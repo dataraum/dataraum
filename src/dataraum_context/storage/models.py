@@ -10,7 +10,6 @@ from uuid import uuid4
 from sqlalchemy import (
     JSON,
     Boolean,
-    Column,
     DateTime,
     Float,
     ForeignKey,
@@ -66,15 +65,9 @@ class Source(Base):
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
     )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        nullable=False,
-        default=lambda: datetime.now(UTC),
-        onupdate=lambda: datetime.now(UTC),
-    )
 
     # Relationships
-    tables: Mapped[list["Table"]] = relationship(
+    tables: Mapped[list[Table]] = relationship(
         back_populates="source", cascade="all, delete-orphan"
     )
 
@@ -99,20 +92,20 @@ class Table(Base):
     last_profiled_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     # Relationships
-    source: Mapped["Source"] = relationship(back_populates="tables")
-    columns: Mapped[list["Column"]] = relationship(
+    source: Mapped[Source] = relationship(back_populates="tables")
+    columns: Mapped[list[Column]] = relationship(
         back_populates="table", cascade="all, delete-orphan"
     )
-    entity_detections: Mapped[list["TableEntity"]] = relationship(
+    entity_detections: Mapped[list[TableEntity]] = relationship(
         back_populates="table", cascade="all, delete-orphan"
     )
-    quality_rules: Mapped[list["QualityRule"]] = relationship(
+    quality_rules: Mapped[list[QualityRule]] = relationship(
         back_populates="table", cascade="all, delete-orphan"
     )
-    quality_scores: Mapped[list["QualityScore"]] = relationship(
+    quality_scores: Mapped[list[QualityScore]] = relationship(
         back_populates="table", cascade="all, delete-orphan"
     )
-    ontology_applications: Mapped[list["OntologyApplication"]] = relationship(
+    ontology_applications: Mapped[list[OntologyApplication]] = relationship(
         back_populates="table", cascade="all, delete-orphan"
     )
 
@@ -133,32 +126,32 @@ class Column(Base):
     resolved_type: Mapped[str | None] = mapped_column(String)
 
     # Relationships
-    table: Mapped["Table"] = relationship(back_populates="columns")
-    profiles: Mapped[list["ColumnProfile"]] = relationship(
+    table: Mapped[Table] = relationship(back_populates="columns")
+    profiles: Mapped[list[ColumnProfile]] = relationship(
         back_populates="column", cascade="all, delete-orphan"
     )
-    type_candidates: Mapped[list["TypeCandidate"]] = relationship(
+    type_candidates: Mapped[list[TypeCandidate]] = relationship(
         back_populates="column", cascade="all, delete-orphan"
     )
-    type_decision: Mapped["TypeDecision | None"] = relationship(
+    type_decision: Mapped[TypeDecision | None] = relationship(
         back_populates="column", uselist=False, cascade="all, delete-orphan"
     )
-    semantic_annotation: Mapped["SemanticAnnotation | None"] = relationship(
+    semantic_annotation: Mapped[SemanticAnnotation | None] = relationship(
         back_populates="column", uselist=False, cascade="all, delete-orphan"
     )
-    temporal_profile: Mapped["TemporalProfile | None"] = relationship(
+    temporal_profile: Mapped[TemporalProfile | None] = relationship(
         back_populates="column", uselist=False, cascade="all, delete-orphan"
     )
-    quality_rules: Mapped[list["QualityRule"]] = relationship(
+    quality_rules: Mapped[list[QualityRule]] = relationship(
         back_populates="column", cascade="all, delete-orphan"
     )
-    quality_scores: Mapped[list["QualityScore"]] = relationship(
+    quality_scores: Mapped[list[QualityScore]] = relationship(
         back_populates="column", cascade="all, delete-orphan"
     )
-    relationships_from: Mapped[list["Relationship"]] = relationship(
+    relationships_from: Mapped[list[Relationship]] = relationship(
         foreign_keys="Relationship.from_column_id", back_populates="from_column"
     )
-    relationships_to: Mapped[list["Relationship"]] = relationship(
+    relationships_to: Mapped[list[Relationship]] = relationship(
         foreign_keys="Relationship.to_column_id", back_populates="to_column"
     )
 
@@ -210,7 +203,7 @@ class ColumnProfile(Base):
     null_ratio: Mapped[float | None] = mapped_column(Float)
 
     # Relationships
-    column: Mapped["Column"] = relationship(back_populates="profiles")
+    column: Mapped[Column] = relationship(back_populates="profiles")
 
 
 Index("idx_column_profiles_latest", ColumnProfile.column_id, ColumnProfile.profiled_at.desc())
@@ -245,7 +238,7 @@ class TypeCandidate(Base):
     unit_confidence: Mapped[float | None] = mapped_column(Float)
 
     # Relationships
-    column: Mapped["Column"] = relationship(back_populates="type_candidates")
+    column: Mapped[Column] = relationship(back_populates="type_candidates")
 
 
 Index("idx_type_candidates_column", TypeCandidate.column_id)
@@ -274,7 +267,7 @@ class TypeDecision(Base):
     decision_reason: Mapped[str | None] = mapped_column(String)
 
     # Relationships
-    column: Mapped["Column"] = relationship(back_populates="type_decision")
+    column: Mapped[Column] = relationship(back_populates="type_decision")
 
 
 # ============================================================================
@@ -317,7 +310,7 @@ class SemanticAnnotation(Base):
     confidence: Mapped[float | None] = mapped_column(Float)
 
     # Relationships
-    column: Mapped["Column"] = relationship(back_populates="semantic_annotation")
+    column: Mapped[Column] = relationship(back_populates="semantic_annotation")
 
 
 class TableEntity(Base):
@@ -347,7 +340,7 @@ class TableEntity(Base):
     )
 
     # Relationships
-    table: Mapped["Table"] = relationship(back_populates="entity_detections")
+    table: Mapped[Table] = relationship(back_populates="entity_detections")
 
 
 # ============================================================================
@@ -394,10 +387,10 @@ class Relationship(Base):
     )
 
     # Relationships
-    from_column: Mapped["Column"] = relationship(
+    from_column: Mapped[Column] = relationship(
         foreign_keys=[from_column_id], back_populates="relationships_from"
     )
-    to_column: Mapped["Column"] = relationship(
+    to_column: Mapped[Column] = relationship(
         foreign_keys=[to_column_id], back_populates="relationships_to"
     )
 
@@ -473,7 +466,7 @@ class TemporalProfile(Base):
     )
 
     # Relationships
-    column: Mapped["Column"] = relationship(back_populates="temporal_profile")
+    column: Mapped[Column] = relationship(back_populates="temporal_profile")
 
 
 # ============================================================================
@@ -511,9 +504,9 @@ class QualityRule(Base):
     created_by: Mapped[str | None] = mapped_column(String)
 
     # Relationships
-    table: Mapped["Table"] = relationship(back_populates="quality_rules")
-    column: Mapped["Column | None"] = relationship(back_populates="quality_rules")
-    results: Mapped[list["QualityResult"]] = relationship(
+    table: Mapped[Table] = relationship(back_populates="quality_rules")
+    column: Mapped[Column | None] = relationship(back_populates="quality_rules")
+    results: Mapped[list[QualityResult]] = relationship(
         back_populates="rule", cascade="all, delete-orphan"
     )
 
@@ -550,7 +543,7 @@ class QualityResult(Base):
     trend_direction: Mapped[str | None] = mapped_column(String)
 
     # Relationships
-    rule: Mapped["QualityRule"] = relationship(back_populates="results")
+    rule: Mapped[QualityRule] = relationship(back_populates="results")
 
 
 class QualityScore(Base):
@@ -579,8 +572,8 @@ class QualityScore(Base):
     )
 
     # Relationships
-    table: Mapped["Table | None"] = relationship(back_populates="quality_scores")
-    column: Mapped["Column | None"] = relationship(back_populates="quality_scores")
+    table: Mapped[Table | None] = relationship(back_populates="quality_scores")
+    column: Mapped[Column | None] = relationship(back_populates="quality_scores")
 
 
 # ============================================================================
@@ -618,7 +611,7 @@ class Ontology(Base):
     )
 
     # Relationships
-    applications: Mapped[list["OntologyApplication"]] = relationship(
+    applications: Mapped[list[OntologyApplication]] = relationship(
         back_populates="ontology", cascade="all, delete-orphan"
     )
 
@@ -645,8 +638,8 @@ class OntologyApplication(Base):
     )
 
     # Relationships
-    table: Mapped["Table"] = relationship(back_populates="ontology_applications")
-    ontology: Mapped["Ontology"] = relationship(back_populates="applications")
+    table: Mapped[Table] = relationship(back_populates="ontology_applications")
+    ontology: Mapped[Ontology] = relationship(back_populates="applications")
 
 
 # ============================================================================
@@ -685,7 +678,7 @@ class Checkpoint(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
 
     # Relationships
-    review_items: Mapped[list["ReviewQueue"]] = relationship(
+    review_items: Mapped[list[ReviewQueue]] = relationship(
         back_populates="checkpoint", cascade="all, delete-orphan"
     )
 
@@ -716,7 +709,7 @@ class ReviewQueue(Base):
     review_notes: Mapped[str | None] = mapped_column(Text)
 
     # Relationships
-    checkpoint: Mapped["Checkpoint"] = relationship(back_populates="review_items")
+    checkpoint: Mapped[Checkpoint] = relationship(back_populates="review_items")
 
 
 Index("idx_review_queue_status", ReviewQueue.status)

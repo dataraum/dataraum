@@ -23,7 +23,6 @@ class Result(BaseModel, Generic[T]):
     Use this instead of exceptions for expected failures.
     Exceptions are reserved for unexpected/programming errors.
     """
-    success: bool
 
     success: bool
     value: T | None = None
@@ -599,7 +598,6 @@ class ContextDocument(BaseModel):
 
     Several fields are LLM-generated when enabled in config/llm.yaml.
     """
-
 
     # Data inventory
     tables: list[TableContext]

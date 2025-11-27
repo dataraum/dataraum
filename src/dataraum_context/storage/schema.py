@@ -1,11 +1,11 @@
 """Database schema initialization and management."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from dataraum_context.storage.base import Base, get_session
+from dataraum_context.storage.base import Base
 
 
 async def init_database(engine: AsyncEngine) -> None:
@@ -55,7 +55,7 @@ async def _set_schema_version(engine: AsyncEngine, version: str) -> None:
         if not existing:
             schema_version = DBSchemaVersion(
                 version=version,
-                applied_at=datetime.now(timezone.utc),
+                applied_at=datetime.now(UTC),
             )
             session.add(schema_version)
             await session.commit()

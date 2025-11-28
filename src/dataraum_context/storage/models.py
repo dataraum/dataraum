@@ -1,8 +1,27 @@
 """SQLAlchemy models for metadata storage.
 
+DEPRECATED: This module is being replaced by storage.models_v2 with a cleaner 5-pillar architecture.
+
+DO NOT ADD NEW MODELS HERE. Use storage/models_v2/ instead.
+
+This file will be removed after the migration to the new architecture is complete (after Phase 6).
+
+Deprecation date: 2025-11-28
+Planned removal: After Phase 6 completion
+New location: storage/models_v2/
+
 Note: This module defines database models (SQLAlchemy ORM).
 For API/interface models (Pydantic), see core.models.
 """
+
+import warnings
+
+warnings.warn(
+    "storage.models is deprecated and will be removed after Phase 6. "
+    "Use storage.models_v2 instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 from datetime import UTC, datetime
 from uuid import uuid4

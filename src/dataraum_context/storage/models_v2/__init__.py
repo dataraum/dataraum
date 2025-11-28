@@ -19,6 +19,7 @@ from dataraum_context.storage.models_v2 import (
     core,
     correlation,
     domain_quality,
+    quality_context,
     statistical_context,
     temporal_context,
     topological_context,
@@ -43,6 +44,14 @@ from dataraum_context.storage.models_v2.domain_quality import (
     IntercompanyTransaction,
     SignConventionViolation,
     TrialBalanceCheck,
+)
+
+# Quality context synthesis (Pillar 5)
+from dataraum_context.storage.models_v2.quality_context import (
+    QualityContext,
+    QualityDimensionDetail,
+    QualityIssueAggregate,
+    QualityTrend,
 )
 
 # Statistical context (Pillar 1)
@@ -99,4 +108,9 @@ __all__ = [
     "SignConventionViolation",
     "IntercompanyTransaction",
     "FiscalPeriodIntegrity",
+    # Pillar 5: Quality Context Synthesis
+    "QualityContext",
+    "QualityDimensionDetail",
+    "QualityIssueAggregate",
+    "QualityTrend",
 ]

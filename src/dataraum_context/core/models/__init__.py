@@ -117,6 +117,20 @@ from dataraum_context.core.models.domain_quality import (
 from dataraum_context.core.models.domain_quality import (
     SignConventionViolation as SignConventionViolationModel,
 )
+
+# Quality context synthesis (Pillar 5) - new models
+from dataraum_context.core.models.quality_context import (
+    QualityContextResult,
+    QualitySummary,
+    QualityTrendPoint,
+    QualityWeights,
+)
+from dataraum_context.core.models.quality_context import (
+    QualityDimensionDetail as QualityDimensionDetailModel,
+)
+from dataraum_context.core.models.quality_context import (
+    QualityIssue as QualityIssueModel,
+)
 from dataraum_context.core.models.statistical import (
     BenfordTestResult,
     DistributionStabilityResult,
@@ -276,4 +290,11 @@ __all__ = [
     "FinancialQualityIssue",
     "FinancialQualityConfig",
     "SignConventionConfig",
+    # Quality Context Synthesis (Pillar 5)
+    "QualityContextResult",
+    "QualityDimensionDetailModel",
+    "QualityIssueModel",
+    "QualityWeights",
+    "QualitySummary",
+    "QualityTrendPoint",
 ]

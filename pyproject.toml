@@ -23,6 +23,7 @@ dependencies = [
     "duckdb>=1.0.0",
     "pyarrow>=15.0.0",
     "pint>=0.23",
+    "pandas>=2.0.0",
     # Database (SQLAlchemy + SQLite backend)
     "sqlalchemy>=2.0.0",
     "aiosqlite>=0.19.0",
@@ -37,6 +38,9 @@ dependencies = [
     "mcp>=0.1.0",
     # Configuration
     "pyyaml>=6.0.0",
+    # TDA (Topological Data Analysis)
+    "scipy>=1.11.0",
+    "ripser>=0.6.0",
     # Utilities
     "structlog>=24.1.0",
     "python-dotenv>=1.0.0",
@@ -148,5 +152,7 @@ module = [
     "openai.*",
     "sdv.*",
     "hamilton.*",
+    "ripser.*",
+    "scipy.*",
 ]
 ignore_missing_imports = true

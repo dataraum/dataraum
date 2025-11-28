@@ -121,31 +121,124 @@ class SemanticAnalysisFeature(LLMFeature):
             Result containing list of column profiles
         """
         try:
-            # Get all columns for these tables
-            stmt = select(Column).join(Table).where(Table.table_id.in_(table_ids))
-            result = await session.execute(stmt)
-            columns = result.scalars().all()
+            # Get latest profile for each column in these tables
+            # We use a subquery to get the most recent profile per column
+            from sqlalchemy import func
 
-            # For now, return empty profiles - in real implementation
-            # we'd load from column_profiles table
-            # This is a placeholder until profiling is integrated
+            from dataraum_context.core.models import (
+                DetectedPattern,
+                NumericStats,
+                StringStats,
+                ValueCount,
+            )
+            from dataraum_context.storage.models import (
+                ColumnProfile as ColumnProfileModel,
+            )
+
+            subq = (
+                select(
+                    ColumnProfileModel.column_id,
+                    func.max(ColumnProfileModel.profiled_at).label("max_profiled_at"),
+                )
+                .join(Column)
+                .join(Table)
+                .where(Table.table_id.in_(table_ids))
+                .group_by(ColumnProfileModel.column_id)
+                .subquery()
+            )
+
+            stmt = (
+                select(ColumnProfileModel, Column, Table)
+                .join(Column, ColumnProfileModel.column_id == Column.column_id)
+                .join(Table, Column.table_id == Table.table_id)
+                .join(
+                    subq,
+                    (ColumnProfileModel.column_id == subq.c.column_id)
+                    & (ColumnProfileModel.profiled_at == subq.c.max_profiled_at),
+                )
+                .where(Table.table_id.in_(table_ids))
+            )
+
+            result = await session.execute(stmt)
+            rows = result.all()
+
             profiles = []
-            for col in columns:
+            for profile_model, col, table in rows:
+                # Convert storage model to core model
+                numeric_stats = None
+                if profile_model.min_value is not None:
+                    numeric_stats = NumericStats(
+                        min_value=profile_model.min_value,
+                        max_value=profile_model.max_value or 0.0,
+                        mean=profile_model.mean_value or 0.0,
+                        stddev=profile_model.stddev_value or 0.0,
+                        percentiles=profile_model.percentiles or {},
+                    )
+
+                string_stats = None
+                if profile_model.min_length is not None:
+                    string_stats = StringStats(
+                        min_length=profile_model.min_length,
+                        max_length=profile_model.max_length or 0,
+                        avg_length=profile_model.avg_length or 0.0,
+                    )
+
+                # Convert top values
+                top_values = []
+                if profile_model.top_values:
+                    for val_data in profile_model.top_values.get("values", []):
+                        top_values.append(
+                            ValueCount(
+                                value=val_data.get("value"),
+                                count=val_data.get("count", 0),
+                                percentage=val_data.get("percentage", 0.0),
+                            )
+                        )
+
+                # Convert detected patterns
+                detected_patterns = []
+                # Note: patterns are stored in type_candidates table in Phase 2B
+                # For now, leave empty - will be populated when profiling is integrated
+
                 profile = ColumnProfile(
                     column_id=col.column_id,
-                    column_ref=ColumnRef(
-                        table_name=col.table.table_name, column_name=col.column_name
-                    ),
-                    profiled_at=col.table.created_at,
-                    total_count=col.table.row_count or 0,
-                    null_count=0,
-                    distinct_count=0,
-                    null_ratio=0.0,
-                    cardinality_ratio=0.0,
-                    top_values=[],
-                    detected_patterns=[],
+                    column_ref=ColumnRef(table_name=table.table_name, column_name=col.column_name),
+                    profiled_at=profile_model.profiled_at,
+                    total_count=profile_model.total_count,
+                    null_count=profile_model.null_count,
+                    distinct_count=profile_model.distinct_count or 0,
+                    null_ratio=profile_model.null_ratio or 0.0,
+                    cardinality_ratio=profile_model.cardinality_ratio or 0.0,
+                    numeric_stats=numeric_stats,
+                    string_stats=string_stats,
+                    top_values=top_values,
+                    detected_patterns=detected_patterns,
                 )
                 profiles.append(profile)
+
+            if not profiles:
+                # If no profiles found, create placeholder profiles
+                # This allows semantic analysis to work even without profiling
+                stmt = select(Column, Table).join(Table).where(Table.table_id.in_(table_ids))
+                result = await session.execute(stmt)
+                rows = result.all()
+
+                for col, table in rows:
+                    profile = ColumnProfile(
+                        column_id=col.column_id,
+                        column_ref=ColumnRef(
+                            table_name=table.table_name, column_name=col.column_name
+                        ),
+                        profiled_at=table.created_at,
+                        total_count=table.row_count or 0,
+                        null_count=0,
+                        distinct_count=0,
+                        null_ratio=0.0,
+                        cardinality_ratio=0.0,
+                        top_values=[],
+                        detected_patterns=[],
+                    )
+                    profiles.append(profile)
 
             return Result.ok(profiles)
 

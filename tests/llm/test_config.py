@@ -1,7 +1,5 @@
 """Tests for LLM configuration loading."""
 
-import pytest
-
 from dataraum_context.llm.config import load_llm_config
 
 

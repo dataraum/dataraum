@@ -1,7 +1,5 @@
 """Tests for LLM service initialization."""
 
-import os
-
 import pytest
 
 from dataraum_context.llm import LLMService, load_llm_config

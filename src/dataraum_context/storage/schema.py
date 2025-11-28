@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from dataraum_context.storage.base import Base
+from dataraum_context.storage.models_v2.base import Base as BaseV2
 
 
 async def init_database(engine: AsyncEngine) -> None:
@@ -19,7 +20,9 @@ async def init_database(engine: AsyncEngine) -> None:
         engine: Async SQLAlchemy engine
     """
     async with engine.begin() as conn:
+        # Create tables from both old and new Base classes
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(BaseV2.metadata.create_all)
 
     # Record schema version
     await _set_schema_version(engine, "0.1.0")
@@ -35,8 +38,11 @@ async def reset_database(engine: AsyncEngine) -> None:
         engine: Async SQLAlchemy engine
     """
     async with engine.begin() as conn:
+        # Drop and recreate tables from both old and new Base classes
         await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(BaseV2.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(BaseV2.metadata.create_all)
 
     await _set_schema_version(engine, "0.1.0")
 

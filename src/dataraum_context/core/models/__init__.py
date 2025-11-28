@@ -78,6 +78,21 @@ LegacyValueCount = _legacy_namespace["ValueCount"]
 LegacyQualityIssue = _legacy_namespace.get("QualityIssue")  # May not exist
 
 # Statistical context (Pillar 1) - new models
+# Correlation analysis (Part of Pillar 1) - new models
+from dataraum_context.core.models.correlation import (
+    CategoricalAssociation as CategoricalAssociationModel,
+)
+from dataraum_context.core.models.correlation import (
+    CorrelationAnalysisResult,
+    CorrelationMatrix,
+    NumericCorrelation,
+)
+from dataraum_context.core.models.correlation import (
+    DerivedColumn as DerivedColumnModel,
+)
+from dataraum_context.core.models.correlation import (
+    FunctionalDependency as FunctionalDependencyModel,
+)
 from dataraum_context.core.models.statistical import (
     BenfordTestResult,
     DistributionStabilityResult,
@@ -157,4 +172,11 @@ __all__ = [
     # New Results (Pillar 1)
     "StatisticalProfilingResult",
     "StatisticalQualityResult",
+    # Correlation Analysis (Pillar 1)
+    "NumericCorrelation",
+    "CategoricalAssociationModel",
+    "FunctionalDependencyModel",
+    "DerivedColumnModel",
+    "CorrelationMatrix",
+    "CorrelationAnalysisResult",
 ]

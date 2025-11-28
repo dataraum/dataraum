@@ -14,28 +14,22 @@ It organizes existing pillar-specific Pydantic models without duplication.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
-# Import legacy models that don't have pillar-specific versions yet
-from dataraum_context.core.models import (
-    DomainConcept,
-    MetricDefinition,
-    Relationship,
-    SemanticEnrichmentResult,
-    SuggestedQuery,
-    TopologyEnrichmentResult,
-)
-
 # Import existing Pydantic models from each pillar
+from dataraum_context.core.models.correlation import CorrelationAnalysisResult
 from dataraum_context.core.models.quality_synthesis import QualitySynthesisResult
 from dataraum_context.core.models.statistical import (
-    CorrelationAnalysisResult,
     StatisticalProfilingResult,
     StatisticalQualityResult,
 )
 from dataraum_context.core.models.temporal import TemporalQualitySummary
 from dataraum_context.core.models.topological import TopologicalSummary
+
+# For fields that would cause circular imports, we use Any with string annotations
+# These will be properly typed when accessed through the main __init__.py
 
 
 class ContextDocument(BaseModel):
@@ -72,13 +66,13 @@ class ContextDocument(BaseModel):
     # ========================================================================
     # Pillar 2: Topological Context
     # ========================================================================
-    topology: TopologyEnrichmentResult | None = None
+    topology: Any = None  # TopologyEnrichmentResult (avoid circular import)
     topological_summary: TopologicalSummary | None = None
 
     # ========================================================================
     # Pillar 3: Semantic Context
     # ========================================================================
-    semantic: SemanticEnrichmentResult | None = None
+    semantic: Any = None  # SemanticEnrichmentResult (avoid circular import)
 
     # ========================================================================
     # Pillar 4: Temporal Context
@@ -93,13 +87,13 @@ class ContextDocument(BaseModel):
     # ========================================================================
     # Ontology-Specific Content
     # ========================================================================
-    relevant_metrics: list[MetricDefinition] = Field(default_factory=list)
-    domain_concepts: list[DomainConcept] = Field(default_factory=list)
+    relevant_metrics: list[Any] = Field(default_factory=list)  # list[MetricDefinition]
+    domain_concepts: list[Any] = Field(default_factory=list)  # list[DomainConcept]
 
     # ========================================================================
     # LLM-Generated Content (Optional)
     # ========================================================================
-    suggested_queries: list[SuggestedQuery] = Field(default_factory=list)
+    suggested_queries: list[Any] = Field(default_factory=list)  # list[SuggestedQuery]
     ai_summary: str | None = None  # Natural language overview
     key_facts: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

@@ -38,9 +38,6 @@ class Source(Base):
     tables: Mapped[list["Table"]] = relationship(
         back_populates="source", cascade="all, delete-orphan"
     )
-    quality_contexts: Mapped[list["QualityContext"]] = relationship(
-        back_populates="source", cascade="all, delete-orphan"
-    )
 
 
 class Table(Base):

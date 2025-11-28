@@ -9,13 +9,19 @@ Design notes:
 - StatisticalQualityMetrics: Advanced quality assessment (optional, more expensive)
 """
 
+from __future__ import annotations
+
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dataraum_context.storage.models_v2.base import Base
+
+if TYPE_CHECKING:
+    from dataraum_context.storage.models_v2.core import Column
 
 
 class StatisticalProfile(Base):

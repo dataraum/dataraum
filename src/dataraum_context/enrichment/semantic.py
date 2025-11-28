@@ -5,17 +5,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.core.models import Result, SemanticEnrichmentResult
 from dataraum_context.llm import LLMService
-from dataraum_context.storage.models import (
+from dataraum_context.storage.models_v2 import (
     Column,
     Table,
 )
-from dataraum_context.storage.models import (
+from dataraum_context.storage.models_v2 import (
     Relationship as RelationshipModel,
 )
-from dataraum_context.storage.models import (
+from dataraum_context.storage.models_v2 import (
     SemanticAnnotation as AnnotationModel,
 )
-from dataraum_context.storage.models import (
+from dataraum_context.storage.models_v2 import (
     TableEntity as EntityModel,
 )
 

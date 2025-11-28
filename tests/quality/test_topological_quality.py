@@ -13,7 +13,7 @@ from dataraum_context.core.models.topological import (
     TopologicalAnomaly,
     TopologicalQualityResult,
 )
-from dataraum_context.enrichment.topological_quality import (
+from dataraum_context.quality.topological import (
     analyze_topological_quality,
     assess_homological_stability,
     assess_structural_complexity,

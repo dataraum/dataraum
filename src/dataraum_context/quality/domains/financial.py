@@ -18,13 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.core.models import Result
 from dataraum_context.core.models.domain_quality import (
-    DomainQualityResult,
     DoubleEntryResult,
     FinancialQualityConfig,
     FinancialQualityIssue,
     FinancialQualityResult,
     FiscalPeriodIntegrityCheck,
-    IntercompanyTransactionMatch,
     SignConventionViolation,
     TrialBalanceResult,
 )
@@ -36,9 +34,6 @@ from dataraum_context.storage.models_v2 import (
 )
 from dataraum_context.storage.models_v2 import (
     FiscalPeriodIntegrity as DBFiscalPeriodIntegrity,
-)
-from dataraum_context.storage.models_v2 import (
-    IntercompanyTransaction as DBIntercompanyTransaction,
 )
 from dataraum_context.storage.models_v2 import (
     SignConventionViolation as DBSignConventionViolation,

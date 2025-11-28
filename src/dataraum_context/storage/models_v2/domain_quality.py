@@ -4,14 +4,19 @@ SQLAlchemy models for storing domain-specific quality metrics,
 focusing on financial domain rules (double-entry, trial balance, etc.).
 """
 
+from __future__ import annotations
+
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
+
+if TYPE_CHECKING:
+    from dataraum_context.storage.models_v2.core import Table
 
 
 class DomainQualityMetrics(Base):

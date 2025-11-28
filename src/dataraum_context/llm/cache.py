@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.llm.providers.base import LLMResponse
-from dataraum_context.storage.models import LLMCache as LLMCacheModel
+from dataraum_context.storage.models_v2 import LLMCache as LLMCacheModel
 
 
 class LLMCache:

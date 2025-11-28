@@ -16,7 +16,7 @@ from dataraum_context.core.models.temporal import (
     TrendAnalysis,
     UpdateFrequencyAnalysis,
 )
-from dataraum_context.enrichment.temporal_quality import (
+from dataraum_context.quality.temporal import (
     analyze_completeness,
     analyze_distribution_stability,
     analyze_seasonality,

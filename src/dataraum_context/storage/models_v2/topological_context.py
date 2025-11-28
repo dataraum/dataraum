@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum_context.storage.models_v2.base import Base
 

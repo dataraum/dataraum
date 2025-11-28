@@ -10,14 +10,13 @@ from dataraum_context.core.config import get_settings
 from dataraum_context.core.models import (
     ColumnProfile,
     ColumnRef,
-    HistogramBucket,
     NumericStats,
     Result,
     StringStats,
     ValueCount,
 )
-from dataraum_context.storage.models import Column, Table
-from dataraum_context.storage.models import ColumnProfile as DBColumnProfile
+from dataraum_context.storage.models_v2 import Column, Table
+from dataraum_context.storage.models_v2 import StatisticalProfile as DBColumnProfile
 
 
 async def compute_statistical_profile(

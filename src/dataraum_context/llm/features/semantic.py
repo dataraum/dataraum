@@ -22,7 +22,7 @@ from dataraum_context.core.models import (
 )
 from dataraum_context.llm.features._base import LLMFeature
 from dataraum_context.llm.privacy import DataSampler
-from dataraum_context.storage.models import Column, Ontology, Table
+from dataraum_context.storage.models_v2 import Column, Ontology, Table
 
 
 class SemanticAnalysisFeature(LLMFeature):
@@ -126,12 +126,11 @@ class SemanticAnalysisFeature(LLMFeature):
             from sqlalchemy import func
 
             from dataraum_context.core.models import (
-                DetectedPattern,
                 NumericStats,
                 StringStats,
                 ValueCount,
             )
-            from dataraum_context.storage.models import (
+            from dataraum_context.storage.models_v2 import (
                 ColumnProfile as ColumnProfileModel,
             )
 

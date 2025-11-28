@@ -11,7 +11,6 @@ Key concepts:
 - Structural complexity: Sum of Betti numbers and entropy
 """
 
-import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -543,7 +542,6 @@ async def analyze_topological_quality(
             return Result.fail(f"Table {table_id} not found")
 
         # Load table data from DuckDB
-        import pandas as pd
 
         table_name = table.duckdb_path
         query = f"SELECT * FROM {table_name} LIMIT 10000"  # Limit for performance

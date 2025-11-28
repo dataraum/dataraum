@@ -13,8 +13,10 @@ from dataraum_context.core.models import (
     TemporalGap,
     TemporalProfile,
 )
-from dataraum_context.storage.models import Column, Table
-from dataraum_context.storage.models import TemporalProfile as TemporalProfileModel
+from dataraum_context.storage.models_v2 import Column, Table
+
+# Note: TemporalProfile storage model was replaced by TemporalQualityMetrics in models_v2
+# from dataraum_context.storage.models_v2 import TemporalProfile as TemporalProfileModel
 
 
 async def enrich_temporal(
@@ -296,21 +298,12 @@ async def _store_temporal_profile(
             ]
         }
 
-    db_profile = TemporalProfileModel(
-        column_id=profile.column_id,
-        min_timestamp=profile.min_timestamp,
-        max_timestamp=profile.max_timestamp,
-        detected_granularity=profile.detected_granularity,
-        granularity_confidence=profile.granularity_confidence,
-        dominant_gap=profile.detected_granularity,
-        expected_periods=profile.expected_periods,
-        actual_periods=profile.actual_periods,
-        completeness_ratio=profile.completeness_ratio,
-        gap_count=profile.gap_count,
-        gap_details=gaps_json,
-        has_seasonality=profile.has_seasonality,
-        seasonality_period=profile.seasonality_period,
-        trend_direction=profile.trend_direction,
-    )
-
-    session.add(db_profile)
+    # TODO: Update to use TemporalQualityMetrics from models_v2
+    # The old TemporalProfile model was replaced by TemporalQualityMetrics in the 5-pillar architecture
+    # This persistence needs to be reimplemented as part of Phase 4 (Temporal Context)
+    #
+    # db_profile = TemporalQualityMetrics(
+    #     column_id=profile.column_id,
+    #     ...  # Map fields to new schema
+    # )
+    # session.add(db_profile)

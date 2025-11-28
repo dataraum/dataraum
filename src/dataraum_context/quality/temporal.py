@@ -11,7 +11,7 @@ Uses statsmodels for seasonal decomposition and ruptures for change point detect
 """
 
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import duckdb
@@ -29,7 +29,6 @@ from dataraum_context.core.models.temporal import (
     DistributionShiftResult,
     DistributionStabilityAnalysis,
     FiscalCalendarAnalysis,
-    SeasonalDecompositionResult,
     SeasonalityAnalysis,
     TemporalCompletenessAnalysis,
     TemporalGapInfo,
@@ -46,13 +45,7 @@ from dataraum_context.storage.models_v2.temporal_context import (
     DistributionShift as DBDistributionShift,
 )
 from dataraum_context.storage.models_v2.temporal_context import (
-    SeasonalDecomposition as DBSeasonalDecomposition,
-)
-from dataraum_context.storage.models_v2.temporal_context import (
     TemporalQualityMetrics as DBTemporalMetrics,
-)
-from dataraum_context.storage.models_v2.temporal_context import (
-    UpdateFrequencyHistory as DBUpdateFrequencyHistory,
 )
 
 # ============================================================================

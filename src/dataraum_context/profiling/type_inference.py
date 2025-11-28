@@ -18,8 +18,8 @@ from dataraum_context.core.models import (
 )
 from dataraum_context.profiling.patterns import load_pattern_config
 from dataraum_context.profiling.units import detect_unit
-from dataraum_context.storage.models import Column, Table
-from dataraum_context.storage.models import TypeCandidate as DBTypeCandidate
+from dataraum_context.storage.models_v2 import Column, Table
+from dataraum_context.storage.models_v2 import TypeCandidate as DBTypeCandidate
 
 
 async def infer_type_candidates(

@@ -49,7 +49,7 @@ async def reset_database(engine: AsyncEngine) -> None:
 
 async def _set_schema_version(engine: AsyncEngine, version: str) -> None:
     """Record the schema version in the database."""
-    from dataraum_context.storage.models import DBSchemaVersion
+    from dataraum_context.storage.models_v2 import DBSchemaVersion
 
     async with AsyncSession(engine) as session:
         # Check if version already exists
@@ -69,7 +69,7 @@ async def _set_schema_version(engine: AsyncEngine, version: str) -> None:
 
 async def get_schema_version(session: AsyncSession) -> str | None:
     """Get the current schema version."""
-    from dataraum_context.storage.models import DBSchemaVersion
+    from dataraum_context.storage.models_v2 import DBSchemaVersion
 
     result = await session.execute(
         select(DBSchemaVersion).order_by(DBSchemaVersion.applied_at.desc()).limit(1)

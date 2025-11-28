@@ -20,7 +20,6 @@ import numpy as np
 from scipy import stats
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.config import get_settings
 from dataraum_context.core.models import Result
 from dataraum_context.core.models.statistical import (
     BenfordTestResult,
@@ -38,7 +37,7 @@ from dataraum_context.storage.models_v2.statistical_context import (
 
 # Type checking imports to avoid hard dependency on scikit-learn
 if TYPE_CHECKING:
-    from sklearn.ensemble import IsolationForest
+    pass
 
 
 # ============================================================================

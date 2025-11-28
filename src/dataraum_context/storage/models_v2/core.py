@@ -4,13 +4,34 @@ These are the fundamental entities that don't change across the 5-pillar archite
 They serve as anchor points for all context metadata.
 """
 
+from __future__ import annotations
+
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dataraum_context.storage.models_v2.base import Base
+
+if TYPE_CHECKING:
+    from dataraum_context.storage.models_v2.domain_quality import (
+        DomainQualityMetrics,
+        FinancialQualityMetrics,
+    )
+    from dataraum_context.storage.models_v2.ontology import OntologyApplication
+    from dataraum_context.storage.models_v2.quality_rules import QualityRule, QualityScore
+    from dataraum_context.storage.models_v2.relationship import Relationship
+    from dataraum_context.storage.models_v2.semantic_context import (
+        SemanticAnnotation,
+        TableEntity,
+    )
+    from dataraum_context.storage.models_v2.statistical_context import (
+        StatisticalProfile,
+        StatisticalQualityMetrics,
+    )
+    from dataraum_context.storage.models_v2.type_inference import TypeCandidate, TypeDecision
 
 
 class Source(Base):
@@ -79,6 +100,24 @@ class Table(Base):
         back_populates="table", cascade="all, delete-orphan"
     )
 
+    # Semantic context relationships
+    entity_detections: Mapped[list["TableEntity"]] = relationship(
+        back_populates="table", cascade="all, delete-orphan"
+    )
+
+    # Quality rules relationships
+    quality_rules: Mapped[list["QualityRule"]] = relationship(
+        back_populates="table", cascade="all, delete-orphan"
+    )
+    quality_scores: Mapped[list["QualityScore"]] = relationship(
+        back_populates="table", cascade="all, delete-orphan"
+    )
+
+    # Ontology relationships
+    ontology_applications: Mapped[list["OntologyApplication"]] = relationship(
+        back_populates="table", cascade="all, delete-orphan"
+    )
+
 
 class Column(Base):
     """Columns in tables.
@@ -112,6 +151,35 @@ class Column(Base):
     )
     statistical_quality_metrics: Mapped[list["StatisticalQualityMetrics"]] = relationship(
         back_populates="column", cascade="all, delete-orphan"
+    )
+
+    # Type inference relationships
+    type_candidates: Mapped[list["TypeCandidate"]] = relationship(
+        back_populates="column", cascade="all, delete-orphan"
+    )
+    type_decision: Mapped["TypeDecision | None"] = relationship(
+        back_populates="column", uselist=False, cascade="all, delete-orphan"
+    )
+
+    # Semantic context relationships
+    semantic_annotation: Mapped["SemanticAnnotation | None"] = relationship(
+        back_populates="column", uselist=False, cascade="all, delete-orphan"
+    )
+
+    # Quality rules relationships
+    quality_rules: Mapped[list["QualityRule"]] = relationship(
+        back_populates="column", cascade="all, delete-orphan"
+    )
+    quality_scores: Mapped[list["QualityScore"]] = relationship(
+        back_populates="column", cascade="all, delete-orphan"
+    )
+
+    # Relationship tracking
+    relationships_from: Mapped[list["Relationship"]] = relationship(
+        foreign_keys="Relationship.from_column_id", back_populates="from_column"
+    )
+    relationships_to: Mapped[list["Relationship"]] = relationship(
+        foreign_keys="Relationship.to_column_id", back_populates="to_column"
     )
 
 

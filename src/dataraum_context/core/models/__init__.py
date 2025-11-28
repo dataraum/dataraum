@@ -23,7 +23,6 @@ For new code, import pillar-specific models:
 # We'll import the parent models.py by using a relative import trick
 # Since we're in core/models/__init__.py, we can access ../models.py
 
-import sys
 from pathlib import Path
 
 # Load the legacy models.py file directly

@@ -17,8 +17,8 @@ from dataraum_context.core.models import (
     TopologyEnrichmentResult,
 )
 from dataraum_context.enrichment.tda import TableRelationshipFinder, TableTopologyExtractor
-from dataraum_context.storage.models import Column, Table
-from dataraum_context.storage.models import Relationship as RelationshipModel
+from dataraum_context.storage.models_v2 import Column, Table
+from dataraum_context.storage.models_v2 import Relationship as RelationshipModel
 
 
 async def enrich_topology(

@@ -202,7 +202,7 @@ class DerivedColumn(Base):
     # Evidence
     total_rows: Mapped[int] = mapped_column(Integer, nullable=False)
     matching_rows: Mapped[int] = mapped_column(Integer, nullable=False)
-    mismatch_examples: Mapped[list | None] = mapped_column(
+    mismatch_examples: Mapped[list[dict[str, object]] | None] = mapped_column(
         JSON
     )  # Sample of rows where formula doesn't hold
 

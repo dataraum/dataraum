@@ -111,16 +111,23 @@ async def compute_numeric_correlations(
 
                 # Pearson correlation
                 pearson_r, pearson_p = stats.pearsonr(val1, val2)
+                pearson_r_float = float(np.asarray(pearson_r).item())
+                pearson_p_float = float(np.asarray(pearson_p).item())
 
                 # Spearman correlation
                 spearman_rho, spearman_p = stats.spearmanr(val1, val2)
+                spearman_rho_float = float(np.asarray(spearman_rho).item())
+                spearman_p_float = float(np.asarray(spearman_p).item())
 
                 # Only store if above threshold
-                if abs(pearson_r) < min_correlation and abs(spearman_rho) < min_correlation:
+                if (
+                    abs(pearson_r_float) < min_correlation
+                    and abs(spearman_rho_float) < min_correlation
+                ):
                     continue
 
                 # Determine strength
-                max_corr = max(abs(pearson_r), abs(spearman_rho))
+                max_corr = max(abs(pearson_r_float), abs(spearman_rho_float))
                 if max_corr >= 0.9:
                     strength = "very_strong"
                 elif max_corr >= 0.7:
@@ -132,7 +139,7 @@ async def compute_numeric_correlations(
                 else:
                     strength = "none"
 
-                is_significant = bool(min(pearson_p, spearman_p) < 0.05)
+                is_significant = bool(min(pearson_p_float, spearman_p_float) < 0.05)
 
                 computed_at = datetime.now(UTC)
 
@@ -143,10 +150,10 @@ async def compute_numeric_correlations(
                     column2_id=col2.column_id,
                     column1_name=col1.column_name,
                     column2_name=col2.column_name,
-                    pearson_r=float(pearson_r),
-                    pearson_p_value=float(pearson_p),
-                    spearman_rho=float(spearman_rho),
-                    spearman_p_value=float(spearman_p),
+                    pearson_r=pearson_r_float,
+                    pearson_p_value=pearson_p_float,
+                    spearman_rho=spearman_rho_float,
+                    spearman_p_value=spearman_p_float,
                     sample_size=len(val1),
                     computed_at=computed_at,
                     correlation_strength=strength,
@@ -655,7 +662,7 @@ async def compute_vif_for_table(
         if isinstance(data, dict):
             X = np.column_stack([data[col] for col in column_names])
         elif hasattr(data, "dtype") and data.dtype.names is not None:
-            X = np.column_stack([data[col] for col in data.dtype.names])  # type: ignore[index]
+            X = np.column_stack([data[col] for col in data.dtype.names])
         else:
             return Result.fail("Unexpected data format from fetchnumpy()")
         X = X[~np.isnan(X).any(axis=1)]

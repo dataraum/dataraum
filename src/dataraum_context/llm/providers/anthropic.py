@@ -1,8 +1,10 @@
 """Anthropic Claude provider implementation."""
 
 import os
+from typing import cast
 
 import anthropic
+from anthropic.types import MessageParam
 from pydantic import BaseModel
 
 from dataraum_context.core.models.base import Result
@@ -65,7 +67,9 @@ class AnthropicProvider(LLMProvider):
             model = self.config.default_model
 
             # Build messages
-            messages = [{"role": "user", "content": request.prompt}]
+            messages: list[MessageParam] = [
+                cast(MessageParam, {"role": "user", "content": request.prompt})
+            ]
 
             # Handle JSON mode via system prompt
             # Claude doesn't have native JSON mode like OpenAI, so we use system prompt
@@ -78,18 +82,21 @@ class AnthropicProvider(LLMProvider):
                 )
 
             # Make API call
-            # Build kwargs conditionally to avoid passing None values
-            create_kwargs = {
-                "model": model,
-                "max_tokens": request.max_tokens,
-                "temperature": request.temperature,
-                "messages": messages,
-            }
-
             if system_prompt:
-                create_kwargs["system"] = system_prompt
-
-            response = await self.client.messages.create(**create_kwargs)
+                response = await self.client.messages.create(
+                    model=model,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    messages=messages,
+                    system=system_prompt,
+                )
+            else:
+                response = await self.client.messages.create(
+                    model=model,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    messages=messages,
+                )
 
             # Extract text content from response
             # Response.content is a list of ContentBlock objects

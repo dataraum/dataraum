@@ -221,11 +221,13 @@ class SemanticAnalysisFeature(LLMFeature):
             if not profiles:
                 # If no profiles found, create placeholder profiles
                 # This allows semantic analysis to work even without profiling
-                stmt = select(Column, Table).join(Table).where(Table.table_id.in_(table_ids))
-                result = await session.execute(stmt)
-                rows = result.all()
+                placeholder_stmt = (
+                    select(Column, Table).join(Table).where(Table.table_id.in_(table_ids))
+                )
+                placeholder_result = await session.execute(placeholder_stmt)
+                placeholder_rows = placeholder_result.all()
 
-                for col, table in rows:
+                for col, table in placeholder_rows:
                     profile = ColumnProfile(
                         column_id=col.column_id,
                         column_ref=ColumnRef(

@@ -3,6 +3,7 @@
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import yaml
 
@@ -72,7 +73,7 @@ class ColumnNamePattern:
 class PatternConfig:
     """Pattern detection configuration."""
 
-    def __init__(self, config_dict: dict):
+    def __init__(self, config_dict: dict[str, object]):
         self._config = config_dict
         self._patterns: list[Pattern] = []
         self._column_name_patterns: list[ColumnNamePattern] = []
@@ -88,7 +89,8 @@ class PatternConfig:
             "currency_patterns",
             "boolean_patterns",
         ]:
-            for pattern_dict in self._config.get(category, []):
+            patterns_list = cast(list[dict[str, Any]], self._config.get(category, []))
+            for pattern_dict in patterns_list:
                 try:
                     # Convert inferred_type string to DataType enum
                     inferred_type_str = pattern_dict.get("inferred_type", "VARCHAR")
@@ -112,19 +114,20 @@ class PatternConfig:
                     continue
 
         # Load column name patterns
-        for pattern_dict in self._config.get("column_name_patterns", []):
+        col_patterns_list = cast(list[dict[str, Any]], self._config.get("column_name_patterns", []))
+        for pattern_dict in col_patterns_list:
             try:
                 likely_type = None
                 if "likely_type" in pattern_dict:
                     likely_type = DataType[pattern_dict["likely_type"]]
 
-                pattern = ColumnNamePattern(
+                col_pattern = ColumnNamePattern(
                     pattern=pattern_dict["pattern"],
                     likely_role=pattern_dict.get("likely_role"),
                     likely_type=likely_type,
                     semantic_type=pattern_dict.get("semantic_type"),
                 )
-                self._column_name_patterns.append(pattern)
+                self._column_name_patterns.append(col_pattern)
             except KeyError:
                 continue
 

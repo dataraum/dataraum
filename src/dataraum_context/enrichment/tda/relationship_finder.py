@@ -276,9 +276,9 @@ class TableRelationshipFinder:
 
     def build_join_graph(self, relationships: list[dict[str, Any]]) -> dict[str, Any]:
         """Build a graph of table relationships"""
-        import networkx as nx  # type: ignore[import-untyped]
+        import networkx as nx
 
-        G = nx.Graph()
+        G: nx.Graph[str] = nx.Graph()
 
         for rel in relationships:
             G.add_edge(

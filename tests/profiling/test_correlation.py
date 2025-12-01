@@ -17,7 +17,6 @@ from dataraum_context.core.models.correlation import (
     FunctionalDependency as FunctionalDependencyResult,
 )
 from dataraum_context.profiling.correlation import (
-    analyze_correlations,
     compute_categorical_associations,
     compute_numeric_correlations,
     compute_vif_for_table,

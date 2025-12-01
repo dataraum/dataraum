@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import pint
 
 # Initialize Pint with currency support
-ureg: pint.UnitRegistry = pint.UnitRegistry(
+ureg: pint.UnitRegistry[float] = pint.UnitRegistry(
     preprocessors=[
         lambda s: s.replace("$", "USD "),
         lambda s: s.replace("€", "EUR "),

@@ -46,10 +46,11 @@ class Result[T](BaseModel):
         """Transform the value if successful."""
         if self.success and self.value is not None:
             return Result.ok(fn(self.value), self.warnings)
-        return self  # type: ignore
+        return self
 
 
 # === Enums ===
+
 
 class DataType(str, Enum):
     """Supported data types."""
@@ -68,6 +69,7 @@ class DataType(str, Enum):
     JSON = "JSON"
     BLOB = "BLOB"
 
+
 class SemanticRole(str, Enum):
     """Semantic role of a column."""
 
@@ -79,6 +81,7 @@ class SemanticRole(str, Enum):
     TIMESTAMP = "timestamp"  # Time dimension
     UNKNOWN = "unknown"
 
+
 class RelationshipType(str, Enum):
     """Type of relationship between tables."""
 
@@ -87,6 +90,7 @@ class RelationshipType(str, Enum):
     CORRELATION = "correlation"
     SEMANTIC = "semantic"
 
+
 class Cardinality(str, Enum):
     """Relationship cardinality."""
 
@@ -94,12 +98,14 @@ class Cardinality(str, Enum):
     ONE_TO_MANY = "1:n"
     MANY_TO_MANY = "n:m"
 
+
 class QualitySeverity(str, Enum):
     """Severity of quality issues."""
 
     ERROR = "error"
     WARNING = "warning"
     INFO = "info"
+
 
 class DecisionSource(str, Enum):
     """Source of a decision (type, annotation, etc)."""
@@ -115,6 +121,7 @@ class DecisionSource(str, Enum):
 
 # === Identifiers ===
 
+
 class ColumnRef(BaseModel):
     """Reference to a column by name."""
 
@@ -126,6 +133,7 @@ class ColumnRef(BaseModel):
 
     def __hash__(self) -> int:
         return hash((self.table_name, self.column_name))
+
 
 class TableRef(BaseModel):
     """Reference to a table by name."""
@@ -140,6 +148,7 @@ class TableRef(BaseModel):
 
 
 # === Staging Models ===
+
 
 class SourceConfig(BaseModel):
     """Configuration for a data source."""

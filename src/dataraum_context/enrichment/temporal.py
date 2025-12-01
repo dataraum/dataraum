@@ -152,7 +152,7 @@ async def _analyze_time_column(
         gaps = []
         if median_gap:
             gap_threshold = median_gap * 2
-            gap_result = duckdb_conn.execute(
+            significant_gaps = duckdb_conn.execute(
                 f"""
                 WITH ordered_ts AS (
                     SELECT DISTINCT {column_name}::TIMESTAMP as ts
@@ -175,8 +175,8 @@ async def _analyze_time_column(
             """
             ).fetchall()
 
-            if gap_result:
-                for gap_start, gap_end, gap_seconds in gap_result:
+            if significant_gaps:
+                for gap_start, gap_end, gap_seconds in significant_gaps:
                     if gap_start and gap_end:
                         missing_periods = int(gap_seconds / median_gap) - 1 if median_gap > 0 else 0
                         gaps.append(

@@ -52,11 +52,13 @@ class NullValueConfig:
 
     def should_trim_whitespace(self) -> bool:
         """Check if whitespace should be trimmed before null checking."""
-        return self._config.get("whitespace_rules", {}).get("trim_before_check", True)
+        result = self._config.get("whitespace_rules", {}).get("trim_before_check", True)
+        return bool(result)
 
     def treat_whitespace_as_null(self) -> bool:
         """Check if whitespace-only strings should be treated as NULL."""
-        return self._config.get("whitespace_rules", {}).get("treat_whitespace_only_as_null", True)
+        result = self._config.get("whitespace_rules", {}).get("treat_whitespace_only_as_null", True)
+        return bool(result)
 
 
 def load_null_value_config(config_path: Path | None = None) -> NullValueConfig:

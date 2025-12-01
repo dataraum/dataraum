@@ -98,11 +98,15 @@ async def check_benford_law(
         # Chi-square test
         chi2, p_value = stats.chisquare(observed_counts, expected_freq * len(first_digits))
 
+        # Convert to float for type safety - use numpy's item() for proper conversion
+        chi2_float = float(np.asarray(chi2).item())
+        p_value_float = float(np.asarray(p_value).item())
+
         # Interpretation
-        compliant = bool(p_value > 0.05)
+        compliant = bool(p_value_float > 0.05)
         if compliant:
             interpretation = "Follows Benford's Law (no anomalies detected)"
-        elif p_value > 0.01:
+        elif p_value_float > 0.01:
             interpretation = "Weak deviation from Benford's Law (monitor)"
         else:
             interpretation = "Strong deviation from Benford's Law (investigate potential anomalies)"
@@ -113,8 +117,8 @@ async def check_benford_law(
         }
 
         result = BenfordTestResult(
-            chi_square=float(chi2),
-            p_value=float(p_value),
+            chi_square=chi2_float,
+            p_value=p_value_float,
             compliant=compliant,
             interpretation=interpretation,
             digit_distribution=digit_distribution,
@@ -444,8 +448,8 @@ async def assess_statistical_quality(
         from sqlalchemy import select
 
         stmt = select(Column).where(Column.table_id == table_id)
-        result = await session.execute(stmt)
-        columns = result.scalars().all()
+        query_result = await session.execute(stmt)
+        columns = query_result.scalars().all()
 
         all_metrics = []
 

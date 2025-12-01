@@ -54,7 +54,7 @@ async def enrich_semantic(
     )
 
     if not llm_result.success:
-        return llm_result
+        return Result.fail(llm_result.error or "Semantic analysis failed")
 
     enrichment = llm_result.unwrap()
 

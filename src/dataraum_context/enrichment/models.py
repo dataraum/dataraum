@@ -9,10 +9,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from dataraum_context.core import RelationshipType
 from dataraum_context.core.models.base import (
     ColumnRef,
     DecisionSource,
+    RelationshipType,
     SemanticRole,
 )
 

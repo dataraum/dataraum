@@ -541,7 +541,6 @@ def test_pydantic_persistence_diagram():
 
 def test_pydantic_structural_complexity():
     """Test StructuralComplexity model."""
-    from datetime import datetime
 
     betti = BettiNumbers(
         betti_0=1,

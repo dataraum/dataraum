@@ -623,7 +623,10 @@ async def analyze_distribution_stability(
             period2 = periods[i + 1]
 
             # Kolmogorov-Smirnov test
-            ks_stat, p_value = stats.ks_2samp(period1.values, period2.values)
+            # Convert to numpy arrays for scipy compatibility
+            values1 = np.asarray(period1.values, dtype=np.float64)
+            values2 = np.asarray(period2.values, dtype=np.float64)
+            ks_stat, p_value = stats.ks_2samp(values1, values2)
 
             is_significant = bool(p_value < 0.05)
 
@@ -954,7 +957,11 @@ async def analyze_temporal_quality(
         # Penalty for issues
         issue_penalty = len(issues) * 0.1
 
-        temporal_quality_score = float(max(0.0, np.mean(scores) - issue_penalty)) if scores else 0.5
+        if scores:
+            mean_score = float(np.mean(scores))
+            temporal_quality_score = max(0.0, mean_score - issue_penalty)
+        else:
+            temporal_quality_score = 0.5
 
         computed_at = datetime.now(UTC)
 

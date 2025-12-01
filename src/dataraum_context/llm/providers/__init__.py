@@ -24,20 +24,20 @@ def create_provider(provider_name: str, provider_config: dict[str, Any]) -> LLMP
     if provider_name == "anthropic":
         from dataraum_context.llm.providers.anthropic import AnthropicConfig, AnthropicProvider
 
-        config = AnthropicConfig(**provider_config)
-        return AnthropicProvider(config)
+        anthropic_config = AnthropicConfig(**provider_config)
+        return AnthropicProvider(anthropic_config)
 
     elif provider_name == "openai":
         from dataraum_context.llm.providers.openai import OpenAIConfig, OpenAIProvider
 
-        config = OpenAIConfig(**provider_config)
-        return OpenAIProvider(config)
+        openai_config = OpenAIConfig(**provider_config)
+        return OpenAIProvider(openai_config)
 
     elif provider_name == "local":
         from dataraum_context.llm.providers.local import LocalConfig, LocalProvider
 
-        config = LocalConfig(**provider_config)
-        return LocalProvider(config)
+        local_config = LocalConfig(**provider_config)
+        return LocalProvider(local_config)
 
     else:
         raise ValueError(

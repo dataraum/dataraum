@@ -2,7 +2,7 @@
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models import Result
+from dataraum_context.core.models.base import Result
 from dataraum_context.llm.cache import LLMCache
 from dataraum_context.llm.config import LLMConfig
 from dataraum_context.llm.prompts import PromptRenderer

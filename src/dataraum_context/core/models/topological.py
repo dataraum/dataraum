@@ -8,9 +8,8 @@ These models are used for:
 Note: These are separate from SQLAlchemy models (storage/models_v2/topological_context.py)
 """
 
-from typing import Any
-
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 

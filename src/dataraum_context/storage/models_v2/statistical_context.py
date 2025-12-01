@@ -110,7 +110,7 @@ class StatisticalProfile(Base):
     inversions_ratio: Mapped[float | None] = mapped_column(Float)  # Measure of "unsortedness"
 
     # Relationships
-    column: Mapped["Column"] = relationship(back_populates="statistical_profiles")
+    column: Mapped[Column] = relationship(back_populates="statistical_profiles")
 
 
 class StatisticalQualityMetrics(Base):
@@ -191,7 +191,7 @@ class StatisticalQualityMetrics(Base):
     )  # [{issue_type, severity, description}, ...]
 
     # Relationships
-    column: Mapped["Column"] = relationship(back_populates="statistical_quality_metrics")
+    column: Mapped[Column] = relationship(back_populates="statistical_quality_metrics")
 
 
 # Indexes for efficient queries

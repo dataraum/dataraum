@@ -1,22 +1,17 @@
 """Core module - configuration, connections, and shared models."""
 
 from dataraum_context.core.config import Settings, get_settings
-from dataraum_context.core.models import (
+from dataraum_context.core.models.base import (
     Cardinality,
-    ColumnContext,
-    ColumnProfile,
     ColumnRef,
-    ContextDocument,
     DataType,
     DecisionSource,
-    MetricDefinition,
     QualitySeverity,
-    Relationship,
     RelationshipType,
     Result,
     SemanticRole,
-    TableContext,
-    TypeCandidate,
+    SourceConfig,
+    TableRef,
 )
 
 __all__ = [
@@ -30,14 +25,9 @@ __all__ = [
     "QualitySeverity",
     "RelationshipType",
     "SemanticRole",
-    # Models - data structures
-    "ColumnContext",
-    "ColumnProfile",
+    # Models - base data structures
     "ColumnRef",
-    "ContextDocument",
-    "MetricDefinition",
-    "Relationship",
     "Result",
-    "TableContext",
-    "TypeCandidate",
+    "SourceConfig",
+    "TableRef",
 ]

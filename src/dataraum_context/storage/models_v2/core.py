@@ -56,7 +56,7 @@ class Source(Base):
     )
 
     # Relationships
-    tables: Mapped[list["Table"]] = relationship(
+    tables: Mapped[list[Table]] = relationship(
         back_populates="source", cascade="all, delete-orphan"
     )
 
@@ -87,34 +87,34 @@ class Table(Base):
     last_profiled_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     # Relationships
-    source: Mapped["Source"] = relationship(back_populates="tables")
-    columns: Mapped[list["Column"]] = relationship(
+    source: Mapped[Source] = relationship(back_populates="tables")
+    columns: Mapped[list[Column]] = relationship(
         back_populates="table", cascade="all, delete-orphan"
     )
 
     # Quality context relationships
-    domain_quality_metrics: Mapped[list["DomainQualityMetrics"]] = relationship(
+    domain_quality_metrics: Mapped[list[DomainQualityMetrics]] = relationship(
         back_populates="table", cascade="all, delete-orphan"
     )
-    financial_quality_metrics: Mapped[list["FinancialQualityMetrics"]] = relationship(
+    financial_quality_metrics: Mapped[list[FinancialQualityMetrics]] = relationship(
         back_populates="table", cascade="all, delete-orphan"
     )
 
     # Semantic context relationships
-    entity_detections: Mapped[list["TableEntity"]] = relationship(
+    entity_detections: Mapped[list[TableEntity]] = relationship(
         back_populates="table", cascade="all, delete-orphan"
     )
 
     # Quality rules relationships
-    quality_rules: Mapped[list["QualityRule"]] = relationship(
+    quality_rules: Mapped[list[QualityRule]] = relationship(
         back_populates="table", cascade="all, delete-orphan"
     )
-    quality_scores: Mapped[list["QualityScore"]] = relationship(
+    quality_scores: Mapped[list[QualityScore]] = relationship(
         back_populates="table", cascade="all, delete-orphan"
     )
 
     # Ontology relationships
-    ontology_applications: Mapped[list["OntologyApplication"]] = relationship(
+    ontology_applications: Mapped[list[OntologyApplication]] = relationship(
         back_populates="table", cascade="all, delete-orphan"
     )
 
@@ -143,42 +143,42 @@ class Column(Base):
     )  # Final decided type after type resolution
 
     # Relationships
-    table: Mapped["Table"] = relationship(back_populates="columns")
+    table: Mapped[Table] = relationship(back_populates="columns")
 
     # Context-specific relationships (defined in their respective modules)
-    statistical_profiles: Mapped[list["StatisticalProfile"]] = relationship(
+    statistical_profiles: Mapped[list[StatisticalProfile]] = relationship(
         back_populates="column", cascade="all, delete-orphan"
     )
-    statistical_quality_metrics: Mapped[list["StatisticalQualityMetrics"]] = relationship(
+    statistical_quality_metrics: Mapped[list[StatisticalQualityMetrics]] = relationship(
         back_populates="column", cascade="all, delete-orphan"
     )
 
     # Type inference relationships
-    type_candidates: Mapped[list["TypeCandidate"]] = relationship(
+    type_candidates: Mapped[list[TypeCandidate]] = relationship(
         back_populates="column", cascade="all, delete-orphan"
     )
-    type_decision: Mapped["TypeDecision | None"] = relationship(
+    type_decision: Mapped[TypeDecision | None] = relationship(
         back_populates="column", uselist=False, cascade="all, delete-orphan"
     )
 
     # Semantic context relationships
-    semantic_annotation: Mapped["SemanticAnnotation | None"] = relationship(
+    semantic_annotation: Mapped[SemanticAnnotation | None] = relationship(
         back_populates="column", uselist=False, cascade="all, delete-orphan"
     )
 
     # Quality rules relationships
-    quality_rules: Mapped[list["QualityRule"]] = relationship(
+    quality_rules: Mapped[list[QualityRule]] = relationship(
         back_populates="column", cascade="all, delete-orphan"
     )
-    quality_scores: Mapped[list["QualityScore"]] = relationship(
+    quality_scores: Mapped[list[QualityScore]] = relationship(
         back_populates="column", cascade="all, delete-orphan"
     )
 
     # Relationship tracking
-    relationships_from: Mapped[list["Relationship"]] = relationship(
+    relationships_from: Mapped[list[Relationship]] = relationship(
         foreign_keys="Relationship.from_column_id", back_populates="from_column"
     )
-    relationships_to: Mapped[list["Relationship"]] = relationship(
+    relationships_to: Mapped[list[Relationship]] = relationship(
         foreign_keys="Relationship.to_column_id", back_populates="to_column"
     )
 

@@ -53,7 +53,7 @@ class TypeCandidate(Base):
     unit_confidence: Mapped[float | None] = mapped_column(Float)
 
     # Relationships
-    column: Mapped["Column"] = relationship(back_populates="type_candidates")
+    column: Mapped[Column] = relationship(back_populates="type_candidates")
 
 
 Index("idx_type_candidates_column", TypeCandidate.column_id)
@@ -88,4 +88,4 @@ class TypeDecision(Base):
     decision_reason: Mapped[str | None] = mapped_column(String)
 
     # Relationships
-    column: Mapped["Column"] = relationship(back_populates="type_decision")
+    column: Mapped[Column] = relationship(back_populates="type_decision")

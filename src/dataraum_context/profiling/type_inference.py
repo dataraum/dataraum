@@ -8,14 +8,12 @@ import duckdb
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.core.config import get_settings
-from dataraum_context.core.models import (
+from dataraum_context.core.models.base import (
     ColumnRef,
     DataType,
     Result,
 )
-from dataraum_context.core.models import (
-    TypeCandidate as TypeCandidateModel,
-)
+from dataraum_context.profiling.models import TypeCandidate as TypeCandidateModel
 from dataraum_context.profiling.patterns import load_pattern_config
 from dataraum_context.profiling.units import detect_unit
 from dataraum_context.storage.models_v2 import Column, Table

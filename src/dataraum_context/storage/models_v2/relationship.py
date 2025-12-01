@@ -76,10 +76,10 @@ class Relationship(Base):
     )
 
     # Relationships
-    from_column: Mapped["Column"] = relationship(
+    from_column: Mapped[Column] = relationship(
         foreign_keys=[from_column_id], back_populates="relationships_from"
     )
-    to_column: Mapped["Column"] = relationship(
+    to_column: Mapped[Column] = relationship(
         foreign_keys=[to_column_id], back_populates="relationships_to"
     )
 

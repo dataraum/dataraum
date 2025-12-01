@@ -9,9 +9,9 @@ Note: These are separate from SQLAlchemy models (storage/models_v2/statistical_c
 """
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
-from typing import Any
 
 # ============================================================================
 # Statistical Profile Models

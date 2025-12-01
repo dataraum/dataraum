@@ -41,7 +41,7 @@ class DomainQualityMetrics(Base):
     violations: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
 
     # Relationships
-    table: Mapped["Table"] = relationship(back_populates="domain_quality_metrics")
+    table: Mapped[Table] = relationship(back_populates="domain_quality_metrics")
 
 
 class FinancialQualityMetrics(Base):
@@ -85,7 +85,7 @@ class FinancialQualityMetrics(Base):
     financial_quality_score: Mapped[float] = mapped_column(Float)
 
     # Relationships
-    table: Mapped["Table"] = relationship(back_populates="financial_quality_metrics")
+    table: Mapped[Table] = relationship(back_populates="financial_quality_metrics")
 
 
 class DoubleEntryCheck(Base):

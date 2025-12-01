@@ -5,7 +5,9 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models import Result, SemanticEnrichmentResult, SuggestedQuery
+from dataraum_context.context.models import SuggestedQuery
+from dataraum_context.core.models.base import Result
+from dataraum_context.enrichment.models import SemanticEnrichmentResult
 from dataraum_context.llm.features._base import LLMFeature
 
 

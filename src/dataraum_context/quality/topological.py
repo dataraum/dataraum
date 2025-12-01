@@ -23,7 +23,7 @@ from scipy.stats import entropy as scipy_entropy
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models import Result
+from dataraum_context.core.models.base import Result
 from dataraum_context.core.models.topological import (
     BettiNumbers,
     HomologicalStability,
@@ -417,7 +417,7 @@ async def assess_homological_stability(
 
         return Result.ok(stability)
 
-    except Exception as e:
+    except Exception:
         # Don't fail the whole analysis if stability computation fails
         return Result.ok(None)
 

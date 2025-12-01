@@ -28,8 +28,8 @@ from dataraum_context.context.converters import (
     convert_statistical_quality_metrics,
     convert_topological_metrics,
 )
-from dataraum_context.core.models import Result
-from dataraum_context.core.models.context_document import ContextDocument
+from dataraum_context.context.models import ContextDocument
+from dataraum_context.core.models.base import Result
 from dataraum_context.core.models.correlation import CorrelationAnalysisResult
 from dataraum_context.core.models.statistical import (
     StatisticalProfilingResult,

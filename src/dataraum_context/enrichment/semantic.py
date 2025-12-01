@@ -3,7 +3,8 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models import Result, SemanticEnrichmentResult
+from dataraum_context.core.models.base import Result
+from dataraum_context.enrichment.models import SemanticEnrichmentResult
 from dataraum_context.llm import LLMService
 from dataraum_context.storage.models_v2 import (
     Column,

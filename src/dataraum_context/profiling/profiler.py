@@ -5,7 +5,8 @@ import time
 import duckdb
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models import ProfileResult, Result
+from dataraum_context.core.models.base import Result
+from dataraum_context.profiling.models import ProfileResult
 from dataraum_context.profiling.statistical import compute_statistical_profile
 from dataraum_context.profiling.type_inference import infer_type_candidates
 from dataraum_context.storage.models_v2 import Table

@@ -5,13 +5,13 @@ Topology provides insights into structural patterns, cycles, and relationships i
 """
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum_context.storage.models_v2.base import Base
-from typing import Any
 
 
 class TopologicalQualityMetrics(Base):

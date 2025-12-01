@@ -6,9 +6,8 @@ import duckdb
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models import (
-    ColumnRef,
-    Result,
+from dataraum_context.core.models.base import ColumnRef, Result
+from dataraum_context.enrichment.models import (
     TemporalEnrichmentResult,
     TemporalGap,
     TemporalProfile,

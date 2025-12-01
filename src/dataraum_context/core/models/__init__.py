@@ -1,28 +1,50 @@
-"""Pydantic models - transitioning to 5-pillar architecture.
+"""Pydantic models organized by the 5-pillar architecture.
 
-BACKWARDS COMPATIBILITY:
-This package re-exports all models from the old core/models.py file to maintain
-backwards compatibility. Existing code can continue to use:
-    from dataraum_context.core.models import Result, DataType, etc.
+This module re-exports all models for convenient access. Models are organized by:
+- Base types: Common enums and fundamental types
+- Pillar-specific: Statistical, Topological, Semantic, Temporal, Quality
+- Domain modules: Staging, Profiling, Enrichment, Quality, Context
 
-NEW PILLAR-BASED MODELS:
-New models are organized by context pillar:
-- statistical.py: Pillar 1 (Statistical Context)
-- topological.py: Pillar 2 (Topological Context) - to be created
-- semantic.py: Pillar 3 (Semantic Context) - to be created
-- temporal.py: Pillar 4 (Temporal Context) - to be created
-- quality.py: Pillar 5 (Quality Context) - to be created
-
-For new code, import pillar-specific models:
+For new code, prefer importing directly from specific modules:
+    from dataraum_context.core.models.base import Result, DataType
     from dataraum_context.core.models.statistical import BenfordTestResult
+    from dataraum_context.staging.models import StagingResult
+
+For backwards compatibility, all models are re-exported from this package:
+    from dataraum_context.core.models import Result, BenfordTestResult, StagingResult
 """
 
-# Standard library imports at top
-from pathlib import Path
-from typing import TYPE_CHECKING
+# =============================================================================
+# Base Models (Common Types)
+# =============================================================================
 
-# Pillar-specific model imports (before legacy namespace loading)
-# Correlation analysis (Part of Pillar 1) - new models
+# Context models
+from dataraum_context.context.models import (
+    ColumnContext,
+    ContextDocument,
+    ContextSummary,
+    DomainConcept,
+    MetricDefinition,
+    QualitySummary,
+    SuggestedQuery,
+    TableContext,
+)
+from dataraum_context.core.models.base import (
+    Cardinality,
+    ColumnRef,
+    DataType,
+    DecisionSource,
+    QualitySeverity,
+    RelationshipType,
+    Result,
+    SemanticRole,
+    SourceConfig,
+    TableRef,
+)
+
+# =============================================================================
+# Statistical Context (Pillar 1)
+# =============================================================================
 from dataraum_context.core.models.correlation import (
     CategoricalAssociation as CategoricalAssociationModel,
 )
@@ -31,12 +53,16 @@ from dataraum_context.core.models.correlation import (
     CorrelationMatrix,
     NumericCorrelation,
 )
-from dataraum_context.core.models.correlation import DerivedColumn as DerivedColumnModel
+from dataraum_context.core.models.correlation import (
+    DerivedColumn as DerivedColumnModel,
+)
 from dataraum_context.core.models.correlation import (
     FunctionalDependency as FunctionalDependencyModel,
 )
 
-# Domain quality (Pillar 5) - new models
+# =============================================================================
+# Domain Quality (Pillar 5)
+# =============================================================================
 from dataraum_context.core.models.domain_quality import (
     DomainQualityResult,
     DoubleEntryResult,
@@ -52,7 +78,9 @@ from dataraum_context.core.models.domain_quality import (
     SignConventionViolation as SignConventionViolationModel,
 )
 
-# Quality Synthesis (Pillar 5) - new models
+# =============================================================================
+# Quality Synthesis (Pillar 5 - Aggregation)
+# =============================================================================
 from dataraum_context.core.models.quality_synthesis import (
     ColumnQualityAssessment,
     DatasetQualityOverview,
@@ -67,8 +95,6 @@ from dataraum_context.core.models.quality_synthesis import (
 from dataraum_context.core.models.quality_synthesis import (
     QualitySeverity as QualitySynthesisSeverity,
 )
-
-# Statistical context (Pillar 1) - new models
 from dataraum_context.core.models.statistical import (
     BenfordTestResult,
     DistributionStabilityResult,
@@ -88,7 +114,9 @@ from dataraum_context.core.models.statistical import (
     VIFResult,
 )
 
-# Temporal context (Pillar 4) - new models
+# =============================================================================
+# Temporal Context (Pillar 4)
+# =============================================================================
 from dataraum_context.core.models.temporal import (
     ChangePointResult,
     DistributionShiftResult,
@@ -105,7 +133,9 @@ from dataraum_context.core.models.temporal import (
     UpdateFrequencyAnalysis,
 )
 
-# Topological context (Pillar 2) - new models
+# =============================================================================
+# Topological Context (Pillar 2)
+# =============================================================================
 from dataraum_context.core.models.topological import (
     BettiNumbers,
     HomologicalStability,
@@ -118,115 +148,66 @@ from dataraum_context.core.models.topological import (
     TopologicalSummary,
 )
 
-# Load the legacy models.py file directly for backwards compatibility
-_models_py_path = Path(__file__).parent.parent / "models.py"
+# Enrichment models
+from dataraum_context.enrichment.models import (
+    EntityDetection,
+    JoinPath,
+    JoinStep,
+    Relationship,
+    SemanticAnnotation,
+    SemanticEnrichmentResult,
+    TemporalEnrichmentResult,
+    TemporalGap,
+    TemporalProfile,
+    TopologyEnrichmentResult,
+)
 
-# Read and execute it in a clean namespace
-_legacy_namespace = {"__name__": "dataraum_context.core.models_legacy"}
-with open(_models_py_path) as f:
-    exec(f.read(), _legacy_namespace)  # type: ignore[misc]
+# Profiling models
+from dataraum_context.profiling.models import (
+    ColumnCastResult,
+    ColumnProfile,
+    DetectedPattern,
+    ProfileResult,
+    TypeCandidate,
+    TypeDecision,
+    TypeResolutionResult,
+)
 
-# Export the models we need from the legacy file
-Cardinality = _legacy_namespace["Cardinality"]
-ColumnCastResult = _legacy_namespace["ColumnCastResult"]
-ColumnContext = _legacy_namespace["ColumnContext"]
-ColumnRef = _legacy_namespace["ColumnRef"]
-ContextDocument = _legacy_namespace["ContextDocument"]
-DataType = _legacy_namespace["DataType"]
-DecisionSource = _legacy_namespace["DecisionSource"]
-DetectedPattern = _legacy_namespace["DetectedPattern"]
-EntityDetection = _legacy_namespace["EntityDetection"]
-JoinPath = _legacy_namespace["JoinPath"]
-JoinStep = _legacy_namespace["JoinStep"]
-MetricDefinition = _legacy_namespace["MetricDefinition"]
-ProfileResult = _legacy_namespace["ProfileResult"]
-QualitySeverity = _legacy_namespace["QualitySeverity"]
-Relationship = _legacy_namespace["Relationship"]
-RelationshipType = _legacy_namespace["RelationshipType"]
-Result = _legacy_namespace["Result"]
-SemanticAnnotation = _legacy_namespace["SemanticAnnotation"]
-SemanticEnrichmentResult = _legacy_namespace["SemanticEnrichmentResult"]
-SemanticRole = _legacy_namespace["SemanticRole"]
-StagedColumn = _legacy_namespace["StagedColumn"]
-StagedTable = _legacy_namespace["StagedTable"]
-StagingResult = _legacy_namespace["StagingResult"]
-TableContext = _legacy_namespace["TableContext"]
-TableRef = _legacy_namespace["TableRef"]
-TemporalEnrichmentResult = _legacy_namespace["TemporalEnrichmentResult"]
-TemporalGap = _legacy_namespace["TemporalGap"]
-TemporalProfile = _legacy_namespace["TemporalProfile"]
-TopologyEnrichmentResult = _legacy_namespace["TopologyEnrichmentResult"]
-TypeCandidate = _legacy_namespace["TypeCandidate"]
-TypeDecision = _legacy_namespace["TypeDecision"]
-TypeResolutionResult = _legacy_namespace["TypeResolutionResult"]
-SourceConfig = _legacy_namespace["SourceConfig"]
-ColumnProfile = _legacy_namespace["ColumnProfile"]
-QualityRule = _legacy_namespace["QualityRule"]
-RuleResult = _legacy_namespace["RuleResult"]
-QualityScore = _legacy_namespace["QualityScore"]
-Anomaly = _legacy_namespace["Anomaly"]
-SuggestedQuery = _legacy_namespace["SuggestedQuery"]
-ContextSummary = _legacy_namespace["ContextSummary"]
-QualitySummary = _legacy_namespace["QualitySummary"]
-DomainConcept = _legacy_namespace["DomainConcept"]
+# Quality models
+from dataraum_context.quality.models import (
+    Anomaly,
+    QualityRule,
+    QualityScore,
+    RuleResult,
+)
 
-# Legacy models with naming conflicts (we'll use "Legacy" prefix)
-LegacyNumericStats = _legacy_namespace["NumericStats"]
-LegacyStringStats = _legacy_namespace["StringStats"]
-LegacyHistogramBucket = _legacy_namespace["HistogramBucket"]
-LegacyValueCount = _legacy_namespace["ValueCount"]
-LegacyQualityIssue = _legacy_namespace.get("QualityIssue")  # May not exist
+# =============================================================================
+# Domain Module Models
+# =============================================================================
+# Staging models
+from dataraum_context.staging.models import (
+    StagedColumn,
+    StagedTable,
+    StagingResult,
+)
+
+# =============================================================================
+# Public API
+# =============================================================================
 
 __all__ = [
-    # Legacy models (for backwards compatibility)
-    "Cardinality",
-    "ColumnCastResult",
-    "ColumnContext",
-    "ColumnProfile",
-    "ColumnRef",
-    "ContextDocument",
-    "DataType",
-    "DecisionSource",
-    "DetectedPattern",
-    "EntityDetection",
-    "JoinPath",
-    "JoinStep",
-    "MetricDefinition",
-    "ProfileResult",
-    "QualitySeverity",
-    "Relationship",
-    "RelationshipType",
+    # Base types
     "Result",
-    "SemanticAnnotation",
-    "SemanticEnrichmentResult",
+    "DataType",
     "SemanticRole",
-    "StagedColumn",
-    "StagedTable",
-    "StagingResult",
-    "TableContext",
+    "RelationshipType",
+    "Cardinality",
+    "QualitySeverity",
+    "DecisionSource",
+    "ColumnRef",
     "TableRef",
-    "TemporalEnrichmentResult",
-    "TemporalGap",
-    "TemporalProfile",
-    "TopologyEnrichmentResult",
-    "TypeCandidate",
-    "TypeDecision",
-    "TypeResolutionResult",
     "SourceConfig",
-    "QualityRule",
-    "RuleResult",
-    "QualityScore",
-    "Anomaly",
-    "SuggestedQuery",
-    "ContextSummary",
-    "QualitySummary",
-    "DomainConcept",
-    # Legacy with prefix
-    "LegacyNumericStats",
-    "LegacyStringStats",
-    "LegacyHistogramBucket",
-    "LegacyValueCount",
-    # New Statistical Profile models (Pillar 1)
+    # Statistical (Pillar 1)
     "StatisticalProfile",
     "NumericStats",
     "StringStats",
@@ -235,24 +216,21 @@ __all__ = [
     "EntropyStats",
     "UniquenessStats",
     "OrderStats",
-    # New Statistical Quality models (Pillar 1)
     "StatisticalQualityMetrics",
     "BenfordTestResult",
     "DistributionStabilityResult",
     "OutlierDetectionResult",
     "VIFResult",
     "QualityIssue",
-    # New Results (Pillar 1)
     "StatisticalProfilingResult",
     "StatisticalQualityResult",
-    # Correlation Analysis (Pillar 1)
     "NumericCorrelation",
     "CategoricalAssociationModel",
     "FunctionalDependencyModel",
     "DerivedColumnModel",
     "CorrelationMatrix",
     "CorrelationAnalysisResult",
-    # Topological Quality (Pillar 2)
+    # Topological (Pillar 2)
     "BettiNumbers",
     "PersistencePoint",
     "PersistenceDiagram",
@@ -262,7 +240,7 @@ __all__ = [
     "TopologicalAnomaly",
     "TopologicalQualityResult",
     "TopologicalSummary",
-    # Temporal Quality (Pillar 4)
+    # Temporal (Pillar 4)
     "SeasonalityAnalysis",
     "SeasonalDecompositionResult",
     "TrendAnalysis",
@@ -287,7 +265,7 @@ __all__ = [
     "FinancialQualityIssue",
     "FinancialQualityConfig",
     "SignConventionConfig",
-    # Quality Synthesis (Pillar 5 - Aggregation)
+    # Quality Synthesis (Pillar 5)
     "QualitySynthesisResult",
     "TableQualityAssessment",
     "ColumnQualityAssessment",
@@ -296,4 +274,41 @@ __all__ = [
     "QualitySynthesisIssue",
     "QualitySynthesisSeverity",
     "DatasetQualityOverview",
+    # Staging
+    "StagedColumn",
+    "StagedTable",
+    "StagingResult",
+    # Profiling
+    "DetectedPattern",
+    "TypeCandidate",
+    "ColumnProfile",
+    "ProfileResult",
+    "TypeDecision",
+    "ColumnCastResult",
+    "TypeResolutionResult",
+    # Enrichment
+    "SemanticAnnotation",
+    "EntityDetection",
+    "Relationship",
+    "JoinStep",
+    "JoinPath",
+    "TemporalGap",
+    "TemporalProfile",
+    "SemanticEnrichmentResult",
+    "TopologyEnrichmentResult",
+    "TemporalEnrichmentResult",
+    # Quality
+    "QualityRule",
+    "RuleResult",
+    "QualityScore",
+    "Anomaly",
+    # Context
+    "ColumnContext",
+    "TableContext",
+    "MetricDefinition",
+    "DomainConcept",
+    "QualitySummary",
+    "SuggestedQuery",
+    "ContextSummary",
+    "ContextDocument",
 ]

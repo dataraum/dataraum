@@ -9,14 +9,14 @@ Implements financial accounting-specific quality rules:
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import duckdb
 import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models import Result  # type: ignore[attr-defined]
+from dataraum_context.core.models.base import Result
 from dataraum_context.core.models.domain_quality import (
     DoubleEntryResult,
     FinancialQualityConfig,
@@ -147,7 +147,7 @@ async def check_double_entry_balance(
         db_check = DBDoubleEntryCheck(
             check_id=check_id,
             metric_id=None,  # Will be set when creating FinancialQualityMetrics
-            computed_at=datetime.now(timezone.utc),
+            computed_at=datetime.now(UTC),
             total_debits=total_debits,
             debit_account_count=debit_count,
             total_credits=total_credits,
@@ -258,7 +258,7 @@ async def check_trial_balance(
         db_check = DBTrialBalanceCheck(
             check_id=check_id,
             metric_id=None,  # Will be set later
-            computed_at=datetime.now(timezone.utc),
+            computed_at=datetime.now(UTC),
             assets=assets,
             liabilities=liabilities,
             equity=equity,
@@ -575,7 +575,7 @@ async def analyze_financial_quality(
         config = FinancialQualityConfig()
 
     metric_id = uuid4()
-    computed_at = datetime.now(timezone.utc)
+    computed_at = datetime.now(UTC)
     quality_issues = []
 
     # 1. Double-entry balance check

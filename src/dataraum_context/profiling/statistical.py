@@ -7,11 +7,10 @@ import duckdb
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.core.config import get_settings
-from dataraum_context.core.models import (
+from dataraum_context.core.models.base import ColumnRef, Result
+from dataraum_context.profiling.models import (
     ColumnProfile,
-    ColumnRef,
     NumericStats,
-    Result,
     StringStats,
     ValueCount,
 )

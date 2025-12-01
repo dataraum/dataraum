@@ -5,7 +5,7 @@ import os
 import anthropic
 from pydantic import BaseModel
 
-from dataraum_context.core.models import Result
+from dataraum_context.core.models.base import Result
 from dataraum_context.llm.providers.base import LLMProvider, LLMRequest, LLMResponse
 
 

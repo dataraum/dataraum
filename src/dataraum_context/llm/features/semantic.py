@@ -7,21 +7,23 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models import (
+from dataraum_context.core.models.base import (
     Cardinality,
-    ColumnProfile,
     ColumnRef,
     DecisionSource,
-    EntityDetection,
-    Relationship,
     RelationshipType,
     Result,
+    SemanticRole,
+)
+from dataraum_context.enrichment.models import (
+    EntityDetection,
+    Relationship,
     SemanticAnnotation,
     SemanticEnrichmentResult,
-    SemanticRole,
 )
 from dataraum_context.llm.features._base import LLMFeature
 from dataraum_context.llm.privacy import DataSampler
+from dataraum_context.profiling.models import ColumnProfile
 from dataraum_context.storage.models_v2 import Column, Ontology, Table
 
 
@@ -125,7 +127,7 @@ class SemanticAnalysisFeature(LLMFeature):
             # We use a subquery to get the most recent profile per column
             from sqlalchemy import func
 
-            from dataraum_context.core.models import (
+            from dataraum_context.profiling.models import (
                 NumericStats,
                 StringStats,
                 ValueCount,

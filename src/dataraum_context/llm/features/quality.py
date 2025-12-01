@@ -6,14 +6,10 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models import (
-    DecisionSource,
-    QualityRule,
-    QualitySeverity,
-    Result,
-    SemanticEnrichmentResult,
-)
+from dataraum_context.core.models.base import DecisionSource, QualitySeverity, Result
+from dataraum_context.enrichment.models import SemanticEnrichmentResult
 from dataraum_context.llm.features._base import LLMFeature
+from dataraum_context.quality.models import QualityRule
 
 
 class QualityRulesFeature(LLMFeature):

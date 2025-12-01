@@ -1,5 +1,5 @@
 # enrichment/tda/relationship_finder.py
-from typing import Any, Dict
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -15,7 +15,7 @@ class TableRelationshipFinder:
     def __init__(self):
         self.extractor = TableTopologyExtractor()
 
-    def find_relationships(self, tables: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+    def find_relationships(self, tables: dict[str, pd.DataFrame]) -> dict[str, Any]:
         """
         Find all relationships between tables
         """

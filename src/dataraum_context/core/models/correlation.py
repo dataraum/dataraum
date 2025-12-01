@@ -9,9 +9,9 @@ Note: These are separate from SQLAlchemy models (storage/models_v2/correlation.p
 """
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
-from typing import Any
 
 # ============================================================================
 # Numeric Correlation Models

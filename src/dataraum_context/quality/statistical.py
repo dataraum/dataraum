@@ -20,7 +20,7 @@ import numpy as np
 from scipy import stats
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models import Result  # type: ignore[attr-defined]
+from dataraum_context.core.models.base import Result
 from dataraum_context.core.models.statistical import (
     BenfordTestResult,
     DistributionStabilityResult,

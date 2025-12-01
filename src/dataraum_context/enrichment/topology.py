@@ -7,13 +7,15 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models import (
+from dataraum_context.core.models.base import (
     Cardinality,
+    RelationshipType,
+    Result,
+)
+from dataraum_context.enrichment.models import (
     JoinPath,
     JoinStep,
     Relationship,
-    RelationshipType,
-    Result,
     TopologyEnrichmentResult,
 )
 from dataraum_context.enrichment.tda import TableRelationshipFinder, TableTopologyExtractor

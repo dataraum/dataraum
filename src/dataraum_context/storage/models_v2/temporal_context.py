@@ -9,13 +9,13 @@ This module stores enhanced temporal analysis including:
 """
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum_context.storage.models_v2.base import Base
-from typing import Any
 
 
 class TemporalQualityMetrics(Base):

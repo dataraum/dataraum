@@ -55,7 +55,7 @@ class Ontology(Base):
     )
 
     # Relationships
-    applications: Mapped[list["OntologyApplication"]] = relationship(
+    applications: Mapped[list[OntologyApplication]] = relationship(
         back_populates="ontology", cascade="all, delete-orphan"
     )
 
@@ -85,5 +85,5 @@ class OntologyApplication(Base):
     )
 
     # Relationships
-    table: Mapped["Table"] = relationship(back_populates="ontology_applications")
-    ontology: Mapped["Ontology"] = relationship(back_populates="applications")
+    table: Mapped[Table] = relationship(back_populates="ontology_applications")
+    ontology: Mapped[Ontology] = relationship(back_populates="applications")

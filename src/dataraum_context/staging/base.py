@@ -6,7 +6,8 @@ from enum import Enum
 import duckdb
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models import Result, SourceConfig, StagingResult  # type: ignore[attr-defined]
+from dataraum_context.core.models.base import Result, SourceConfig
+from dataraum_context.staging.models import StagingResult
 
 
 class TypeSystemStrength(str, Enum):

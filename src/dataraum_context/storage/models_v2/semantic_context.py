@@ -72,7 +72,7 @@ class SemanticAnnotation(Base):
     confidence: Mapped[float | None] = mapped_column(Float)
 
     # Relationships
-    column: Mapped["Column"] = relationship(back_populates="semantic_annotation")
+    column: Mapped[Column] = relationship(back_populates="semantic_annotation")
 
 
 class TableEntity(Base):
@@ -108,4 +108,4 @@ class TableEntity(Base):
     )
 
     # Relationships
-    table: Mapped["Table"] = relationship(back_populates="entity_detections")
+    table: Mapped[Table] = relationship(back_populates="entity_detections")

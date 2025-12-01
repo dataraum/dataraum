@@ -5,10 +5,9 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.storage.models import (
+from dataraum_context.storage.models_v2 import (
     Checkpoint,
     Column,
-    ColumnProfile,
     DBSchemaVersion,
     JoinPath,
     LLMCache,
@@ -21,9 +20,10 @@ from dataraum_context.storage.models import (
     ReviewQueue,
     SemanticAnnotation,
     Source,
+    StatisticalProfile,
     Table,
     TableEntity,
-    TemporalProfile,
+    TemporalQualityMetrics,
     TypeCandidate,
     TypeDecision,
 )
@@ -142,7 +142,7 @@ class TestStatisticalModels:
         session.add_all([source, table, column])
         await session.flush()
 
-        profile = ColumnProfile(
+        profile = StatisticalProfile(
             column=column,
             total_count=1000,
             null_count=50,
@@ -154,7 +154,7 @@ class TestStatisticalModels:
         session.add(profile)
         await session.commit()
 
-        result = await session.execute(select(ColumnProfile))
+        result = await session.execute(select(StatisticalProfile))
         saved = result.scalar_one()
 
         assert saved.total_count == 1000
@@ -339,7 +339,7 @@ class TestTemporalModels:
         session.add_all([source, table, column])
         await session.flush()
 
-        temporal = TemporalProfile(
+        temporal = TemporalQualityMetrics(
             column=column,
             min_timestamp=datetime(2024, 1, 1),
             max_timestamp=datetime(2024, 12, 31),
@@ -356,7 +356,7 @@ class TestTemporalModels:
         session.add(temporal)
         await session.commit()
 
-        result = await session.execute(select(TemporalProfile))
+        result = await session.execute(select(TemporalQualityMetrics))
         saved = result.scalar_one()
 
         assert saved.detected_granularity == "day"

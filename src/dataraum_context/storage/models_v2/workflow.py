@@ -61,7 +61,7 @@ class Checkpoint(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
 
     # Relationships
-    review_items: Mapped[list["ReviewQueue"]] = relationship(
+    review_items: Mapped[list[ReviewQueue]] = relationship(
         back_populates="checkpoint", cascade="all, delete-orphan"
     )
 
@@ -101,7 +101,7 @@ class ReviewQueue(Base):
     review_notes: Mapped[str | None] = mapped_column(Text)
 
     # Relationships
-    checkpoint: Mapped["Checkpoint"] = relationship(back_populates="review_items")
+    checkpoint: Mapped[Checkpoint] = relationship(back_populates="review_items")
 
 
 Index("idx_review_queue_status", ReviewQueue.status)

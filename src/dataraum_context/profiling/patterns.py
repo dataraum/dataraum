@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 from dataraum_context.core.config import get_settings
-from dataraum_context.core.models import DataType  # type: ignore[attr-defined]
+from dataraum_context.core.models.base import DataType
 
 
 @dataclass

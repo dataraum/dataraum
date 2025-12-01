@@ -123,7 +123,7 @@ class FinancialQualityResult(BaseModel):
     financial_quality_score: float = Field(ge=0.0, le=1.0)
 
     # Issues
-    quality_issues: list["FinancialQualityIssue"] = Field(default_factory=list)
+    quality_issues: list[FinancialQualityIssue] = Field(default_factory=list)
     has_issues: bool
 
 

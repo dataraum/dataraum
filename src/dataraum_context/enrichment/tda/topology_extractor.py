@@ -1,5 +1,5 @@
 # core/topology_extractor.py
-from typing import Any, Dict
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,7 @@ class TableTopologyExtractor:
         self.max_dimension = max_dimension
         self.feature_cache = {}
 
-    def extract_topology(self, df: pd.DataFrame) -> Dict[str, Any]:
+    def extract_topology(self, df: pd.DataFrame) -> dict[str, Any]:
         """
         Main method: Extract full topological signature
         """
@@ -122,7 +122,7 @@ class TableTopologyExtractor:
 
         return np.array(features)
 
-    def compute_persistence(self, features: np.ndarray) -> Dict[str, Any]:
+    def compute_persistence(self, features: np.ndarray) -> dict[str, Any]:
         """
         Compute persistence diagrams
         """
@@ -168,7 +168,7 @@ class TableTopologyExtractor:
             "distance_matrix": distance_matrix,
         }
 
-    def extract_column_topology(self, df: pd.DataFrame) -> Dict[str, Any]:
+    def extract_column_topology(self, df: pd.DataFrame) -> dict[str, Any]:
         """
         Understand relationships between columns
         """
@@ -183,7 +183,7 @@ class TableTopologyExtractor:
 
         return column_relationships
 
-    def analyze_column_relationship(self, col1: pd.Series, col2: pd.Series) -> Dict[str, float]:
+    def analyze_column_relationship(self, col1: pd.Series, col2: pd.Series) -> dict[str, float]:
         """
         Analyze topological relationship between two columns
         """
@@ -225,7 +225,7 @@ class TableTopologyExtractor:
 
         return relationship
 
-    def extract_row_topology(self, df: pd.DataFrame) -> Dict[str, Any]:
+    def extract_row_topology(self, df: pd.DataFrame) -> dict[str, Any]:
         """
         Understand entity relationships (row-level topology)
         """

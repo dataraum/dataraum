@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from statsmodels.tsa.seasonal import seasonal_decompose
 
-from dataraum_context.core.models import Result  # type: ignore[attr-defined]
+from dataraum_context.core.models.base import Result
 from dataraum_context.core.models.temporal import (
     ChangePointResult,
     DistributionShiftResult,
@@ -464,9 +464,8 @@ async def analyze_update_frequency(
         last_update = timestamps[-1].to_pydatetime()
         # Make timezone-aware if needed
         if last_update.tzinfo is None:
-            from datetime import timezone
 
-            last_update = last_update.replace(tzinfo=timezone.utc)
+            last_update = last_update.replace(tzinfo=UTC)
         now = datetime.now(UTC)
         freshness_days = (now - last_update).total_seconds() / 86400
 

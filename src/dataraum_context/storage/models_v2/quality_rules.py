@@ -64,9 +64,9 @@ class QualityRule(Base):
     created_by: Mapped[str | None] = mapped_column(String)
 
     # Relationships
-    table: Mapped["Table"] = relationship(back_populates="quality_rules")
-    column: Mapped["Column | None"] = relationship(back_populates="quality_rules")
-    results: Mapped[list["QualityResult"]] = relationship(
+    table: Mapped[Table] = relationship(back_populates="quality_rules")
+    column: Mapped[Column | None] = relationship(back_populates="quality_rules")
+    results: Mapped[list[QualityResult]] = relationship(
         back_populates="rule", cascade="all, delete-orphan"
     )
 
@@ -110,7 +110,7 @@ class QualityResult(Base):
     )  # 'improving', 'stable', 'degrading'
 
     # Relationships
-    rule: Mapped["QualityRule"] = relationship(back_populates="results")
+    rule: Mapped[QualityRule] = relationship(back_populates="results")
 
 
 class QualityScore(Base):
@@ -143,5 +143,5 @@ class QualityScore(Base):
     )
 
     # Relationships
-    table: Mapped["Table | None"] = relationship(back_populates="quality_scores")
-    column: Mapped["Column | None"] = relationship(back_populates="quality_scores")
+    table: Mapped[Table | None] = relationship(back_populates="quality_scores")
+    column: Mapped[Column | None] = relationship(back_populates="quality_scores")

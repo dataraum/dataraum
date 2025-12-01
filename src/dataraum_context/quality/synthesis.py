@@ -26,7 +26,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models import Result  # type: ignore[attr-defined]
+from dataraum_context.core.models.base import Result
 from dataraum_context.core.models.quality_synthesis import (
     ColumnQualityAssessment,
     DimensionScore,

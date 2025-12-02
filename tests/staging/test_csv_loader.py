@@ -4,11 +4,12 @@ from pathlib import Path
 
 import duckdb
 import pytest
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from dataraum_context.core.models import SourceConfig
 from dataraum_context.staging.loaders.csv import CSVLoader
-from dataraum_context.storage.base import Base
+from dataraum_context.storage.schema import init_database
 
 
 @pytest.fixture
@@ -19,9 +20,15 @@ async def test_session():
         echo=False,
     )
 
-    # Create tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Enable foreign keys for SQLite
+    @event.listens_for(engine.sync_engine, "connect")
+    def set_sqlite_pragma(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    # Initialize database schema
+    await init_database(engine)
 
     # Create session
     async_session = async_sessionmaker(engine, expire_on_commit=False)

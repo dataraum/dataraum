@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -28,8 +28,8 @@ class DomainQualityMetrics(Base):
 
     __tablename__ = "domain_quality_metrics"
 
-    metric_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    table_id: Mapped[UUID] = mapped_column(ForeignKey("tables.table_id"))
+    metric_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    table_id: Mapped[str] = mapped_column(String, ForeignKey("tables.table_id"))
     domain: Mapped[str] = mapped_column(String)  # 'financial', 'marketing', etc.
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -53,8 +53,8 @@ class FinancialQualityMetrics(Base):
 
     __tablename__ = "financial_quality_metrics"
 
-    metric_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    table_id: Mapped[UUID] = mapped_column(ForeignKey("tables.table_id"))
+    metric_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    table_id: Mapped[str] = mapped_column(String, ForeignKey("tables.table_id"))
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     # Double-entry accounting
@@ -96,8 +96,10 @@ class DoubleEntryCheck(Base):
 
     __tablename__ = "double_entry_checks"
 
-    check_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    metric_id: Mapped[UUID] = mapped_column(ForeignKey("financial_quality_metrics.metric_id"))
+    check_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    metric_id: Mapped[str] = mapped_column(
+        String, ForeignKey("financial_quality_metrics.metric_id")
+    )
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     # Debit accounts
@@ -126,8 +128,10 @@ class TrialBalanceCheck(Base):
 
     __tablename__ = "trial_balance_checks"
 
-    check_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    metric_id: Mapped[UUID] = mapped_column(ForeignKey("financial_quality_metrics.metric_id"))
+    check_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    metric_id: Mapped[str] = mapped_column(
+        String, ForeignKey("financial_quality_metrics.metric_id")
+    )
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     # Accounting equation components
@@ -154,8 +158,12 @@ class SignConventionViolation(Base):
 
     __tablename__ = "sign_convention_violations"
 
-    violation_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    metric_id: Mapped[UUID] = mapped_column(ForeignKey("financial_quality_metrics.metric_id"))
+    violation_id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid4())
+    )
+    metric_id: Mapped[str] = mapped_column(
+        String, ForeignKey("financial_quality_metrics.metric_id")
+    )
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     # Account info
@@ -183,8 +191,12 @@ class IntercompanyTransaction(Base):
 
     __tablename__ = "intercompany_transactions"
 
-    transaction_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    metric_id: Mapped[UUID] = mapped_column(ForeignKey("financial_quality_metrics.metric_id"))
+    transaction_id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid4())
+    )
+    metric_id: Mapped[str] = mapped_column(
+        String, ForeignKey("financial_quality_metrics.metric_id")
+    )
 
     # Transaction details
     source_entity: Mapped[str] = mapped_column(String)
@@ -194,8 +206,8 @@ class IntercompanyTransaction(Base):
 
     # Matching status
     is_matched: Mapped[bool] = mapped_column(Boolean)
-    matching_transaction_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("intercompany_transactions.transaction_id"), nullable=True
+    matching_transaction_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("intercompany_transactions.transaction_id"), nullable=True
     )
     elimination_status: Mapped[str] = mapped_column(String)  # 'eliminated', 'pending', 'orphaned'
 
@@ -211,8 +223,10 @@ class FiscalPeriodIntegrity(Base):
 
     __tablename__ = "fiscal_period_integrity"
 
-    check_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    metric_id: Mapped[UUID] = mapped_column(ForeignKey("financial_quality_metrics.metric_id"))
+    check_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    metric_id: Mapped[str] = mapped_column(
+        String, ForeignKey("financial_quality_metrics.metric_id")
+    )
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
     # Period definition

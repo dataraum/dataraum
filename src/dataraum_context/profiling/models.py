@@ -25,12 +25,14 @@ class NumericStats(BaseModel):
     stddev: float
     percentiles: dict[str, float] = Field(default_factory=dict)
 
+
 class StringStats(BaseModel):
     """Statistics for string columns."""
 
     min_length: int
     max_length: int
     avg_length: float
+
 
 class HistogramBucket(BaseModel):
     """A histogram bucket."""
@@ -39,6 +41,7 @@ class HistogramBucket(BaseModel):
     bucket_max: float | str
     count: int
 
+
 class ValueCount(BaseModel):
     """A value with its count."""
 
@@ -46,12 +49,14 @@ class ValueCount(BaseModel):
     count: int
     percentage: float
 
+
 class DetectedPattern(BaseModel):
     """A detected pattern in column values."""
 
     name: str
     match_rate: float
     semantic_type: str | None = None
+
 
 class TypeCandidate(BaseModel):
     """A candidate type for a column."""
@@ -69,6 +74,7 @@ class TypeCandidate(BaseModel):
 
     detected_unit: str | None = None
     unit_confidence: float | None = None
+
 
 class ColumnProfile(BaseModel):
     """Statistical profile of a column."""
@@ -91,6 +97,7 @@ class ColumnProfile(BaseModel):
     top_values: list[ValueCount] | None = None
     detected_patterns: list[DetectedPattern] = Field(default_factory=list)
 
+
 class ProfileResult(BaseModel):
     """Result of profiling operation."""
 
@@ -101,6 +108,7 @@ class ProfileResult(BaseModel):
 
 # === Type Resolution Models ===
 
+
 class TypeDecision(BaseModel):
     """A type decision for a column."""
 
@@ -108,6 +116,7 @@ class TypeDecision(BaseModel):
     decided_type: DataType
     decision_source: DecisionSource = DecisionSource.AUTO
     decision_reason: str | None = None
+
 
 class ColumnCastResult(BaseModel):
     """Cast result for a single column."""
@@ -120,6 +129,7 @@ class ColumnCastResult(BaseModel):
     failure_count: int
     success_rate: float
     failure_samples: list[str] = Field(default_factory=list)
+
 
 class TypeResolutionResult(BaseModel):
     """Result of type resolution."""

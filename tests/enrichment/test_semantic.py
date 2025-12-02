@@ -27,7 +27,7 @@ async def test_enrich_semantic_stores_annotations(db_session):
     llm_service.analyze_semantics = AsyncMock()
 
     # Setup test data - create tables and columns
-    from dataraum_context.storage.models import Column, Source, Table
+    from dataraum_context.storage.models_v2 import Column, Source, Table
 
     source = Source(name="test_source", source_type="csv")
     db_session.add(source)
@@ -119,7 +119,7 @@ async def test_enrich_semantic_stores_annotations(db_session):
     # Verify annotations stored in database
     from sqlalchemy import select
 
-    from dataraum_context.storage.models import SemanticAnnotation as AnnotationModel
+    from dataraum_context.storage.models_v2 import SemanticAnnotation as AnnotationModel
 
     stmt = select(AnnotationModel)
     db_result = await db_session.execute(stmt)
@@ -132,7 +132,7 @@ async def test_enrich_semantic_stores_annotations(db_session):
     assert annotations[1].business_name == "Revenue"
 
     # Verify entity detection stored
-    from dataraum_context.storage.models import TableEntity
+    from dataraum_context.storage.models_v2 import TableEntity
 
     stmt = select(TableEntity)
     db_result = await db_session.execute(stmt)
@@ -150,7 +150,7 @@ async def test_enrich_semantic_handles_missing_columns(db_session):
     llm_service.analyze_semantics = AsyncMock()
 
     # Create test table
-    from dataraum_context.storage.models import Column, Source, Table
+    from dataraum_context.storage.models_v2 import Column, Source, Table
 
     source = Source(name="test_source", source_type="csv")
     db_session.add(source)
@@ -210,7 +210,7 @@ async def test_enrich_semantic_handles_missing_columns(db_session):
     # Verify no annotations stored
     from sqlalchemy import select
 
-    from dataraum_context.storage.models import SemanticAnnotation as AnnotationModel
+    from dataraum_context.storage.models_v2 import SemanticAnnotation as AnnotationModel
 
     stmt = select(AnnotationModel)
     db_result = await db_session.execute(stmt)
@@ -226,7 +226,7 @@ async def test_enrich_semantic_stores_relationships(db_session):
     llm_service.analyze_semantics = AsyncMock()
 
     # Create two related tables
-    from dataraum_context.storage.models import Column, Source, Table
+    from dataraum_context.storage.models_v2 import Column, Source, Table
 
     source = Source(name="test_source", source_type="csv")
     db_session.add(source)
@@ -296,7 +296,7 @@ async def test_enrich_semantic_stores_relationships(db_session):
     # Verify relationship stored
     from sqlalchemy import select
 
-    from dataraum_context.storage.models import Relationship as RelationshipModel
+    from dataraum_context.storage.models_v2 import Relationship as RelationshipModel
 
     stmt = select(RelationshipModel)
     db_result = await db_session.execute(stmt)

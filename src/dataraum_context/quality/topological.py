@@ -587,7 +587,7 @@ async def analyze_topological_quality(
             return Result.fail(
                 stability_result.error if stability_result.error else "Unknown error"
             )
-        stability = stability_result.unwrap()
+        stability = stability_result.value  # Can be None if no previous data
 
         # Detect cycles
         cycle_result = await detect_persistent_cycles(
@@ -605,7 +605,7 @@ async def analyze_topological_quality(
             return Result.fail(
                 complexity_result.error if complexity_result.error else "Unknown error"
             )
-        complexity = complexity_result.unwrap()
+        complexity = complexity_result.value  # Can be None if no historical data
 
         # Detect anomalies
         anomalies = []
@@ -622,7 +622,7 @@ async def analyze_topological_quality(
                 )
             )
 
-        if not complexity.within_bounds:
+        if complexity and not complexity.within_bounds:
             anomalies.append(
                 TopologicalAnomaly(
                     anomaly_type="complexity_spike",
@@ -655,7 +655,7 @@ async def analyze_topological_quality(
         quality_score = 1.0
         if anomalies:
             quality_score -= len(anomalies) * 0.2
-        if not complexity.within_bounds:
+        if complexity and not complexity.within_bounds:
             quality_score -= 0.3
         quality_score = max(0.0, quality_score)
 
@@ -692,9 +692,9 @@ async def analyze_topological_quality(
             },
             homologically_stable=stability.is_stable if stability else None,
             bottleneck_distance=stability.bottleneck_distance if stability else None,
-            structural_complexity=complexity.total_complexity,
-            complexity_trend=complexity.complexity_trend,
-            complexity_within_bounds=complexity.within_bounds,
+            structural_complexity=complexity.total_complexity if complexity else None,
+            complexity_trend=complexity.complexity_trend if complexity else None,
+            complexity_within_bounds=complexity.within_bounds if complexity else True,
             anomalous_cycles={
                 "cycles": [c.cycle_id for c in cycles if c.is_anomalous] if cycles else []
             },
@@ -763,4 +763,4 @@ async def analyze_topological_quality(
         return Result.ok(result_obj)
 
     except Exception as e:
-        return Result.fail(f"Topological quality analysis failed: {e}")
+        return Result.fail(f"Topological quality analysis failed: {type(e).__name__}: {str(e)}")

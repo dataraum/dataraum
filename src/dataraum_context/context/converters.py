@@ -440,20 +440,3 @@ def convert_topological_metrics(
         has_issues=len(anomalous_cycles) > 0 or orphaned_components > 0,
         persistent_entropy=db_metrics.persistent_entropy,
     )
-
-
-# ==================== Helper Functions ====================
-
-
-def safe_get(obj: object, attr: str, default: Any = None) -> Any:
-    """Safely get attribute from object, return default if not present.
-
-    Args:
-        obj: Object to get attribute from
-        attr: Attribute name
-        default: Default value if attribute not present
-
-    Returns:
-        Attribute value or default
-    """
-    return getattr(obj, attr, default)

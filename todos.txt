@@ -2,3 +2,6 @@
 - Rethink relationships as something less strict
 - Check if models and calulations fit the original ideas and have the right attributes --> make a report
 - Evaluate summarisations --> phase 7
+- Move domain into injectable package
+- Topology analysis across periods should happen for financial data, not import periods
+- Context Document and Context lack a design beyond assemply

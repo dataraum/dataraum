@@ -90,7 +90,9 @@ class ReviewQueue(Base):
     context_data: Mapped[dict[str, Any] | None] = mapped_column(
         JSON
     )  # Data for review (e.g., failed values, type candidates)
-    suggested_action: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # AI-suggested action for reviewer
+    suggested_action: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON
+    )  # AI-suggested action for reviewer
 
     # Status
     status: Mapped[str] = mapped_column(

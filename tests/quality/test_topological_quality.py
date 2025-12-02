@@ -181,6 +181,7 @@ async def test_extract_betti_numbers_empty():
     """Test Betti number extraction with empty diagrams."""
     result = await extract_betti_numbers([])
     assert not result.success
+    assert result.error
     assert "No persistence diagrams" in result.error
 
 
@@ -197,7 +198,7 @@ async def test_extract_betti_numbers_simple():
     result = await extract_betti_numbers(diagrams)
     assert result.success
 
-    betti = result.value
+    betti = result.unwrap()
     assert betti.betti_0 == 3  # 2 finite + 1 for infinite component
     assert betti.betti_1 == 1  # 1 cycle
     assert betti.betti_2 is None  # No dimension 2
@@ -218,7 +219,7 @@ async def test_extract_betti_numbers_connected():
     result = await extract_betti_numbers(diagrams)
     assert result.success
 
-    betti = result.value
+    betti = result.unwrap()
     assert betti.betti_0 == 1
     assert betti.betti_1 == 0
     assert betti.is_connected
@@ -243,7 +244,7 @@ async def test_process_persistence_diagrams():
     result = await process_persistence_diagrams(diagrams)
     assert result.success
 
-    processed = result.value
+    processed = result.unwrap()
     assert len(processed) == 2
 
     # Check dimension 0
@@ -296,7 +297,7 @@ async def test_detect_persistent_cycles():
     result = await detect_persistent_cycles(diagrams, metric_id="test-metric", min_persistence=0.2)
     assert result.success
 
-    cycles = result.value
+    cycles = result.unwrap()
     # Should detect cycles with persistence >= 0.2
     # Cycle 1: 0.8 - 0.1 = 0.7 ✓
     # Cycle 2: 0.5 - 0.2 = 0.3 ✓
@@ -317,7 +318,7 @@ async def test_detect_persistent_cycles_no_dimension_1():
 
     result = await detect_persistent_cycles(diagrams, metric_id="test-metric")
     assert result.success
-    assert len(result.value) == 0
+    assert len(result.unwrap()) == 0
 
 
 @pytest.mark.asyncio
@@ -338,7 +339,7 @@ async def test_assess_structural_complexity_no_history(async_session):
     )
     assert result.success
 
-    complexity = result.value
+    complexity = result.unwrap()
     assert complexity.total_complexity == 3
     assert complexity.persistent_entropy == 1.5
     assert complexity.complexity_mean is None  # No history
@@ -378,7 +379,7 @@ async def test_analyze_topological_quality_simple(
 
     assert result.success, f"Analysis failed: {result.error}"
 
-    analysis = result.value
+    analysis = result.unwrap()
     assert analysis.table_id == simple_topology_table.table_id
     assert analysis.table_name == "simple_topology_data"
 
@@ -411,7 +412,7 @@ async def test_analyze_topological_quality_cyclic(
 
     assert result.success
 
-    analysis = result.value
+    analysis = result.unwrap()
     # Circular data may or may not create detectable cycles depending on sampling
     # Just verify the analysis completes and returns valid Betti numbers
     assert analysis.betti_numbers.betti_0 >= 1
@@ -433,7 +434,7 @@ async def test_analyze_topological_quality_disconnected(
 
     assert result.success
 
-    analysis = result.value
+    analysis = result.unwrap()
     # Should detect orphaned components
     assert analysis.orphaned_components > 0 or analysis.betti_numbers.betti_0 > 1
 
@@ -452,7 +453,7 @@ async def test_analyze_topological_quality_persistence(
         simple_topology_table.table_id, duckdb_conn, async_session
     )
     assert result1.success
-    analysis1 = result1.value
+    analysis1 = result1.unwrap()
     assert analysis1.stability is None  # No previous data
 
     # Second analysis (should compare with first)
@@ -460,7 +461,7 @@ async def test_analyze_topological_quality_persistence(
         simple_topology_table.table_id, duckdb_conn, async_session
     )
     assert result2.success
-    analysis2 = result2.value
+    analysis2 = result2.unwrap()
 
     # Stability might still be None if persim not installed
     # But the analysis should succeed
@@ -474,6 +475,7 @@ async def test_analyze_topological_quality_table_not_found(duckdb_conn, async_se
     """Test error handling for non-existent table."""
     result = await analyze_topological_quality("nonexistent-table", duckdb_conn, async_session)
     assert not result.success
+    assert result.error
     assert "not found" in result.error.lower()
 
 
@@ -495,6 +497,7 @@ async def test_analyze_topological_quality_empty_table(async_session, sample_sou
 
     result = await analyze_topological_quality(table.table_id, duckdb_conn, async_session)
     assert not result.success
+    assert result.error
     assert "empty" in result.error.lower()
 
 

@@ -4,12 +4,13 @@ from pathlib import Path
 
 import duckdb
 import pytest
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from dataraum_context.core.models import SourceConfig
 from dataraum_context.profiling import profile_table
 from dataraum_context.staging.loaders.csv import CSVLoader
-from dataraum_context.storage.base import Base
+from dataraum_context.storage.schema import init_database
 
 
 @pytest.fixture
@@ -20,8 +21,15 @@ async def test_session():
         echo=False,
     )
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Enable foreign keys for SQLite
+    @event.listens_for(engine.sync_engine, "connect")
+    def set_sqlite_pragma(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    # Initialize database schema
+    await init_database(engine)
 
     async_session = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -174,14 +182,14 @@ class TestProfilerIntegration:
         assert profile_result.success
 
         # Check that metadata was stored in database
-        from dataraum_context.storage.models import ColumnProfile, Table, TypeCandidate
+        from dataraum_context.storage.models_v2 import StatisticalProfile, Table, TypeCandidate
 
         # Refresh table to get updated last_profiled_at
         await test_session.refresh(await test_session.get(Table, str(table.table_id)))
 
-        # Check ColumnProfile records were created
+        # Check StatisticalProfile records were created
         profiles = await test_session.run_sync(
-            lambda sync_session: sync_session.query(ColumnProfile).all()
+            lambda sync_session: sync_session.query(StatisticalProfile).all()
         )
         assert len(profiles) > 0
 

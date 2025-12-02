@@ -56,7 +56,9 @@ class TopologicalQualityMetrics(Base):
     complexity_within_bounds: Mapped[bool | None] = mapped_column(Boolean)  # Historical norms
 
     # Anomaly detection
-    anomalous_cycles: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # Unexpected flow patterns
+    anomalous_cycles: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON
+    )  # Unexpected flow patterns
     orphaned_components: Mapped[int | None] = mapped_column(Integer)  # Disconnected subgraphs
 
     # Summary for LLM context

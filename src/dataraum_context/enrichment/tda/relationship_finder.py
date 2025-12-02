@@ -256,6 +256,7 @@ class TableRelationshipFinder:
             return "unrelated"
 
         # Check cardinalities
+        # TODO it might make sense to also check other candidates than the 1 element in the list
         best_join = join_candidates[0]
         col1 = df1[best_join["column1"]]
         col2 = df2[best_join["column2"]]

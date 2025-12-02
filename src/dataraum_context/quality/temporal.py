@@ -278,7 +278,10 @@ async def analyze_trend(
             )
 
         # Linear regression
-        slope, _, rvalue, _, stderr, _ = stats.linregress(x_clean, y_clean)
+        result = stats.linregress(x_clean, y_clean)
+        slope = result.slope
+        rvalue = result.rvalue
+        stderr = result.stderr
 
         # Trend strength is R²
         trend_strength = rvalue**2
@@ -748,8 +751,9 @@ async def analyze_completeness(
         gaps = []
         for gap_end, gap_length in zip(large_gaps.index, large_gaps.values, strict=False):
             gap_start = gap_end - gap_length
-            gap_days = gap_length.total_seconds() / 86400
-            missing_periods = int(gap_length.total_seconds() / seconds_per_period) - 1
+            gap_seconds = pd.Timedelta(gap_length).total_seconds()
+            gap_days = gap_seconds / 86400
+            missing_periods = int(gap_seconds / seconds_per_period) - 1
 
             severity = "minor"
             if gap_days > 30:

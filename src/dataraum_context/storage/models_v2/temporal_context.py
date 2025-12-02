@@ -40,7 +40,9 @@ class TemporalQualityMetrics(Base):
     seasonality_period: Mapped[str | None] = mapped_column(
         String
     )  # 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'
-    seasonal_peaks: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # {"month": 12, "day_of_week": 5}
+    seasonal_peaks: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON
+    )  # {"month": 12, "day_of_week": 5}
 
     # Trend analysis (Phase 3)
     has_trend: Mapped[bool | None] = mapped_column(Boolean)
@@ -53,7 +55,9 @@ class TemporalQualityMetrics(Base):
 
     # Change points (Phase 3)
     change_point_count: Mapped[int | None] = mapped_column(Integer)
-    change_points: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # List of detected break points
+    change_points: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON
+    )  # List of detected break points
 
     # Update frequency (Phase 3)
     update_frequency_score: Mapped[float | None] = mapped_column(Float)  # 0-1, regularity
@@ -73,7 +77,9 @@ class TemporalQualityMetrics(Base):
     # Distribution stability (Phase 3)
     distribution_stability_score: Mapped[float | None] = mapped_column(Float)  # 0-1
     distribution_shift_count: Mapped[int | None] = mapped_column(Integer)
-    distribution_shifts: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # KS test results by period
+    distribution_shifts: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON
+    )  # KS test results by period
 
     # Completeness and quality
     completeness_ratio: Mapped[float | None] = mapped_column(Float)  # 0-1
@@ -121,7 +127,9 @@ class SeasonalDecomposition(Base):
     )  # 1 - Var(resid) / Var(deseasonalized)
 
     # Stored components (sampled or aggregated)
-    seasonal_pattern: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # Seasonal component values
+    seasonal_pattern: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON
+    )  # Seasonal component values
     trend_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # Trend summary stats
 
 

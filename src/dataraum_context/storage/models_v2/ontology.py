@@ -35,9 +35,13 @@ class Ontology(Base):
     version: Mapped[str | None] = mapped_column(String)
 
     # Content (loaded from YAML configs)
-    concepts: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # Business concepts and their definitions
+    concepts: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON
+    )  # Business concepts and their definitions
     metrics: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # Computable metrics with formulas
-    quality_rules: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # Domain-specific quality rules
+    quality_rules: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON
+    )  # Domain-specific quality rules
     semantic_hints: Mapped[dict[str, Any] | None] = mapped_column(
         JSON
     )  # Column pattern -> semantic role mappings
@@ -76,9 +80,15 @@ class OntologyApplication(Base):
     ontology_id: Mapped[str] = mapped_column(ForeignKey("ontologies.ontology_id"), nullable=False)
 
     # Results
-    matched_concepts: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # Which concepts were detected
-    applicable_metrics: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # Which metrics can be computed
-    applied_rules: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # Which quality rules were applied
+    matched_concepts: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON
+    )  # Which concepts were detected
+    applicable_metrics: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON
+    )  # Which metrics can be computed
+    applied_rules: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON
+    )  # Which quality rules were applied
 
     applied_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)

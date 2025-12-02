@@ -97,7 +97,9 @@ class TableEntity(Base):
     evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     # Grain analysis
-    grain_columns: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # List of column IDs that define grain
+    grain_columns: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON
+    )  # List of column IDs that define grain
     is_fact_table: Mapped[bool | None] = mapped_column(Boolean)
     is_dimension_table: Mapped[bool | None] = mapped_column(Boolean)
 

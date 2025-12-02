@@ -165,7 +165,6 @@ plugins = ["pydantic.mypy"]
 # These are false positives due to exec()-based re-export in core.models.__init__
 [[tool.mypy.overrides]]
 module = "dataraum_context.core.models"
-disable_error_code = ["attr-defined", "valid-type"]
 
 [[tool.mypy.overrides]]
 module = [
@@ -182,4 +181,3 @@ module = [
     "statsmodels.*",
     "ruptures.*",
 ]
-ignore_missing_imports = true

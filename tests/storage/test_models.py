@@ -339,14 +339,17 @@ class TestTemporalModels:
         session.add_all([source, table, column])
         await session.flush()
 
+        from uuid import uuid4
+
         temporal = TemporalQualityMetrics(
-            column=column,
+            metric_id=str(uuid4()),
+            column_id=column.column_id,
+            computed_at=datetime.now(),
             min_timestamp=datetime(2024, 1, 1),
             max_timestamp=datetime(2024, 12, 31),
+            span_days=364.0,
             detected_granularity="day",
             granularity_confidence=0.98,
-            expected_periods=365,
-            actual_periods=350,
             completeness_ratio=0.96,
             gap_count=5,
             has_seasonality=True,

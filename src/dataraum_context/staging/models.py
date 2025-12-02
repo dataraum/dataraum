@@ -15,6 +15,7 @@ class StagedColumn(BaseModel):
     position: int
     sample_values: list[str] = Field(default_factory=list)
 
+
 class StagedTable(BaseModel):
     """A staged table."""
 
@@ -23,6 +24,7 @@ class StagedTable(BaseModel):
     raw_table_name: str
     row_count: int
     columns: list[StagedColumn]
+
 
 class StagingResult(BaseModel):
     """Result of staging operation."""

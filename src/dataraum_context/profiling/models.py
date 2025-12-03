@@ -188,16 +188,6 @@ class DistributionStability(BaseModel):
     comparison_period_end: datetime | None = None
 
 
-class VIFResult(BaseModel):
-    """Variance Inflation Factor result (multicollinearity detection)."""
-
-    column_id: str
-    column_ref: ColumnRef
-    vif_score: float
-    has_multicollinearity: bool  # VIF > 10
-    correlated_columns: list[str] = Field(default_factory=list)  # Column IDs
-
-
 class StatisticalQualityResult(BaseModel):
     """Comprehensive statistical quality assessment.
 
@@ -216,10 +206,6 @@ class StatisticalQualityResult(BaseModel):
 
     # Distribution stability
     distribution_stability: DistributionStability | None = None
-
-    # Multicollinearity (VIF)
-    vif_score: float | None = None
-    vif_correlated_columns: list[str] = Field(default_factory=list)  # Column IDs
 
     # Overall quality assessment
     quality_score: float  # 0-1 aggregate

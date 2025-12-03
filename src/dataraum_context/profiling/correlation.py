@@ -5,7 +5,6 @@ This module implements:
 - Categorical association (Cramér's V)
 - Functional dependency detection
 - Derived column detection
-- VIF computation (completes Phase 1 placeholder)
 
 All analysis is within a single table. Cross-table relationships
 are handled by the topological enrichment module.
@@ -36,7 +35,6 @@ from dataraum_context.core.models.correlation import (
 from dataraum_context.core.models.correlation import (
     FunctionalDependency as FunctionalDependencyModel,
 )
-from dataraum_context.profiling.models import VIFResult
 from dataraum_context.storage.models_v2.core import Column, Table
 from dataraum_context.storage.models_v2.correlation_context import (
     CategoricalAssociation as DBCategoricalAssociation,
@@ -607,121 +605,6 @@ async def detect_derived_columns(
 
     except Exception as e:
         return Result.fail(f"Derived column detection failed: {e}")
-
-
-# ============================================================================
-# VIF Computation (Completes Phase 1 Placeholder)
-# ============================================================================
-
-
-async def compute_vif_for_table(
-    table: Table,
-    duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
-) -> Result[list[VIFResult]]:
-    """Compute Variance Inflation Factor for each numeric column.
-
-    VIF = 1 / (1 - R²) where R² is from regressing the column against all other columns.
-
-    This requires the correlation matrix, which we now have from Phase 2.
-
-    Args:
-        table: Table to analyze
-        duckdb_conn: DuckDB connection
-        session: AsyncSession
-
-    Returns:
-        Result containing list of VIFResult objects
-    """
-    try:
-        # Get numeric columns
-        stmt = select(Column).where(
-            Column.table_id == table.table_id,
-            Column.resolved_type.in_(["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]),
-        )
-        result = await session.execute(stmt)
-        numeric_columns = result.scalars().all()
-
-        if len(numeric_columns) < 2:
-            return Result.ok([])
-
-        # Get data matrix
-        table_name = table.duckdb_path
-        column_names = [col.column_name for col in numeric_columns]
-
-        # Use aliases to preserve column names
-        query = f"""
-            SELECT {", ".join(f'TRY_CAST("{col}" AS DOUBLE) as "{col}"' for col in column_names)}
-            FROM {table_name}
-        """
-
-        data: Any = duckdb_conn.execute(query).fetchnumpy()
-
-        # Build matrix (remove rows with any NULL)
-        # fetchnumpy() returns a dict of column_name -> array
-        if isinstance(data, dict):
-            X = np.column_stack([data[col] for col in column_names])
-        elif hasattr(data, "dtype") and data.dtype.names is not None:
-            X = np.column_stack([data[col] for col in data.dtype.names])
-        else:
-            return Result.fail("Unexpected data format from fetchnumpy()")
-        X = X[~np.isnan(X).any(axis=1)]
-
-        if len(X) < 10 or X.shape[1] < 2:
-            return Result.ok([])
-
-        vif_results = []
-
-        # Compute VIF for each column
-        for i, col in enumerate(numeric_columns):
-            # Skip if not enough variance
-            if np.std(X[:, i]) < 1e-10:
-                continue
-
-            # Regress column i against all others
-            y = X[:, i]
-            X_others = np.delete(X, i, axis=1)
-
-            # Simple R² calculation (using correlation)
-            # R² = 1 - (variance of residuals / variance of y)
-            from sklearn.linear_model import LinearRegression
-
-            try:
-                reg = LinearRegression()
-                reg.fit(X_others, y)
-                r_squared = reg.score(X_others, y)
-
-                # VIF = 1 / (1 - R²)
-                vif = 1 / (1 - r_squared) if r_squared < 0.9999 else float("inf")
-
-                # Find correlated columns
-                correlated_cols = []
-                for j, other_col in enumerate(numeric_columns):
-                    if i == j:
-                        continue
-                    corr = np.corrcoef(X[:, i], X[:, j])[0, 1]
-                    if abs(corr) > 0.7:
-                        correlated_cols.append(other_col.column_id)
-
-                vif_result = VIFResult(
-                    column_id=col.column_id,
-                    vif_score=float(vif) if not np.isinf(vif) else 999.0,
-                    has_multicollinearity=vif > 10,
-                    correlated_columns=correlated_cols,
-                )
-
-                vif_results.append(vif_result)
-
-            except Exception:
-                continue  # Skip this column if regression fails
-
-        return Result.ok(vif_results)
-
-    except Exception as e:
-        # If sklearn not available, return empty
-        if "sklearn" in str(e) or "LinearRegression" in str(e):
-            return Result.ok([])
-        return Result.fail(f"VIF computation failed: {e}")
 
 
 # ============================================================================

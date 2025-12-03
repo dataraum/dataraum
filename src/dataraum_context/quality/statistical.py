@@ -463,11 +463,6 @@ async def _assess_column_quality(
             if iso_samples:
                 outlier_detection.outlier_samples.extend(iso_samples)
 
-        # VIF computation (TODO: optimize by computing for all columns at once)
-        vif_score = None
-        vif_correlated_columns = []
-        # Skipping VIF for now - requires correlation with other columns
-
         # Generate quality issues
         quality_issues = _generate_statistical_quality_issues(
             benford_analysis=benford_analysis,
@@ -492,8 +487,6 @@ async def _assess_column_quality(
             benford_analysis=benford_analysis,
             outlier_detection=outlier_detection,
             distribution_stability=dist_stability,
-            vif_score=vif_score,
-            vif_correlated_columns=vif_correlated_columns,
             quality_score=quality_score,
             quality_issues=quality_issues,
         )

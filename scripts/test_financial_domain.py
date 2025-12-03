@@ -19,13 +19,13 @@ import duckdb
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
+from dataraum_context.quality.domains.financial import FinancialDomainAnalyzer
 from dataraum_context.quality.topological import (
     analyze_topological_quality,
     analyze_topological_quality_multi_table,
 )
-from dataraum_context.quality.domains.financial import FinancialDomainAnalyzer
 from dataraum_context.storage.models_v2 import Base
-from dataraum_context.storage.models_v2.core import Table, Column, Source
+from dataraum_context.storage.models_v2.core import Column, Source, Table
 
 
 async def load_financial_tables(
@@ -138,7 +138,7 @@ async def create_mock_relationships(
     column_map = {(table_name, col_name): col_id for table_name, col_name, col_id in rows}
 
     # Debug: Show available columns for transactions
-    print(f"\n🔍 Available columns in transactions table:")
+    print("\n🔍 Available columns in transactions table:")
     txn_cols = [
         col_name for table_name, col_name in column_map.keys() if table_name == "transactions"
     ]
@@ -321,7 +321,7 @@ def print_analysis_results(result, table_name: str):
     if not result.success:
         print(f"\n❌ Analysis failed: {result.error}")
         if result.warnings:
-            print(f"⚠️  Warnings:")
+            print("⚠️  Warnings:")
             for warning in result.warnings:
                 print(f"   - {warning}")
         return
@@ -336,7 +336,7 @@ def print_analysis_results(result, table_name: str):
     # Topological features (Betti numbers)
     if hasattr(data, "betti_numbers"):
         betti = data.betti_numbers
-        print(f"\n🔢 Topological Features:")
+        print("\n🔢 Topological Features:")
         print(f"   Betti-0 (components): {betti.betti_0}")
         print(f"   Betti-1 (cycles): {betti.betti_1}")
         print(f"   Betti-2 (voids): {betti.betti_2}")
@@ -344,7 +344,7 @@ def print_analysis_results(result, table_name: str):
 
     # Historical complexity stats
     if hasattr(data, "complexity_mean") and data.complexity_mean is not None:
-        print(f"\n📊 Historical Complexity Analysis:")
+        print("\n📊 Historical Complexity Analysis:")
         print(f"   Baseline (30-day mean): {data.complexity_mean:.1f}")
         print(f"   Std deviation: {data.complexity_std:.1f}")
         print(f"   Z-score: {data.complexity_z_score:.2f}")
@@ -355,13 +355,13 @@ def print_analysis_results(result, table_name: str):
                 f"   ⚠️  ANOMALY: Complexity is {abs(data.complexity_z_score):.1f} std deviations from baseline"
             )
         elif abs(data.complexity_z_score) > 1.5:
-            print(f"   ⚠️  WARNING: Complexity slightly elevated")
+            print("   ⚠️  WARNING: Complexity slightly elevated")
         else:
-            print(f"   ✓ Complexity within normal range")
+            print("   ✓ Complexity within normal range")
 
     # Cycle detection
     cycles = data.cycles if hasattr(data, "cycles") else []
-    print(f"\n🔄 Cycle Detection:")
+    print("\n🔄 Cycle Detection:")
     print(f"   Total cycles: {len(cycles)}")
 
     if cycles:
@@ -373,14 +373,14 @@ def print_analysis_results(result, table_name: str):
                 cycle_types.get(cycle_type or "unclassified", 0) + 1
             )
 
-        print(f"\n   Cycle Types:")
+        print("\n   Cycle Types:")
         for cycle_type, count in sorted(cycle_types.items(), key=lambda x: x[1], reverse=True):
             print(f"      {cycle_type}: {count}")
 
         # Show details of first few classified cycles
         classified = [c for c in cycles if hasattr(c, "cycle_type") and c.cycle_type]
         if classified:
-            print(f"\n   📋 Sample Classified Cycles:")
+            print("\n   📋 Sample Classified Cycles:")
             for cycle in classified[:3]:
                 print(f"\n      Type: {cycle.cycle_type}")
                 print(f"      Columns: {', '.join(cycle.involved_columns[:5])}")
@@ -401,7 +401,7 @@ def print_analysis_results(result, table_name: str):
     # Domain-specific results (if available)
     domain_analysis = data.domain_analysis if hasattr(data, "domain_analysis") else None
     if domain_analysis:
-        print(f"\n💼 Financial Domain Analysis:")
+        print("\n💼 Financial Domain Analysis:")
 
         classified_cycles = domain_analysis.get("classified_cycles", [])
         classification_rate = (
@@ -513,14 +513,14 @@ async def main():
                 multi_data = multi_result.value
                 cross_table = multi_data["cross_table"]
 
-                print(f"\n🌐 Cross-Table Topology:")
+                print("\n🌐 Cross-Table Topology:")
                 print(f"   Relationships found: {multi_data['relationship_count']}")
                 print(f"   Graph Betti-0 (connected components): {cross_table['betti_0']}")
                 print(f"   Cross-table cycles detected: {cross_table['cycle_count']}")
 
                 # If we have cross-table cycles, display them
                 if cross_table["cycles"]:
-                    print(f"\n🔄 Cross-Table Cycles (Raw):")
+                    print("\n🔄 Cross-Table Cycles (Raw):")
                     for i, cycle in enumerate(cross_table["cycles"], 1):
                         cycle_path = " → ".join(cycle) + f" → {cycle[0]}"
                         print(f"   {i}. {cycle_path}")
@@ -528,21 +528,21 @@ async def main():
                 # Display domain analysis with integrated cross-table classification
                 if multi_data.get("domain_analysis"):
                     domain = multi_data["domain_analysis"]
-                    print(f"\n📊 Domain Analysis Summary:")
+                    print("\n📊 Domain Analysis Summary:")
                     print(f"   Single-table cycles: {len(domain['single_table_cycles'])}")
                     print(f"   Cross-table cycles: {len(domain['cross_table_cycles'])}")
 
                     # Display cross-table cycle classification if available
                     cross_table_classification = domain.get("cross_table_classification")
                     if cross_table_classification:
-                        print(f"\n💼 Business Process Classification:")
+                        print("\n💼 Business Process Classification:")
                         print(
                             f"   Classification rate: {cross_table_classification['classification_rate']:.1%}"
                         )
                         print(f"   {cross_table_classification['quality_assessment']}")
 
                         if cross_table_classification["business_processes"]:
-                            print(f"\n📋 Detected Business Processes:")
+                            print("\n📋 Detected Business Processes:")
                             for bp in cross_table_classification["business_processes"]:
                                 print(
                                     f"   • {bp['process_name']} (confidence: {bp['confidence']:.1%})"
@@ -552,7 +552,7 @@ async def main():
                                 )
 
                         if cross_table_classification["classified_cycles"]:
-                            print(f"\n🏷️  Classified Cycles:")
+                            print("\n🏷️  Classified Cycles:")
                             for cycle_data in cross_table_classification["classified_cycles"]:
                                 cycle_type = cycle_data["cycle_type"] or "unclassified"
                                 table_path = (
@@ -565,7 +565,7 @@ async def main():
             else:
                 print(f"\n❌ Multi-table analysis failed: {multi_result.error}")
 
-        print(f"\n✅ Analysis complete!")
+        print("\n✅ Analysis complete!")
 
     finally:
         duckdb_conn.close()

@@ -19,7 +19,6 @@ from dataraum_context.core.models.correlation import (
 from dataraum_context.profiling.correlation import (
     compute_categorical_associations,
     compute_numeric_correlations,
-    compute_vif_for_table,
     detect_derived_columns,
     detect_functional_dependencies,
 )
@@ -320,37 +319,6 @@ async def test_derived_column_product(derived_table, duckdb_conn, async_session)
     )
     assert prod is not None
     assert prod.match_rate >= 0.95
-
-
-@pytest.mark.asyncio
-async def test_vif_computation(correlated_table, duckdb_conn, async_session):
-    """Test VIF computation."""
-    # Add a third column that's correlated with both x and y
-    col_z = create_column("col-z", correlated_table.table_id, "z", 2, "DOUBLE")
-    async_session.add(col_z)
-    await async_session.commit()
-
-    # Add z column to DuckDB table (z = x + y)
-    duckdb_conn.execute(
-        """
-        CREATE OR REPLACE TABLE correlated_data AS
-        SELECT
-            x,
-            y,
-            (x + y)::DOUBLE as z
-        FROM correlated_data
-        """
-    )
-
-    result = await compute_vif_for_table(correlated_table, duckdb_conn, async_session)
-
-    assert result.success
-    vif_results = result.value
-    assert len(vif_results) == 3  # x, y, z
-
-    # All should have high VIF due to multicollinearity
-    for vif_result in vif_results:
-        assert vif_result.vif_score > 5.0
 
 
 def test_pydantic_models():

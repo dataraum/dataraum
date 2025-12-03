@@ -23,7 +23,10 @@ class NumericStats(BaseModel):
     max_value: float
     mean: float
     stddev: float
-    percentiles: dict[str, float] = Field(default_factory=dict)
+    skewness: float | None = None
+    kurtosis: float | None = None
+    cv: float | None = None  # Coefficient of variation (stddev/mean)
+    percentiles: dict[str, float | None] = Field(default_factory=dict)
 
 
 class StringStats(BaseModel):
@@ -144,4 +147,90 @@ class TypeResolutionResult(BaseModel):
     column_results: list[ColumnCastResult]
 
 
-# === Enrichment Models ===
+# === Statistical Quality Models ===
+
+
+class BenfordAnalysis(BaseModel):
+    """Benford's Law compliance analysis."""
+
+    chi_square: float
+    p_value: float
+    is_compliant: bool  # p_value > 0.05
+    digit_distribution: dict[str, float]  # {1: 0.301, 2: 0.176, ...}
+    interpretation: str
+
+
+class OutlierDetection(BaseModel):
+    """Outlier detection results."""
+
+    # IQR Method
+    iqr_lower_fence: float
+    iqr_upper_fence: float
+    iqr_outlier_count: int
+    iqr_outlier_ratio: float
+
+    # Isolation Forest
+    isolation_forest_score: float  # Average anomaly score
+    isolation_forest_anomaly_count: int
+    isolation_forest_anomaly_ratio: float
+
+    # Sample outliers
+    outlier_samples: list[dict[str, Any]] = Field(default_factory=list)  # [{value, method, score}]
+
+
+class DistributionStability(BaseModel):
+    """Distribution stability analysis (KS test)."""
+
+    ks_statistic: float
+    ks_p_value: float
+    is_stable: bool  # p_value > 0.01
+    comparison_period_start: datetime | None = None
+    comparison_period_end: datetime | None = None
+
+
+class VIFResult(BaseModel):
+    """Variance Inflation Factor result (multicollinearity detection)."""
+
+    column_id: str
+    column_ref: ColumnRef
+    vif_score: float
+    has_multicollinearity: bool  # VIF > 10
+    correlated_columns: list[str] = Field(default_factory=list)  # Column IDs
+
+
+class StatisticalQualityResult(BaseModel):
+    """Comprehensive statistical quality assessment.
+
+    This is the Pydantic source of truth for statistical quality metrics.
+    Gets serialized to StatisticalQualityMetrics.quality_data JSONB field.
+    """
+
+    column_id: str
+    column_ref: ColumnRef
+
+    # Benford's Law (for financial/count columns)
+    benford_analysis: BenfordAnalysis | None = None
+
+    # Outlier detection
+    outlier_detection: OutlierDetection | None = None
+
+    # Distribution stability
+    distribution_stability: DistributionStability | None = None
+
+    # Multicollinearity (VIF)
+    vif_score: float | None = None
+    vif_correlated_columns: list[str] = Field(default_factory=list)  # Column IDs
+
+    # Overall quality assessment
+    quality_score: float  # 0-1 aggregate
+    quality_issues: list[dict[str, Any]] = Field(
+        default_factory=list
+    )  # [{issue_type, severity, description}]
+
+
+class StatisticalProfilingResult(BaseModel):
+    """Result of statistical profiling and quality analysis operation."""
+
+    profiles: list[ColumnProfile] = Field(default_factory=list)
+    statistical_quality: list[StatisticalQualityResult] = Field(default_factory=list)
+    duration_seconds: float

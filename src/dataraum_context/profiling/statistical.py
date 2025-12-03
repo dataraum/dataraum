@@ -10,6 +10,7 @@ from dataraum_context.core.config import Settings, get_settings
 from dataraum_context.core.models.base import ColumnRef, Result
 from dataraum_context.profiling.models import (
     ColumnProfile,
+    HistogramBucket,
     NumericStats,
     StringStats,
     ValueCount,
@@ -69,32 +70,26 @@ async def compute_statistical_profile(
             if not profile:
                 continue
 
-            # Store in metadata database
+            # Calculate is_unique and duplicate_count
+            non_null_count = profile.total_count - profile.null_count
+            is_unique = profile.distinct_count == non_null_count if non_null_count > 0 else False
+
+            # Store in metadata database using hybrid storage
             db_profile = DBColumnProfile(
                 profile_id=str(uuid4()),
                 column_id=column.column_id,
                 profiled_at=profiled_at,
+                # STRUCTURED: Queryable core dimensions
                 total_count=profile.total_count,
                 null_count=profile.null_count,
                 distinct_count=profile.distinct_count,
                 null_ratio=profile.null_ratio,
                 cardinality_ratio=profile.cardinality_ratio,
-                min_value=profile.numeric_stats.min_value if profile.numeric_stats else None,
-                max_value=profile.numeric_stats.max_value if profile.numeric_stats else None,
-                mean_value=profile.numeric_stats.mean if profile.numeric_stats else None,
-                stddev_value=profile.numeric_stats.stddev if profile.numeric_stats else None,
-                percentiles=(profile.numeric_stats.percentiles if profile.numeric_stats else None),
-                min_length=profile.string_stats.min_length if profile.string_stats else None,
-                max_length=profile.string_stats.max_length if profile.string_stats else None,
-                avg_length=profile.string_stats.avg_length if profile.string_stats else None,
-                histogram=[
-                    {"bucket_min": b.bucket_min, "bucket_max": b.bucket_max, "count": b.count}
-                    for b in (profile.histogram or [])
-                ],
-                top_values=[
-                    {"value": v.value, "count": v.count, "percentage": v.percentage}
-                    for v in (profile.top_values or [])
-                ],
+                # Flags for filtering
+                is_unique=is_unique,
+                is_numeric=profile.numeric_stats is not None,
+                # JSONB: Full Pydantic model (zero mapping!)
+                profile_data=profile.model_dump(mode="json"),
             )
             session.add(db_profile)
             profiles.append(profile)
@@ -156,24 +151,41 @@ async def _profile_column(
                     MAX(TRY_CAST("{col_name}" AS DOUBLE)) as max_val,
                     AVG(TRY_CAST("{col_name}" AS DOUBLE)) as mean_val,
                     STDDEV(TRY_CAST("{col_name}" AS DOUBLE)) as stddev_val,
+                    SKEWNESS(TRY_CAST("{col_name}" AS DOUBLE)) as skewness_val,
+                    KURTOSIS(TRY_CAST("{col_name}" AS DOUBLE)) as kurtosis_val,
+                    PERCENTILE_CONT(0.01) WITHIN GROUP (ORDER BY TRY_CAST("{col_name}" AS DOUBLE)) as p01,
                     PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY TRY_CAST("{col_name}" AS DOUBLE)) as p25,
                     PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY TRY_CAST("{col_name}" AS DOUBLE)) as p50,
-                    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY TRY_CAST("{col_name}" AS DOUBLE)) as p75
+                    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY TRY_CAST("{col_name}" AS DOUBLE)) as p75,
+                    PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY TRY_CAST("{col_name}" AS DOUBLE)) as p99
                 FROM {table_name}
                 WHERE TRY_CAST("{col_name}" AS DOUBLE) IS NOT NULL
             """
             numeric_row = duckdb_conn.execute(numeric_query).fetchone()
 
             if numeric_row and numeric_row[0] is not None:
+                mean_val = float(numeric_row[2]) if numeric_row[2] is not None else 0.0
+                stddev_val = float(numeric_row[3]) if numeric_row[3] is not None else 0.0
+
+                # Calculate coefficient of variation (avoid division by zero)
+                cv_val = None
+                if mean_val != 0 and stddev_val is not None:
+                    cv_val = stddev_val / abs(mean_val)
+
                 numeric_stats = NumericStats(
                     min_value=float(numeric_row[0]),
                     max_value=float(numeric_row[1]),
-                    mean=float(numeric_row[2]) if numeric_row[2] is not None else 0.0,
-                    stddev=float(numeric_row[3]) if numeric_row[3] is not None else 0.0,
+                    mean=mean_val,
+                    stddev=stddev_val,
+                    skewness=float(numeric_row[4]) if numeric_row[4] is not None else None,
+                    kurtosis=float(numeric_row[5]) if numeric_row[5] is not None else None,
+                    cv=cv_val,
                     percentiles={
-                        "p25": float(numeric_row[4]) if numeric_row[4] is not None else 0.0,
-                        "p50": float(numeric_row[5]) if numeric_row[5] is not None else 0.0,
-                        "p75": float(numeric_row[6]) if numeric_row[6] is not None else 0.0,
+                        "p01": float(numeric_row[6]) if numeric_row[6] is not None else None,
+                        "p25": float(numeric_row[7]) if numeric_row[7] is not None else None,
+                        "p50": float(numeric_row[8]) if numeric_row[8] is not None else None,
+                        "p75": float(numeric_row[9]) if numeric_row[9] is not None else None,
+                        "p99": float(numeric_row[10]) if numeric_row[10] is not None else None,
                     },
                 )
         except Exception:
@@ -229,6 +241,62 @@ async def _profile_column(
         except Exception:
             pass
 
+        # Histogram (only for numeric columns)
+        histogram = []
+        if numeric_stats is not None:
+            try:
+                num_bins = 20  # Standard histogram bin count
+
+                # Use WIDTH_BUCKET approach for histogram
+                # First get the range
+                min_val = numeric_stats.min_value
+                max_val = numeric_stats.max_value
+
+                # Only create histogram if there's a meaningful range
+                if min_val != max_val and non_null_count > 0:
+                    # Calculate bucket width
+                    range_width = max_val - min_val
+                    bucket_width = range_width / num_bins
+
+                    # Generate histogram using WIDTH_BUCKET
+                    histogram_query = f"""
+                        WITH bucketed AS (
+                            SELECT
+                                WIDTH_BUCKET(
+                                    TRY_CAST("{col_name}" AS DOUBLE),
+                                    {min_val},
+                                    {max_val},
+                                    {num_bins}
+                                ) as bucket_num
+                            FROM {table_name}
+                            WHERE TRY_CAST("{col_name}" AS DOUBLE) IS NOT NULL
+                        )
+                        SELECT
+                            bucket_num,
+                            COUNT(*) as count
+                        FROM bucketed
+                        WHERE bucket_num > 0 AND bucket_num <= {num_bins}
+                        GROUP BY bucket_num
+                        ORDER BY bucket_num
+                    """
+
+                    histogram_rows = duckdb_conn.execute(histogram_query).fetchall()
+
+                    for bucket_num, count in histogram_rows:
+                        # Calculate bucket boundaries
+                        bucket_min = min_val + (bucket_num - 1) * bucket_width
+                        bucket_max = min_val + bucket_num * bucket_width
+
+                        histogram.append(
+                            HistogramBucket(
+                                bucket_min=float(bucket_min),
+                                bucket_max=float(bucket_max),
+                                count=int(count),
+                            )
+                        )
+            except Exception:
+                pass  # Histogram generation failed, that's ok
+
         # Build profile
         profile = ColumnProfile(
             column_id=column.column_id,
@@ -244,9 +312,9 @@ async def _profile_column(
             cardinality_ratio=cardinality_ratio,
             numeric_stats=numeric_stats,
             string_stats=string_stats,
-            histogram=None,  # TODO: Implement histogram
+            histogram=histogram if histogram else None,
             top_values=top_values,
-            detected_patterns=[],  # Will be filled by pattern detection
+            detected_patterns=[],  # TODO Will be filled by pattern detection
         )
 
         return Result.ok(profile)

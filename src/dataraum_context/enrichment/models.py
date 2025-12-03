@@ -1,10 +1,14 @@
 """Enrichment layer models.
 
-Defines data structures for semantic, topological, and temporal enrichment."""
+Defines data structures for semantic and topological relationship discovery.
+
+NOTE: Quality analysis models (temporal/topological quality) have been moved to
+quality/models.py where they belong. This module now only contains models for
+the enrichment discovery phase.
+"""
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -15,6 +19,9 @@ from dataraum_context.core.models.base import (
     RelationshipType,
     SemanticRole,
 )
+
+# Import quality models that enrichment references
+from dataraum_context.quality.models import TemporalQualityResult
 
 
 class SemanticAnnotation(BaseModel):
@@ -88,38 +95,6 @@ class JoinPath(BaseModel):
     total_confidence: float
 
 
-class TemporalGap(BaseModel):
-    """A gap in temporal data."""
-
-    start: datetime
-    end: datetime
-    missing_periods: int
-
-
-class TemporalProfile(BaseModel):
-    """Temporal profile for a time column."""
-
-    column_id: str
-    column_ref: ColumnRef
-
-    min_timestamp: datetime
-    max_timestamp: datetime
-
-    detected_granularity: str
-    granularity_confidence: float
-
-    expected_periods: int
-    actual_periods: int
-    completeness_ratio: float
-
-    gap_count: int
-    gaps: list[TemporalGap] = Field(default_factory=list)
-
-    has_seasonality: bool = False
-    seasonality_period: str | None = None
-    trend_direction: str | None = None
-
-
 # === Enrichment Result Models ===
 
 
@@ -142,7 +117,4 @@ class TopologyEnrichmentResult(BaseModel):
 class TemporalEnrichmentResult(BaseModel):
     """Result of temporal enrichment operation."""
 
-    profiles: list[TemporalProfile] = Field(default_factory=list)
-
-
-# === Quality Models ===
+    profiles: list[TemporalQualityResult] = Field(default_factory=list)

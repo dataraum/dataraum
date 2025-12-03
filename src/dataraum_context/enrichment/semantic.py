@@ -1,15 +1,11 @@
 """Semantic enrichment using LLM analysis."""
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.core.models.base import Result
 from dataraum_context.enrichment.models import SemanticEnrichmentResult
+from dataraum_context.enrichment.utils import load_column_mappings, load_table_mappings
 from dataraum_context.llm import LLMService
-from dataraum_context.storage.models_v2 import (
-    Column,
-    Table,
-)
 from dataraum_context.storage.models_v2 import (
     Relationship as RelationshipModel,
 )
@@ -59,8 +55,8 @@ async def enrich_semantic(
     enrichment = llm_result.unwrap()
 
     # Load column ID mappings
-    column_map = await _load_column_mappings(session, table_ids)
-    table_map = await _load_table_mappings(session, table_ids)
+    column_map = await load_column_mappings(session, table_ids)
+    table_map = await load_table_mappings(session, table_ids)
 
     # Store annotations
     for annotation in enrichment.annotations:
@@ -129,29 +125,3 @@ async def enrich_semantic(
     await session.commit()
 
     return Result.ok(enrichment)
-
-
-async def _load_column_mappings(
-    session: AsyncSession,
-    table_ids: list[str],
-) -> dict[tuple[str, str], str]:
-    """Load mapping of (table_name, column_name) -> column_id."""
-    stmt = (
-        select(Table.table_name, Column.column_name, Column.column_id)
-        .join(Column)
-        .where(Table.table_id.in_(table_ids))
-    )
-    result = await session.execute(stmt)
-
-    return {(table_name, col_name): col_id for table_name, col_name, col_id in result.all()}
-
-
-async def _load_table_mappings(
-    session: AsyncSession,
-    table_ids: list[str],
-) -> dict[str, str]:
-    """Load mapping of table_name -> table_id."""
-    stmt = select(Table.table_name, Table.table_id).where(Table.table_id.in_(table_ids))
-    result = await session.execute(stmt)
-
-    return dict(result.tuples().all())

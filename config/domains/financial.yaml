@@ -1,0 +1,292 @@
+# Financial Domain Configuration
+# Defines patterns, thresholds, and rules for financial/accounting data quality analysis
+
+# ===================================================================
+# CYCLE CLASSIFICATION PATTERNS
+# ===================================================================
+# Maps column name patterns and semantic roles to financial cycle types
+
+cycle_patterns:
+  accounts_receivable_cycle:
+    description: "AR collection cycle: Invoice → Payment → Cash"
+    column_patterns:
+      - "customer"
+      - "invoice"
+      - "payment"
+      - "receivable"
+      - "collection"
+      - "receipt"
+    semantic_roles:
+      - "customer_id"
+      - "invoice_id"
+      - "payment_id"
+      - "transaction_id"
+    expected_relationships:
+      - "customer -> invoice"
+      - "invoice -> payment"
+    business_value: "high"
+
+  expense_cycle:
+    description: "Expense cycle: PO → Receipt → Invoice → Payment"
+    column_patterns:
+      - "vendor"
+      - "payable"
+      - "purchase"
+      - "expense"
+      - "supplier"
+      - "purchase_order"
+      - "po_"
+    semantic_roles:
+      - "vendor_id"
+      - "supplier_id"
+      - "expense_id"
+      - "purchase_order_id"
+    expected_relationships:
+      - "vendor -> purchase_order"
+      - "purchase_order -> invoice"
+      - "invoice -> payment"
+    business_value: "high"
+
+  inventory_cycle:
+    description: "Inventory cycle: Purchase → Stock → COGS → Sale"
+    column_patterns:
+      - "inventory"
+      - "stock"
+      - "product"
+      - "cogs"
+      - "sku"
+      - "item"
+      - "warehouse"
+    semantic_roles:
+      - "product_id"
+      - "sku_id"
+      - "inventory_id"
+      - "item_id"
+    expected_relationships:
+      - "product -> inventory"
+      - "inventory -> sale"
+    business_value: "medium"
+
+  payroll_cycle:
+    description: "Payroll cycle: Time → Payroll → Disbursement"
+    column_patterns:
+      - "employee"
+      - "payroll"
+      - "salary"
+      - "wage"
+      - "timesheet"
+      - "compensation"
+      - "hours"
+    semantic_roles:
+      - "employee_id"
+      - "payroll_id"
+      - "timesheet_id"
+    expected_relationships:
+      - "employee -> timesheet"
+      - "timesheet -> payroll"
+    business_value: "medium"
+
+  capital_cycle:
+    description: "Capital cycle: Investment → Depreciation → Disposal"
+    column_patterns:
+      - "asset"
+      - "depreciation"
+      - "investment"
+      - "capital"
+      - "fixed_asset"
+      - "equipment"
+      - "property"
+    semantic_roles:
+      - "asset_id"
+      - "equipment_id"
+      - "property_id"
+    expected_relationships:
+      - "asset -> depreciation"
+    business_value: "medium"
+
+  intercompany_cycle:
+    description: "Intercompany cycle: Charges between entities"
+    column_patterns:
+      - "entity"
+      - "subsidiary"
+      - "intercompany"
+      - "division"
+      - "company_code"
+      - "legal_entity"
+    semantic_roles:
+      - "entity_id"
+      - "subsidiary_id"
+      - "division_id"
+      - "company_id"
+    expected_relationships:
+      - "entity -> entity"
+    business_value: "high"
+
+  revenue_cycle:
+    description: "Revenue cycle: Order → Fulfillment → Recognition"
+    column_patterns:
+      - "revenue"
+      - "sale"
+      - "order"
+      - "booking"
+      - "contract"
+      - "subscription"
+    semantic_roles:
+      - "order_id"
+      - "sale_id"
+      - "contract_id"
+      - "subscription_id"
+    expected_relationships:
+      - "customer -> order"
+      - "order -> invoice"
+    business_value: "high"
+
+# ===================================================================
+# QUALITY SCORING THRESHOLDS
+# ===================================================================
+
+quality_thresholds:
+  # Critical penalties (structural integrity)
+  critical:
+    disconnected_components:
+      threshold: 3  # More than this is CRITICAL
+      penalty: 0.5  # Severe penalty
+    moderate_disconnection:
+      threshold: 1  # More than this is moderate issue
+      penalty: 0.2
+
+  # Medium penalties (domain-specific issues)
+  medium:
+    excessive_cycles:
+      threshold: 15  # More than this is excessive
+      penalty: 0.3
+    missing_expected_cycles:
+      penalty: 0.2
+    unclassified_cycles:
+      threshold: 5  # More than this is concerning
+      penalty: 0.15
+    cost_center_isolation:
+      penalty: 0.2
+    data_fragmentation:
+      penalty: 0.3
+
+  # Minor penalties (complexity)
+  minor:
+    very_high_complexity:
+      threshold: 20  # Cycles
+      penalty: 0.1
+    high_complexity:
+      threshold: 15  # Cycles
+      penalty: 0.05
+
+  # Bonuses
+  bonuses:
+    well_classified_cycles:
+      threshold: 0.8  # Classification rate
+      bonus: 0.05
+
+# ===================================================================
+# EXPECTED CYCLE TYPES
+# ===================================================================
+# Cycles we expect to see in financial data
+# Missing these triggers anomaly detection
+
+expected_cycles:
+  - "accounts_receivable_cycle"
+  - "expense_cycle"
+  - "revenue_cycle"
+
+# ===================================================================
+# FISCAL CALENDAR CONFIGURATION
+# ===================================================================
+
+fiscal_calendar:
+  # Default fiscal year end month (1-12, or null for calendar year)
+  default_year_end_month: null  # null = December (calendar year)
+
+  # Period-end effect patterns
+  period_effects:
+    month_end:
+      stability_tolerance: "minor_changes"
+      expected_spike_ratio: 1.5  # 50% increase in activity is normal
+    quarter_end:
+      stability_tolerance: "significant_changes"
+      expected_spike_ratio: 2.0  # 100% increase is normal
+    year_end:
+      stability_tolerance: "unstable"
+      expected_spike_ratio: 3.0  # 200% increase is normal
+
+# ===================================================================
+# ANOMALY DETECTION RULES
+# ===================================================================
+
+anomaly_rules:
+  # When to flag as anomalous
+  excessive_cycles:
+    enabled: true
+    threshold: 15
+    severity: "high"
+
+  unclassified_cycles:
+    enabled: true
+    threshold: 5
+    severity: "medium"
+
+  data_fragmentation:
+    enabled: true
+    threshold: 3  # Betti_0
+    severity: "high"
+
+  missing_expected_cycles:
+    enabled: true
+    severity: "medium"
+
+  cost_center_isolation:
+    enabled: true
+    severity: "medium"
+
+# ===================================================================
+# SEMANTIC ENRICHMENT INTEGRATION
+# ===================================================================
+# How to use semantic enrichment data for enhanced cycle detection
+
+semantic_enrichment:
+  # Use LLM-detected column roles for cycle classification
+  use_semantic_roles: true
+
+  # Column role patterns to look for
+  role_mappings:
+    customer_identifier:
+      - "customer_id"
+      - "client_id"
+      - "account_id"
+    vendor_identifier:
+      - "vendor_id"
+      - "supplier_id"
+    transaction_identifier:
+      - "transaction_id"
+      - "txn_id"
+      - "invoice_id"
+      - "payment_id"
+    product_identifier:
+      - "product_id"
+      - "sku"
+      - "item_id"
+    employee_identifier:
+      - "employee_id"
+      - "staff_id"
+    account_identifier:
+      - "account_code"
+      - "gl_account"
+      - "account_number"
+
+  # Business entity types to look for
+  entity_types:
+    - "customer"
+    - "vendor"
+    - "employee"
+    - "product"
+    - "account"
+    - "transaction"
+    - "invoice"
+    - "payment"

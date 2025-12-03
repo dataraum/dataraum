@@ -428,6 +428,11 @@ class SemanticAnalysisFeature(LLMFeature):
                 elif card_str == "many_to_many":
                     cardinality = Cardinality.MANY_TO_MANY
 
+                # Build evidence dict with reasoning if provided
+                evidence = {"source": "semantic_analysis"}
+                if "reasoning" in rel_data:
+                    evidence["reasoning"] = rel_data["reasoning"]
+
                 relationship = Relationship(
                     relationship_id=str(uuid4()),
                     from_table=rel_data["from_table"],
@@ -438,7 +443,7 @@ class SemanticAnalysisFeature(LLMFeature):
                     cardinality=cardinality,
                     confidence=rel_data.get("confidence", 0.8),
                     detection_method="llm",
-                    evidence={"source": "semantic_analysis"},
+                    evidence=evidence,
                 )
                 relationships.append(relationship)
 

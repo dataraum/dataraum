@@ -40,9 +40,21 @@ prompt: |
   - **description**: One sentence human-readable description
   - **confidence**: Your confidence in this analysis (0.0-1.0)
 
-  For **relationships**, identify:
-  - Foreign key relationships between tables
-  - Hierarchical relationships (e.g., product → category)
+  For **relationships**, identify ALL possible relationships between tables:
+  - **Foreign key relationships**: Look for columns that reference keys in other tables
+    * Match on naming patterns (customer_id → customers.id, vendor_id → vendors.id)
+    * Match on semantic meaning (txn_customer → customers.customer_id)
+    * Consider cardinality based on distinct counts
+  - **Hierarchical relationships**: Parent-child structures (product → category)
+  - **Business process flows**: Tables connected through business cycles
+    * Example: customers → invoices → payments (AR cycle)
+    * Example: vendors → purchase_orders → invoices → payments (AP cycle)
+
+  **IMPORTANT**: Be thorough in detecting relationships. Missing a relationship is worse than suggesting a low-confidence one. Consider:
+  - Column name similarities (even partial matches)
+  - Semantic similarity (customer vs client, product vs item)
+  - Domain-specific patterns (txn_id, order_id, invoice_id often link tables)
+  - Cardinality hints from distinct_count ratios
 
   ## Semantic Role Definitions
 
@@ -80,13 +92,14 @@ prompt: |
     ],
     "relationships": [
       {{
-        "from_table": "...",
-        "from_column": "...",
-        "to_table": "...",
-        "to_column": "...",
+        "from_table": "transactions",
+        "from_column": "customer_id",
+        "to_table": "customers",
+        "to_column": "id",
         "relationship_type": "foreign_key",
         "cardinality": "many_to_one",
-        "confidence": 0.9
+        "confidence": 0.95,
+        "reasoning": "customer_id in transactions references customers.id primary key"
       }}
     ],
     "summary": "Brief overview of the schema structure and domain"

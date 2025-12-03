@@ -5,16 +5,18 @@ from uuid import uuid4
 
 import pytest
 
-from dataraum_context.core.models import (
+from dataraum_context.core.models.base import (
     ColumnRef,
     DecisionSource,
-    EntityDetection,
-    Relationship,
     RelationshipType,
     Result,
+    SemanticRole,
+)
+from dataraum_context.enrichment.models import (
+    EntityDetection,
+    Relationship,
     SemanticAnnotation,
     SemanticEnrichmentResult,
-    SemanticRole,
 )
 from dataraum_context.enrichment.semantic import enrich_semantic
 

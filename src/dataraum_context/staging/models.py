@@ -33,6 +33,3 @@ class StagingResult(BaseModel):
     tables: list[StagedTable]
     total_rows: int
     duration_seconds: float
-
-
-# === Profiling Models ===

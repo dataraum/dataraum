@@ -92,15 +92,12 @@ from dataraum_context.storage.models_v2.statistical_context import (
 
 # Pillar 4: Temporal Context
 from dataraum_context.storage.models_v2.temporal_context import (
-    ChangePoint,
-    DistributionShift,
-    SeasonalDecomposition,
     TemporalQualityMetrics,
-    UpdateFrequencyHistory,
 )
 
 # Pillar 2: Topological Context
 from dataraum_context.storage.models_v2.topological_context import (
+    MultiTableTopologyMetrics,
     PersistentCycle,
     StructuralComplexityHistory,
     TopologicalQualityMetrics,
@@ -130,6 +127,7 @@ __all__ = [
     "DerivedColumn",
     # Pillar 2: Topological Context
     "TopologicalQualityMetrics",
+    "MultiTableTopologyMetrics",
     "PersistentCycle",
     "StructuralComplexityHistory",
     "Relationship",
@@ -139,10 +137,6 @@ __all__ = [
     "TableEntity",
     # Pillar 4: Temporal Context
     "TemporalQualityMetrics",
-    "SeasonalDecomposition",
-    "ChangePoint",
-    "DistributionShift",
-    "UpdateFrequencyHistory",
     # Pillar 5: Domain Quality
     "DomainQualityMetrics",
     "FinancialQualityMetrics",

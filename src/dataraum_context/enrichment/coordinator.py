@@ -1,4 +1,24 @@
-"""Enrichment coordinator - orchestrates all enrichment steps."""
+"""Enrichment coordinator - orchestrates all enrichment steps.
+
+CURRENT STATUS: This module is a placeholder for future workflow engine integration.
+
+The EnrichmentCoordinator class is currently UNUSED in the codebase. Callers directly
+import and use individual enrichment functions (enrich_semantic, enrich_topology,
+enrich_temporal) instead of using this coordinator.
+
+FUTURE PLAN:
+When a workflow engine (e.g., Apache Hamilton, Temporal.io, Prefect) is introduced,
+this coordinator will serve as the integration point for orchestrating enrichment
+steps with proper:
+- Dependency management
+- Checkpointing/resumability
+- Parallel execution where possible
+- Error handling and retries
+- Observability and metrics
+
+For now, this serves as architectural documentation of how enrichment steps
+should be orchestrated once workflow tooling is added.
+"""
 
 from typing import Any
 

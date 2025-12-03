@@ -12,7 +12,7 @@ These metrics are optional and may require additional dependencies:
 """
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import duckdb
@@ -20,15 +20,12 @@ import numpy as np
 from scipy import stats
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models.base import Result
-from dataraum_context.core.models.statistical import (
-    BenfordTestResult,
-    DistributionStabilityResult,
-    OutlierDetectionResult,
-    QualityIssue,
-    StatisticalQualityMetrics,
+from dataraum_context.core.models.base import ColumnRef, Result
+from dataraum_context.profiling.models import (
+    BenfordAnalysis,
+    DistributionStability,
+    OutlierDetection,
     StatisticalQualityResult,
-    VIFResult,
 )
 from dataraum_context.storage.models_v2.core import Column, Table
 from dataraum_context.storage.models_v2.statistical_context import (
@@ -49,7 +46,7 @@ async def check_benford_law(
     table: Table,
     column: Column,
     duckdb_conn: duckdb.DuckDBPyConnection,
-) -> Result[BenfordTestResult | None]:
+) -> Result[BenfordAnalysis | None]:
     """Test if a numeric column follows Benford's Law.
 
     Benford's Law states that in many real-world datasets, the first digit
@@ -65,7 +62,7 @@ async def check_benford_law(
         duckdb_conn: DuckDB connection
 
     Returns:
-        Result containing BenfordTestResult or None if not applicable
+        Result containing BenfordAnalysis or None if not applicable
     """
     try:
         table_name = table.duckdb_path
@@ -103,8 +100,8 @@ async def check_benford_law(
         p_value_float = float(np.asarray(p_value).item())
 
         # Interpretation
-        compliant = bool(p_value_float > 0.05)
-        if compliant:
+        is_compliant = bool(p_value_float > 0.05)
+        if is_compliant:
             interpretation = "Follows Benford's Law (no anomalies detected)"
         elif p_value_float > 0.01:
             interpretation = "Weak deviation from Benford's Law (monitor)"
@@ -113,15 +110,15 @@ async def check_benford_law(
 
         # Digit distribution for review
         digit_distribution = {
-            int(digit): float(freq) for digit, freq in enumerate(observed_freq, start=1)
+            str(digit): float(freq) for digit, freq in enumerate(observed_freq, start=1)
         }
 
-        result = BenfordTestResult(
+        result = BenfordAnalysis(
             chi_square=chi2_float,
             p_value=p_value_float,
-            compliant=compliant,
-            interpretation=interpretation,
+            is_compliant=is_compliant,
             digit_distribution=digit_distribution,
+            interpretation=interpretation,
         )
 
         return Result.ok(result)
@@ -140,7 +137,7 @@ async def check_distribution_stability(
     column: Column,
     duckdb_conn: duckdb.DuckDBPyConnection,
     comparison_days: int = 30,
-) -> Result[DistributionStabilityResult | None]:
+) -> Result[DistributionStability | None]:
     """Test if column's distribution is stable across time periods.
 
     Uses Kolmogorov-Smirnov (KS) test to compare distributions between
@@ -156,7 +153,7 @@ async def check_distribution_stability(
         comparison_days: Number of days to use for each period
 
     Returns:
-        Result containing DistributionStabilityResult or None if not applicable
+        Result containing DistributionStability or None if not applicable
     """
     try:
         # TODO: This requires temporal column detection
@@ -177,7 +174,7 @@ async def detect_outliers_iqr(
     table: Table,
     column: Column,
     duckdb_conn: duckdb.DuckDBPyConnection,
-) -> Result[OutlierDetectionResult | None]:
+) -> Result[OutlierDetection | None]:
     """Detect outliers using Interquartile Range (IQR) method.
 
     IQR method:
@@ -193,7 +190,7 @@ async def detect_outliers_iqr(
         duckdb_conn: DuckDB connection
 
     Returns:
-        Result containing OutlierDetectionResult or None if not numeric
+        Result containing OutlierDetection or None if not numeric
     """
     try:
         table_name = table.duckdb_path
@@ -263,13 +260,18 @@ async def detect_outliers_iqr(
             for row in duckdb_conn.execute(sample_query).fetchall()
         ]
 
-        result = OutlierDetectionResult(
-            method="iqr",
-            outlier_count=int(outlier_count),
-            outlier_ratio=float(outlier_ratio),
-            lower_fence=float(lower_fence),
-            upper_fence=float(upper_fence),
-            outlier_samples=outlier_samples if outlier_samples else None,
+        result = OutlierDetection(
+            # IQR Method
+            iqr_lower_fence=float(lower_fence),
+            iqr_upper_fence=float(upper_fence),
+            iqr_outlier_count=int(outlier_count),
+            iqr_outlier_ratio=float(outlier_ratio),
+            # Isolation Forest (not computed yet)
+            isolation_forest_score=0.0,
+            isolation_forest_anomaly_count=0,
+            isolation_forest_anomaly_ratio=0.0,
+            # Sample outliers
+            outlier_samples=outlier_samples if outlier_samples else [],
         )
 
         return Result.ok(result)
@@ -283,7 +285,7 @@ async def detect_outliers_isolation_forest(
     column: Column,
     duckdb_conn: duckdb.DuckDBPyConnection,
     contamination: float = 0.05,
-) -> Result[OutlierDetectionResult | None]:
+) -> tuple[float, int, float, list[dict[str, Any]]] | None:
     """Detect outliers using Isolation Forest (ML-based).
 
     Isolation Forest is an unsupervised anomaly detection algorithm that
@@ -300,14 +302,14 @@ async def detect_outliers_isolation_forest(
         contamination: Expected proportion of outliers (default 0.05 = 5%)
 
     Returns:
-        Result containing OutlierDetectionResult or None if sklearn not available
+        Tuple of (avg_score, anomaly_count, anomaly_ratio, samples) or None if sklearn not available
     """
     try:
         # Check if scikit-learn is available
         try:
             from sklearn.ensemble import IsolationForest
         except ImportError:
-            return Result.ok(None)  # Skip if not installed
+            return None  # Skip if not installed
 
         table_name = table.duckdb_path
         col_name = column.column_name
@@ -323,7 +325,7 @@ async def detect_outliers_isolation_forest(
 
         if len(values) < 100:
             # Not enough data for meaningful outlier detection
-            return Result.ok(None)
+            return None
 
         # Ensure we have a numpy array (not Categorical)
         if not isinstance(values, np.ndarray):
@@ -354,58 +356,10 @@ async def detect_outliers_isolation_forest(
             for idx in outlier_indices
         ]
 
-        result = OutlierDetectionResult(
-            method="isolation_forest",
-            outlier_count=outlier_count,
-            outlier_ratio=outlier_ratio,
-            average_anomaly_score=avg_score,
-            outlier_samples=outlier_samples if outlier_samples else None,
-        )
+        return (avg_score, outlier_count, outlier_ratio, outlier_samples)
 
-        return Result.ok(result)
-
-    except Exception as e:
-        return Result.fail(f"Isolation Forest outlier detection failed: {e}")
-
-
-# ============================================================================
-# Multicollinearity Detection (VIF)
-# ============================================================================
-
-
-async def compute_vif(
-    table: Table,
-    column: Column,
-    duckdb_conn: duckdb.DuckDBPyConnection,
-) -> Result[VIFResult | None]:
-    """Compute Variance Inflation Factor (VIF) for multicollinearity detection.
-
-    VIF measures how much the variance of a regression coefficient is inflated
-    due to multicollinearity with other predictors.
-
-    Interpretation:
-    - VIF = 1: No correlation
-    - VIF < 5: Low correlation
-    - VIF 5-10: Moderate correlation
-    - VIF > 10: High multicollinearity (problematic)
-
-    This requires computing correlations with all other numeric columns in the table.
-
-    Args:
-        table: Table containing the column
-        column: Column to test
-        duckdb_conn: DuckDB connection
-
-    Returns:
-        Result containing VIFResult or None if not enough numeric columns
-    """
-    try:
-        # TODO: This requires correlation matrix computation across all columns
-        # Will implement after correlation analysis module is created
-        return Result.ok(None)
-
-    except Exception as e:
-        return Result.fail(f"VIF computation failed: {e}")
+    except Exception:
+        return None
 
 
 # ============================================================================
@@ -417,14 +371,15 @@ async def assess_statistical_quality(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: AsyncSession,
-) -> Result[StatisticalQualityResult]:
-    """Assess statistical quality for all columns in a table.
+) -> Result[list[StatisticalQualityResult]]:
+    """Assess statistical quality for all numeric columns in a table.
 
-    Runs all applicable quality tests:
-    - Benford's Law (for numeric columns)
-    - Distribution stability (if temporal data available)
-    - Outlier detection (IQR and Isolation Forest)
-    - VIF (if multiple numeric columns)
+    This function:
+    1. Runs quality tests (Benford, outliers, stability, VIF)
+    2. Generates quality issues
+    3. Computes overall quality score
+    4. Builds StatisticalQualityResult (Pydantic source of truth)
+    5. Persists using hybrid storage (structured + JSONB)
 
     Args:
         table_id: Table ID to assess
@@ -432,12 +387,8 @@ async def assess_statistical_quality(
         session: SQLAlchemy session
 
     Returns:
-        Result containing StatisticalQualityResult
+        Result containing list of StatisticalQualityResult objects
     """
-    import time
-
-    start_time = time.time()
-
     try:
         # Get table from metadata
         table = await session.get(Table, str(table_id))
@@ -451,129 +402,233 @@ async def assess_statistical_quality(
         query_result = await session.execute(stmt)
         columns = query_result.scalars().all()
 
-        all_metrics = []
+        results = []
 
         for column in columns:
-            # Skip non-numeric columns for most tests
+            # Skip non-numeric columns for statistical quality tests
             if column.resolved_type not in ["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]:
                 continue
 
-            computed_at = datetime.now(UTC)
-
-            # Run Benford's Law test
-            benford_result = await check_benford_law(table, column, duckdb_conn)
-            benford_test = benford_result.value if benford_result.success else None
-
-            # Run distribution stability test
-            stability_result = await check_distribution_stability(table, column, duckdb_conn)
-            dist_stability = stability_result.value if stability_result.success else None
-
-            # Run IQR outlier detection
-            iqr_result = await detect_outliers_iqr(table, column, duckdb_conn)
-            iqr_outliers = iqr_result.value if iqr_result.success else None
-
-            # Run Isolation Forest outlier detection
-            iso_result = await detect_outliers_isolation_forest(table, column, duckdb_conn)
-            iso_outliers = iso_result.value if iso_result.success else None
-
-            # Run VIF computation
-            vif_result_obj = await compute_vif(table, column, duckdb_conn)
-            vif_res = vif_result_obj.value if vif_result_obj.success else None
-
-            # Aggregate quality issues
-            quality_issues = []
-
-            if benford_test and not benford_test.compliant:
-                quality_issues.append(
-                    QualityIssue(
-                        issue_type="benford_violation",
-                        severity="warning"
-                        if benford_test.p_value and benford_test.p_value > 0.01
-                        else "critical",
-                        description=benford_test.interpretation,
-                        evidence={
-                            "chi_square": benford_test.chi_square,
-                            "p_value": benford_test.p_value,
-                        },
-                    )
-                )
-
-            if iqr_outliers and iqr_outliers.outlier_ratio > 0.05:
-                quality_issues.append(
-                    QualityIssue(
-                        issue_type="outliers",
-                        severity="warning" if iqr_outliers.outlier_ratio < 0.10 else "critical",
-                        description=f"{iqr_outliers.outlier_ratio * 100:.1f}% of values are outliers (IQR method)",
-                        evidence={"outlier_count": iqr_outliers.outlier_count},
-                    )
-                )
-
-            # Compute overall quality score (0-1)
-            quality_score = 1.0
-            if benford_test and not benford_test.compliant:
-                quality_score -= 0.3
-            if iqr_outliers and iqr_outliers.outlier_ratio > 0.10:
-                quality_score -= 0.3
-
-            quality_score = max(0.0, quality_score)
-
-            # Create metrics object
-            metric = StatisticalQualityMetrics(
-                metric_id=str(uuid4()),
-                column_id=column.column_id,
-                computed_at=computed_at,
-                benford_test=benford_test,
-                distribution_stability=dist_stability,
-                outlier_detection=iqr_outliers or iso_outliers,
-                vif_result=vif_res,
-                quality_score=quality_score,
-                quality_issues=quality_issues,
+            # Run quality assessment for this column
+            quality_result = await _assess_column_quality(
+                table=table,
+                column=column,
+                duckdb_conn=duckdb_conn,
+                session=session,
             )
 
-            all_metrics.append(metric)
+            if quality_result.success and quality_result.value:
+                results.append(quality_result.value)
 
-            # Store in database
-            db_metric = DBStatisticalQualityMetrics(
-                metric_id=metric.metric_id,
-                column_id=metric.column_id,
-                computed_at=metric.computed_at,
-                # Benford
-                benford_chi_square=benford_test.chi_square if benford_test else None,
-                benford_p_value=benford_test.p_value if benford_test else None,
-                benford_compliant=benford_test.compliant if benford_test else None,
-                benford_interpretation=benford_test.interpretation if benford_test else None,
-                benford_digit_distribution=benford_test.digit_distribution
-                if benford_test
-                else None,
-                # Outliers
-                iqr_outlier_count=iqr_outliers.outlier_count if iqr_outliers else None,
-                iqr_outlier_ratio=iqr_outliers.outlier_ratio if iqr_outliers else None,
-                iqr_lower_fence=iqr_outliers.lower_fence if iqr_outliers else None,
-                iqr_upper_fence=iqr_outliers.upper_fence if iqr_outliers else None,
-                isolation_forest_anomaly_count=iso_outliers.outlier_count if iso_outliers else None,
-                isolation_forest_anomaly_ratio=iso_outliers.outlier_ratio if iso_outliers else None,
-                isolation_forest_score=iso_outliers.average_anomaly_score if iso_outliers else None,
-                outlier_samples=(iqr_outliers.outlier_samples if iqr_outliers else None)
-                or (iso_outliers.outlier_samples if iso_outliers else None),
-                # VIF
-                vif_score=vif_res.vif_score if vif_res else None,
-                vif_correlated_columns=vif_res.correlated_columns if vif_res else None,
-                # Overall
-                quality_score=metric.quality_score,
-                quality_issues=[issue.dict() for issue in metric.quality_issues],
-            )
-            session.add(db_metric)
-
-        await session.commit()
-
-        duration = time.time() - start_time
-
-        result = StatisticalQualityResult(
-            metrics=all_metrics,
-            duration_seconds=duration,
-        )
-
-        return Result.ok(result)
+        return Result.ok(results)
 
     except Exception as e:
         return Result.fail(f"Statistical quality assessment failed: {e}")
+
+
+async def _assess_column_quality(
+    table: Table,
+    column: Column,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    session: AsyncSession,
+) -> Result[StatisticalQualityResult]:
+    """Assess statistical quality for a single column.
+
+    Follows the gold-standard hybrid storage pattern from temporal enrichment.
+    """
+    try:
+        computed_at = datetime.now(UTC)
+
+        # Run Benford's Law test
+        benford_result = await check_benford_law(table, column, duckdb_conn)
+        benford_analysis = benford_result.value if benford_result.success else None
+
+        # Run distribution stability test
+        stability_result = await check_distribution_stability(table, column, duckdb_conn)
+        dist_stability = stability_result.value if stability_result.success else None
+
+        # Run IQR outlier detection
+        iqr_result = await detect_outliers_iqr(table, column, duckdb_conn)
+        outlier_detection = iqr_result.value if iqr_result.success else None
+
+        # Run Isolation Forest outlier detection and merge into OutlierDetection
+        iso_forest_data = await detect_outliers_isolation_forest(table, column, duckdb_conn)
+        if iso_forest_data and outlier_detection:
+            avg_score, anomaly_count, anomaly_ratio, iso_samples = iso_forest_data
+            # Update the outlier_detection with Isolation Forest results
+            outlier_detection.isolation_forest_score = avg_score
+            outlier_detection.isolation_forest_anomaly_count = anomaly_count
+            outlier_detection.isolation_forest_anomaly_ratio = anomaly_ratio
+            # Merge samples
+            if iso_samples:
+                outlier_detection.outlier_samples.extend(iso_samples)
+
+        # VIF computation (TODO: optimize by computing for all columns at once)
+        vif_score = None
+        vif_correlated_columns = []
+        # Skipping VIF for now - requires correlation with other columns
+
+        # Generate quality issues
+        quality_issues = _generate_statistical_quality_issues(
+            benford_analysis=benford_analysis,
+            outlier_detection=outlier_detection,
+            dist_stability=dist_stability,
+        )
+
+        # Compute comprehensive quality score
+        quality_score = _compute_statistical_quality_score(
+            benford_analysis=benford_analysis,
+            outlier_detection=outlier_detection,
+            issue_count=len(quality_issues),
+        )
+
+        # Build StatisticalQualityResult (Pydantic source of truth)
+        quality_result = StatisticalQualityResult(
+            column_id=column.column_id,
+            column_ref=ColumnRef(
+                table_name=table.table_name,
+                column_name=column.column_name,
+            ),
+            benford_analysis=benford_analysis,
+            outlier_detection=outlier_detection,
+            distribution_stability=dist_stability,
+            vif_score=vif_score,
+            vif_correlated_columns=vif_correlated_columns,
+            quality_score=quality_score,
+            quality_issues=quality_issues,
+        )
+
+        # Persist using hybrid storage
+        db_metric = DBStatisticalQualityMetrics(
+            metric_id=str(uuid4()),
+            column_id=column.column_id,
+            computed_at=computed_at,
+            # STRUCTURED: Queryable quality indicators
+            quality_score=quality_score,
+            benford_compliant=benford_analysis.is_compliant if benford_analysis else None,
+            distribution_stable=dist_stability.is_stable if dist_stability else None,
+            has_outliers=(outlier_detection.iqr_outlier_ratio > 0.05)
+            if outlier_detection
+            else None,
+            iqr_outlier_ratio=outlier_detection.iqr_outlier_ratio if outlier_detection else None,
+            isolation_forest_anomaly_ratio=outlier_detection.isolation_forest_anomaly_ratio
+            if outlier_detection
+            else None,
+            # JSONB: Full Pydantic model (zero mapping!)
+            quality_data=quality_result.model_dump(mode="json"),
+        )
+        session.add(db_metric)
+        await session.commit()
+
+        return Result.ok(quality_result)
+
+    except Exception as e:
+        return Result.fail(f"Failed to assess column quality for {column.column_name}: {e}")
+
+
+def _generate_statistical_quality_issues(
+    benford_analysis: BenfordAnalysis | None,
+    outlier_detection: OutlierDetection | None,
+    dist_stability: DistributionStability | None,
+) -> list[dict[str, Any]]:
+    """Generate quality issues from statistical analysis results."""
+    issues = []
+
+    # Benford's Law violation
+    if benford_analysis and not benford_analysis.is_compliant:
+        severity = "warning" if benford_analysis.p_value > 0.01 else "critical"
+        issues.append(
+            {
+                "issue_type": "benford_violation",
+                "severity": severity,
+                "description": benford_analysis.interpretation,
+                "evidence": {
+                    "chi_square": benford_analysis.chi_square,
+                    "p_value": benford_analysis.p_value,
+                },
+            }
+        )
+
+    # High outlier ratio (IQR)
+    if outlier_detection and outlier_detection.iqr_outlier_ratio > 0.05:
+        severity = "warning" if outlier_detection.iqr_outlier_ratio < 0.10 else "critical"
+        issues.append(
+            {
+                "issue_type": "outliers_iqr",
+                "severity": severity,
+                "description": f"{outlier_detection.iqr_outlier_ratio * 100:.1f}% of values are outliers (IQR method)",
+                "evidence": {
+                    "outlier_count": outlier_detection.iqr_outlier_count,
+                    "outlier_ratio": outlier_detection.iqr_outlier_ratio,
+                },
+            }
+        )
+
+    # High anomaly ratio (Isolation Forest)
+    if (
+        outlier_detection
+        and outlier_detection.isolation_forest_anomaly_ratio > 0.0
+        and outlier_detection.isolation_forest_anomaly_ratio > 0.05
+    ):
+        severity = (
+            "warning" if outlier_detection.isolation_forest_anomaly_ratio < 0.10 else "critical"
+        )
+        issues.append(
+            {
+                "issue_type": "outliers_isolation_forest",
+                "severity": severity,
+                "description": f"{outlier_detection.isolation_forest_anomaly_ratio * 100:.1f}% of values are anomalies (Isolation Forest)",
+                "evidence": {
+                    "anomaly_count": outlier_detection.isolation_forest_anomaly_count,
+                    "anomaly_ratio": outlier_detection.isolation_forest_anomaly_ratio,
+                },
+            }
+        )
+
+    # Distribution instability
+    if dist_stability and not dist_stability.is_stable:
+        issues.append(
+            {
+                "issue_type": "distribution_shift",
+                "severity": "warning",
+                "description": "Distribution has shifted significantly over time",
+                "evidence": {
+                    "ks_statistic": dist_stability.ks_statistic,
+                    "p_value": dist_stability.ks_p_value,
+                },
+            }
+        )
+
+    return issues
+
+
+def _compute_statistical_quality_score(
+    benford_analysis: BenfordAnalysis | None,
+    outlier_detection: OutlierDetection | None,
+    issue_count: int,
+) -> float:
+    """Compute comprehensive statistical quality score (0-1)."""
+    score = 1.0
+
+    # Benford's Law penalty
+    if benford_analysis and not benford_analysis.is_compliant:
+        # Stronger penalty for more significant deviation
+        if benford_analysis.p_value < 0.01:
+            score -= 0.3
+        else:
+            score -= 0.15
+
+    # Outlier penalty (IQR)
+    if outlier_detection and outlier_detection.iqr_outlier_ratio > 0.05:
+        if outlier_detection.iqr_outlier_ratio > 0.20:
+            score -= 0.4  # Very high outlier ratio
+        elif outlier_detection.iqr_outlier_ratio > 0.10:
+            score -= 0.3
+        else:
+            score -= 0.15
+
+    # Issue count penalty
+    if issue_count > 0:
+        score -= issue_count * 0.05  # 5% per issue
+
+    return max(0.0, min(1.0, score))

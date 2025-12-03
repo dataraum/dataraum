@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from dataraum_context.core.models.statistical import BenfordTestResult
+from dataraum_context.profiling.models import BenfordAnalysis
 
 
 class TestBenfordLaw:
@@ -145,18 +145,18 @@ class TestIsolationForest:
 class TestPydanticModels:
     """Test Pydantic models for statistical quality."""
 
-    def test_benford_test_result_model(self):
-        """Test BenfordTestResult Pydantic model."""
-        result = BenfordTestResult(
+    def test_benford_analysis_model(self):
+        """Test BenfordAnalysis Pydantic model."""
+        result = BenfordAnalysis(
             chi_square=10.5,
             p_value=0.15,
-            compliant=True,
+            is_compliant=True,
             interpretation="Follows Benford's Law",
-            digit_distribution={1: 0.301, 2: 0.176, 3: 0.125},
+            digit_distribution={"1": 0.301, "2": 0.176, "3": 0.125},
         )
 
         assert result.chi_square == 10.5
         assert result.p_value == 0.15
-        assert result.compliant is True
+        assert result.is_compliant is True
         assert "Benford" in result.interpretation
-        assert result.digit_distribution[1] == 0.301
+        assert result.digit_distribution["1"] == 0.301

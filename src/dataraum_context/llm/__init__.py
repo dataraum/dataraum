@@ -29,9 +29,11 @@ from typing import Any
 from dataraum_context.llm.cache import LLMCache
 from dataraum_context.llm.config import LLMConfig, load_llm_config
 from dataraum_context.llm.features.quality import QualityRulesFeature
-from dataraum_context.llm.features.queries import SuggestedQueriesFeature
+
+# DISABLED: Depend on context module which is not yet implemented
+# from dataraum_context.llm.features.queries import SuggestedQueriesFeature
+# from dataraum_context.llm.features.summary import ContextSummaryFeature
 from dataraum_context.llm.features.semantic import SemanticAnalysisFeature
-from dataraum_context.llm.features.summary import ContextSummaryFeature
 from dataraum_context.llm.prompts import PromptRenderer
 from dataraum_context.llm.providers import create_provider
 
@@ -96,19 +98,9 @@ class LLMService:
             cache=self.cache,
         )
 
-        self.queries = SuggestedQueriesFeature(
-            config=config,
-            provider=self.provider,
-            prompt_renderer=self.renderer,
-            cache=self.cache,
-        )
-
-        self.summary = ContextSummaryFeature(
-            config=config,
-            provider=self.provider,
-            prompt_renderer=self.renderer,
-            cache=self.cache,
-        )
+        # DISABLED: Depend on context module which is not yet implemented
+        self.queries = None  # type: ignore[assignment]
+        self.summary = None  # type: ignore[assignment]
 
     # Convenience methods that delegate to features
 
@@ -122,8 +114,18 @@ class LLMService:
 
     async def generate_suggested_queries(self, *args: Any, **kwargs: Any) -> Any:
         """Generate suggested queries. See SuggestedQueriesFeature.generate_queries()."""
+        if self.queries is None:
+            raise NotImplementedError(
+                "Suggested queries feature is not yet implemented. "
+                "Requires context module to be completed."
+            )
         return await self.queries.generate_queries(*args, **kwargs)
 
     async def generate_context_summary(self, *args: Any, **kwargs: Any) -> Any:
         """Generate context summary. See ContextSummaryFeature.generate_summary()."""
+        if self.summary is None:
+            raise NotImplementedError(
+                "Context summary feature is not yet implemented. "
+                "Requires context module to be completed."
+            )
         return await self.summary.generate_summary(*args, **kwargs)

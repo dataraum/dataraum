@@ -36,7 +36,7 @@ from dataraum_context.core.models.correlation import (
 from dataraum_context.core.models.correlation import (
     FunctionalDependency as FunctionalDependencyModel,
 )
-from dataraum_context.core.models.statistical import VIFResult
+from dataraum_context.profiling.models import VIFResult
 from dataraum_context.storage.models_v2.core import Column, Table
 from dataraum_context.storage.models_v2.correlation_context import (
     CategoricalAssociation as DBCategoricalAssociation,

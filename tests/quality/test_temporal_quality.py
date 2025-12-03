@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from dataraum_context.core.models.temporal import (
+from dataraum_context.quality.models import (
     ChangePointResult,
     DistributionStabilityAnalysis,
     FiscalCalendarAnalysis,
@@ -510,10 +510,13 @@ def test_pydantic_fiscal_calendar_analysis():
 
 def test_pydantic_temporal_quality_result():
     """Test TemporalQualityResult model."""
+    from dataraum_context.core.models.base import ColumnRef
+
     now = datetime.now()
     result = TemporalQualityResult(
         metric_id="metric-1",
         column_id="col-1",
+        column_ref=ColumnRef(table_name="test_table", column_name="event_time"),
         column_name="event_time",
         table_name="test_table",
         computed_at=now,

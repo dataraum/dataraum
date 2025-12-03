@@ -17,6 +17,10 @@ from dataraum_context.storage.models_v2.base import Base
 class TopologicalQualityMetrics(Base):
     """Topological quality metrics for a table.
 
+    HYBRID STORAGE APPROACH:
+    - Structured fields: Queryable core dimensions (Betti numbers, flags)
+    - JSONB field: Full topological analysis results
+
     Tracks structural features like Betti numbers, persistence, and stability.
     These metrics help detect structural anomalies and track topology changes over time.
     """
@@ -31,43 +35,75 @@ class TopologicalQualityMetrics(Base):
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
 
+    # STRUCTURED: Queryable core dimensions
     # Betti numbers (homology dimensions)
     betti_0: Mapped[int | None] = mapped_column(Integer)  # Connected components
     betti_1: Mapped[int | None] = mapped_column(Integer)  # Cycles / holes
     betti_2: Mapped[int | None] = mapped_column(Integer)  # Voids / cavities
 
-    # Persistence metrics
-    persistent_entropy: Mapped[float | None] = mapped_column(Float)  # Complexity measure
-    max_persistence_h0: Mapped[float | None] = mapped_column(Float)  # Longest-lived component
-    max_persistence_h1: Mapped[float | None] = mapped_column(Float)  # Longest-lived cycle
-
-    # Persistence diagrams stored as JSON: [{"dimension": 0, "birth": 0.1, "death": 0.5}, ...]
-    persistence_diagrams: Mapped[dict[str, Any] | None] = mapped_column(JSON)
-
-    # Stability metrics (comparison with previous period)
-    bottleneck_distance: Mapped[float | None] = mapped_column(Float)  # Distance from previous
-    homologically_stable: Mapped[bool | None] = mapped_column(Boolean)  # Within threshold?
-
-    # Complexity metrics
+    # Overall complexity
     structural_complexity: Mapped[int | None] = mapped_column(Integer)  # Sum of Betti numbers
-    complexity_trend: Mapped[str | None] = mapped_column(
-        String
-    )  # 'increasing', 'stable', 'decreasing'
-    complexity_within_bounds: Mapped[bool | None] = mapped_column(Boolean)  # Historical norms
-
-    # Anomaly detection
-    anomalous_cycles: Mapped[dict[str, Any] | None] = mapped_column(
-        JSON
-    )  # Unexpected flow patterns
     orphaned_components: Mapped[int | None] = mapped_column(Integer)  # Disconnected subgraphs
 
-    # Summary for LLM context
-    topology_description: Mapped[str | None] = mapped_column(String)
-    quality_warnings: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # List of warning strings
+    # Flags for filtering
+    homologically_stable: Mapped[bool | None] = mapped_column(Boolean)  # Within threshold?
+    has_cycles: Mapped[bool | None] = mapped_column(Boolean)  # betti_1 > 0
+    has_anomalies: Mapped[bool | None] = mapped_column(Boolean)
+
+    # JSONB: Full topological analysis
+    # Stores: persistence diagrams, stability metrics, complexity history, anomalous cycles, etc.
+    topology_data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class MultiTableTopologyMetrics(Base):
+    """Multi-table topology analysis results.
+
+    Tracks cross-table relationships, graph topology, and business process detection
+    across multiple related tables. Enables historical tracking of schema evolution,
+    relationship changes, and business process patterns over time.
+    """
+
+    __tablename__ = "multi_table_topology_metrics"
+
+    analysis_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    # Table IDs included in analysis (JSON array of strings)
+    table_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+
+    # STRUCTURED: Queryable cross-table metrics
+    cross_table_cycles: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    graph_betti_0: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1
+    )  # Graph connectivity
+    relationship_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Flags for filtering
+    has_cross_table_cycles: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_connected_graph: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )  # graph_betti_0 == 1
+
+    # JSONB: Full multi-table analysis result
+    # Stores: per_table results (references), cross_table details, domain_analysis, business_processes
+    analysis_data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+# DEPRECATED: These models are replaced by JSONB storage in TopologicalQualityMetrics.topology_data
+#
+# PersistentCycle and StructuralComplexityHistory data is now stored as JSON within the
+# topology_data field. This provides schema flexibility and reduces the number of tables/joins.
+#
+# Migration path: These tables can be dropped once all code is updated to use the hybrid
+# storage approach.
 
 
 class PersistentCycle(Base):
     """Individual persistent cycle detected in the data.
+
+    DEPRECATED: Cycles are now stored in TopologicalQualityMetrics.topology_data JSONB field.
 
     Cycles represent circular relationships or flows (e.g., money flow cycles in financial data).
     Tracking individual cycles helps identify domain-specific patterns.
@@ -108,6 +144,8 @@ class PersistentCycle(Base):
 
 class StructuralComplexityHistory(Base):
     """Historical tracking of structural complexity.
+
+    DEPRECATED: Complexity history is now stored in TopologicalQualityMetrics.topology_data JSONB field.
 
     Tracks Betti numbers and complexity over time to detect trends and anomalies.
     This enables baseline comparison and drift detection.

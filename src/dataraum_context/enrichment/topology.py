@@ -19,8 +19,9 @@ from dataraum_context.enrichment.models import (
     TopologyEnrichmentResult,
 )
 from dataraum_context.enrichment.tda import TableRelationshipFinder, TableTopologyExtractor
-from dataraum_context.storage.models_v2 import Column, Table
+from dataraum_context.enrichment.utils import load_column_mappings, load_table_mappings
 from dataraum_context.storage.models_v2 import Relationship as RelationshipModel
+from dataraum_context.storage.models_v2 import Table
 
 
 async def enrich_topology(
@@ -74,9 +75,15 @@ async def enrich_topology(
         try:
             tda_result = finder.find_relationships(tables_data)
 
-            # Convert TDA relationships to our model
-            # Store ALL candidate joins, not just the best one
-            # This gives downstream models exploratory information
+            # Convert TDA relationships to our Relationship model
+            # TDA integration is WORKING - TableRelationshipFinder properly called
+            # Store ALL candidate joins, not just the best one for exploratory analysis
+            #
+            # NOTE: TDA currently returns dict-based structures for flexibility:
+            # {"relationships": [{"table1": str, "table2": str, "join_columns": [...], ...}], ...}
+            # This is intentional - allows prototype-style iteration without schema changes
+            #
+            # TODO(low-priority): Consider typed TDA models if dict unpacking becomes error-prone
             for rel in tda_result.get("relationships", []):
                 if not rel.get("join_columns"):
                     continue
@@ -105,6 +112,8 @@ async def enrich_topology(
                             "join_type": join_candidate.get("join_type"),
                             "rank": rel["join_columns"].index(join_candidate),
                             "total_candidates": len(rel["join_columns"]),
+                            "topology_similarity": rel.get("topology_similarity"),
+                            "relationship_type": rel.get("relationship_type"),
                         },
                     )
                     relationships.append(relationship)
@@ -161,8 +170,8 @@ async def _store_relationships(
 ) -> None:
     """Store detected relationships in database."""
     # Load table and column mappings
-    table_map = await _load_table_mappings(session, table_ids)
-    column_map = await _load_column_mappings(session, table_ids)
+    table_map = await load_table_mappings(session, table_ids)
+    column_map = await load_column_mappings(session, table_ids)
 
     for rel in relationships:
         from_col_id = column_map.get((rel.from_table, rel.from_column))
@@ -188,32 +197,6 @@ async def _store_relationships(
         session.add(db_rel)
 
     await session.commit()
-
-
-async def _load_table_mappings(
-    session: AsyncSession,
-    table_ids: list[str],
-) -> dict[str, str]:
-    """Load mapping of table_name -> table_id."""
-    stmt = select(Table.table_name, Table.table_id).where(Table.table_id.in_(table_ids))
-    result = await session.execute(stmt)
-
-    return dict(tuple(row) for row in result.all())
-
-
-async def _load_column_mappings(
-    session: AsyncSession,
-    table_ids: list[str],
-) -> dict[tuple[str, str], str]:
-    """Load mapping of (table_name, column_name) -> column_id."""
-    stmt = (
-        select(Table.table_name, Column.column_name, Column.column_id)
-        .join(Column)
-        .where(Table.table_id.in_(table_ids))
-    )
-    result = await session.execute(stmt)
-
-    return {(table_name, col_name): col_id for table_name, col_name, col_id in result.all()}
 
 
 def _map_cardinality(join_type: str) -> Cardinality | None:

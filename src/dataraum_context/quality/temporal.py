@@ -23,29 +23,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from statsmodels.tsa.seasonal import seasonal_decompose
 
 from dataraum_context.core.models.base import Result
-from dataraum_context.core.models.temporal import (
+from dataraum_context.quality.models import (
     ChangePointResult,
     DistributionShiftResult,
     DistributionStabilityAnalysis,
     FiscalCalendarAnalysis,
+    SeasonalDecompositionResult,
     SeasonalityAnalysis,
     TemporalCompletenessAnalysis,
     TemporalGapInfo,
-    TemporalQualityIssue,
     TemporalQualityResult,
     TrendAnalysis,
     UpdateFrequencyAnalysis,
 )
+from dataraum_context.quality.models import (
+    QualityIssue as TemporalQualityIssue,
+)
 from dataraum_context.storage.models_v2.core import Column, Table
-from dataraum_context.storage.models_v2.temporal_context import (
-    ChangePoint as DBChangePoint,
-)
-from dataraum_context.storage.models_v2.temporal_context import (
-    DistributionShift as DBDistributionShift,
-)
-from dataraum_context.storage.models_v2.temporal_context import (
-    TemporalQualityMetrics as DBTemporalMetrics,
-)
+
+# NOTE: ChangePoint and DistributionShift tables are DEPRECATED
+# Data is now stored in TemporalQualityMetrics.temporal_data JSONB field
 
 # ============================================================================
 # Helper: Load Time Series Data
@@ -206,6 +203,47 @@ async def analyze_seasonality(
 
         period_name = _period_to_name(period)
 
+        # Calculate trend strength
+        # Formula: 1 - Var(residual) / Var(deseasonalized)
+        deseasonalized = time_series - decomposition.seasonal
+        deseasonalized = deseasonalized.dropna()
+
+        if len(deseasonalized) == 0 or deseasonalized.var() == 0:
+            trend_strength = 0.0
+        else:
+            residual_var = decomposition.resid.dropna().var()
+            deseasonalized_var = deseasonalized.var()
+            trend_strength = max(0.0, 1.0 - (residual_var / deseasonalized_var))
+
+        # Build seasonal pattern summary
+        seasonal_pattern_summary = None
+        if has_seasonality and len(seasonal_component) > 0:
+            peak_idx = seasonal_component.idxmax()
+            trough_idx = seasonal_component.idxmin()
+            seasonal_pattern_summary = {
+                "peak_value": float(seasonal_component.max()),
+                "trough_value": float(seasonal_component.min()),
+                "amplitude": float(seasonal_component.max() - seasonal_component.min()),
+            }
+            if isinstance(peak_idx, pd.Timestamp):
+                seasonal_pattern_summary["peak_month"] = int(peak_idx.month)
+                seasonal_pattern_summary["peak_day_of_week"] = int(peak_idx.dayofweek)
+            if isinstance(trough_idx, pd.Timestamp):
+                seasonal_pattern_summary["trough_month"] = int(trough_idx.month)
+                seasonal_pattern_summary["trough_day_of_week"] = int(trough_idx.dayofweek)
+
+        # Create detailed decomposition result
+        decomposition_result = SeasonalDecompositionResult(
+            seasonal_component=decomposition.seasonal.fillna(0).tolist(),
+            trend_component=decomposition.trend.fillna(0).tolist(),
+            residual_component=decomposition.resid.fillna(0).tolist(),
+            model_type="additive",
+            seasonality_strength=float(seasonality_strength),
+            trend_strength=float(trend_strength),
+            seasonal_pattern_summary=seasonal_pattern_summary,
+            period=period,
+        )
+
         analysis = SeasonalityAnalysis(
             has_seasonality=has_seasonality,
             strength=float(seasonality_strength),
@@ -213,6 +251,7 @@ async def analyze_seasonality(
             period_length=period,
             peaks=peaks,
             model_type="additive",
+            decomposition=decomposition_result,
         )
 
         return Result.ok(analysis)
@@ -900,6 +939,7 @@ async def analyze_temporal_quality(
                         "data points present"
                     ),
                     evidence={"completeness_ratio": completeness.completeness_ratio},
+                    detected_at=datetime.now(UTC),
                 )
             )
 
@@ -910,6 +950,7 @@ async def analyze_temporal_quality(
                     severity="high" if completeness.largest_gap_days > 90 else "medium",
                     description=f"Large gap of {completeness.largest_gap_days:.0f} days detected",
                     evidence={"gap_days": completeness.largest_gap_days},
+                    detected_at=datetime.now(UTC),
                 )
             )
 
@@ -920,6 +961,7 @@ async def analyze_temporal_quality(
                     severity="medium",
                     description=f"Data is {update_frequency.data_freshness_days:.0f} days old",
                     evidence={"freshness_days": update_frequency.data_freshness_days},
+                    detected_at=datetime.now(UTC),
                 )
             )
 
@@ -930,6 +972,7 @@ async def analyze_temporal_quality(
                     severity="medium",
                     description=f"{len(change_points)} change points detected (unstable pattern)",
                     evidence={"change_point_count": len(change_points)},
+                    detected_at=datetime.now(UTC),
                 )
             )
 
@@ -943,6 +986,7 @@ async def analyze_temporal_quality(
                         f"{distribution_stability.stability_score:.2f}"
                     ),
                     evidence={"stability_score": distribution_stability.stability_score},
+                    detected_at=datetime.now(UTC),
                 )
             )
 
@@ -969,117 +1013,19 @@ async def analyze_temporal_quality(
 
         computed_at = datetime.now(UTC)
 
-        # Store in database
-        db_metric = DBTemporalMetrics(
-            metric_id=metric_id,
-            column_id=column_id,
-            computed_at=computed_at,
-            min_timestamp=min_timestamp,
-            max_timestamp=max_timestamp,
-            span_days=span_days,
-            detected_granularity=granularity,
-            granularity_confidence=confidence,
-            has_seasonality=seasonality.has_seasonality if seasonality else None,
-            seasonality_strength=seasonality.strength if seasonality else None,
-            seasonality_period=seasonality.period if seasonality else None,
-            seasonal_peaks=seasonality.peaks if seasonality else None,
-            has_trend=trend.has_trend if trend else None,
-            trend_strength=trend.strength if trend else None,
-            trend_direction=trend.direction if trend else None,
-            trend_slope=trend.slope if trend else None,
-            autocorrelation_lag1=trend.autocorrelation_lag1 if trend else None,
-            change_point_count=len(change_points),
-            change_points={"change_points": [cp.change_point_id for cp in change_points]},
-            update_frequency_score=update_frequency.update_frequency_score
-            if update_frequency
-            else None,
-            median_update_interval_seconds=update_frequency.median_interval_seconds
-            if update_frequency
-            else None,
-            update_interval_cv=update_frequency.interval_cv if update_frequency else None,
-            last_update_timestamp=update_frequency.last_update if update_frequency else None,
-            data_freshness_days=update_frequency.data_freshness_days if update_frequency else None,
-            is_stale=update_frequency.is_stale if update_frequency else None,
-            fiscal_alignment_detected=fiscal_calendar.fiscal_alignment_detected
-            if fiscal_calendar
-            else None,
-            fiscal_year_end_month=fiscal_calendar.fiscal_year_end_month
-            if fiscal_calendar
-            else None,
-            has_period_end_effects=fiscal_calendar.has_period_end_effects
-            if fiscal_calendar
-            else None,
-            period_end_spike_ratio=fiscal_calendar.period_end_spike_ratio
-            if fiscal_calendar
-            else None,
-            distribution_stability_score=distribution_stability.stability_score
-            if distribution_stability
-            else None,
-            distribution_shift_count=distribution_stability.shift_count
-            if distribution_stability
-            else None,
-            distribution_shifts={"shifts": [s.shift_id for s in distribution_stability.shifts]}
-            if distribution_stability
-            else None,
-            completeness_ratio=completeness.completeness_ratio if completeness else None,
-            gap_count=completeness.gap_count if completeness else None,
-            largest_gap_days=completeness.largest_gap_days if completeness else None,
-            temporal_quality_score=temporal_quality_score,
-            quality_issues={
-                "issues": [
-                    {"type": i.issue_type, "severity": i.severity, "description": i.description}
-                    for i in issues
-                ]
-            },
-        )
-        session.add(db_metric)
-
-        # Store change points
-        for cp in change_points:
-            db_cp = DBChangePoint(
-                change_point_id=cp.change_point_id,
-                metric_id=metric_id,
-                detected_at=cp.detected_at,
-                index_position=cp.index_position,
-                change_type=cp.change_type,
-                magnitude=cp.magnitude,
-                confidence=cp.confidence,
-                mean_before=cp.mean_before,
-                mean_after=cp.mean_after,
-                variance_before=cp.variance_before,
-                variance_after=cp.variance_after,
-                detection_method=cp.detection_method,
-            )
-            session.add(db_cp)
-
-        # Store distribution shifts
-        if distribution_stability:
-            for shift in distribution_stability.shifts:
-                db_shift = DBDistributionShift(
-                    shift_id=shift.shift_id,
-                    metric_id=metric_id,
-                    period1_start=shift.period1_start,
-                    period1_end=shift.period1_end,
-                    period2_start=shift.period2_start,
-                    period2_end=shift.period2_end,
-                    test_statistic=shift.test_statistic,
-                    p_value=shift.p_value,
-                    is_significant=shift.is_significant,
-                    period1_mean=shift.period1_mean,
-                    period2_mean=shift.period2_mean,
-                    period1_std=shift.period1_std,
-                    period2_std=shift.period2_std,
-                    shift_direction=shift.shift_direction,
-                    shift_magnitude=shift.shift_magnitude,
-                )
-                session.add(db_shift)
-
-        await session.commit()
-
         # Build result
+        from dataraum_context.core.models.base import ColumnRef
+
+        column_ref = ColumnRef(
+            source_id=table.source_id,
+            table_name=table.table_name,
+            column_name=column.column_name,
+        )
+
         result_obj = TemporalQualityResult(
             metric_id=metric_id,
             column_id=column_id,
+            column_ref=column_ref,
             column_name=column.column_name,
             table_name=table.table_name,
             computed_at=computed_at,
@@ -1099,6 +1045,10 @@ async def analyze_temporal_quality(
             quality_issues=issues,
             has_issues=len(issues) > 0,
         )
+
+        # NOTE: Data storage happens in enrichment/temporal.py
+        # This quality module only performs analysis and returns results
+        # The enrichment module handles persistence using the hybrid storage approach
 
         return Result.ok(result_obj)
 

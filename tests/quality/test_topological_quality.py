@@ -3,20 +3,17 @@
 import numpy as np
 import pytest
 
-from dataraum_context.core.models.topological import (
+from dataraum_context.quality.models import (
     BettiNumbers,
-    HomologicalStability,
+    CycleDetection,
     PersistenceDiagram,
     PersistencePoint,
-    PersistentCycleResult,
-    StructuralComplexity,
-    TopologicalAnomaly,
+    StabilityAnalysis,
     TopologicalQualityResult,
 )
 from dataraum_context.quality.topological import (
     analyze_topological_quality,
     assess_homological_stability,
-    assess_structural_complexity,
     compute_persistent_entropy,
     detect_persistent_cycles,
     extract_betti_numbers,
@@ -322,28 +319,31 @@ async def test_detect_persistent_cycles_no_dimension_1():
 
 
 @pytest.mark.asyncio
-async def test_assess_structural_complexity_no_history(async_session):
-    """Test complexity assessment with no historical data."""
-    betti = BettiNumbers(
-        betti_0=1,
-        betti_1=2,
-        betti_2=0,
-        total_complexity=3,
-        is_connected=True,
-        has_cycles=True,
-        has_voids=False,
-    )
-
-    result = await assess_structural_complexity(
-        betti, persistent_entropy=1.5, table_id="test-table", session=async_session
-    )
-    assert result.success
-
-    complexity = result.unwrap()
-    assert complexity.total_complexity == 3
-    assert complexity.persistent_entropy == 1.5
-    assert complexity.complexity_mean is None  # No history
-    assert complexity.within_bounds  # Default to True
+# NOTE: assess_structural_complexity function was removed/refactored
+# This test is commented out as the function no longer exists
+# The functionality is now integrated into analyze_topological_quality
+# async def test_assess_structural_complexity_no_history(async_session):
+#     """Test complexity assessment with no historical data."""
+#     betti = BettiNumbers(
+#         betti_0=1,
+#         betti_1=2,
+#         betti_2=0,
+#         total_complexity=3,
+#         is_connected=True,
+#         has_cycles=True,
+#         has_voids=False,
+#     )
+#
+#     result = await assess_structural_complexity(
+#         betti, persistent_entropy=1.5, table_id="test-table", session=async_session
+#     )
+#     assert result.success
+#
+#     complexity = result.unwrap()
+#     assert complexity.total_complexity == 3
+#     assert complexity.persistent_entropy == 1.5
+#     assert complexity.complexity_mean is None  # No history
+#     assert complexity.within_bounds  # Default to True
 
 
 @pytest.mark.asyncio
@@ -542,125 +542,76 @@ def test_pydantic_persistence_diagram():
     assert diagram.max_persistence == 0.7
 
 
-def test_pydantic_structural_complexity():
-    """Test StructuralComplexity model."""
-
+def test_pydantic_betti_numbers_detailed():
+    """Test BettiNumbers model with full attributes."""
     betti = BettiNumbers(
         betti_0=1,
         betti_1=2,
-        betti_2=None,
+        betti_2=0,
         total_complexity=3,
-        is_connected=True,
         has_cycles=True,
-        has_voids=False,
     )
-    complexity = StructuralComplexity(
-        total_complexity=3,
-        betti_numbers=betti,
-        persistent_entropy=1.5,
-        complexity_mean=2.8,
-        complexity_std=0.5,
-        complexity_z_score=0.4,
-        complexity_trend="stable",
-        within_bounds=True,
-    )
-    assert complexity.total_complexity == 3
-    assert complexity.complexity_z_score == 0.4
-    assert complexity.within_bounds
+    assert betti.betti_0 == 1
+    assert betti.betti_1 == 2
+    assert betti.total_complexity == 3
+    assert betti.has_cycles
 
 
-def test_pydantic_homological_stability():
-    """Test HomologicalStability model."""
-    stability = HomologicalStability(
+def test_pydantic_stability_analysis():
+    """Test StabilityAnalysis model."""
+    stability = StabilityAnalysis(
         bottleneck_distance=0.15,
         is_stable=True,
-        threshold=0.2,
-        components_added=0,
-        components_removed=0,
-        cycles_added=1,
-        cycles_removed=0,
-        stability_level="stable",
+        stability_threshold=0.2,
     )
     assert stability.is_stable
     assert stability.bottleneck_distance == 0.15
-    assert stability.stability_level == "stable"
-    assert stability.cycles_added == 1
+    assert stability.stability_threshold == 0.2
 
 
-def test_pydantic_topological_anomaly():
-    """Test TopologicalAnomaly model."""
-    anomaly = TopologicalAnomaly(
-        anomaly_type="orphaned_components",
-        severity="medium",
-        description="Found 2 disconnected components",
-        evidence={"component_count": 3},
-        affected_tables=["table-1"],
-    )
-    assert anomaly.anomaly_type == "orphaned_components"
-    assert anomaly.severity == "medium"
-    assert "disconnected" in anomaly.description
-
-
-def test_pydantic_persistent_cycle_result():
-    """Test PersistentCycleResult model."""
-    from datetime import datetime
-
-    now = datetime.now()
-    cycle = PersistentCycleResult(
-        cycle_id="cycle-1",
+def test_pydantic_cycle_detection():
+    """Test CycleDetection model."""
+    cycle = CycleDetection(
         dimension=1,
         birth=0.2,
         death=0.8,
         persistence=0.6,
         involved_columns=["col-1", "col-2"],
-        cycle_type="correlation_loop",
         is_anomalous=False,
         anomaly_reason=None,
-        first_detected=now,
-        last_seen=now,
     )
-    assert cycle.cycle_id == "cycle-1"
+    assert cycle.dimension == 1
     assert cycle.persistence == 0.6
     assert not cycle.is_anomalous
+    assert len(cycle.involved_columns) == 2
 
 
 def test_pydantic_topological_quality_result():
     """Test TopologicalQualityResult model."""
-    from datetime import datetime
-
     betti = BettiNumbers(
         betti_0=1,
         betti_1=1,
-        betti_2=None,
+        betti_2=0,
         total_complexity=2,
-        is_connected=True,
         has_cycles=True,
-        has_voids=False,
-    )
-    complexity = StructuralComplexity(
-        total_complexity=2,
-        betti_numbers=betti,
-        persistent_entropy=1.2,
-        within_bounds=True,
     )
     result = TopologicalQualityResult(
-        metric_id="metric-1",
         table_id="table-1",
         table_name="test_table",
-        computed_at=datetime.now(),
         betti_numbers=betti,
         persistence_diagrams=[],
-        persistent_entropy=1.2,
-        stability=None,
-        complexity=complexity,
         persistent_cycles=[],
-        anomalies=[],
+        stability=None,
+        structural_complexity=2,
         orphaned_components=0,
-        topology_description="fully connected, 1 cycle",
+        complexity_trend="stable",
+        complexity_within_bounds=True,
+        has_anomalies=False,
+        anomalous_cycles=[],
         quality_warnings=[],
-        quality_score=0.95,
-        has_issues=False,
+        topology_description="fully connected, 1 cycle",
     )
-    assert result.metric_id == "metric-1"
-    assert result.quality_score == 0.95
-    assert not result.has_issues
+    assert result.table_id == "table-1"
+    assert result.structural_complexity == 2
+    assert result.complexity_within_bounds
+    assert not result.has_anomalies

@@ -1,14 +1,28 @@
 # Architecture Overview
 
-## Vision
+## Table of Contents
 
-Traditional semantic layers tell BI tools "what things are called." This system tells AI 
+1. [Vision & Core Insight](#vision--core-insight)
+2. [System Architecture](#system-architecture)
+3. [Data Processing Layers](#data-processing-layers)
+4. [Metadata Generation](#metadata-generation)
+5. [Context Assembly & Delivery](#context-assembly--delivery)
+6. [Key Algorithms](#key-algorithms)
+7. [Deployment & Scaling](#deployment--scaling)
+8. [LLM Integration](#llm-integration)
+9. [Extension Points](#extension-points)
+
+## Vision & Core Insight
+
+Traditional semantic layers tell BI tools "what things are called." This system tells AI
 "what the data means, how it behaves, how it relates, and what you can compute from it."
 
-The core insight: AI agents don't need tools to discover metadata at runtime. They need 
+**Core insight**: AI agents don't need tools to discover metadata at runtime. They need
 **rich, pre-computed context** delivered in a format optimized for LLM consumption.
 
-## Architecture Layers
+## System Architecture
+
+### High-Level Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -103,23 +117,33 @@ The core insight: AI agents don't need tools to discover metadata at runtime. Th
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Component Deep Dives
+### Technology Stack
 
-### Staging Layer
+| Layer | Technology | Purpose |
+|-------|------------|---------|
+| **AI Interface** | MCP Server | 4 tools for AI agents |
+| **API Layer** | FastAPI | HTTP REST endpoints |
+| **Orchestration** | Apache Hamilton | Functional DAG with lineage |
+| **Metadata Store** | SQLAlchemy | SQLite (dev) / PostgreSQL (prod) |
+| **Data Compute** | DuckDB | Query and transform data |
+| **Data Exchange** | PyArrow | Efficient in-memory data |
+| **Pattern Detection** | Pint + Regex | Units and patterns |
+| **Topology Analysis** | TDA (prototype) | Relationship detection |
+| **LLM (optional)** | Anthropic/OpenAI | Semantic analysis & rules |
 
-**Purpose**: Get data into DuckDB without losing information.
+## Data Processing Layers
 
-**Key Decision**: VARCHAR-first loading.
+### 1. Staging Layer - VARCHAR-First Loading
 
-Why? CSV readers like `read_csv_auto` make irreversible type decisions:
-- "N/A" in an integer column → NULL (data loss)
-- "1,234.56" vs "1.234,56" (locale ambiguity)
-- "2024-01-15" vs "01/15/2024" (format ambiguity)
+**Purpose**: Preserve all raw data without information loss.
 
-By loading everything as VARCHAR:
-- Original values preserved exactly
-- Type inference happens explicitly in profiling
-- Failed casts go to quarantine, not oblivion
+**Key Principle**: Load everything as VARCHAR to avoid irreversible type decisions at import time.
+
+**Why VARCHAR-first?**
+- CSV readers make irreversible decisions: `"N/A"` → `NULL`, locale-dependent number parsing
+- Original values preserved exactly for explicit type inference later
+- Failed type casts go to quarantine tables, not oblivion
+- Human review possible before data loss occurs
 
 ```sql
 -- What we create
@@ -134,17 +158,16 @@ CREATE TABLE raw_sales (
 );
 ```
 
-### Profiling Layer
+### 2. Profiling Layer - Statistical Analysis & Type Inference
 
-**Purpose**: Extract statistical metadata and infer types.
+**Purpose**: Extract statistical metadata and infer column types with confidence scores.
 
 **Components**:
+1. **Statistical Profiler** - Distributions, cardinality, null rates
+2. **Pattern Detector** - Regex patterns, unit detection (Pint), semantic hints
+3. **Type Inferencer** - Cast testing with confidence scoring
 
-1. **Statistical Profiler** - Computes distributions, cardinality, null rates
-2. **Pattern Detector** (existing prototype) - Identifies patterns, detects units
-3. **Type Inferencer** - Produces type candidates with confidence scores
-
-**Type Inference Logic**:
+**Type Inference Pipeline**:
 
 ```python
 # For each column, try casting to each type
@@ -164,13 +187,13 @@ if pattern_result.detected_unit:
     # "kg", "USD", "m/s" → suggests numeric type + semantic info
 ```
 
-**Output**: `type_candidates` table with multiple options per column, ranked by confidence.
+**Output**: `type_candidates` table with multiple ranked options per column.
 
-### Type Resolution Layer
+### 3. Type Resolution Layer - Quarantine Pattern
 
-**Purpose**: Apply type decisions and handle failures gracefully.
+**Purpose**: Apply type decisions with graceful failure handling.
 
-**Key Pattern**: Quarantine
+**Key Innovation**: Failed casts don't break the pipeline - they go to quarantine for review.
 
 ```sql
 -- Create typed table with cast attempts
@@ -194,49 +217,61 @@ JOIN typed_sales typed ON raw._source_row = typed._source_row
 WHERE typed._date_failed;
 ```
 
-**Workflow Checkpoint**: If quarantine has rows, workflow pauses for human review.
+**Workflow Checkpoint**: Quarantine rows trigger human review before proceeding.
 
-### Enrichment Layer
+## Metadata Generation
 
-**Purpose**: Extract semantic, topological, and temporal metadata.
+### Enrichment Overview
 
-#### Semantic Enrichment (LLM-Powered)
+The enrichment layer adds four types of metadata to profiled data:
 
-When LLM is enabled, semantic analysis is performed by sending table/column metadata 
-to the configured LLM provider. The LLM analyzes:
+| Type | Purpose | Technology | Required |
+|------|---------|------------|----------|
+| **Semantic** | Column roles, entity types, relationships | LLM or YAML config | Yes |
+| **Topological** | Relationship graph, FK detection | TDA prototype | No |
+| **Temporal** | Time granularity, gaps, completeness | Statistical analysis | For time data |
+| **Quality** | Rules, scores, anomaly detection | LLM or YAML config | No |
 
-- **Column Roles**: measure, dimension, key, foreign_key, timestamp, attribute
-- **Entity Types**: What real-world entity does each table/column represent?
-- **Business Terms**: Mapping to ontology concepts
-- **Relationships**: Foreign key and hierarchical relationships
-- **Descriptions**: Human-readable descriptions for documentation
+### Semantic Enrichment
 
+**Purpose**: Understand what data *means* in business terms.
+
+**Analyzes**:
+- Column roles (measure, dimension, key, foreign_key, timestamp, attribute)
+- Entity types (what real-world concept does this represent?)
+- Business terminology mapping to ontology concepts
+- Relationships between tables and columns
+
+**LLM Mode** (when enabled):
 ```python
-# LLM semantic analysis (config/prompts/semantic_analysis.yaml)
 result = await llm_analyze_semantics(
     tables=table_profiles,
     ontology=selected_ontology,
     config=llm_config,
 )
-# Returns: SemanticAnalysisResult with annotations and relationships
+# Returns: SemanticAnalysisResult with roles, entities, relationships
 ```
 
-**Fallback**: When LLM is disabled, manual definitions are required via 
-`config/semantic_overrides.yaml`.
+**Manual Mode** (LLM disabled):
+- Define annotations in `config/semantic_overrides.yaml`
+- Suitable for small datasets or when privacy is critical
 
-#### Topological Enrichment (TDA Prototype)
+### Topological Enrichment (TDA)
 
-The existing prototype uses Topological Data Analysis to detect relationships:
+**Purpose**: Detect relationships through structural analysis, not just value overlap.
 
-- Value overlap analysis (traditional FK detection)
-- Structural similarity (TDA features)
+**Approach**:
+- Traditional FK detection (value overlap)
+- TDA persistent homology (structural similarity)
 - Semantic similarity (column name embeddings)
 
-Output: Relationship graph with confidence scores and evidence.
+**Output**: Relationship graph with confidence scores and supporting evidence.
 
-#### Temporal Enrichment
+### Temporal Enrichment
 
-For identified time columns:
+**Purpose**: Understand time-series behavior and data completeness.
+
+**For time columns**:
 
 ```python
 # Granularity detection
@@ -254,51 +289,43 @@ completeness = actual / expected
 gaps = find_gaps(time_column, granularity)
 ```
 
-### Quality Layer
+### Quality Assessment
 
-**Purpose**: Generate and execute quality rules, compute scores.
+**Purpose**: Generate domain-appropriate rules and compute quality scores.
 
-#### Rule Generation (LLM-Powered)
+**Rule Generation**:
 
-When LLM is enabled, quality rules are generated based on semantic understanding:
-
+*LLM Mode* - Intelligent rule generation:
 ```python
-# LLM rule generation (config/prompts/quality_rules.yaml)
 result = await llm_generate_rules(
     schema=semantic_analysis,
     ontology=selected_ontology,
     config=llm_config,
 )
-# Returns: List of domain-appropriate quality rules
 ```
+Considers: column semantics, ontology constraints, cross-column logic, statistical baselines
 
-The LLM considers:
-- Column semantics (e.g., "revenue should be non-negative")
-- Ontology constraints (e.g., financial reporting rules)
-- Cross-column logic (e.g., "start_date <= end_date")
-- Statistical baselines from profiling
+*Manual Mode* - Configuration-based:
+- `config/rules/default.yaml` - Standard rules by type/role
+- `config/ontologies/*.yaml` - Domain-specific rules
 
-**Fallback**: When LLM is disabled, rules come from:
-1. `config/rules/default.yaml` - Standard rules by type/role
-2. `config/ontologies/*.yaml` - Ontology-specific rules
+**Quality Dimensions** (industry standard):
 
-#### Quality Scoring
+| Dimension | Metrics | Example |
+|-----------|---------|---------|
+| **Completeness** | Null rates, missing records | "90% of rows have email" |
+| **Validity** | Range/pattern conformance | "All amounts > 0" |
+| **Consistency** | Referential integrity, cross-column | "start_date <= end_date" |
+| **Uniqueness** | Duplicate detection | "order_id is unique" |
+| **Timeliness** | Freshness, gap analysis | "No gaps in daily data" |
 
-Five dimensions (DQ standard):
-- **Completeness**: Null rates
-- **Validity**: Values within expected ranges/patterns
-- **Consistency**: Referential integrity, cross-column rules
-- **Uniqueness**: Duplicate detection
-- **Timeliness**: Data freshness, gap analysis
+## Context Assembly & Delivery
 
-### Context Layer
+### Ontology Application
 
-**Purpose**: Assemble all metadata into AI-consumable documents.
+**Purpose**: Map generic metadata to domain-specific business concepts.
 
-#### Ontology Application
-
-Ontologies are YAML configs:
-
+**Ontology Structure** (`config/ontologies/*.yaml`):
 ```yaml
 name: financial_reporting
 concepts:
@@ -314,29 +341,13 @@ quality_rules:
   - date should have no gaps
 ```
 
-When context is requested with `ontology=financial_reporting`:
-1. Columns are mapped to concepts
-2. Applicable metrics are identified
-3. Domain-specific quality rules are applied
-4. Context document is annotated with financial semantics
+**Application Flow**:
+1. Map columns to ontology concepts (pattern matching + semantic analysis)
+2. Identify applicable computable metrics
+3. Apply domain-specific quality rules
+4. Annotate context with business semantics
 
-#### LLM-Generated Content
-
-When LLM is enabled, the context layer generates additional content:
-
-**Suggested Queries** (`config/prompts/suggested_queries.yaml`):
-```python
-queries = await llm_generate_queries(schema, ontology)
-# Returns: Overview, metrics, trends, segments, quality queries
-```
-
-**Context Summary** (`config/prompts/context_summary.yaml`):
-```python
-summary = await llm_generate_summary(schema, quality_scores)
-# Returns: Natural language overview, key facts, warnings
-```
-
-#### Context Document Structure
+### Context Document Structure
 
 ```python
 ContextDocument(
@@ -393,49 +404,57 @@ ContextDocument(
 )
 ```
 
-### API Layer
+**What AI receives in the context**:
+- Statistical profiles (distributions, cardinality, null rates)
+- Semantic annotations (roles, entity types, business terms)
+- Topological structure (relationships, hierarchies, join paths)
+- Temporal characteristics (granularity, gaps, trends)
+- Quality assessment (scores, rules, anomalies)
+- Domain context (ontology-mapped concepts, computable metrics)
+- Suggested analyses (LLM-generated queries and insights)
 
-**FastAPI** for HTTP access:
+### Delivery Interfaces
 
-```
-POST /sources              # Add data source
-GET  /sources/{id}/tables  # List tables
-POST /profile              # Trigger profiling
-POST /context              # Get context document
-PUT  /columns/{id}/annotation  # Human-in-loop updates
-GET  /metrics/{ontology}   # Available metrics
-POST /query                # Execute SQL
-```
+**FastAPI HTTP API**:
 
-**MCP Server** for AI tool access:
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /sources` | Register data source |
+| `POST /profile` | Trigger profiling pipeline |
+| `POST /context` | Get context document |
+| `POST /query` | Execute read-only SQL |
+| `GET  /metrics/{ontology}` | List available metrics |
+| `PUT  /columns/{id}/annotation` | Human-in-loop updates |
 
-Only 4 tools - minimal surface area:
+**MCP Server** (AI tool interface):
 
-| Tool | Purpose |
-|------|---------|
-| `get_context` | Primary context retrieval |
-| `query` | Execute SQL (read-only) |
-| `get_metrics` | List metrics for ontology |
-| `annotate` | Update semantic annotations |
+| Tool | Purpose | Parameters |
+|------|---------|------------|
+| `get_context` | Retrieve context document | source, ontology |
+| `query` | Execute SQL | sql, limit |
+| `get_metrics` | List ontology metrics | ontology |
+| `annotate` | Update semantic metadata | column_id, annotations |
 
-### Dataflow Layer
+**Design principle**: Minimal tool surface area. AI gets rich context upfront, not discovery tools.
+
+### Orchestration with Hamilton
 
 **Apache Hamilton** provides:
-- Functional DAG definition via Python functions
+- Functional DAG (pure Python functions)
 - Automatic lineage tracking
-- Built-in data validation (`@check_output`)
-- Parallel execution where possible
-- Visualization of dataflows
+- Built-in validation (`@check_output`)
+- Parallel execution
+- Visual dataflow graphs
 
-**PostgreSQL checkpoints** provide:
-- Human-in-loop review state persistence
-- Workflow resume after interruption
-- Audit trail of decisions
+**Key Dataflows**:
+- `ingest_dataflow` - Full pipeline: stage → profile → resolve → enrich → quality → context
+- `profile_dataflow` - Re-profile after data changes
+- `enrich_dataflow` - Re-enrich after manual type corrections
 
-Key dataflows:
-- `ingest_dataflow` - Full pipeline from source to context
-- `profile_dataflow` - Profiling only (for re-profiling)
-- `enrich_dataflow` - Enrichment only (after manual type fixes)
+**Checkpoints** (PostgreSQL):
+- Human-in-loop review points
+- Workflow resume capability
+- Decision audit trail
 
 ## Key Algorithms
 
@@ -481,102 +500,107 @@ Ontology rules (domain-specific)
 Rule deduplication and prioritization
 ```
 
-## Deployment Considerations
+## Deployment & Scaling
 
-### Compute vs Storage Separation
+### Architecture Separation
 
-- **DuckDB**: Ephemeral compute. Can be in-memory or file-based.
-- **SQLite/PostgreSQL**: Persistent metadata. SQLite for dev, PostgreSQL for production.
-- **Data files**: Parquet preferred for DuckDB performance.
+| Component | Technology | Characteristics |
+|-----------|------------|-----------------|
+| **Data Compute** | DuckDB | Ephemeral, in-memory or file-based |
+| **Metadata Store** | SQLite / PostgreSQL | Persistent, SQLite for dev, PostgreSQL for prod |
+| **Data Files** | Parquet | Best DuckDB performance |
 
-### Scaling
+### Scalability Characteristics
 
-- Profiling is embarrassingly parallel (per-column)
-- TDA is expensive - consider sampling for large tables
-- Quality assessment parallelizes well
-- Context assembly is cheap (metadata queries)
-- For production scale, switch to PostgreSQL for concurrent access
+| Operation | Parallelization | Notes |
+|-----------|-----------------|-------|
+| **Profiling** | Embarrassingly parallel | Per-column, scales linearly |
+| **TDA** | Expensive, sample | Consider sampling for large tables |
+| **Quality** | Parallel-friendly | Per-rule evaluation |
+| **Context Assembly** | Fast | Metadata queries only |
+| **Concurrent Access** | PostgreSQL | Switch from SQLite for production |
 
-### Caching
+### Caching Strategy
 
-- Profile results are versioned (re-run on data change)
-- Context documents can be cached with TTL
-- Configuration files (ontologies, patterns, rules) cached in memory
-
-## Extension Points
-
-### Custom Ontologies
-
-Add YAML to `config/ontologies/` directory:
-
-```yaml
-name: my_domain
-concepts: [...]
-metrics: [...]
-quality_rules: [...]
-```
-
-### Custom Pattern Detectors
-
-Add YAML to `config/patterns` directory:
-
-```yaml
-some_patterns:
-  - name: [...]
-    pattern: [...]
-    inferred_type: [...]
-    examples: [...]
-```
+- **Profile results**: Versioned, invalidate on data change
+- **Context documents**: TTL-based cache
+- **Configuration**: In-memory (ontologies, patterns, rules)
 
 ## LLM Integration
 
-The context engine supports optional LLM integration for intelligent analysis.
-Users can choose between:
+The system supports **optional** LLM integration. All LLM features have manual fallbacks.
 
-1. **LLM-powered** - Automatic semantic analysis, quality rules, query suggestions
-2. **Manual** - User-defined configuration in YAML files
+### Modes of Operation
 
-### Supported Providers
+| Mode | Use Case | Configuration |
+|------|----------|---------------|
+| **LLM-powered** | Automatic semantic analysis, intelligent rules | `config/llm.yaml` + API keys |
+| **Manual** | Privacy-sensitive, small datasets, cost control | YAML config files |
 
-| Provider | Config | Notes |
-|----------|--------|-------|
-| Anthropic | `anthropic` | Claude models, recommended |
-| OpenAI | `openai` | GPT-4 models |
-| Local | `local` | Any OpenAI-compatible endpoint |
+### Supported LLM Providers
 
-### LLM-Powered Features
+| Provider | Config Key | Best For |
+|----------|------------|----------|
+| Anthropic Claude | `anthropic` | General use (recommended) |
+| OpenAI GPT-4 | `openai` | Alternative provider |
+| Local/Custom | `local` | Any OpenAI-compatible endpoint |
 
-| Feature | Description | Manual Alternative |
-|---------|-------------|-------------------|
-| Semantic Analysis | Column roles, entity types, relationships | `config/semantic_overrides.yaml` |
-| Quality Rules | Domain-specific rule generation | `config/rules/*.yaml` |
-| Suggested Queries | Context-aware query generation | Skip |
-| Context Summary | Natural language overview | Skip |
+### LLM-Enhanced Features
 
-### Prompt Customization
+| Feature | LLM Mode | Manual Mode | Impact if Skipped |
+|---------|----------|-------------|-------------------|
+| **Semantic Analysis** | Auto-infer roles, entities | `semantic_overrides.yaml` | High - required |
+| **Quality Rules** | Domain-aware generation | `rules/*.yaml` | Medium |
+| **Suggested Queries** | Context-aware SQL | - | Low - skip |
+| **Context Summary** | Natural language | - | Low - skip |
 
-All prompts are stored in `config/prompts/` and can be customized:
+### Customization & Privacy
 
+**Prompt Customization** (`config/prompts/*.yaml`):
 ```yaml
-# config/prompts/semantic_analysis.yaml
 prompt: |
   Your custom prompt here...
   {tables_json}
   {ontology_concepts}
 ```
 
-This allows integration with existing prompt libraries.
-
-### Privacy Protection
-
-For sensitive data, the engine can use SDV (Synthetic Data Vault) to generate 
-synthetic samples instead of sending real data to external LLMs:
-
+**Privacy Protection** (`config/llm.yaml`):
 ```yaml
-# config/llm.yaml
 privacy:
-  use_synthetic_samples: true
+  use_synthetic_samples: true  # Use SDV for synthetic data
   sensitive_patterns:
     - ".*email.*"
     - ".*ssn.*"
+```
+
+When enabled, sensitive columns are replaced with synthetic values before LLM calls.
+
+## Extension Points
+
+### Custom Ontologies
+
+Add domain-specific ontologies to `config/ontologies/`:
+
+```yaml
+name: my_domain
+concepts:
+  - name: my_concept
+    indicators: ["pattern1", "pattern2"]
+metrics:
+  - name: my_metric
+    formula: "calculation"
+quality_rules:
+  - rule_definition
+```
+
+### Custom Patterns
+
+Add pattern detectors to `config/patterns/`:
+
+```yaml
+my_patterns:
+  - name: pattern_name
+    pattern: regex_pattern
+    inferred_type: TYPE
+    examples: [...]
 ```

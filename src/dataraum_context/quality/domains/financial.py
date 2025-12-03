@@ -1,19 +1,31 @@
 """Financial domain quality checks.
 
 Implements financial accounting-specific quality rules:
+
+**Accounting Quality Checks:**
 - Double-entry balance validation
 - Trial balance checks (Assets = Liabilities + Equity)
 - Sign convention validation
 - Intercompany transaction matching
 - Fiscal period integrity
+
+**Topological Domain Analysis:**
+- Financial cycle detection and classification
+- Fiscal period-aware stability assessment
+- Financial anomaly detection in topology
+- Domain-weighted quality scoring
 """
 
 import logging
+import os
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import duckdb
 import pandas as pd
+import yaml
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.core.models.base import Result
@@ -840,3 +852,872 @@ async def analyze_financial_quality(
     )
 
     return Result.ok(result)
+
+
+# ===================================================================
+# TOPOLOGICAL DOMAIN ANALYSIS
+# ===================================================================
+# These functions enhance generic topological analysis with
+# financial domain-specific interpretations
+
+
+def _load_financial_config() -> dict[str, Any]:
+    """Load financial domain configuration from YAML file.
+
+    Returns:
+        Dict with configuration data
+    """
+    # Try multiple locations for config file
+    possible_paths: list[Path] = [
+        # Project root (when running from source)
+        Path.cwd() / "config" / "domains" / "financial.yaml",
+        # Relative to this file (installed package)
+        Path(__file__).parent.parent.parent.parent / "config" / "domains" / "financial.yaml",
+    ]
+
+    # Add environment variable override if set
+    config_dir = os.getenv("DATARAUM_CONFIG_DIR")
+    if config_dir:
+        possible_paths.insert(0, Path(config_dir) / "domains" / "financial.yaml")
+
+    config_path: Path | None = None
+    for path in possible_paths:
+        if path.exists():
+            config_path = path
+            break
+
+    if not config_path:
+        logger.warning(
+            f"Financial config not found in any of: {[str(p) for p in possible_paths]}, "
+            "using defaults"
+        )
+        return {}
+
+    try:
+        with open(config_path) as f:
+            config: dict[str, Any] = yaml.safe_load(f) or {}
+        logger.info(f"Loaded financial domain config from {config_path}")
+        return config
+    except Exception as e:
+        logger.error(f"Failed to load financial config: {e}")
+        return {}
+
+
+def detect_financial_cycles(
+    cycles: list[Any],  # list[CycleDetection] from enrichment.models
+    table_names: list[str],
+    column_relationships: dict[str, Any],
+    semantic_annotations: dict[str, Any] | None = None,  # Semantic enrichment data
+) -> list[Any]:  # Returns list[CycleDetection]
+    """Classify generic topological cycles with financial domain meaning.
+
+    Uses configuration-driven pattern matching and optional semantic enrichment
+    to classify cycles into business-meaningful types.
+
+    Args:
+        cycles: List of CycleDetection objects from topological analysis
+        table_names: Names of tables involved in the analysis
+        column_relationships: Dict mapping columns to their relationships
+        semantic_annotations: Optional semantic enrichment data with column roles
+
+    Returns:
+        List of CycleDetection objects with cycle_type populated
+    """
+    # Import here to avoid circular dependency
+    from dataraum_context.quality.models import CycleDetection
+
+    # Load configuration
+    config = _load_financial_config()
+    cycle_patterns = config.get("cycle_patterns", {})
+
+    # Fallback to hardcoded patterns if config not available
+    if not cycle_patterns:
+        logger.warning("No cycle patterns in config, using hardcoded fallback")
+        cycle_patterns = _get_fallback_cycle_patterns()
+
+    classified_cycles = []
+
+    for cycle in cycles:
+        # Analyze involved columns to determine cycle type
+        involved_cols = cycle.involved_columns if hasattr(cycle, "involved_columns") else []
+
+        # Try to classify using configuration patterns
+        cycle_type = None
+        cycle_description = None
+        match_score = 0.0
+
+        # Check each cycle pattern from config
+        for pattern_name, pattern_config in cycle_patterns.items():
+            score = _score_cycle_match(involved_cols, pattern_config, semantic_annotations)
+
+            if score > match_score:
+                match_score = score
+                cycle_type = pattern_name
+                cycle_description = pattern_config.get("description", f"{pattern_name} cycle")
+
+        # Create classified cycle with domain meaning
+        classified_cycle = CycleDetection(
+            cycle_id=cycle.cycle_id if hasattr(cycle, "cycle_id") else str(uuid4()),
+            dimension=cycle.dimension if hasattr(cycle, "dimension") else 1,
+            birth=cycle.birth if hasattr(cycle, "birth") else 0.0,
+            death=cycle.death if hasattr(cycle, "death") else 0.0,
+            persistence=cycle.persistence if hasattr(cycle, "persistence") else 0.0,
+            involved_columns=involved_cols,
+            cycle_type=cycle_type if match_score > 0 else None,  # DOMAIN-SPECIFIC!
+            is_anomalous=cycle.is_anomalous if hasattr(cycle, "is_anomalous") else False,
+            anomaly_reason=cycle.anomaly_reason if hasattr(cycle, "anomaly_reason") else None,
+            first_detected=(
+                cycle.first_detected if hasattr(cycle, "first_detected") else datetime.now(UTC)
+            ),
+            last_seen=cycle.last_seen if hasattr(cycle, "last_seen") else datetime.now(UTC),
+        )
+
+        classified_cycles.append(classified_cycle)
+
+        logger.info(
+            f"Classified cycle {classified_cycle.cycle_id}: "
+            f"{cycle_type or 'unclassified'} (score: {match_score:.2f}) - "
+            f"{cycle_description or 'Generic cycle'}"
+        )
+
+    return classified_cycles
+
+
+def _score_cycle_match(
+    involved_columns: list[str],
+    pattern_config: dict[str, Any],
+    semantic_annotations: dict[str, Any] | None,
+) -> float:
+    """Score how well a cycle matches a financial pattern.
+
+    Args:
+        involved_columns: List of column names in the cycle
+        pattern_config: Pattern configuration from YAML
+        semantic_annotations: Optional semantic enrichment data
+
+    Returns:
+        Match score (0-1), higher is better match
+    """
+    if not involved_columns:
+        return 0.0
+
+    score = 0.0
+    max_score = 0.0
+
+    # Score 1: Column name pattern matching
+    column_patterns = pattern_config.get("column_patterns", [])
+    if column_patterns:
+        max_score += 1.0
+        matches = sum(
+            1
+            for col in involved_columns
+            for pattern in column_patterns
+            if pattern.lower() in col.lower()
+        )
+        # Normalize by number of columns (avoid over-scoring long cycles)
+        score += min(1.0, matches / max(len(involved_columns) * 0.3, 1.0))
+
+    # Score 2: Semantic role matching (if available)
+    if semantic_annotations:
+        semantic_roles = pattern_config.get("semantic_roles", [])
+        if semantic_roles:
+            max_score += 1.0
+            role_matches = 0
+            for col in involved_columns:
+                col_annotation = semantic_annotations.get(col, {})
+                col_role = col_annotation.get("semantic_role")
+                if col_role and any(role.lower() in col_role.lower() for role in semantic_roles):
+                    role_matches += 1
+            if role_matches > 0:
+                score += min(1.0, role_matches / max(len(involved_columns) * 0.3, 1.0))
+
+    # Normalize score to 0-1 range
+    return score / max_score if max_score > 0 else 0.0
+
+
+def _get_fallback_cycle_patterns() -> dict[str, Any]:
+    """Fallback hardcoded cycle patterns if config not available.
+
+    Returns:
+        Dict of cycle patterns
+    """
+    return {
+        "accounts_receivable_cycle": {
+            "description": "AR collection cycle: Invoice → Payment → Cash",
+            "column_patterns": ["customer", "invoice", "payment", "receivable", "collection"],
+        },
+        "expense_cycle": {
+            "description": "Expense cycle: PO → Receipt → Invoice → Payment",
+            "column_patterns": ["vendor", "payable", "purchase", "expense", "supplier"],
+        },
+        "inventory_cycle": {
+            "description": "Inventory cycle: Purchase → Stock → COGS → Sale",
+            "column_patterns": ["inventory", "stock", "product", "cogs", "sku"],
+        },
+        "payroll_cycle": {
+            "description": "Payroll cycle: Time → Payroll → Disbursement",
+            "column_patterns": ["employee", "payroll", "salary", "wage", "timesheet"],
+        },
+        "capital_cycle": {
+            "description": "Capital cycle: Investment → Depreciation → Disposal",
+            "column_patterns": ["asset", "depreciation", "investment", "capital", "fixed_asset"],
+        },
+        "intercompany_cycle": {
+            "description": "Intercompany cycle: Charges between entities",
+            "column_patterns": ["entity", "subsidiary", "intercompany", "division", "company_code"],
+        },
+        "revenue_cycle": {
+            "description": "Revenue cycle: Order → Fulfillment → Recognition",
+            "column_patterns": ["revenue", "sale", "order", "booking", "contract"],
+        },
+    }
+
+
+def assess_fiscal_stability(
+    stability: Any,  # StabilityAnalysis from enrichment.models
+    temporal_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Enhance stability analysis with fiscal period awareness.
+
+    Distinguishes between:
+    - Fiscal period effects (expected, recurring changes)
+    - Structural changes (unexpected, permanent topology shifts)
+
+    Args:
+        stability: StabilityAnalysis object from topological analysis
+        temporal_context: Dict with fiscal calendar information
+
+    Returns:
+        Dict with enhanced stability assessment including fiscal context
+    """
+    if stability is None:
+        return {
+            "stability_level": "unknown",
+            "fiscal_context": None,
+            "is_fiscal_period_effect": False,
+            "pattern_type": "unknown",
+        }
+
+    # Extract fiscal calendar info
+    current_period = temporal_context.get("current_fiscal_period")
+    is_period_end = temporal_context.get("is_period_end", False)
+    is_quarter_end = temporal_context.get("is_quarter_end", False)
+    is_year_end = temporal_context.get("is_year_end", False)
+
+    # Determine if changes are fiscal period effects
+    fiscal_context = None
+    is_fiscal_period_effect = False
+    pattern_type = "structural_change"  # Default assumption
+
+    if is_year_end and stability.stability_level in ["significant_changes", "unstable"]:
+        fiscal_context = "fiscal_year_end_close"
+        is_fiscal_period_effect = True
+        pattern_type = "recurring_spike"
+        logger.info("Stability changes attributed to fiscal year-end close")
+
+    elif is_quarter_end and stability.stability_level in ["minor_changes", "significant_changes"]:
+        fiscal_context = "quarter_end_close"
+        is_fiscal_period_effect = True
+        pattern_type = "recurring_spike"
+        logger.info("Stability changes attributed to quarter-end close")
+
+    elif is_period_end and stability.stability_level == "minor_changes":
+        fiscal_context = "month_end_close"
+        is_fiscal_period_effect = True
+        pattern_type = "recurring_spike"
+        logger.info("Stability changes attributed to month-end close")
+
+    elif stability.stability_level in ["significant_changes", "unstable"]:
+        # Significant changes outside period-end = structural issue
+        fiscal_context = "mid_period"
+        is_fiscal_period_effect = False
+        pattern_type = "structural_change"
+        logger.warning("Structural topology changes detected mid-period")
+
+    # Build enhanced assessment
+    assessment = {
+        "original_stability_level": stability.stability_level,
+        "fiscal_context": fiscal_context,
+        "is_fiscal_period_effect": is_fiscal_period_effect,
+        "pattern_type": pattern_type,
+        "affected_periods": [current_period] if current_period else [],
+        "components_added": (
+            stability.components_added if hasattr(stability, "components_added") else 0
+        ),
+        "components_removed": (
+            stability.components_removed if hasattr(stability, "components_removed") else 0
+        ),
+        "cycles_added": stability.cycles_added if hasattr(stability, "cycles_added") else 0,
+        "cycles_removed": stability.cycles_removed if hasattr(stability, "cycles_removed") else 0,
+        "interpretation": _interpret_fiscal_stability(
+            stability.stability_level, is_fiscal_period_effect, fiscal_context
+        ),
+    }
+
+    return assessment
+
+
+def _interpret_fiscal_stability(
+    stability_level: str, is_fiscal_effect: bool, fiscal_context: str | None
+) -> str:
+    """Generate human-readable interpretation of stability assessment."""
+    if is_fiscal_effect:
+        if fiscal_context == "fiscal_year_end_close":
+            return (
+                "Expected topology changes due to fiscal year-end close. "
+                "Increased activity and relationship complexity is normal."
+            )
+        elif fiscal_context == "quarter_end_close":
+            return (
+                "Recurring topology changes due to quarter-end close. "
+                "Period-end spikes are expected."
+            )
+        elif fiscal_context == "month_end_close":
+            return "Minor topology changes due to month-end close. Normal recurring pattern."
+        else:
+            return "Changes appear related to fiscal period effects."
+    else:
+        if stability_level == "unstable":
+            return (
+                "ALERT: Significant structural changes detected outside normal fiscal periods. "
+                "Investigate data quality or business process changes."
+            )
+        elif stability_level == "significant_changes":
+            return (
+                "WARNING: Notable structural changes detected mid-period. "
+                "May indicate data quality issues or business changes."
+            )
+        else:
+            return "Topology is stable with minor expected variations."
+
+
+def detect_financial_anomalies(
+    topological_result: Any,  # TopologicalQualityResult from enrichment.models
+    cycles: list[Any],  # list[CycleDetection] with financial classification
+) -> list[Any]:  # Returns list[TopologicalAnomaly]
+    """Detect financial-specific topological anomalies.
+
+    Anomaly types:
+    - unbalanced_entry_pattern: Debits/Credits imbalance in graph
+    - missing_reconciliation: Account not reconciled
+    - fiscal_period_gap: Missing period in time series
+    - unusual_account_linkage: Unexpected GL account relationships
+    - cost_center_isolation: Disconnected cost center
+    - revenue_recognition_anomaly: Irregular revenue timing
+
+    Args:
+        topological_result: TopologicalQualityResult from analysis
+        cycles: List of classified CycleDetection objects
+
+    Returns:
+        List of TopologicalAnomaly objects with financial context
+    """
+    # Import here to avoid circular dependency
+    from dataraum_context.quality.models import TopologicalAnomaly
+
+    anomalies = []
+
+    # Anomaly 1: Unusual cycle complexity for financial data
+    # Financial data typically has well-defined cycles (AR, AP, etc.)
+    # Too many cycles or too complex cycles = anomaly
+    cycle_count = len(cycles)
+    unclassified_cycles = [c for c in cycles if c.cycle_type is None]
+
+    if cycle_count > 15:
+        anomalies.append(
+            TopologicalAnomaly(
+                anomaly_type="excessive_financial_cycles",
+                severity="high",
+                description=f"Unusually high number of cycles ({cycle_count}) for financial data",
+                evidence={"cycle_count": cycle_count, "expected_max": 10},
+                affected_tables=[topological_result.table_name]
+                if hasattr(topological_result, "table_name")
+                else [],
+                affected_columns=[],
+            )
+        )
+
+    if len(unclassified_cycles) > 5:
+        anomalies.append(
+            TopologicalAnomaly(
+                anomaly_type="unclassified_financial_cycles",
+                severity="medium",
+                description=f"{len(unclassified_cycles)} cycles could not be classified with financial domain patterns",
+                evidence={
+                    "unclassified_count": len(unclassified_cycles),
+                    "total_count": cycle_count,
+                },
+                affected_tables=[topological_result.table_name]
+                if hasattr(topological_result, "table_name")
+                else [],
+                affected_columns=[],
+            )
+        )
+
+    # Anomaly 2: Disconnected components in financial data
+    # Financial data should be well-connected (all accounts relate)
+    if hasattr(topological_result, "betti_numbers"):
+        betti_0 = topological_result.betti_numbers.betti_0
+        if betti_0 > 3:
+            anomalies.append(
+                TopologicalAnomaly(
+                    anomaly_type="financial_data_fragmentation",
+                    severity="high",
+                    description=f"Financial data has {betti_0} disconnected components. Expected: 1-2",
+                    evidence={
+                        "component_count": betti_0,
+                        "expected_max": 2,
+                        "interpretation": "Accounts or entities are not properly linked",
+                    },
+                    affected_tables=[topological_result.table_name]
+                    if hasattr(topological_result, "table_name")
+                    else [],
+                    affected_columns=[],
+                )
+            )
+
+    # Anomaly 3: Missing expected financial cycles
+    # If we have financial data but no AR/AP cycles = anomaly
+    cycle_types = {c.cycle_type for c in cycles if c.cycle_type is not None}
+    expected_cycles = {"accounts_receivable_cycle", "expense_cycle", "revenue_cycle"}
+
+    missing_cycles = expected_cycles - cycle_types
+    if len(missing_cycles) > 0 and cycle_count > 0:
+        anomalies.append(
+            TopologicalAnomaly(
+                anomaly_type="missing_financial_cycles",
+                severity="medium",
+                description=f"Expected financial cycles not detected: {', '.join(missing_cycles)}",
+                evidence={
+                    "missing_cycles": list(missing_cycles),
+                    "detected_cycles": list(cycle_types),
+                },
+                affected_tables=[topological_result.table_name]
+                if hasattr(topological_result, "table_name")
+                else [],
+                affected_columns=[],
+            )
+        )
+
+    # Anomaly 4: Cost center isolation
+    # If we detect "cost_center" columns but they're in disconnected component = anomaly
+    if (
+        hasattr(topological_result, "orphaned_components")
+        and topological_result.orphaned_components > 0
+    ):
+        anomalies.append(
+            TopologicalAnomaly(
+                anomaly_type="cost_center_isolation",
+                severity="medium",
+                description=f"{topological_result.orphaned_components} isolated components detected, possibly disconnected cost centers",
+                evidence={"orphaned_count": topological_result.orphaned_components},
+                affected_tables=[topological_result.table_name]
+                if hasattr(topological_result, "table_name")
+                else [],
+                affected_columns=[],
+            )
+        )
+
+    logger.info(f"Detected {len(anomalies)} financial domain-specific anomalies")
+
+    return anomalies
+
+
+def compute_financial_quality_score(
+    topological_result: Any,  # TopologicalQualityResult
+    financial_anomalies: list[Any],  # list[TopologicalAnomaly]
+    cycles: list[Any],  # list[CycleDetection] with classification
+) -> float:
+    """Compute domain-weighted quality score for financial data.
+
+    Uses configuration-driven thresholds for penalties and bonuses.
+
+    Financial data has stricter quality requirements:
+    - Critical: Balanced cycles, connected data
+    - Major: Missing fiscal periods, unusual linkages
+    - Minor: High complexity (expected in accounting)
+
+    Args:
+        topological_result: TopologicalQualityResult from analysis
+        financial_anomalies: List of financial-specific anomalies
+        cycles: List of classified financial cycles
+
+    Returns:
+        Quality score (0.0-1.0) with financial domain weighting
+    """
+    # Load configuration thresholds
+    config = _load_financial_config()
+    thresholds = config.get("quality_thresholds", {})
+
+    # Get penalty values (with fallbacks)
+    critical_threshold = (
+        thresholds.get("critical", {}).get("disconnected_components", {}).get("threshold", 3)
+    )
+    critical_penalty = (
+        thresholds.get("critical", {}).get("disconnected_components", {}).get("penalty", 0.5)
+    )
+    moderate_penalty = (
+        thresholds.get("critical", {}).get("moderate_disconnection", {}).get("penalty", 0.2)
+    )
+
+    quality_score = 1.0
+
+    # Critical penalties (structural integrity)
+    if hasattr(topological_result, "betti_numbers"):
+        betti_0 = topological_result.betti_numbers.betti_0
+
+        # Disconnected financial data is CRITICAL
+        if betti_0 > critical_threshold:
+            quality_score -= critical_penalty
+            logger.warning(f"CRITICAL: Financial data fragmentation ({betti_0} components)")
+        elif betti_0 > 1:
+            quality_score -= moderate_penalty
+
+    # Medium penalties (domain-specific issues) - from config
+    medium_thresholds = thresholds.get("medium", {})
+    for anomaly in financial_anomalies:
+        penalty = 0.0
+        if anomaly.anomaly_type == "excessive_financial_cycles":
+            penalty = medium_thresholds.get("excessive_cycles", {}).get("penalty", 0.3)
+        elif anomaly.anomaly_type == "missing_financial_cycles":
+            penalty = medium_thresholds.get("missing_expected_cycles", {}).get("penalty", 0.2)
+        elif anomaly.anomaly_type == "unclassified_financial_cycles":
+            penalty = medium_thresholds.get("unclassified_cycles", {}).get("penalty", 0.15)
+        elif anomaly.anomaly_type == "cost_center_isolation":
+            penalty = medium_thresholds.get("cost_center_isolation", {}).get("penalty", 0.2)
+        elif anomaly.anomaly_type == "financial_data_fragmentation":
+            penalty = medium_thresholds.get("data_fragmentation", {}).get("penalty", 0.3)
+
+        quality_score -= penalty
+
+    # Minor penalties (complexity is OK for financial data) - from config
+    minor_thresholds = thresholds.get("minor", {})
+    cycle_count = len(cycles)
+    very_high_threshold = minor_thresholds.get("very_high_complexity", {}).get("threshold", 20)
+    high_threshold = minor_thresholds.get("high_complexity", {}).get("threshold", 15)
+
+    if cycle_count > very_high_threshold:
+        quality_score -= minor_thresholds.get("very_high_complexity", {}).get("penalty", 0.1)
+    elif cycle_count > high_threshold:
+        quality_score -= minor_thresholds.get("high_complexity", {}).get("penalty", 0.05)
+
+    # Bonus: Well-classified cycles - from config
+    bonus_config = thresholds.get("bonuses", {}).get("well_classified_cycles", {})
+    classified_count = sum(1 for c in cycles if c.cycle_type is not None)
+    classification_rate = classified_count / cycle_count if cycle_count > 0 else 0.0
+
+    if cycle_count > 0:
+        bonus_threshold = bonus_config.get("threshold", 0.8)
+        bonus_amount = bonus_config.get("bonus", 0.05)
+
+        if classification_rate > bonus_threshold:
+            quality_score += bonus_amount
+
+    # Ensure score is in valid range
+    quality_score = max(0.0, min(1.0, quality_score))
+
+    logger.info(
+        f"Financial quality score: {quality_score:.2f} "
+        f"({len(financial_anomalies)} anomalies, {cycle_count} cycles, "
+        f"{classified_count} classified, {classification_rate:.1%} classification rate)"
+    )
+
+    return quality_score
+
+
+class FinancialDomainAnalyzer:
+    """Financial domain analyzer for enhancing topological quality analysis.
+
+    Usage:
+        analyzer = FinancialDomainAnalyzer()
+        enhanced_result = analyzer.analyze(topological_result, temporal_context)
+    """
+
+    def __init__(self, config: FinancialQualityConfig | None = None):
+        """Initialize financial domain analyzer.
+
+        Args:
+            config: Financial quality configuration (uses defaults if None)
+        """
+        self.config = config or FinancialQualityConfig()
+
+    def analyze(
+        self,
+        topological_result: Any,  # TopologicalQualityResult
+        temporal_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Perform complete financial domain analysis on topological results.
+
+        Args:
+            topological_result: TopologicalQualityResult from generic analysis
+            temporal_context: Optional fiscal calendar context
+
+        Returns:
+            Dict with enhanced financial domain analysis
+        """
+        temporal_context = temporal_context or {}
+
+        # Extract cycles from result
+        cycles = (
+            topological_result.persistent_cycles
+            if hasattr(topological_result, "persistent_cycles")
+            else []
+        )
+        table_names = (
+            [topological_result.table_name] if hasattr(topological_result, "table_name") else []
+        )
+
+        # Step 1: Classify cycles with financial domain meaning
+        classified_cycles = detect_financial_cycles(
+            cycles=cycles, table_names=table_names, column_relationships={}
+        )
+
+        # Step 2: Assess stability with fiscal period awareness
+        stability_assessment = assess_fiscal_stability(
+            stability=(
+                topological_result.stability if hasattr(topological_result, "stability") else None
+            ),
+            temporal_context=temporal_context,
+        )
+
+        # Step 3: Detect financial-specific anomalies
+        financial_anomalies = detect_financial_anomalies(
+            topological_result=topological_result, cycles=classified_cycles
+        )
+
+        # Step 4: Compute domain-weighted quality score
+        financial_quality_score = compute_financial_quality_score(
+            topological_result=topological_result,
+            financial_anomalies=financial_anomalies,
+            cycles=classified_cycles,
+        )
+
+        # Build comprehensive result
+        result = {
+            "domain": "financial",
+            "classified_cycles": classified_cycles,
+            "cycle_classification_summary": self._summarize_cycles(classified_cycles),
+            "stability_assessment": stability_assessment,
+            "financial_anomalies": financial_anomalies,
+            "financial_quality_score": financial_quality_score,
+            "original_quality_score": (
+                topological_result.quality_score
+                if hasattr(topological_result, "quality_score")
+                else None
+            ),
+            "quality_improvement": (
+                financial_quality_score - topological_result.quality_score
+                if hasattr(topological_result, "quality_score")
+                else 0.0
+            ),
+        }
+
+        return result
+
+    def _summarize_cycles(self, cycles: list[Any]) -> dict[str, Any]:
+        """Summarize cycle classification results."""
+        cycle_types: dict[str, int] = {}
+        for cycle in cycles:
+            cycle_type = cycle.cycle_type or "unclassified"
+            cycle_types[cycle_type] = cycle_types.get(cycle_type, 0) + 1
+
+        return {
+            "total_cycles": len(cycles),
+            "classified_count": sum(1 for c in cycles if c.cycle_type is not None),
+            "unclassified_count": sum(1 for c in cycles if c.cycle_type is None),
+            "cycle_types": cycle_types,
+            "classification_rate": (
+                sum(1 for c in cycles if c.cycle_type is not None) / len(cycles)
+                if len(cycles) > 0
+                else 0.0
+            ),
+        }
+
+    # TODO implement this with an LLM classifier
+    def analyze_cross_table_cycles(
+        self,
+        cross_table_cycles: list[list[str]],
+        table_names_map: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Analyze and classify cross-table cycles from relationship graph.
+
+        Args:
+            cross_table_cycles: List of cycles, where each cycle is a list of table IDs
+            table_names_map: Optional mapping from table_id to human-readable table name
+
+        Returns:
+            Dict with classified cross-table cycles and business process insights
+        """
+        if not cross_table_cycles:
+            return {
+                "total_cycles": 0,
+                "classified_cycles": [],
+                "business_processes": [],
+                "quality_assessment": "No cross-table cycles detected",
+            }
+
+        # Load configuration
+        config = _load_financial_config()
+        cross_table_patterns = config.get("cross_table_cycle_patterns", {})
+
+        # Fallback patterns if config not available
+        if not cross_table_patterns:
+            cross_table_patterns = self._get_fallback_cross_table_patterns()
+
+        classified_cycles = []
+        business_processes = []
+
+        for cycle_tables in cross_table_cycles:
+            # Get table names for pattern matching
+            if table_names_map:
+                table_names = [table_names_map.get(tid, tid) for tid in cycle_tables]
+            else:
+                table_names = cycle_tables
+
+            # Try to classify the cycle based on table name patterns
+            cycle_type = None
+            business_process = None
+            match_score = 0.0
+
+            for pattern_name, pattern_config in cross_table_patterns.items():
+                score = self._score_cross_table_match(table_names, pattern_config)
+
+                if score > match_score:
+                    match_score = score
+                    cycle_type = pattern_name
+                    business_process = pattern_config.get("business_process")
+
+            classified_cycles.append(
+                {
+                    "tables": cycle_tables,
+                    "table_names": table_names,
+                    "cycle_type": cycle_type,
+                    "business_process": business_process,
+                    "match_confidence": match_score,
+                }
+            )
+
+            if business_process and match_score > 0.5:
+                business_processes.append(
+                    {
+                        "process_name": business_process,
+                        "cycle_type": cycle_type,
+                        "tables_involved": table_names,
+                        "confidence": match_score,
+                    }
+                )
+
+        # Assess quality based on detected business processes
+        quality_assessment = self._assess_business_process_quality(classified_cycles)
+
+        return {
+            "total_cycles": len(cross_table_cycles),
+            "classified_cycles": classified_cycles,
+            "business_processes": business_processes,
+            "quality_assessment": quality_assessment,
+            "classification_rate": (
+                sum(1 for c in classified_cycles if c["cycle_type"] is not None)
+                / len(classified_cycles)
+                if classified_cycles
+                else 0.0
+            ),
+        }
+
+    def _score_cross_table_match(
+        self, table_names: list[str], pattern_config: dict[str, Any]
+    ) -> float:
+        """Score how well a cross-table cycle matches a business process pattern.
+
+        Args:
+            table_names: List of table names in the cycle
+            pattern_config: Pattern configuration with expected tables
+
+        Returns:
+            Match score (0-1)
+        """
+        expected_tables = pattern_config.get("expected_tables", [])
+        if not expected_tables:
+            return 0.0
+
+        # Convert to lowercase for case-insensitive matching
+        table_names_lower = [t.lower() for t in table_names]
+
+        # Count how many expected tables are present
+        matches = 0
+        for expected in expected_tables:
+            expected_lower = expected.lower()
+            # Check for exact match or substring match
+            if any(expected_lower in table_name for table_name in table_names_lower):
+                matches += 1
+
+        # Score based on coverage (what % of expected tables are present)
+        score = matches / len(expected_tables) if expected_tables else 0.0
+
+        return min(1.0, score)
+
+    def _get_fallback_cross_table_patterns(self) -> dict[str, Any]:
+        """Fallback patterns for cross-table cycle classification.
+
+        Returns:
+            Dict of cross-table cycle patterns
+        """
+        return {
+            "accounts_receivable_cycle": {
+                "description": "AR cycle: Customer → Invoice → Payment",
+                "expected_tables": ["customer", "invoice", "payment", "transaction"],
+                "business_process": "Revenue Collection (Order-to-Cash)",
+            },
+            "accounts_payable_cycle": {
+                "description": "AP cycle: Vendor → PO → Invoice → Payment",
+                "expected_tables": [
+                    "vendor",
+                    "purchase_order",
+                    "invoice",
+                    "payment",
+                    "transaction",
+                ],
+                "business_process": "Procurement (Procure-to-Pay)",
+            },
+            "inventory_cycle": {
+                "description": "Inventory cycle: Product → Purchase → Stock → Sale",
+                "expected_tables": ["product", "inventory", "purchase", "sale", "transaction"],
+                "business_process": "Inventory Management",
+            },
+            "payroll_cycle": {
+                "description": "Payroll cycle: Employee → Timesheet → Payroll → Payment",
+                "expected_tables": ["employee", "timesheet", "payroll", "payment", "transaction"],
+                "business_process": "Human Resources (Hire-to-Retire)",
+            },
+            "revenue_recognition_cycle": {
+                "description": "Revenue cycle: Customer → Contract → Invoice → Revenue",
+                "expected_tables": ["customer", "contract", "invoice", "revenue", "transaction"],
+                "business_process": "Revenue Recognition",
+            },
+        }
+
+    def _assess_business_process_quality(self, classified_cycles: list[dict[str, Any]]) -> str:
+        """Assess the quality of detected business processes.
+
+        Args:
+            classified_cycles: List of classified cycle dicts
+
+        Returns:
+            Quality assessment string
+        """
+        total = len(classified_cycles)
+        if total == 0:
+            return "No cross-table cycles detected"
+
+        classified = sum(1 for c in classified_cycles if c["cycle_type"] is not None)
+        high_confidence = sum(1 for c in classified_cycles if c.get("match_confidence", 0) > 0.7)
+
+        if classified == 0:
+            return f"❌ POOR: {total} cycle(s) detected but none matched known financial business processes"
+        elif classified == total and high_confidence == total:
+            return f"✅ EXCELLENT: All {total} cycle(s) matched known business processes with high confidence"
+        elif classified == total:
+            return f"✓ GOOD: All {total} cycle(s) matched business processes (some with lower confidence)"
+        elif classified > total / 2:
+            return f"⚠️ FAIR: {classified}/{total} cycles matched business processes"
+        else:
+            return f"❌ POOR: Only {classified}/{total} cycles matched business processes"

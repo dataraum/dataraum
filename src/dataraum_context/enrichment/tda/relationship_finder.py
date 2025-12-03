@@ -53,7 +53,10 @@ class TableRelationshipFinder:
         topo2: dict[str, Any],
     ) -> dict[str, Any]:
         """
-        Compare two table topologies to find relationships
+        Compare two table topologies to find relationships using numerical topology measures.
+
+        Uses persistence diagrams, Betti numbers, and join column analysis to detect
+        relationships. Prioritizes topological similarity over heuristic row counts.
         """
         relationship = {
             "table1": name1,
@@ -61,26 +64,38 @@ class TableRelationshipFinder:
             "confidence": 0,
             "join_columns": [],
             "relationship_type": "unknown",
+            "topology_similarity": 0.0,
         }
 
-        # Compare persistence diagrams
+        # Compare persistence diagrams (PRIMARY signal)
         persistence_similarity = self.compare_persistence_diagrams(
             topo1["global_persistence"], topo2["global_persistence"]
         )
+        relationship["topology_similarity"] = persistence_similarity
 
-        # Find potential join columns
+        # Find potential join columns (SECONDARY signal)
         join_candidates = self.find_join_columns(df1, df2)
 
         if join_candidates:
             relationship["join_columns"] = join_candidates
-            relationship["confidence"] = max(
-                persistence_similarity, max(j["confidence"] for j in join_candidates)
-            )
 
-            # Determine relationship type
-            relationship["relationship_type"] = self.determine_relationship_type(
-                df1, df2, join_candidates
+            # Calculate weighted confidence score
+            # Persistence similarity is PRIMARY (60%), join overlap is SECONDARY (40%)
+            max_join_confidence = max(j["confidence"] for j in join_candidates)
+            relationship["confidence"] = 0.6 * persistence_similarity + 0.4 * max_join_confidence
+
+            # Use topology-based classification
+            relationship["relationship_type"] = self.determine_relationship_type_topology(
+                topo1, topo2, persistence_similarity, join_candidates
             )
+        else:
+            # No join columns - rely purely on topology
+            relationship["confidence"] = persistence_similarity
+
+            if persistence_similarity > 0.7:
+                relationship["relationship_type"] = "structurally-similar"
+            else:
+                relationship["relationship_type"] = "unrelated"
 
         return relationship
 
@@ -248,32 +263,67 @@ class TableRelationshipFinder:
         else:
             return "many-to-many"
 
-    def determine_relationship_type(
-        self, df1: pd.DataFrame, df2: pd.DataFrame, join_candidates: list[dict[str, Any]]
+    def determine_relationship_type_topology(
+        self,
+        topo1: dict[str, Any],
+        topo2: dict[str, Any],
+        persistence_similarity: float,
+        join_candidates: list[dict[str, Any]],
     ) -> str:
-        """Determine overall relationship type between tables"""
+        """Determine relationship type using topological features.
+
+        Uses Betti numbers, persistence similarity, and topological structure
+        to classify relationships based on numerical topology measures.
+
+        Args:
+            topo1: Topology of first table
+            topo2: Topology of second table
+            persistence_similarity: Wasserstein distance-based similarity (0-1)
+            join_candidates: Detected join columns
+
+        Returns:
+            Relationship type classification
+        """
         if not join_candidates:
+            # No join columns found - use pure topology
+            if persistence_similarity > 0.7:
+                return "structurally-similar"  # Topologically related but no explicit join
             return "unrelated"
 
-        # Check cardinalities
-        # TODO it might make sense to also check other candidates than the 1 element in the list
+        # Extract Betti numbers from topologies
+        betti_0_table1 = topo1.get("betti_numbers", {}).get("betti_0", 1)
+        betti_0_table2 = topo2.get("betti_numbers", {}).get("betti_0", 1)
+        betti_1_table1 = topo1.get("betti_numbers", {}).get("betti_1", 0)
+        betti_1_table2 = topo2.get("betti_numbers", {}).get("betti_1", 0)
+
+        # Topology-based classification:
+
+        # 1. Circular dependencies (β₁ > 0 in both)
+        if betti_1_table1 > 0 and betti_1_table2 > 0:
+            return "circular-dependency"  # Both have cycles - potential circular reference
+
+        # 2. Star schema detection (β₀ pattern)
+        # Fact table: β₀=1 (connected)
+        # Dimension tables: β₀ could be >1 if disconnected from fact
+        if betti_0_table1 == 1 and betti_0_table2 > 1:
+            return "fact-to-dimensions"  # Table1 is central hub
+        elif betti_0_table2 == 1 and betti_0_table1 > 1:
+            return "dimensions-to-fact"  # Table2 is central hub
+
+        # 3. Both connected (β₀=1) with high structural similarity
+        if betti_0_table1 == 1 and betti_0_table2 == 1:
+            if persistence_similarity > 0.8:
+                return "master-detail"  # Structurally similar, likely hierarchical
+            elif persistence_similarity > 0.6:
+                return "related"  # Moderately similar structure
+
+        # 4. Disconnected data (β₀ > 1 in either)
+        if betti_0_table1 > 1 or betti_0_table2 > 1:
+            return "fragmented"  # Data islands detected
+
+        # 5. Fallback to cardinality-based detection if topology inconclusive
         best_join = join_candidates[0]
-        col1 = df1[best_join["column1"]]
-        col2 = df2[best_join["column2"]]
-
-        # Check for parent-child relationship
-        if col1.nunique() == len(df1) and col1.nunique() < col2.nunique():
-            return "parent-child"
-        elif col2.nunique() == len(df2) and col2.nunique() < col1.nunique():
-            return "child-parent"
-
-        # Check for lookup relationship
-        if len(df1) < 100 and len(df2) > 1000:
-            return "lookup-fact"
-        elif len(df2) < 100 and len(df1) > 1000:
-            return "fact-lookup"
-
-        return str(best_join["join_type"])
+        return str(best_join.get("join_type", "many-to-many"))
 
     def build_join_graph(self, relationships: list[dict[str, Any]]) -> dict[str, Any]:
         """Build a graph of table relationships"""
@@ -320,26 +370,7 @@ class TableRelationshipFinder:
                     "tables": (rel["table1"], rel["table2"]),
                     "join_columns": rel["join_columns"][0] if rel["join_columns"] else None,
                     "confidence": rel["confidence"],
-                    "sql": self.generate_join_sql(rel, tables),
                 }
                 suggestions.append(suggestion)
 
         return suggestions
-
-    def generate_join_sql(
-        self, relationship: dict[str, Any], tables: dict[str, pd.DataFrame]
-    ) -> str | None:
-        """Generate SQL for the suggested join"""
-        if not relationship["join_columns"]:
-            return None
-
-        best_join = relationship["join_columns"][0]
-
-        sql = f"""
-SELECT *
-FROM {relationship["table1"]} t1
-{best_join["join_type"].upper().replace("-", "_")} JOIN {relationship["table2"]} t2
-    ON t1.{best_join["column1"]} = t2.{best_join["column2"]}
-        """.strip()
-
-        return sql

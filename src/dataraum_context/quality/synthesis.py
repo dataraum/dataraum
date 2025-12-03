@@ -47,6 +47,7 @@ from dataraum_context.storage.models_v2.domain_quality import (
     DomainQualityMetrics,
     FinancialQualityMetrics,
 )
+from dataraum_context.storage.models_v2.semantic_context import SemanticAnnotation
 from dataraum_context.storage.models_v2.statistical_context import (
     StatisticalProfile,
     StatisticalQualityMetrics,
@@ -55,6 +56,7 @@ from dataraum_context.storage.models_v2.temporal_context import TemporalQualityM
 from dataraum_context.storage.models_v2.topological_context import (
     TopologicalQualityMetrics,
 )
+from dataraum_context.storage.models_v2.type_inference import TypeCandidate, TypeDecision
 
 # ============================================================================
 # Dimension Scoring Functions
@@ -98,12 +100,21 @@ def _compute_completeness_score(
 def _compute_validity_score(
     parse_success_rate: float | None,
     outlier_ratio: float | None,
+    skewness: float | None = None,
+    kurtosis: float | None = None,
+    cv: float | None = None,
 ) -> tuple[float, str]:
     """Compute validity score from parse success and outlier detection.
+
+    Distribution shape metrics (skewness, kurtosis, CV) provide context for outliers
+    but do not penalize the score. They help explain whether outliers are expected.
 
     Args:
         parse_success_rate: % of values that parse to inferred type (0-1)
         outlier_ratio: Ratio of outliers detected (0-1)
+        skewness: Distribution asymmetry (Phase 2 metric)
+        kurtosis: Tail heaviness (Phase 2 metric)
+        cv: Coefficient of variation - dispersion (Phase 2 metric)
 
     Returns:
         Tuple of (score, explanation)
@@ -121,6 +132,17 @@ def _compute_validity_score(
             penalty = min((outlier_ratio - 0.05) / 0.10, 0.5)  # Max 50% penalty
             score *= 1.0 - penalty
             factors.append(f"{outlier_ratio * 100:.1f}% outliers")
+
+    # Phase 2 distribution shape context (informational, no penalty)
+    if skewness is not None and abs(skewness) > 2.0:
+        direction = "right" if skewness > 0 else "left"
+        factors.append(f"skewness={skewness:.2f} ({direction}-skewed)")
+
+    if kurtosis is not None and abs(kurtosis) > 5.0:
+        factors.append(f"kurtosis={kurtosis:.2f} (heavy-tailed)")
+
+    if cv is not None and cv > 1.0:
+        factors.append(f"CV={cv:.2f} (high dispersion)")
 
     if not factors:
         return 1.0, "No validity metrics available"
@@ -304,17 +326,38 @@ def _aggregate_statistical_issues(
     column_id: str,
     column_name: str,
 ) -> list[QualitySynthesisIssue]:
-    """Extract quality issues from statistical quality metrics."""
-    if not stat_quality or not stat_quality.quality_issues:
+    """Extract quality issues from statistical quality metrics using Pydantic deserialization."""
+    if not stat_quality or not stat_quality.quality_data:
         return []
 
-    # Handle both list and dict formats
-    issues_list = stat_quality.quality_issues
-    if isinstance(issues_list, dict):
-        issues_list = issues_list.get("issues", [])
+    # Deserialize JSONB to Pydantic model
+    from dataraum_context.profiling.models import StatisticalQualityResult
+
+    try:
+        quality_result = StatisticalQualityResult.model_validate(stat_quality.quality_data)
+        issues_list = quality_result.quality_issues
+    except Exception:
+        # Fallback to dict access if deserialization fails
+        issues_list = stat_quality.quality_data.get("quality_issues", [])
+
+    if not issues_list:
+        return []
 
     issues = []
-    for issue_dict in issues_list:
+    for quality_issue in issues_list:
+        # Handle both dict (from Pydantic) and QualityIssue object (shouldn't happen but be defensive)
+        if isinstance(quality_issue, dict):
+            issue_type = quality_issue.get("issue_type", "unknown")
+            severity_str = quality_issue.get("severity", "warning")
+            description = quality_issue.get("description", "Statistical quality issue")
+            evidence = quality_issue.get("evidence", {})
+        else:
+            # Shouldn't happen, but handle it
+            issue_type = getattr(quality_issue, "issue_type", "unknown")
+            severity_str = getattr(quality_issue, "severity", "warning")
+            description = getattr(quality_issue, "description", "Statistical quality issue")
+            evidence = getattr(quality_issue, "evidence", {})
+
         # Map severity
         severity_map = {
             "critical": QualitySeverity.CRITICAL,
@@ -322,13 +365,15 @@ def _aggregate_statistical_issues(
             "warning": QualitySeverity.WARNING,
             "info": QualitySeverity.INFO,
         }
-        severity = severity_map.get(issue_dict.get("severity", "warning"), QualitySeverity.WARNING)
+        severity = severity_map.get(severity_str, QualitySeverity.WARNING)
 
         # Map to dimension
-        issue_type = issue_dict.get("issue_type", "unknown")
         dimension_map = {
             "benford_violation": QualityDimension.ACCURACY,
             "outliers": QualityDimension.VALIDITY,
+            "outliers_iqr": QualityDimension.VALIDITY,
+            "outliers_isolation_forest": QualityDimension.VALIDITY,
+            "distribution_shift": QualityDimension.CONSISTENCY,
             "multicollinearity": QualityDimension.CONSISTENCY,
         }
         dimension = dimension_map.get(issue_type, QualityDimension.VALIDITY)
@@ -341,9 +386,9 @@ def _aggregate_statistical_issues(
             table_id=None,
             column_id=column_id,
             column_name=column_name,
-            description=issue_dict.get("description", "Statistical quality issue"),
+            description=description,
             recommendation=None,
-            evidence=issue_dict.get("evidence", {}),
+            evidence=evidence,
             source_pillar=1,  # Statistical
             source_module="statistical_quality",
             detected_at=stat_quality.computed_at,
@@ -358,27 +403,48 @@ def _aggregate_temporal_issues(
     column_id: str,
     column_name: str,
 ) -> list[QualitySynthesisIssue]:
-    """Extract quality issues from temporal quality metrics."""
-    if not temp_quality or not temp_quality.quality_issues:
+    """Extract quality issues from temporal quality metrics using Pydantic deserialization."""
+    if not temp_quality or not temp_quality.temporal_data:
         return []
 
-    # Handle both list and dict formats
-    issues_list = temp_quality.quality_issues
-    if isinstance(issues_list, dict):
-        issues_list = issues_list.get("issues", [])
+    # Deserialize JSONB to Pydantic model
+    from dataraum_context.quality.models import TemporalQualityResult
+
+    try:
+        quality_result = TemporalQualityResult.model_validate(temp_quality.temporal_data)
+        issues_list = quality_result.quality_issues
+    except Exception:
+        # Fallback to dict access if deserialization fails
+        issues_list = temp_quality.temporal_data.get("quality_issues", [])
+
+    if not issues_list:
+        return []
 
     issues = []
-    for issue_dict in issues_list:
+    for quality_issue in issues_list:
+        # Handle both QualityIssue object and dict
+        if hasattr(quality_issue, "issue_type"):
+            # It's a Pydantic QualityIssue
+            issue_type = quality_issue.issue_type
+            severity_str = quality_issue.severity
+            description = quality_issue.description
+            evidence = quality_issue.evidence
+        else:
+            # It's a dict
+            issue_type = quality_issue.get("issue_type", "unknown")
+            severity_str = quality_issue.get("severity", "warning")
+            description = quality_issue.get("description", "Temporal quality issue")
+            evidence = quality_issue.get("evidence", {})
+
         severity_map = {
             "critical": QualitySeverity.CRITICAL,
             "error": QualitySeverity.ERROR,
             "warning": QualitySeverity.WARNING,
             "info": QualitySeverity.INFO,
         }
-        severity = severity_map.get(issue_dict.get("severity", "warning"), QualitySeverity.WARNING)
+        severity = severity_map.get(severity_str, QualitySeverity.WARNING)
 
         # Map to dimension
-        issue_type = issue_dict.get("issue_type", "unknown")
         dimension_map = {
             "low_completeness": QualityDimension.COMPLETENESS,
             "large_gap": QualityDimension.COMPLETENESS,
@@ -396,9 +462,9 @@ def _aggregate_temporal_issues(
             table_id=None,
             column_id=column_id,
             column_name=column_name,
-            description=issue_dict.get("description", "Temporal quality issue"),
+            description=description,
             recommendation=None,
-            evidence=issue_dict.get("evidence", {}),
+            evidence=evidence,
             source_pillar=4,  # Temporal
             source_module="temporal_quality",
             detected_at=temp_quality.computed_at,
@@ -442,10 +508,19 @@ def _aggregate_topological_issues(
             )
         )
 
-    # Check for anomalous cycles
-    if topo_quality.anomalous_cycles:
-        cycle_count = len(topo_quality.anomalous_cycles.get("cycles", []))
-        if cycle_count > 0:
+    # Check for anomalous cycles (deserialize from JSONB)
+    if topo_quality.topology_data:
+        try:
+            from dataraum_context.quality.models import TopologicalQualityResult
+
+            topology_result = TopologicalQualityResult.model_validate(topo_quality.topology_data)
+            anomalous_cycles = topology_result.anomalous_cycles
+        except Exception:
+            # Fallback to dict access
+            anomalous_cycles = topo_quality.topology_data.get("anomalous_cycles", [])
+
+        if anomalous_cycles and len(anomalous_cycles) > 0:
+            cycle_count = len(anomalous_cycles)
             issues.append(
                 QualitySynthesisIssue(
                     issue_id=str(uuid4()),
@@ -667,6 +742,25 @@ async def assess_column_quality(
         fd_results = list(fd_results) + fd_results_with_determinant
         fd_violations = sum(1 for fd in fd_results if fd.violation_count and fd.violation_count > 0)
 
+        # Fetch type decision to get parse rate
+        type_decision_stmt = select(TypeDecision).where(TypeDecision.column_id == column.column_id)
+        type_decision = (await session.execute(type_decision_stmt)).scalar_one_or_none()
+
+        # If we have a type decision, get the parse rate from the winning type candidate
+        parse_rate = None
+        if type_decision:
+            # Find the type candidate that matches the decided type
+            type_candidate_stmt = (
+                select(TypeCandidate)
+                .where(TypeCandidate.column_id == column.column_id)
+                .where(TypeCandidate.data_type == type_decision.decided_type)
+                .order_by(TypeCandidate.confidence.desc())
+                .limit(1)
+            )
+            type_candidate = (await session.execute(type_candidate_stmt)).scalar_one_or_none()
+            if type_candidate and type_candidate.parse_success_rate is not None:
+                parse_rate = type_candidate.parse_success_rate
+
         # Compute dimensional scores
         dimension_scores = []
 
@@ -687,7 +781,7 @@ async def assess_column_quality(
         )
 
         # Validity
-        parse_rate = None  # TODO: Get from type inference
+        # parse_rate was already fetched above from type_candidate.parse_success_rate
         # Get outlier ratio from outlier detection metrics
         outlier_ratio = None
         if stat_quality:
@@ -695,7 +789,33 @@ async def assess_column_quality(
             outlier_ratio = (
                 stat_quality.iqr_outlier_ratio or stat_quality.isolation_forest_anomaly_ratio
             )
-        score, explanation = _compute_validity_score(parse_rate, outlier_ratio)
+
+        # Get Phase 2 distribution shape metrics from JSONB profile_data
+        # Deserialize JSONB into Pydantic model for type-safe access
+        skewness = None
+        kurtosis = None
+        cv = None
+        if stat_profile and stat_profile.profile_data:
+            from dataraum_context.profiling.models import ColumnProfile
+
+            # Pydantic handles deserialization automatically
+            try:
+                profile = ColumnProfile.model_validate(stat_profile.profile_data)
+                if profile.numeric_stats:
+                    skewness = profile.numeric_stats.skewness
+                    kurtosis = profile.numeric_stats.kurtosis
+                    cv = profile.numeric_stats.cv
+            except Exception:
+                # Fallback to dict access if model validation fails
+                numeric_stats = stat_profile.profile_data.get("numeric_stats")
+                if numeric_stats:
+                    skewness = numeric_stats.get("skewness")
+                    kurtosis = numeric_stats.get("kurtosis")
+                    cv = numeric_stats.get("cv")
+
+        score, explanation = _compute_validity_score(
+            parse_rate, outlier_ratio, skewness, kurtosis, cv
+        )
         dimension_scores.append(
             DimensionScore(
                 dimension=QualityDimension.VALIDITY,
@@ -709,10 +829,10 @@ async def assess_column_quality(
         )
 
         # Consistency
-        # Get VIF score from statistical quality metrics
-        vif_score = None
-        if stat_quality:
-            vif_score = stat_quality.vif_score
+        # Get VIF score from statistical quality metrics JSONB
+        vif_score = None  # TODO VIF score is not calculated yet
+        if stat_quality and stat_quality.quality_data:
+            vif_score = stat_quality.quality_data.get("vif_score")
         # Note: Topological metrics are table-level, handled in table assessment
         score, explanation = _compute_consistency_score(
             vif_score,
@@ -735,8 +855,15 @@ async def assess_column_quality(
 
         # Uniqueness
         cardinality_ratio = stat_profile.cardinality_ratio if stat_profile else None
-        duplicate_count = stat_profile.duplicate_count if stat_profile else None
         total_count = stat_profile.total_count if stat_profile else None
+
+        # Calculate duplicate_count from cardinality
+        duplicate_count = None
+        if stat_profile and stat_profile.distinct_count is not None:
+            non_null_count = total_count - stat_profile.null_count
+            duplicate_count = (
+                non_null_count - stat_profile.distinct_count if non_null_count > 0 else 0
+            )
         score, explanation = _compute_uniqueness_score(
             cardinality_ratio, duplicate_count, total_count
         )
@@ -754,10 +881,11 @@ async def assess_column_quality(
 
         # Timeliness
         # Get timeliness metrics from temporal quality
-        is_stale = getattr(temp_quality, "is_stale", None) if temp_quality else None
-        freshness_days = (
-            getattr(temp_quality, "data_freshness_days", None) if temp_quality else None
-        )
+        is_stale = temp_quality.is_stale if temp_quality else None
+        freshness_days = None
+        if temp_quality and temp_quality.temporal_data:
+            # Extract from JSONB
+            freshness_days = temp_quality.temporal_data.get("data_freshness_days")
         score, explanation = _compute_timeliness_score(is_stale, freshness_days)
         dimension_scores.append(
             DimensionScore(
@@ -817,6 +945,14 @@ async def assess_column_quality(
 
         # Note: Domain quality is table-level, handled in table assessment
 
+        # Check for semantic annotations
+        semantic_stmt = select(SemanticAnnotation).where(
+            SemanticAnnotation.column_id == column.column_id
+        )
+        has_semantic_annotation = (
+            await session.execute(semantic_stmt)
+        ).scalar_one_or_none() is not None
+
         # Update issue counts in dimension scores
         for dim_score in dimension_scores:
             dim_issues = [i for i in issues if i.dimension == dim_score.dimension]
@@ -836,7 +972,7 @@ async def assess_column_quality(
             issues=issues,
             has_statistical_quality=stat_quality is not None,
             has_temporal_quality=temp_quality is not None,
-            has_semantic_context=False,  # TODO: Check semantic annotations
+            has_semantic_context=has_semantic_annotation,
             assessed_at=datetime.now(UTC),
         )
 

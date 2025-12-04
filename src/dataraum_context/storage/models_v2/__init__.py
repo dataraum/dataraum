@@ -98,8 +98,6 @@ from dataraum_context.storage.models_v2.temporal_context import (
 # Pillar 2: Topological Context
 from dataraum_context.storage.models_v2.topological_context import (
     MultiTableTopologyMetrics,
-    PersistentCycle,
-    StructuralComplexityHistory,
     TopologicalQualityMetrics,
 )
 
@@ -128,8 +126,6 @@ __all__ = [
     # Pillar 2: Topological Context
     "TopologicalQualityMetrics",
     "MultiTableTopologyMetrics",
-    "PersistentCycle",
-    "StructuralComplexityHistory",
     "Relationship",
     "JoinPath",
     # Pillar 3: Semantic Context

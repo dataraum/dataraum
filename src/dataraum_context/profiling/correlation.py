@@ -23,24 +23,22 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.core.models.base import ColumnRef, Result
-from dataraum_context.core.models.correlation import (
+from dataraum_context.profiling.models import (
     CategoricalAssociation as CategoricalAssociationModel,
-)
-from dataraum_context.core.models.correlation import (
-    CorrelationAnalysisResult,
-    NumericCorrelation,
-)
-from dataraum_context.core.models.correlation import (
-    DerivedColumn as DerivedColumnModel,
-)
-from dataraum_context.core.models.correlation import (
-    FunctionalDependency as FunctionalDependencyModel,
 )
 from dataraum_context.profiling.models import (
     ColumnVIF,
     ConditionIndexAnalysis,
+    CorrelationAnalysisResult,
     DependencyGroup,
     MulticollinearityAnalysis,
+    NumericCorrelation,
+)
+from dataraum_context.profiling.models import (
+    DerivedColumn as DerivedColumnModel,
+)
+from dataraum_context.profiling.models import (
+    FunctionalDependency as FunctionalDependencyModel,
 )
 from dataraum_context.storage.models_v2.core import Column, Table
 from dataraum_context.storage.models_v2.correlation_context import (

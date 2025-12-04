@@ -1,13 +1,17 @@
 """Domain-specific quality models.
 
-Pydantic models for domain-specific quality metrics,
-focusing on financial domain validation.
+Pydantic models for domain-specific quality metrics.
+Moved from core/models/domain_quality.py - these are domain-specific quality outputs.
 """
 
 from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+# ============================================================================
+# Financial Domain Models
+# ============================================================================
 
 
 class DoubleEntryResult(BaseModel):
@@ -83,6 +87,16 @@ class FiscalPeriodIntegrityCheck(BaseModel):
     total_amount: float
 
 
+class FinancialQualityIssue(BaseModel):
+    """Financial quality issue."""
+
+    issue_type: str  # 'double_entry_imbalance', 'sign_violation', 'period_incomplete', etc.
+    severity: str  # 'minor', 'moderate', 'severe', 'critical'
+    description: str
+    affected_accounts: list[str] = Field(default_factory=list)
+    recommendation: str | None = None
+
+
 class FinancialQualityResult(BaseModel):
     """Complete financial quality assessment."""
 
@@ -126,16 +140,6 @@ class FinancialQualityResult(BaseModel):
     has_issues: bool
 
 
-class FinancialQualityIssue(BaseModel):
-    """Financial quality issue."""
-
-    issue_type: str  # 'double_entry_imbalance', 'sign_violation', 'period_incomplete', etc.
-    severity: str  # 'minor', 'moderate', 'severe', 'critical'
-    description: str
-    affected_accounts: list[str] = Field(default_factory=list)
-    recommendation: str | None = None
-
-
 class DomainQualityResult(BaseModel):
     """Generic domain quality result."""
 
@@ -153,6 +157,11 @@ class DomainQualityResult(BaseModel):
 
     # Domain-specific result (if financial)
     financial_quality: FinancialQualityResult | None = None
+
+
+# ============================================================================
+# Configuration Models
+# ============================================================================
 
 
 class SignConventionConfig(BaseModel):

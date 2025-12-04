@@ -3,24 +3,24 @@
 import numpy as np
 import pytest
 
-from dataraum_context.core.models.correlation import (
-    CategoricalAssociation as CategoricalAssociationResult,
-)
-from dataraum_context.core.models.correlation import (
-    CorrelationAnalysisResult,
-    NumericCorrelation,
-)
-from dataraum_context.core.models.correlation import (
-    DerivedColumn as DerivedColumnResult,
-)
-from dataraum_context.core.models.correlation import (
-    FunctionalDependency as FunctionalDependencyResult,
-)
 from dataraum_context.profiling.correlation import (
     compute_categorical_associations,
     compute_numeric_correlations,
     detect_derived_columns,
     detect_functional_dependencies,
+)
+from dataraum_context.profiling.models import (
+    CategoricalAssociation as CategoricalAssociationResult,
+)
+from dataraum_context.profiling.models import (
+    CorrelationAnalysisResult,
+    NumericCorrelation,
+)
+from dataraum_context.profiling.models import (
+    DerivedColumn as DerivedColumnResult,
+)
+from dataraum_context.profiling.models import (
+    FunctionalDependency as FunctionalDependencyResult,
 )
 from dataraum_context.storage.models_v2.core import Column, Source, Table
 

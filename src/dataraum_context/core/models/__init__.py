@@ -1,21 +1,22 @@
-"""Core models: ONLY truly shared base types and cross-domain models.
+"""Core models: ONLY truly shared base types.
 
 ARCHITECTURAL PRINCIPLE: NO DOMAIN RE-EXPORTS
 ----------------------------------------------
-This package contains ONLY:
-1. Truly shared base types (Result, DataType, ColumnRef, etc.)
-2. Cross-domain models (correlation, domain_quality, quality_synthesis)
+This package contains ONLY truly shared base types (Result, DataType, ColumnRef, etc.)
 
 Domain models live in their respective packages:
-- profiling/models.py    → Statistical profiling + quality models
-- enrichment/models.py   → Enrichment models (topological, temporal, semantic)
-- quality/models.py      → Quality rules, scores, anomalies
-- staging/models.py      → Staging models
+- profiling/models.py           → Statistical profiling + correlation models
+- enrichment/models.py          → Enrichment models (topological, temporal, semantic)
+- quality/models.py             → Quality synthesis models
+- quality/domains/models.py     → Domain-specific quality models (financial, etc.)
+- staging/models.py             → Staging models
 
 Import domain models directly from their packages:
-    from dataraum_context.profiling.models import BenfordAnalysis
+    from dataraum_context.profiling.models import BenfordAnalysis, NumericCorrelation
     from dataraum_context.enrichment.models import TopologicalQualityResult
-    from dataraum_context.quality.models import QualityRule
+    from dataraum_context.quality.models import QualityRule, QualitySynthesisResult
+    from dataraum_context.quality.domains.models import FinancialQualityConfig
+    from dataraum_context.staging.models import StagedTable
 """
 
 # =============================================================================
@@ -36,59 +37,11 @@ from dataraum_context.core.models.base import (
 )
 
 # =============================================================================
-# Cross-Domain Models (core/models/*)
-# =============================================================================
-# Correlation (cross-domain analysis)
-from dataraum_context.core.models.correlation import (
-    CategoricalAssociation as CategoricalAssociationModel,
-)
-from dataraum_context.core.models.correlation import (
-    CorrelationAnalysisResult,
-    CorrelationMatrix,
-    NumericCorrelation,
-)
-from dataraum_context.core.models.correlation import (
-    DerivedColumn as DerivedColumnModel,
-)
-from dataraum_context.core.models.correlation import (
-    FunctionalDependency as FunctionalDependencyModel,
-)
-
-# Domain Quality (financial reporting, etc.)
-from dataraum_context.core.models.domain_quality import (
-    DomainQualityResult,
-    DoubleEntryResult,
-    FinancialQualityConfig,
-    FinancialQualityIssue,
-    FinancialQualityResult,
-    FiscalPeriodIntegrityCheck,
-    IntercompanyTransactionMatch,
-    SignConventionConfig,
-)
-from dataraum_context.core.models.domain_quality import (
-    SignConventionViolation as SignConventionViolationModel,
-)
-
-# Quality Synthesis (aggregation across pillars)
-# Moved to quality/models.py - re-export for backward compatibility
-from dataraum_context.quality.models import (
-    ColumnQualityAssessment,
-    DatasetQualityOverview,
-    DatasetQualitySynthesisResult,
-    DimensionScore,
-    QualityDimension,
-    QualitySynthesisIssue,
-    QualitySynthesisResult,
-    QualitySynthesisSeverity,
-    TableQualityAssessment,
-)
-
-# =============================================================================
 # Public API
 # =============================================================================
 
 __all__ = [
-    # Base types
+    # Base types - truly shared across all domains
     "Result",
     "DataType",
     "SemanticRole",
@@ -99,31 +52,4 @@ __all__ = [
     "ColumnRef",
     "TableRef",
     "SourceConfig",
-    # Cross-domain (Correlation)
-    "NumericCorrelation",
-    "CategoricalAssociationModel",
-    "FunctionalDependencyModel",
-    "DerivedColumnModel",
-    "CorrelationMatrix",
-    "CorrelationAnalysisResult",
-    # Cross-domain (Domain Quality)
-    "DomainQualityResult",
-    "FinancialQualityResult",
-    "DoubleEntryResult",
-    "SignConventionViolationModel",
-    "IntercompanyTransactionMatch",
-    "FiscalPeriodIntegrityCheck",
-    "FinancialQualityIssue",
-    "FinancialQualityConfig",
-    "SignConventionConfig",
-    # Cross-domain (Quality Synthesis)
-    "QualitySynthesisResult",
-    "TableQualityAssessment",
-    "ColumnQualityAssessment",
-    "DimensionScore",
-    "QualityDimension",
-    "QualitySynthesisIssue",
-    "QualitySynthesisSeverity",
-    "DatasetQualityOverview",
-    "DatasetQualitySynthesisResult",
 ]

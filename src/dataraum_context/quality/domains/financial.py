@@ -29,7 +29,7 @@ import yaml
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.core.models.base import Result
-from dataraum_context.core.models.domain_quality import (
+from dataraum_context.quality.domains.models import (
     DoubleEntryResult,
     FinancialQualityConfig,
     FinancialQualityIssue,

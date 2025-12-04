@@ -608,33 +608,6 @@ class QualitySynthesisResult(BaseModel):
     synthesized_at: datetime
 
 
-class DatasetQualityOverview(BaseModel):
-    """Quality overview for an entire dataset (all tables)."""
-
-    source_id: str
-    source_name: str
-
-    # Table assessments
-    table_assessments: list[TableQualityAssessment] = Field(default_factory=list)
-
-    # Overall metrics
-    total_tables: int
-    total_columns: int
-    average_table_quality: float = Field(ge=0.0, le=1.0)
-    average_column_quality: float = Field(ge=0.0, le=1.0)
-
-    # Issues rollup
-    total_issues: int
-    critical_issues: int
-    issues_by_dimension: dict[str, int] = Field(default_factory=dict)
-
-    # Dataset-level summary
-    dataset_summary: str | None = Field(None)
-
-    # Computed at
-    assessed_at: datetime
-
-
 class DatasetQualitySynthesisResult(BaseModel):
     """Complete dataset-level quality synthesis result.
 

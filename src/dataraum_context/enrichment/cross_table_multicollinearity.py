@@ -26,7 +26,7 @@ from dataraum_context.core.models.base import (
 from dataraum_context.profiling.models import (
     CrossTableDependencyGroup,
     CrossTableMulticollinearityAnalysis,
-    JoinPath,
+    SingleRelationshipJoin,
 )
 from dataraum_context.storage.models_v2 import (
     Column,
@@ -367,7 +367,7 @@ def _find_join_paths_for_group(
     column_ids: list[str],
     relationships: list[EnrichedRelationship],
     column_metadata: list[ColumnMetadata],
-) -> list[JoinPath]:
+) -> list[SingleRelationshipJoin]:
     """Find join paths connecting columns in a dependency group.
 
     Args:
@@ -376,7 +376,7 @@ def _find_join_paths_for_group(
         column_metadata: Metadata for all columns
 
     Returns:
-        List of JoinPath objects showing how columns are connected
+        List of SingleRelationshipJoin objects showing how columns are connected
     """
     # Build mapping of column_id -> table_id
     col_to_table = {col.column_id: col.table_id for col in column_metadata}
@@ -389,7 +389,7 @@ def _find_join_paths_for_group(
     for rel in relationships:
         if rel.from_table_id in tables_in_group and rel.to_table_id in tables_in_group:
             join_paths.append(
-                JoinPath(
+                SingleRelationshipJoin(
                     from_table=rel.from_table,
                     from_column=rel.from_column,
                     to_table=rel.to_table,

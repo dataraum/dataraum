@@ -14,3 +14,25 @@ TOD- Evaluate all todos --> phase 7
     complexity_trend: Mapped[str | None] = mapped_column(String)
     complexity_within_bounds: Mapped[bool | None] = mapped_column(Boolean)
     anomalous_cycles: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
+### profiling/models.py (5 unused)
+
+1. **DetectedPattern** - 0 usages
+   - Pattern detection model
+   - Never referenced
+
+2. **ColumnCastResult** - 0 usages
+   - Type casting result model
+   - Never referenced
+
+3. **TypeResolutionResult** - 0 usages
+   - Type resolution result model
+   - Never referenced
+
+
+### quality/models.py (2 unused)
+
+1. **RuleResult** - 0 usages
+   - Quality rule result model
+   - Never referenced

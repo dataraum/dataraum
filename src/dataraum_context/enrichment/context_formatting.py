@@ -18,8 +18,8 @@ from dataraum_context.profiling.models import (
     CrossTableDependencyGroup,
     CrossTableMulticollinearityAnalysis,
     DependencyGroup,
-    JoinPath,
     MulticollinearityAnalysis,
+    SingleRelationshipJoin,
 )
 
 
@@ -409,11 +409,11 @@ def _generate_multicollinearity_recommendations(
 # === Cross-Table Multicollinearity Formatting ===
 
 
-def _format_join_path(join_path: JoinPath) -> dict[str, Any]:
+def _format_join_path(join_path: SingleRelationshipJoin) -> dict[str, Any]:
     """Format a join path for LLM consumption.
 
     Args:
-        join_path: JoinPath object describing a relationship
+        join_path: SingleRelationshipJoin object describing a relationship
 
     Returns:
         Formatted join path dict

@@ -5,7 +5,6 @@ Moved from core/models/domain_quality.py - these are domain-specific quality out
 """
 
 from datetime import datetime
-from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -55,20 +54,6 @@ class SignConventionViolation(BaseModel):
     violation_severity: str  # 'minor', 'moderate', 'severe'
     description: str
     transaction_date: datetime | None = None
-
-
-class IntercompanyTransactionMatch(BaseModel):
-    """Intercompany transaction matching status."""
-
-    transaction_id: str
-    source_entity: str
-    target_entity: str
-    amount: float
-    transaction_date: datetime
-    is_matched: bool
-    matching_transaction_id: str | None = None
-    elimination_status: str  # 'eliminated', 'pending', 'orphaned'
-    description: str | None = None
 
 
 class FiscalPeriodIntegrityCheck(BaseModel):
@@ -125,7 +110,6 @@ class FinancialQualityResult(BaseModel):
     # Consolidation
     intercompany_elimination_rate: float | None = Field(None, ge=0.0, le=1.0)
     orphaned_intercompany: int | None = None
-    intercompany_details: list[IntercompanyTransactionMatch] = Field(default_factory=list)
 
     # Period integrity
     fiscal_period_complete: bool
@@ -138,25 +122,6 @@ class FinancialQualityResult(BaseModel):
     # Issues
     quality_issues: list[FinancialQualityIssue] = Field(default_factory=list)
     has_issues: bool
-
-
-class DomainQualityResult(BaseModel):
-    """Generic domain quality result."""
-
-    metric_id: str
-    table_id: str
-    domain: str
-    computed_at: datetime
-
-    # Generic metrics storage
-    metrics: dict[str, Any]
-
-    # Overall compliance
-    domain_compliance_score: float = Field(ge=0.0, le=1.0)
-    violations: list[dict[str, Any]] = Field(default_factory=list)
-
-    # Domain-specific result (if financial)
-    financial_quality: FinancialQualityResult | None = None
 
 
 # ============================================================================

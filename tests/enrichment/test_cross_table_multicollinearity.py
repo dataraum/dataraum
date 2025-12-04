@@ -21,7 +21,7 @@ from dataraum_context.enrichment.cross_table_multicollinearity import (
 from dataraum_context.profiling.models import (
     CrossTableDependencyGroup,
     CrossTableMulticollinearityAnalysis,
-    JoinPath,
+    SingleRelationshipJoin,
 )
 from dataraum_context.storage.models_v2 import (
     Column,
@@ -55,7 +55,7 @@ def test_cross_table_interpretation_none():
 
 def test_cross_table_interpretation_moderate():
     """Test interpretation for moderate cross-table multicollinearity."""
-    join_path = JoinPath(
+    join_path = SingleRelationshipJoin(
         from_table="orders",
         from_column="customer_id",
         to_table="customers",
@@ -100,7 +100,7 @@ def test_cross_table_interpretation_moderate():
 
 def test_cross_table_interpretation_severe():
     """Test interpretation for severe cross-table multicollinearity."""
-    join_path = JoinPath(
+    join_path = SingleRelationshipJoin(
         from_table="orders",
         from_column="total_price",
         to_table="invoices",
@@ -170,7 +170,7 @@ def test_cross_table_group_recommendation_single_table():
 
 def test_cross_table_group_recommendation_fk_severe():
     """Test recommendations for severe FK-based dependencies."""
-    join_path = JoinPath(
+    join_path = SingleRelationshipJoin(
         from_table="orders",
         from_column="customer_id",
         to_table="customers",
@@ -206,7 +206,7 @@ def test_cross_table_group_recommendation_fk_severe():
 
 def test_cross_table_group_recommendation_semantic_severe():
     """Test recommendations for severe semantic dependencies."""
-    join_path = JoinPath(
+    join_path = SingleRelationshipJoin(
         from_table="orders",
         from_column="total_amount",
         to_table="invoices",
@@ -260,7 +260,7 @@ def test_cross_table_recommendations_none():
 def test_cross_table_recommendations_with_denormalization():
     """Test recommendations detect denormalization patterns."""
     # Create 2 FK-based groups to trigger denormalization warning
-    join_path1 = JoinPath(
+    join_path1 = SingleRelationshipJoin(
         from_table="orders",
         from_column="customer_name",
         to_table="customers",
@@ -272,7 +272,7 @@ def test_cross_table_recommendations_with_denormalization():
         detection_method="tda",
     )
 
-    join_path2 = JoinPath(
+    join_path2 = SingleRelationshipJoin(
         from_table="orders",
         from_column="customer_email",
         to_table="customers",
@@ -329,7 +329,7 @@ def test_cross_table_recommendations_with_denormalization():
 
 def test_cross_table_recommendations_with_semantic_duplication():
     """Test recommendations detect semantic duplication."""
-    join_path = JoinPath(
+    join_path = SingleRelationshipJoin(
         from_table="orders",
         from_column="total",
         to_table="invoices",
@@ -382,7 +382,7 @@ def test_cross_table_recommendations_with_semantic_duplication():
 
 def test_format_cross_table_multicollinearity_for_llm():
     """Test complete formatting for LLM consumption."""
-    join_path = JoinPath(
+    join_path = SingleRelationshipJoin(
         from_table="orders",
         from_column="customer_id",
         to_table="customers",

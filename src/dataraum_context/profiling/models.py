@@ -203,14 +203,6 @@ class StatisticalQualityResult(BaseModel):
     )  # [{issue_type, severity, description}]
 
 
-class StatisticalProfilingResult(BaseModel):
-    """Result of statistical profiling and quality analysis operation."""
-
-    profiles: list[ColumnProfile] = Field(default_factory=list)
-    statistical_quality: list[StatisticalQualityResult] = Field(default_factory=list)
-    duration_seconds: float
-
-
 # === Multicollinearity Models ===
 
 
@@ -342,8 +334,12 @@ class MulticollinearityAnalysis(BaseModel):
 # === Cross-Table Multicollinearity Models (Phase 2) ===
 
 
-class JoinPath(BaseModel):
-    """Describes how two columns are connected through relationships."""
+class SingleRelationshipJoin(BaseModel):
+    """Describes a single relationship connecting two columns across tables.
+
+    Represents a direct join between two columns through a single relationship.
+    For multi-step join paths, see enrichment.models.JoinPath.
+    """
 
     from_table: str
     from_column: str
@@ -373,7 +369,7 @@ class CrossTableDependencyGroup(BaseModel):
     variance_proportions: list[float]  # VDP values for each column
 
     # Relationship context
-    join_paths: list[JoinPath]  # How columns are connected
+    join_paths: list[SingleRelationshipJoin]  # How columns are connected
     relationship_types: list[RelationshipType]  # FK, CORRELATION, SEMANTIC, etc.
 
     @property
@@ -549,22 +545,6 @@ class DerivedColumn(BaseModel):
     mismatch_examples: list[dict[str, Any]] | None = None
 
     # Metadata
-    computed_at: datetime
-
-
-class CorrelationMatrix(BaseModel):
-    """Correlation matrix for all numeric columns in a table."""
-
-    table_id: str
-    table_name: str
-    column_names: list[str]
-    column_ids: list[str]
-
-    # Correlation matrix (row-major order)
-    pearson_matrix: list[list[float]]  # n x n matrix
-    spearman_matrix: list[list[float]] | None = None
-
-    # Computed at
     computed_at: datetime
 
 

@@ -1,95 +1,53 @@
-"""Main profiling orchestrator."""
+"""Main profiling orchestrator.
 
-import time
-from typing import Any
+This module provides the main entry points for profiling:
+- profile_schema(): Raw stage profiling (type discovery)
+- profile_statistics(): Typed stage profiling (all statistics)
+- profile_and_resolve_types(): Combined profiling + type resolution
+"""
 
 import duckdb
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.core.models.base import Result
-from dataraum_context.profiling.models import ProfileResult, TypeResolutionResult
-from dataraum_context.profiling.statistical import compute_statistical_profile
-from dataraum_context.profiling.type_inference import infer_type_candidates
+from dataraum_context.profiling.models import (
+    SchemaProfileResult,
+    StatisticsProfileResult,
+    TypeResolutionResult,
+)
+from dataraum_context.profiling.schema_profiler import (
+    profile_schema as _profile_schema,
+)
+from dataraum_context.profiling.statistics_profiler import (
+    profile_statistics as _profile_statistics,
+)
 from dataraum_context.profiling.type_resolution import resolve_types
-from dataraum_context.storage.models_v2 import Table
 
 
-async def profile_table(
+# Re-export for convenience
+async def profile_schema(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: AsyncSession,
-) -> Result[ProfileResult]:
-    """Profile a table to generate statistical metadata and type candidates.
+) -> Result[SchemaProfileResult]:
+    """Profile raw table structure for type discovery.
 
-    This is the main entry point for profiling. It:
-    1. Computes statistical profiles (counts, nulls, distributions)
-    2. Detects patterns and infers type candidates
-    3. Stores results in metadata database
-
-    Args:
-        table_id: Table ID to profile
-        duckdb_conn: DuckDB connection
-        session: SQLAlchemy session
-
-    Returns:
-        Result containing ProfileResult or error
+    See schema_profiler.profile_schema for full documentation.
     """
-    start_time = time.time()
+    return await _profile_schema(table_id, duckdb_conn, session)
 
-    try:
-        # Get table from metadata
-        table = await session.get(Table, str(table_id))
-        if not table:
-            return Result.fail(f"Table not found: {table_id}")
 
-        if not table.duckdb_path:
-            return Result.fail(f"Table has no DuckDB path: {table_id}")
+async def profile_statistics(
+    table_id: str,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    session: AsyncSession,
+    include_correlations: bool = True,
+) -> Result[StatisticsProfileResult]:
+    """Profile typed table to compute all row-based statistics.
 
-        # Step 1: Statistical profiling
-        stats_result = await compute_statistical_profile(
-            table=table,
-            duckdb_conn=duckdb_conn,
-            session=session,
-        )
-
-        if not stats_result.success:
-            return Result.fail(f"Statistical profiling failed: {stats_result.error}")
-
-        # Step 2: Type inference (only for 'raw' layer tables)
-        type_candidates: list[Any] = []
-        if table.layer == "raw":
-            type_result = await infer_type_candidates(
-                table=table,
-                duckdb_conn=duckdb_conn,
-                session=session,
-            )
-
-            if not type_result.success:
-                return Result.fail(f"Type inference failed: {type_result.error}")
-
-            type_candidates = type_result.unwrap()
-
-        # Update table's last_profiled_at
-        from datetime import UTC, datetime
-
-        table.last_profiled_at = datetime.now(UTC)
-        await session.commit()
-
-        # Build result
-        duration = time.time() - start_time
-
-        profiles = stats_result.value
-
-        result = ProfileResult(
-            profiles=profiles if profiles else [],
-            type_candidates=type_candidates if type_candidates else [],
-            duration_seconds=duration,
-        )
-
-        return Result.ok(result)
-
-    except Exception as e:
-        return Result.fail(f"Profiling failed: {e}")
+    See statistics_profiler.profile_statistics for full documentation.
+    """
+    return await _profile_statistics(table_id, duckdb_conn, session, include_correlations)
 
 
 async def profile_and_resolve_types(
@@ -101,8 +59,8 @@ async def profile_and_resolve_types(
 ) -> Result[TypeResolutionResult]:
     """Profile table and optionally resolve types.
 
-    Combines profiling and type resolution into a single operation:
-    1. Calls profile_table() for statistics + type candidates
+    Combines schema profiling and type resolution into a single operation:
+    1. Calls profile_schema() for type discovery (sample-based)
     2. If auto_resolve, calls resolve_types() to create typed table
     3. Returns TypeResolutionResult
 
@@ -116,10 +74,10 @@ async def profile_and_resolve_types(
     Returns:
         Result containing TypeResolutionResult or error
     """
-    # Profile the table first
-    profile_result = await profile_table(table_id, duckdb_conn, session)
-    if not profile_result.success:
-        return Result.fail(f"Profiling failed: {profile_result.error}")
+    # Schema profiling (sample-based type discovery)
+    schema_result = await profile_schema(table_id, duckdb_conn, session)
+    if not schema_result.success:
+        return Result.fail(f"Schema profiling failed: {schema_result.error}")
 
     if not auto_resolve:
         return Result.ok(

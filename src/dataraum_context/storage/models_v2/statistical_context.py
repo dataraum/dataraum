@@ -47,6 +47,10 @@ class StatisticalProfile(Base):
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
 
+    # Layer indicator: "raw" or "typed"
+    # Determines which stage produced this profile
+    layer: Mapped[str] = mapped_column(String, nullable=False, default="raw")
+
     # STRUCTURED: Queryable core dimensions
     total_count: Mapped[int] = mapped_column(Integer, nullable=False)
     null_count: Mapped[int] = mapped_column(Integer, nullable=False)

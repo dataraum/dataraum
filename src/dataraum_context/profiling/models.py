@@ -111,6 +111,29 @@ class ProfileResult(BaseModel):
     duration_seconds: float
 
 
+class SchemaProfileResult(BaseModel):
+    """Result of schema profiling (raw stage, discovery only).
+
+    Contains only sample-based, stable results that don't change
+    when rows are quarantined during type resolution.
+    """
+
+    type_candidates: list[TypeCandidate]
+    detected_patterns: dict[str, list[DetectedPattern]] = Field(default_factory=dict)
+    duration_seconds: float
+
+
+class StatisticsProfileResult(BaseModel):
+    """Result of statistics profiling (typed stage, all stats).
+
+    Contains all row-based statistics computed on clean typed data.
+    """
+
+    column_profiles: list[ColumnProfile] = Field(default_factory=list)
+    correlation_result: CorrelationAnalysisResult | None = None
+    duration_seconds: float
+
+
 # === Type Resolution Models ===
 
 

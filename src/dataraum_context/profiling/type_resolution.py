@@ -7,6 +7,7 @@ using TypeCandidates computed during profiling.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import uuid4
 
 import duckdb
 from sqlalchemy import select
@@ -184,6 +185,64 @@ async def resolve_types(
     typed_rows = typed_result[0] if typed_result else 0
     quarantine_result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{quarantine_table}"').fetchone()
     quarantine_rows = quarantine_result[0] if quarantine_result else 0
+
+    # Create metadata records for typed and quarantine tables
+    typed_table_record = Table(
+        table_id=str(uuid4()),
+        source_id=table.source_id,
+        table_name=table.table_name,
+        layer="typed",
+        duckdb_path=typed_table,
+        row_count=typed_rows,
+    )
+    session.add(typed_table_record)
+
+    quarantine_table_record = Table(
+        table_id=str(uuid4()),
+        source_id=table.source_id,
+        table_name=table.table_name,
+        layer="quarantine",
+        duckdb_path=quarantine_table,
+        row_count=quarantine_rows,
+    )
+    session.add(quarantine_table_record)
+
+    # Create column records for typed table
+    for i, spec in enumerate(specs):
+        typed_col = Column(
+            column_id=str(uuid4()),
+            table_id=typed_table_record.table_id,
+            column_name=spec.column_name,
+            column_position=i,
+            raw_type="VARCHAR",
+            resolved_type=spec.data_type.value,
+        )
+        session.add(typed_col)
+
+    # Create column records for quarantine table (all columns + _quarantined_at)
+    for i, spec in enumerate(specs):
+        quarantine_col = Column(
+            column_id=str(uuid4()),
+            table_id=quarantine_table_record.table_id,
+            column_name=spec.column_name,
+            column_position=i,
+            raw_type="VARCHAR",
+            resolved_type="VARCHAR",  # Quarantine keeps original VARCHAR
+        )
+        session.add(quarantine_col)
+
+    # Add _quarantined_at column
+    quarantine_meta_col = Column(
+        column_id=str(uuid4()),
+        table_id=quarantine_table_record.table_id,
+        column_name="_quarantined_at",
+        column_position=len(specs),
+        raw_type="TIMESTAMP",
+        resolved_type="TIMESTAMP",
+    )
+    session.add(quarantine_meta_col)
+
+    await session.commit()
 
     # Build column results
     column_results = []

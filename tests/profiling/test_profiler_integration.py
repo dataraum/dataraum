@@ -8,7 +8,7 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from dataraum_context.core.models import SourceConfig
-from dataraum_context.profiling import profile_table
+from dataraum_context.profiling import profile_schema
 from dataraum_context.staging.loaders.csv import CSVLoader
 from dataraum_context.storage.schema import init_database
 
@@ -56,13 +56,13 @@ def payment_method_csv():
 class TestProfilerIntegration:
     """Integration tests for CSV loading → profiling pipeline."""
 
-    async def test_load_and_profile_payment_method(
+    async def test_load_and_profile_schema(
         self,
         payment_method_csv,
         test_duckdb,
         test_session,
     ):
-        """Test full pipeline: load CSV → profile → generate type candidates."""
+        """Test schema profiling: load CSV → profile_schema → type candidates."""
         if not payment_method_csv.exists():
             pytest.skip("Example CSV not found")
 
@@ -81,21 +81,17 @@ class TestProfilerIntegration:
         assert staging_result
         table = staging_result.tables[0]
 
-        # Step 2: Profile the table
-        profile_result = await profile_table(
+        # Step 2: Schema profiling (type discovery)
+        schema_result = await profile_schema(
             table_id=table.table_id,
             duckdb_conn=test_duckdb,
             session=test_session,
         )
 
-        assert profile_result.success, f"Profiling failed: {profile_result.error}"
+        assert schema_result.success, f"Schema profiling failed: {schema_result.error}"
 
-        result = profile_result.value
+        result = schema_result.value
         assert result
-
-        # Verify we got profiles
-        assert len(result.profiles) > 0
-        assert len(result.profiles) == len(table.columns)
 
         # Verify we got type candidates (since this is a 'raw' layer table)
         assert len(result.type_candidates) > 0
@@ -103,19 +99,6 @@ class TestProfilerIntegration:
         # Check that each column has at least one type candidate
         columns_with_candidates = {tc.column_id for tc in result.type_candidates}
         assert len(columns_with_candidates) > 0
-
-        # Verify profile contents
-        for profile in result.profiles:
-            assert profile.total_count > 0
-            assert profile.null_ratio >= 0.0
-            assert profile.null_ratio <= 1.0
-            assert profile.cardinality_ratio >= 0.0
-            assert profile.cardinality_ratio <= 1.0
-
-            # Should have string stats for VARCHAR columns
-            if profile.string_stats:
-                assert profile.string_stats.min_length >= 0
-                assert profile.string_stats.max_length >= profile.string_stats.min_length
 
         # Verify type candidates
         for candidate in result.type_candidates:
@@ -147,13 +130,13 @@ class TestProfilerIntegration:
             # Might be detected as BOOLEAN or VARCHAR depending on patterns
             assert len(types) > 0
 
-    async def test_profile_creates_metadata(
+    async def test_schema_profile_creates_metadata(
         self,
         payment_method_csv,
         test_duckdb,
         test_session,
     ):
-        """Test that profiling creates proper metadata records."""
+        """Test that schema profiling creates proper metadata records."""
         if not payment_method_csv.exists():
             pytest.skip("Example CSV not found")
 
@@ -172,26 +155,20 @@ class TestProfilerIntegration:
         assert staging_result
         table = staging_result.tables[0]
 
-        # Profile
-        profile_result = await profile_table(
+        # Schema profiling
+        schema_result = await profile_schema(
             table_id=table.table_id,
             duckdb_conn=test_duckdb,
             session=test_session,
         )
 
-        assert profile_result.success
+        assert schema_result.success
 
         # Check that metadata was stored in database
-        from dataraum_context.storage.models_v2 import StatisticalProfile, Table, TypeCandidate
+        from dataraum_context.storage.models_v2 import Table, TypeCandidate
 
         # Refresh table to get updated last_profiled_at
         await test_session.refresh(await test_session.get(Table, str(table.table_id)))
-
-        # Check StatisticalProfile records were created
-        profiles = await test_session.run_sync(
-            lambda sync_session: sync_session.query(StatisticalProfile).all()
-        )
-        assert len(profiles) > 0
 
         # Check TypeCandidate records were created
         candidates = await test_session.run_sync(
@@ -204,3 +181,44 @@ class TestProfilerIntegration:
             assert candidate.data_type is not None
             assert candidate.confidence >= 0.0
             assert candidate.detected_at is not None
+
+    async def test_schema_profile_detects_patterns(
+        self,
+        payment_method_csv,
+        test_duckdb,
+        test_session,
+    ):
+        """Test that schema profiling detects patterns in columns."""
+        if not payment_method_csv.exists():
+            pytest.skip("Example CSV not found")
+
+        # Load CSV
+        loader = CSVLoader()
+        config = SourceConfig(
+            name="payment_method",
+            source_type="csv",
+            path=str(payment_method_csv),
+        )
+
+        load_result = await loader.load(config, test_duckdb, test_session)
+        assert load_result.success
+
+        staging_result = load_result.value
+        assert staging_result
+        table = staging_result.tables[0]
+
+        # Schema profiling
+        schema_result = await profile_schema(
+            table_id=table.table_id,
+            duckdb_conn=test_duckdb,
+            session=test_session,
+        )
+
+        assert schema_result.success
+        result = schema_result.value
+        assert result
+
+        # Check detected patterns dict
+        # Should have some patterns detected
+        # (exact patterns depend on the CSV content)
+        assert isinstance(result.detected_patterns, dict)

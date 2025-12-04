@@ -25,6 +25,7 @@ class Pattern:
     ambiguous: bool = False
     locale: str | None = None
     examples: list[str] | None = None
+    standardization_expr: str | None = None  # DuckDB SQL to normalize before cast
 
     def __post_init__(self) -> None:
         """Compile regex pattern."""
@@ -107,6 +108,7 @@ class PatternConfig:
                         ambiguous=pattern_dict.get("ambiguous", False),
                         locale=pattern_dict.get("locale"),
                         examples=pattern_dict.get("examples"),
+                        standardization_expr=pattern_dict.get("standardization_expr"),
                     )
                     self._patterns.append(pattern)
                 except KeyError:

@@ -180,6 +180,8 @@ module = [
     "sklearn.*",
     "statsmodels.*",
     "ruptures.*",
+    "pyarrow.*",
+    "networkx.*",
 ]
 ignore_missing_imports = true
 

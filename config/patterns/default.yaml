@@ -24,11 +24,13 @@ date_patterns:
     inferred_type: DATE
     examples: ["1/15/2024", "01/15/24"]
     ambiguous: true  # Could be MM/DD or DD/MM
-    
+    standardization_expr: "STRPTIME(\"{col}\", '%m/%d/%Y')"
+
   - name: eu_date
     pattern: '^\d{1,2}\.\d{1,2}\.\d{2,4}$'
     inferred_type: DATE
     examples: ["15.01.2024", "15.1.24"]
+    standardization_expr: "STRPTIME(\"{col}\", '%d.%m.%Y')"
     
   - name: time_only
     pattern: '^\d{1,2}:\d{2}(:\d{2})?$'
@@ -80,6 +82,7 @@ numeric_patterns:
     inferred_type: DOUBLE
     locale: "eu"
     examples: ["123,45", "-0,5"]
+    standardization_expr: "REPLACE(\"{col}\", ',', '.')"
     
   - name: scientific
     pattern: '^-?\d+\.?\d*[eE][+-]?\d+$'
@@ -91,6 +94,7 @@ numeric_patterns:
     inferred_type: DOUBLE
     semantic_type: percentage
     examples: ["45%", "12.5%", "-3%"]
+    standardization_expr: "CAST(REPLACE(\"{col}\", '%', '') AS DOUBLE) / 100"
 
 # Currency Patterns
 currency_patterns:
@@ -99,24 +103,28 @@ currency_patterns:
     inferred_type: DOUBLE
     detected_unit: USD
     examples: ["$1,234.56", "$100"]
-    
+    standardization_expr: "REGEXP_REPLACE(REPLACE(\"{col}\", ',', ''), '[^0-9.+-]', '')"
+
   - name: currency_eur
     pattern: '^€[\d\s.]+,?\d*$|^[\d\s.]+,?\d*\s*€$'
     inferred_type: DOUBLE
     detected_unit: EUR
     examples: ["€1.234,56", "1.234,56 €"]
-    
+    standardization_expr: "REGEXP_REPLACE(REPLACE(REPLACE(\"{col}\", '.', ''), ',', '.'), '[^0-9.+-]', '')"
+
   - name: currency_gbp
     pattern: '^£[\d,]+\.?\d*$'
     inferred_type: DOUBLE
     detected_unit: GBP
     examples: ["£1,234.56"]
-    
+    standardization_expr: "REGEXP_REPLACE(REPLACE(\"{col}\", ',', ''), '[^0-9.+-]', '')"
+
   - name: currency_chf
     pattern: '^CHF\s*[\d\x27]+\.?\d*$|^[\d\x27]+\.?\d*\s*CHF$'
     inferred_type: DOUBLE
     detected_unit: CHF
     examples: ["CHF 1'234.56", "1'234.56 CHF"]
+    standardization_expr: "REGEXP_REPLACE(REPLACE(\"{col}\", '''', ''), '[^0-9.+-]', '')"
 
 # Boolean Patterns
 boolean_patterns:

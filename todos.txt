@@ -36,3 +36,21 @@ TOD- Evaluate all todos --> phase 7
 1. **RuleResult** - 0 usages
    - Quality rule result model
    - Never referenced
+
+
+Persistent Entropy: You would use this as a summary statistic for a single dataset. For example, you could track the persistent entropy of a data stream over time; a sudden spike or drop in entropy could signal an anomaly or a change in the underlying data distribution, indicating a potential data quality problem. ?
+
+
+Yes, the
+bottleneck distance can be used for comparing accounting or similar periodical time series data to find changed patterns or anomalies over different periods.
+The approach involves using Topological Data Analysis (TDA) to transform the time series into a format suitable for topological comparison:
+Methodology
+
+    Data Transformation (Time-Delay Embedding): Raw accounting time series data (e.g., monthly expenses, quarterly revenue) is usually a 1D sequence. To apply TDA, this data is often converted into a higher-dimensional point cloud using a technique called Time-Delay Embedding (TDE). The resulting point cloud provides a representation of the system's dynamics or underlying shape.
+    Persistence Diagram Generation: For each period you want to compare (e.g., Q1 2024 vs. Q1 2025), you generate a persistence diagram from its corresponding embedded point cloud.
+    Bottleneck Distance Calculation: The bottleneck distance is then calculated between the persistence diagrams of the two different periods.
+
+How it Helps Detect Changed Patterns
+
+    Quantitative Comparison: The bottleneck distance provides a single, quantitative measure of how different the topological "shape" or structure of one period's data is from another period's data.
+    Anomaly Detection: A high bottleneck distance value would signal a significant change in the underlying data patterns (e.g., new expense cycles, altered revenue streams, or data entry errors), which might indicate an anomaly or a shift in the business process.

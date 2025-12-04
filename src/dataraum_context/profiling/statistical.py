@@ -10,11 +10,13 @@ from dataraum_context.core.config import Settings, get_settings
 from dataraum_context.core.models.base import ColumnRef, Result
 from dataraum_context.profiling.models import (
     ColumnProfile,
+    DetectedPattern,
     HistogramBucket,
     NumericStats,
     StringStats,
     ValueCount,
 )
+from dataraum_context.profiling.patterns import load_pattern_config
 from dataraum_context.storage.models_v2 import Column, Table
 from dataraum_context.storage.models_v2 import StatisticalProfile as DBColumnProfile
 
@@ -241,6 +243,68 @@ async def _profile_column(
         except Exception:
             pass
 
+        # Pattern detection using sample values
+        detected_patterns = []
+        try:
+            pattern_config = load_pattern_config()
+
+            # Sample values for pattern detection (use top values + additional random sample)
+            sample_values = [v.value for v in top_values if v.value is not None]
+
+            # Get additional random sample if needed
+            if len(sample_values) < 50 and non_null_count > 0:
+                sample_query = f"""
+                    SELECT DISTINCT "{col_name}"
+                    FROM {table_name}
+                    WHERE "{col_name}" IS NOT NULL
+                    USING SAMPLE 50 ROWS
+                """
+                try:
+                    sample_rows = duckdb_conn.execute(sample_query).fetchall()
+                    sample_values.extend(str(row[0]) for row in sample_rows if row[0] is not None)
+                except Exception:
+                    pass
+
+            # Convert all to strings for pattern matching
+            sample_values = list({str(v) for v in sample_values if v})
+
+            if sample_values:
+                # Count pattern matches
+                pattern_counts: dict[str, int] = {}
+                for value in sample_values:
+                    matched = pattern_config.match_value(str(value))
+                    for pattern in matched:
+                        pattern_counts[pattern.name] = pattern_counts.get(pattern.name, 0) + 1
+
+                # Calculate match rates and create DetectedPattern entries
+                sample_size = len(sample_values)
+                for pattern_name, count in pattern_counts.items():
+                    match_rate = count / sample_size
+                    if match_rate >= 0.1:  # Only include patterns with >= 10% match rate
+                        # Find the pattern to get semantic_type
+                        found_pattern = next(
+                            (
+                                p
+                                for p in pattern_config.get_value_patterns()
+                                if p.name == pattern_name
+                            ),
+                            None,
+                        )
+                        detected_patterns.append(
+                            DetectedPattern(
+                                name=pattern_name,
+                                match_rate=match_rate,
+                                semantic_type=found_pattern.semantic_type
+                                if found_pattern
+                                else None,
+                            )
+                        )
+
+                # Sort by match rate descending
+                detected_patterns.sort(key=lambda p: p.match_rate, reverse=True)
+        except Exception:
+            pass  # Pattern detection failed, that's ok
+
         # Histogram (only for numeric columns)
         histogram = []
         if numeric_stats is not None:
@@ -314,7 +378,7 @@ async def _profile_column(
             string_stats=string_stats,
             histogram=histogram if histogram else None,
             top_values=top_values,
-            detected_patterns=[],  # TODO Will be filled by pattern detection
+            detected_patterns=detected_patterns,
         )
 
         return Result.ok(profile)

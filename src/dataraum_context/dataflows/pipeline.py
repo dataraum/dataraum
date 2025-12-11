@@ -1,6 +1,6 @@
-"""Complete data processing pipeline from CSV to enriched metadata.
+"""Complete data processing pipeline from CSV to enriched metadata with quality assessment.
 
-Consolidates staging, profiling, and enrichment into one unified pipeline.
+Consolidates staging, profiling, enrichment, and quality assessment into one unified pipeline.
 All stages are mandatory and run sequentially.
 
 Pipeline stages:
@@ -10,8 +10,14 @@ Pipeline stages:
 4. Statistics Profiling: Column stats, correlations
 5. Semantic Enrichment: LLM analysis (CRITICAL - fails pipeline if fails)
 6. Topology Enrichment: TDA-based FK detection
-7. Temporal Enrichment: Time series analysis
+7. Temporal Enrichment: Time series analysis (basic - gaps, completeness)
 8. Cross-table Analysis: Multicollinearity (multi-table datasets only)
+9. Quality Assessment (NEW - Phase 4):
+   - Statistical quality (Benford, outliers)
+   - Topological quality (cycles, Betti numbers)
+   - Temporal quality (seasonality, trends - advanced)
+   - Domain quality (financial, if detected)
+   - Quality synthesis (dimensional scores)
 
 All metadata is stored in the database. Results contain only health information.
 """
@@ -36,6 +42,11 @@ from dataraum_context.enrichment.topology import enrich_topology
 from dataraum_context.llm import LLMService
 from dataraum_context.profiling.profiler import profile_schema, profile_statistics
 from dataraum_context.profiling.type_resolution import resolve_types
+from dataraum_context.quality.domains.financial import analyze_financial_quality
+from dataraum_context.quality.statistical import assess_statistical_quality
+from dataraum_context.quality.synthesis import assess_dataset_quality
+from dataraum_context.quality.temporal import analyze_temporal_quality
+from dataraum_context.quality.topological import analyze_topological_quality
 from dataraum_context.staging.loaders.csv import CSVLoader
 from dataraum_context.storage.models_v2.core import Column, Table
 from dataraum_context.storage.models_v2.relationship import Relationship
@@ -69,11 +80,22 @@ class TablePipelineHealth:
     topology_enrichment_completed: bool = False
     temporal_enrichment_completed: bool = False
 
+    # Quality assessment completion flags (Phase 4 - NEW)
+    statistical_quality_completed: bool = False
+    topological_quality_completed: bool = False
+    temporal_quality_completed: bool = False
+    domain_quality_completed: bool = False
+    quality_synthesis_completed: bool = False
+
     # Counts (summary stats)
     row_count: int = 0
     column_count: int = 0
     semantic_annotation_count: int = 0
     relationship_count: int = 0
+
+    # Quality counts (Phase 4 - NEW)
+    quality_issue_count: int = 0
+    quality_score: float | None = None
 
     # Error tracking
     error: str | None = None
@@ -185,7 +207,7 @@ async def run_pipeline(
     min_confidence: float = 0.85,
     ontology: str = "general",
 ) -> Result[PipelineResult]:
-    """Run complete pipeline from CSV(s) through enrichment.
+    """Run complete pipeline from CSV(s) through enrichment and quality assessment.
 
     All stages run sequentially. All metadata is stored in the database.
     Returns only health information and IDs.
@@ -197,8 +219,14 @@ async def run_pipeline(
     4. Statistics Profiling: Column stats, correlations
     5. Semantic Enrichment: LLM analysis (CRITICAL)
     6. Topology Enrichment: TDA-based FK detection
-    7. Temporal Enrichment: Time series analysis
+    7. Temporal Enrichment: Time series analysis (basic)
     8. Cross-table Analysis: Multicollinearity (if >1 table)
+    9. Quality Assessment (NEW):
+       - Statistical quality (Benford, outliers)
+       - Topological quality (cycles, Betti numbers)
+       - Temporal quality (seasonality, trends - advanced)
+       - Domain quality (financial, if ontology="financial_reporting")
+       - Quality synthesis (dimensional scores)
 
     Args:
         source: CSV file path or directory path
@@ -208,6 +236,7 @@ async def run_pipeline(
         llm_service: LLM service for semantic analysis
         min_confidence: Minimum confidence for type resolution (default: 0.85)
         ontology: Ontology for semantic analysis (default: "general")
+                  Use "financial_reporting" to enable domain quality checks
 
     Returns:
         Result containing PipelineResult with health information
@@ -430,7 +459,172 @@ async def run_pipeline(
             warnings.append(f"Cross-table multicollinearity exception: {e}")
 
     # =========================================================================
-    # PHASE 4: RETURN HEALTH INFORMATION
+    # PHASE 4: QUALITY ASSESSMENT (NEW)
+    # Pure measurement - NO rules evaluation, NO filtering
+    # =========================================================================
+
+    # Stage 4.1: Statistical Quality (Benford, outliers)
+    for health in table_health_records:
+        if health.error or not health.typed_table_name:
+            continue
+
+        # Get typed table ID
+        typed_id = typed_table_ids.get(health.table_id)
+        if not typed_id:
+            continue
+
+        try:
+            stat_quality_result = await assess_statistical_quality(typed_id, duckdb_conn, session)
+            # ✅ StatisticalQualityMetrics stored in database
+
+            if stat_quality_result.success:
+                health.statistical_quality_completed = True
+            else:
+                # Non-critical - warn but don't fail table
+                warnings.append(
+                    f"Statistical quality assessment failed for {health.table_name}: {stat_quality_result.error}"
+                )
+
+        except Exception as e:
+            warnings.append(
+                f"Statistical quality assessment exception for {health.table_name}: {e}"
+            )
+
+    # Stage 4.2: Topological Quality (cycles, Betti numbers)
+    for health in table_health_records:
+        if health.error or not health.typed_table_name:
+            continue
+
+        typed_id = typed_table_ids.get(health.table_id)
+        if not typed_id:
+            continue
+
+        try:
+            topo_quality_result = await analyze_topological_quality(typed_id, duckdb_conn, session)
+            # ✅ TopologicalQualityMetrics stored in database
+
+            if topo_quality_result.success:
+                health.topological_quality_completed = True
+            else:
+                warnings.append(
+                    f"Topological quality assessment failed for {health.table_name}: {topo_quality_result.error}"
+                )
+
+        except Exception as e:
+            warnings.append(
+                f"Topological quality assessment exception for {health.table_name}: {e}"
+            )
+
+    # Stage 4.3: Temporal Quality (seasonality, trends) - ADVANCED
+    # This enriches existing TemporalQualityMetrics from enrichment
+    for health in table_health_records:
+        if health.error or not health.typed_table_name:
+            continue
+
+        typed_id = typed_table_ids.get(health.table_id)
+        if not typed_id:
+            continue
+
+        try:
+            # Get temporal columns
+            from sqlalchemy import select
+
+            stmt = select(Column).where(
+                Column.table_id == typed_id,
+                Column.resolved_type.in_(["DATE", "TIMESTAMP", "TIMESTAMPTZ"]),
+            )
+            result = await session.execute(stmt)
+            temporal_columns = result.scalars().all()
+
+            # Analyze each temporal column
+            temporal_analyzed = 0
+            for column in temporal_columns:
+                temp_result = await analyze_temporal_quality(column.column_id, duckdb_conn, session)
+                # ✅ Updates existing TemporalQualityMetrics in database
+
+                if temp_result.success:
+                    temporal_analyzed += 1
+
+            if temporal_analyzed > 0:
+                health.temporal_quality_completed = True
+
+        except Exception as e:
+            warnings.append(f"Temporal quality assessment exception for {health.table_name}: {e}")
+
+    # Stage 4.4: Domain Quality (financial) - CONDITIONAL
+    # Only run if financial domain is detected (simple config check for now)
+    if ontology == "financial_reporting":
+        for health in table_health_records:
+            if health.error or not health.typed_table_name:
+                continue
+
+            typed_id = typed_table_ids.get(health.table_id)
+            if not typed_id:
+                continue
+
+            try:
+                financial_result = await analyze_financial_quality(typed_id, duckdb_conn, session)
+                # ✅ DomainQualityMetrics stored in database
+
+                if financial_result.success:
+                    health.domain_quality_completed = True
+                else:
+                    warnings.append(
+                        f"Financial quality assessment failed for {health.table_name}: {financial_result.error}"
+                    )
+
+            except Exception as e:
+                warnings.append(
+                    f"Financial quality assessment exception for {health.table_name}: {e}"
+                )
+
+    # Stage 4.5: Quality Synthesis
+    # Aggregate all quality pillars into dimensional scores
+    if successful_table_ids:
+        try:
+            # Use typed table IDs for synthesis
+            typed_ids_for_synthesis = [
+                typed_table_ids[raw_id]
+                for raw_id in successful_table_ids
+                if raw_id in typed_table_ids
+            ]
+
+            if typed_ids_for_synthesis:
+                synthesis_result = await assess_dataset_quality(
+                    typed_ids_for_synthesis, duckdb_conn, session
+                )
+                # ✅ QualitySynthesisResult stored in database
+
+                if synthesis_result.success:
+                    synthesis = synthesis_result.unwrap()
+
+                    # Update health records with quality info
+                    for table_synthesis in synthesis.table_assessments:
+                        # Find corresponding health record by typed table ID
+                        for raw_id, typed_id in typed_table_ids.items():
+                            if typed_id == table_synthesis.table_id:
+                                matching_health = next(
+                                    (h for h in table_health_records if h.table_id == raw_id),
+                                    None,
+                                )
+                                if matching_health:
+                                    matching_health.quality_synthesis_completed = True
+                                    matching_health.quality_score = (
+                                        table_synthesis.table_assessment.overall_score
+                                    )
+                                    matching_health.quality_issue_count = len(
+                                        table_synthesis.table_assessment.issues
+                                    )
+                                break
+
+                else:
+                    warnings.append(f"Quality synthesis failed: {synthesis_result.error}")
+
+        except Exception as e:
+            warnings.append(f"Quality synthesis exception: {e}")
+
+    # =========================================================================
+    # PHASE 5: RETURN HEALTH INFORMATION
     # =========================================================================
     return Result.ok(
         PipelineResult(

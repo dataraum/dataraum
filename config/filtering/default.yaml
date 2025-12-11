@@ -1,0 +1,100 @@
+# Default Filtering Rules Configuration
+#
+# These rules override/extend LLM-generated filtering recommendations.
+# Rules are evaluated during System 1 (Filtering), NOT during quality assessment.
+#
+# Priority levels:
+# - override: User rule replaces LLM recommendation
+# - extend: User rule added to LLM recommendations
+# - suggest: User rule only if no LLM recommendation exists
+
+name: default
+version: "1.0.0"
+description: Default filtering rules with LLM override/extend semantics
+
+filtering_rules:
+  # OVERRIDE RULES - These always take precedence over LLM recommendations
+
+  - name: "always_validate_email"
+    priority: "override"
+    filter: "email ~ '^[^@]+@[^@]+$'"
+    applies_to:
+      pattern: '.*_email$|^email$'
+    description: "Always enforce email format validation regardless of quality metrics"
+
+  - name: "never_filter_primary_keys"
+    priority: "override"
+    action: "exclude_from_quarantine"
+    applies_to:
+      role: "primary_key"
+    description: "Never quarantine rows based on primary key issues"
+
+  - name: "never_filter_foreign_keys"
+    priority: "override"
+    action: "exclude_from_quarantine"
+    applies_to:
+      role: "foreign_key"
+    description: "Never quarantine rows based on foreign key issues"
+
+  # EXTEND RULES - These add domain-specific constraints to LLM recommendations
+
+  - name: "price_must_be_positive"
+    priority: "extend"
+    filter: "price > 0"
+    applies_to:
+      columns: ["price", "amount", "cost", "value"]
+    description: "Prices and amounts must be positive"
+
+  - name: "date_order_consistency"
+    priority: "extend"
+    filter: "{start_column} <= {end_column}"
+    applies_to:
+      pattern: '.*_start.*'
+    template_variables:
+      start_column: "auto"  # Will be detected from pattern
+      end_column: "auto"  # Will find matching *_end.* column
+    description: "Start dates must be before end dates"
+
+  - name: "percentage_range"
+    priority: "extend"
+    filter: "{column} BETWEEN 0 AND 100"
+    applies_to:
+      pattern: '.*_percent.*|.*_pct.*|.*_percentage.*'
+    description: "Percentage columns must be 0-100"
+
+  - name: "non_negative_quantities"
+    priority: "extend"
+    filter: "{column} >= 0"
+    applies_to:
+      pattern: '.*_quantity.*|.*_count.*|.*_qty.*'
+    description: "Quantities and counts cannot be negative"
+
+  # SUGGEST RULES - These provide defaults when LLM has no opinion
+
+  - name: "suggest_url_validation"
+    priority: "suggest"
+    filter: "url ~ '^https?://'"
+    applies_to:
+      pattern: '.*_url$|^url$'
+    description: "URLs should start with http:// or https://"
+
+  - name: "suggest_phone_format"
+    priority: "suggest"
+    filter: "LENGTH(phone) >= 10"
+    applies_to:
+      pattern: '.*_phone.*|^phone$'
+    description: "Phone numbers should have at least 10 digits"
+
+  - name: "suggest_reasonable_dates"
+    priority: "suggest"
+    filter: "{column} BETWEEN '1970-01-01' AND '2100-01-01'"
+    applies_to:
+      type: "DATE"
+    description: "Dates should be within reasonable range"
+
+  - name: "suggest_reasonable_timestamps"
+    priority: "suggest"
+    filter: "{column} BETWEEN '1970-01-01' AND '2100-01-01'"
+    applies_to:
+      type: "TIMESTAMP"
+    description: "Timestamps should be within reasonable range"

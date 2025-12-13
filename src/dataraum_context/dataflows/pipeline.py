@@ -620,7 +620,7 @@ async def run_pipeline(
 
             if typed_ids_for_synthesis:
                 synthesis_result = await assess_dataset_quality(
-                    typed_ids_for_synthesis, duckdb_conn, session
+                    typed_ids_for_synthesis, duckdb_conn, session, llm_service
                 )
                 # ✅ QualitySynthesisResult stored in database
 

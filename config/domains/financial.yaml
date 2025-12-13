@@ -290,3 +290,144 @@ semantic_enrichment:
     - "transaction"
     - "invoice"
     - "payment"
+
+# ===================================================================
+# CROSS-TABLE CYCLE PATTERNS (Multi-Table Business Process Detection)
+# ===================================================================
+# These patterns help LLM classify cross-table cycles as business processes.
+# LLM uses these as vocabulary/context, not strict rules.
+
+cross_table_cycle_patterns:
+  accounts_receivable_cycle:
+    description: "AR collection cycle spanning customer and transaction tables"
+    table_patterns:
+      - ["*transaction*", "*customer*"]
+      - ["*invoice*", "*customer*", "*payment*"]
+      - ["*order*", "*customer*", "*receipt*"]
+      - ["*sales*", "*customer*"]
+    column_indicators:
+      required:
+        - pattern: "A/R|receivable|ar_"
+          description: "AR-specific columns"
+      supporting:
+        - pattern: "customer|client"
+          description: "Customer identifiers"
+        - pattern: "invoice|bill"
+          description: "Invoice references"
+        - pattern: "payment|receipt"
+          description: "Payment tracking"
+    relationship_hints:
+      - cardinality: "many_to_one"
+        from_table_pattern: "*transaction*"
+        to_table_pattern: "*customer*"
+    business_value: "high"
+
+  expense_cycle:
+    description: "AP/Expense cycle spanning vendor and transaction tables"
+    table_patterns:
+      - ["*transaction*", "*vendor*"]
+      - ["*purchase*", "*vendor*", "*payment*"]
+      - ["*bill*", "*vendor*", "*disbursement*"]
+      - ["*expense*", "*vendor*"]
+    column_indicators:
+      required:
+        - pattern: "A/P|payable|ap_|vendor"
+          description: "AP-specific columns"
+      supporting:
+        - pattern: "purchase|expense"
+          description: "Expense types"
+        - pattern: "bill|invoice"
+          description: "Vendor invoices"
+        - pattern: "payment|disbursement"
+          description: "Payment tracking"
+    relationship_hints:
+      - cardinality: "many_to_one"
+        from_table_pattern: "*transaction*"
+        to_table_pattern: "*vendor*"
+    business_value: "high"
+
+  revenue_cycle:
+    description: "Revenue recognition cycle from order to cash"
+    table_patterns:
+      - ["*customer*", "*order*", "*invoice*"]
+      - ["*customer*", "*transaction*", "*product*"]
+      - ["*sales*", "*customer*", "*payment*"]
+    column_indicators:
+      required:
+        - pattern: "sale|revenue|income"
+          description: "Revenue indicators"
+      supporting:
+        - pattern: "customer|client"
+          description: "Customer linkage"
+        - pattern: "order|contract"
+          description: "Order processing"
+        - pattern: "product|service"
+          description: "What was sold"
+    relationship_hints:
+      - cardinality: "many_to_one"
+        from_table_pattern: "*order*"
+        to_table_pattern: "*customer*"
+    business_value: "high"
+
+  inventory_cycle:
+    description: "Inventory flow from purchase through sale"
+    table_patterns:
+      - ["*transaction*", "*product*"]
+      - ["*inventory*", "*product*", "*sale*"]
+      - ["*purchase*", "*product*", "*sales*"]
+    column_indicators:
+      required:
+        - pattern: "product|item|sku|inventory"
+          description: "Product identifiers"
+      supporting:
+        - pattern: "quantity|qty"
+          description: "Quantity tracking"
+        - pattern: "cost|cogs"
+          description: "Cost of goods"
+    relationship_hints:
+      - cardinality: "many_to_one"
+        from_table_pattern: "*transaction*"
+        to_table_pattern: "*product*"
+    business_value: "medium"
+
+  payroll_cycle:
+    description: "Payroll processing cycle"
+    table_patterns:
+      - ["*transaction*", "*employee*"]
+      - ["*payroll*", "*employee*", "*time*"]
+      - ["*salary*", "*employee*"]
+    column_indicators:
+      required:
+        - pattern: "employee|staff|payroll"
+          description: "Employee identifiers"
+      supporting:
+        - pattern: "salary|wage|compensation"
+          description: "Compensation data"
+        - pattern: "hours|time"
+          description: "Time tracking"
+    relationship_hints:
+      - cardinality: "many_to_one"
+        from_table_pattern: "*transaction*"
+        to_table_pattern: "*employee*"
+    business_value: "medium"
+
+  chart_of_accounts_cycle:
+    description: "General ledger account hierarchy"
+    table_patterns:
+      - ["*transaction*", "*account*", "*chart*"]
+      - ["*journal*", "*account*"]
+      - ["*ledger*", "*account*"]
+    column_indicators:
+      required:
+        - pattern: "account|gl_|ledger"
+          description: "Account references"
+      supporting:
+        - pattern: "debit|credit"
+          description: "Double-entry"
+        - pattern: "balance"
+          description: "Account balances"
+    relationship_hints:
+      - cardinality: "many_to_one"
+        from_table_pattern: "*transaction*"
+        to_table_pattern: "*account*"
+    business_value: "high"

@@ -22,14 +22,22 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.core.models.base import Result
+from dataraum_context.enrichment.cross_table_multicollinearity import (
+    EnrichedRelationship,
+    gather_relationships,
+)
 from dataraum_context.llm import LLMService
+from dataraum_context.llm.providers.base import LLMRequest
 from dataraum_context.quality.domains.financial import analyze_financial_quality
 from dataraum_context.quality.domains.financial_llm import (
     classify_financial_cycle_with_llm,
     interpret_financial_quality_with_llm,
 )
 from dataraum_context.quality.models import TopologicalAnomaly
-from dataraum_context.quality.topological import analyze_topological_quality
+from dataraum_context.quality.topological import (
+    analyze_relationship_graph,
+    analyze_topological_quality,
+)
 from dataraum_context.storage.models_v2.core import Column, Table
 from dataraum_context.storage.models_v2.semantic_context import SemanticAnnotation
 
@@ -758,3 +766,521 @@ async def analyze_complete_financial_quality(
     except Exception as e:
         logger.error(f"Complete financial quality analysis failed: {e}")
         return Result.fail(f"Analysis failed: {e}")
+
+
+# =============================================================================
+# Multi-Table Business Cycle Analysis
+# =============================================================================
+
+
+async def classify_cross_table_cycle_with_llm(
+    cycle_table_ids: list[str],
+    relationships: list[EnrichedRelationship],
+    table_semantics: dict[str, dict[str, Any]],
+    llm_service: LLMService,
+) -> Result[dict[str, Any]]:
+    """Classify a cross-table cycle as a business process using LLM.
+
+    LLM receives:
+    - Tables involved in the cycle
+    - Relationships connecting them (with types, cardinality)
+    - Semantic context from enrichment
+    - Config patterns as vocabulary (not rules)
+
+    Args:
+        cycle_table_ids: List of table IDs forming the cycle
+        relationships: Enriched relationships between tables in the cycle
+        table_semantics: Semantic context per table {table_id: {columns, roles, ...}}
+        llm_service: LLM service
+
+    Returns:
+        Result containing classification dict with:
+        - cycle_types: list[dict] with type, confidence for each classification
+        - primary_type: str (highest confidence type)
+        - explanation: str
+        - business_value: str (high/medium/low)
+        - completeness: str (complete/partial/incomplete)
+        - missing_elements: list[str] | None
+    """
+    try:
+        # Load config for vocabulary
+        config = _load_financial_config()
+        cycle_patterns = config.get("cycle_patterns", {})
+        cross_table_patterns = config.get("cross_table_cycle_patterns", {})
+
+        # Build cycle context
+        cycle_tables_info = []
+        for table_id in cycle_table_ids:
+            semantics = table_semantics.get(table_id, {})
+            cycle_tables_info.append(
+                {
+                    "table_id": table_id,
+                    "table_name": semantics.get("table_name", "unknown"),
+                    "key_columns": semantics.get("key_columns", []),
+                    "semantic_roles": semantics.get("semantic_roles", {}),
+                }
+            )
+
+        # Build relationships context
+        relationships_info = []
+        for rel in relationships:
+            if rel.from_table_id in cycle_table_ids and rel.to_table_id in cycle_table_ids:
+                relationships_info.append(
+                    {
+                        "from_table": rel.from_table,
+                        "from_column": rel.from_column,
+                        "to_table": rel.to_table,
+                        "to_column": rel.to_column,
+                        "relationship_type": rel.relationship_type.value
+                        if hasattr(rel.relationship_type, "value")
+                        else str(rel.relationship_type),
+                        "cardinality": rel.cardinality.value
+                        if rel.cardinality and hasattr(rel.cardinality, "value")
+                        else str(rel.cardinality)
+                        if rel.cardinality
+                        else None,
+                        "confidence": rel.confidence,
+                    }
+                )
+
+        # Build config vocabulary context
+        patterns_context = "Known Business Cycle Types:\n"
+
+        # Single-table patterns (for reference)
+        for cycle_type, pattern_def in cycle_patterns.items():
+            patterns_context += f"\n{cycle_type}:\n"
+            patterns_context += f"  Description: {pattern_def.get('description', 'N/A')}\n"
+            patterns_context += (
+                f"  Column indicators: {', '.join(pattern_def.get('column_patterns', []))}\n"
+            )
+            patterns_context += f"  Business value: {pattern_def.get('business_value', 'medium')}\n"
+
+        # Cross-table patterns (primary reference)
+        if cross_table_patterns:
+            patterns_context += "\n\nCross-Table Cycle Patterns:\n"
+            for cycle_type, pattern_def in cross_table_patterns.items():
+                patterns_context += f"\n{cycle_type}:\n"
+                patterns_context += f"  Description: {pattern_def.get('description', 'N/A')}\n"
+                patterns_context += f"  Table patterns: {pattern_def.get('table_patterns', [])}\n"
+                patterns_context += (
+                    f"  Business value: {pattern_def.get('business_value', 'medium')}\n"
+                )
+
+        # LLM prompt
+        system_prompt = """You are a financial data expert analyzing business process cycles in multi-table datasets.
+
+Your task: Classify this cross-table cycle as one or more business processes.
+
+A cross-table cycle is a loop in the table relationship graph, e.g.:
+- transactions → customers → transactions (AR cycle)
+- transactions → vendors → transactions (AP cycle)
+- customers → orders → invoices → payments → customers (Revenue cycle)
+
+Guidelines:
+- Analyze table names, column semantics, and relationship types
+- A cycle can represent MULTIPLE business processes (multi-label)
+- Use the config patterns as vocabulary, not strict rules
+- Assess completeness: is this a full cycle or partial?
+- Explain your reasoning
+
+Return JSON with:
+{
+  "cycle_types": [
+    {"type": "accounts_receivable_cycle", "confidence": 0.85},
+    {"type": "revenue_cycle", "confidence": 0.70}
+  ],
+  "primary_type": "accounts_receivable_cycle",
+  "explanation": "This cycle connects customer and transaction tables via Customer name...",
+  "business_value": "high",
+  "completeness": "complete",
+  "missing_elements": null
+}"""
+
+        user_prompt = f"""Cross-Table Cycle Analysis:
+
+Tables in Cycle:
+{yaml.dump(cycle_tables_info, default_flow_style=False)}
+
+Relationships:
+{yaml.dump(relationships_info, default_flow_style=False)}
+
+{patterns_context}
+
+Classify this cross-table cycle. What business process(es) does it represent?"""
+
+        # Call LLM
+        request = LLMRequest(
+            prompt=f"{system_prompt}\n\n{user_prompt}",
+            max_tokens=1000,
+            temperature=0.3,
+            response_format="json",
+        )
+
+        response_result = await llm_service.provider.complete(request)
+
+        if not response_result.success or not response_result.value:
+            return Result.fail(f"LLM classification failed: {response_result.error}")
+
+        # Parse JSON
+        import json
+
+        response_text = response_result.value.content.strip()
+        try:
+            classification = json.loads(response_text)
+            return Result.ok(classification)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse LLM response: {e}")
+            return Result.fail(f"Invalid JSON from LLM: {e}")
+
+    except Exception as e:
+        logger.error(f"Cross-table cycle classification failed: {e}")
+        return Result.fail(f"Classification failed: {e}")
+
+
+async def analyze_complete_financial_dataset_quality(
+    table_ids: list[str],
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    session: AsyncSession,
+    llm_service: LLMService | None = None,
+) -> Result[dict[str, Any]]:
+    """Complete financial quality analysis for a multi-table dataset.
+
+    This is the main entry point for analyzing business process cycles
+    across multiple related tables.
+
+    Architecture:
+        Layer 1:   Per-table accounting checks (financial.py)
+        Layer 2:   Relationship gathering (cross_table_multicollinearity.py)
+        Layer 3:   Cross-table cycle detection (topological.py)
+        Layer 4:   LLM business cycle classification (multi-label)
+        Layer 5:   LLM holistic interpretation
+
+    Args:
+        table_ids: List of table IDs in the dataset
+        duckdb_conn: DuckDB connection
+        session: SQLAlchemy session
+        llm_service: LLM service (optional - returns raw cycles if None)
+
+    Returns:
+        Result containing:
+        - per_table_metrics: Dict of table_id → financial metrics
+        - relationships: List of detected relationships
+        - cross_table_cycles: List of detected cycles (table ID lists)
+        - classified_cycles: List of LLM classifications (if LLM available)
+        - dataset_quality: Overall dataset assessment
+        - interpretation: LLM interpretation (if LLM available)
+
+    Example:
+        result = await analyze_complete_financial_dataset_quality(
+            table_ids=["transactions", "customers", "vendors", "products"],
+            duckdb_conn=conn,
+            session=session,
+            llm_service=llm_service
+        )
+
+        if result.success:
+            data = result.value
+            for cycle in data["classified_cycles"]:
+                print(f"{cycle['primary_type']}: {cycle['explanation']}")
+    """
+    try:
+        logger.info(f"Analyzing financial dataset with {len(table_ids)} tables")
+
+        # =====================================================================
+        # LAYER 1: PER-TABLE ACCOUNTING CHECKS
+        # =====================================================================
+
+        per_table_metrics: dict[str, dict[str, Any]] = {}
+        per_table_topological: dict[str, Any] = {}
+
+        for table_id in table_ids:
+            # Financial accounting checks
+            financial_result = await analyze_financial_quality(
+                table_id=table_id, duckdb_conn=duckdb_conn, session=session
+            )
+
+            if financial_result.success:
+                fq = financial_result.unwrap()
+                per_table_metrics[table_id] = {
+                    "double_entry_balanced": fq.double_entry_balanced,
+                    "balance_difference": fq.balance_difference,
+                    "accounting_equation_holds": fq.accounting_equation_holds,
+                    "sign_convention_compliance": fq.sign_convention_compliance,
+                }
+            else:
+                logger.warning(
+                    f"Financial analysis failed for {table_id}: {financial_result.error}"
+                )
+                per_table_metrics[table_id] = {"error": financial_result.error}
+
+            # Single-table topological analysis (for data quality, not business cycles)
+            topo_result = await analyze_topological_quality(
+                table_id=table_id, duckdb_conn=duckdb_conn, session=session
+            )
+
+            if topo_result.success:
+                tq = topo_result.unwrap()
+                per_table_topological[table_id] = {
+                    "betti_0": tq.betti_numbers.betti_0,
+                    "betti_1": tq.betti_numbers.betti_1,
+                    "quality_score": tq.quality_score,
+                    "has_anomalies": tq.has_anomalies,
+                }
+
+        # =====================================================================
+        # LAYER 2: RELATIONSHIP GATHERING
+        # =====================================================================
+
+        logger.info("Gathering relationships between tables")
+
+        relationships = await gather_relationships(table_ids, session)
+
+        logger.info(f"Found {len(relationships)} relationships")
+
+        # =====================================================================
+        # LAYER 3: CROSS-TABLE CYCLE DETECTION
+        # =====================================================================
+
+        logger.info("Detecting cross-table cycles")
+
+        # analyze_relationship_graph uses duck typing - EnrichedRelationship has
+        # the same attributes as RelationshipModel (from_table_id, to_table_id, etc.)
+        graph_analysis = analyze_relationship_graph(
+            table_ids,
+            relationships,  # type: ignore[arg-type]
+        )
+
+        cross_table_cycles: list[list[str]] = graph_analysis.get("cycles", [])  # type: ignore[assignment]
+        betti_0: int = graph_analysis.get("betti_0", 1)  # type: ignore[assignment]
+
+        logger.info(
+            f"Detected {len(cross_table_cycles)} cross-table cycles, {betti_0} connected components"
+        )
+
+        # If no LLM, return raw results
+        if llm_service is None:
+            logger.info("No LLM service - returning raw cycle detection results")
+            return Result.ok(
+                {
+                    "per_table_metrics": per_table_metrics,
+                    "per_table_topological": per_table_topological,
+                    "relationships": [
+                        {
+                            "from_table": r.from_table,
+                            "to_table": r.to_table,
+                            "from_column": r.from_column,
+                            "to_column": r.to_column,
+                            "relationship_type": str(r.relationship_type),
+                            "confidence": r.confidence,
+                        }
+                        for r in relationships
+                    ],
+                    "cross_table_cycles": cross_table_cycles,
+                    "graph_betti_0": betti_0,
+                    "classified_cycles": [],
+                    "llm_available": False,
+                }
+            )
+
+        # =====================================================================
+        # LAYER 4: LLM BUSINESS CYCLE CLASSIFICATION
+        # =====================================================================
+
+        logger.info("Classifying cross-table cycles with LLM")
+
+        # Build table semantics context
+        table_semantics: dict[str, dict[str, Any]] = {}
+
+        for table_id in table_ids:
+            table = await session.get(Table, table_id)
+            if not table:
+                continue
+
+            # Get columns
+            stmt = select(Column).where(Column.table_id == table_id)
+            columns_result = await session.execute(stmt)
+            columns = list(columns_result.scalars().all())
+
+            # Get semantic annotations
+            stmt_semantic = (
+                select(SemanticAnnotation, Column.column_name)
+                .join(Column, SemanticAnnotation.column_id == Column.column_id)
+                .where(Column.table_id == table_id)
+            )
+            semantic_result = await session.execute(stmt_semantic)
+            semantic_roles = {
+                col_name: ann.semantic_role
+                for ann, col_name in semantic_result.all()
+                if ann.semantic_role
+            }
+
+            table_semantics[table_id] = {
+                "table_name": table.table_name,
+                "key_columns": [
+                    c.column_name
+                    for c in columns
+                    if "id" in c.column_name.lower() or "_key" in c.column_name.lower()
+                ],
+                "all_columns": [c.column_name for c in columns],
+                "semantic_roles": semantic_roles,
+            }
+
+        # Classify each cross-table cycle
+        classified_cycles: list[dict[str, Any]] = []
+
+        for cycle in cross_table_cycles:
+            classification_result = await classify_cross_table_cycle_with_llm(
+                cycle_table_ids=cycle,
+                relationships=relationships,
+                table_semantics=table_semantics,
+                llm_service=llm_service,
+            )
+
+            if classification_result.success:
+                classification = classification_result.unwrap()
+                classification["cycle_tables"] = cycle
+                classified_cycles.append(classification)
+            else:
+                logger.warning(f"Cycle classification failed: {classification_result.error}")
+                classified_cycles.append(
+                    {
+                        "cycle_tables": cycle,
+                        "cycle_types": [],
+                        "primary_type": "UNKNOWN",
+                        "explanation": f"Classification failed: {classification_result.error}",
+                        "business_value": "unknown",
+                        "completeness": "unknown",
+                    }
+                )
+
+        # =====================================================================
+        # LAYER 5: LLM HOLISTIC INTERPRETATION
+        # =====================================================================
+
+        logger.info("Generating holistic dataset interpretation")
+
+        # Build interpretation context
+        interpretation_context = f"""
+=== FINANCIAL DATASET ANALYSIS ===
+
+Tables Analyzed: {len(table_ids)}
+Relationships Detected: {len(relationships)}
+Connected Components: {betti_0}
+Cross-Table Cycles: {len(cross_table_cycles)}
+
+=== PER-TABLE ACCOUNTING HEALTH ===
+"""
+        for table_id, metrics in per_table_metrics.items():
+            table_name = table_semantics.get(table_id, {}).get("table_name", table_id)
+            interpretation_context += f"\n{table_name}:\n"
+            for key, value in metrics.items():
+                interpretation_context += f"  {key}: {value}\n"
+
+        interpretation_context += "\n=== CLASSIFIED BUSINESS CYCLES ===\n"
+        for i, classified in enumerate(classified_cycles, 1):
+            interpretation_context += f"\nCycle {i}:\n"
+            interpretation_context += f"  Tables: {classified.get('cycle_tables', [])}\n"
+            interpretation_context += f"  Type: {classified.get('primary_type', 'UNKNOWN')}\n"
+            interpretation_context += f"  Confidence: {classified.get('cycle_types', [{}])[0].get('confidence', 0) if classified.get('cycle_types') else 0:.0%}\n"
+            interpretation_context += (
+                f"  Business Value: {classified.get('business_value', 'unknown')}\n"
+            )
+            interpretation_context += (
+                f"  Completeness: {classified.get('completeness', 'unknown')}\n"
+            )
+
+        # Expected cycles from config
+        config = _load_financial_config()
+        expected_cycles: list[str] = config.get("expected_cycles", [])
+        detected_types: set[str] = {
+            c.get("primary_type", "UNKNOWN") for c in classified_cycles if c.get("primary_type")
+        }
+        missing_expected = set(expected_cycles) - detected_types
+
+        interpretation_context += "\n=== EXPECTED VS DETECTED ===\n"
+        interpretation_context += f"Expected cycles: {', '.join(expected_cycles)}\n"
+        interpretation_context += f"Detected cycles: {', '.join(detected_types)}\n"
+        interpretation_context += (
+            f"Missing: {', '.join(missing_expected) if missing_expected else 'None'}\n"
+        )
+
+        # Generate LLM interpretation
+        system_prompt = """You are a financial data quality expert providing holistic assessment of a multi-table dataset.
+
+Your task: Interpret the business process health of this dataset based on:
+1. Per-table accounting integrity
+2. Detected business cycles (AR, AP, Revenue, etc.)
+3. Missing expected cycles
+4. Overall data connectivity
+
+Provide:
+1. Overall dataset quality score (0-1)
+2. Business process health assessment
+3. Critical issues (blocking problems)
+4. Recommendations (prioritized)
+5. Executive summary (2-3 sentences)
+
+Return JSON:
+{
+  "overall_quality_score": 0.75,
+  "business_process_health": {
+    "accounts_receivable": "healthy",
+    "accounts_payable": "partial",
+    "revenue": "missing"
+  },
+  "critical_issues": ["No revenue cycle detected"],
+  "recommendations": [
+    {"priority": "HIGH", "action": "...", "rationale": "..."}
+  ],
+  "summary": "..."
+}"""
+
+        request = LLMRequest(
+            prompt=f"{system_prompt}\n\n{interpretation_context}\n\nProvide holistic assessment.",
+            max_tokens=1500,
+            temperature=0.3,
+            response_format="json",
+        )
+
+        interpretation_response = await llm_service.provider.complete(request)
+
+        interpretation = None
+        if interpretation_response.success and interpretation_response.value:
+            import json
+
+            try:
+                interpretation = json.loads(interpretation_response.value.content.strip())
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse interpretation JSON")
+
+        # =====================================================================
+        # RETURN COMPLETE RESULT
+        # =====================================================================
+
+        return Result.ok(
+            {
+                "per_table_metrics": per_table_metrics,
+                "per_table_topological": per_table_topological,
+                "relationships": [
+                    {
+                        "from_table": r.from_table,
+                        "to_table": r.to_table,
+                        "from_column": r.from_column,
+                        "to_column": r.to_column,
+                        "relationship_type": str(r.relationship_type),
+                        "confidence": r.confidence,
+                    }
+                    for r in relationships
+                ],
+                "cross_table_cycles": cross_table_cycles,
+                "graph_betti_0": betti_0,
+                "classified_cycles": classified_cycles,
+                "missing_expected_cycles": list(missing_expected),
+                "interpretation": interpretation,
+                "llm_available": True,
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Complete financial dataset analysis failed: {e}")
+        return Result.fail(f"Dataset analysis failed: {e}")

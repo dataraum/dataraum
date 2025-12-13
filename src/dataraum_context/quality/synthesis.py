@@ -1503,7 +1503,71 @@ async def assess_dataset_quality(
             synthesized_at=datetime.now(UTC),
         )
 
-        # 8. LLM-enhanced dataset summary (optional)
+        # 8. Multi-table financial cycle analysis (cross-table business processes)
+        cross_table_financial_analysis = None
+        if len(table_ids) >= 2 and duckdb_conn is not None:
+            try:
+                from dataraum_context.quality.domains.financial_orchestrator import (
+                    analyze_complete_financial_dataset_quality,
+                )
+
+                financial_result = await analyze_complete_financial_dataset_quality(
+                    table_ids=table_ids,
+                    duckdb_conn=duckdb_conn,
+                    session=session,
+                    llm_service=llm_service,
+                )
+
+                if financial_result.success and financial_result.value:
+                    cross_table_financial_analysis = financial_result.value
+                    logger.info(
+                        f"Cross-table financial analysis detected "
+                        f"{len(cross_table_financial_analysis.get('cross_table_cycles', []))} cycles"
+                    )
+
+                    # Add cross-table cycle issues
+                    for cycle_classification in cross_table_financial_analysis.get(
+                        "classified_cycles", []
+                    ):
+                        cycle_type = cycle_classification.get("primary_type", "unknown_cycle")
+                        explanation = cycle_classification.get("explanation", "")
+                        business_value = cycle_classification.get("business_value", "medium")
+
+                        severity = (
+                            QualitySynthesisSeverity.INFO
+                            if business_value == "high"
+                            else QualitySynthesisSeverity.WARNING
+                        )
+
+                        issue = QualitySynthesisIssue(
+                            issue_id=str(uuid4()),
+                            issue_type=f"financial_cycle_{cycle_type}",
+                            severity=severity,
+                            dimension=QualityDimension.CONSISTENCY,
+                            table_id=None,  # Spans multiple tables
+                            column_id=None,
+                            column_name=None,
+                            description=f"Business cycle detected: {explanation}",
+                            recommendation=(
+                                "Review business process data flow for completeness"
+                                if business_value == "high"
+                                else None
+                            ),
+                            evidence={
+                                "cycle_type": cycle_type,
+                                "business_value": business_value,
+                                "cycle_types": cycle_classification.get("cycle_types", []),
+                            },
+                            source_pillar=5,  # Quality (domain quality)
+                            source_module="financial_orchestrator",
+                            detected_at=datetime.now(UTC),
+                        )
+                        cross_table_issues.append(issue)
+
+            except Exception as e:
+                logger.warning(f"Failed to run cross-table financial analysis: {e}")
+
+        # 9. LLM-enhanced dataset summary (optional)
         if llm_service is not None:
             try:
                 # Aggregate summaries from all tables
@@ -1519,10 +1583,38 @@ async def assess_dataset_quality(
                         + "\n".join(table_summaries)
                     )
 
+                # Add cross-table financial cycle interpretation
+                if cross_table_financial_analysis:
+                    interpretation = cross_table_financial_analysis.get("interpretation")
+                    if interpretation:
+                        interp_summary = interpretation.get("summary", "")
+                        if interp_summary:
+                            if dataset_result.dataset_summary:
+                                dataset_result.dataset_summary += (
+                                    f"\n\nBusiness Process Analysis:\n{interp_summary}"
+                                )
+                            else:
+                                dataset_result.dataset_summary = (
+                                    f"Business Process Analysis:\n{interp_summary}"
+                                )
+
                 # Aggregate recommendations from all tables
                 all_recommendations = []
                 for assessment in table_assessments:
                     all_recommendations.extend(assessment.top_recommendations)
+
+                # Add cross-table financial recommendations
+                if cross_table_financial_analysis:
+                    interpretation = cross_table_financial_analysis.get("interpretation")
+                    if interpretation and interpretation.get("recommendations"):
+                        for rec in interpretation["recommendations"]:
+                            if isinstance(rec, dict):
+                                priority = rec.get("priority", "MEDIUM")
+                                action = rec.get("action", rec.get("recommendation", ""))
+                            else:
+                                priority = "MEDIUM"
+                                action = str(rec)
+                            all_recommendations.append(f"[{priority}] {action}")
 
                 # Deduplicate and prioritize
                 seen = set()

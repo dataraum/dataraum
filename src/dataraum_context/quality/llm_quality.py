@@ -3,7 +3,10 @@
 This module provides LLM analysis of quality metrics:
 1. Quality summaries - Natural language quality descriptions
 2. Quality recommendations - Prioritized action items
-3. Business cycle classification - Topological cycle interpretation
+
+For business cycle classification, use:
+- dataraum_context.quality.domains.financial_llm.classify_financial_cycle_with_llm()
+- dataraum_context.quality.domains.financial_orchestrator.analyze_complete_financial_quality()
 
 These features are OPTIONAL and gracefully degrade if LLM is unavailable.
 """
@@ -20,7 +23,6 @@ from dataraum_context.llm.providers.base import LLMRequest
 from dataraum_context.quality.models import (
     QualityDimension,
     QualitySynthesisResult,
-    TopologicalQualityResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -281,118 +283,12 @@ async def generate_quality_recommendations(
         return Result.fail(f"Recommendation generation failed: {e}")
 
 
-async def classify_business_cycle(
-    cycle_description: str,
-    topological_result: TopologicalQualityResult,
-    llm_service: LLMService | None,
-    domain: str = "general",
-) -> Result[dict[str, str | None]]:
-    """Classify a topological cycle as valid business logic or data issue.
-
-    Args:
-        cycle_description: Human-readable description of the cycle
-        topological_result: Topological quality result with cycle details
-        llm_service: LLM service (optional - returns UNKNOWN if None)
-        domain: Business domain for context
-
-    Returns:
-        Result containing classification:
-        {
-            "classification": "VALID_BUSINESS_CYCLE" | "DATA_MODELING_ISSUE" | "REFERENTIAL_INTEGRITY_ISSUE" | "UNKNOWN",
-            "confidence": "HIGH" | "MEDIUM" | "LOW",
-            "explanation": "Why this classification...",
-            "recommendation": "How to fix (if issue)" or null
-        }
-
-    Example:
-        >>> cycle = "Orders → Shipments → Invoices → Orders"
-        >>> classification = await classify_business_cycle(cycle, topo_result, llm_service, "financial_reporting")
-        >>> print(classification.value["classification"])
-        "VALID_BUSINESS_CYCLE"
-    """
-    try:
-        # If no LLM, return UNKNOWN
-        if llm_service is None:
-            return Result.ok(
-                {
-                    "classification": "UNKNOWN",
-                    "confidence": "LOW",
-                    "explanation": "LLM unavailable for cycle classification",
-                    "recommendation": "Manual review required",
-                }
-            )
-
-        # Load prompts
-        try:
-            prompts = _load_prompts()
-            cycle_prompt = prompts.get("business_cycle_classification", {})
-        except Exception as e:
-            logger.warning(f"Failed to load prompts, returning UNKNOWN: {e}")
-            return await classify_business_cycle(
-                cycle_description, topological_result, None, domain
-            )
-
-        # Extract cycle details from topological result
-        # NOTE: This is a stub - actual implementation would extract from result.cycles
-        tables_in_cycle = "Unknown"  # TODO: Extract from topological_result
-        relationship_chain = cycle_description
-
-        # Get persistence score (stub - actual field name may differ)
-        # TODO: Extract actual persistence score from stability analysis
-        persistence_score = 0.5  # Placeholder
-
-        # Format context
-        system_prompt = cycle_prompt.get("system", "")
-        user_template = cycle_prompt.get("user", "")
-
-        user_prompt = user_template.format(
-            table_name="multiple tables",  # Cycles span tables
-            cycle_description=cycle_description,
-            tables_in_cycle=tables_in_cycle,
-            relationship_chain=relationship_chain,
-            persistence_score=persistence_score,
-            domain=domain,
-            table_types="Unknown",  # TODO: Extract from metadata
-            relationship_types="Foreign keys",
-            betti_1=topological_result.betti_numbers.betti_1,
-            total_relationships=10,  # Placeholder
-        )
-
-        # Call LLM
-        full_prompt = f"{system_prompt}\n\n{user_prompt}"
-
-        request = LLMRequest(
-            prompt=full_prompt,
-            max_tokens=400,
-            temperature=0.3,  # Lower temperature for classification
-            response_format="json",
-        )
-
-        response_result = await llm_service.provider.complete(request)
-
-        if not response_result.success or not response_result.value:
-            return await classify_business_cycle(
-                cycle_description, topological_result, None, domain
-            )
-
-        # Parse JSON response
-        response_text = response_result.value.content.strip()
-        try:
-            classification = json.loads(response_text)
-            # Ensure recommendation is str or None
-            if "recommendation" in classification and classification["recommendation"] == "":
-                classification["recommendation"] = None
-            return Result.ok(classification)
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse cycle classification JSON: {e}")
-            result: dict[str, str | None] = {
-                "classification": "UNKNOWN",
-                "confidence": "LOW",
-                "explanation": f"Failed to parse LLM response: {response_text[:100]}",
-                "recommendation": None,
-            }
-            return Result.ok(result)
-
-    except Exception as e:
-        logger.error(f"Failed to classify business cycle: {e}")
-        return Result.fail(f"Cycle classification failed: {e}")
+# NOTE: classify_business_cycle() has been removed.
+# For LLM-based cycle classification, use:
+#   from dataraum_context.quality.domains.financial_llm import classify_financial_cycle_with_llm
+#   from dataraum_context.quality.domains.financial_orchestrator import analyze_complete_financial_quality
+#
+# The financial_orchestrator provides the complete flow:
+#   Layer 1: Compute metrics (topological analysis)
+#   Layer 2: LLM classification of individual cycles
+#   Layer 3: LLM holistic interpretation

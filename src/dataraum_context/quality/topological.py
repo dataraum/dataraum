@@ -505,29 +505,53 @@ async def analyze_topological_quality(
 
     This is the main entry point for topological quality analysis.
 
+    For LLM-enhanced cycle classification, use the financial_orchestrator instead:
+        from dataraum_context.quality.domains.financial_orchestrator import (
+            analyze_complete_financial_quality,
+        )
+        result = await analyze_complete_financial_quality(
+            table_id, duckdb_conn, session, llm_service
+        )
+
+    The orchestrator will:
+    1. Call this function for raw topological analysis
+    2. Classify cycles using LLM with domain context
+    3. Run financial domain analysis with classified cycles
+    4. Generate holistic LLM interpretation
+
     Args:
         table_id: Table to analyze
         duckdb_conn: DuckDB connection
         session: Database session
         max_dimension: Maximum homology dimension to compute
         min_persistence: Minimum persistence for significant features
-        domain_analyzer: Optional domain-specific analyzer for enhanced interpretation
+        domain_analyzer: Optional domain-specific analyzer for enhanced interpretation.
+            If provided without LLM, cycles are passed through unclassified.
+            For LLM classification, use the orchestrator instead.
         temporal_context: Optional temporal context (fiscal periods, etc.) for domain analysis
 
     Returns:
         Result containing complete topological quality assessment
 
     Example:
-        # Generic analysis
+        # Generic analysis (no cycle classification)
         result = await analyze_topological_quality(table_id, conn, session)
 
-        # Financial domain-specific analysis
+        # With domain analyzer (basic analysis, no LLM)
         from dataraum_context.quality.domains.financial import FinancialDomainAnalyzer
         analyzer = FinancialDomainAnalyzer()
         result = await analyze_topological_quality(
             table_id, conn, session,
             domain_analyzer=analyzer,
             temporal_context={"is_period_end": True, "is_quarter_end": True}
+        )
+
+        # For LLM-enhanced analysis, use the orchestrator (recommended)
+        from dataraum_context.quality.domains.financial_orchestrator import (
+            analyze_complete_financial_quality,
+        )
+        result = await analyze_complete_financial_quality(
+            table_id, conn, session, llm_service
         )
     """
 

@@ -903,176 +903,6 @@ def _load_financial_config() -> dict[str, Any]:
         return {}
 
 
-def detect_financial_cycles(
-    cycles: list[Any],  # list[CycleDetection] from enrichment.models
-    table_names: list[str],
-    column_relationships: dict[str, Any],
-    semantic_annotations: dict[str, Any] | None = None,  # Semantic enrichment data
-) -> list[Any]:  # Returns list[CycleDetection]
-    """Classify generic topological cycles with financial domain meaning.
-
-    Uses configuration-driven pattern matching and optional semantic enrichment
-    to classify cycles into business-meaningful types.
-
-    Args:
-        cycles: List of CycleDetection objects from topological analysis
-        table_names: Names of tables involved in the analysis
-        column_relationships: Dict mapping columns to their relationships
-        semantic_annotations: Optional semantic enrichment data with column roles
-
-    Returns:
-        List of CycleDetection objects with cycle_type populated
-    """
-    # Import here to avoid circular dependency
-    from dataraum_context.quality.models import CycleDetection
-
-    # Load configuration
-    config = _load_financial_config()
-    cycle_patterns = config.get("cycle_patterns", {})
-
-    # Fallback to hardcoded patterns if config not available
-    if not cycle_patterns:
-        logger.warning("No cycle patterns in config, using hardcoded fallback")
-        cycle_patterns = _get_fallback_cycle_patterns()
-
-    classified_cycles = []
-
-    for cycle in cycles:
-        # Analyze involved columns to determine cycle type
-        involved_cols = cycle.involved_columns if hasattr(cycle, "involved_columns") else []
-
-        # Try to classify using configuration patterns
-        cycle_type = None
-        cycle_description = None
-        match_score = 0.0
-
-        # Check each cycle pattern from config
-        for pattern_name, pattern_config in cycle_patterns.items():
-            score = _score_cycle_match(involved_cols, pattern_config, semantic_annotations)
-
-            if score > match_score:
-                match_score = score
-                cycle_type = pattern_name
-                cycle_description = pattern_config.get("description", f"{pattern_name} cycle")
-
-        # Create classified cycle with domain meaning
-        classified_cycle = CycleDetection(
-            cycle_id=cycle.cycle_id if hasattr(cycle, "cycle_id") else str(uuid4()),
-            dimension=cycle.dimension if hasattr(cycle, "dimension") else 1,
-            birth=cycle.birth if hasattr(cycle, "birth") else 0.0,
-            death=cycle.death if hasattr(cycle, "death") else 0.0,
-            persistence=cycle.persistence if hasattr(cycle, "persistence") else 0.0,
-            involved_columns=involved_cols,
-            cycle_type=cycle_type if match_score > 0 else None,  # DOMAIN-SPECIFIC!
-            is_anomalous=cycle.is_anomalous if hasattr(cycle, "is_anomalous") else False,
-            anomaly_reason=cycle.anomaly_reason if hasattr(cycle, "anomaly_reason") else None,
-            first_detected=(
-                cycle.first_detected if hasattr(cycle, "first_detected") else datetime.now(UTC)
-            ),
-            last_seen=cycle.last_seen if hasattr(cycle, "last_seen") else datetime.now(UTC),
-        )
-
-        classified_cycles.append(classified_cycle)
-
-        logger.info(
-            f"Classified cycle {classified_cycle.cycle_id}: "
-            f"{cycle_type or 'unclassified'} (score: {match_score:.2f}) - "
-            f"{cycle_description or 'Generic cycle'}"
-        )
-
-    return classified_cycles
-
-
-def _score_cycle_match(
-    involved_columns: list[str],
-    pattern_config: dict[str, Any],
-    semantic_annotations: dict[str, Any] | None,
-) -> float:
-    """Score how well a cycle matches a financial pattern.
-
-    Args:
-        involved_columns: List of column names in the cycle
-        pattern_config: Pattern configuration from YAML
-        semantic_annotations: Optional semantic enrichment data
-
-    Returns:
-        Match score (0-1), higher is better match
-    """
-    if not involved_columns:
-        return 0.0
-
-    score = 0.0
-    max_score = 0.0
-
-    # Score 1: Column name pattern matching
-    column_patterns = pattern_config.get("column_patterns", [])
-    if column_patterns:
-        max_score += 1.0
-        matches = sum(
-            1
-            for col in involved_columns
-            for pattern in column_patterns
-            if pattern.lower() in col.lower()
-        )
-        # Normalize by number of columns (avoid over-scoring long cycles)
-        score += min(1.0, matches / max(len(involved_columns) * 0.3, 1.0))
-
-    # Score 2: Semantic role matching (if available)
-    if semantic_annotations:
-        semantic_roles = pattern_config.get("semantic_roles", [])
-        if semantic_roles:
-            max_score += 1.0
-            role_matches = 0
-            for col in involved_columns:
-                col_annotation = semantic_annotations.get(col, {})
-                col_role = col_annotation.get("semantic_role")
-                if col_role and any(role.lower() in col_role.lower() for role in semantic_roles):
-                    role_matches += 1
-            if role_matches > 0:
-                score += min(1.0, role_matches / max(len(involved_columns) * 0.3, 1.0))
-
-    # Normalize score to 0-1 range
-    return score / max_score if max_score > 0 else 0.0
-
-
-def _get_fallback_cycle_patterns() -> dict[str, Any]:
-    """Fallback hardcoded cycle patterns if config not available.
-
-    Returns:
-        Dict of cycle patterns
-    """
-    return {
-        "accounts_receivable_cycle": {
-            "description": "AR collection cycle: Invoice → Payment → Cash",
-            "column_patterns": ["customer", "invoice", "payment", "receivable", "collection"],
-        },
-        "expense_cycle": {
-            "description": "Expense cycle: PO → Receipt → Invoice → Payment",
-            "column_patterns": ["vendor", "payable", "purchase", "expense", "supplier"],
-        },
-        "inventory_cycle": {
-            "description": "Inventory cycle: Purchase → Stock → COGS → Sale",
-            "column_patterns": ["inventory", "stock", "product", "cogs", "sku"],
-        },
-        "payroll_cycle": {
-            "description": "Payroll cycle: Time → Payroll → Disbursement",
-            "column_patterns": ["employee", "payroll", "salary", "wage", "timesheet"],
-        },
-        "capital_cycle": {
-            "description": "Capital cycle: Investment → Depreciation → Disposal",
-            "column_patterns": ["asset", "depreciation", "investment", "capital", "fixed_asset"],
-        },
-        "intercompany_cycle": {
-            "description": "Intercompany cycle: Charges between entities",
-            "column_patterns": ["entity", "subsidiary", "intercompany", "division", "company_code"],
-        },
-        "revenue_cycle": {
-            "description": "Revenue cycle: Order → Fulfillment → Recognition",
-            "column_patterns": ["revenue", "sale", "order", "booking", "contract"],
-        },
-    }
-
-
 def assess_fiscal_stability(
     stability: Any,  # StabilityAnalysis from enrichment.models
     temporal_context: dict[str, Any],
@@ -1428,9 +1258,19 @@ def compute_financial_quality_score(
 class FinancialDomainAnalyzer:
     """Financial domain analyzer for enhancing topological quality analysis.
 
+    This class provides synchronous analysis for compatibility with topological.py.
+    For LLM-enhanced analysis, use financial_orchestrator.analyze_complete_financial_quality().
+
     Usage:
+        # Basic analysis (no LLM)
         analyzer = FinancialDomainAnalyzer()
         enhanced_result = analyzer.analyze(topological_result, temporal_context)
+
+        # LLM-enhanced analysis (preferred)
+        from dataraum_context.quality.domains.financial_orchestrator import (
+            analyze_complete_financial_quality,
+        )
+        result = await analyze_complete_financial_quality(table_id, conn, session, llm_service)
     """
 
     def __init__(self, config: FinancialQualityConfig | None = None):
@@ -1445,12 +1285,18 @@ class FinancialDomainAnalyzer:
         self,
         topological_result: Any,  # TopologicalQualityResult
         temporal_context: dict[str, Any] | None = None,
+        classified_cycles: list[Any] | None = None,  # Pre-classified cycles from LLM
     ) -> dict[str, Any]:
-        """Perform complete financial domain analysis on topological results.
+        """Perform financial domain analysis on topological results.
+
+        Note: Cycle classification is now done via LLM in financial_orchestrator.py.
+        If pre-classified cycles are provided, they are used directly.
+        Otherwise, cycles are passed through without classification.
 
         Args:
             topological_result: TopologicalQualityResult from generic analysis
             temporal_context: Optional fiscal calendar context
+            classified_cycles: Optional pre-classified cycles from LLM analysis
 
         Returns:
             Dict with enhanced financial domain analysis
@@ -1458,21 +1304,17 @@ class FinancialDomainAnalyzer:
         temporal_context = temporal_context or {}
 
         # Extract cycles from result
-        cycles = (
+        raw_cycles = (
             topological_result.persistent_cycles
             if hasattr(topological_result, "persistent_cycles")
             else []
         )
-        table_names = (
-            [topological_result.table_name] if hasattr(topological_result, "table_name") else []
-        )
 
-        # Step 1: Classify cycles with financial domain meaning
-        classified_cycles = detect_financial_cycles(
-            cycles=cycles, table_names=table_names, column_relationships={}
-        )
+        # Use pre-classified cycles if provided, otherwise use raw cycles
+        # (LLM classification happens in financial_orchestrator.py)
+        cycles_to_analyze = classified_cycles if classified_cycles is not None else raw_cycles
 
-        # Step 2: Assess stability with fiscal period awareness
+        # Step 1: Assess stability with fiscal period awareness
         stability_assessment = assess_fiscal_stability(
             stability=(
                 topological_result.stability if hasattr(topological_result, "stability") else None
@@ -1480,23 +1322,23 @@ class FinancialDomainAnalyzer:
             temporal_context=temporal_context,
         )
 
-        # Step 3: Detect financial-specific anomalies
+        # Step 2: Detect financial-specific anomalies
         financial_anomalies = detect_financial_anomalies(
-            topological_result=topological_result, cycles=classified_cycles
+            topological_result=topological_result, cycles=cycles_to_analyze
         )
 
-        # Step 4: Compute domain-weighted quality score
+        # Step 3: Compute domain-weighted quality score
         financial_quality_score = compute_financial_quality_score(
             topological_result=topological_result,
             financial_anomalies=financial_anomalies,
-            cycles=classified_cycles,
+            cycles=cycles_to_analyze,
         )
 
         # Build comprehensive result
         result = {
             "domain": "financial",
-            "classified_cycles": classified_cycles,
-            "cycle_classification_summary": self._summarize_cycles(classified_cycles),
+            "classified_cycles": cycles_to_analyze,
+            "cycle_classification_summary": self._summarize_cycles(cycles_to_analyze),
             "stability_assessment": stability_assessment,
             "financial_anomalies": financial_anomalies,
             "financial_quality_score": financial_quality_score,
@@ -1518,35 +1360,38 @@ class FinancialDomainAnalyzer:
         """Summarize cycle classification results."""
         cycle_types: dict[str, int] = {}
         for cycle in cycles:
-            cycle_type = cycle.cycle_type or "unclassified"
+            cycle_type = getattr(cycle, "cycle_type", None) or "unclassified"
             cycle_types[cycle_type] = cycle_types.get(cycle_type, 0) + 1
 
+        total = len(cycles)
+        classified = sum(1 for c in cycles if getattr(c, "cycle_type", None) is not None)
+
         return {
-            "total_cycles": len(cycles),
-            "classified_count": sum(1 for c in cycles if c.cycle_type is not None),
-            "unclassified_count": sum(1 for c in cycles if c.cycle_type is None),
+            "total_cycles": total,
+            "classified_count": classified,
+            "unclassified_count": total - classified,
             "cycle_types": cycle_types,
-            "classification_rate": (
-                sum(1 for c in cycles if c.cycle_type is not None) / len(cycles)
-                if len(cycles) > 0
-                else 0.0
-            ),
+            "classification_rate": classified / total if total > 0 else 0.0,
         }
 
-    # TODO implement this with an LLM classifier
     def analyze_cross_table_cycles(
         self,
         cross_table_cycles: list[list[str]],
         table_names_map: dict[str, str] | None = None,
+        llm_classifications: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Analyze and classify cross-table cycles from relationship graph.
+        """Analyze cross-table cycles from relationship graph.
+
+        Note: For LLM-based classification, use financial_orchestrator.py which calls
+        financial_llm.py to classify cycles with domain context.
 
         Args:
             cross_table_cycles: List of cycles, where each cycle is a list of table IDs
             table_names_map: Optional mapping from table_id to human-readable table name
+            llm_classifications: Optional pre-computed LLM classifications
 
         Returns:
-            Dict with classified cross-table cycles and business process insights
+            Dict with cross-table cycles (classified if llm_classifications provided)
         """
         if not cross_table_cycles:
             return {
@@ -1554,170 +1399,78 @@ class FinancialDomainAnalyzer:
                 "classified_cycles": [],
                 "business_processes": [],
                 "quality_assessment": "No cross-table cycles detected",
+                "classification_rate": 0.0,
             }
 
-        # Load configuration
-        config = _load_financial_config()
-        cross_table_patterns = config.get("cross_table_cycle_patterns", {})
-
-        # Fallback patterns if config not available
-        if not cross_table_patterns:
-            cross_table_patterns = self._get_fallback_cross_table_patterns()
-
+        # Build basic cycle info
         classified_cycles = []
-        business_processes = []
-
-        for cycle_tables in cross_table_cycles:
-            # Get table names for pattern matching
+        for i, cycle_tables in enumerate(cross_table_cycles):
+            # Get table names
             if table_names_map:
                 table_names = [table_names_map.get(tid, tid) for tid in cycle_tables]
             else:
                 table_names = cycle_tables
 
-            # Try to classify the cycle based on table name patterns
-            cycle_type = None
-            business_process = None
-            match_score = 0.0
-
-            for pattern_name, pattern_config in cross_table_patterns.items():
-                score = self._score_cross_table_match(table_names, pattern_config)
-
-                if score > match_score:
-                    match_score = score
-                    cycle_type = pattern_name
-                    business_process = pattern_config.get("business_process")
-
-            classified_cycles.append(
-                {
-                    "tables": cycle_tables,
-                    "table_names": table_names,
-                    "cycle_type": cycle_type,
-                    "business_process": business_process,
-                    "match_confidence": match_score,
-                }
-            )
-
-            if business_process and match_score > 0.5:
-                business_processes.append(
+            # Use LLM classification if provided
+            if llm_classifications and i < len(llm_classifications):
+                llm_class = llm_classifications[i]
+                classified_cycles.append(
                     {
-                        "process_name": business_process,
-                        "cycle_type": cycle_type,
-                        "tables_involved": table_names,
-                        "confidence": match_score,
+                        "tables": cycle_tables,
+                        "table_names": table_names,
+                        "cycle_type": llm_class.get("cycle_type"),
+                        "business_process": llm_class.get("business_process"),
+                        "match_confidence": llm_class.get("confidence", 0.0),
+                        "explanation": llm_class.get("explanation"),
+                        "is_expected": llm_class.get("is_expected", False),
+                    }
+                )
+            else:
+                # Without LLM, cycles are unclassified
+                classified_cycles.append(
+                    {
+                        "tables": cycle_tables,
+                        "table_names": table_names,
+                        "cycle_type": None,
+                        "business_process": None,
+                        "match_confidence": 0.0,
+                        "explanation": "Use LLM classification for business process detection",
+                        "is_expected": None,
                     }
                 )
 
-        # Assess quality based on detected business processes
-        quality_assessment = self._assess_business_process_quality(classified_cycles)
+        # Extract business processes from LLM classifications
+        business_processes = [
+            {
+                "process_name": c.get("business_process"),
+                "cycle_type": c.get("cycle_type"),
+                "tables_involved": c.get("table_names", []),
+                "confidence": c.get("match_confidence", 0.0),
+            }
+            for c in classified_cycles
+            if c.get("business_process") and c.get("match_confidence", 0) > 0.5
+        ]
+
+        # Compute classification rate
+        total = len(classified_cycles)
+        classified = sum(1 for c in classified_cycles if c.get("cycle_type") is not None)
+        classification_rate = classified / total if total > 0 else 0.0
+
+        # Quality assessment
+        if llm_classifications:
+            if classified == total:
+                quality_assessment = f"All {total} cycle(s) classified by LLM"
+            else:
+                quality_assessment = f"{classified}/{total} cycles classified by LLM"
+        else:
+            quality_assessment = (
+                f"{total} cycle(s) detected. Use LLM classification for business process analysis."
+            )
 
         return {
-            "total_cycles": len(cross_table_cycles),
+            "total_cycles": total,
             "classified_cycles": classified_cycles,
             "business_processes": business_processes,
             "quality_assessment": quality_assessment,
-            "classification_rate": (
-                sum(1 for c in classified_cycles if c["cycle_type"] is not None)
-                / len(classified_cycles)
-                if classified_cycles
-                else 0.0
-            ),
+            "classification_rate": classification_rate,
         }
-
-    def _score_cross_table_match(
-        self, table_names: list[str], pattern_config: dict[str, Any]
-    ) -> float:
-        """Score how well a cross-table cycle matches a business process pattern.
-
-        Args:
-            table_names: List of table names in the cycle
-            pattern_config: Pattern configuration with expected tables
-
-        Returns:
-            Match score (0-1)
-        """
-        expected_tables = pattern_config.get("expected_tables", [])
-        if not expected_tables:
-            return 0.0
-
-        # Convert to lowercase for case-insensitive matching
-        table_names_lower = [t.lower() for t in table_names]
-
-        # Count how many expected tables are present
-        matches = 0
-        for expected in expected_tables:
-            expected_lower = expected.lower()
-            # Check for exact match or substring match
-            if any(expected_lower in table_name for table_name in table_names_lower):
-                matches += 1
-
-        # Score based on coverage (what % of expected tables are present)
-        score = matches / len(expected_tables) if expected_tables else 0.0
-
-        return min(1.0, score)
-
-    def _get_fallback_cross_table_patterns(self) -> dict[str, Any]:
-        """Fallback patterns for cross-table cycle classification.
-
-        Returns:
-            Dict of cross-table cycle patterns
-        """
-        return {
-            "accounts_receivable_cycle": {
-                "description": "AR cycle: Customer → Invoice → Payment",
-                "expected_tables": ["customer", "invoice", "payment", "transaction"],
-                "business_process": "Revenue Collection (Order-to-Cash)",
-            },
-            "accounts_payable_cycle": {
-                "description": "AP cycle: Vendor → PO → Invoice → Payment",
-                "expected_tables": [
-                    "vendor",
-                    "purchase_order",
-                    "invoice",
-                    "payment",
-                    "transaction",
-                ],
-                "business_process": "Procurement (Procure-to-Pay)",
-            },
-            "inventory_cycle": {
-                "description": "Inventory cycle: Product → Purchase → Stock → Sale",
-                "expected_tables": ["product", "inventory", "purchase", "sale", "transaction"],
-                "business_process": "Inventory Management",
-            },
-            "payroll_cycle": {
-                "description": "Payroll cycle: Employee → Timesheet → Payroll → Payment",
-                "expected_tables": ["employee", "timesheet", "payroll", "payment", "transaction"],
-                "business_process": "Human Resources (Hire-to-Retire)",
-            },
-            "revenue_recognition_cycle": {
-                "description": "Revenue cycle: Customer → Contract → Invoice → Revenue",
-                "expected_tables": ["customer", "contract", "invoice", "revenue", "transaction"],
-                "business_process": "Revenue Recognition",
-            },
-        }
-
-    def _assess_business_process_quality(self, classified_cycles: list[dict[str, Any]]) -> str:
-        """Assess the quality of detected business processes.
-
-        Args:
-            classified_cycles: List of classified cycle dicts
-
-        Returns:
-            Quality assessment string
-        """
-        total = len(classified_cycles)
-        if total == 0:
-            return "No cross-table cycles detected"
-
-        classified = sum(1 for c in classified_cycles if c["cycle_type"] is not None)
-        high_confidence = sum(1 for c in classified_cycles if c.get("match_confidence", 0) > 0.7)
-
-        if classified == 0:
-            return f"❌ POOR: {total} cycle(s) detected but none matched known financial business processes"
-        elif classified == total and high_confidence == total:
-            return f"✅ EXCELLENT: All {total} cycle(s) matched known business processes with high confidence"
-        elif classified == total:
-            return f"✓ GOOD: All {total} cycle(s) matched business processes (some with lower confidence)"
-        elif classified > total / 2:
-            return f"⚠️ FAIR: {classified}/{total} cycles matched business processes"
-        else:
-            return f"❌ POOR: Only {classified}/{total} cycles matched business processes"

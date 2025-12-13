@@ -19,9 +19,10 @@ Quality Dimensions:
 - Accuracy: Benford compliance, domain rule violations
 """
 
+import logging
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import duckdb
@@ -59,6 +60,11 @@ from dataraum_context.storage.models_v2.topological_context import (
     TopologicalQualityMetrics,
 )
 from dataraum_context.storage.models_v2.type_inference import TypeCandidate, TypeDecision
+
+if TYPE_CHECKING:
+    from dataraum_context.llm import LLMService
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # Dimension Scoring Functions
@@ -1023,12 +1029,16 @@ async def assess_column_quality(
 async def assess_table_quality(
     table_id: str,
     session: AsyncSession,
+    duckdb_conn: duckdb.DuckDBPyConnection | None = None,
+    llm_service: LLMService | None = None,
 ) -> Result[QualitySynthesisResult]:
     """Assess quality for a table and all its columns.
 
     Args:
         table_id: Table ID to assess
         session: Database session
+        duckdb_conn: Optional DuckDB connection for financial cycle analysis
+        llm_service: Optional LLM service for summaries and recommendations
 
     Returns:
         Result containing QualitySynthesisResult
@@ -1182,7 +1192,7 @@ async def assess_table_quality(
             pillar = issue.source_pillar
             issues_by_pillar[pillar] = issues_by_pillar.get(pillar, 0) + 1
 
-        # Create synthesis result
+        # Create synthesis result (initially without LLM fields)
         synthesis = QualitySynthesisResult(
             table_id=table_id,
             table_name=table.table_name,
@@ -1194,11 +1204,75 @@ async def assess_table_quality(
             warnings=warnings,
             issues_by_dimension=issues_by_dimension,
             issues_by_pillar=issues_by_pillar,
-            quality_summary=None,  # TODO: LLM-generated summary
-            top_recommendations=[],  # TODO: Prioritize recommendations
+            quality_summary=None,
+            top_recommendations=[],
             synthesis_duration_seconds=time.time() - start_time,
             synthesized_at=datetime.now(UTC),
         )
+
+        # LLM-enhanced analysis (optional)
+        if llm_service is not None:
+            # Generate quality summary
+            try:
+                from dataraum_context.quality.llm_quality import generate_quality_summary
+
+                summary_result = await generate_quality_summary(synthesis, llm_service)
+                if summary_result.success and summary_result.value:
+                    synthesis.quality_summary = summary_result.value
+            except Exception as e:
+                logger.warning(f"Failed to generate quality summary: {e}")
+
+            # Generate recommendations
+            try:
+                from dataraum_context.quality.llm_quality import (
+                    generate_quality_recommendations,
+                )
+
+                recs_result = await generate_quality_recommendations(synthesis, llm_service)
+                if recs_result.success and recs_result.value:
+                    synthesis.top_recommendations = [
+                        f"[{r.get('priority', 'MEDIUM')}] {r.get('recommendation', '')}"
+                        for r in recs_result.value
+                    ]
+            except Exception as e:
+                logger.warning(f"Failed to generate recommendations: {e}")
+
+            # Run financial domain cycle analysis if duckdb available
+            if duckdb_conn is not None:
+                try:
+                    from dataraum_context.quality.domains.financial_orchestrator import (
+                        analyze_complete_financial_quality,
+                    )
+
+                    financial_result = await analyze_complete_financial_quality(
+                        table_id=table_id,
+                        duckdb_conn=duckdb_conn,
+                        session=session,
+                        llm_service=llm_service,
+                    )
+
+                    if financial_result.success and financial_result.value:
+                        # Store LLM interpretation in the quality summary if available
+                        llm_interp = financial_result.value.get("llm_interpretation")
+                        if llm_interp and synthesis.quality_summary:
+                            synthesis.quality_summary += (
+                                f"\n\nFinancial Domain Analysis: {llm_interp.get('summary', '')}"
+                            )
+                        elif llm_interp:
+                            synthesis.quality_summary = (
+                                f"Financial Domain Analysis: {llm_interp.get('summary', '')}"
+                            )
+
+                        # Add financial recommendations
+                        if llm_interp and llm_interp.get("recommendations"):
+                            synthesis.top_recommendations.extend(
+                                [
+                                    f"[FINANCIAL] {rec}"
+                                    for rec in llm_interp.get("recommendations", [])
+                                ]
+                            )
+                except Exception as e:
+                    logger.warning(f"Failed to run financial domain analysis: {e}")
 
         return Result.ok(synthesis)
 
@@ -1215,6 +1289,7 @@ async def assess_dataset_quality(
     table_ids: list[str],
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: AsyncSession,
+    llm_service: LLMService | None = None,
 ) -> Result[DatasetQualitySynthesisResult]:
     """Assess quality across multiple related tables.
 
@@ -1222,11 +1297,13 @@ async def assess_dataset_quality(
     - Cross-table multicollinearity (via unified correlation matrix)
     - Cross-table consistency violations
     - Dataset-level quality aggregation
+    - LLM-enhanced cycle analysis and summaries (if llm_service provided)
 
     Args:
         table_ids: List of table IDs to assess
         duckdb_conn: DuckDB connection for cross-table analysis
         session: Database session
+        llm_service: Optional LLM service for enhanced analysis
 
     Returns:
         Result containing DatasetQualitySynthesisResult
@@ -1238,10 +1315,12 @@ async def assess_dataset_quality(
     start_time = time.time()
 
     try:
-        # 1. Get individual table assessments
+        # 1. Get individual table assessments (with LLM if available)
         table_assessments = []
         for table_id in table_ids:
-            result = await assess_table_quality(table_id, session)
+            result = await assess_table_quality(
+                table_id, session, duckdb_conn=duckdb_conn, llm_service=llm_service
+            )
             if result.success and result.value:
                 table_assessments.append(result.value)
 
@@ -1399,7 +1478,7 @@ async def assess_dataset_quality(
         # 6. Get table names
         table_names = [a.table_name for a in table_assessments]
 
-        # 7. Create dataset synthesis result
+        # 7. Create dataset synthesis result (initially without LLM fields)
         dataset_result = DatasetQualitySynthesisResult(
             table_ids=table_ids,
             table_names=table_names,
@@ -1418,11 +1497,45 @@ async def assess_dataset_quality(
             cross_table_dependencies=cross_table_dependencies,
             cross_table_multicollinearity_severity=cross_table_severity,
             cross_table_issues=cross_table_issues,
-            dataset_summary=None,  # TODO: LLM-generated summary in Phase 4
-            top_recommendations=[],  # TODO: Prioritize recommendations in Phase 4
+            dataset_summary=None,
+            top_recommendations=[],
             synthesis_duration_seconds=time.time() - start_time,
             synthesized_at=datetime.now(UTC),
         )
+
+        # 8. LLM-enhanced dataset summary (optional)
+        if llm_service is not None:
+            try:
+                # Aggregate summaries from all tables
+                table_summaries = [
+                    f"- {a.table_name}: {a.quality_summary}"
+                    for a in table_assessments
+                    if a.quality_summary
+                ]
+
+                if table_summaries:
+                    dataset_result.dataset_summary = (
+                        f"Dataset quality assessment across {total_tables} tables:\n"
+                        + "\n".join(table_summaries)
+                    )
+
+                # Aggregate recommendations from all tables
+                all_recommendations = []
+                for assessment in table_assessments:
+                    all_recommendations.extend(assessment.top_recommendations)
+
+                # Deduplicate and prioritize
+                seen = set()
+                unique_recs = []
+                for rec in all_recommendations:
+                    if rec not in seen:
+                        seen.add(rec)
+                        unique_recs.append(rec)
+
+                dataset_result.top_recommendations = unique_recs[:10]  # Top 10
+
+            except Exception as e:
+                logger.warning(f"Failed to generate dataset summary: {e}")
 
         return Result.ok(dataset_result)
 

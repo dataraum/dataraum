@@ -990,27 +990,6 @@ async def analyze_temporal_quality(
                 )
             )
 
-        # Calculate overall quality score
-        scores = []
-
-        if completeness:
-            scores.append(completeness.completeness_ratio)
-
-        if update_frequency:
-            scores.append(update_frequency.update_frequency_score)
-
-        if distribution_stability:
-            scores.append(distribution_stability.stability_score)
-
-        # Penalty for issues
-        issue_penalty = len(issues) * 0.1
-
-        if scores:
-            mean_score = float(np.mean(scores))
-            temporal_quality_score = max(0.0, mean_score - issue_penalty)
-        else:
-            temporal_quality_score = 0.5
-
         computed_at = datetime.now(UTC)
 
         # Build result
@@ -1041,7 +1020,6 @@ async def analyze_temporal_quality(
             fiscal_calendar=fiscal_calendar,
             distribution_stability=distribution_stability,
             completeness=completeness,
-            temporal_quality_score=temporal_quality_score,
             quality_issues=issues,
             has_issues=len(issues) > 0,
         )

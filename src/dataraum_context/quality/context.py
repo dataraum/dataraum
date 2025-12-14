@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # Import formatter and model for multicollinearity
 from dataraum_context.enrichment.context_formatting import format_multicollinearity_for_llm
+from dataraum_context.enrichment.relationships.gathering import gather_relationships
 from dataraum_context.profiling.models import MulticollinearityAnalysis
 from dataraum_context.quality.models import (
     ColumnQualityContext,
@@ -28,6 +29,7 @@ from dataraum_context.quality.models import (
     QualityDimension,
     QualitySynthesisIssue,
     QualitySynthesisSeverity,
+    RelationshipContext,
     TableQualityContext,
 )
 from dataraum_context.quality.synthesis import (
@@ -479,6 +481,24 @@ async def format_dataset_quality_context(
         if table_context:
             table_contexts.append(table_context)
 
+    # Gather relationships between tables
+    relationships: list[RelationshipContext] = []
+    if len(table_ids) > 1:
+        enriched_rels = await gather_relationships(table_ids, session)
+        for rel in enriched_rels:
+            relationships.append(
+                RelationshipContext(
+                    from_table=rel.from_table,
+                    from_column=rel.from_column,
+                    to_table=rel.to_table,
+                    to_column=rel.to_column,
+                    relationship_type=rel.relationship_type.value,
+                    cardinality=rel.cardinality.value if rel.cardinality else None,
+                    confidence=rel.confidence,
+                    detection_method=rel.detection_method,
+                )
+            )
+
     # Fetch cross-table analysis
     cross_table_issues: list[QualitySynthesisIssue] = []
     cross_table_severity = None
@@ -566,6 +586,7 @@ async def format_dataset_quality_context(
 
     return DatasetQualityContext(
         tables=table_contexts,
+        relationships=relationships,
         cross_table_issues=cross_table_issues,
         cross_table_multicollinearity_severity=cross_table_severity,
         cross_table_correlation_count=cross_table_correlation_count,

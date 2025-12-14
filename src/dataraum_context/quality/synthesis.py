@@ -26,13 +26,21 @@ from dataraum_context.quality.models import (
     QualitySynthesisSeverity,
 )
 from dataraum_context.storage.models_v2.correlation_context import (
+    CategoricalAssociation,
     ColumnCorrelation,
     FunctionalDependency,
+    MulticollinearityMetrics,
 )
 from dataraum_context.storage.models_v2.domain_quality import DomainQualityMetrics
-from dataraum_context.storage.models_v2.statistical_context import StatisticalQualityMetrics
+from dataraum_context.storage.models_v2.statistical_context import (
+    StatisticalProfile,
+    StatisticalQualityMetrics,
+)
 from dataraum_context.storage.models_v2.temporal_context import TemporalQualityMetrics
-from dataraum_context.storage.models_v2.topological_context import TopologicalQualityMetrics
+from dataraum_context.storage.models_v2.topological_context import (
+    MultiTableTopologyMetrics,
+    TopologicalQualityMetrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -383,6 +391,68 @@ def aggregate_correlation_issues(
     return issues
 
 
+def aggregate_categorical_association_issues(
+    column_id: str,
+    column_name: str,
+    strong_associations: list[CategoricalAssociation],
+) -> list[QualitySynthesisIssue]:
+    """Extract quality issues from categorical associations (Cramér's V).
+
+    Strong associations between categorical columns may indicate:
+    - Redundant encoding of the same concept
+    - Derived columns
+    - Hidden dependencies
+
+    Args:
+        column_id: Column ID
+        column_name: Column name for display
+        strong_associations: List of strong associations (Cramér's V > 0.7)
+
+    Returns:
+        List of QualitySynthesisIssue for categorical dependencies
+    """
+    issues = []
+
+    for assoc in strong_associations[:3]:  # Top 3
+        other_col_id = assoc.column2_id if assoc.column1_id == column_id else assoc.column1_id
+
+        # Determine severity based on association strength
+        if assoc.cramers_v >= 0.9:
+            severity = QualitySynthesisSeverity.WARNING
+            strength_label = "very strong"
+        else:
+            severity = QualitySynthesisSeverity.INFO
+            strength_label = "strong"
+
+        issues.append(
+            QualitySynthesisIssue(
+                issue_id=str(uuid4()),
+                issue_type="categorical_association",
+                severity=severity,
+                dimension=QualityDimension.CONSISTENCY,
+                table_id=assoc.table_id,
+                column_id=column_id,
+                column_name=column_name,
+                description=(
+                    f"{strength_label.capitalize()} categorical association "
+                    f"(Cramér's V = {assoc.cramers_v:.2f}) with another column"
+                ),
+                recommendation="Consider if columns represent the same concept or if one is derived",
+                evidence={
+                    "other_column_id": other_col_id,
+                    "cramers_v": assoc.cramers_v,
+                    "chi_square": assoc.chi_square,
+                    "p_value": assoc.p_value,
+                },
+                source_pillar=1,  # Statistical
+                source_module="categorical_association",
+                detected_at=assoc.computed_at,
+            )
+        )
+
+    return issues
+
+
 def aggregate_domain_issues(
     domain_quality: DomainQualityMetrics | None,
     table_id: str | None = None,
@@ -445,6 +515,294 @@ def aggregate_domain_issues(
     return issues
 
 
+def aggregate_profile_anomaly_issues(
+    profile: StatisticalProfile | None,
+    column_id: str,
+    column_name: str,
+) -> list[QualitySynthesisIssue]:
+    """Extract quality issues from statistical profile anomalies.
+
+    Detects columns with problematic patterns:
+    - All null values (completeness issue)
+    - Constant column (zero variance - potential redundancy)
+    - Very low cardinality (may need attention)
+
+    Args:
+        profile: Statistical profile from DB
+        column_id: Column ID
+        column_name: Column name for display
+
+    Returns:
+        List of QualitySynthesisIssue for profile anomalies
+    """
+    if not profile:
+        return []
+
+    issues = []
+
+    # Check for all-null column
+    if profile.null_ratio is not None and profile.null_ratio >= 1.0:
+        issues.append(
+            QualitySynthesisIssue(
+                issue_id=str(uuid4()),
+                issue_type="all_nulls",
+                severity=QualitySynthesisSeverity.ERROR,
+                dimension=QualityDimension.COMPLETENESS,
+                table_id=None,
+                column_id=column_id,
+                column_name=column_name,
+                description="Column contains only NULL values",
+                recommendation="Consider dropping this column or investigating data loading issues",
+                evidence={
+                    "null_ratio": profile.null_ratio,
+                    "null_count": profile.null_count,
+                    "total_count": profile.total_count,
+                },
+                source_pillar=1,  # Statistical
+                source_module="statistical_profile",
+                detected_at=profile.profiled_at,
+            )
+        )
+
+    # Check for constant column (all same value)
+    elif profile.cardinality_ratio is not None and profile.cardinality_ratio == 0:
+        issues.append(
+            QualitySynthesisIssue(
+                issue_id=str(uuid4()),
+                issue_type="constant_column",
+                severity=QualitySynthesisSeverity.WARNING,
+                dimension=QualityDimension.VALIDITY,
+                table_id=None,
+                column_id=column_id,
+                column_name=column_name,
+                description="Column contains only a single unique value (constant)",
+                recommendation="Consider if this column provides meaningful information",
+                evidence={
+                    "cardinality_ratio": profile.cardinality_ratio,
+                    "distinct_count": profile.distinct_count,
+                    "total_count": profile.total_count,
+                },
+                source_pillar=1,  # Statistical
+                source_module="statistical_profile",
+                detected_at=profile.profiled_at,
+            )
+        )
+
+    # Check for very high null ratio (but not 100%)
+    elif profile.null_ratio is not None and profile.null_ratio >= 0.95:
+        issues.append(
+            QualitySynthesisIssue(
+                issue_id=str(uuid4()),
+                issue_type="high_null_ratio",
+                severity=QualitySynthesisSeverity.WARNING,
+                dimension=QualityDimension.COMPLETENESS,
+                table_id=None,
+                column_id=column_id,
+                column_name=column_name,
+                description=f"Column has {profile.null_ratio * 100:.1f}% NULL values",
+                recommendation="Investigate data completeness or consider if column is needed",
+                evidence={
+                    "null_ratio": profile.null_ratio,
+                    "null_count": profile.null_count,
+                    "total_count": profile.total_count,
+                },
+                source_pillar=1,  # Statistical
+                source_module="statistical_profile",
+                detected_at=profile.profiled_at,
+            )
+        )
+
+    return issues
+
+
+def aggregate_multicollinearity_issues(
+    multicol: MulticollinearityMetrics | None,
+    table_id: str,
+    table_name: str,
+) -> list[QualitySynthesisIssue]:
+    """Extract quality issues from multicollinearity analysis (table-level).
+
+    High multicollinearity indicates redundant predictors:
+    - VIF > 10: Severe multicollinearity for specific columns
+    - Condition Index > 30: Overall model instability
+
+    Args:
+        multicol: Multicollinearity metrics from DB
+        table_id: Table ID
+        table_name: Table name for display
+
+    Returns:
+        List of QualitySynthesisIssue for multicollinearity issues
+    """
+    if not multicol:
+        return []
+
+    issues = []
+
+    # Check for severe multicollinearity
+    if multicol.has_severe_multicollinearity:
+        severity = QualitySynthesisSeverity.WARNING
+        if multicol.condition_index and multicol.condition_index > 100:
+            severity = QualitySynthesisSeverity.ERROR
+
+        issues.append(
+            QualitySynthesisIssue(
+                issue_id=str(uuid4()),
+                issue_type="severe_multicollinearity",
+                severity=severity,
+                dimension=QualityDimension.CONSISTENCY,
+                table_id=table_id,
+                column_id=None,
+                column_name=None,
+                description=(
+                    f"Severe multicollinearity detected: "
+                    f"{multicol.num_problematic_columns or 'multiple'} columns affected"
+                ),
+                recommendation=(
+                    "Consider removing redundant columns or using dimensionality reduction"
+                ),
+                evidence={
+                    "condition_index": multicol.condition_index,
+                    "max_vif": multicol.max_vif,
+                    "num_problematic_columns": multicol.num_problematic_columns,
+                },
+                source_pillar=1,  # Statistical
+                source_module="multicollinearity",
+                detected_at=multicol.computed_at,
+            )
+        )
+
+    # High condition index but not flagged as severe
+    elif multicol.condition_index and multicol.condition_index > 30:
+        issues.append(
+            QualitySynthesisIssue(
+                issue_id=str(uuid4()),
+                issue_type="high_condition_index",
+                severity=QualitySynthesisSeverity.INFO,
+                dimension=QualityDimension.CONSISTENCY,
+                table_id=table_id,
+                column_id=None,
+                column_name=None,
+                description=f"Elevated condition index ({multicol.condition_index:.1f}) suggests collinearity",
+                recommendation="Review column correlations for potential redundancy",
+                evidence={
+                    "condition_index": multicol.condition_index,
+                    "max_vif": multicol.max_vif,
+                },
+                source_pillar=1,  # Statistical
+                source_module="multicollinearity",
+                detected_at=multicol.computed_at,
+            )
+        )
+
+    return issues
+
+
+def aggregate_cross_table_topology_issues(
+    cross_topology: MultiTableTopologyMetrics | None,
+) -> list[QualitySynthesisIssue]:
+    """Extract quality issues from cross-table topology analysis (dataset-level).
+
+    Detects issues in the relationship graph across tables:
+    - Disconnected components (orphaned table groups)
+    - Cross-table cycles (may indicate circular dependencies)
+    - Missing relationships (isolated tables)
+
+    Args:
+        cross_topology: Multi-table topology metrics from DB
+
+    Returns:
+        List of QualitySynthesisIssue for cross-table issues
+    """
+    if not cross_topology:
+        return []
+
+    issues = []
+
+    # Check for disconnected graph (multiple components)
+    if not cross_topology.is_connected_graph and cross_topology.graph_betti_0 > 1:
+        issues.append(
+            QualitySynthesisIssue(
+                issue_id=str(uuid4()),
+                issue_type="disconnected_schema",
+                severity=QualitySynthesisSeverity.WARNING,
+                dimension=QualityDimension.CONSISTENCY,
+                table_id=None,
+                column_id=None,
+                column_name=None,
+                description=(
+                    f"Schema graph has {cross_topology.graph_betti_0} disconnected components"
+                ),
+                recommendation="Investigate if tables should be related or if data is incomplete",
+                evidence={
+                    "betti_0": cross_topology.graph_betti_0,
+                    "table_count": len(cross_topology.table_ids),
+                    "relationship_count": cross_topology.relationship_count,
+                },
+                source_pillar=2,  # Topological
+                source_module="cross_table_topology",
+                detected_at=cross_topology.computed_at,
+            )
+        )
+
+    # Check for cross-table cycles
+    if cross_topology.has_cross_table_cycles and cross_topology.cross_table_cycles > 0:
+        severity = (
+            QualitySynthesisSeverity.WARNING
+            if cross_topology.cross_table_cycles <= 2
+            else QualitySynthesisSeverity.ERROR
+        )
+
+        issues.append(
+            QualitySynthesisIssue(
+                issue_id=str(uuid4()),
+                issue_type="cross_table_cycles",
+                severity=severity,
+                dimension=QualityDimension.CONSISTENCY,
+                table_id=None,
+                column_id=None,
+                column_name=None,
+                description=(
+                    f"{cross_topology.cross_table_cycles} circular relationship "
+                    f"{'path' if cross_topology.cross_table_cycles == 1 else 'paths'} detected across tables"
+                ),
+                recommendation="Review circular foreign key relationships for correctness",
+                evidence={
+                    "cycle_count": cross_topology.cross_table_cycles,
+                },
+                source_pillar=2,  # Topological
+                source_module="cross_table_topology",
+                detected_at=cross_topology.computed_at,
+            )
+        )
+
+    # Check for sparse relationships
+    table_count = len(cross_topology.table_ids)
+    if table_count > 1 and cross_topology.relationship_count == 0:
+        issues.append(
+            QualitySynthesisIssue(
+                issue_id=str(uuid4()),
+                issue_type="no_relationships",
+                severity=QualitySynthesisSeverity.INFO,
+                dimension=QualityDimension.CONSISTENCY,
+                table_id=None,
+                column_id=None,
+                column_name=None,
+                description=f"No relationships detected among {table_count} tables",
+                recommendation="Verify if tables should be related or are truly independent",
+                evidence={
+                    "table_count": table_count,
+                    "relationship_count": 0,
+                },
+                source_pillar=2,  # Topological
+                source_module="cross_table_topology",
+                detected_at=cross_topology.computed_at,
+            )
+        )
+
+    return issues
+
+
 # ============================================================================
 # Public API - Convenience functions for issue collection
 # ============================================================================
@@ -454,4 +812,8 @@ _aggregate_statistical_issues = aggregate_statistical_issues
 _aggregate_temporal_issues = aggregate_temporal_issues
 _aggregate_topological_issues = aggregate_topological_issues
 _aggregate_correlation_issues = aggregate_correlation_issues
+_aggregate_categorical_association_issues = aggregate_categorical_association_issues
+_aggregate_profile_anomaly_issues = aggregate_profile_anomaly_issues
+_aggregate_multicollinearity_issues = aggregate_multicollinearity_issues
+_aggregate_cross_table_topology_issues = aggregate_cross_table_topology_issues
 _aggregate_domain_quality_issues = aggregate_domain_issues

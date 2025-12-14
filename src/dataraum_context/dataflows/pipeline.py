@@ -565,7 +565,6 @@ async def run_pipeline(
                                 if temp_quality.update_frequency
                                 else None
                             ),
-                            temporal_quality_score=temp_quality.temporal_quality_score,
                         )
                     )
                     await session.execute(update_stmt)

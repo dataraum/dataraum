@@ -76,7 +76,6 @@ class TemporalTableSummaryMetrics(Base):
 
     # STRUCTURED: Queryable aggregates
     temporal_column_count: Mapped[int] = mapped_column(nullable=False)
-    avg_quality_score: Mapped[float] = mapped_column(Float, nullable=False)
     total_issues: Mapped[int] = mapped_column(nullable=False)
 
     # Pattern counts (for filtering)

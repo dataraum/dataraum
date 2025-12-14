@@ -245,7 +245,6 @@ async def _analyze_time_column(
             detected_granularity=granularity,
             granularity_confidence=confidence,
             completeness=completeness,
-            temporal_quality_score=completeness_ratio_clamped,  # Simple score based on completeness
             has_issues=completeness_ratio_clamped < 0.9,
         )
 
@@ -351,7 +350,6 @@ async def _store_temporal_profile(
         has_seasonality=result.seasonality.has_seasonality if result.seasonality else False,
         has_trend=result.trend.has_trend if result.trend else False,
         is_stale=False,  # Will be computed in quality/temporal.py
-        temporal_quality_score=result.temporal_quality_score,
         # JSONB: Full Pydantic model (zero mapping!)
         temporal_data=result.model_dump(mode="json"),
     )
@@ -402,7 +400,6 @@ async def compute_table_temporal_summary(
 
         # Aggregate metrics across columns
         temporal_column_count = len(metrics)
-        quality_scores = []
         total_issues = 0
         columns_with_seasonality = 0
         columns_with_trends = 0
@@ -416,10 +413,6 @@ async def compute_table_temporal_summary(
             temporal_data = metric.temporal_data
             if not temporal_data:
                 continue
-
-            # Quality score
-            if "temporal_quality_score" in temporal_data:
-                quality_scores.append(temporal_data["temporal_quality_score"])
 
             # Issue count
             if "quality_issues" in temporal_data:
@@ -454,14 +447,10 @@ async def compute_table_temporal_summary(
                 if freshness_days > stalest_column_days:
                     stalest_column_days = freshness_days
 
-        # Calculate average quality score
-        avg_quality_score = sum(quality_scores) / len(quality_scores) if quality_scores else 0.0
-
         summary = TemporalTableSummary(
             table_id=table_id,
             table_name=table.table_name,
             temporal_column_count=temporal_column_count,
-            avg_quality_score=avg_quality_score,
             total_issues=total_issues,
             columns_with_seasonality=columns_with_seasonality,
             columns_with_trends=columns_with_trends,
@@ -504,7 +493,6 @@ async def persist_table_temporal_summary(
             # Update existing record
             existing.computed_at = datetime.now()
             existing.temporal_column_count = summary.temporal_column_count
-            existing.avg_quality_score = summary.avg_quality_score
             existing.total_issues = summary.total_issues
             existing.columns_with_seasonality = summary.columns_with_seasonality
             existing.columns_with_trends = summary.columns_with_trends
@@ -519,7 +507,6 @@ async def persist_table_temporal_summary(
                 table_id=summary.table_id,
                 computed_at=datetime.now(),
                 temporal_column_count=summary.temporal_column_count,
-                avg_quality_score=summary.avg_quality_score,
                 total_issues=summary.total_issues,
                 columns_with_seasonality=summary.columns_with_seasonality,
                 columns_with_trends=summary.columns_with_trends,

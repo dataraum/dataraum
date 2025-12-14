@@ -219,8 +219,7 @@ class StatisticalQualityResult(BaseModel):
     # Outlier detection
     outlier_detection: OutlierDetection | None = None
 
-    # Overall quality assessment
-    quality_score: float  # 0-1 aggregate
+    # Quality issues detected
     quality_issues: list[dict[str, Any]] = Field(
         default_factory=list
     )  # [{issue_type, severity, description}]

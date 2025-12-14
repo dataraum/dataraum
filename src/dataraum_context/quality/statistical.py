@@ -428,13 +428,6 @@ async def _assess_column_quality(
             outlier_detection=outlier_detection,
         )
 
-        # Compute comprehensive quality score
-        quality_score = _compute_statistical_quality_score(
-            benford_analysis=benford_analysis,
-            outlier_detection=outlier_detection,
-            issue_count=len(quality_issues),
-        )
-
         # Build StatisticalQualityResult (Pydantic source of truth)
         quality_result = StatisticalQualityResult(
             column_id=column.column_id,
@@ -444,7 +437,6 @@ async def _assess_column_quality(
             ),
             benford_analysis=benford_analysis,
             outlier_detection=outlier_detection,
-            quality_score=quality_score,
             quality_issues=quality_issues,
         )
 
@@ -454,7 +446,6 @@ async def _assess_column_quality(
             column_id=column.column_id,
             computed_at=computed_at,
             # STRUCTURED: Queryable quality indicators
-            quality_score=quality_score,
             benford_compliant=benford_analysis.is_compliant if benford_analysis else None,
             has_outliers=(outlier_detection.iqr_outlier_ratio > 0.05)
             if outlier_detection
@@ -534,35 +525,3 @@ def _generate_statistical_quality_issues(
         )
 
     return issues
-
-
-def _compute_statistical_quality_score(
-    benford_analysis: BenfordAnalysis | None,
-    outlier_detection: OutlierDetection | None,
-    issue_count: int,
-) -> float:
-    """Compute comprehensive statistical quality score (0-1)."""
-    score = 1.0
-
-    # Benford's Law penalty
-    if benford_analysis and not benford_analysis.is_compliant:
-        # Stronger penalty for more significant deviation
-        if benford_analysis.p_value < 0.01:
-            score -= 0.3
-        else:
-            score -= 0.15
-
-    # Outlier penalty (IQR)
-    if outlier_detection and outlier_detection.iqr_outlier_ratio > 0.05:
-        if outlier_detection.iqr_outlier_ratio > 0.20:
-            score -= 0.4  # Very high outlier ratio
-        elif outlier_detection.iqr_outlier_ratio > 0.10:
-            score -= 0.3
-        else:
-            score -= 0.15
-
-    # Issue count penalty
-    if issue_count > 0:
-        score -= issue_count * 0.05  # 5% per issue
-
-    return max(0.0, min(1.0, score))

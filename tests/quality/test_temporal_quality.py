@@ -372,8 +372,8 @@ async def test_analyze_temporal_quality_complete(temporal_table, duckdb_conn, as
     assert analysis.update_frequency is not None
     assert analysis.completeness is not None
 
-    # Check quality score
-    assert 0.0 <= analysis.temporal_quality_score <= 1.0
+    # Check quality issues list exists
+    assert isinstance(analysis.quality_issues, list)
 
 
 @pytest.mark.asyncio
@@ -527,9 +527,8 @@ def test_pydantic_temporal_quality_result():
         granularity_confidence=0.9,
         seasonality=SeasonalityAnalysis(has_seasonality=False, strength=0.0),
         trend=TrendAnalysis(has_trend=False, strength=0.0, direction="stable"),
-        temporal_quality_score=0.85,
         has_issues=False,
     )
     assert result.metric_id == "metric-1"
     assert result.span_days == 365.0
-    assert result.temporal_quality_score == 0.85
+    assert result.has_issues is False

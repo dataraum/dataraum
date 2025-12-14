@@ -306,8 +306,7 @@ class TemporalQualityResult(BaseModel):
     # Completeness
     completeness: TemporalCompletenessAnalysis | None = None
 
-    # Overall quality
-    temporal_quality_score: float  # 0-1, retained for analysis reference
+    # Quality issues
     quality_issues: list[QualityIssue] = Field(default_factory=list)
     has_issues: bool = False
 
@@ -318,7 +317,6 @@ class TemporalTableSummary(BaseModel):
     table_id: str
     table_name: str
     temporal_column_count: int
-    avg_quality_score: float
     total_issues: int
 
     # Counts of columns with specific patterns
@@ -567,6 +565,24 @@ class TableQualityContext(BaseModel):
     )
 
 
+class RelationshipContext(BaseModel):
+    """Simplified relationship for LLM context output.
+
+    Excludes internal IDs, focuses on human-readable names and key attributes.
+    """
+
+    from_table: str = Field(description="Source table name")
+    from_column: str = Field(description="Source column name")
+    to_table: str = Field(description="Target table name")
+    to_column: str = Field(description="Target column name")
+    relationship_type: str = Field(
+        description="Type: foreign_key, semantic, correlation, hierarchy"
+    )
+    cardinality: str | None = Field(None, description="Cardinality: one_to_one, one_to_many, etc.")
+    confidence: float = Field(description="Detection confidence (0-1)")
+    detection_method: str = Field(description="How relationship was detected")
+
+
 class DatasetQualityContext(BaseModel):
     """Quality context for an entire dataset - optimized for LLM consumption.
 
@@ -575,6 +591,12 @@ class DatasetQualityContext(BaseModel):
 
     # Tables
     tables: list[TableQualityContext] = Field(default_factory=list)
+
+    # Detected relationships between tables
+    relationships: list[RelationshipContext] = Field(
+        default_factory=list,
+        description="Detected relationships between tables with confidence scores",
+    )
 
     # Cross-table issues
     cross_table_issues: list[QualitySynthesisIssue] = Field(default_factory=list)

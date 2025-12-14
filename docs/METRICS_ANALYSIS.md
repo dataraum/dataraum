@@ -1,27 +1,45 @@
 # Data Context Library: Comprehensive Metrics Analysis Report
 
-**Generated:** 2025-11-28  
-**Version:** 1.0  
+**Generated:** 2025-11-28
+**Updated:** 2025-12-14 (context-focused refactoring)
+**Version:** 2.0
 **Scope:** All metrics collected across 5 pillars (Statistical, Topological, Temporal, Correlation, Domain Quality)
 
 ---
 
 ## Executive Summary
 
-This report analyzes all metrics collected by the DataRaum Context Engine, documenting their purpose, relevance, and usage in quality synthesis. The library collects **127+ individual metrics** across 5 pillars to provide comprehensive data context for AI-driven analytics.
+This report analyzes all metrics collected by the DataRaum Context Engine, documenting their purpose, relevance, and surfacing in quality context. The library collects **127+ individual metrics** across 5 pillars to provide comprehensive data context for AI-driven analytics.
 
 ### Key Findings
 
-| Pillar | Total Metrics | Used in Quality Synthesis | Context-Only Metrics | Coverage % |
+| Pillar | Total Metrics | Surfaced in Quality Context | Issue Generation | Notes |
 |--------|---------------|---------------------------|---------------------|------------|
-| Statistical | 42 | 12 | 30 | 28.6% |
-| Topological | 18 | 4 | 14 | 22.2% |
-| Temporal | 36 | 8 | 28 | 22.2% |
-| Correlation | 21 | 4 | 17 | 19.0% |
-| Domain Quality | 10+ | 10+ | 0 | 100% |
-| **TOTAL** | **127+** | **38+** | **89+** | **29.9%** |
+| Statistical | 42 | 15+ | Yes | Outliers, Benford, multicollinearity |
+| Topological | 18 | 6+ | Yes | Betti numbers, orphans, cycles |
+| Temporal | 36 | 10+ | Yes | Granularity, completeness, staleness |
+| Correlation | 21 | 8+ | Yes | High correlations, FD violations |
+| Domain Quality | 10+ | 10+ | Yes | Rule violations |
+| **TOTAL** | **127+** | **49+** | - | - |
 
-**Philosophy:** The library prioritizes **comprehensive context over minimal scoring**. Most metrics serve as rich context for AI interpretation rather than direct quality scoring inputs.
+**Philosophy:** The library prioritizes **context-focused output over computed scores**. Metrics and issues are surfaced with flags and evidence for consumers to interpret within their own context. Quality scores have been removed in favor of raw metrics and actionable flags.
+
+### Recent Changes (v2.0)
+
+The following metrics are now surfaced in quality context output:
+
+**Column Context (`ColumnQualityContext`):**
+- `detected_granularity` - Time granularity (daily, weekly, etc.)
+- `completeness_ratio` - Temporal coverage ratio
+- `semantic_role` - Semantic role (identifier, measure, attribute, dimension)
+- `entity_type` - Business entity type
+- `business_name` - Human-friendly name
+- `derived_from` - Derivation relationships (formula, match_rate)
+
+**Table Context (`TableQualityContext`):**
+- `multicollinearity` - Full LLM-formatted multicollinearity analysis
+- `detected_entity_type` - Table entity type
+- `is_fact_table` / `is_dimension_table` - Table classification
 
 ---
 
@@ -1004,17 +1022,32 @@ This enables AI to:
 
 The DataRaum Context Engine collects **127+ metrics** across 5 pillars with a clear philosophy:
 
-1. **Quality Scoring (30%):** ~38 metrics directly drive quality dimension scores
-2. **AI Context (55%):** ~70 metrics provide rich context for AI interpretation
+1. **Quality Context (40%):** ~50 metrics surfaced in quality context for LLM/API consumption
+2. **AI Context (45%):** ~55 metrics provide rich context for AI interpretation
 3. **Human Investigation (10%):** ~13 metrics support exploratory analysis
-4. **Evidence (5%):** ~6 metrics provide supporting evidence
+4. **Evidence (5%):** ~9 metrics provide supporting evidence
 
 This architecture enables:
-- **Rigorous quality assessment** through multi-dimensional scoring
-- **Intelligent AI suggestions** through comprehensive context
+- **Context-focused quality output** through issues, flags, and raw metrics
+- **Intelligent AI suggestions** through comprehensive formatted context
 - **Human understanding** through evidence and examples
 - **Privacy-preserving analysis** by providing context without raw data access
 
-The synthesis architecture in Pillar 5 aggregates quality signals from all pillars into 6 standard quality dimensions (Completeness, Validity, Consistency, Uniqueness, Timeliness, Accuracy), while preserving all context metrics for AI consumption.
+The quality context output (`DatasetQualityContext`) aggregates metrics and issues from all pillars into a structured format optimized for LLM consumption. Instead of computed scores, consumers receive:
+- Raw metrics (null_ratio, outlier_ratio, etc.)
+- Actionable flags (high_nulls, stale_data, benford_violation)
+- Issues with evidence and source tracking
+- Formatted analysis (multicollinearity, etc.)
 
-**Key Insight:** More metrics ≠ better quality scores. The library intentionally separates **scoring metrics** (actionable) from **context metrics** (interpretive), enabling AI to understand data deeply without conflating description with quality assessment.
+**Key Insight:** More metrics ≠ better scores. The library intentionally separates **quality signals** (issues, flags) from **context metrics** (interpretive), enabling AI to understand data deeply and consumers to interpret quality within their own context.
+
+---
+
+## Appendix D: Future Work
+
+See `docs/METRICS_BACKLOG.md` for planned metrics and features including:
+- Shannon entropy metrics
+- Ordering metrics (is_sorted, is_monotonic)
+- Uniqueness/duplicate detection
+- Additional formatters for statistical, temporal, topological domains
+- API endpoints and MCP tools

@@ -19,6 +19,9 @@ import duckdb
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# Import formatter and model for multicollinearity
+from dataraum_context.enrichment.context_formatting import format_multicollinearity_for_llm
+from dataraum_context.profiling.models import MulticollinearityAnalysis
 from dataraum_context.quality.models import (
     ColumnQualityContext,
     DatasetQualityContext,
@@ -38,9 +41,12 @@ from dataraum_context.storage.models_v2.core import Column, Table
 from dataraum_context.storage.models_v2.correlation_context import (
     ColumnCorrelation,
     CrossTableMulticollinearityMetrics,
+    DerivedColumn,
     FunctionalDependency,
+    MulticollinearityMetrics,
 )
 from dataraum_context.storage.models_v2.domain_quality import DomainQualityMetrics
+from dataraum_context.storage.models_v2.semantic_context import SemanticAnnotation, TableEntity
 from dataraum_context.storage.models_v2.statistical_context import (
     StatisticalProfile,
     StatisticalQualityMetrics,
@@ -203,6 +209,28 @@ async def format_column_quality_context(
     fd_results = (await session.execute(fd_stmt)).scalars().all()
     fd_violations = [fd for fd in fd_results if fd.violation_count and fd.violation_count > 0]
 
+    # Fetch semantic annotation
+    semantic_stmt = select(SemanticAnnotation).where(
+        SemanticAnnotation.column_id == column.column_id
+    )
+    semantic_annotation = (await session.execute(semantic_stmt)).scalar_one_or_none()
+
+    # Fetch derived column info (if this column is derived from others)
+    derived_stmt = select(DerivedColumn).where(DerivedColumn.derived_column_id == column.column_id)
+    derived_results = (await session.execute(derived_stmt)).scalars().all()
+
+    derived_from: list[dict[str, Any]] | None = None
+    if derived_results:
+        derived_from = [
+            {
+                "derivation_type": d.derivation_type,
+                "formula": d.formula,
+                "match_rate": d.match_rate,
+                "source_column_ids": d.source_column_ids,
+            }
+            for d in derived_results
+        ]
+
     # Extract metrics
     null_ratio = stat_profile.null_ratio if stat_profile else None
     cardinality_ratio = stat_profile.cardinality_ratio if stat_profile else None
@@ -218,14 +246,28 @@ async def format_column_quality_context(
     freshness_days = None
     has_seasonality = None
     has_trend = None
-    if temp_quality and temp_quality.temporal_data:
-        freshness_days = temp_quality.temporal_data.get("data_freshness_days")
-        seasonality = temp_quality.temporal_data.get("seasonality")
-        if seasonality:
-            has_seasonality = seasonality.get("has_seasonality")
-        trend = temp_quality.temporal_data.get("trend")
-        if trend:
-            has_trend = trend.get("has_trend")
+    detected_granularity = None
+    completeness_ratio = None
+
+    if temp_quality:
+        # Extract from structured fields
+        detected_granularity = temp_quality.detected_granularity
+        completeness_ratio = temp_quality.completeness_ratio
+
+        # Extract from JSONB temporal_data
+        if temp_quality.temporal_data:
+            freshness_days = temp_quality.temporal_data.get("data_freshness_days")
+            seasonality = temp_quality.temporal_data.get("seasonality")
+            if seasonality:
+                has_seasonality = seasonality.get("has_seasonality")
+            trend = temp_quality.temporal_data.get("trend")
+            if trend:
+                has_trend = trend.get("has_trend")
+
+    # Extract semantic context
+    semantic_role = semantic_annotation.semantic_role if semantic_annotation else None
+    column_entity_type = semantic_annotation.entity_type if semantic_annotation else None
+    business_name = semantic_annotation.business_name if semantic_annotation else None
 
     # Generate flags
     flags = _generate_column_flags(
@@ -255,7 +297,13 @@ async def format_column_quality_context(
         data_freshness_days=freshness_days,
         has_seasonality=has_seasonality,
         has_trend=has_trend,
+        detected_granularity=detected_granularity,
+        completeness_ratio=completeness_ratio,
         benford_compliant=benford_compliant,
+        semantic_role=semantic_role,
+        entity_type=column_entity_type,
+        business_name=business_name,
+        derived_from=derived_from,
         flags=flags,
         issues=issues,
         filter_hints=[],  # Populated by LLM later
@@ -326,6 +374,32 @@ async def format_table_quality_context(
     )
     domain_quality = (await session.execute(domain_stmt)).scalar_one_or_none()
 
+    # Fetch and format multicollinearity analysis
+    multicol_stmt = (
+        select(MulticollinearityMetrics)
+        .where(MulticollinearityMetrics.table_id == table_id)
+        .order_by(MulticollinearityMetrics.computed_at.desc())
+        .limit(1)
+    )
+    multicol_metrics = (await session.execute(multicol_stmt)).scalar_one_or_none()
+
+    multicollinearity_formatted: dict[str, Any] | None = None
+    if multicol_metrics and multicol_metrics.analysis_data:
+        try:
+            # Deserialize JSONB to Pydantic model and format for LLM
+            analysis = MulticollinearityAnalysis.model_validate(multicol_metrics.analysis_data)
+            multicollinearity_formatted = format_multicollinearity_for_llm(analysis)
+        except Exception as e:
+            logger.warning(f"Failed to format multicollinearity for table {table_id}: {e}")
+
+    # Fetch table entity (semantic classification)
+    table_entity_stmt = select(TableEntity).where(TableEntity.table_id == table_id)
+    table_entity = (await session.execute(table_entity_stmt)).scalar_one_or_none()
+
+    detected_entity_type = table_entity.detected_entity_type if table_entity else None
+    is_fact_table = table_entity.is_fact_table if table_entity else None
+    is_dimension_table = table_entity.is_dimension_table if table_entity else None
+
     # Extract topological metrics
     betti_0 = None
     betti_1 = None
@@ -365,8 +439,12 @@ async def format_table_quality_context(
         betti_0=betti_0,
         betti_1=betti_1,
         orphaned_components=orphaned_components,
+        detected_entity_type=detected_entity_type,
+        is_fact_table=is_fact_table,
+        is_dimension_table=is_dimension_table,
         domain_anomaly_count=domain_anomaly_count,
         fiscal_stability=None,  # Set by financial orchestrator if applicable
+        multicollinearity=multicollinearity_formatted,
         problematic_relationships=[],
         flags=flags,
     )

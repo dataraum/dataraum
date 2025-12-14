@@ -478,9 +478,30 @@ class ColumnQualityContext(BaseModel):
     data_freshness_days: float | None = None
     has_seasonality: bool | None = None
     has_trend: bool | None = None
+    detected_granularity: str | None = Field(
+        None, description="Detected time granularity (daily, weekly, monthly, etc.)"
+    )
+    completeness_ratio: float | None = Field(
+        None, description="Ratio of actual to expected time periods (0-1)"
+    )
 
     # Statistical metrics
     benford_compliant: bool | None = None
+
+    # Semantic context (from LLM or manual annotation)
+    semantic_role: str | None = Field(
+        None, description="Role: identifier, measure, attribute, dimension"
+    )
+    entity_type: str | None = Field(
+        None, description="Entity type: customer, product, transaction, etc."
+    )
+    business_name: str | None = Field(None, description="Human-friendly business name")
+
+    # Derived column info (if this column is computed from others)
+    derived_from: list[dict[str, Any]] | None = Field(
+        None,
+        description="List of derivation relationships: derivation_type, formula, match_rate, source_columns",
+    )
 
     # Actionable flags for quick filtering decisions
     flags: list[str] = Field(
@@ -520,9 +541,21 @@ class TableQualityContext(BaseModel):
     betti_1: int | None = None  # Cycles
     orphaned_components: int | None = None
 
+    # Semantic context (from LLM or manual annotation)
+    detected_entity_type: str | None = Field(
+        None, description="Entity type: customer, order, product, etc."
+    )
+    is_fact_table: bool | None = Field(None, description="Whether this is a fact table")
+    is_dimension_table: bool | None = Field(None, description="Whether this is a dimension table")
+
     # Domain analysis summary (if applicable)
     domain_anomaly_count: int = 0
     fiscal_stability: dict[str, Any] | None = None
+
+    # Multicollinearity assessment (formatted for LLM)
+    multicollinearity: dict[str, Any] | None = Field(
+        None, description="LLM-formatted multicollinearity analysis from context_formatting"
+    )
 
     # Relationships with issues
     problematic_relationships: list[dict[str, Any]] = Field(default_factory=list)

@@ -419,15 +419,59 @@ def get_default_config() -> FormatterConfig:
         },
     )
 
+    # Domain group
+    config.groups["domain"] = MetricGroupConfig(
+        thresholds={
+            "compliance_score": ThresholdConfig(
+                thresholds={"none": 0.99, "low": 0.95, "moderate": 0.8, "high": 0.5},
+                default_severity="severe",
+                ascending=False,
+            ),
+            "violation_count": ThresholdConfig(
+                thresholds={"none": 0, "low": 2, "moderate": 5, "high": 10},
+                default_severity="severe",
+            ),
+            "balance_difference": ThresholdConfig(
+                thresholds={"none": 0.01, "low": 1.0, "moderate": 100.0, "high": 1000.0},
+                default_severity="critical",
+            ),
+            "sign_compliance": ThresholdConfig(
+                thresholds={"none": 0.999, "low": 0.99, "moderate": 0.95, "high": 0.9},
+                default_severity="critical",
+                ascending=False,
+            ),
+        },
+    )
+
     # Topology group
     config.groups["topology"] = MetricGroupConfig(
         thresholds={
+            "betti_0": ThresholdConfig(
+                thresholds={"none": 1, "low": 2, "moderate": 4, "high": 8},
+                default_severity="severe",
+            ),
+            "betti_1": ThresholdConfig(
+                thresholds={"none": 0, "low": 2, "moderate": 5, "high": 10},
+                default_severity="severe",
+            ),
             "orphaned_components": ThresholdConfig(
                 thresholds={"none": 0, "low": 1, "moderate": 3, "high": 5},
                 default_severity="severe",
             ),
-            "anomalous_cycles": ThresholdConfig(
+            "cycle_count": ThresholdConfig(
+                thresholds={"none": 0, "low": 3, "moderate": 6, "high": 10},
+                default_severity="severe",
+            ),
+            "anomalous_cycle_count": ThresholdConfig(
                 thresholds={"none": 0, "low": 1, "moderate": 2, "high": 3},
+                default_severity="severe",
+            ),
+            "structural_complexity": ThresholdConfig(
+                thresholds={"none": 3, "low": 6, "moderate": 10, "high": 15},
+                default_severity="severe",
+            ),
+            "bottleneck_distance": ThresholdConfig(
+                thresholds={"none": 0.05, "low": 0.1, "moderate": 0.2, "high": 0.3},
                 default_severity="severe",
             ),
         },

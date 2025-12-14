@@ -170,10 +170,26 @@ groups:
 
   # ============================================================================
   # Topology Group
-  # Metrics: orphaned_components, anomalous_cycles
+  # Metrics: Betti numbers, cycles, complexity, stability
   # ============================================================================
   topology:
     metrics:
+      betti_0:
+        thresholds:
+          none: 1         # Single component is ideal
+          low: 2          # 2 components is acceptable
+          moderate: 4     # 3-4 components needs attention
+          high: 8         # 5-8 components is problematic
+        default_severity: severe
+
+      betti_1:
+        thresholds:
+          none: 0         # No cycles is ideal
+          low: 2          # 1-2 cycles is acceptable
+          moderate: 5     # 3-5 cycles needs attention
+          high: 10        # 6-10 cycles is problematic
+        default_severity: severe
+
       orphaned_components:
         thresholds:
           none: 0         # No orphans is ideal
@@ -182,20 +198,36 @@ groups:
           high: 5         # 4-5 orphans is problematic
         default_severity: severe
 
-      anomalous_cycles:
+      cycle_count:
         thresholds:
-          none: 0         # No cycles is ideal
+          none: 0         # No persistent cycles is ideal
+          low: 3          # 1-3 cycles is acceptable
+          moderate: 6     # 4-6 cycles needs attention
+          high: 10        # 7-10 cycles is problematic
+        default_severity: severe
+
+      anomalous_cycle_count:
+        thresholds:
+          none: 0         # No anomalous cycles is ideal
           low: 1          # 1 cycle is low concern
           moderate: 2     # 2 cycles needs attention
           high: 3         # 3 cycles is problematic
         default_severity: severe
 
-      betti_0:
+      structural_complexity:
         thresholds:
-          none: 1         # Single component is ideal
-          low: 2          # 2 components is acceptable
-          moderate: 4     # 3-4 components needs attention
-          high: 8         # 5-8 components is problematic
+          none: 3         # Low complexity is ideal
+          low: 6          # 4-6 is acceptable
+          moderate: 10    # 7-10 needs attention
+          high: 15        # 11-15 is problematic
+        default_severity: severe
+
+      bottleneck_distance:
+        thresholds:
+          none: 0.05      # <5% change is stable
+          low: 0.1        # 5-10% is acceptable
+          moderate: 0.2   # 10-20% needs attention
+          high: 0.3       # 20-30% is problematic
         default_severity: severe
 
   # ============================================================================

@@ -55,9 +55,13 @@ async def enrich_temporal(
     result = await session.execute(stmt)
     timestamp_columns = result.all()
 
+    print(table_ids)
+    print(timestamp_columns[0][0].column_name)
+
     profiles = []
 
     for col, table in timestamp_columns:
+        print(col,table)
         # Analyze time column
         temporal_result = await _analyze_time_column(
             duckdb_conn,
@@ -113,19 +117,21 @@ async def _analyze_time_column(
         result = duckdb_conn.execute(
             f"""
             SELECT
-                MIN({column_name})::TIMESTAMP as min_ts,
-                MAX({column_name})::TIMESTAMP as max_ts,
-                COUNT(DISTINCT {column_name}) as distinct_count,
+                MIN("{column_name}") as min_ts,
+                MAX("{column_name}") as max_ts,
+                COUNT(DISTINCT "{column_name}") as distinct_count,
                 COUNT(*) as total_count
             FROM {actual_table}
-            WHERE {column_name} IS NOT NULL
+            WHERE "{column_name}" IS NOT NULL
         """
         ).fetchone()
+        print(result)
 
         if not result:
             return Result.fail("No result found")
 
         min_ts, max_ts, distinct_count, total_count = result
+        print(min_ts, max_ts, distinct_count, total_count)
 
         if not min_ts or not max_ts:
             return Result.fail("No valid timestamps found")
@@ -134,16 +140,16 @@ async def _analyze_time_column(
         gap_result = duckdb_conn.execute(
             f"""
             WITH ordered_ts AS (
-                SELECT DISTINCT {column_name}::TIMESTAMP as ts
+                SELECT DISTINCT "{column_name}" as ts
                 FROM {actual_table}
-                WHERE {column_name} IS NOT NULL
+                WHERE "{column_name}" IS NOT NULL
                 ORDER BY ts
             ),
             gaps AS (
                 SELECT
                     ts,
                     LEAD(ts) OVER (ORDER BY ts) as next_ts,
-                    epoch(LEAD(ts) OVER (ORDER BY ts) - ts) as gap_seconds
+                    date_diff('second', ts, next_ts) as gap_seconds
                 FROM ordered_ts
             )
             SELECT
@@ -173,16 +179,16 @@ async def _analyze_time_column(
             significant_gaps = duckdb_conn.execute(
                 f"""
                 WITH ordered_ts AS (
-                    SELECT DISTINCT {column_name}::TIMESTAMP as ts
+                    SELECT DISTINCT "{column_name}" as ts
                     FROM {actual_table}
-                    WHERE {column_name} IS NOT NULL
+                    WHERE "{column_name}" IS NOT NULL
                     ORDER BY ts
                 ),
                 gaps AS (
                     SELECT
                         ts as gap_start,
                         LEAD(ts) OVER (ORDER BY ts) as gap_end,
-                        epoch(LEAD(ts) OVER (ORDER BY ts) - ts) as gap_seconds
+                        date_diff('second', gap_start, gap_end) as gap_seconds
                     FROM ordered_ts
                 )
                 SELECT gap_start, gap_end, gap_seconds
@@ -251,7 +257,11 @@ async def _analyze_time_column(
         return Result.ok(quality_result)
 
     except Exception as e:
+        print(f"Error analyzing time column {column_name} in table {table_name}: {e}")
         return Result.fail(f"Failed to analyze time column: {e}")
+    
+
+    
 
 
 def _infer_granularity(

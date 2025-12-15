@@ -187,6 +187,7 @@ async def _infer_column_types(
                 col_name=col_name,
                 target_type=pattern.inferred_type,
                 duckdb_conn=duckdb_conn,
+                standardization_expr=pattern.standardization_expr,
             )
 
             if parse_result.success_rate < 0.8:
@@ -325,6 +326,7 @@ async def _test_type_cast(
     col_name: str,
     target_type: DataType,
     duckdb_conn: duckdb.DuckDBPyConnection,
+    standardization_expr: str | None = None,
 ) -> ParseResult:
     """Test casting a column to a target type.
 
@@ -333,7 +335,8 @@ async def _test_type_cast(
         col_name: Column name
         target_type: Target data type
         duckdb_conn: DuckDB connection
-
+        standardization_expr: Optional DuckDB SQL to normalize value before casting
+                             (e.g., STRPTIME for date formats)
     Returns:
         ParseResult with success rate and failed examples
     """
@@ -350,11 +353,18 @@ async def _test_type_cast(
         if total_count == 0:
             return ParseResult(success_rate=0.0, failed_examples=[])
 
+        # Build cast expression - use standardization_expr if provided
+        if standardization_expr:
+            cast_expression = standardization_expr.format(col=col_name)
+            cast_expr = f"TRY_CAST({cast_expression} AS {target_type.value})"
+        else:
+            cast_expr = f'TRY_CAST("{col_name}" AS {target_type.value})'
+
         # Count successful casts
         success_query = f"""
             SELECT COUNT(*)
             FROM {table_name}
-            WHERE TRY_CAST("{col_name}" AS {target_type.value}) IS NOT NULL
+            WHERE {cast_expr} IS NOT NULL
             AND "{col_name}" IS NOT NULL
         """
         success_count_rows = duckdb_conn.execute(success_query).fetchone()
@@ -369,7 +379,7 @@ async def _test_type_cast(
                 SELECT "{col_name}"
                 FROM {table_name}
                 WHERE "{col_name}" IS NOT NULL
-                AND TRY_CAST("{col_name}" AS {target_type.value}) IS NULL
+                AND {cast_expr} IS NULL
                 LIMIT 5
             """
             failed_examples = [row[0] for row in duckdb_conn.execute(failed_query).fetchall()]

@@ -82,9 +82,9 @@ fallback:
 
 # Cost and rate controls
 limits:
-  max_input_tokens_per_request: 8000
-  max_output_tokens_per_request: 4000
-  max_columns_per_batch: 30
+  max_input_tokens_per_request: 16000
+  max_output_tokens_per_request: 8000
+  max_columns_per_batch: 50
   max_requests_per_minute: 20
   cache_ttl_seconds: 86400 # 24 hours
 

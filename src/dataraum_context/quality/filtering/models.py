@@ -139,12 +139,80 @@ class FilteringRulesConfig(BaseModel):
         return sorted(applicable, key=lambda r: priority_order[r.priority])
 
 
-class FilteringRecommendations(BaseModel):
-    """LLM-generated filtering recommendations (output of Phase 8)."""
+class FilterType(str, Enum):
+    """Type of filter - scope vs quality."""
 
+    SCOPE = "scope"  # Row selection for calculations (e.g., type = 'sale')
+    QUALITY = "quality"  # Data cleaning (e.g., amount IS NOT NULL)
+
+
+class FilterDefinition(BaseModel):
+    """A single filter with metadata."""
+
+    column: str = Field(..., description="Column this filter applies to")
+    condition: str = Field(..., description="SQL WHERE clause fragment")
+    filter_type: FilterType = Field(..., description="Scope or quality filter")
+    reason: str = Field(..., description="Why this filter was generated")
+    rows_affected_pct: float | None = Field(
+        None, description="Estimated percentage of rows affected"
+    )
+    auto_approve: bool = Field(default=True, description="Whether this filter can be auto-approved")
+    review_note: str | None = Field(None, description="Note for human reviewer")
+
+
+class QualityFlag(BaseModel):
+    """Issue that can't be filtered, only flagged for awareness."""
+
+    issue_type: str = Field(..., description="Type of issue (e.g., 'benford_violation')")
+    column: str = Field(..., description="Affected column")
+    description: str = Field(..., description="Human-readable description")
+    severity: str = Field(default="moderate", description="none, low, moderate, high, severe")
+    recommendation: str | None = Field(None, description="Suggested action")
+
+
+class CalculationImpact(BaseModel):
+    """Impact of quality issues on downstream calculations."""
+
+    calculation_id: str = Field(..., description="Affected calculation (e.g., 'dso')")
+    abstract_field: str = Field(..., description="Affected abstract field (e.g., 'revenue')")
+    impact_severity: str = Field(..., description="critical, high, moderate, low")
+    explanation: str = Field(..., description="Why this matters for the calculation")
+
+
+class FilteringRecommendations(BaseModel):
+    """LLM-generated filtering recommendations.
+
+    Extended to support:
+    - Scope filters (row selection for calculations)
+    - Quality filters (data cleaning)
+    - Flags (issues that can't be filtered)
+    - Calculation impact context
+    """
+
+    # New structured filters
+    scope_filters: list[FilterDefinition] = Field(
+        default_factory=list,
+        description="Filters for calculation scope (e.g., type = 'sale' for revenue)",
+    )
+    quality_filters: list[FilterDefinition] = Field(
+        default_factory=list,
+        description="Filters for data quality (e.g., amount IS NOT NULL)",
+    )
+    flags: list[QualityFlag] = Field(
+        default_factory=list,
+        description="Issues that can't be filtered, only flagged",
+    )
+
+    # Calculation context
+    calculation_impacts: list[CalculationImpact] = Field(
+        default_factory=list,
+        description="How quality issues affect downstream calculations",
+    )
+
+    # Backward-compatible fields (populated from scope_filters + quality_filters)
     clean_view_filters: list[str] = Field(
         default_factory=list,
-        description="SQL WHERE clauses for clean view",
+        description="SQL WHERE clauses for clean view (all filters combined)",
     )
     quarantine_criteria: list[str] = Field(
         default_factory=list,
@@ -158,7 +226,38 @@ class FilteringRecommendations(BaseModel):
         default_factory=dict,
         description="Explanation for each recommendation",
     )
-    source: str = Field(default="llm", description="Source of recommendations (llm or user_rule)")
+
+    # Metadata
+    source: str = Field(default="llm", description="Source: llm, user_rule, or merged")
+    confidence: float = Field(default=0.0, description="LLM confidence (0.0 to 1.0)")
+    requires_acknowledgment: bool = Field(
+        default=False, description="Whether human must acknowledge before use"
+    )
+
+    # Business context
+    business_cycles: list[str] = Field(
+        default_factory=list,
+        description="Business cycles this table participates in",
+    )
+
+    def get_all_filter_conditions(self) -> list[str]:
+        """Get all filter conditions as SQL WHERE clauses."""
+        conditions = []
+        for f in self.scope_filters:
+            conditions.append(f.condition)
+        for f in self.quality_filters:
+            conditions.append(f.condition)
+        # Include legacy filters
+        conditions.extend(self.clean_view_filters)
+        return list(set(conditions))  # Deduplicate
+
+    def get_filters_by_column(self, column: str) -> list[FilterDefinition]:
+        """Get all filters that apply to a specific column."""
+        return [f for f in self.scope_filters + self.quality_filters if f.column == column]
+
+    def has_critical_impacts(self) -> bool:
+        """Check if any calculation impacts are critical."""
+        return any(i.impact_severity == "critical" for i in self.calculation_impacts)
 
 
 class FilteringResult(BaseModel):

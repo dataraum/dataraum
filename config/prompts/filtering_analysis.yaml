@@ -4,8 +4,8 @@
 # and generates intelligent filtering recommendations for data filtering.
 #
 # Key Design:
-# - Input: Quality context (metrics, flags, issues) from context formatters
-# - Output: Executable SQL WHERE clauses + rationale
+# - Input: Quality context (metrics, flags, issues) + business cycles + schema mapping
+# - Output: Scope filters (row selection) + Quality filters (data cleaning) + flags
 # - User rules (Phase 9) can override/extend these recommendations
 
 filtering_analysis:
@@ -13,7 +13,11 @@ filtering_analysis:
     You are a data quality engineer analyzing quality context to recommend
     filtering strategies for downstream data consumers.
 
-    Your goal: Generate SQL WHERE clauses that separate clean data from problematic data.
+    Your goal: Generate SQL WHERE clauses that:
+    1. **SCOPE FILTERS**: Select rows relevant for specific calculations
+       (e.g., "type = 'sale'" for revenue calculations)
+    2. **QUALITY FILTERS**: Clean data by removing problematic rows
+       (e.g., "amount IS NOT NULL AND amount > 0")
 
     Focus on these quality dimensions:
     - **Completeness**: High null rates (>30%), missing required data
@@ -29,9 +33,17 @@ filtering_analysis:
     1. Be specific: "email ~ '^[^@]+@[^@]+$'" not "validate email"
     2. Use DuckDB SQL syntax: ~ for regex, BETWEEN for ranges
     3. Combine related filters: "email IS NOT NULL AND email ~ '...'"
-    4. Provide clear rationale explaining WHY each filter is needed
-    5. Quarantine criteria should be the INVERSE of clean filters
-    6. Only recommend filters for columns with actual quality issues
+    4. Distinguish SCOPE filters (calculation boundaries) from QUALITY filters (data cleaning)
+    5. Provide clear rationale explaining WHY each filter is needed
+    6. Flag issues that CANNOT be filtered, only acknowledged
+
+    **Business Cycles Context**:
+    If this table participates in business cycles (AR, AP, Revenue, etc.),
+    prioritize quality for columns that feed into high-value cycles.
+
+    **Schema Mapping Context**:
+    If columns map to calculation fields, note which calculations are affected
+    and prioritize quality for REQUIRED fields.
 
   user: |
     Analyze the following quality context and recommend filtering strategy:
@@ -55,33 +67,79 @@ filtering_analysis:
     **Problematic Columns** (issues detected):
     {problematic_columns_summary}
 
+    **Business Cycles Context**:
+    {business_cycles_context}
+
+    **Schema Mapping Context** (calculation dependencies):
+    {schema_mapping_context}
+
     **Recommendations Needed**:
-    1. Clean View Filters: SQL WHERE clauses to keep only high-quality rows
-    2. Quarantine Criteria: SQL conditions identifying problematic rows (inverse of clean)
-    3. Column Exclusions: Columns too problematic to include in default queries
-    4. Rationale: Explain each recommendation with specific metrics
+    1. Scope Filters: Row selection for calculations (e.g., "type = 'sale'" for revenue)
+    2. Quality Filters: Data cleaning (e.g., "amount IS NOT NULL")
+    3. Flags: Issues that can't be filtered, only flagged for awareness
+    4. Calculation Impacts: How quality issues affect downstream calculations
 
     **Format response as JSON**:
     ```json
     {{
+      "scope_filters": [
+        {{
+          "column": "transaction_type",
+          "condition": "transaction_type = 'sale'",
+          "reason": "Revenue calculation requires only sale transactions",
+          "rows_affected_pct": 0.35,
+          "auto_approve": true
+        }}
+      ],
+      "quality_filters": [
+        {{
+          "column": "amount",
+          "condition": "amount IS NOT NULL AND amount > 0",
+          "reason": "45% nulls + negative amounts detected",
+          "rows_affected_pct": 0.45,
+          "auto_approve": true
+        }},
+        {{
+          "column": "email",
+          "condition": "email ~ '^[^@]+@[^@]+\\.[^@]+$'",
+          "reason": "12% failed email pattern validation",
+          "rows_affected_pct": 0.12,
+          "auto_approve": false,
+          "review_note": "May exclude valid legacy email formats"
+        }}
+      ],
+      "flags": [
+        {{
+          "issue_type": "benford_violation",
+          "column": "invoice_amount",
+          "description": "First-digit distribution deviates from Benford's Law",
+          "severity": "moderate",
+          "recommendation": "Review for potential data manipulation"
+        }}
+      ],
+      "calculation_impacts": [
+        {{
+          "calculation_id": "dso",
+          "abstract_field": "revenue",
+          "impact_severity": "high",
+          "explanation": "45% null rate in amount column affects revenue calculation"
+        }}
+      ],
       "clean_view_filters": [
-        "column_name IS NOT NULL",
-        "column_name ~ '^pattern$'",
-        "column_name BETWEEN min AND max"
+        "amount IS NOT NULL AND amount > 0",
+        "email ~ '^[^@]+@[^@]+\\.[^@]+$'"
       ],
       "quarantine_criteria": [
-        "column_name IS NULL",
-        "column_name !~ '^pattern$'",
-        "column_name < min OR column_name > max"
+        "amount IS NULL OR amount <= 0",
+        "email !~ '^[^@]+@[^@]+\\.[^@]+$'"
       ],
-      "column_exclusions": [
-        "extremely_problematic_column"
-      ],
+      "column_exclusions": [],
       "rationale": {{
-        "column_name_null_filter": "45% nulls detected, high risk for downstream",
-        "column_name_pattern_filter": "No email pattern validation, 12% invalid",
-        "column_name_range_filter": "Benford violation + 15% outliers beyond 3σ"
-      }}
+        "amount_quality_filter": "High null rate affects revenue calculations",
+        "email_quality_filter": "Invalid emails cause downstream lookup failures"
+      }},
+      "confidence": 0.85,
+      "requires_acknowledgment": false
     }}
     ```
 

@@ -15,11 +15,15 @@ Key Design:
 from dataraum_context.quality.filtering.executor import execute_filtering
 from dataraum_context.quality.filtering.llm_filter_agent import analyze_quality_for_filtering
 from dataraum_context.quality.filtering.models import (
+    CalculationImpact,
     FilterAction,
+    FilterDefinition,
     FilteringRecommendations,
     FilteringResult,
     FilteringRule,
     FilteringRulesConfig,
+    FilterType,
+    QualityFlag,
     RuleAppliesTo,
     RulePriority,
 )
@@ -31,7 +35,7 @@ from dataraum_context.quality.filtering.rules_loader import (
 from dataraum_context.quality.filtering.rules_merger import merge_filtering_rules
 
 __all__ = [
-    # Models
+    # Core models
     "FilteringRule",
     "FilteringRulesConfig",
     "FilteringRecommendations",
@@ -39,6 +43,11 @@ __all__ = [
     "RuleAppliesTo",
     "RulePriority",
     "FilterAction",
+    # Extended filter models
+    "FilterType",
+    "FilterDefinition",
+    "QualityFlag",
+    "CalculationImpact",
     # Phase 1: Loader
     "load_filtering_rules",
     "load_default_filtering_rules",

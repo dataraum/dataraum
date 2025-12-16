@@ -1,4 +1,4 @@
-"""Domain-specific quality metrics models.
+"""Domain-specific quality metrics database models.
 
 SQLAlchemy models for storing domain-specific quality metrics,
 focusing on financial domain rules (double-entry, trial balance, etc.).
@@ -13,7 +13,7 @@ from uuid import uuid4
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from .base import Base
+from dataraum_context.storage.models_v2.base import Base
 
 if TYPE_CHECKING:
     from dataraum_context.storage.models_v2.core import Table

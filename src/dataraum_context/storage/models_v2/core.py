@@ -27,12 +27,12 @@ if TYPE_CHECKING:
         TypeCandidate,
         TypeDecision,
     )
-    from dataraum_context.storage.models_v2.domain_quality import (
+    from dataraum_context.quality.db_models import QualityRule
+    from dataraum_context.quality.domains.db_models import (
         DomainQualityMetrics,
         FinancialQualityMetrics,
     )
     from dataraum_context.storage.models_v2.ontology import OntologyApplication
-    from dataraum_context.storage.models_v2.quality_rules import QualityRule, QualityScore
 
 
 class Source(Base):
@@ -110,9 +110,6 @@ class Table(Base):
     quality_rules: Mapped[list[QualityRule]] = relationship(
         back_populates="table", cascade="all, delete-orphan"
     )
-    quality_scores: Mapped[list[QualityScore]] = relationship(
-        back_populates="table", cascade="all, delete-orphan"
-    )
 
     # Ontology relationships
     ontology_applications: Mapped[list[OntologyApplication]] = relationship(
@@ -169,9 +166,6 @@ class Column(Base):
 
     # Quality rules relationships
     quality_rules: Mapped[list[QualityRule]] = relationship(
-        back_populates="column", cascade="all, delete-orphan"
-    )
-    quality_scores: Mapped[list[QualityScore]] = relationship(
         back_populates="column", cascade="all, delete-orphan"
     )
 

@@ -17,15 +17,13 @@ from dataraum_context.profiling.db_models import (
     TypeCandidate,
     TypeDecision,
 )
+from dataraum_context.quality.db_models import QualityResult, QualityRule
 from dataraum_context.storage.models_v2 import (
     Column,
     DBSchemaVersion,
     LLMCache,
     Ontology,
     OntologyApplication,
-    QualityResult,
-    QualityRule,
-    QualityScore,
     Source,
     Table,
 )
@@ -432,30 +430,6 @@ class TestQualityModels:
 
         assert saved.total_records == 1000
         assert saved.pass_rate == 0.95
-
-    async def test_create_quality_score(self, session: AsyncSession):
-        source = Source(name="test_source", source_type="csv")
-        table = Table(source=source, table_name="sales", layer="raw")
-        session.add_all([source, table])
-        await session.flush()
-
-        score = QualityScore(
-            table=table,
-            completeness_score=0.95,
-            validity_score=0.98,
-            consistency_score=0.92,
-            uniqueness_score=0.99,
-            timeliness_score=0.90,
-            overall_score=0.95,
-        )
-        session.add(score)
-        await session.commit()
-
-        result = await session.execute(select(QualityScore))
-        saved = result.scalar_one()
-
-        assert saved.overall_score == 0.95
-        assert saved.completeness_score == 0.95
 
 
 class TestOntologyModels:

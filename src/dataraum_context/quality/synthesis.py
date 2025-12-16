@@ -33,12 +33,12 @@ from dataraum_context.profiling.db_models import (
     StatisticalProfile,
     StatisticalQualityMetrics,
 )
+from dataraum_context.quality.domains.db_models import DomainQualityMetrics
 from dataraum_context.quality.models import (
     QualityDimension,
     QualitySynthesisIssue,
     QualitySynthesisSeverity,
 )
-from dataraum_context.storage.models_v2.domain_quality import DomainQualityMetrics
 
 logger = logging.getLogger(__name__)
 

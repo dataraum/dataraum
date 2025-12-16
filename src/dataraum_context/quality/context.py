@@ -38,6 +38,7 @@ from dataraum_context.profiling.db_models import (
     TypeDecision,
 )
 from dataraum_context.profiling.models import MulticollinearityAnalysis
+from dataraum_context.quality.domains.db_models import DomainQualityMetrics
 
 # Import formatter and model for multicollinearity
 from dataraum_context.quality.formatting import format_multicollinearity_for_llm
@@ -58,7 +59,6 @@ from dataraum_context.quality.synthesis import (
     aggregate_topological_issues,
 )
 from dataraum_context.storage.models_v2.core import Column, Table
-from dataraum_context.storage.models_v2.domain_quality import DomainQualityMetrics
 
 if TYPE_CHECKING:
     from dataraum_context.llm import LLMService

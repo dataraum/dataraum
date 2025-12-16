@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 # These imports ensure tables are created when init_database() is called
 from dataraum_context.enrichment import db_models as _enrichment_models  # noqa: F401
 from dataraum_context.profiling import db_models as _profiling_models  # noqa: F401
+from dataraum_context.quality import db_models as _quality_models  # noqa: F401
+from dataraum_context.quality.domains import db_models as _domain_quality_models  # noqa: F401
 from dataraum_context.storage.base import Base
 from dataraum_context.storage.models_v2.base import Base as BaseV2
 

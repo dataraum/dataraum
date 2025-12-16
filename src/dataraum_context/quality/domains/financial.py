@@ -29,6 +29,21 @@ import yaml
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.core.models.base import Result
+from dataraum_context.quality.domains.db_models import (
+    DoubleEntryCheck as DBDoubleEntryCheck,
+)
+from dataraum_context.quality.domains.db_models import (
+    FinancialQualityMetrics as DBFinancialQualityMetrics,
+)
+from dataraum_context.quality.domains.db_models import (
+    FiscalPeriodIntegrity as DBFiscalPeriodIntegrity,
+)
+from dataraum_context.quality.domains.db_models import (
+    SignConventionViolation as DBSignConventionViolation,
+)
+from dataraum_context.quality.domains.db_models import (
+    TrialBalanceCheck as DBTrialBalanceCheck,
+)
 from dataraum_context.quality.domains.models import (
     DoubleEntryResult,
     FinancialQualityConfig,
@@ -38,24 +53,7 @@ from dataraum_context.quality.domains.models import (
     SignConventionViolation,
     TrialBalanceResult,
 )
-from dataraum_context.storage.models_v2 import (
-    DoubleEntryCheck as DBDoubleEntryCheck,
-)
-from dataraum_context.storage.models_v2 import (
-    FinancialQualityMetrics as DBFinancialQualityMetrics,
-)
-from dataraum_context.storage.models_v2 import (
-    FiscalPeriodIntegrity as DBFiscalPeriodIntegrity,
-)
-from dataraum_context.storage.models_v2 import (
-    SignConventionViolation as DBSignConventionViolation,
-)
-from dataraum_context.storage.models_v2 import (
-    Table,
-)
-from dataraum_context.storage.models_v2 import (
-    TrialBalanceCheck as DBTrialBalanceCheck,
-)
+from dataraum_context.storage.models_v2 import Table
 
 logger = logging.getLogger(__name__)
 

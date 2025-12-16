@@ -16,13 +16,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from dataraum_context.core.models.base import Cardinality, RelationshipType, Result
+from dataraum_context.enrichment.db_models import Relationship
 from dataraum_context.quality.domains.financial_orchestrator import (
     analyze_complete_financial_dataset_quality,
     classify_cross_table_cycle_with_llm,
 )
 from dataraum_context.quality.topological import analyze_relationship_graph
 from dataraum_context.storage.models_v2 import Base, Column, Source, Table
-from dataraum_context.storage.models_v2.relationship import Relationship
 
 
 @pytest.fixture

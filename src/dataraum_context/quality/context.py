@@ -19,6 +19,12 @@ import duckdb
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataraum_context.enrichment.db_models import (
+    SemanticAnnotation,
+    TableEntity,
+    TemporalQualityMetrics,
+    TopologicalQualityMetrics,
+)
 from dataraum_context.enrichment.relationships.gathering import gather_relationships
 from dataraum_context.profiling.db_models import (
     ColumnCorrelation,
@@ -53,9 +59,6 @@ from dataraum_context.quality.synthesis import (
 )
 from dataraum_context.storage.models_v2.core import Column, Table
 from dataraum_context.storage.models_v2.domain_quality import DomainQualityMetrics
-from dataraum_context.storage.models_v2.semantic_context import SemanticAnnotation, TableEntity
-from dataraum_context.storage.models_v2.temporal_context import TemporalQualityMetrics
-from dataraum_context.storage.models_v2.topological_context import TopologicalQualityMetrics
 
 if TYPE_CHECKING:
     from dataraum_context.llm import LLMService

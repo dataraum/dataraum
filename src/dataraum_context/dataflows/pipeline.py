@@ -36,6 +36,11 @@ from dataraum_context.core.models.base import Result
 from dataraum_context.enrichment.cross_table_multicollinearity import (
     compute_cross_table_multicollinearity,
 )
+from dataraum_context.enrichment.db_models import (
+    Relationship,
+    SemanticAnnotation,
+    TemporalQualityMetrics,
+)
 from dataraum_context.enrichment.semantic import enrich_semantic
 from dataraum_context.enrichment.temporal import enrich_temporal
 from dataraum_context.enrichment.topology import enrich_topology
@@ -49,9 +54,6 @@ from dataraum_context.quality.temporal import analyze_temporal_quality
 from dataraum_context.quality.topological import analyze_topological_quality
 from dataraum_context.staging.loaders.csv import CSVLoader
 from dataraum_context.storage.models_v2.core import Column, Table
-from dataraum_context.storage.models_v2.relationship import Relationship
-from dataraum_context.storage.models_v2.semantic_context import SemanticAnnotation
-from dataraum_context.storage.models_v2.temporal_context import TemporalQualityMetrics
 
 # =============================================================================
 # Result Models (Simplified - Health Info Only)

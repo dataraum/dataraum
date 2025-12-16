@@ -5,11 +5,11 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
+from dataraum_context.enrichment.db_models import MultiTableTopologyMetrics
 from dataraum_context.quality.topological import analyze_topological_quality_multi_table
 from dataraum_context.storage.models_v2 import (
     Base,
     Column,
-    MultiTableTopologyMetrics,
     Source,
     Table,
 )

@@ -5,6 +5,13 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataraum_context.enrichment.db_models import (
+    JoinPath,
+    Relationship,
+    SemanticAnnotation,
+    TableEntity,
+    TemporalQualityMetrics,
+)
 from dataraum_context.profiling.db_models import (
     StatisticalProfile,
     TypeCandidate,
@@ -13,19 +20,14 @@ from dataraum_context.profiling.db_models import (
 from dataraum_context.storage.models_v2 import (
     Column,
     DBSchemaVersion,
-    JoinPath,
     LLMCache,
     Ontology,
     OntologyApplication,
     QualityResult,
     QualityRule,
     QualityScore,
-    Relationship,
-    SemanticAnnotation,
     Source,
     Table,
-    TableEntity,
-    TemporalQualityMetrics,
 )
 
 

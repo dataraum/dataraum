@@ -337,7 +337,7 @@ async def _store_temporal_profile(
     """
     from uuid import uuid4
 
-    from dataraum_context.storage.models_v2.temporal_context import TemporalQualityMetrics
+    from dataraum_context.enrichment.db_models import TemporalQualityMetrics
 
     # Persist using hybrid storage
     db_metric = TemporalQualityMetrics(
@@ -377,7 +377,7 @@ async def compute_table_temporal_summary(
         Result containing table-level temporal summary
     """
     try:
-        from dataraum_context.storage.models_v2.temporal_context import (
+        from dataraum_context.enrichment.db_models import (
             TemporalQualityMetrics as DBTemporalMetrics,
         )
 
@@ -483,7 +483,7 @@ async def persist_table_temporal_summary(
         Result with table_id on success
     """
     try:
-        from dataraum_context.storage.models_v2.temporal_context import (
+        from dataraum_context.enrichment.db_models import (
             TemporalTableSummaryMetrics as DBTableSummary,
         )
 

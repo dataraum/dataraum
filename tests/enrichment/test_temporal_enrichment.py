@@ -403,7 +403,7 @@ async def test_enrich_temporal_stores_metrics(session: AsyncSession, duckdb_conn
     # Check that metrics were stored in database
     from sqlalchemy import select
 
-    from dataraum_context.storage.models_v2.temporal_context import TemporalQualityMetrics
+    from dataraum_context.enrichment.db_models import TemporalQualityMetrics
 
     stmt = select(TemporalQualityMetrics)
     db_result = await session.execute(stmt)

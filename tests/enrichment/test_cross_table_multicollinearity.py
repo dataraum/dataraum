@@ -11,6 +11,7 @@ from dataraum_context.core.models.base import (
 from dataraum_context.enrichment.cross_table_multicollinearity import (
     gather_relationships,
 )
+from dataraum_context.enrichment.db_models import Relationship
 from dataraum_context.profiling.models import (
     CrossTableDependencyGroup,
     CrossTableMulticollinearityAnalysis,
@@ -25,7 +26,6 @@ from dataraum_context.quality.formatting.multicollinearity import (
 )
 from dataraum_context.storage.models_v2 import (
     Column,
-    Relationship,
     Source,
     Table,
 )

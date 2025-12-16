@@ -249,7 +249,7 @@ async def test_enrich_topology_stores_relationships(session: AsyncSession, duckd
     # Check that relationships were stored in database
     from sqlalchemy import select
 
-    from dataraum_context.storage.models_v2 import Relationship as RelationshipModel
+    from dataraum_context.enrichment.db_models import Relationship as RelationshipModel
 
     stmt = select(RelationshipModel)
     db_result = await session.execute(stmt)

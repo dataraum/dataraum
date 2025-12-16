@@ -20,6 +20,11 @@ import logging
 from typing import Any
 from uuid import uuid4
 
+from dataraum_context.enrichment.db_models import (
+    MultiTableTopologyMetrics,
+    TemporalQualityMetrics,
+    TopologicalQualityMetrics,
+)
 from dataraum_context.profiling.db_models import (
     CategoricalAssociation,
     ColumnCorrelation,
@@ -34,11 +39,6 @@ from dataraum_context.quality.models import (
     QualitySynthesisSeverity,
 )
 from dataraum_context.storage.models_v2.domain_quality import DomainQualityMetrics
-from dataraum_context.storage.models_v2.temporal_context import TemporalQualityMetrics
-from dataraum_context.storage.models_v2.topological_context import (
-    MultiTableTopologyMetrics,
-    TopologicalQualityMetrics,
-)
 
 logger = logging.getLogger(__name__)
 

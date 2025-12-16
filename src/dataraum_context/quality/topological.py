@@ -24,6 +24,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.core.models.base import Result
+from dataraum_context.enrichment.db_models import Relationship as RelationshipModel
+from dataraum_context.enrichment.db_models import (
+    TopologicalQualityMetrics as DBTopologicalMetrics,
+)
 
 # Re-export from relationships package for backward compatibility
 # TODO: Remove this re-export and update all imports to use
@@ -40,10 +44,6 @@ from dataraum_context.quality.models import (
     TopologicalQualityResult,
 )
 from dataraum_context.storage.models_v2.core import Table
-from dataraum_context.storage.models_v2.relationship import Relationship as RelationshipModel
-from dataraum_context.storage.models_v2.topological_context import (
-    TopologicalQualityMetrics as DBTopologicalMetrics,
-)
 
 # ============================================================================
 # Betti Number Extraction
@@ -458,7 +458,7 @@ async def compute_historical_complexity(
 
     from sqlalchemy import select
 
-    from dataraum_context.storage.models_v2 import TopologicalQualityMetrics
+    from dataraum_context.enrichment.db_models import TopologicalQualityMetrics
 
     try:
         # Query historical complexity values
@@ -847,7 +847,7 @@ async def analyze_topological_quality_multi_table(
         }
 
         # Save multi-table analysis to database
-        from dataraum_context.storage.models_v2 import MultiTableTopologyMetrics
+        from dataraum_context.enrichment.db_models import MultiTableTopologyMetrics
 
         # Extract cycles safely with proper type handling
         cycles_value = graph_analysis.get("cycles", [])

@@ -6,8 +6,9 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
+from dataraum_context.enrichment.db_models import TopologicalQualityMetrics
 from dataraum_context.quality.topological import compute_historical_complexity
-from dataraum_context.storage.models_v2 import Base, TopologicalQualityMetrics
+from dataraum_context.storage.models_v2 import Base
 
 
 @pytest.fixture

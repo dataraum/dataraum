@@ -4,17 +4,16 @@ Core storage models.
 This module contains the core storage models and shared infrastructure.
 Domain-specific models have been co-located with their business logic:
 - Profiling models: dataraum_context.profiling.db_models
+- Enrichment models: dataraum_context.enrichment.db_models
 
 Remaining models (to be co-located in future phases):
-- Pillar 2: Topological Context (topological_context.py, relationship.py)
-- Pillar 3: Semantic Context (semantic_context.py)
-- Pillar 4: Temporal Context (temporal_context.py)
 - Pillar 5: Quality Context (domain_quality.py, quality_rules.py)
+- LLM models (llm.py)
+- Graphs/Filtering models (graphs.py, filtering.py)
 
 Core modules (will remain here):
 - core.py: Core entities (sources, tables, columns)
 - ontology.py: Ontology definitions and applications
-- llm.py: LLM response caching (to be moved to llm module)
 
 Created: 2025-11-28
 """
@@ -28,11 +27,7 @@ from dataraum_context.storage.models_v2 import (
     llm,
     ontology,
     quality_rules,
-    relationship,
     schema,
-    semantic_context,
-    temporal_context,
-    topological_context,
 )
 from dataraum_context.storage.models_v2.base import Base, metadata_obj
 
@@ -74,28 +69,9 @@ from dataraum_context.storage.models_v2.quality_rules import (
     QualityRule,
     QualityScore,
 )
-from dataraum_context.storage.models_v2.relationship import JoinPath, Relationship
 
 # Schema version tracking
 from dataraum_context.storage.models_v2.schema import DBSchemaVersion
-
-# Pillar 3: Semantic Context
-from dataraum_context.storage.models_v2.semantic_context import (
-    SemanticAnnotation,
-    TableEntity,
-)
-
-# Pillar 4: Temporal Context
-from dataraum_context.storage.models_v2.temporal_context import (
-    TemporalQualityMetrics,
-)
-
-# Pillar 2: Topological Context
-from dataraum_context.storage.models_v2.topological_context import (
-    BusinessCycleClassification,
-    MultiTableTopologyMetrics,
-    TopologicalQualityMetrics,
-)
 
 __all__ = [
     # Base
@@ -105,17 +81,6 @@ __all__ = [
     "Source",
     "Table",
     "Column",
-    # Pillar 2: Topological Context
-    "TopologicalQualityMetrics",
-    "MultiTableTopologyMetrics",
-    "BusinessCycleClassification",
-    "Relationship",
-    "JoinPath",
-    # Pillar 3: Semantic Context
-    "SemanticAnnotation",
-    "TableEntity",
-    # Pillar 4: Temporal Context
-    "TemporalQualityMetrics",
     # Pillar 5: Domain Quality
     "DomainQualityMetrics",
     "FinancialQualityMetrics",

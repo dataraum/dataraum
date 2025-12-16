@@ -16,6 +16,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from dataraum_context.storage.models_v2.base import Base
 
 if TYPE_CHECKING:
+    from dataraum_context.enrichment.db_models import (
+        Relationship,
+        SemanticAnnotation,
+        TableEntity,
+    )
     from dataraum_context.profiling.db_models import (
         StatisticalProfile,
         StatisticalQualityMetrics,
@@ -28,11 +33,6 @@ if TYPE_CHECKING:
     )
     from dataraum_context.storage.models_v2.ontology import OntologyApplication
     from dataraum_context.storage.models_v2.quality_rules import QualityRule, QualityScore
-    from dataraum_context.storage.models_v2.relationship import Relationship
-    from dataraum_context.storage.models_v2.semantic_context import (
-        SemanticAnnotation,
-        TableEntity,
-    )
 
 
 class Source(Base):

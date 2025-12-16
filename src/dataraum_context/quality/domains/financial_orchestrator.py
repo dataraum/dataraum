@@ -22,6 +22,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.core.models.base import Result
+from dataraum_context.enrichment.db_models import (
+    BusinessCycleClassification,
+    MultiTableTopologyMetrics,
+    SemanticAnnotation,
+)
 from dataraum_context.enrichment.relationships import (
     EnrichedRelationship,
     analyze_relationship_graph,
@@ -37,11 +42,6 @@ from dataraum_context.quality.domains.financial_llm import (
 from dataraum_context.quality.models import TopologicalAnomaly
 from dataraum_context.quality.topological import analyze_topological_quality
 from dataraum_context.storage.models_v2.core import Column, Table
-from dataraum_context.storage.models_v2.semantic_context import SemanticAnnotation
-from dataraum_context.storage.models_v2.topological_context import (
-    BusinessCycleClassification,
-    MultiTableTopologyMetrics,
-)
 
 logger = logging.getLogger(__name__)
 

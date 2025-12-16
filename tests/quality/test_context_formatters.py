@@ -7,6 +7,10 @@ from datetime import UTC, datetime
 
 import pytest
 
+from dataraum_context.enrichment.db_models import (
+    TemporalQualityMetrics,
+    TopologicalQualityMetrics,
+)
 from dataraum_context.profiling.db_models import (
     StatisticalProfile,
     StatisticalQualityMetrics,
@@ -24,8 +28,6 @@ from dataraum_context.quality.models import (
     TableQualityContext,
 )
 from dataraum_context.storage.models_v2.core import Column, Source, Table
-from dataraum_context.storage.models_v2.temporal_context import TemporalQualityMetrics
-from dataraum_context.storage.models_v2.topological_context import TopologicalQualityMetrics
 
 # ============================================================================
 # Flag Generation Tests

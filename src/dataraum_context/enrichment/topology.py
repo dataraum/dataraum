@@ -12,6 +12,7 @@ from dataraum_context.core.models.base import (
     RelationshipType,
     Result,
 )
+from dataraum_context.enrichment.db_models import Relationship as RelationshipModel
 from dataraum_context.enrichment.models import (
     JoinPath,
     JoinStep,
@@ -20,7 +21,6 @@ from dataraum_context.enrichment.models import (
 )
 from dataraum_context.enrichment.tda import TableRelationshipFinder, TableTopologyExtractor
 from dataraum_context.enrichment.utils import load_column_mappings, load_table_mappings
-from dataraum_context.storage.models_v2 import Relationship as RelationshipModel
 from dataraum_context.storage.models_v2 import Table
 
 

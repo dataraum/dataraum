@@ -620,15 +620,130 @@ from analysis.correlation.models import (
 
 ---
 
-## Phases 5-10: To Be Planned
+## Phase 5: analysis/semantic
 
-Detailed plans for Phases 5-10 will be created after Phases 3 and 4 are completed and verified.
+### Goal
+LLM-powered semantic analysis with enriched context from prior analysis phases. The LLM receives analysis results (types, correlations, derived columns, functional dependencies) and optionally TDA-detected relationship candidates to confirm/enhance.
 
-### Phase 5: analysis/semantic
-Source: `enrichment/agent.py`, `enrichment/semantic.py`, `enrichment/ontology.py`, parts of `enrichment/db_models.py`
+### Source Files (current → new)
+
+| Current Location | New Location | Notes |
+|-----------------|--------------|-------|
+| `enrichment/agent.py` | `analysis/semantic/agent.py` | Enhanced with analysis context |
+| `enrichment/semantic.py` | `analysis/semantic/processor.py` | Orchestration |
+| `enrichment/ontology.py` | `analysis/semantic/ontology.py` | Keep as-is |
+| `enrichment/models.py` (partial) | `analysis/semantic/models.py` | SemanticAnnotation, EntityDetection |
+| `enrichment/db_models.py` (partial) | `analysis/semantic/db_models.py` | SemanticAnnotation, TableEntity |
+
+### What Stays
+- SemanticAgent class extending LLMFeature
+- OntologyLoader with concept/metric/rule loading
+- SemanticAnnotation, EntityDetection models
+- Database persistence for annotations and entities
+
+### What Changes
+
+1. **Enriched Context for LLM**:
+   - Add `resolved_type` to each column (from analysis/typing)
+   - Add correlation summaries (high correlations from analysis/correlation)
+   - Add derived column info ("Credit = Quantity × Rate")
+   - Add functional dependencies ("Transaction ID → all columns")
+   - Optionally pass TDA relationship candidates for confirmation
+
+2. **Split Prompts** (if beneficial):
+   - Column analysis prompt (roles, types, business terms)
+   - Table analysis prompt (entity type, fact/dimension, grain)
+   - Relationship confirmation prompt (confirm/enhance TDA candidates + discover new)
+
+3. **Relationship Flow**:
+   - TDA detects structural candidates (Phase 6)
+   - LLM confirms/enhances with semantic understanding (Phase 5)
+   - No heuristic combination - LLM is the final arbiter
+
+### New Structure
+```
+analysis/semantic/
+├── __init__.py
+├── db_models.py        # SemanticAnnotation, TableEntity
+├── models.py           # SemanticAnnotation, EntityDetection, SemanticEnrichmentResult
+├── ontology.py         # OntologyLoader, OntologyDefinition
+├── context.py          # NEW: Build enriched context from analysis results
+├── agent.py            # SemanticAgent with enriched context
+├── processor.py        # enrich_semantic orchestration
+├── formatter.py        # Format for downstream LLM context
+└── tests/
+    ├── test_agent.py
+    ├── test_ontology.py
+    └── test_context.py
+```
+
+### Interface
+
+**analysis/semantic/__init__.py**:
+```python
+from analysis.semantic.processor import analyze_semantic
+from analysis.semantic.agent import SemanticAgent
+from analysis.semantic.ontology import OntologyLoader, OntologyDefinition
+from analysis.semantic.context import build_semantic_context
+from analysis.semantic.db_models import SemanticAnnotation, TableEntity
+from analysis.semantic.models import (
+    SemanticAnnotation as SemanticAnnotationModel,
+    EntityDetection,
+    SemanticEnrichmentResult,
+)
+```
+
+### Dependencies
+- Depends on: `core/` (Result, enums, refs)
+- Depends on: `core/storage/` (Table, Column)
+- Depends on: `analysis/typing/` (resolved types)
+- Depends on: `analysis/statistics/` (column profiles)
+- Depends on: `analysis/correlation/` (correlations, FDs, derived columns)
+- Optionally: `analysis/relationships/` (TDA candidates to confirm)
+- Uses: `llm/` (LLMFeature, providers, cache)
+
+### Context Building (NEW)
+
+**analysis/semantic/context.py**:
+```python
+async def build_semantic_context(
+    session: AsyncSession,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    table_ids: list[str],
+    include_tda_candidates: bool = False,
+) -> SemanticContext:
+    """Build enriched context for LLM semantic analysis.
+
+    Gathers:
+    - Column profiles (statistics)
+    - Resolved types (typing)
+    - Correlations (correlation)
+    - Derived columns (correlation)
+    - Functional dependencies (correlation)
+    - TDA relationship candidates (optional, from relationships)
+    """
+```
+
+### Test Data
+- Use finance_csv_example with multiple tables
+- Verify LLM receives enriched context
+- Mock LLM responses for deterministic testing
+
+### Verification
+1. Import works: `from analysis.semantic import analyze_semantic`
+2. Context includes resolved types, correlations, derived columns, FDs
+3. LLM receives enriched context JSON
+4. Annotations stored correctly
+5. Relationships include reasoning from LLM
+
+---
+
+## Phases 6-10: To Be Planned
 
 ### Phase 6: analysis/relationships
 Source: `enrichment/topology.py`, `enrichment/relationships/*`, `enrichment/tda/*`, parts of `enrichment/db_models.py`
+
+**Key Decision**: TDA detects structural candidates. LLM (Phase 5) confirms/enhances. No heuristic combination.
 
 ### Phase 7: analysis/temporal
 Source: `enrichment/temporal.py` + `quality/temporal.py` (consolidate), `quality/formatting/temporal.py`
@@ -665,7 +780,8 @@ dataflows/pipeline.py            # Replaced by pipeline/
 | Phase 1 | `scripts/test_phase1_csv_import.py` | PASSED |
 | Phase 2 | `scripts/test_phase2_typing.py` | PASSED |
 | Phase 3 | `scripts/test_phase3_statistics.py` | PASSED |
-| Phase 4 | `scripts/test_phase4_correlation.py` | PENDING |
+| Phase 4 | `scripts/test_phase4_correlation.py` | PASSED |
+| Phase 5 | `scripts/test_phase5_semantic.py` | PENDING |
 
 Run verification:
 ```bash
@@ -694,6 +810,9 @@ uv run python scripts/test_phase4_correlation.py
 | 2024-12-16 | 0.2.1 | Phase 3 and Phase 4 planned in detail |
 | 2024-12-16 | 0.3.0 | Phase 3 complete - analysis/statistics module with 5 new tests |
 | 2024-12-16 | 0.3.1 | Phase 3 fixes - moved quality models to quality/, removed detected_patterns from ColumnProfile |
+| 2024-12-16 | 0.4.0 | Phase 4 complete - analysis/correlation module, deleted profiling/ |
+| 2024-12-16 | 0.4.1 | Phase 4 fixes - deduplicate commutative derived columns, multicollinearity optional |
+| 2024-12-16 | 0.5.0 | Phase 5 planned - analysis/semantic with enriched context from prior phases |
 
 ## Phase 2 Completion Notes
 

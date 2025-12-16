@@ -1,7 +1,7 @@
 """LLM module - AI-powered intelligent analysis.
 
-This module provides LLM-powered features for semantic analysis,
-quality rule generation, suggested queries, and context summaries.
+This module provides LLM-powered features for semantic analysis.
+The SemanticAnalysisFeature is co-located with enrichment module.
 
 Example usage:
 
@@ -28,13 +28,6 @@ from typing import Any
 
 from dataraum_context.llm.cache import LLMCache
 from dataraum_context.llm.config import LLMConfig, load_llm_config
-from dataraum_context.llm.features.filter_recommendations import FilterRecommendationsFeature
-from dataraum_context.llm.features.quality import QualityRulesFeature
-
-# DISABLED: Depend on context module which is not yet implemented
-# from dataraum_context.llm.features.queries import SuggestedQueriesFeature
-# from dataraum_context.llm.features.summary import ContextSummaryFeature
-from dataraum_context.llm.features.semantic import SemanticAnalysisFeature
 from dataraum_context.llm.prompts import PromptRenderer
 from dataraum_context.llm.providers import create_provider
 
@@ -49,7 +42,7 @@ __all__ = [
 class LLMService:
     """Main service facade for LLM features.
 
-    Provides a unified interface to all LLM-powered analysis features.
+    Provides a unified interface to LLM-powered analysis features.
     Manages provider initialization, caching, and prompt rendering.
     """
 
@@ -84,7 +77,9 @@ class LLMService:
         self.cache = LLMCache()
         self.renderer = PromptRenderer()
 
-        # Create features
+        # Create semantic analysis feature (co-located with enrichment)
+        from dataraum_context.enrichment.llm_feature import SemanticAnalysisFeature
+
         self.semantic = SemanticAnalysisFeature(
             config=config,
             provider=self.provider,
@@ -92,52 +87,8 @@ class LLMService:
             cache=self.cache,
         )
 
-        self.quality = QualityRulesFeature(
-            config=config,
-            provider=self.provider,
-            prompt_renderer=self.renderer,
-            cache=self.cache,
-        )
-
-        self.filter_recommendations = FilterRecommendationsFeature(
-            config=config,
-            provider=self.provider,
-            prompt_renderer=self.renderer,
-            cache=self.cache,
-        )
-
-        # DISABLED: Depend on context module which is not yet implemented
-        self.queries = None  # type: ignore[assignment]
-        self.summary = None  # type: ignore[assignment]
-
     # Convenience methods that delegate to features
 
     async def analyze_semantics(self, *args: Any, **kwargs: Any) -> Any:
         """Run semantic analysis. See SemanticAnalysisFeature.analyze()."""
         return await self.semantic.analyze(*args, **kwargs)
-
-    async def generate_quality_rules(self, *args: Any, **kwargs: Any) -> Any:
-        """Generate quality rules. See QualityRulesFeature.generate_rules()."""
-        return await self.quality.generate_rules(*args, **kwargs)
-
-    async def generate_filter_recommendations(self, *args: Any, **kwargs: Any) -> Any:
-        """Generate filter recommendations. See FilterRecommendationsFeature.generate()."""
-        return await self.filter_recommendations.generate(*args, **kwargs)
-
-    async def generate_suggested_queries(self, *args: Any, **kwargs: Any) -> Any:
-        """Generate suggested queries. See SuggestedQueriesFeature.generate_queries()."""
-        if self.queries is None:
-            raise NotImplementedError(
-                "Suggested queries feature is not yet implemented. "
-                "Requires context module to be completed."
-            )
-        return await self.queries.generate_queries(*args, **kwargs)
-
-    async def generate_context_summary(self, *args: Any, **kwargs: Any) -> Any:
-        """Generate context summary. See ContextSummaryFeature.generate_summary()."""
-        if self.summary is None:
-            raise NotImplementedError(
-                "Context summary feature is not yet implemented. "
-                "Requires context module to be completed."
-            )
-        return await self.summary.generate_summary(*args, **kwargs)

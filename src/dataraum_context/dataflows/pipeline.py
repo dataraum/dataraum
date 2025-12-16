@@ -31,6 +31,9 @@ import duckdb
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataraum_context.analysis.correlation import analyze_correlations
+from dataraum_context.analysis.statistics import profile_statistics
+from dataraum_context.analysis.typing import infer_type_candidates, resolve_types
 from dataraum_context.core.models import SourceConfig
 from dataraum_context.core.models.base import Result
 from dataraum_context.enrichment.agent import SemanticAgent
@@ -45,8 +48,6 @@ from dataraum_context.enrichment.db_models import (
 from dataraum_context.enrichment.semantic import enrich_semantic
 from dataraum_context.enrichment.temporal import enrich_temporal
 from dataraum_context.enrichment.topology import enrich_topology
-from dataraum_context.profiling.profiler import profile_schema, profile_statistics
-from dataraum_context.profiling.type_resolution import resolve_types
 from dataraum_context.quality.context import format_dataset_quality_context
 from dataraum_context.quality.domains.financial import analyze_financial_quality
 from dataraum_context.quality.statistical import assess_statistical_quality
@@ -299,20 +300,26 @@ async def run_pipeline(
     # Track typed table IDs for statistics profiling
     typed_table_ids: dict[str, str] = {}
 
-    # Stage 2.1: Schema profiling (type discovery)
+    # Stage 2.1: Type inference (type discovery)
     for health in table_health_records:
         if health.error:
             continue
 
-        schema_result = await profile_schema(health.table_id, duckdb_conn, session)
-        # ✅ SchemaProfile stored in database by profile_schema()
+        # Get the table object for type inference
+        table = await session.get(Table, health.table_id)
+        if not table:
+            health.error = f"Table not found: {health.table_id}"
+            continue
 
-        if schema_result.success:
+        type_inference_result = await infer_type_candidates(table, duckdb_conn, session)
+        # ✅ TypeCandidate stored in database by infer_type_candidates()
+
+        if type_inference_result.success:
             health.schema_profiling_completed = True
         else:
-            health.error = f"Schema profiling failed: {schema_result.error}"
+            health.error = f"Type inference failed: {type_inference_result.error}"
             warnings.append(
-                f"Schema profiling failed for {health.table_name}: {schema_result.error}"
+                f"Type inference failed for {health.table_name}: {type_inference_result.error}"
             )
 
     # Stage 2.2: Type resolution
@@ -344,9 +351,7 @@ async def run_pipeline(
         if health.error:
             continue
 
-        stats_result = await profile_statistics(
-            typed_id, duckdb_conn, session, include_correlations=True
-        )
+        stats_result = await profile_statistics(typed_id, duckdb_conn, session)
         # ✅ StatisticalProfile stored in database by profile_statistics()
 
         if stats_result.success:
@@ -355,6 +360,21 @@ async def run_pipeline(
             # Non-critical - warn but don't fail table
             warnings.append(
                 f"Statistics profiling failed for {health.table_name}: {stats_result.error}"
+            )
+
+    # Stage 2.4: Correlation analysis (on typed tables)
+    for raw_id, typed_id in typed_table_ids.items():
+        health = next(h for h in table_health_records if h.table_id == raw_id)
+        if health.error:
+            continue
+
+        corr_result = await analyze_correlations(typed_id, duckdb_conn, session)
+        # ✅ Correlations stored in database by analyze_correlations()
+
+        if not corr_result.success:
+            # Non-critical - warn but don't fail table
+            warnings.append(
+                f"Correlation analysis failed for {health.table_name}: {corr_result.error}"
             )
 
     # =========================================================================

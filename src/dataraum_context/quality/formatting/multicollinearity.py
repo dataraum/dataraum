@@ -8,8 +8,7 @@ Moved from enrichment/context_formatting.py for consolidation.
 
 from typing import Any
 
-from dataraum_context.core.models.base import RelationshipType
-from dataraum_context.profiling.models import (
+from dataraum_context.analysis.correlation.models import (
     ColumnVIF,
     CrossTableDependencyGroup,
     CrossTableMulticollinearityAnalysis,
@@ -17,6 +16,7 @@ from dataraum_context.profiling.models import (
     MulticollinearityAnalysis,
     SingleRelationshipJoin,
 )
+from dataraum_context.core.models.base import RelationshipType
 from dataraum_context.quality.formatting.base import format_list_with_overflow
 from dataraum_context.quality.formatting.config import FormatterConfig, get_default_config
 

@@ -20,19 +20,19 @@ import logging
 from typing import Any
 from uuid import uuid4
 
+from dataraum_context.analysis.correlation.db_models import (
+    CategoricalAssociation,
+    ColumnCorrelation,
+    FunctionalDependency,
+    MulticollinearityMetrics,
+)
+from dataraum_context.analysis.statistics.db_models import StatisticalProfile
 from dataraum_context.enrichment.db_models import (
     MultiTableTopologyMetrics,
     TemporalQualityMetrics,
     TopologicalQualityMetrics,
 )
-from dataraum_context.profiling.db_models import (
-    CategoricalAssociation,
-    ColumnCorrelation,
-    FunctionalDependency,
-    MulticollinearityMetrics,
-    StatisticalProfile,
-    StatisticalQualityMetrics,
-)
+from dataraum_context.quality.db_models import StatisticalQualityMetrics
 from dataraum_context.quality.domains.db_models import DomainQualityMetrics
 from dataraum_context.quality.models import (
     QualityDimension,
@@ -67,7 +67,7 @@ def aggregate_statistical_issues(
         return []
 
     # Deserialize JSONB to Pydantic model
-    from dataraum_context.profiling.models import StatisticalQualityResult
+    from dataraum_context.quality.models import StatisticalQualityResult
 
     try:
         quality_result = StatisticalQualityResult.model_validate(stat_quality.quality_data)

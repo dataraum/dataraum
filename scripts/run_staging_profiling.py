@@ -35,6 +35,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from dataraum_context.analysis.statistics import profile_statistics
+from dataraum_context.analysis.statistics.db_models import StatisticalProfile
+from dataraum_context.analysis.typing import infer_type_candidates, resolve_types
 from dataraum_context.core.models import SourceConfig
 from dataraum_context.enrichment.cross_table_multicollinearity import (
     compute_cross_table_multicollinearity,
@@ -44,9 +47,6 @@ from dataraum_context.enrichment.semantic import enrich_semantic
 from dataraum_context.enrichment.temporal import enrich_temporal
 from dataraum_context.enrichment.topology import enrich_topology
 from dataraum_context.llm import LLMService, load_llm_config
-from dataraum_context.profiling.db_models import StatisticalProfile
-from dataraum_context.profiling.profiler import profile_schema, profile_statistics
-from dataraum_context.profiling.type_resolution import resolve_types
 from dataraum_context.staging.loaders.csv import CSVLoader
 from dataraum_context.storage import Column, Table, init_database
 
@@ -224,32 +224,38 @@ async def run_staging_and_profiling(
         print("=" * 60)
 
         # -----------------------------------------------------------------
-        # Stage 2.1: Schema profiling (type discovery)
+        # Stage 2.1: Type inference (type discovery)
         # -----------------------------------------------------------------
-        print("\n--- Stage 2.1: Schema Profiling ---")
+        print("\n--- Stage 2.1: Type Inference ---")
         for health in table_health_records:
             if health.error:
                 continue
 
-            schema_result = await profile_schema(health.table_id, duckdb_conn, session)
+            # Get table object for type inference
+            table = await session.get(Table, health.table_id)
+            if not table:
+                health.error = f"Table not found: {health.table_id}"
+                continue
 
-            if schema_result.success:
+            type_result = await infer_type_candidates(table, duckdb_conn, session)
+
+            if type_result.success:
                 health.schema_profiling_completed = True
-                profile = schema_result.value
-                print(f"✅ Schema profiling completed for {health.table_name}")
-                print(f"   Type candidates detected: {len(profile.type_candidates)}")
+                type_candidates = type_result.value
+                print(f"✅ Type inference completed for {health.table_name}")
+                print(f"   Type candidates detected: {len(type_candidates)}")
 
                 print("\n   Column Type Candidates:")
                 print("   " + "-" * 56)
-                for candidate in profile.type_candidates:
+                for candidate in type_candidates:
                     col_name = candidate.column_ref.column_name
                     data_type = candidate.data_type.value
                     confidence = candidate.confidence
                     print(f"   {col_name:<25} → {data_type:<15} ({confidence:.1%})")
             else:
-                health.error = f"Schema profiling failed: {schema_result.error}"
+                health.error = f"Type inference failed: {type_result.error}"
                 warnings.append(
-                    f"Schema profiling failed for {health.table_name}: {schema_result.error}"
+                    f"Type inference failed for {health.table_name}: {type_result.error}"
                 )
                 print(f"❌ {health.error}")
 
@@ -295,19 +301,13 @@ async def run_staging_and_profiling(
             if health.error:
                 continue
 
-            stats_result = await profile_statistics(
-                typed_id, duckdb_conn, session, include_correlations=True
-            )
+            stats_result = await profile_statistics(typed_id, duckdb_conn, session)
 
             if stats_result.success:
                 health.statistics_profiling_completed = True
                 stats = stats_result.value
                 print(f"✅ Statistics profiling completed for {health.table_name}")
                 print(f"   Columns profiled: {len(stats.column_profiles)}")
-                if stats.correlation_result:
-                    corr = stats.correlation_result
-                    print(f"   Numeric correlations: {len(corr.numeric_correlations)}")
-                    print(f"   Strong correlations: {corr.strong_correlations}")
             else:
                 # Non-critical - warn but don't fail table
                 warnings.append(
@@ -316,6 +316,30 @@ async def run_staging_and_profiling(
                 print(
                     f"⚠️ Statistics profiling failed for {health.table_name}: {stats_result.error}"
                 )
+
+        # -----------------------------------------------------------------
+        # Stage 2.4: Correlation analysis (on typed tables)
+        # -----------------------------------------------------------------
+        print("\n--- Stage 2.4: Correlation Analysis ---")
+        from dataraum_context.analysis.correlation import analyze_correlations
+
+        for raw_id, typed_id in typed_table_ids.items():
+            health = next(h for h in table_health_records if h.table_id == raw_id)
+            if health.error:
+                continue
+
+            corr_result = await analyze_correlations(typed_id, duckdb_conn, session)
+
+            if corr_result.success:
+                corr = corr_result.value
+                print(f"✅ Correlation analysis completed for {health.table_name}")
+                print(f"   Numeric correlations: {len(corr.numeric_correlations)}")
+                print(f"   Strong correlations: {corr.strong_correlations}")
+            else:
+                warnings.append(
+                    f"Correlation analysis failed for {health.table_name}: {corr_result.error}"
+                )
+                print(f"⚠️ Correlation analysis failed for {health.table_name}: {corr_result.error}")
 
         # =====================================================================
         # DISPLAY DATABASE RESULTS: Stage 2.3 Statistical Profiles

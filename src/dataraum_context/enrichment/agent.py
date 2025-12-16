@@ -14,6 +14,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataraum_context.analysis.statistics.models import ColumnProfile
 from dataraum_context.core.models.base import (
     Cardinality,
     ColumnRef,
@@ -31,7 +32,6 @@ from dataraum_context.enrichment.models import (
 from dataraum_context.enrichment.ontology import OntologyLoader
 from dataraum_context.llm.features._base import LLMFeature
 from dataraum_context.llm.privacy import DataSampler
-from dataraum_context.profiling.models import ColumnProfile
 from dataraum_context.storage import Column, Table
 
 if TYPE_CHECKING:
@@ -167,10 +167,10 @@ class SemanticAgent(LLMFeature):
             # We use a subquery to get the most recent profile per column
             from sqlalchemy import func
 
-            from dataraum_context.profiling.db_models import (
+            from dataraum_context.analysis.statistics.db_models import (
                 StatisticalProfile as ColumnProfileModel,
             )
-            from dataraum_context.profiling.models import (
+            from dataraum_context.analysis.statistics.models import (
                 NumericStats,
                 StringStats,
                 ValueCount,

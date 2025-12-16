@@ -19,6 +19,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataraum_context.analysis.correlation.models import (
+    CrossTableDependencyGroup,
+    CrossTableMulticollinearityAnalysis,
+    SingleRelationshipJoin,
+)
 from dataraum_context.core.models.base import Result
 
 # Re-export from relationships package for backward compatibility
@@ -29,11 +34,6 @@ from dataraum_context.enrichment.relationships.gathering import (
     gather_relationships,
 )
 from dataraum_context.enrichment.relationships.models import EnrichedRelationship
-from dataraum_context.profiling.models import (
-    CrossTableDependencyGroup,
-    CrossTableMulticollinearityAnalysis,
-    SingleRelationshipJoin,
-)
 from dataraum_context.storage import Column, Table
 
 __all__ = ["EnrichedRelationship", "gather_relationships", "CONFIDENCE_THRESHOLDS"]
@@ -344,7 +344,9 @@ async def compute_cross_table_multicollinearity(
         return Result.fail("Matrix build succeeded but returned None value")
 
     # Step 3: Apply Belsley VDP (reuse existing function!)
-    from dataraum_context.profiling.correlation import _compute_variance_decomposition
+    from dataraum_context.analysis.correlation.multicollinearity import (
+        _compute_variance_decomposition,
+    )
 
     # Eigenvalue decomposition
     eigenvalues, eigenvectors = np.linalg.eigh(matrix_data.correlation_matrix)
@@ -485,7 +487,7 @@ async def get_stored_cross_table_analysis(
     Returns:
         Result containing most recent analysis if found, None if not found
     """
-    from dataraum_context.profiling.db_models import (
+    from dataraum_context.analysis.correlation.db_models import (
         CrossTableMulticollinearityMetrics,
     )
 
@@ -533,7 +535,7 @@ async def store_cross_table_analysis(
     Returns:
         Result containing metric_id
     """
-    from dataraum_context.profiling.db_models import (
+    from dataraum_context.analysis.correlation.db_models import (
         CrossTableMulticollinearityMetrics,
     )
 

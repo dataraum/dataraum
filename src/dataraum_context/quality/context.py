@@ -19,6 +19,15 @@ import duckdb
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataraum_context.analysis.correlation.db_models import (
+    ColumnCorrelation,
+    CrossTableMulticollinearityMetrics,
+    DerivedColumn,
+    FunctionalDependency,
+    MulticollinearityMetrics,
+)
+from dataraum_context.analysis.correlation.models import MulticollinearityAnalysis
+from dataraum_context.analysis.statistics.db_models import StatisticalProfile
 from dataraum_context.analysis.typing.db_models import (
     TypeCandidate,
     TypeDecision,
@@ -30,16 +39,7 @@ from dataraum_context.enrichment.db_models import (
     TopologicalQualityMetrics,
 )
 from dataraum_context.enrichment.relationships.gathering import gather_relationships
-from dataraum_context.profiling.db_models import (
-    ColumnCorrelation,
-    CrossTableMulticollinearityMetrics,
-    DerivedColumn,
-    FunctionalDependency,
-    MulticollinearityMetrics,
-    StatisticalProfile,
-    StatisticalQualityMetrics,
-)
-from dataraum_context.profiling.models import MulticollinearityAnalysis
+from dataraum_context.quality.db_models import StatisticalQualityMetrics
 from dataraum_context.quality.domains.db_models import DomainQualityMetrics
 
 # Import formatter and model for multicollinearity

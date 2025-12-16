@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.analysis.typing.db_models import TypeCandidate as DBTypeCandidate
 from dataraum_context.analysis.typing.models import TypeCandidate as TypeCandidateModel
-from dataraum_context.analysis.typing.patterns import PatternConfig, load_pattern_config
+from dataraum_context.analysis.typing.patterns import Pattern, PatternConfig, load_pattern_config
 from dataraum_context.analysis.typing.units import detect_unit
 from dataraum_context.core.config import Settings, get_settings
 from dataraum_context.core.models.base import (

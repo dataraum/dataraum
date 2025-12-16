@@ -2,12 +2,12 @@
 
 from datetime import UTC, datetime
 
-from dataraum_context.core.models.base import ColumnRef
-from dataraum_context.profiling.models import (
+from dataraum_context.analysis.correlation.models import (
     ColumnVIF,
     ConditionIndexAnalysis,
     MulticollinearityAnalysis,
 )
+from dataraum_context.core.models.base import ColumnRef
 from dataraum_context.quality.formatting.multicollinearity import (
     _generate_multicollinearity_recommendations,
     _get_multicollinearity_interpretation,

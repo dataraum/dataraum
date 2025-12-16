@@ -1,10 +1,13 @@
-"""Profiling layer models.
+"""Correlation Analysis Pydantic Models.
 
-Defines data structures for statistical profiling, type inference, and correlation.
-
-NOTE: Statistical models have been moved to analysis/statistics/models.py
-      Type inference models have been moved to analysis/typing/models.py
-      These are re-exported here for backwards compatibility.
+Data structures for correlation analysis:
+- NumericCorrelation: Pearson and Spearman correlations
+- CategoricalAssociation: Cramér's V associations
+- FunctionalDependency: A → B dependencies
+- DerivedColumn: Detected derived columns
+- MulticollinearityAnalysis: VIF, Condition Index, Dependency Groups
+- CrossTableMulticollinearityAnalysis: Cross-table multicollinearity
+- CorrelationAnalysisResult: Complete analysis result
 """
 
 from __future__ import annotations
@@ -14,89 +17,147 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-# Re-export statistics models from new location
-from dataraum_context.analysis.statistics.models import (
-    ColumnProfile,
-    DetectedPattern,
-    HistogramBucket,
-    NumericStats,
-    StringStats,
-    ValueCount,
-)
+from dataraum_context.core.models.base import Cardinality, ColumnRef, RelationshipType
 
-# Re-export type inference models from new location
-from dataraum_context.analysis.typing.models import (
-    ColumnCastResult,
-    TypeCandidate,
-    TypeDecision,
-    TypeResolutionResult,
-)
-from dataraum_context.core.models.base import (
-    Cardinality,
-    ColumnRef,
-    RelationshipType,
-)
-
-# Re-export quality models from their new location
-from dataraum_context.quality.models import (
-    BenfordAnalysis,
-    OutlierDetection,
-    StatisticalQualityResult,
-)
-
-# Re-export all migrated models for backwards compatibility
-__all__ = [
-    # Type inference models
-    "TypeCandidate",
-    "TypeDecision",
-    "TypeResolutionResult",
-    "ColumnCastResult",
-    # Statistics models
-    "NumericStats",
-    "StringStats",
-    "HistogramBucket",
-    "ValueCount",
-    "DetectedPattern",
-    "ColumnProfile",
-    "BenfordAnalysis",
-    "OutlierDetection",
-    "StatisticalQualityResult",
-]
+# =============================================================================
+# Numeric Correlation Models
+# =============================================================================
 
 
-class ProfileResult(BaseModel):
-    """Result of profiling operation."""
+class NumericCorrelation(BaseModel):
+    """Pearson and Spearman correlation between two numeric columns."""
 
-    profiles: list[ColumnProfile]
-    type_candidates: list[TypeCandidate]
-    duration_seconds: float
+    correlation_id: str
+    table_id: str
+    column1_id: str
+    column2_id: str
+    column1_name: str
+    column2_name: str
+
+    # Pearson (linear relationship)
+    pearson_r: float | None = None
+    pearson_p_value: float | None = None
+
+    # Spearman (monotonic relationship)
+    spearman_rho: float | None = None
+    spearman_p_value: float | None = None
+
+    # Metadata
+    sample_size: int
+    computed_at: datetime
+
+    # Interpretation
+    correlation_strength: str  # 'none', 'weak', 'moderate', 'strong', 'very_strong'
+    is_significant: bool  # p_value < 0.05
 
 
-class SchemaProfileResult(BaseModel):
-    """Result of schema profiling (raw stage, discovery only).
+# =============================================================================
+# Categorical Association Models
+# =============================================================================
 
-    Contains only sample-based, stable results that don't change
-    when rows are quarantined during type resolution.
+
+class CategoricalAssociation(BaseModel):
+    """Cramér's V association between two categorical columns."""
+
+    association_id: str
+    table_id: str
+    column1_id: str
+    column2_id: str
+    column1_name: str
+    column2_name: str
+
+    # Cramér's V (0 to 1)
+    cramers_v: float
+
+    # Chi-square test
+    chi_square: float
+    p_value: float
+    degrees_of_freedom: int
+
+    # Metadata
+    sample_size: int
+    computed_at: datetime
+
+    # Interpretation
+    association_strength: str  # 'none', 'weak', 'moderate', 'strong'
+    is_significant: bool
+
+
+# =============================================================================
+# Functional Dependency Models
+# =============================================================================
+
+
+class FunctionalDependency(BaseModel):
+    """A functional dependency: determinant → dependent.
+
+    Represents that values in determinant column(s) uniquely determine
+    values in the dependent column.
     """
 
-    type_candidates: list[TypeCandidate]
-    detected_patterns: dict[str, list[DetectedPattern]] = Field(default_factory=dict)
-    duration_seconds: float
+    dependency_id: str
+    table_id: str
+
+    # Determinant (left side) - can be multiple columns
+    determinant_column_ids: list[str]
+    determinant_column_names: list[str]
+
+    # Dependent (right side) - single column
+    dependent_column_id: str
+    dependent_column_name: str
+
+    # Confidence (1.0 = exact, < 1.0 = approximate)
+    confidence: float
+
+    # Evidence
+    unique_determinant_values: int
+    violation_count: int
+
+    # Example
+    example: dict[str, Any] | None = None  # {determinant_values: [...], dependent_value: ...}
+
+    # Metadata
+    computed_at: datetime
 
 
-class StatisticsProfileResult(BaseModel):
-    """Result of statistics profiling (typed stage, all stats).
-
-    Contains all row-based statistics computed on clean typed data.
-    Note: correlation_result is handled separately by analysis/correlation module.
-    """
-
-    column_profiles: list[ColumnProfile] = Field(default_factory=list)
-    correlation_result: CorrelationAnalysisResult | None = None
-    duration_seconds: float
+# =============================================================================
+# Derived Column Models
+# =============================================================================
 
 
-# === Multicollinearity Models ===
+class DerivedColumn(BaseModel):
+    """A column that appears to be derived from other columns."""
+
+    derived_id: str
+    table_id: str
+
+    # Derived column
+    derived_column_id: str
+    derived_column_name: str
+
+    # Source columns
+    source_column_ids: list[str]
+    source_column_names: list[str]
+
+    # Derivation
+    derivation_type: str  # 'sum', 'difference', 'product', 'ratio', 'concat', 'upper', etc.
+    formula: str  # Human-readable formula
+
+    # Match quality
+    match_rate: float  # 0 to 1
+    total_rows: int
+    matching_rows: int
+
+    # Evidence
+    mismatch_examples: list[dict[str, Any]] | None = None
+
+    # Metadata
+    computed_at: datetime
+
+
+# =============================================================================
+# Multicollinearity Models
+# =============================================================================
 
 
 class DependencyGroup(BaseModel):
@@ -224,7 +285,9 @@ class MulticollinearityAnalysis(BaseModel):
     quality_issues: list[dict[str, Any]] = Field(default_factory=list)
 
 
-# === Cross-Table Multicollinearity Models (Phase 2) ===
+# =============================================================================
+# Cross-Table Multicollinearity Models
+# =============================================================================
 
 
 class SingleRelationshipJoin(BaseModel):
@@ -319,126 +382,9 @@ class CrossTableMulticollinearityAnalysis(BaseModel):
         return len(self.cross_table_groups)
 
 
-# ============================================================================
-# Correlation Analysis Models (Pillar 1)
-# ============================================================================
-# Moved from core/models/correlation.py - these are profiling outputs
-
-
-class NumericCorrelation(BaseModel):
-    """Pearson and Spearman correlation between two numeric columns."""
-
-    correlation_id: str
-    table_id: str
-    column1_id: str
-    column2_id: str
-    column1_name: str
-    column2_name: str
-
-    # Pearson (linear relationship)
-    pearson_r: float | None = None
-    pearson_p_value: float | None = None
-
-    # Spearman (monotonic relationship)
-    spearman_rho: float | None = None
-    spearman_p_value: float | None = None
-
-    # Metadata
-    sample_size: int
-    computed_at: datetime
-
-    # Interpretation
-    correlation_strength: str  # 'none', 'weak', 'moderate', 'strong', 'very_strong'
-    is_significant: bool  # p_value < 0.05
-
-
-class CategoricalAssociation(BaseModel):
-    """Cramér's V association between two categorical columns."""
-
-    association_id: str
-    table_id: str
-    column1_id: str
-    column2_id: str
-    column1_name: str
-    column2_name: str
-
-    # Cramér's V (0 to 1)
-    cramers_v: float
-
-    # Chi-square test
-    chi_square: float
-    p_value: float
-    degrees_of_freedom: int
-
-    # Metadata
-    sample_size: int
-    computed_at: datetime
-
-    # Interpretation
-    association_strength: str  # 'none', 'weak', 'moderate', 'strong'
-    is_significant: bool
-
-
-class FunctionalDependency(BaseModel):
-    """A functional dependency: determinant → dependent.
-
-    Represents that values in determinant column(s) uniquely determine
-    values in the dependent column.
-    """
-
-    dependency_id: str
-    table_id: str
-
-    # Determinant (left side) - can be multiple columns
-    determinant_column_ids: list[str]
-    determinant_column_names: list[str]
-
-    # Dependent (right side) - single column
-    dependent_column_id: str
-    dependent_column_name: str
-
-    # Confidence (1.0 = exact, < 1.0 = approximate)
-    confidence: float
-
-    # Evidence
-    unique_determinant_values: int
-    violation_count: int
-
-    # Example
-    example: dict[str, Any] | None = None  # {determinant_values: [...], dependent_value: ...}
-
-    # Metadata
-    computed_at: datetime
-
-
-class DerivedColumn(BaseModel):
-    """A column that appears to be derived from other columns."""
-
-    derived_id: str
-    table_id: str
-
-    # Derived column
-    derived_column_id: str
-    derived_column_name: str
-
-    # Source columns
-    source_column_ids: list[str]
-    source_column_names: list[str]
-
-    # Derivation
-    derivation_type: str  # 'sum', 'difference', 'product', 'ratio', 'concat', 'upper', etc.
-    formula: str  # Human-readable formula
-
-    # Match quality
-    match_rate: float  # 0 to 1
-    total_rows: int
-    matching_rows: int
-
-    # Evidence
-    mismatch_examples: list[dict[str, Any]] | None = None
-
-    # Metadata
-    computed_at: datetime
+# =============================================================================
+# Correlation Analysis Result
+# =============================================================================
 
 
 class CorrelationAnalysisResult(BaseModel):

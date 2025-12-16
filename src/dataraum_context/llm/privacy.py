@@ -9,8 +9,8 @@ Simple placeholder implementation that:
 import re
 from typing import Any
 
+from dataraum_context.analysis.statistics.models import ColumnProfile
 from dataraum_context.llm.config import LLMPrivacy
-from dataraum_context.profiling.models import ColumnProfile
 
 
 class DataSampler:

@@ -5,17 +5,18 @@ ARCHITECTURAL PRINCIPLE: NO DOMAIN RE-EXPORTS
 This package contains ONLY truly shared base types (Result, DataType, ColumnRef, etc.)
 
 Domain models live in their respective packages:
-- profiling/models.py           → Statistical profiling + correlation models
+- analysis/typing/models.py     → Type inference models
+- analysis/statistics/models.py → Statistical profiling models
+- analysis/correlation/models.py → Correlation analysis models
 - enrichment/models.py          → Enrichment models (topological, temporal, semantic)
 - quality/models.py             → Quality synthesis models
 - quality/domains/models.py     → Domain-specific quality models (financial, etc.)
 - sources/csv/models.py         → CSV staging models
-- analysis/typing/models.py     → Type inference models
 
 Import domain models directly from their packages:
-    from dataraum_context.profiling.models import BenfordAnalysis, NumericCorrelation
-    from dataraum_context.enrichment.models import TopologicalQualityResult
-    from dataraum_context.quality.models import QualityRule, QualitySynthesisResult
+    from dataraum_context.analysis.statistics.models import ColumnProfile, NumericStats
+    from dataraum_context.analysis.correlation.models import NumericCorrelation
+    from dataraum_context.quality.models import BenfordAnalysis, QualitySynthesisResult
     from dataraum_context.quality.domains.models import FinancialQualityConfig
     from dataraum_context.sources.csv.models import StagedTable
 """

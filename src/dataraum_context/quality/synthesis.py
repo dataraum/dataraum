@@ -24,7 +24,6 @@ from dataraum_context.analysis.correlation.db_models import (
     CategoricalAssociation,
     ColumnCorrelation,
     FunctionalDependency,
-    MulticollinearityMetrics,
 )
 from dataraum_context.analysis.statistics.db_models import StatisticalProfile
 from dataraum_context.enrichment.db_models import (
@@ -613,89 +612,6 @@ def aggregate_profile_anomaly_issues(
     return issues
 
 
-def aggregate_multicollinearity_issues(
-    multicol: MulticollinearityMetrics | None,
-    table_id: str,
-    table_name: str,
-) -> list[QualitySynthesisIssue]:
-    """Extract quality issues from multicollinearity analysis (table-level).
-
-    High multicollinearity indicates redundant predictors:
-    - VIF > 10: Severe multicollinearity for specific columns
-    - Condition Index > 30: Overall model instability
-
-    Args:
-        multicol: Multicollinearity metrics from DB
-        table_id: Table ID
-        table_name: Table name for display
-
-    Returns:
-        List of QualitySynthesisIssue for multicollinearity issues
-    """
-    if not multicol:
-        return []
-
-    issues = []
-
-    # Check for severe multicollinearity
-    if multicol.has_severe_multicollinearity:
-        severity = QualitySynthesisSeverity.WARNING
-        if multicol.condition_index and multicol.condition_index > 100:
-            severity = QualitySynthesisSeverity.ERROR
-
-        issues.append(
-            QualitySynthesisIssue(
-                issue_id=str(uuid4()),
-                issue_type="severe_multicollinearity",
-                severity=severity,
-                dimension=QualityDimension.CONSISTENCY,
-                table_id=table_id,
-                column_id=None,
-                column_name=None,
-                description=(
-                    f"Severe multicollinearity detected: "
-                    f"{multicol.num_problematic_columns or 'multiple'} columns affected"
-                ),
-                recommendation=(
-                    "Consider removing redundant columns or using dimensionality reduction"
-                ),
-                evidence={
-                    "condition_index": multicol.condition_index,
-                    "max_vif": multicol.max_vif,
-                    "num_problematic_columns": multicol.num_problematic_columns,
-                },
-                source_pillar=1,  # Statistical
-                source_module="multicollinearity",
-                detected_at=multicol.computed_at,
-            )
-        )
-
-    # High condition index but not flagged as severe
-    elif multicol.condition_index and multicol.condition_index > 30:
-        issues.append(
-            QualitySynthesisIssue(
-                issue_id=str(uuid4()),
-                issue_type="high_condition_index",
-                severity=QualitySynthesisSeverity.INFO,
-                dimension=QualityDimension.CONSISTENCY,
-                table_id=table_id,
-                column_id=None,
-                column_name=None,
-                description=f"Elevated condition index ({multicol.condition_index:.1f}) suggests collinearity",
-                recommendation="Review column correlations for potential redundancy",
-                evidence={
-                    "condition_index": multicol.condition_index,
-                    "max_vif": multicol.max_vif,
-                },
-                source_pillar=1,  # Statistical
-                source_module="multicollinearity",
-                detected_at=multicol.computed_at,
-            )
-        )
-
-    return issues
-
-
 def aggregate_cross_table_topology_issues(
     cross_topology: MultiTableTopologyMetrics | None,
 ) -> list[QualitySynthesisIssue]:
@@ -812,6 +728,5 @@ _aggregate_topological_issues = aggregate_topological_issues
 _aggregate_correlation_issues = aggregate_correlation_issues
 _aggregate_categorical_association_issues = aggregate_categorical_association_issues
 _aggregate_profile_anomaly_issues = aggregate_profile_anomaly_issues
-_aggregate_multicollinearity_issues = aggregate_multicollinearity_issues
 _aggregate_cross_table_topology_issues = aggregate_cross_table_topology_issues
 _aggregate_domain_quality_issues = aggregate_domain_issues

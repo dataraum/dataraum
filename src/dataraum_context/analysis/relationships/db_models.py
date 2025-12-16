@@ -17,6 +17,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     UniqueConstraint,
 )
@@ -103,4 +104,48 @@ Index("idx_relationships_from", Relationship.from_table_id)
 Index("idx_relationships_to", Relationship.to_table_id)
 
 
-__all__ = ["Relationship"]
+class CrossTableMulticollinearityMetrics(Base):
+    """Cross-table multicollinearity analysis results (hybrid storage).
+
+    HYBRID STORAGE APPROACH:
+    - Structured fields: Queryable dimensions for filtering/sorting
+    - JSONB field: Full CrossTableMulticollinearityAnalysis Pydantic model
+
+    Computes correlation matrix across related tables and identifies
+    columns that are linearly dependent across table boundaries.
+
+    Per-dataset storage: One record represents analysis across multiple tables.
+    """
+
+    __tablename__ = "cross_table_multicollinearity_metrics"
+    __table_args__ = {"extend_existing": True}
+
+    metric_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+    # Scope (multiple tables) - stored as JSON array
+    table_ids: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)  # {"table_ids": [...]}
+
+    # STRUCTURED: Queryable dimensions for filtering
+    overall_condition_index: Mapped[float | None] = mapped_column(Float)
+    num_cross_table_groups: Mapped[int | None] = mapped_column(Integer)
+    num_total_groups: Mapped[int | None] = mapped_column(Integer)
+    has_severe_cross_table_dependencies: Mapped[bool | None] = mapped_column(Boolean)
+    total_columns_analyzed: Mapped[int | None] = mapped_column(Integer)
+    total_relationships_used: Mapped[int | None] = mapped_column(Integer)
+
+    # JSONB: Full CrossTableMulticollinearityAnalysis Pydantic model
+    # Stores: dependency_groups, cross_table_groups, join_paths, quality_issues
+    analysis_data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+Index(
+    "idx_cross_multicollinearity_severity",
+    CrossTableMulticollinearityMetrics.has_severe_cross_table_dependencies,
+    CrossTableMulticollinearityMetrics.num_cross_table_groups,
+)
+
+
+__all__ = ["Relationship", "CrossTableMulticollinearityMetrics"]

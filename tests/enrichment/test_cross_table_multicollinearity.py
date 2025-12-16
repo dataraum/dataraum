@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from dataraum_context.analysis.correlation.models import (
+from dataraum_context.analysis.relationships.models import (
     CrossTableDependencyGroup,
     CrossTableMulticollinearityAnalysis,
     SingleRelationshipJoin,

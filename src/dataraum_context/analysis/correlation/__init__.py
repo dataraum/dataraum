@@ -5,10 +5,9 @@ Analyzes relationships between columns within a table:
 - Categorical associations (Cramér's V)
 - Functional dependencies (A → B)
 - Derived columns (col3 = col1 + col2)
-- Multicollinearity (VIF, Tolerance, Condition Index)
 
-All analysis is within a single table. Cross-table relationships
-are handled by the analysis/relationships module (Phase 6).
+Note: Multicollinearity analysis has moved to analysis/relationships module
+as it only makes sense across tables with relationship context.
 """
 
 from dataraum_context.analysis.correlation.categorical import compute_categorical_associations
@@ -17,8 +16,6 @@ from dataraum_context.analysis.correlation.db_models import (
 )
 from dataraum_context.analysis.correlation.db_models import (
     ColumnCorrelation,
-    CrossTableMulticollinearityMetrics,
-    MulticollinearityMetrics,
 )
 from dataraum_context.analysis.correlation.db_models import (
     DerivedColumn as DBDerivedColumn,
@@ -32,20 +29,10 @@ from dataraum_context.analysis.correlation.functional_dependency import (
 )
 from dataraum_context.analysis.correlation.models import (
     CategoricalAssociation,
-    ColumnVIF,
-    ConditionIndexAnalysis,
     CorrelationAnalysisResult,
-    CrossTableDependencyGroup,
-    CrossTableMulticollinearityAnalysis,
-    DependencyGroup,
     DerivedColumn,
     FunctionalDependency,
-    MulticollinearityAnalysis,
     NumericCorrelation,
-    SingleRelationshipJoin,
-)
-from dataraum_context.analysis.correlation.multicollinearity import (
-    compute_multicollinearity_for_table,
 )
 from dataraum_context.analysis.correlation.numeric import compute_numeric_correlations
 from dataraum_context.analysis.correlation.processor import analyze_correlations
@@ -58,26 +45,15 @@ __all__ = [
     "compute_categorical_associations",
     "detect_functional_dependencies",
     "detect_derived_columns",
-    "compute_multicollinearity_for_table",
     # DB Models
     "ColumnCorrelation",
     "DBCategoricalAssociation",
     "DBFunctionalDependency",
     "DBDerivedColumn",
-    "MulticollinearityMetrics",
-    "CrossTableMulticollinearityMetrics",
     # Pydantic Models
     "NumericCorrelation",
     "CategoricalAssociation",
     "FunctionalDependency",
     "DerivedColumn",
     "CorrelationAnalysisResult",
-    # Multicollinearity models
-    "DependencyGroup",
-    "ColumnVIF",
-    "ConditionIndexAnalysis",
-    "MulticollinearityAnalysis",
-    "SingleRelationshipJoin",
-    "CrossTableDependencyGroup",
-    "CrossTableMulticollinearityAnalysis",
 ]

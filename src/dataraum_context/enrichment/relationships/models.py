@@ -1,36 +1,15 @@
 """Relationship models.
 
-Shared Pydantic models for relationship operations.
+Re-exports from analysis/relationships for backward compatibility.
+The enrichment package will be removed in the future.
 """
-
-from typing import Any
 
 from pydantic import BaseModel
 
-from dataraum_context.core.models.base import Cardinality, RelationshipType
+# Re-export from canonical location
+from dataraum_context.analysis.relationships.models import EnrichedRelationship
 
-
-class EnrichedRelationship(BaseModel):
-    """Relationship enriched with column and table metadata for join construction.
-
-    This model extends the basic relationship with human-readable names
-    and additional metadata needed for building SQL joins and analysis.
-    """
-
-    relationship_id: str
-    from_table: str
-    from_column: str
-    from_column_id: str
-    from_table_id: str
-    to_table: str
-    to_column: str
-    to_column_id: str
-    to_table_id: str
-    relationship_type: RelationshipType
-    cardinality: Cardinality | None = None
-    confidence: float
-    detection_method: str
-    evidence: dict[str, Any] = {}
+__all__ = ["EnrichedRelationship", "GraphAnalysisResult"]
 
 
 class GraphAnalysisResult(BaseModel):

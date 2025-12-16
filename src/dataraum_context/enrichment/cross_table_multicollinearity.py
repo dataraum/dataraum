@@ -19,24 +19,28 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.analysis.correlation.models import (
+from dataraum_context.analysis.relationships.models import (
     CrossTableDependencyGroup,
     CrossTableMulticollinearityAnalysis,
+    DependencyGroup,
+    EnrichedRelationship,
     SingleRelationshipJoin,
 )
 from dataraum_context.core.models.base import Result
 
 # Re-export from relationships package for backward compatibility
-# TODO: Remove these re-exports and update all imports to use
-#       dataraum_context.enrichment.relationships directly
 from dataraum_context.enrichment.relationships.gathering import (
     CONFIDENCE_THRESHOLDS,
     gather_relationships,
 )
-from dataraum_context.enrichment.relationships.models import EnrichedRelationship
 from dataraum_context.storage import Column, Table
 
-__all__ = ["EnrichedRelationship", "gather_relationships", "CONFIDENCE_THRESHOLDS"]
+__all__ = [
+    "EnrichedRelationship",
+    "gather_relationships",
+    "CONFIDENCE_THRESHOLDS",
+    "compute_cross_table_multicollinearity",
+]
 
 # === Helper Models ===
 
@@ -59,6 +63,99 @@ class UnifiedMatrixResult(BaseModel):
     num_rows: int
     num_columns: int
     join_query: str
+
+
+# === Variance Decomposition (Belsley VDP) ===
+
+
+def _compute_variance_decomposition(
+    eigenvalues: np.ndarray,
+    eigenvectors: np.ndarray,
+    column_ids: list[str],
+    vdp_threshold: float = 0.5,
+) -> list[DependencyGroup]:
+    """Compute Variance Decomposition Proportions per Belsley, Kuh, Welsch (1980).
+
+    Correct implementation of Belsley diagnostics for detecting multicollinearity
+    involving any number of variables (2, 3, 4+).
+
+    Methodology:
+    1. Compute phi_kj = V_kj² / D_j² for all variables k and dimensions j
+    2. For each variable k: VDP_kj = phi_kj / Σ_j(phi_kj) [normalize across dimensions]
+    3. For dimensions with high CI (>30): variables with VDP > threshold form a group
+
+    This differs from naive eigenvector normalization - VDPs sum to 1 ACROSS dimensions
+    for each variable, not across variables for a single dimension.
+
+    Args:
+        eigenvalues: Eigenvalues sorted descending (D² from SVD)
+        eigenvectors: Corresponding eigenvectors (V from SVD)
+        column_ids: Column IDs corresponding to data matrix columns
+        vdp_threshold: VDP threshold (Belsley recommends 0.5-0.8)
+
+    Returns:
+        List of DependencyGroup objects
+
+    Reference:
+        Belsley, D.A., Kuh, E., Welsch, R.E. (1980). Regression Diagnostics:
+        Identifying Influential Data and Sources of Collinearity. Wiley.
+    """
+    n_vars = len(column_ids)
+    n_dims = len(eigenvalues)
+
+    # Step 1: Compute phi matrix (n_vars x n_dims)
+    # phi_kj = V_kj² / eigenvalue_j
+    # Use abs(eigenvalue) to handle near-zero negative values
+    phi_matrix = np.zeros((n_vars, n_dims))
+    for j in range(n_dims):
+        eigenvalue_abs = abs(eigenvalues[j]) if abs(eigenvalues[j]) > 1e-10 else 1e-10
+        for k in range(n_vars):
+            phi_matrix[k, j] = eigenvectors[k, j] ** 2 / eigenvalue_abs
+
+    # Step 2: Compute VDP matrix by normalizing phi across dimensions (row-wise)
+    # VDP_kj = phi_kj / Σ_j(phi_kj)
+    phi_sums = phi_matrix.sum(axis=1, keepdims=True)  # Sum across dimensions for each var
+    phi_sums = np.where(phi_sums < 1e-10, 1.0, phi_sums)  # Avoid division by zero
+    vdp_matrix = phi_matrix / phi_sums
+
+    # Step 3: For each high-CI dimension, find variables with high VDP
+    dependency_groups = []
+    max_eigenvalue = eigenvalues[0]
+
+    for j, eigenvalue in enumerate(eigenvalues):
+        # Skip if eigenvalue is not near-zero
+        if abs(eigenvalue) >= 0.01:
+            continue
+
+        # Compute condition index for this dimension
+        condition_index = float(np.sqrt(max_eigenvalue / abs(eigenvalue)))
+
+        # Belsley recommends CI > 30 for severe multicollinearity
+        if condition_index < 10:
+            continue
+
+        # Find variables with VDP > threshold on this dimension
+        high_vdp_indices = np.where(vdp_matrix[:, j] > vdp_threshold)[0]
+
+        # Need at least 2 variables for a dependency group
+        if len(high_vdp_indices) < 2:
+            continue
+
+        # Determine severity
+        severity = "severe" if condition_index > 30 else "moderate"
+
+        dependency_groups.append(
+            DependencyGroup(
+                dimension=j,
+                eigenvalue=float(eigenvalue),
+                condition_index=condition_index,
+                severity=severity,
+                involved_column_ids=[column_ids[idx] for idx in high_vdp_indices],
+                variance_proportions=vdp_matrix[high_vdp_indices, j].tolist(),
+            )
+        )
+
+    return dependency_groups
 
 
 # === Main Functions ===
@@ -343,11 +440,7 @@ async def compute_cross_table_multicollinearity(
     if matrix_data is None:
         return Result.fail("Matrix build succeeded but returned None value")
 
-    # Step 3: Apply Belsley VDP (reuse existing function!)
-    from dataraum_context.analysis.correlation.multicollinearity import (
-        _compute_variance_decomposition,
-    )
-
+    # Step 3: Apply Belsley VDP
     # Eigenvalue decomposition
     eigenvalues, eigenvectors = np.linalg.eigh(matrix_data.correlation_matrix)
 
@@ -487,7 +580,7 @@ async def get_stored_cross_table_analysis(
     Returns:
         Result containing most recent analysis if found, None if not found
     """
-    from dataraum_context.analysis.correlation.db_models import (
+    from dataraum_context.analysis.relationships.db_models import (
         CrossTableMulticollinearityMetrics,
     )
 
@@ -535,7 +628,7 @@ async def store_cross_table_analysis(
     Returns:
         Result containing metric_id
     """
-    from dataraum_context.analysis.correlation.db_models import (
+    from dataraum_context.analysis.relationships.db_models import (
         CrossTableMulticollinearityMetrics,
     )
 

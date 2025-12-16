@@ -5,29 +5,24 @@ Main orchestrator that runs all correlation analyses:
 - Categorical associations (Cramér's V)
 - Functional dependencies (A → B)
 - Derived columns
-- Multicollinearity (VIF, Tolerance, Condition Index)
+
+Note: Multicollinearity analysis has moved to analysis/relationships module
+as it requires cross-table relationship context.
 """
 
 import time
 from datetime import UTC, datetime
-from uuid import uuid4
 
 import duckdb
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.analysis.correlation.categorical import compute_categorical_associations
-from dataraum_context.analysis.correlation.db_models import (
-    MulticollinearityMetrics as DBMulticollinearityMetrics,
-)
 from dataraum_context.analysis.correlation.derived_columns import detect_derived_columns
 from dataraum_context.analysis.correlation.functional_dependency import (
     detect_functional_dependencies,
 )
 from dataraum_context.analysis.correlation.models import CorrelationAnalysisResult
-from dataraum_context.analysis.correlation.multicollinearity import (
-    compute_multicollinearity_for_table,
-)
 from dataraum_context.analysis.correlation.numeric import compute_numeric_correlations
 from dataraum_context.core.models.base import Result
 from dataraum_context.storage import Column, Table
@@ -37,7 +32,6 @@ async def analyze_correlations(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: AsyncSession,
-    include_multicollinearity: bool = False,
 ) -> Result[CorrelationAnalysisResult]:
     """Run complete correlation analysis on a table.
 
@@ -46,15 +40,11 @@ async def analyze_correlations(
     - Categorical associations
     - Functional dependencies
     - Derived columns
-    - Multicollinearity (VIF, Tolerance, Condition Index) - optional, off by default
 
     Args:
         table_id: Table ID to analyze
         duckdb_conn: DuckDB connection
         session: SQLAlchemy session
-        include_multicollinearity: Whether to run multicollinearity analysis.
-            Disabled by default - should only be enabled after data cleaning
-            (outlier handling, null imputation). See multicollinearity.py for details.
 
     Returns:
         Result containing CorrelationAnalysisResult
@@ -83,39 +73,6 @@ async def analyze_correlations(
 
         derived_result = await detect_derived_columns(table, duckdb_conn, session)
         derived_columns = derived_result.unwrap() if derived_result.success else []
-
-        # Compute multicollinearity (VIF, Tolerance, Condition Index) - optional
-        multicollinearity_analysis = None
-        if include_multicollinearity:
-            multicollinearity_result = await compute_multicollinearity_for_table(
-                table, duckdb_conn, session
-            )
-            multicollinearity_analysis = (
-                multicollinearity_result.value if multicollinearity_result.success else None
-            )
-
-        # Persist multicollinearity results (only if computed)
-        if multicollinearity_analysis:
-            db_multicollinearity = DBMulticollinearityMetrics(
-                metric_id=str(uuid4()),
-                table_id=table.table_id,
-                computed_at=multicollinearity_analysis.computed_at,
-                has_severe_multicollinearity=multicollinearity_analysis.has_severe_multicollinearity,
-                num_problematic_columns=multicollinearity_analysis.num_problematic_columns,
-                condition_index=(
-                    multicollinearity_analysis.condition_index.condition_index
-                    if multicollinearity_analysis.condition_index
-                    else None
-                ),
-                max_vif=(
-                    max(vif.vif for vif in multicollinearity_analysis.column_vifs)
-                    if multicollinearity_analysis.column_vifs
-                    else None
-                ),
-                analysis_data=multicollinearity_analysis.model_dump(mode="json"),
-            )
-            session.add(db_multicollinearity)
-            await session.commit()
 
         # Summary stats
         stmt = select(Column).where(Column.table_id == table_id)

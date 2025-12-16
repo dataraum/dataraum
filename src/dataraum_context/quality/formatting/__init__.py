@@ -40,7 +40,6 @@ from dataraum_context.quality.formatting.domain import (
 )
 from dataraum_context.quality.formatting.multicollinearity import (
     format_cross_table_multicollinearity_for_llm,
-    format_multicollinearity_for_llm,
 )
 from dataraum_context.quality.formatting.statistical import (
     format_benford_group,
@@ -79,8 +78,7 @@ __all__ = [
     "MetricGroupConfig",
     "get_default_config",
     "load_formatter_config",
-    # Multicollinearity formatters
-    "format_multicollinearity_for_llm",
+    # Multicollinearity formatters (cross-table only)
     "format_cross_table_multicollinearity_for_llm",
     # Statistical formatters
     "format_completeness_group",

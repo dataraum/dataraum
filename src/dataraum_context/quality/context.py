@@ -21,12 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.analysis.correlation.db_models import (
     ColumnCorrelation,
-    CrossTableMulticollinearityMetrics,
     DerivedColumn,
     FunctionalDependency,
-    MulticollinearityMetrics,
 )
-from dataraum_context.analysis.correlation.models import MulticollinearityAnalysis
+from dataraum_context.analysis.relationships.db_models import (
+    CrossTableMulticollinearityMetrics,
+)
 from dataraum_context.analysis.statistics.db_models import StatisticalProfile
 from dataraum_context.analysis.typing.db_models import (
     TypeCandidate,
@@ -41,9 +41,6 @@ from dataraum_context.enrichment.db_models import (
 from dataraum_context.enrichment.relationships.gathering import gather_relationships
 from dataraum_context.quality.db_models import StatisticalQualityMetrics
 from dataraum_context.quality.domains.db_models import DomainQualityMetrics
-
-# Import formatter and model for multicollinearity
-from dataraum_context.quality.formatting import format_multicollinearity_for_llm
 from dataraum_context.quality.models import (
     ColumnQualityContext,
     DatasetQualityContext,
@@ -378,23 +375,8 @@ async def format_table_quality_context(
     )
     domain_quality = (await session.execute(domain_stmt)).scalar_one_or_none()
 
-    # Fetch and format multicollinearity analysis
-    multicol_stmt = (
-        select(MulticollinearityMetrics)
-        .where(MulticollinearityMetrics.table_id == table_id)
-        .order_by(MulticollinearityMetrics.computed_at.desc())
-        .limit(1)
-    )
-    multicol_metrics = (await session.execute(multicol_stmt)).scalar_one_or_none()
-
-    multicollinearity_formatted: dict[str, Any] | None = None
-    if multicol_metrics and multicol_metrics.analysis_data:
-        try:
-            # Deserialize JSONB to Pydantic model and format for LLM
-            analysis = MulticollinearityAnalysis.model_validate(multicol_metrics.analysis_data)
-            multicollinearity_formatted = format_multicollinearity_for_llm(analysis)
-        except Exception as e:
-            logger.warning(f"Failed to format multicollinearity for table {table_id}: {e}")
+    # NOTE: Per-table multicollinearity has been removed.
+    # Cross-table multicollinearity is computed in relationships module.
 
     # Fetch table entity (semantic classification)
     table_entity_stmt = select(TableEntity).where(TableEntity.table_id == table_id)
@@ -448,7 +430,7 @@ async def format_table_quality_context(
         is_dimension_table=is_dimension_table,
         domain_anomaly_count=domain_anomaly_count,
         fiscal_stability=None,  # Set by financial orchestrator if applicable
-        multicollinearity=multicollinearity_formatted,
+        multicollinearity=None,  # Per-table multicollinearity removed; use cross-table
         problematic_relationships=[],
         flags=flags,
     )

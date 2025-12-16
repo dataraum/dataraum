@@ -38,6 +38,13 @@ prompt: |
 
   Not all candidates are real relationships. Use column names and semantic context to decide.
 
+  ## Cross-Table Correlation Analysis
+
+  The following shows correlation and multicollinearity patterns detected across tables.
+  This helps identify columns that may be related, derived, or redundant.
+
+  {correlation_context}
+
   ## Analysis Instructions
 
   For each **table**, determine:
@@ -129,6 +136,11 @@ inputs:
     description: Pre-computed relationship candidates from TDA and join detection
     required: false
     default: "No pre-computed relationship candidates available."
+
+  correlation_context:
+    description: Cross-table correlation and multicollinearity analysis
+    required: false
+    default: "No cross-table correlation analysis available."
 
 # Expected output schema (for validation)
 output_schema:

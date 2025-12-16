@@ -14,6 +14,9 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataraum_context.analysis.relationships.models import (
+    CrossTableMulticollinearityAnalysis,
+)
 from dataraum_context.analysis.semantic.models import (
     EntityDetection,
     Relationship,
@@ -83,6 +86,7 @@ class SemanticAgent(LLMFeature):
         table_ids: list[str],
         ontology: str = "general",
         relationship_candidates: list[dict[str, Any]] | None = None,
+        correlation_context: CrossTableMulticollinearityAnalysis | None = None,
     ) -> Result[SemanticEnrichmentResult]:
         """Analyze semantic meaning of tables and columns.
 
@@ -95,6 +99,8 @@ class SemanticAgent(LLMFeature):
                 - table1, table2: Table names
                 - join_columns: List of column pairs with confidence scores
                 - topology_similarity: TDA-based structural similarity
+            correlation_context: Cross-table correlation and multicollinearity
+                analysis from analysis/correlation module
 
         Returns:
             Result containing SemanticEnrichmentResult or error
@@ -126,6 +132,7 @@ class SemanticAgent(LLMFeature):
             "relationship_candidates": self._format_relationship_candidates(
                 relationship_candidates
             ),
+            "correlation_context": self._format_correlation_context(correlation_context),
         }
 
         # Render prompt
@@ -331,6 +338,63 @@ class SemanticAgent(LLMFeature):
                     conf = jc.get("confidence", 0.0)
                     card = jc.get("cardinality", "unknown")
                     lines.append(f"  - {col1} <-> {col2}: {conf:.2f} ({card})")
+
+        return "\n".join(lines)
+
+    def _format_correlation_context(
+        self, analysis: CrossTableMulticollinearityAnalysis | None
+    ) -> str:
+        """Format cross-table correlation context for the prompt.
+
+        Args:
+            analysis: Cross-table multicollinearity analysis result
+
+        Returns:
+            Formatted string for the prompt
+        """
+        if not analysis:
+            return "No cross-table correlation analysis available."
+
+        lines = []
+
+        # Overall summary
+        lines.append(f"Tables analyzed: {', '.join(analysis.table_names)}")
+        lines.append(f"Total numeric columns: {analysis.total_columns_analyzed}")
+        lines.append(f"Overall condition index: {analysis.overall_condition_index:.1f}")
+        lines.append(f"Severity: {analysis.overall_severity}")
+
+        # Cross-table dependency groups (most valuable for semantic analysis)
+        if analysis.cross_table_groups:
+            lines.append(f"\n### Cross-Table Dependencies ({len(analysis.cross_table_groups)})")
+            lines.append("Columns that are linearly related across table boundaries:")
+
+            for group in analysis.cross_table_groups:
+                tables_involved = list({table for table, _ in group.involved_columns})
+                lines.append(f"\n**Group (CI={group.condition_index:.1f}, {group.severity})**")
+                lines.append(f"Tables: {', '.join(tables_involved)}")
+                lines.append("Columns:")
+                for (table, col), vdp in zip(
+                    group.involved_columns, group.variance_proportions, strict=False
+                ):
+                    lines.append(f"  - {table}.{col} (VDP={vdp:.2f})")
+
+                if group.join_paths:
+                    lines.append("Connected via:")
+                    for path in group.join_paths:
+                        lines.append(
+                            f"  - {path.from_table}.{path.from_column} -> "
+                            f"{path.to_table}.{path.to_column}"
+                        )
+
+                lines.append(f"Interpretation: {group.interpretation}")
+        else:
+            lines.append("\nNo cross-table dependencies detected.")
+
+        # Quality issues
+        if analysis.quality_issues:
+            lines.append("\n### Quality Concerns")
+            for issue in analysis.quality_issues:
+                lines.append(f"- {issue.get('description', 'Unknown issue')}")
 
         return "\n".join(lines)
 

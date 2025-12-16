@@ -31,15 +31,15 @@ import duckdb
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.analysis.correlation import analyze_correlations
+from dataraum_context.analysis.correlation import (
+    analyze_correlations,
+    compute_cross_table_multicollinearity,
+)
 from dataraum_context.analysis.statistics import profile_statistics
 from dataraum_context.analysis.typing import infer_type_candidates, resolve_types
 from dataraum_context.core.models import SourceConfig
 from dataraum_context.core.models.base import Result
 from dataraum_context.enrichment.agent import SemanticAgent
-from dataraum_context.enrichment.cross_table_multicollinearity import (
-    compute_cross_table_multicollinearity,
-)
 from dataraum_context.enrichment.db_models import (
     Relationship,
     SemanticAnnotation,

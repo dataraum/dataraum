@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Phase 5 verification: analysis/semantic module with relationship candidates.
+"""Phase 5 verification: analysis/semantic module with relationship candidates + correlation context.
 
 This script demonstrates the full semantic analysis flow:
 1. Load CSV files
 2. Run type inference and resolution
 3. Run statistical profiling
 4. Detect relationship candidates (Phase 6) - stored in DB
-5. Run semantic analysis with relationship candidates
-6. Print the LLM prompt for inspection
+5. Run cross-table correlation analysis (NEW)
+6. Run semantic analysis with relationship candidates AND correlation context
+7. Print the LLM prompt for inspection
 """
 
 import asyncio
@@ -19,11 +20,14 @@ from dotenv import load_dotenv
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from dataraum_context.analysis.correlation import analyze_cross_table_correlations
 from dataraum_context.analysis.relationships import detect_relationships
+from dataraum_context.analysis.relationships.models import EnrichedRelationship
 from dataraum_context.analysis.semantic import SemanticAgent, enrich_semantic
 from dataraum_context.analysis.statistics import profile_statistics
 from dataraum_context.analysis.typing import infer_type_candidates, resolve_types
 from dataraum_context.core.models import SourceConfig
+from dataraum_context.core.models.base import Cardinality, RelationshipType
 from dataraum_context.llm.cache import LLMCache
 from dataraum_context.llm.config import load_llm_config
 from dataraum_context.llm.prompts import PromptRenderer
@@ -167,8 +171,111 @@ async def main():
                 for jc in rc["join_columns"][:3]:  # Show first 3
                     print(f"      {jc['column1']} <-> {jc['column2']}: {jc['confidence']:.2f}")
 
+        # Cross-table correlation analysis (NEW)
+        print("\n4. Cross-table correlation analysis")
+        print("-" * 50)
+        correlation_context = None
+
+        if len(table_ids) > 1 and relationship_candidates:
+            # Convert relationship candidates to EnrichedRelationship objects
+            enriched_relationships = []
+
+            # Build table name -> table_id mapping for typed tables only
+            table_name_to_id = {}
+            for tid in table_ids:
+                t = await session.get(Table, tid)
+                if t:
+                    table_name_to_id[t.table_name] = t
+
+            for rc in relationship_candidates:
+                # Get tables from our mapping
+                table1 = table_name_to_id.get(rc["table1"])
+                table2 = table_name_to_id.get(rc["table2"])
+
+                if not table1 or not table2:
+                    continue
+
+                for jc in rc["join_columns"]:
+                    # Get column IDs
+                    col1_stmt = select(Column).where(
+                        Column.table_id == table1.table_id,
+                        Column.column_name == jc["column1"],
+                    )
+                    col2_stmt = select(Column).where(
+                        Column.table_id == table2.table_id,
+                        Column.column_name == jc["column2"],
+                    )
+                    col1 = (await session.execute(col1_stmt)).scalar_one_or_none()
+                    col2 = (await session.execute(col2_stmt)).scalar_one_or_none()
+
+                    if not col1 or not col2:
+                        continue
+
+                    # Map cardinality string to enum
+                    cardinality = None
+                    card_str = jc.get("cardinality", "")
+                    if card_str == "one_to_one":
+                        cardinality = Cardinality.ONE_TO_ONE
+                    elif card_str in ["one_to_many", "many_to_one"]:
+                        cardinality = Cardinality.ONE_TO_MANY
+                    elif card_str == "many_to_many":
+                        cardinality = Cardinality.MANY_TO_MANY
+
+                    enriched_relationships.append(
+                        EnrichedRelationship(
+                            relationship_id=f"{col1.column_id}_{col2.column_id}",
+                            from_table=table1.table_name,
+                            from_column=col1.column_name,
+                            from_column_id=col1.column_id,
+                            from_table_id=table1.table_id,
+                            to_table=table2.table_name,
+                            to_column=col2.column_name,
+                            to_column_id=col2.column_id,
+                            to_table_id=table2.table_id,
+                            relationship_type=RelationshipType.FOREIGN_KEY,
+                            cardinality=cardinality,
+                            confidence=jc["confidence"],
+                            detection_method="candidate",
+                        )
+                    )
+
+            if enriched_relationships:
+                print(f"   Built {len(enriched_relationships)} enriched relationships")
+
+                # Run cross-table correlation analysis
+                corr_result = await analyze_cross_table_correlations(
+                    table_ids=table_ids,
+                    relationships=enriched_relationships,
+                    duckdb_conn=duckdb_conn,
+                    session=session,
+                )
+
+                if corr_result.success and corr_result.value:
+                    correlation_context = corr_result.value
+                    print(
+                        f"   Overall condition index: {correlation_context.overall_condition_index:.1f}"
+                    )
+                    print(f"   Overall severity: {correlation_context.overall_severity}")
+                    print(f"   Columns analyzed: {correlation_context.total_columns_analyzed}")
+                    print(f"   Dependency groups: {len(correlation_context.dependency_groups)}")
+                    print(f"   Cross-table groups: {len(correlation_context.cross_table_groups)}")
+
+                    if correlation_context.cross_table_groups:
+                        print("\n   Cross-table dependency groups:")
+                        for group in correlation_context.cross_table_groups:
+                            cols = [f"{t}.{c}" for t, c in group.involved_columns]
+                            print(
+                                f"      CI={group.condition_index:.1f} ({group.severity}): {', '.join(cols)}"
+                            )
+                else:
+                    print(f"   Correlation analysis failed: {corr_result.error}")
+            else:
+                print("   No enriched relationships could be built")
+        else:
+            print("   Skipped (requires multiple tables with relationships)")
+
         # Semantic analysis (Phase 5)
-        print("\n4. Semantic analysis with relationship candidates")
+        print("\n5. Semantic analysis with relationship candidates + correlation context")
         print("-" * 50)
 
         if not api_key:
@@ -248,23 +355,39 @@ async def main():
             ontology_def = agent._ontology_loader.load("general")
             ontology_concepts = agent._ontology_loader.format_concepts_for_prompt(ontology_def)
 
+            # Format correlation context
+            corr_context_str = agent._format_correlation_context(correlation_context)
+
             context = {
                 "tables_json": json.dumps(tables_json, indent=2),
                 "ontology_name": "general",
                 "ontology_concepts": ontology_concepts,
                 "relationship_candidates": rel_candidates_str,
+                "correlation_context": corr_context_str,
             }
 
             prompt, temperature = renderer.render("semantic_analysis", context)
             print(f"\nTemperature: {temperature}")
-            print("\n--- PROMPT START ---")
-            print(prompt[:3000])  # First 3000 chars
+            print(f"Prompt length: {len(prompt)} characters")
+
+            # Find and show the correlation context section
+            if "Cross-Table Correlation Analysis" in prompt:
+                idx = prompt.find("Cross-Table Correlation Analysis")
+                end_idx = (
+                    prompt.find("##", idx + 10) if prompt.find("##", idx + 10) > 0 else idx + 1500
+                )
+                print("\n--- CORRELATION CONTEXT SECTION ---")
+                print(prompt[idx:end_idx])
+                print("--- END CORRELATION SECTION ---\n")
+
+            print("\n--- PROMPT START (first 3000 chars) ---")
+            print(prompt[:3000])
             if len(prompt) > 3000:
                 print(f"\n... [{len(prompt) - 3000} more characters] ...")
             print("--- PROMPT END ---\n")
 
-            # Run semantic enrichment with relationship candidates
-            print("\n5. Running LLM analysis...")
+            # Run semantic enrichment with relationship candidates AND correlation context
+            print("\n6. Running LLM analysis...")
             print("-" * 50)
 
             sem_result = await enrich_semantic(
@@ -273,6 +396,7 @@ async def main():
                 table_ids=table_ids,
                 ontology="general",
                 relationship_candidates=relationship_candidates,
+                correlation_context=correlation_context,
             )
 
             if sem_result.success:

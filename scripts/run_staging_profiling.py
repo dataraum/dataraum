@@ -35,13 +35,13 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from dataraum_context.analysis.correlation import (
+    compute_cross_table_multicollinearity,
+)
 from dataraum_context.analysis.statistics import profile_statistics
 from dataraum_context.analysis.statistics.db_models import StatisticalProfile
 from dataraum_context.analysis.typing import infer_type_candidates, resolve_types
 from dataraum_context.core.models import SourceConfig
-from dataraum_context.enrichment.cross_table_multicollinearity import (
-    compute_cross_table_multicollinearity,
-)
 from dataraum_context.enrichment.db_models import Relationship, SemanticAnnotation
 from dataraum_context.enrichment.semantic import enrich_semantic
 from dataraum_context.enrichment.temporal import enrich_temporal

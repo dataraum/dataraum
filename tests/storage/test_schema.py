@@ -32,8 +32,6 @@ class TestSchemaInitialization:
             "temporal_quality_metrics",
             "quality_rules",
             "quality_results",
-            "ontologies",
-            "ontology_applications",
             "llm_cache",
         ]
 

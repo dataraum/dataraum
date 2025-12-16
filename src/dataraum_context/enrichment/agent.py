@@ -7,7 +7,8 @@ This agent follows the same pattern as graphs/agent.py:
 """
 
 import json
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -27,10 +28,17 @@ from dataraum_context.enrichment.models import (
     SemanticAnnotation,
     SemanticEnrichmentResult,
 )
+from dataraum_context.enrichment.ontology import OntologyLoader
 from dataraum_context.llm.features._base import LLMFeature
 from dataraum_context.llm.privacy import DataSampler
 from dataraum_context.profiling.models import ColumnProfile
-from dataraum_context.storage.models_v2 import Column, Ontology, Table
+from dataraum_context.storage.models_v2 import Column, Table
+
+if TYPE_CHECKING:
+    from dataraum_context.llm.cache import LLMCache
+    from dataraum_context.llm.config import LLMConfig
+    from dataraum_context.llm.prompts import PromptRenderer
+    from dataraum_context.llm.providers.base import LLMProvider
 
 
 class SemanticAgent(LLMFeature):
@@ -47,6 +55,27 @@ class SemanticAgent(LLMFeature):
     - Can be instantiated directly with LLM config, provider, renderer, cache
     - Does not depend on LLMService facade
     """
+
+    def __init__(
+        self,
+        config: LLMConfig,
+        provider: LLMProvider,
+        prompt_renderer: PromptRenderer,
+        cache: LLMCache,
+        ontologies_dir: Path | None = None,
+    ) -> None:
+        """Initialize semantic agent.
+
+        Args:
+            config: LLM configuration
+            provider: LLM provider instance
+            prompt_renderer: Prompt template renderer
+            cache: Response cache
+            ontologies_dir: Directory containing ontology YAML files.
+                          If None, uses config/ontologies/
+        """
+        super().__init__(config, provider, prompt_renderer, cache)
+        self._ontology_loader = OntologyLoader(ontologies_dir)
 
     async def analyze(
         self,
@@ -82,12 +111,12 @@ class SemanticAgent(LLMFeature):
 
         # Build context for prompt
         tables_json = self._build_tables_json(profiles, samples)
-        ontology_data = await self._load_ontology(session, ontology)
+        ontology_def = self._ontology_loader.load(ontology)
 
         context = {
             "tables_json": json.dumps(tables_json, indent=2),
             "ontology_name": ontology,
-            "ontology_concepts": self._format_ontology_concepts(ontology_data),
+            "ontology_concepts": self._ontology_loader.format_concepts_for_prompt(ontology_def),
         }
 
         # Render prompt
@@ -260,34 +289,6 @@ class SemanticAgent(LLMFeature):
         except Exception as e:
             return Result.fail(f"Failed to load profiles: {e}")
 
-    async def _load_ontology(self, session: AsyncSession, ontology_name: str) -> dict[str, Any]:
-        """Load ontology from database.
-
-        Args:
-            session: Database session
-            ontology_name: Ontology name
-
-        Returns:
-            Ontology data dict
-        """
-        try:
-            stmt = select(Ontology).where(Ontology.name == ontology_name)
-            result = await session.execute(stmt)
-            ontology = result.scalar_one_or_none()
-
-            if ontology:
-                return {
-                    "name": ontology.name,
-                    "concepts": ontology.concepts or {},
-                    "metrics": ontology.metrics or {},
-                }
-            else:
-                # Return empty ontology
-                return {"name": ontology_name, "concepts": {}, "metrics": {}}
-
-        except Exception:
-            return {"name": ontology_name, "concepts": {}, "metrics": {}}
-
     def _build_tables_json(
         self, profiles: list[ColumnProfile], samples: dict[str, list[Any]]
     ) -> list[dict[str, Any]]:
@@ -333,31 +334,6 @@ class SemanticAgent(LLMFeature):
             tables_data[table_name]["columns"].append(col_data)
 
         return list(tables_data.values())
-
-    def _format_ontology_concepts(self, ontology_data: dict[str, Any]) -> str:
-        """Format ontology concepts for prompt.
-
-        Args:
-            ontology_data: Ontology data dict
-
-        Returns:
-            Formatted string describing concepts
-        """
-        concepts = ontology_data.get("concepts", {})
-
-        if not concepts:
-            return "No specific ontology concepts defined"
-
-        # Format as bullet list
-        lines = []
-        for concept_name, concept_data in concepts.items():
-            if isinstance(concept_data, dict):
-                indicators = concept_data.get("indicators", [])
-                lines.append(f"- {concept_name}: {', '.join(indicators)}")
-            else:
-                lines.append(f"- {concept_name}")
-
-        return "\n".join(lines)
 
     def _parse_semantic_response(
         self, parsed: dict[str, Any], model_name: str

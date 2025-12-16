@@ -32,7 +32,6 @@ if TYPE_CHECKING:
         DomainQualityMetrics,
         FinancialQualityMetrics,
     )
-    from dataraum_context.storage.models_v2.ontology import OntologyApplication
 
 
 class Source(Base):
@@ -108,11 +107,6 @@ class Table(Base):
 
     # Quality rules relationships
     quality_rules: Mapped[list[QualityRule]] = relationship(
-        back_populates="table", cascade="all, delete-orphan"
-    )
-
-    # Ontology relationships
-    ontology_applications: Mapped[list[OntologyApplication]] = relationship(
         back_populates="table", cascade="all, delete-orphan"
     )
 

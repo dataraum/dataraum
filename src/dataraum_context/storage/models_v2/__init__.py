@@ -12,10 +12,10 @@ Domain-specific models have been co-located with their business logic:
 
 Pruned (unused):
 - Filtering models (FilteringRecommendationRecord, FilteringExecutionRecord)
+- Ontology models (ontologies, ontology_applications) - loaded from config files instead
 
 Core modules (remain here):
 - core.py: Core entities (sources, tables, columns)
-- ontology.py: Ontology definitions and applications
 
 Created: 2025-11-28
 """
@@ -24,16 +24,12 @@ Created: 2025-11-28
 # ruff: noqa: F401
 from dataraum_context.storage.models_v2 import (
     core,
-    ontology,
     schema,
 )
 from dataraum_context.storage.models_v2.base import Base, metadata_obj
 
 # Core entities
 from dataraum_context.storage.models_v2.core import Column, Source, Table
-
-# Ontology system
-from dataraum_context.storage.models_v2.ontology import Ontology, OntologyApplication
 
 # Schema version tracking
 from dataraum_context.storage.models_v2.schema import DBSchemaVersion
@@ -46,9 +42,6 @@ __all__ = [
     "Source",
     "Table",
     "Column",
-    # Ontology System
-    "Ontology",
-    "OntologyApplication",
     # Schema Version
     "DBSchemaVersion",
 ]

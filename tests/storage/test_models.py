@@ -22,8 +22,6 @@ from dataraum_context.quality.db_models import QualityResult, QualityRule
 from dataraum_context.storage.models_v2 import (
     Column,
     DBSchemaVersion,
-    Ontology,
-    OntologyApplication,
     Source,
     Table,
 )
@@ -430,55 +428,6 @@ class TestQualityModels:
 
         assert saved.total_records == 1000
         assert saved.pass_rate == 0.95
-
-
-class TestOntologyModels:
-    """Test ontology models."""
-
-    async def test_create_ontology(self, session: AsyncSession):
-        ontology = Ontology(
-            name="financial_reporting",
-            description="Financial reporting ontology",
-            version="1.0",
-            concepts=[{"name": "revenue", "indicators": ["sales", "income"]}],
-            metrics=[{"name": "gross_margin", "formula": "(revenue - cogs) / revenue"}],
-            quality_rules=[{"rule": "revenue >= 0"}],
-            is_builtin=True,
-        )
-        session.add(ontology)
-        await session.commit()
-
-        result = await session.execute(
-            select(Ontology).where(Ontology.name == "financial_reporting")
-        )
-        saved = result.scalar_one()
-
-        assert saved.name == "financial_reporting"
-        assert saved.is_builtin is True
-        assert saved.concepts
-        assert len(saved.concepts) == 1
-
-    async def test_create_ontology_application(self, session: AsyncSession):
-        source = Source(name="test_source", source_type="csv")
-        table = Table(source=source, table_name="sales", layer="raw")
-        ontology = Ontology(name="test_ontology", concepts=[], metrics=[], quality_rules=[])
-        session.add_all([source, table, ontology])
-        await session.flush()
-
-        application = OntologyApplication(
-            table=table,
-            ontology=ontology,
-            matched_concepts=["revenue"],
-            applicable_metrics=["total_revenue"],
-            applied_rules=["revenue_non_negative"],
-        )
-        session.add(application)
-        await session.commit()
-
-        result = await session.execute(select(OntologyApplication))
-        saved = result.scalar_one()
-
-        assert saved.matched_concepts == ["revenue"]
 
 
 class TestLLMCache:

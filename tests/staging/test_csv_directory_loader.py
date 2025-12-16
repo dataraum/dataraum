@@ -45,15 +45,15 @@ def test_duckdb():
 
 
 @pytest.fixture
-def mock_llm_service():
-    """Create a mock LLM service for testing."""
+def mock_semantic_agent():
+    """Create a mock semantic agent for testing."""
     from unittest.mock import AsyncMock, MagicMock
 
     from dataraum_context.core.models.base import Result
     from dataraum_context.enrichment.models import SemanticEnrichmentResult
 
     mock = MagicMock()
-    mock.analyze_semantics = AsyncMock(
+    mock.analyze = AsyncMock(
         return_value=Result.ok(
             SemanticEnrichmentResult(
                 annotations=[],
@@ -194,7 +194,7 @@ class TestCSVDirectoryPipeline:
         finance_csv_directory,
         test_duckdb,
         test_session,
-        mock_llm_service,
+        mock_semantic_agent,
     ):
         """Test the unified pipeline with a directory."""
         if not finance_csv_directory.exists():
@@ -205,7 +205,7 @@ class TestCSVDirectoryPipeline:
             source_name="finance_test",
             duckdb_conn=test_duckdb,
             session=test_session,
-            llm_service=mock_llm_service,
+            semantic_agent=mock_semantic_agent,
         )
 
         assert result.success, f"Pipeline failed: {result.error}"

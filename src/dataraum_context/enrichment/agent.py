@@ -1,4 +1,10 @@
-"""Semantic analysis feature - LLM-powered column and table analysis."""
+"""Semantic Agent - LLM-powered column and table analysis.
+
+This agent follows the same pattern as graphs/agent.py:
+- It extends LLMFeature from the llm module
+- It depends on llm module, but llm module does not depend on it
+- Used directly by enrichment/semantic.py
+"""
 
 import json
 from typing import Any
@@ -27,14 +33,19 @@ from dataraum_context.profiling.models import ColumnProfile
 from dataraum_context.storage.models_v2 import Column, Ontology, Table
 
 
-class SemanticAnalysisFeature(LLMFeature):
-    """LLM-powered semantic analysis.
+class SemanticAgent(LLMFeature):
+    """LLM-powered semantic analysis agent.
 
     Analyzes tables and columns to determine:
     - Semantic roles (measure, dimension, key, etc.)
     - Entity types (customer, product, transaction, etc.)
     - Business names and descriptions
     - Relationships between tables
+
+    This agent follows the same pattern as GraphAgent:
+    - Extends LLMFeature for LLM infrastructure access
+    - Can be instantiated directly with LLM config, provider, renderer, cache
+    - Does not depend on LLMService facade
     """
 
     async def analyze(

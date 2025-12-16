@@ -466,9 +466,8 @@ def duckdb_conn_multi_table():
 
 
 @pytest.fixture
-def mock_llm_service():
-    """Create a mock LLM service for testing."""
-    mock_service = MagicMock()
+def mock_llm_provider():
+    """Create a mock LLM provider for testing."""
     mock_provider = AsyncMock()
 
     # Mock successful classification response
@@ -556,9 +555,8 @@ def mock_llm_service():
         return Result.ok(mock_response)
 
     mock_provider.complete = mock_complete
-    mock_service.provider = mock_provider
 
-    return mock_service
+    return mock_provider
 
 
 # =============================================================================
@@ -658,7 +656,7 @@ class TestMultiTableAnalysisNoLLM:
             table_ids=table_ids,
             duckdb_conn=duckdb_conn_multi_table,
             session=session,
-            llm_service=None,  # No LLM
+            llm_provider=None,  # No LLM
         )
 
         assert result.success
@@ -688,7 +686,7 @@ class TestMultiTableAnalysisNoLLM:
             table_ids=table_ids,
             duckdb_conn=duckdb_conn_multi_table,
             session=session,
-            llm_service=None,
+            llm_provider=None,
         )
 
         assert result.success
@@ -711,7 +709,7 @@ class TestMultiTableAnalysisNoLLM:
             table_ids=table_ids,
             duckdb_conn=duckdb_conn_multi_table,
             session=session,
-            llm_service=None,
+            llm_provider=None,
         )
 
         assert result.success
@@ -742,7 +740,7 @@ class TestMultiTableAnalysisWithLLM:
 
     @pytest.mark.asyncio
     async def test_llm_classifies_cycles(
-        self, multi_table_with_cycle, duckdb_conn_multi_table, mock_llm_service
+        self, multi_table_with_cycle, duckdb_conn_multi_table, mock_llm_provider
     ):
         """Test that LLM classifies detected cycles."""
         session, tables, columns, relationships = multi_table_with_cycle
@@ -753,7 +751,7 @@ class TestMultiTableAnalysisWithLLM:
             table_ids=table_ids,
             duckdb_conn=duckdb_conn_multi_table,
             session=session,
-            llm_service=mock_llm_service,
+            llm_provider=mock_llm_provider,
         )
 
         assert result.success
@@ -772,7 +770,7 @@ class TestMultiTableAnalysisWithLLM:
 
     @pytest.mark.asyncio
     async def test_llm_provides_interpretation(
-        self, multi_table_with_star_schema, duckdb_conn_multi_table, mock_llm_service
+        self, multi_table_with_star_schema, duckdb_conn_multi_table, mock_llm_provider
     ):
         """Test that LLM provides holistic interpretation even without cycles."""
         session, tables, columns, relationships = multi_table_with_star_schema
@@ -783,7 +781,7 @@ class TestMultiTableAnalysisWithLLM:
             table_ids=table_ids,
             duckdb_conn=duckdb_conn_multi_table,
             session=session,
-            llm_service=mock_llm_service,
+            llm_provider=mock_llm_provider,
         )
 
         assert result.success
@@ -803,7 +801,7 @@ class TestClassifyCrossTableCycleWithLLM:
     """Tests for the cycle classification function directly."""
 
     @pytest.mark.asyncio
-    async def test_classification_returns_multi_label(self, mock_llm_service):
+    async def test_classification_returns_multi_label(self, mock_llm_provider):
         """Test that classification supports multiple labels."""
         from dataraum_context.enrichment.cross_table_multicollinearity import (
             EnrichedRelationship,
@@ -849,7 +847,7 @@ class TestClassifyCrossTableCycleWithLLM:
             cycle_table_ids=cycle_table_ids,
             relationships=relationships,
             table_semantics=table_semantics,
-            llm_service=mock_llm_service,
+            llm_provider=mock_llm_provider,
         )
 
         assert result.success
@@ -879,7 +877,7 @@ class TestEdgeCases:
             table_ids=[],
             duckdb_conn=duckdb_conn_multi_table,
             session=session,
-            llm_service=None,
+            llm_provider=None,
         )
 
         # Should handle gracefully
@@ -896,7 +894,7 @@ class TestEdgeCases:
             table_ids=[tables["transactions"].table_id],
             duckdb_conn=duckdb_conn_multi_table,
             session=session,
-            llm_service=None,
+            llm_provider=None,
         )
 
         assert result.success
@@ -917,7 +915,7 @@ class TestEdgeCases:
             table_ids=table_ids,
             duckdb_conn=duckdb_conn_multi_table,
             session=session,
-            llm_service=None,
+            llm_provider=None,
         )
 
         assert result.success

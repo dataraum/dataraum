@@ -1,11 +1,11 @@
-"""Tests for LLM service initialization."""
+"""Tests for LLM infrastructure initialization."""
 
 import pytest
 
 # Skip all tests if anthropic is not installed
 pytest.importorskip("anthropic", reason="anthropic package not installed")
 
-from dataraum_context.llm import LLMService, load_llm_config
+from dataraum_context.llm import LLMCache, PromptRenderer, create_provider, load_llm_config
 
 
 @pytest.fixture
@@ -14,38 +14,36 @@ def mock_anthropic_key(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-for-testing")
 
 
-def test_llm_service_initialization(mock_anthropic_key):
-    """Test that LLM service initializes correctly."""
+def test_llm_config_loads(mock_anthropic_key):
+    """Test that LLM config loads correctly."""
     config = load_llm_config()
-    service = LLMService(config)
 
-    assert service.config == config
-    assert service.provider is not None
-    assert service.cache is not None
-    assert service.renderer is not None
-    assert service.semantic is not None
-    assert service.quality is not None
-    # queries and summary are currently disabled (depend on unfinished context module)
-    assert service.queries is None
-    assert service.summary is None
+    assert config is not None
+    assert config.active_provider == "anthropic"
+    assert "anthropic" in config.providers
 
 
-def test_llm_service_with_invalid_provider(mock_anthropic_key):
-    """Test that LLM service fails gracefully with invalid provider."""
+def test_llm_provider_creation(mock_anthropic_key):
+    """Test that LLM provider can be created."""
     config = load_llm_config()
-    config.active_provider = "nonexistent"
+    provider_config = config.providers[config.active_provider]
+    provider = create_provider(config.active_provider, provider_config.model_dump())
 
-    with pytest.raises(ValueError, match="Active provider.*not found"):
-        LLMService(config)
+    assert provider is not None
+
+
+def test_llm_cache_initialization():
+    """Test that LLM cache initializes correctly."""
+    cache = LLMCache()
+    assert cache is not None
 
 
 def test_prompt_renderer_loads_templates(mock_anthropic_key):
     """Test that prompt renderer can load templates."""
-    config = load_llm_config()
-    service = LLMService(config)
+    renderer = PromptRenderer()
 
     # Load semantic analysis template
-    template = service.renderer.load_template("semantic_analysis")
+    template = renderer.load_template("semantic_analysis")
     assert template.name == "semantic_analysis"
     assert template.prompt
     assert template.temperature >= 0
@@ -53,8 +51,7 @@ def test_prompt_renderer_loads_templates(mock_anthropic_key):
 
 def test_prompt_renderer_renders_template(mock_anthropic_key):
     """Test that prompt renderer can render with context."""
-    config = load_llm_config()
-    service = LLMService(config)
+    renderer = PromptRenderer()
 
     context = {
         "tables_json": "[]",
@@ -62,7 +59,7 @@ def test_prompt_renderer_renders_template(mock_anthropic_key):
         "ontology_concepts": "None",
     }
 
-    rendered, temperature = service.renderer.render("semantic_analysis", context)
+    rendered, temperature = renderer.render("semantic_analysis", context)
 
     assert rendered
     assert "[]" in rendered

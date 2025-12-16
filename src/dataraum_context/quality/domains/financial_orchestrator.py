@@ -32,8 +32,7 @@ from dataraum_context.enrichment.relationships import (
     analyze_relationship_graph,
     gather_relationships,
 )
-from dataraum_context.llm import LLMService
-from dataraum_context.llm.providers.base import LLMRequest
+from dataraum_context.llm.providers.base import LLMProvider, LLMRequest
 from dataraum_context.quality.domains.financial import analyze_financial_quality
 from dataraum_context.quality.domains.financial_llm import (
     classify_financial_cycle_with_llm,
@@ -305,7 +304,7 @@ async def analyze_complete_financial_quality(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: AsyncSession,
-    llm_service: LLMService | None = None,
+    llm_provider: LLMProvider | None = None,
 ) -> Result[dict[str, Any]]:
     """Complete financial quality analysis with LLM interpretation.
 
@@ -318,7 +317,7 @@ async def analyze_complete_financial_quality(
         table_id: Table to analyze
         duckdb_conn: DuckDB connection
         session: SQLAlchemy session
-        llm_service: LLM service (optional - returns metrics only if None)
+        llm_provider: LLM provider (optional - returns metrics only if None)
 
     Returns:
         Result containing:
@@ -332,7 +331,7 @@ async def analyze_complete_financial_quality(
             table_id="table-123",
             duckdb_conn=conn,
             session=session,
-            llm_service=llm_service
+            llm_provider=llm_provider
         )
 
         if result.success:
@@ -436,7 +435,7 @@ async def analyze_complete_financial_quality(
             }
 
         # If no LLM, still run domain rules and return
-        if llm_service is None:
+        if llm_provider is None:
             logger.info("No LLM service - running domain rules only")
 
             # Run Layer 1.5 without LLM
@@ -515,7 +514,7 @@ async def analyze_complete_financial_quality(
                     table_name=table.table_name,
                     column_names=column_names,
                     semantic_roles=semantic_annotations,
-                    llm_service=llm_service,
+                    llm_provider=llm_provider,
                 )
 
                 if classification_result.success:
@@ -575,7 +574,7 @@ async def analyze_complete_financial_quality(
             financial_metrics=financial_metrics,
             topological_metrics=topological_metrics,
             classified_cycles=classified_cycles,
-            llm_service=llm_service,
+            llm_provider=llm_provider,
             domain_analysis=domain_analysis,  # Pass domain analysis as context
         )
 
@@ -625,7 +624,7 @@ async def classify_cross_table_cycle_with_llm(
     cycle_table_ids: list[str],
     relationships: list[EnrichedRelationship],
     table_semantics: dict[str, dict[str, Any]],
-    llm_service: LLMService,
+    llm_provider: LLMProvider,
 ) -> Result[dict[str, Any]]:
     """Classify a cross-table cycle as a business process using LLM.
 
@@ -639,7 +638,7 @@ async def classify_cross_table_cycle_with_llm(
         cycle_table_ids: List of table IDs forming the cycle
         relationships: Enriched relationships between tables in the cycle
         table_semantics: Semantic context per table {table_id: {columns, roles, ...}}
-        llm_service: LLM service
+        llm_provider: LLM provider
 
     Returns:
         Result containing classification dict with:
@@ -764,7 +763,7 @@ Classify this cross-table cycle. What business process(es) does it represent?"""
             response_format="json",
         )
 
-        response_result = await llm_service.provider.complete(request)
+        response_result = await llm_provider.complete(request)
 
         if not response_result.success or not response_result.value:
             return Result.fail(f"LLM classification failed: {response_result.error}")
@@ -789,7 +788,7 @@ async def analyze_complete_financial_dataset_quality(
     table_ids: list[str],
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: AsyncSession,
-    llm_service: LLMService | None = None,
+    llm_provider: LLMProvider | None = None,
 ) -> Result[dict[str, Any]]:
     """Complete financial quality analysis for a multi-table dataset.
 
@@ -807,7 +806,7 @@ async def analyze_complete_financial_dataset_quality(
         table_ids: List of table IDs in the dataset
         duckdb_conn: DuckDB connection
         session: SQLAlchemy session
-        llm_service: LLM service (optional - returns raw cycles if None)
+        llm_provider: LLM provider (optional - returns raw cycles if None)
 
     Returns:
         Result containing:
@@ -823,7 +822,7 @@ async def analyze_complete_financial_dataset_quality(
             table_ids=["transactions", "customers", "vendors", "products"],
             duckdb_conn=conn,
             session=session,
-            llm_service=llm_service
+            llm_provider=llm_provider
         )
 
         if result.success:
@@ -906,7 +905,7 @@ async def analyze_complete_financial_dataset_quality(
         )
 
         # If no LLM, return raw results
-        if llm_service is None:
+        if llm_provider is None:
             logger.info("No LLM service - returning raw cycle detection results")
             return Result.ok(
                 {
@@ -981,7 +980,7 @@ async def analyze_complete_financial_dataset_quality(
                 cycle_table_ids=cycle,
                 relationships=relationships,
                 table_semantics=table_semantics,
-                llm_service=llm_service,
+                llm_provider=llm_provider,
             )
 
             if classification_result.success:
@@ -1090,7 +1089,7 @@ Return JSON:
             response_format="json",
         )
 
-        interpretation_response = await llm_service.provider.complete(request)
+        interpretation_response = await llm_provider.complete(request)
 
         interpretation = None
         if interpretation_response.success and interpretation_response.value:
@@ -1148,7 +1147,7 @@ Return JSON:
                 table_ids=classified.get("cycle_tables", []),
                 explanation=classified.get("explanation"),
                 missing_elements=classified.get("missing_elements"),
-                llm_model=llm_service.provider.__class__.__name__ if llm_service else None,
+                llm_model=llm_provider.__class__.__name__ if llm_provider else None,
             )
             session.add(cycle_record)
             persisted_cycle_ids.append(cycle_record.cycle_id)

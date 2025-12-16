@@ -13,7 +13,7 @@ Usage:
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import duckdb
 from sqlalchemy import select
@@ -59,9 +59,6 @@ from dataraum_context.quality.synthesis import (
     aggregate_topological_issues,
 )
 from dataraum_context.storage.models_v2.core import Column, Table
-
-if TYPE_CHECKING:
-    from dataraum_context.llm import LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -464,7 +461,6 @@ async def format_dataset_quality_context(
     table_ids: list[str],
     session: AsyncSession,
     duckdb_conn: duckdb.DuckDBPyConnection | None = None,
-    llm_service: LLMService | None = None,
 ) -> DatasetQualityContext:
     """Format quality context for a dataset (multiple tables).
 
@@ -472,7 +468,6 @@ async def format_dataset_quality_context(
         table_ids: List of table IDs
         session: Database session
         duckdb_conn: Optional DuckDB connection for row counts
-        llm_service: Optional LLM service for filter recommendations
 
     Returns:
         DatasetQualityContext with all table contexts and cross-table issues
@@ -579,13 +574,9 @@ async def format_dataset_quality_context(
         dim = issue.dimension.value
         issues_by_dimension[dim] = issues_by_dimension.get(dim, 0) + 1
 
-    # Generate filter recommendations if LLM service is available
+    # Filter recommendations and summary (future feature)
     filter_recommendations: list[dict[str, Any]] = []
     summary: str | None = None
-
-    if llm_service:
-        # LLM filter recommendations will be added in Phase 4
-        pass
 
     return DatasetQualityContext(
         tables=table_contexts,

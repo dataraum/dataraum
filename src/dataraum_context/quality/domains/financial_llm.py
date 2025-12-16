@@ -20,8 +20,7 @@ from typing import Any
 import yaml
 
 from dataraum_context.core.models.base import Result
-from dataraum_context.llm import LLMService
-from dataraum_context.llm.providers.base import LLMRequest
+from dataraum_context.llm.providers.base import LLMProvider, LLMRequest
 from dataraum_context.quality.models import CycleDetection
 
 logger = logging.getLogger(__name__)
@@ -61,7 +60,7 @@ async def classify_financial_cycle_with_llm(
     table_name: str,
     column_names: list[str],
     semantic_roles: dict[str, str] | None,
-    llm_service: LLMService,
+    llm_provider: LLMProvider,
 ) -> Result[dict[str, Any]]:
     """Classify a single cycle using LLM with config context.
 
@@ -76,7 +75,7 @@ async def classify_financial_cycle_with_llm(
         table_name: Table name for context
         column_names: Columns involved in cycle
         semantic_roles: Column → role mapping from semantic enrichment
-        llm_service: LLM service
+        llm_provider: LLM provider for making API calls
 
     Returns:
         Result containing classification dict with:
@@ -156,7 +155,7 @@ Classify this cycle and explain its financial significance."""
             response_format="json",
         )
 
-        response_result = await llm_service.provider.complete(request)
+        response_result = await llm_provider.complete(request)
 
         if not response_result.success or not response_result.value:
             return Result.fail(f"LLM classification failed: {response_result.error}")
@@ -182,7 +181,7 @@ async def interpret_financial_quality_with_llm(
     financial_metrics: dict[str, Any],
     topological_metrics: dict[str, Any],
     classified_cycles: list[dict[str, Any]],
-    llm_service: LLMService,
+    llm_provider: LLMProvider,
     domain_analysis: dict[str, Any] | None = None,
 ) -> Result[dict[str, Any]]:
     """Interpret complete financial quality using LLM.
@@ -193,7 +192,7 @@ async def interpret_financial_quality_with_llm(
         financial_metrics: Results from financial.py (double-entry, trial balance, etc.)
         topological_metrics: Results from topological.py (Betti numbers, cycles)
         classified_cycles: Cycles classified by classify_financial_cycle_with_llm()
-        llm_service: LLM service
+        llm_provider: LLM provider for making API calls
         domain_analysis: Optional domain rule results (anomalies, quality score, fiscal stability)
 
     Returns:
@@ -352,7 +351,7 @@ Return JSON:
             response_format="json",
         )
 
-        response_result = await llm_service.provider.complete(request)
+        response_result = await llm_provider.complete(request)
 
         if not response_result.success or not response_result.value:
             return Result.fail(f"LLM interpretation failed: {response_result.error}")

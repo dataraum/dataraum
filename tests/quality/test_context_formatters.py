@@ -424,9 +424,7 @@ class TestFormatDatasetQualityContext:
     @pytest.mark.asyncio
     async def test_basic_dataset_context(self, async_session, sample_table, sample_column):
         """Test basic dataset context formatting."""
-        context = await format_dataset_quality_context(
-            [sample_table.table_id], async_session, None, None
-        )
+        context = await format_dataset_quality_context([sample_table.table_id], async_session, None)
 
         assert isinstance(context, DatasetQualityContext)
         assert context.total_tables == 1
@@ -461,9 +459,7 @@ class TestFormatDatasetQualityContext:
         async_session.add_all([profile, quality])
         await async_session.commit()
 
-        context = await format_dataset_quality_context(
-            [sample_table.table_id], async_session, None, None
-        )
+        context = await format_dataset_quality_context([sample_table.table_id], async_session, None)
 
         # Should have issues aggregated
         assert context.total_issues >= 0  # Issues come from synthesis
@@ -472,7 +468,7 @@ class TestFormatDatasetQualityContext:
     @pytest.mark.asyncio
     async def test_dataset_context_empty_tables(self, async_session):
         """Test dataset context with empty table list."""
-        context = await format_dataset_quality_context([], async_session, None, None)
+        context = await format_dataset_quality_context([], async_session, None)
 
         assert context.total_tables == 0
         assert context.total_columns == 0
@@ -516,9 +512,7 @@ class TestFormatDatasetQualityContext:
         async_session.add_all([col1, col2])
         await async_session.commit()
 
-        context = await format_dataset_quality_context(
-            ["table-1", "table-2"], async_session, None, None
-        )
+        context = await format_dataset_quality_context(["table-1", "table-2"], async_session, None)
 
         assert context.total_tables == 2
         assert context.total_columns == 2

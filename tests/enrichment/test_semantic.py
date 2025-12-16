@@ -24,9 +24,9 @@ from dataraum_context.enrichment.semantic import enrich_semantic
 @pytest.mark.asyncio
 async def test_enrich_semantic_stores_annotations(db_session):
     """Test that semantic enrichment stores annotations in database."""
-    # Create mock LLM service
-    llm_service = MagicMock()
-    llm_service.analyze_semantics = AsyncMock()
+    # Create mock semantic agent
+    agent = MagicMock()
+    agent.analyze = AsyncMock()
 
     # Setup test data - create tables and columns
     from dataraum_context.storage.models_v2 import Column, Source, Table
@@ -103,12 +103,12 @@ async def test_enrich_semantic_stores_annotations(db_session):
         source="llm",
     )
 
-    llm_service.analyze_semantics.return_value = Result.ok(mock_result)
+    agent.analyze.return_value = Result.ok(mock_result)
 
     # Run enrichment
     result = await enrich_semantic(
         session=db_session,
-        llm_service=llm_service,
+        agent=agent,
         table_ids=[table.table_id],
         ontology="general",
     )
@@ -148,8 +148,8 @@ async def test_enrich_semantic_stores_annotations(db_session):
 @pytest.mark.asyncio
 async def test_enrich_semantic_handles_missing_columns(db_session):
     """Test that enrichment handles references to non-existent columns gracefully."""
-    llm_service = MagicMock()
-    llm_service.analyze_semantics = AsyncMock()
+    agent = MagicMock()
+    agent.analyze = AsyncMock()
 
     # Create test table
     from dataraum_context.storage.models_v2 import Column, Source, Table
@@ -196,12 +196,12 @@ async def test_enrich_semantic_handles_missing_columns(db_session):
         source="llm",
     )
 
-    llm_service.analyze_semantics.return_value = Result.ok(mock_result)
+    agent.analyze.return_value = Result.ok(mock_result)
 
     # Run enrichment - should not fail
     result = await enrich_semantic(
         session=db_session,
-        llm_service=llm_service,
+        agent=agent,
         table_ids=[table.table_id],
         ontology="general",
     )
@@ -224,8 +224,8 @@ async def test_enrich_semantic_handles_missing_columns(db_session):
 @pytest.mark.asyncio
 async def test_enrich_semantic_stores_relationships(db_session):
     """Test that enrichment stores detected relationships."""
-    llm_service = MagicMock()
-    llm_service.analyze_semantics = AsyncMock()
+    agent = MagicMock()
+    agent.analyze = AsyncMock()
 
     # Create two related tables
     from dataraum_context.storage.models_v2 import Column, Source, Table
@@ -283,12 +283,12 @@ async def test_enrich_semantic_stores_relationships(db_session):
         source="llm",
     )
 
-    llm_service.analyze_semantics.return_value = Result.ok(mock_result)
+    agent.analyze.return_value = Result.ok(mock_result)
 
     # Run enrichment
     result = await enrich_semantic(
         session=db_session,
-        llm_service=llm_service,
+        agent=agent,
         table_ids=[customers_table.table_id, orders_table.table_id],
         ontology="general",
     )

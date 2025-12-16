@@ -17,23 +17,20 @@ from dataraum_context.enrichment.db_models import (
 from dataraum_context.enrichment.models import SemanticEnrichmentResult
 from dataraum_context.enrichment.utils import load_column_mappings, load_table_mappings
 
-# Lazy import to avoid circular dependency:
-# llm/__init__.py → features/quality.py → enrichment/models.py → enrichment/__init__.py
-# → enrichment/coordinator.py → enrichment/semantic.py → llm/__init__.py (CYCLE!)
 if TYPE_CHECKING:
-    from dataraum_context.llm import LLMService
+    from dataraum_context.enrichment.agent import SemanticAgent
 
 
 async def enrich_semantic(
     session: AsyncSession,
-    llm_service: LLMService,
+    agent: SemanticAgent,
     table_ids: list[str],
     ontology: str = "general",
 ) -> Result[SemanticEnrichmentResult]:
     """Run semantic enrichment on tables.
 
     Steps:
-    1. Call LLM service for semantic analysis
+    1. Call semantic agent for LLM analysis
     2. Map column_refs to actual column_ids from database
     3. Store annotations in semantic_annotations table
     4. Store entity detections in table_entities table
@@ -42,15 +39,15 @@ async def enrich_semantic(
 
     Args:
         session: Database session
-        llm_service: LLM service for semantic analysis
+        agent: Semantic agent for LLM analysis
         table_ids: List of table IDs to enrich
         ontology: Ontology context for analysis
 
     Returns:
         Result containing semantic enrichment data
     """
-    # Call LLM service
-    llm_result = await llm_service.analyze_semantics(
+    # Call semantic agent
+    llm_result = await agent.analyze(
         session=session,
         table_ids=table_ids,
         ontology=ontology,

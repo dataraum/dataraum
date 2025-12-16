@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.core.models import SourceConfig
 from dataraum_context.core.models.base import Result
+from dataraum_context.enrichment.agent import SemanticAgent
 from dataraum_context.enrichment.cross_table_multicollinearity import (
     compute_cross_table_multicollinearity,
 )
@@ -44,7 +45,6 @@ from dataraum_context.enrichment.db_models import (
 from dataraum_context.enrichment.semantic import enrich_semantic
 from dataraum_context.enrichment.temporal import enrich_temporal
 from dataraum_context.enrichment.topology import enrich_topology
-from dataraum_context.llm import LLMService
 from dataraum_context.profiling.profiler import profile_schema, profile_statistics
 from dataraum_context.profiling.type_resolution import resolve_types
 from dataraum_context.quality.context import format_dataset_quality_context
@@ -205,7 +205,7 @@ async def run_pipeline(
     source_name: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: AsyncSession,
-    llm_service: LLMService,
+    semantic_agent: SemanticAgent,
     min_confidence: float = 0.85,
     ontology: str = "general",
 ) -> Result[PipelineResult]:
@@ -235,7 +235,7 @@ async def run_pipeline(
         source_name: Name for the data source
         duckdb_conn: DuckDB connection
         session: SQLAlchemy async session
-        llm_service: LLM service for semantic analysis
+        semantic_agent: Semantic agent for LLM analysis
         min_confidence: Minimum confidence for type resolution (default: 0.85)
         ontology: Ontology for semantic analysis (default: "general")
                   Use "financial_reporting" to enable domain quality checks
@@ -370,7 +370,7 @@ async def run_pipeline(
     try:
         semantic_result = await enrich_semantic(
             session=session,
-            llm_service=llm_service,
+            agent=semantic_agent,
             table_ids=successful_table_ids,
             ontology=ontology,
         )
@@ -620,7 +620,7 @@ async def run_pipeline(
 
             if typed_ids_for_context:
                 quality_context = await format_dataset_quality_context(
-                    typed_ids_for_context, session, duckdb_conn, llm_service
+                    typed_ids_for_context, session, duckdb_conn
                 )
                 # ✅ Quality context assembled from all pillars
 

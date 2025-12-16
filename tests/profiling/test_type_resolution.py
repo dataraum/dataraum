@@ -41,15 +41,15 @@ def test_duckdb():
 
 
 @pytest.fixture
-def mock_llm_service():
-    """Create a mock LLM service for testing."""
+def mock_semantic_agent():
+    """Create a mock semantic agent for testing."""
     from unittest.mock import AsyncMock, MagicMock
 
     from dataraum_context.core.models.base import Result
     from dataraum_context.enrichment.models import SemanticEnrichmentResult
 
     mock = MagicMock()
-    mock.analyze_semantics = AsyncMock(
+    mock.analyze = AsyncMock(
         return_value=Result.ok(
             SemanticEnrichmentResult(
                 annotations=[],
@@ -128,7 +128,7 @@ class TestTypeResolution:
         assert "typed_simple" in table_names
 
     async def test_pipeline_run_pipeline(
-        self, simple_csv, test_duckdb, test_session, mock_llm_service
+        self, simple_csv, test_duckdb, test_session, mock_semantic_agent
     ):
         """Test the full unified pipeline."""
         result = await run_pipeline(
@@ -136,7 +136,7 @@ class TestTypeResolution:
             source_name="pipeline_test",
             duckdb_conn=test_duckdb,
             session=test_session,
-            llm_service=mock_llm_service,
+            semantic_agent=mock_semantic_agent,
         )
 
         assert result.success
@@ -162,7 +162,7 @@ class TestQuarantineHandling:
     """Tests for quarantine table handling."""
 
     async def test_quarantine_table_created(
-        self, quarantine_csv, test_duckdb, test_session, mock_llm_service
+        self, quarantine_csv, test_duckdb, test_session, mock_semantic_agent
     ):
         """Test that quarantine table is created for failed casts."""
         result = await run_pipeline(
@@ -170,7 +170,7 @@ class TestQuarantineHandling:
             source_name="quarantine_test",
             duckdb_conn=test_duckdb,
             session=test_session,
-            llm_service=mock_llm_service,
+            semantic_agent=mock_semantic_agent,
             min_confidence=0.5,
         )
 

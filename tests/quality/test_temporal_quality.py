@@ -7,23 +7,25 @@ import pandas as pd
 import pytest
 
 from dataraum_context.analysis.temporal import (
+    TemporalAnalysisResult,
+    profile_temporal,
+)
+from dataraum_context.analysis.temporal.models import (
     ChangePointResult,
     DistributionStabilityAnalysis,
     FiscalCalendarAnalysis,
     SeasonalityAnalysis,
-    TemporalAnalysisResult,
     TemporalCompletenessAnalysis,
     TrendAnalysis,
     UpdateFrequencyAnalysis,
+)
+from dataraum_context.analysis.temporal.patterns import (
     analyze_distribution_stability,
     analyze_seasonality,
     analyze_trend,
     analyze_update_frequency,
     detect_change_points,
     detect_fiscal_calendar,
-)
-from dataraum_context.analysis.temporal import (
-    analyze_temporal as analyze_temporal_quality,
 )
 from dataraum_context.storage import Column, Source, Table
 
@@ -421,19 +423,22 @@ async def test_analyze_completeness_with_gaps():
 
 
 @pytest.mark.asyncio
-async def test_analyze_temporal_quality_complete(temporal_table, duckdb_conn, async_session):
-    """Test full temporal quality analysis."""
+async def test_profile_temporal_complete(temporal_table, duckdb_conn, async_session):
+    """Test full temporal profiling for a table."""
     table, column = temporal_table
 
-    result = await analyze_temporal_quality(
-        column.column_id,
+    result = await profile_temporal(
+        table.table_id,
         duckdb_conn,
         async_session,
     )
 
     assert result.success, f"Analysis failed: {result.error}"
 
-    analysis = result.value
+    profile_result = result.value
+    assert len(profile_result.column_profiles) == 1
+
+    analysis = profile_result.column_profiles[0]
     assert isinstance(analysis, TemporalAnalysisResult)
     assert analysis.column_id == column.column_id
     assert analysis.table_name == "temporal_data"
@@ -445,8 +450,6 @@ async def test_analyze_temporal_quality_complete(temporal_table, duckdb_conn, as
     assert analysis.detected_granularity in ["day", "daily"]
 
     # Check that analyses were performed (may be None if no seasonality/trend detected)
-    # Note: The temporal_table fixture creates timestamps without values, so seasonality
-    # analysis may not detect patterns
     assert analysis.trend is not None  # Trend analysis should always run
     assert analysis.update_frequency is not None
     assert analysis.completeness is not None
@@ -456,10 +459,8 @@ async def test_analyze_temporal_quality_complete(temporal_table, duckdb_conn, as
 
 
 @pytest.mark.asyncio
-async def test_analyze_temporal_quality_non_temporal_column(
-    async_session, sample_source, duckdb_conn
-):
-    """Test error handling for non-temporal column."""
+async def test_profile_temporal_non_temporal_table(async_session, sample_source, duckdb_conn):
+    """Test profiling table with no temporal columns returns empty profiles."""
     table = Table(
         table_id="non-temporal-table",
         source_id=sample_source.source_id,
@@ -479,21 +480,22 @@ async def test_analyze_temporal_quality_non_temporal_column(
     async_session.add(column)
     await async_session.commit()
 
-    result = await analyze_temporal_quality(
-        column.column_id,
+    result = await profile_temporal(
+        table.table_id,
         duckdb_conn,
         async_session,
     )
 
-    assert not result.success
-    assert "not a temporal type" in result.error.lower()
+    # Should succeed but return no temporal profiles
+    assert result.success
+    assert len(result.value.column_profiles) == 0
 
 
 @pytest.mark.asyncio
-async def test_analyze_temporal_quality_missing_column(duckdb_conn, async_session):
-    """Test error handling for missing column."""
-    result = await analyze_temporal_quality(
-        "nonexistent-column",
+async def test_profile_temporal_missing_table(duckdb_conn, async_session):
+    """Test error handling for missing table."""
+    result = await profile_temporal(
+        "nonexistent-table",
         duckdb_conn,
         async_session,
     )

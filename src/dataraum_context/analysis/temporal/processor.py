@@ -297,32 +297,75 @@ async def _load_time_series(
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_name: str,
     column_name: str,
-    limit: int = 10000,
+    sample_percent: float = 20.0,
+    min_rows: int = 1000,
 ) -> Result[pd.Series]:
-    """Load time series data from DuckDB.
+    """Load time series data from DuckDB using Bernoulli sampling.
+
+    Uses DuckDB's Bernoulli sampling to get a random sample distributed across
+    the full time range, then orders by timestamp for temporal analysis.
 
     Args:
         duckdb_conn: DuckDB connection
         table_name: DuckDB table name
         column_name: Column name
-        limit: Maximum rows to load
+        sample_percent: Percentage of rows to sample (default 20%)
+        min_rows: Minimum rows to return (uses higher sample if needed)
 
     Returns:
         Result containing pandas Series indexed by datetime
+
+    TODO: Revisit sampling strategy for temporal analysis:
+        - Bernoulli sampling creates artificial gaps that affect:
+          - Granularity detection (sees sampled intervals, not true intervals)
+          - Completeness analysis (artificial gaps mask real gaps)
+          - Seasonality detection (sparse data may miss patterns)
+        - Consider stratified sampling (equal samples from time segments)
+        - Consider adaptive sampling based on detected granularity
+        - For now, use generous 20% sample which balances coverage vs speed
     """
     try:
-        query = f"""
-        SELECT "{column_name}"::TIMESTAMP as ts
+        # First, get row count to determine if sampling is needed
+        count_query = f"""
+        SELECT COUNT(*) as cnt
         FROM {table_name}
         WHERE "{column_name}" IS NOT NULL
-        ORDER BY "{column_name}"
-        LIMIT {limit}
         """
+        count_result = duckdb_conn.execute(count_query).fetchone()
+        total_rows = count_result[0] if count_result else 0
+
+        if total_rows == 0:
+            return Result.fail("No data found")
+
+        # Adjust sample percentage to ensure minimum rows
+        effective_percent = sample_percent
+        if total_rows * (sample_percent / 100) < min_rows:
+            effective_percent = min(100.0, (min_rows / total_rows) * 100)
+
+        # Use Bernoulli sampling for random distribution across time range
+        # Then ORDER BY to restore temporal sequence
+        # Note: In DuckDB, WHERE must come before USING SAMPLE
+        if effective_percent >= 100.0 or total_rows <= min_rows:
+            # No sampling needed for small tables
+            query = f"""
+            SELECT "{column_name}"::TIMESTAMP as ts
+            FROM {table_name}
+            WHERE "{column_name}" IS NOT NULL
+            ORDER BY "{column_name}"
+            """
+        else:
+            query = f"""
+            SELECT "{column_name}"::TIMESTAMP as ts
+            FROM {table_name}
+            WHERE "{column_name}" IS NOT NULL
+            USING SAMPLE {effective_percent:.1f} PERCENT (bernoulli)
+            ORDER BY "{column_name}"
+            """
 
         df = duckdb_conn.execute(query).fetchdf()
 
         if df.empty:
-            return Result.fail("No data found")
+            return Result.fail("No data found after sampling")
 
         ts = pd.Series(1, index=pd.to_datetime(df["ts"]))
         ts = ts.sort_index()
@@ -495,68 +538,6 @@ async def _persist_table_summary(
         session.add(db_summary)
 
 
-# Legacy aliases for backwards compatibility during migration
-async def analyze_temporal(
-    column_id: str,
-    duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
-    persist: bool = True,
-) -> Result[TemporalAnalysisResult]:
-    """Analyze temporal patterns for a single column.
-
-    DEPRECATED: Use profile_temporal(table_id, ...) instead.
-    This function is kept for backwards compatibility.
-    """
-    # Get column info to find table
-    stmt = select(Column, Table).join(Table).where(Column.column_id == column_id)
-    result = await session.execute(stmt)
-    row = result.one_or_none()
-
-    if not row:
-        return Result.fail(f"Column {column_id} not found")
-
-    column, table = row
-
-    # Verify it's a temporal column
-    if column.resolved_type not in ["DATE", "TIMESTAMP", "TIMESTAMPTZ"]:
-        return Result.fail(f"Column {column.column_name} is not a temporal type")
-
-    profiled_at = datetime.now(UTC)
-
-    profile_result = await _profile_temporal_column(
-        table=table,
-        column=column,
-        duckdb_conn=duckdb_conn,
-        profiled_at=profiled_at,
-    )
-
-    if not profile_result.success:
-        return profile_result
-
-    profile = profile_result.value
-    if persist and profile:
-        db_profile = TemporalColumnProfile(
-            profile_id=profile.metric_id,
-            column_id=column.column_id,
-            profiled_at=profiled_at,
-            min_timestamp=profile.min_timestamp,
-            max_timestamp=profile.max_timestamp,
-            detected_granularity=profile.detected_granularity,
-            completeness_ratio=(
-                profile.completeness.completeness_ratio if profile.completeness else None
-            ),
-            has_seasonality=profile.seasonality.has_seasonality if profile.seasonality else False,
-            has_trend=profile.trend.has_trend if profile.trend else False,
-            is_stale=profile.update_frequency.is_stale if profile.update_frequency else False,
-            profile_data=profile.model_dump(mode="json"),
-        )
-        session.add(db_profile)
-        await session.commit()
-
-    return profile_result
-
-
 __all__ = [
     "profile_temporal",
-    "analyze_temporal",  # Legacy, will be removed
 ]

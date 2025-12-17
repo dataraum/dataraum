@@ -24,7 +24,6 @@ from dataraum_context.analysis.semantic.models import (  # noqa: F401
 # Import temporal models from their new canonical location
 from dataraum_context.analysis.temporal.models import (  # noqa: F401
     TemporalAnalysisResult,
-    TemporalEnrichmentResult,
 )
 
 
@@ -48,7 +47,6 @@ class JoinPath(BaseModel):
 
 # === Enrichment Result Models ===
 # SemanticEnrichmentResult is imported from analysis/semantic/models.py above
-# TemporalEnrichmentResult is imported from analysis/temporal/models.py above
 
 
 class TopologyEnrichmentResult(BaseModel):
@@ -66,7 +64,6 @@ __all__ = [
     "SemanticEnrichmentResult",
     # Re-exported from analysis/temporal/models.py
     "TemporalAnalysisResult",
-    "TemporalEnrichmentResult",
     # Local models
     "JoinStep",
     "JoinPath",

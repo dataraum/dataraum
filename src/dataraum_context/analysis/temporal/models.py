@@ -212,7 +212,7 @@ class TemporalQualityIssue(BaseModel):
 class TemporalAnalysisResult(BaseModel):
     """Complete temporal analysis result for a single column.
 
-    This is the main result type for analyze_temporal().
+    This is the per-column result type returned in TemporalProfileResult.column_profiles.
     """
 
     metric_id: str

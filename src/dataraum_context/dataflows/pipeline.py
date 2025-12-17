@@ -37,10 +37,6 @@ from dataraum_context.analysis.correlation import analyze_correlations
 # from dataraum_context.analysis.correlation import compute_cross_table_multicollinearity
 from dataraum_context.analysis.statistics import profile_statistics
 from dataraum_context.analysis.temporal import (
-    TemporalAnalysisMetrics as TemporalQualityMetrics,
-)
-from dataraum_context.analysis.temporal import (
-    analyze_temporal as analyze_temporal_quality,
     profile_temporal,
 )
 from dataraum_context.analysis.typing import infer_type_candidates, resolve_types
@@ -526,7 +522,7 @@ async def run_pipeline(
             )
 
     # Stage 4.3: Temporal Quality (seasonality, trends) - ADVANCED
-    # This enriches existing TemporalQualityMetrics from enrichment
+    # Profile temporal columns for each typed table
     for health in table_health_records:
         if health.error or not health.typed_table_name:
             continue
@@ -536,54 +532,13 @@ async def run_pipeline(
             continue
 
         try:
-            # Get temporal columns
-            from sqlalchemy import select
+            # Profile all temporal columns in the table at once
+            temp_result = await profile_temporal(typed_id, duckdb_conn, session)
 
-            stmt = select(Column).where(
-                Column.table_id == typed_id,
-                Column.resolved_type.in_(["DATE", "TIMESTAMP", "TIMESTAMPTZ"]),
-            )
-            result = await session.execute(stmt)
-            temporal_columns = result.scalars().all()
-
-            # Analyze each temporal column
-            temporal_analyzed = 0
-            for column in temporal_columns:
-                temp_result = await analyze_temporal_quality(column.column_id, duckdb_conn, session)
-
-                if temp_result.success:
-                    # Persist advanced temporal metrics by updating existing record
-                    from sqlalchemy import update
-
-                    temp_quality = temp_result.unwrap()
-
-                    # Update existing TemporalQualityMetrics record with advanced metrics
-                    update_stmt = (
-                        update(TemporalQualityMetrics)
-                        .where(TemporalQualityMetrics.column_id == column.column_id)
-                        .values(
-                            has_seasonality=(
-                                temp_quality.seasonality.has_seasonality
-                                if temp_quality.seasonality
-                                else None
-                            ),
-                            has_trend=(
-                                temp_quality.trend is not None and temp_quality.trend.slope != 0.0
-                            ),
-                            is_stale=(
-                                temp_quality.update_frequency.is_stale
-                                if temp_quality.update_frequency
-                                else None
-                            ),
-                        )
-                    )
-                    await session.execute(update_stmt)
-                    await session.commit()
-
-                    temporal_analyzed += 1
-
-            if temporal_analyzed > 0:
-                health.temporal_quality_completed = True
+            if temp_result.success:
+                profile_result = temp_result.unwrap()
+                if profile_result.column_profiles:
+                    health.temporal_quality_completed = True
 
         except Exception as e:
             warnings.append(f"Temporal quality assessment exception for {health.table_name}: {e}")

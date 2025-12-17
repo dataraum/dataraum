@@ -26,7 +26,7 @@ from dataraum_context.analysis.correlation.db_models import (
     FunctionalDependency,
 )
 from dataraum_context.analysis.statistics.db_models import StatisticalProfile
-from dataraum_context.analysis.temporal import TemporalAnalysisMetrics as TemporalQualityMetrics
+from dataraum_context.analysis.temporal import TemporalColumnProfile as TemporalQualityMetrics
 from dataraum_context.enrichment.db_models import (
     MultiTableTopologyMetrics,
     TopologicalQualityMetrics,
@@ -211,7 +211,7 @@ def aggregate_temporal_issues(
             evidence=evidence,
             source_pillar=4,  # Temporal
             source_module="temporal_quality",
-            detected_at=temp_quality.computed_at,
+            detected_at=temp_quality.profiled_at,
         )
         issues.append(issue)
 

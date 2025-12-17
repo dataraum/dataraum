@@ -27,7 +27,7 @@ from dataraum_context.analysis.correlation.db_models import (
 
 # NOTE: CrossTableMulticollinearityMetrics removed - being replaced with per-relationship evaluation
 from dataraum_context.analysis.statistics.db_models import StatisticalProfile
-from dataraum_context.analysis.temporal import TemporalAnalysisMetrics as TemporalQualityMetrics
+from dataraum_context.analysis.temporal import TemporalColumnProfile as TemporalQualityMetrics
 from dataraum_context.analysis.typing.db_models import (
     TypeCandidate,
     TypeDecision,

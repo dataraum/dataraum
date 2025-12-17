@@ -297,6 +297,7 @@ async def detect_change_points(
     time_series: pd.Series,
     min_size: int = 10,
     jump: int = 5,
+    max_points: int = 1000,
 ) -> Result[list[ChangePointResult]]:
     """Detect change points using PELT algorithm.
 
@@ -304,9 +305,17 @@ async def detect_change_points(
         time_series: Time series data
         min_size: Minimum segment size
         jump: Jump parameter for efficiency
+        max_points: Maximum points to analyze (sample if larger)
 
     Returns:
         Result containing list of ChangePointResult
+
+    TODO: Revisit change point detection sampling:
+        - Currently uses uniform stride sampling for large series
+        - This works for value distribution changes but may miss
+          localized change points in the skipped regions
+        - Consider adaptive sampling or running on time-windowed segments
+        - PELT with L2 model is O(n) but RBF would be O(n²)
     """
     try:
         if len(time_series) < 30:
@@ -319,17 +328,18 @@ async def detect_change_points(
         if len(signal_clean) < 30:
             return Result.ok([])
 
-        # Detect change points using PELT
+        # Sample if too large (PELT with rbf is O(n²))
+        if len(signal_clean) > max_points:
+            step = len(signal_clean) // max_points
+            signal_clean = signal_clean[::step]
+            mask = mask[::step]
+
+        # Detect change points using PELT with l2 model (faster than rbf)
         try:
-            algo = rpt.Pelt(model="rbf", min_size=min_size, jump=jump).fit(signal_clean)
-            change_points_idx = algo.predict(pen=3)
+            algo = rpt.Pelt(model="l2", min_size=min_size, jump=jump).fit(signal_clean)
+            change_points_idx = algo.predict(pen=5)
         except Exception:
-            # Fallback to simpler method
-            try:
-                algo = rpt.Pelt(model="l2", min_size=min_size).fit(signal_clean)
-                change_points_idx = algo.predict(pen=5)
-            except Exception:
-                return Result.ok([])
+            return Result.ok([])
 
         changes = []
         timestamps: pd.Index[pd.Timestamp] = time_series.index[mask]

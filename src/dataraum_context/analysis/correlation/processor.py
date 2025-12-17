@@ -24,6 +24,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.analysis.correlation.categorical import compute_categorical_associations
 from dataraum_context.analysis.correlation.cross_table import analyze_relationship_quality
+from dataraum_context.analysis.correlation.db_models import (
+    CorrelationAnalysisRun,
+    CrossTableCorrelationDB,
+    MulticollinearityGroup,
+    QualityIssueDB,
+)
 from dataraum_context.analysis.correlation.derived_columns import detect_derived_columns
 from dataraum_context.analysis.correlation.functional_dependency import (
     detect_functional_dependencies,
@@ -194,7 +200,8 @@ async def analyze_cross_table_quality(
         )
 
         # Run cross-table quality analysis
-        result = analyze_relationship_quality(
+        start_time = time.time()
+        quality_result = analyze_relationship_quality(
             relationship=enriched,
             duckdb_conn=duckdb_conn,
             from_table_path=from_table.duckdb_path,
@@ -203,10 +210,105 @@ async def analyze_cross_table_quality(
             redundancy_threshold=redundancy_threshold,
         )
 
-        if result is None:
+        if quality_result is None:
             return Result.fail("Cross-table analysis returned no results (insufficient data)")
 
-        return Result.ok(result)
+        duration = time.time() - start_time
+
+        # Store results to DB
+        await _store_cross_table_results(
+            session=session,
+            relationship=relationship,
+            quality_result=quality_result,
+            from_table_name=from_table.table_name,
+            to_table_name=to_table.table_name,
+            from_column_name=from_column.column_name,
+            to_column_name=to_column.column_name,
+            duration=duration,
+        )
+
+        return Result.ok(quality_result)
 
     except Exception as e:
         return Result.fail(f"Cross-table quality analysis failed: {e}")
+
+
+async def _store_cross_table_results(
+    session: AsyncSession,
+    relationship: Relationship,
+    quality_result: CrossTableQualityResult,
+    from_table_name: str,
+    to_table_name: str,
+    from_column_name: str,
+    to_column_name: str,
+    duration: float,
+) -> None:
+    """Store cross-table quality analysis results to database."""
+    now = datetime.now(UTC)
+
+    # Create analysis run record
+    run_record = CorrelationAnalysisRun(
+        target_id=relationship.relationship_id,
+        target_type="relationship",
+        from_table=from_table_name,
+        to_table=to_table_name,
+        join_column_from=from_column_name,
+        join_column_to=to_column_name,
+        rows_analyzed=quality_result.joined_row_count,
+        columns_analyzed=quality_result.numeric_columns_analyzed,
+        overall_condition_index=quality_result.overall_condition_index,
+        overall_severity=quality_result.overall_severity,
+        started_at=quality_result.analyzed_at,
+        completed_at=now,
+        duration_seconds=duration,
+    )
+    session.add(run_record)
+    await session.flush()  # Get run_id for child records
+
+    # Store cross-table correlations
+    for corr in quality_result.cross_table_correlations:
+        db_corr = CrossTableCorrelationDB(
+            run_id=run_record.run_id,
+            from_table=corr.from_table,
+            from_column=corr.from_column,
+            to_table=corr.to_table,
+            to_column=corr.to_column,
+            pearson_r=corr.pearson_r,
+            spearman_rho=corr.spearman_rho,
+            strength=corr.strength,
+            is_join_column=corr.is_join_column,
+            computed_at=now,
+        )
+        session.add(db_corr)
+
+    # Store multicollinearity groups (both within-table and cross-table)
+    all_groups = quality_result.dependency_groups + quality_result.cross_table_dependency_groups
+    for group in all_groups:
+        columns_data = [
+            {"table": t, "column": c, "vdp": group.variance_proportions.get((t, c), 0.0)}
+            for t, c in group.columns
+        ]
+        db_group = MulticollinearityGroup(
+            run_id=run_record.run_id,
+            columns_involved=columns_data,
+            condition_index=group.condition_index,
+            severity=group.severity,
+            is_cross_table=group.is_cross_table,
+            computed_at=now,
+        )
+        session.add(db_group)
+
+    # Store quality issues
+    for issue in quality_result.issues:
+        affected_cols = [{"table": t, "column": c} for t, c in issue.affected_columns]
+        db_issue = QualityIssueDB(
+            run_id=run_record.run_id,
+            issue_type=issue.issue_type,
+            severity=issue.severity,
+            message=issue.message,
+            affected_columns=affected_cols,
+            detected_at=now,
+        )
+        session.add(db_issue)
+
+    await session.commit()

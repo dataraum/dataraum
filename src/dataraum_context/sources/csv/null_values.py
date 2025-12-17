@@ -46,7 +46,7 @@ class NullValueConfig:
             null_strings.append(item["value"])
 
         # Remove empty string (handled separately in DuckDB)
-        null_strings = [s for s in null_strings if s != ""]
+        #null_strings = [s for s in null_strings if s != ""]
 
         return null_strings
 

@@ -30,8 +30,8 @@ from dataraum_context.analysis.correlation import (
 from dataraum_context.analysis.correlation.algorithms.multicollinearity import (
     compute_multicollinearity,
 )
+from dataraum_context.analysis.correlation.models import EnrichedRelationship
 from dataraum_context.analysis.relationships import detect_relationships
-from dataraum_context.analysis.relationships.models import EnrichedRelationship
 from dataraum_context.analysis.typing import infer_type_candidates, resolve_types
 from dataraum_context.core.models import SourceConfig
 from dataraum_context.core.models.base import Cardinality, RelationshipType
@@ -100,7 +100,7 @@ async def main():
 
         # Drop junk columns (index columns from CSV export)
         print("\n   Dropping junk columns...")
-        junk_columns = ["column00", "Unnamed: 0.2", "Unnamed: 0.1", "Unnamed: 0"]
+        junk_columns = ["column0", "column00", "Unnamed: 0.2", "Unnamed: 0.1", "Unnamed: 0"]
         for junk_col in junk_columns:
             try:
                 # Drop from DuckDB
@@ -271,7 +271,7 @@ async def main():
                 continue
 
             # Drop junk columns
-            for junk in ["column00", "Unnamed: 0.2", "Unnamed: 0.1", "Unnamed: 0"]:
+            for junk in ["column0", "column00", "Unnamed: 0.2", "Unnamed: 0.1", "Unnamed: 0"]:
                 try:
                     duckdb_conn.execute(f'ALTER TABLE {raw_table.duckdb_path} DROP COLUMN "{junk}"')
                     stmt = select(Column).where(
@@ -321,7 +321,11 @@ async def main():
         # 6c. Build EnrichedRelationship objects
         print("\n6c. Building enriched relationships:")
         print("-" * 50)
+        import time
+
+        start_6c = time.time()
         enriched_relationships = []
+        query_count = 0
 
         for rc in relationship_candidates:
             table1 = table_name_map.get(rc.table1)
@@ -329,6 +333,7 @@ async def main():
             if not table1 or not table2:
                 continue
 
+            # Limit to top 3 join candidates per relationship to avoid slowness
             for jc in rc.join_candidates:
                 col1_stmt = select(Column).where(
                     Column.table_id == table1.table_id, Column.column_name == jc.column1
@@ -338,6 +343,7 @@ async def main():
                 )
                 col1 = (await session.execute(col1_stmt)).scalar_one_or_none()
                 col2 = (await session.execute(col2_stmt)).scalar_one_or_none()
+                query_count += 2
 
                 if not col1 or not col2:
                     continue
@@ -367,6 +373,8 @@ async def main():
                 )
 
         print(f"   Built {len(enriched_relationships)} enriched relationships")
+        print(f"   Queries executed: {query_count}")
+        print(f"   Time: {time.time() - start_6c:.2f}s")
 
         # 6d. Run cross-table correlation analysis
         print("\n6d. Running cross-table correlation analysis:")

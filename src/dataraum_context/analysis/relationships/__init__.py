@@ -3,7 +3,8 @@
 Combines multiple signals:
 - TDA (Topological Data Analysis): structural similarity via persistence diagrams
 - Value overlap: join column detection via Jaccard/containment
-- Cross-table correlation: multicollinearity analysis across tables
+
+Cross-table correlation models are in analysis/correlation/models.py
 
 Confidence = max(topology_similarity, best_join_confidence)
 """
@@ -16,14 +17,9 @@ from dataraum_context.analysis.relationships.detector import detect_relationship
 from dataraum_context.analysis.relationships.finder import find_relationships
 from dataraum_context.analysis.relationships.joins import find_join_columns
 from dataraum_context.analysis.relationships.models import (
-    CrossTableDependencyGroup,
-    CrossTableMulticollinearityAnalysis,
-    DependencyGroup,
-    EnrichedRelationship,
     JoinCandidate,
     RelationshipCandidate,
     RelationshipDetectionResult,
-    SingleRelationshipJoin,
 )
 from dataraum_context.analysis.relationships.topology import (
     compute_persistence,
@@ -42,12 +38,6 @@ __all__ = [
     "RelationshipCandidate",
     "JoinCandidate",
     "RelationshipDetectionResult",
-    # Cross-table analysis models
-    "EnrichedRelationship",
-    "SingleRelationshipJoin",
-    "DependencyGroup",
-    "CrossTableDependencyGroup",
-    "CrossTableMulticollinearityAnalysis",
     # DB Models
     "Relationship",
     "CrossTableMulticollinearityMetrics",

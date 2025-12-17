@@ -803,7 +803,7 @@ class TestClassifyCrossTableCycleWithLLM:
     @pytest.mark.asyncio
     async def test_classification_returns_multi_label(self, mock_llm_provider):
         """Test that classification supports multiple labels."""
-        from dataraum_context.analysis.relationships.models import (
+        from dataraum_context.analysis.correlation.models import (
             EnrichedRelationship,
         )
 

@@ -7,8 +7,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataraum_context.analysis.correlation.models import CrossTableMulticollinearityAnalysis
 from dataraum_context.analysis.relationships.db_models import Relationship as RelationshipModel
-from dataraum_context.analysis.relationships.models import CrossTableMulticollinearityAnalysis
 from dataraum_context.analysis.semantic.agent import SemanticAgent
 from dataraum_context.analysis.semantic.db_models import (
     SemanticAnnotation as AnnotationModel,

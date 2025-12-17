@@ -7,7 +7,7 @@ The enrichment package will be removed in the future.
 from pydantic import BaseModel
 
 # Re-export from canonical location
-from dataraum_context.analysis.relationships.models import EnrichedRelationship
+from dataraum_context.analysis.correlation.models import EnrichedRelationship
 
 __all__ = ["EnrichedRelationship", "GraphAnalysisResult"]
 

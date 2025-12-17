@@ -19,10 +19,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.analysis.relationships.models import (
+from dataraum_context.analysis.correlation.models import (
     CrossTableDependencyGroup,
     CrossTableMulticollinearityAnalysis,
-    DependencyGroup,
     EnrichedRelationship,
     SingleRelationshipJoin,
 )
@@ -34,6 +33,24 @@ from dataraum_context.enrichment.relationships.gathering import (
     gather_relationships,
 )
 from dataraum_context.storage import Column, Table
+
+
+# Legacy model - kept here for backwards compatibility
+class DependencyGroup(BaseModel):
+    """A group of columns involved in a linear dependency (LEGACY).
+
+    This model is kept for backwards compatibility with the old
+    enrichment/cross_table_multicollinearity implementation.
+    New code should use CrossTableDependencyGroup from correlation/models.py.
+    """
+
+    dimension: int
+    eigenvalue: float
+    condition_index: float
+    severity: str  # "moderate" | "severe"
+    involved_column_ids: list[str]
+    variance_proportions: list[float]
+
 
 __all__ = [
     "EnrichedRelationship",

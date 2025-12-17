@@ -9,7 +9,7 @@ only makes sense across tables where relationships exist.
 
 from typing import Any
 
-from dataraum_context.analysis.relationships.models import (
+from dataraum_context.analysis.correlation.models import (
     CrossTableDependencyGroup,
     CrossTableMulticollinearityAnalysis,
     SingleRelationshipJoin,

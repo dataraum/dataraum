@@ -35,7 +35,7 @@ from dataraum_context.analysis.correlation.algorithms.numeric import (
 from dataraum_context.analysis.relationships.db_models import (
     CrossTableMulticollinearityMetrics,
 )
-from dataraum_context.analysis.relationships.models import (
+from dataraum_context.analysis.correlation.models import (
     CrossTableCategoricalAssociation,
     CrossTableDependencyGroup,
     CrossTableMulticollinearityAnalysis,
@@ -628,10 +628,11 @@ async def _build_join_query(
         if col.table_id in aliases
     ]
 
-    # FROM clause with USING SAMPLE for random sampling
-    query = f"SELECT {', '.join(select_parts)} FROM {base_table.duckdb_path} AS t0"
+    # FROM clause - sample base table FIRST, then join
+    query = f"SELECT {', '.join(select_parts)} FROM (SELECT * FROM {base_table.duckdb_path} USING SAMPLE {sample_size} ROWS) AS t0"
 
-    # JOIN clauses
+    # JOIN clauses - track join columns for NULL filtering
+    join_columns = []
     joined = {base_table_id}
     for rel in relationships:
         if rel.from_table_id in joined and rel.to_table_id not in joined:
@@ -644,6 +645,7 @@ async def _build_join_query(
                     f'ON {from_alias}."{rel.from_column}" = {to_alias}."{rel.to_column}"'
                 )
                 joined.add(rel.to_table_id)
+                join_columns.append(f'{to_alias}."{rel.to_column}"')
 
         elif rel.to_table_id in joined and rel.from_table_id not in joined:
             from_table = await session.get(Table, rel.from_table_id)
@@ -655,9 +657,15 @@ async def _build_join_query(
                     f'ON {from_alias}."{rel.from_column}" = {to_alias}."{rel.to_column}"'
                 )
                 joined.add(rel.from_table_id)
+                join_columns.append(f'{from_alias}."{rel.from_column}"')
 
-    # Add sampling using USING SAMPLE (DuckDB feature)
-    query += f" USING SAMPLE {sample_size} ROWS"
+    # Filter out rows where any join failed (NULL in join column)
+    if join_columns:
+        null_checks = " AND ".join(f"{col} IS NOT NULL" for col in join_columns)
+        query += f" WHERE {null_checks}"
+
+    # Limit final result
+    query += f" LIMIT {sample_size}"
 
     return query
 

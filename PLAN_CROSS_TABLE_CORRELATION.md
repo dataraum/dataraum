@@ -46,6 +46,8 @@ This means `enrichment/cross_table_multicollinearity.py` gets replaced by `corre
 - [x] Updated prompt template with `correlation_context` variable
 - [x] Added `_format_correlation_context()` method to SemanticAgent
 - [x] Updated `analyze()` and `enrich_semantic()` to accept correlation context
+- [x] Added cross-table numeric correlations (strong/very_strong, limited to top 10)
+- [x] Added cross-table categorical associations (moderate/strong, limited to top 10)
 
 ### Task 4: Integrate with downstream quality ✅
 - [x] Added `store_cross_table_analysis()` function
@@ -57,6 +59,21 @@ This means `enrichment/cross_table_multicollinearity.py` gets replaced by `corre
 - [x] Updated import in `tests/quality/test_multi_table_business_cycles.py`
 - [ ] Old file `enrichment/cross_table_multicollinearity.py` can be deleted when ready
 - [ ] Old test files in `tests/enrichment/` can be updated or removed
+
+### Task 5b: Move cross-table models to correlation/models.py ✅
+**Problem:** Cross-table correlation models were in `relationships/models.py` but are primarily used by correlation module.
+
+**Models moved to `correlation/models.py`:**
+- [x] `CrossTableNumericCorrelation`
+- [x] `CrossTableCategoricalAssociation`
+- [x] `CrossTableDependencyGroup`
+- [x] `CrossTableMulticollinearityAnalysis`
+- [x] `SingleRelationshipJoin` (used for join path context)
+- [x] `EnrichedRelationship` (used for building joins)
+
+**Kept in relationships/models.py:**
+- `JoinCandidate`, `RelationshipCandidate`, `RelationshipDetectionResult` (relationship detection)
+- `DependencyGroup` (within-table multicollinearity)
 
 ### Task 6: Use pure algorithms in cross-table analysis ✅
 **Problem:** The pure algorithms created in Task 0 were not being used in cross-table analysis.
@@ -88,6 +105,33 @@ This means `enrichment/cross_table_multicollinearity.py` gets replaced by `corre
 **Future improvements (optional):**
 - [ ] Create synthetic test dataset with explicit cross-table multicollinearity
 - [ ] Add more diverse numeric columns to customer/vendor tables
+
+### Task 8: Fix VDP group splitting for perfectly correlated columns ✅
+**Problem:** When 4+ columns are perfectly correlated (r=1.0), the Belsley VDP algorithm spreads
+variance across multiple near-zero eigenvalue dimensions. This caused:
+1. Columns split into separate groups (e.g., 2 in one group, 2 in another)
+2. Some perfectly correlated columns missed entirely (VDP < threshold)
+
+**Example:** 4 Business Id columns from 4 tables (master_txn, customer, vendor, payment_method)
+were all perfectly correlated (r=1.0), but only 2 were found in a dependency group.
+
+**Solution:** Added two post-processing functions:
+
+1. **`_merge_correlated_groups()`** - Expands VDP groups:
+   - Expands each group to include ALL columns with r >= 0.95 correlation with any member
+   - Merges groups that share columns or have highly correlated members
+
+2. **`_find_correlation_clusters()`** - Finds additional groups:
+   - Builds a correlation graph where edges connect columns with |r| >= threshold
+   - Finds connected components (clusters) of highly correlated columns
+   - Creates dependency groups for clusters not already covered by VDP
+
+**Result:** All 4 Business Id columns now correctly appear in a single dependency group spanning
+all 4 tables, plus Transaction ID (r=0.999 with Business Id). Additional correlation clusters
+are detected even when VDP misses them due to eigenvalue/VDP thresholds.
+
+**Debug mode:** Set `DEBUG_MULTICOLLINEARITY=1` environment variable to see raw VDP results
+and merging output.
 
 ## Output Context (what downstream agents receive)
 

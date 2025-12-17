@@ -14,7 +14,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.analysis.relationships.models import (
+from dataraum_context.analysis.correlation.models import (
     CrossTableMulticollinearityAnalysis,
 )
 from dataraum_context.analysis.semantic.models import (
@@ -363,7 +363,41 @@ class SemanticAgent(LLMFeature):
         lines.append(f"Overall condition index: {analysis.overall_condition_index:.1f}")
         lines.append(f"Severity: {analysis.overall_severity}")
 
-        # Cross-table dependency groups (most valuable for semantic analysis)
+        # Cross-table numeric correlations (strong correlations suggest similar concepts)
+        strong_correlations = [
+            c
+            for c in analysis.cross_table_correlations
+            if c.is_significant and c.strength in ("strong", "very_strong")
+        ]
+        if strong_correlations:
+            lines.append(f"\n### Cross-Table Correlations ({len(strong_correlations)} strong)")
+            lines.append("Numeric columns with strong correlation across tables:")
+            for corr in strong_correlations[:10]:  # Limit to top 10
+                lines.append(
+                    f"  - {corr.table1}.{corr.column1} <-> {corr.table2}.{corr.column2}: "
+                    f"r={corr.pearson_r:.2f}, ρ={corr.spearman_rho:.2f} ({corr.strength})"
+                )
+            if len(strong_correlations) > 10:
+                lines.append(f"  ... and {len(strong_correlations) - 10} more")
+
+        # Cross-table categorical associations (strong associations suggest grouping)
+        strong_associations = [
+            a
+            for a in analysis.cross_table_associations
+            if a.is_significant and a.strength in ("moderate", "strong")
+        ]
+        if strong_associations:
+            lines.append(f"\n### Cross-Table Categorical Associations ({len(strong_associations)})")
+            lines.append("Categorical columns with significant association across tables:")
+            for assoc in strong_associations[:10]:  # Limit to top 10
+                lines.append(
+                    f"  - {assoc.table1}.{assoc.column1} <-> {assoc.table2}.{assoc.column2}: "
+                    f"V={assoc.cramers_v:.2f} ({assoc.strength})"
+                )
+            if len(strong_associations) > 10:
+                lines.append(f"  ... and {len(strong_associations) - 10} more")
+
+        # Cross-table dependency groups (multicollinearity)
         if analysis.cross_table_groups:
             lines.append(f"\n### Cross-Table Dependencies ({len(analysis.cross_table_groups)})")
             lines.append("Columns that are linearly related across table boundaries:")
@@ -387,8 +421,6 @@ class SemanticAgent(LLMFeature):
                         )
 
                 lines.append(f"Interpretation: {group.interpretation}")
-        else:
-            lines.append("\nNo cross-table dependencies detected.")
 
         # Quality issues
         if analysis.quality_issues:

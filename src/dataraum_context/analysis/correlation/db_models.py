@@ -1,12 +1,18 @@
 """Correlation Analysis Database Models.
 
-SQLAlchemy models for correlation analysis persistence:
+SQLAlchemy models for correlation analysis persistence.
+
+Within-Table Analysis:
 - ColumnCorrelation: Numeric correlations (Pearson, Spearman)
 - CategoricalAssociation: Categorical associations (Cramér's V)
 - FunctionalDependency: Functional dependencies (A → B)
 - DerivedColumn: Derived column detection
 
-Note: Multicollinearity models are in analysis/relationships/db_models.py
+Cross-Table Quality (post-confirmation):
+- CrossTableCorrelationDB: Correlations between columns in different tables
+- MulticollinearityGroup: VDP dependency groups
+- QualityIssueDB: Detected quality issues
+- CorrelationAnalysisRun: Tracks when analysis was run
 """
 
 from __future__ import annotations
@@ -218,10 +224,146 @@ class DerivedColumn(Base):
 
 
 # =============================================================================
+# Cross-Table Quality Models (post-confirmation)
+# =============================================================================
+
+
+class CorrelationAnalysisRun(Base):
+    """Tracks when correlation analysis was run.
+
+    Links a relationship to its quality analysis results.
+    """
+
+    __tablename__ = "correlation_analysis_runs"
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+
+    # Can be table_id (for within-table) or relationship_id (for cross-table)
+    target_id: Mapped[str] = mapped_column(String, nullable=False)
+    target_type: Mapped[str] = mapped_column(String, nullable=False)  # 'table' or 'relationship'
+
+    # For cross-table analysis
+    from_table: Mapped[str | None] = mapped_column(String)
+    to_table: Mapped[str | None] = mapped_column(String)
+    join_column_from: Mapped[str | None] = mapped_column(String)
+    join_column_to: Mapped[str | None] = mapped_column(String)
+
+    # Metrics
+    rows_analyzed: Mapped[int] = mapped_column(Integer, nullable=False)
+    columns_analyzed: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Multicollinearity summary
+    overall_condition_index: Mapped[float | None] = mapped_column(Float)
+    overall_severity: Mapped[str | None] = mapped_column(String)  # 'none', 'moderate', 'severe'
+
+    # Timing
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    duration_seconds: Mapped[float | None] = mapped_column(Float)
+
+
+class CrossTableCorrelationDB(Base):
+    """Correlation between columns in different tables.
+
+    Stored after cross-table quality analysis on confirmed relationships.
+    """
+
+    __tablename__ = "cross_table_correlations"
+
+    correlation_id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid4())
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("correlation_analysis_runs.run_id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Tables involved
+    from_table: Mapped[str] = mapped_column(String, nullable=False)
+    from_column: Mapped[str] = mapped_column(String, nullable=False)
+    to_table: Mapped[str] = mapped_column(String, nullable=False)
+    to_column: Mapped[str] = mapped_column(String, nullable=False)
+
+    # Correlation values
+    pearson_r: Mapped[float] = mapped_column(Float, nullable=False)
+    spearman_rho: Mapped[float] = mapped_column(Float, nullable=False)
+    strength: Mapped[str] = mapped_column(String, nullable=False)  # 'weak', 'moderate', etc.
+
+    # Is this the join column pair?
+    is_join_column: Mapped[bool] = mapped_column(Integer, nullable=False, default=False)
+
+    # Metadata
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+class MulticollinearityGroup(Base):
+    """VDP dependency group from multicollinearity analysis.
+
+    Identifies groups of columns that are linearly dependent.
+    """
+
+    __tablename__ = "multicollinearity_groups"
+
+    group_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("correlation_analysis_runs.run_id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Columns involved: [{"table": "...", "column": "...", "vdp": 0.8}, ...]
+    columns_involved: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+
+    # VDP metrics
+    condition_index: Mapped[float] = mapped_column(Float, nullable=False)
+    severity: Mapped[str] = mapped_column(String, nullable=False)  # 'moderate', 'severe'
+
+    # Does this group span multiple tables?
+    is_cross_table: Mapped[bool] = mapped_column(Integer, nullable=False, default=False)
+
+    # Metadata
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+class QualityIssueDB(Base):
+    """Detected quality issue from correlation analysis.
+
+    Generic storage for various quality issues detected during analysis.
+    """
+
+    __tablename__ = "correlation_quality_issues"
+
+    issue_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("correlation_analysis_runs.run_id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Issue classification
+    issue_type: Mapped[str] = mapped_column(
+        String, nullable=False
+    )  # 'redundant_column', 'unexpected_correlation', 'multicollinearity'
+    severity: Mapped[str] = mapped_column(String, nullable=False)  # 'info', 'warning', 'error'
+
+    # Human-readable message
+    message: Mapped[str] = mapped_column(String, nullable=False)
+
+    # Affected columns: [{"table": "...", "column": "..."}, ...]
+    affected_columns: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False)
+
+    # Metadata
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+# =============================================================================
 # Indexes for efficient queries
 # =============================================================================
 
-# Correlations
+# Within-table correlations
 Index("idx_correlations_table", ColumnCorrelation.table_id)
 Index("idx_correlations_col1", ColumnCorrelation.column1_id)
 Index("idx_correlations_col2", ColumnCorrelation.column2_id)
@@ -232,3 +374,12 @@ Index("idx_dependencies_table", FunctionalDependency.table_id)
 Index("idx_dependencies_dependent", FunctionalDependency.dependent_column_id)
 Index("idx_derived_table", DerivedColumn.table_id)
 Index("idx_derived_column", DerivedColumn.derived_column_id)
+
+# Cross-table analysis
+Index(
+    "idx_analysis_runs_target", CorrelationAnalysisRun.target_id, CorrelationAnalysisRun.target_type
+)
+Index("idx_cross_corr_run", CrossTableCorrelationDB.run_id)
+Index("idx_mc_groups_run", MulticollinearityGroup.run_id)
+Index("idx_quality_issues_run", QualityIssueDB.run_id)
+Index("idx_quality_issues_type", QualityIssueDB.issue_type)

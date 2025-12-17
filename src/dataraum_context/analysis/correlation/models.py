@@ -1,30 +1,38 @@
 """Correlation Analysis Pydantic Models.
 
-Data structures for within-table correlation analysis:
+This module contains all Pydantic models for the correlation analysis module.
+
+Within-Table Analysis:
 - NumericCorrelation: Pearson and Spearman correlations
 - CategoricalAssociation: Cramér's V associations
 - FunctionalDependency: A → B dependencies
 - DerivedColumn: Detected derived columns
-- CorrelationAnalysisResult: Complete analysis result
 
-Utility models:
+Cross-Table Quality (post-confirmation):
+- CrossTableCorrelation: Correlation between columns in different tables
+- RedundantColumnPair: Perfectly correlated columns within same table
+- DependencyGroup: VDP multicollinearity group
+- QualityIssue: Generic quality issue
+
+Result Containers:
+- CorrelationAnalysisResult: Complete per-table analysis result
+- CrossTableQualityResult: Cross-table quality analysis result
+
+Utilities:
 - EnrichedRelationship: Relationship with metadata for building joins
-
-Cross-table relationship evaluation is in analysis/relationships/models.py.
-Quality-focused cross-table analysis (VDP) is in analysis/correlation/cross_table.py.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from dataraum_context.core.models.base import Cardinality, RelationshipType
 
 # =============================================================================
-# Numeric Correlation Models
+# Within-Table Analysis Models
 # =============================================================================
 
 
@@ -55,11 +63,6 @@ class NumericCorrelation(BaseModel):
     is_significant: bool  # p_value < 0.05
 
 
-# =============================================================================
-# Categorical Association Models
-# =============================================================================
-
-
 class CategoricalAssociation(BaseModel):
     """Cramér's V association between two categorical columns."""
 
@@ -85,11 +88,6 @@ class CategoricalAssociation(BaseModel):
     # Interpretation
     association_strength: str  # 'none', 'weak', 'moderate', 'strong'
     is_significant: bool
-
-
-# =============================================================================
-# Functional Dependency Models
-# =============================================================================
 
 
 class FunctionalDependency(BaseModel):
@@ -118,15 +116,10 @@ class FunctionalDependency(BaseModel):
     violation_count: int
 
     # Example
-    example: dict[str, Any] | None = None  # {determinant_values: [...], dependent_value: ...}
+    example: dict[str, Any] | None = None
 
     # Metadata
     computed_at: datetime
-
-
-# =============================================================================
-# Derived Column Models
-# =============================================================================
 
 
 class DerivedColumn(BaseModel):
@@ -144,7 +137,7 @@ class DerivedColumn(BaseModel):
     source_column_names: list[str]
 
     # Derivation
-    derivation_type: str  # 'sum', 'difference', 'product', 'ratio', 'concat', 'upper', etc.
+    derivation_type: str  # 'sum', 'difference', 'product', 'ratio', 'concat', etc.
     formula: str  # Human-readable formula
 
     # Match quality
@@ -160,12 +153,71 @@ class DerivedColumn(BaseModel):
 
 
 # =============================================================================
-# Correlation Analysis Result
+# Cross-Table Quality Models (post-confirmation)
+# =============================================================================
+
+
+class CrossTableCorrelation(BaseModel):
+    """A correlation between columns in different tables."""
+
+    from_table: str
+    from_column: str
+    to_table: str
+    to_column: str
+    pearson_r: float
+    spearman_rho: float
+    strength: str  # 'weak', 'moderate', 'strong', 'very_strong'
+    is_join_column: bool  # True if this is the join column pair
+
+
+class RedundantColumnPair(BaseModel):
+    """Two columns that appear to contain the same data."""
+
+    table: str
+    column1: str
+    column2: str
+    correlation: float
+    recommendation: str  # e.g., "Consider removing one column"
+
+
+class DerivedColumnCandidate(BaseModel):
+    """A column that may be derived from another (cross-table detection)."""
+
+    table: str
+    derived_column: str
+    source_column: str
+    correlation: float
+    likely_formula: str | None = None  # e.g., "derived = source * 0.1"
+
+
+class DependencyGroup(BaseModel):
+    """A group of columns involved in multicollinearity."""
+
+    model_config = {"frozen": False}
+
+    columns: list[tuple[str, str]]  # [(table, column), ...]
+    condition_index: float
+    severity: Literal["moderate", "severe"]
+    variance_proportions: dict[tuple[str, str], float]  # {(table, col): vdp}
+    is_cross_table: bool  # True if columns span multiple tables
+
+
+class QualityIssue(BaseModel):
+    """A detected quality issue."""
+
+    issue_type: str  # 'redundant_column', 'unexpected_correlation', 'multicollinearity'
+    severity: Literal["info", "warning", "error"]
+    message: str
+    affected_columns: list[tuple[str, str]]  # [(table, column), ...]
+
+
+# =============================================================================
+# Result Container Models
 # =============================================================================
 
 
 class CorrelationAnalysisResult(BaseModel):
-    """Complete correlation analysis result for a table."""
+    """Complete correlation analysis result for a single table."""
 
     table_id: str
     table_name: str
@@ -192,8 +244,39 @@ class CorrelationAnalysisResult(BaseModel):
     computed_at: datetime
 
 
+class CrossTableQualityResult(BaseModel):
+    """Quality analysis result for a confirmed relationship (cross-table)."""
+
+    relationship_id: str
+    from_table: str
+    to_table: str
+    join_column_from: str
+    join_column_to: str
+
+    # Metrics
+    joined_row_count: int
+    numeric_columns_analyzed: int
+
+    # Cross-table correlations (excluding join columns)
+    cross_table_correlations: list[CrossTableCorrelation] = Field(default_factory=list)
+
+    # Within-table issues
+    redundant_columns: list[RedundantColumnPair] = Field(default_factory=list)
+    derived_columns: list[DerivedColumnCandidate] = Field(default_factory=list)
+
+    # Multicollinearity
+    overall_condition_index: float
+    overall_severity: Literal["none", "moderate", "severe"]
+    dependency_groups: list[DependencyGroup] = Field(default_factory=list)
+    cross_table_dependency_groups: list[DependencyGroup] = Field(default_factory=list)
+
+    # Summary
+    issues: list[QualityIssue] = Field(default_factory=list)
+    analyzed_at: datetime
+
+
 # =============================================================================
-# Utility Models (for building joins)
+# Utility Models
 # =============================================================================
 
 

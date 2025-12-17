@@ -2,9 +2,10 @@
 
 Analyzes relationships between columns:
 - Per-table: Numeric correlations, categorical associations, functional dependencies, derived columns
+- Post-confirmation: Cross-table quality analysis (VDP, redundant/derived columns)
 
 Cross-table relationship evaluation is in analysis/relationships/evaluator.py.
-Quality-focused cross-table analysis (VDP) will be rebuilt in cross_table.py.
+Quality-focused cross-table analysis is in analysis/correlation/cross_table.py.
 """
 
 # Algorithms (pure computation)
@@ -21,14 +22,23 @@ from dataraum_context.analysis.correlation.algorithms import (
 # Per-table runners
 from dataraum_context.analysis.correlation.categorical import compute_categorical_associations
 
-# NOTE: Cross-table runner disabled - being replaced with per-relationship evaluation
-# See analysis/relationships/evaluator.py
-# DB Models
+# Post-confirmation quality analysis
+from dataraum_context.analysis.correlation.cross_table import (
+    analyze_relationship_quality,
+)
+
+# DB Models - Within-table
 from dataraum_context.analysis.correlation.db_models import (
     CategoricalAssociation as DBCategoricalAssociation,
 )
+
+# DB Models - Cross-table quality
 from dataraum_context.analysis.correlation.db_models import (
     ColumnCorrelation,
+    CorrelationAnalysisRun,
+    CrossTableCorrelationDB,
+    MulticollinearityGroup,
+    QualityIssueDB,
 )
 from dataraum_context.analysis.correlation.db_models import (
     DerivedColumn as DBDerivedColumn,
@@ -41,13 +51,21 @@ from dataraum_context.analysis.correlation.functional_dependency import (
     detect_functional_dependencies,
 )
 
-# Pydantic Models
+# Pydantic Models - Within-table
+# Pydantic Models - Cross-table quality
 from dataraum_context.analysis.correlation.models import (
     CategoricalAssociation,
     CorrelationAnalysisResult,
+    CrossTableCorrelation,
+    CrossTableQualityResult,
+    DependencyGroup,
     DerivedColumn,
+    DerivedColumnCandidate,
+    EnrichedRelationship,
     FunctionalDependency,
     NumericCorrelation,
+    QualityIssue,
+    RedundantColumnPair,
 )
 from dataraum_context.analysis.correlation.numeric import compute_numeric_correlations
 from dataraum_context.analysis.correlation.processor import analyze_correlations
@@ -55,7 +73,7 @@ from dataraum_context.analysis.correlation.processor import analyze_correlations
 __all__ = [
     # Main entry points
     "analyze_correlations",  # Per-table
-    # NOTE: Cross-table functions disabled - see analysis/relationships/evaluator.py
+    "analyze_relationship_quality",  # Post-confirmation cross-table
     # Per-table analysis functions
     "compute_numeric_correlations",
     "compute_categorical_associations",
@@ -69,15 +87,28 @@ __all__ = [
     "AssociationResult",
     "DependencyGroupResult",
     "MulticollinearityResult",
-    # DB Models
+    # DB Models - Within-table
     "ColumnCorrelation",
     "DBCategoricalAssociation",
     "DBFunctionalDependency",
     "DBDerivedColumn",
-    # Pydantic Models
+    # DB Models - Cross-table quality
+    "CorrelationAnalysisRun",
+    "CrossTableCorrelationDB",
+    "MulticollinearityGroup",
+    "QualityIssueDB",
+    # Pydantic Models - Within-table
     "NumericCorrelation",
     "CategoricalAssociation",
     "FunctionalDependency",
     "DerivedColumn",
     "CorrelationAnalysisResult",
+    # Pydantic Models - Cross-table quality
+    "CrossTableQualityResult",
+    "CrossTableCorrelation",
+    "RedundantColumnPair",
+    "DerivedColumnCandidate",
+    "DependencyGroup",
+    "QualityIssue",
+    "EnrichedRelationship",
 ]

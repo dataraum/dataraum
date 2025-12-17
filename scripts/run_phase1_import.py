@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from test_infra import (
+from infra import (
     check_tables_exist,
     cleanup_connections,
     get_duckdb_conn,

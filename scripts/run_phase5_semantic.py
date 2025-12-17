@@ -21,14 +21,14 @@ import sys
 from typing import Any
 
 from dotenv import load_dotenv
-from sqlalchemy import func, select
-from test_infra import (
+from infra import (
     cleanup_connections,
     get_duckdb_conn,
     get_test_session,
     print_database_summary,
     print_phase_status,
 )
+from sqlalchemy import func, select
 
 # Load environment variables from .env
 load_dotenv()

@@ -6,7 +6,7 @@ This module provides utilities for test scripts to:
 3. Load/save intermediate state between test runs
 
 Usage:
-    from test_infra import get_test_session, get_duckdb_conn, check_phase_complete
+    from infra import get_test_session, get_duckdb_conn, check_phase_complete
 
     async with get_test_session() as session:
         duckdb_conn = get_duckdb_conn()

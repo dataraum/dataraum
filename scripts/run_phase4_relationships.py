@@ -17,14 +17,14 @@ import asyncio
 import sys
 from typing import Any
 
-from sqlalchemy import func, select
-from test_infra import (
+from infra import (
     cleanup_connections,
     get_duckdb_conn,
     get_test_session,
     print_database_summary,
     print_phase_status,
 )
+from sqlalchemy import func, select
 
 
 async def main() -> int:

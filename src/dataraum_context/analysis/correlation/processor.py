@@ -15,6 +15,7 @@ Cross-table quality analysis (analyze_cross_table_quality):
 - Requires confirmed relationships from semantic agent
 """
 
+import math
 import time
 from datetime import UTC, datetime
 
@@ -265,8 +266,12 @@ async def _store_cross_table_results(
     session.add(run_record)
     await session.flush()  # Get run_id for child records
 
-    # Store cross-table correlations
+    # Store cross-table correlations (skip NaN values from constant columns)
     for corr in quality_result.cross_table_correlations:
+        # Skip correlations with NaN (happens when column is constant)
+        if math.isnan(corr.pearson_r) or math.isnan(corr.spearman_rho):
+            continue
+
         db_corr = CrossTableCorrelationDB(
             run_id=run_record.run_id,
             from_table=corr.from_table,

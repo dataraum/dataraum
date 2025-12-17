@@ -90,23 +90,14 @@ async def main() -> int:
 
         unanalyzed_tables = [t for t in typed_tables if t.table_id not in analyzed_table_ids]
 
-        if not unanalyzed_tables:
-            print("\n   All tables already analyzed!")
-            for tt in typed_tables:
-                print_phase_status(f"corr_{tt.table_name}", True)
-            await _print_correlation_summary(session)
-            await print_database_summary(session, duckdb_conn)
-            await cleanup_connections()
-            return 0
-
-        # Show what needs analysis
-        print("\n   Correlation analysis status:")
+        # Show within-table analysis status
+        print("\n   Within-table analysis status:")
         for tt in typed_tables:
             is_analyzed = tt.table_id in analyzed_table_ids
             print_phase_status(f"corr_{tt.table_name}", is_analyzed)
 
-        # Run correlation analysis
-        print("\n2. Running correlation analysis...")
+        # Run within-table correlation analysis if needed
+        print("\n2. Running within-table correlation analysis...")
         print("-" * 50)
 
         from datetime import UTC, datetime
@@ -114,44 +105,51 @@ async def main() -> int:
         from dataraum_context.analysis.correlation import analyze_correlations
         from dataraum_context.storage import Column
 
-        analyzed_count = 0
+        if not unanalyzed_tables:
+            print("   All tables already analyzed!")
+        else:
+            analyzed_count = 0
 
-        for typed_table in unanalyzed_tables:
-            print(f"      Processing: {typed_table.table_name}...")
+            for typed_table in unanalyzed_tables:
+                print(f"      Processing: {typed_table.table_name}...")
 
-            result = await analyze_correlations(typed_table.table_id, duckdb_conn, session)
-            if not result.success:
-                print(f"         ERROR: {result.error}")
-                continue
+                result = await analyze_correlations(typed_table.table_id, duckdb_conn, session)
+                if not result.success:
+                    print(f"         ERROR: {result.error}")
+                    continue
 
-            corr_result = result.unwrap()
-            print(f"         Numeric correlations: {len(corr_result.numeric_correlations)}")
-            print(f"         Categorical associations: {len(corr_result.categorical_associations)}")
-            print(f"         Functional dependencies: {len(corr_result.functional_dependencies)}")
-            print(f"         Derived columns: {len(corr_result.derived_columns)}")
-            print(f"         Duration: {corr_result.duration_seconds:.2f}s")
+                corr_result = result.unwrap()
+                print(f"         Numeric correlations: {len(corr_result.numeric_correlations)}")
+                print(
+                    f"         Categorical associations: {len(corr_result.categorical_associations)}"
+                )
+                print(
+                    f"         Functional dependencies: {len(corr_result.functional_dependencies)}"
+                )
+                print(f"         Derived columns: {len(corr_result.derived_columns)}")
+                print(f"         Duration: {corr_result.duration_seconds:.2f}s")
 
-            # Create CorrelationAnalysisRun record to track completion
-            columns_stmt = select(Column).where(Column.table_id == typed_table.table_id)
-            columns = (await session.execute(columns_stmt)).scalars().all()
+                # Create CorrelationAnalysisRun record to track completion
+                columns_stmt = select(Column).where(Column.table_id == typed_table.table_id)
+                columns = (await session.execute(columns_stmt)).scalars().all()
 
-            run_record = CorrelationAnalysisRun(
-                target_id=typed_table.table_id,
-                target_type="table",
-                rows_analyzed=0,  # Within-table analysis doesn't have row counts
-                columns_analyzed=len(columns),
-                started_at=corr_result.computed_at,
-                completed_at=datetime.now(UTC),
-                duration_seconds=corr_result.duration_seconds,
-            )
-            session.add(run_record)
+                run_record = CorrelationAnalysisRun(
+                    target_id=typed_table.table_id,
+                    target_type="table",
+                    rows_analyzed=0,  # Within-table analysis doesn't have row counts
+                    columns_analyzed=len(columns),
+                    started_at=corr_result.computed_at,
+                    completed_at=datetime.now(UTC),
+                    duration_seconds=corr_result.duration_seconds,
+                )
+                session.add(run_record)
 
-            analyzed_count += 1
+                analyzed_count += 1
 
-        # Commit the analysis run records
-        await session.commit()
+            # Commit the analysis run records
+            await session.commit()
 
-        print(f"\n   Analyzed {analyzed_count} tables")
+            print(f"\n   Analyzed {analyzed_count} tables")
 
         # Cross-table analysis on confirmed relationships
         print("\n3. Running cross-table quality analysis...")
@@ -203,20 +201,25 @@ async def main() -> int:
                     rel_desc = f"{rel_from_tbl.table_name}.{rel_from_col.column_name} → {rel_to_tbl.table_name}.{rel_to_col.column_name}"
                     print(f"      Processing: {rel_desc}...")
 
-                    ct_result = await analyze_cross_table_quality(rel, duckdb_conn, session)
-                    if not ct_result.success:
-                        print(f"         SKIPPED: {ct_result.error}")
-                        continue
+                    try:
+                        ct_result = await analyze_cross_table_quality(rel, duckdb_conn, session)
+                        if not ct_result.success:
+                            print(f"         SKIPPED: {ct_result.error}")
+                            await session.rollback()
+                            continue
 
-                    quality = ct_result.unwrap()
-                    print(f"         Joined rows: {quality.joined_row_count}")
-                    print(
-                        f"         Cross-table correlations: {len(quality.cross_table_correlations)}"
-                    )
-                    print(f"         Multicollinearity: {quality.overall_severity}")
-                    print(f"         Quality issues: {len(quality.issues)}")
+                        quality = ct_result.unwrap()
+                        print(f"         Joined rows: {quality.joined_row_count}")
+                        print(
+                            f"         Cross-table correlations: {len(quality.cross_table_correlations)}"
+                        )
+                        print(f"         Multicollinearity: {quality.overall_severity}")
+                        print(f"         Quality issues: {len(quality.issues)}")
 
-                    cross_table_count += 1
+                        cross_table_count += 1
+                    except Exception as e:
+                        print(f"         ERROR: {e}")
+                        await session.rollback()
 
                 print(f"\n   Analyzed {cross_table_count} relationships")
 

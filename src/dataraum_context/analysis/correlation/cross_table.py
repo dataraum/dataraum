@@ -47,6 +47,7 @@ def analyze_relationship_quality(
     to_table_path: str,
     min_correlation: float = 0.3,
     redundancy_threshold: float = 0.99,
+    max_sample_size: int = 50000,
 ) -> CrossTableQualityResult | None:
     """Analyze quality of a single confirmed relationship.
 
@@ -60,6 +61,7 @@ def analyze_relationship_quality(
         to_table_path: DuckDB path to to_table
         min_correlation: Minimum |r| to report
         redundancy_threshold: Correlation threshold for redundancy detection
+        max_sample_size: Maximum rows to sample for analysis (default: 50000)
 
     Returns:
         CrossTableQualityResult or None if analysis fails
@@ -86,11 +88,31 @@ def analyze_relationship_quality(
             select_parts.append(f'b."{c}"')
             col_labels.append((relationship.to_table, c))
 
-        join_query = f"""
-            SELECT {", ".join(select_parts)}
-            FROM {from_table_path} a
+        # First get total row count to decide if sampling is needed
+        count_query = f"""
+            SELECT COUNT(*) FROM {from_table_path} a
             JOIN {to_table_path} b ON a."{join_col_from}" = b."{join_col_to}"
         """
+        count_result = duckdb_conn.execute(count_query).fetchone()
+        if count_result is None:
+            return None
+        total_rows: int = count_result[0]
+
+        # Use sampling for large joins to avoid memory/performance issues
+        if total_rows > max_sample_size:
+            sample_pct = (max_sample_size / total_rows) * 100
+            join_query = f"""
+                SELECT {", ".join(select_parts)}
+                FROM {from_table_path} a
+                JOIN {to_table_path} b ON a."{join_col_from}" = b."{join_col_to}"
+                USING SAMPLE {sample_pct:.4f}%
+            """
+        else:
+            join_query = f"""
+                SELECT {", ".join(select_parts)}
+                FROM {from_table_path} a
+                JOIN {to_table_path} b ON a."{join_col_from}" = b."{join_col_to}"
+            """
 
         result = duckdb_conn.execute(join_query).fetchnumpy()
         data = np.column_stack([result[k] for k in result.keys()])
@@ -254,7 +276,7 @@ def analyze_relationship_quality(
             to_table=relationship.to_table,
             join_column_from=join_col_from,
             join_column_to=join_col_to,
-            joined_row_count=len(data),
+            joined_row_count=total_rows,  # Report actual join size, not sample
             numeric_columns_analyzed=len(col_labels),
             cross_table_correlations=cross_table_corrs,
             redundant_columns=redundant_pairs,

@@ -34,16 +34,15 @@ async def detect_relationships(
 ) -> Result[RelationshipDetectionResult]:
     """Detect relationships between tables and store as candidates.
 
-    Stores all detected relationships in the database with detection_method='tda'
-    for topology-based detection or 'join_detection' for value overlap detection.
-    These serve as candidates for LLM semantic analysis to confirm/reject.
+    Uses value overlap (Jaccard/containment) to find joinable column pairs.
+    Candidates are stored for semantic analysis to confirm/reject.
 
     Args:
         table_ids: List of table IDs to analyze
         duckdb_conn: DuckDB connection
         session: SQLAlchemy async session
-        min_confidence: Minimum confidence threshold
-        sample_percent: Percentage of rows to sample (uses reservoir sampling)
+        min_confidence: Minimum join_confidence threshold (default 0.3)
+        sample_percent: Percentage of rows to sample for uniqueness calculation
         evaluate: Whether to evaluate candidates with quality metrics (default True)
 
     Returns:
@@ -52,7 +51,7 @@ async def detect_relationships(
     start_time = time.time()
 
     try:
-        # Load tables with paths and sampled data for TDA
+        # Load tables with paths and sampled data
         tables_data = await _load_tables(session, duckdb_conn, table_ids, sample_percent)
 
         if len(tables_data) < 2:
@@ -65,25 +64,22 @@ async def detect_relationships(
                 )
             )
 
-        # Find relationships using DuckDB for accurate join detection
+        # Find relationships via value overlap
         raw_results = find_relationships(duckdb_conn, tables_data, min_confidence)
 
         # Convert to typed models
-        # Each JoinCandidate now has its own topology_similarity and join_confidence
         candidates = [
             RelationshipCandidate(
                 table1=r["table1"],
                 table2=r["table2"],
-                confidence=r["confidence"],
-                relationship_type=r["relationship_type"],
                 join_candidates=[
                     JoinCandidate(
                         column1=j["column1"],
                         column2=j["column2"],
-                        confidence=j["confidence"],
-                        cardinality=j["cardinality"],
-                        topology_similarity=j["topology_similarity"],
                         join_confidence=j["join_confidence"],
+                        cardinality=j["cardinality"],
+                        left_uniqueness=j["left_uniqueness"],
+                        right_uniqueness=j["right_uniqueness"],
                     )
                     for j in r["join_columns"]
                 ],
@@ -99,12 +95,17 @@ async def detect_relationships(
         # Store candidates in database
         await _store_candidates(session, table_ids, candidates)
 
+        # Count high confidence candidates
+        high_conf_count = sum(
+            1 for c in candidates for jc in c.join_candidates if jc.join_confidence > 0.7
+        )
+
         return Result.ok(
             RelationshipDetectionResult(
                 candidates=candidates,
                 total_tables=len(tables_data),
                 total_candidates=len(candidates),
-                high_confidence_count=sum(1 for c in candidates if c.confidence > 0.7),
+                high_confidence_count=high_conf_count,
                 computed_at=datetime.now(UTC),
                 duration_seconds=time.time() - start_time,
             )
@@ -122,7 +123,7 @@ async def _store_candidates(
     """Store relationship candidates in the database.
 
     Each join candidate is stored as a separate relationship with
-    detection_method='candidate' to distinguish from LLM-confirmed relationships.
+    detection_method='candidate' to distinguish from confirmed relationships.
     """
     # Load mappings
     column_map = await load_column_mappings(session, table_ids)
@@ -143,15 +144,13 @@ async def _store_candidates(
             if not col1_id or not col2_id:
                 continue
 
-            # Build evidence with per-column topology and value overlap metrics
-            # Each JoinCandidate now has its own topology_similarity (column feature
-            # similarity) and join_confidence (value overlap), with confidence =
-            # max(topology_similarity, join_confidence)
+            # Build evidence with value overlap and column characteristics
             evidence = {
-                "topology_similarity": jc.topology_similarity,
                 "join_confidence": jc.join_confidence,
                 "cardinality": jc.cardinality,
-                "source": "tda_join_detection",
+                "left_uniqueness": jc.left_uniqueness,
+                "right_uniqueness": jc.right_uniqueness,
+                "source": "value_overlap",
             }
 
             # Add evaluation metrics if available
@@ -178,7 +177,7 @@ async def _store_candidates(
                 to_column_id=col2_id,
                 relationship_type="candidate",
                 cardinality=jc.cardinality,
-                confidence=jc.confidence,  # Already max(topology_similarity, join_confidence)
+                confidence=jc.join_confidence,
                 detection_method="candidate",
                 evidence=evidence,
                 is_confirmed=False,
@@ -196,8 +195,8 @@ async def _load_tables(
 ) -> dict[str, tuple[str, pd.DataFrame]]:
     """Load table data from DuckDB.
 
-    Returns duckdb_path for accurate join detection via SQL,
-    plus sampled DataFrame for TDA topology analysis.
+    Returns duckdb_path for join detection via SQL,
+    plus sampled DataFrame for uniqueness calculation.
     """
     stmt = select(Table.table_name, Table.duckdb_path).where(Table.table_id.in_(table_ids))
     result = await session.execute(stmt)
@@ -205,7 +204,7 @@ async def _load_tables(
     tables_data: dict[str, tuple[str, pd.DataFrame]] = {}
     for table_name, duckdb_path in result.all():
         try:
-            # Sample for TDA only (join detection uses full data via SQL)
+            # Sample for uniqueness calculation (join detection uses full data via SQL)
             df = duckdb_conn.execute(
                 f"SELECT * FROM {duckdb_path} USING SAMPLE {sample_percent}%"
             ).df()

@@ -1,11 +1,9 @@
 """Relationship detection and evaluation between tables.
 
-Combines multiple signals:
-- TDA (Topological Data Analysis): structural similarity via persistence diagrams
-- Value overlap: join column detection via Jaccard/containment
-- Evaluation: referential integrity, cardinality verification, join quality
-
-Confidence = max(topology_similarity, best_join_confidence)
+Uses value overlap (Jaccard/containment) to detect joinable column pairs.
+Enriches candidates with:
+- Column uniqueness ratios
+- Evaluation metrics (referential integrity, cardinality verification, join quality)
 """
 
 from dataraum_context.analysis.relationships.db_models import Relationship
@@ -22,10 +20,6 @@ from dataraum_context.analysis.relationships.models import (
     RelationshipCandidate,
     RelationshipDetectionResult,
 )
-from dataraum_context.analysis.relationships.topology import (
-    compute_persistence,
-    persistence_similarity,
-)
 from dataraum_context.analysis.relationships.utils import (
     load_relationship_candidates_for_semantic,
 )
@@ -39,8 +33,6 @@ __all__ = [
     "load_relationship_candidates_for_semantic",
     # Components
     "find_join_columns",
-    "compute_persistence",
-    "persistence_similarity",
     "evaluate_join_candidate",
     "evaluate_relationship_candidate",
     # Relationship detection models

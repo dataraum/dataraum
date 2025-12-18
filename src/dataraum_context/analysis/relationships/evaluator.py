@@ -86,14 +86,14 @@ def evaluate_join_candidate(
         duckdb_conn,
     )
 
-    # Return updated candidate, preserving topology and join confidence
+    # Return updated candidate, preserving original values
     return JoinCandidate(
         column1=join_candidate.column1,
         column2=join_candidate.column2,
-        confidence=join_candidate.confidence,
-        cardinality=join_candidate.cardinality,
-        topology_similarity=join_candidate.topology_similarity,
         join_confidence=join_candidate.join_confidence,
+        cardinality=join_candidate.cardinality,
+        left_uniqueness=join_candidate.left_uniqueness,
+        right_uniqueness=join_candidate.right_uniqueness,
         left_referential_integrity=round(left_ri, 2),
         right_referential_integrity=round(right_ri, 2),
         orphan_count=orphan_count,
@@ -186,15 +186,13 @@ def evaluate_relationship_candidate(
         return RelationshipCandidate(
             table1=candidate.table1,
             table2=candidate.table2,
-            confidence=candidate.confidence,
-            relationship_type=candidate.relationship_type,
             join_candidates=evaluated_joins,
             join_success_rate=None,
             introduces_duplicates=None,
         )
 
-    # Use best join (highest confidence) for relationship metrics
-    best_join = max(evaluated_joins, key=lambda j: j.confidence)
+    # Use best join (highest join_confidence) for relationship metrics
+    best_join = max(evaluated_joins, key=lambda j: j.join_confidence)
 
     # Join success rate = left referential integrity of best join
     join_success_rate = best_join.left_referential_integrity
@@ -211,8 +209,6 @@ def evaluate_relationship_candidate(
     return RelationshipCandidate(
         table1=candidate.table1,
         table2=candidate.table2,
-        confidence=candidate.confidence,
-        relationship_type=candidate.relationship_type,
         join_candidates=evaluated_joins,
         join_success_rate=join_success_rate,
         introduces_duplicates=introduces_duplicates,

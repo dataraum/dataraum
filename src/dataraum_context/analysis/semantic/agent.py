@@ -315,10 +315,8 @@ class SemanticAgent(LLMFeature):
         for rel in candidates:
             table1 = rel.get("table1", "?")
             table2 = rel.get("table2", "?")
-            topo_sim = rel.get("topology_similarity", 0.0)
 
             lines.append(f"\n### {table1} <-> {table2}")
-            lines.append(f"Structural similarity: {topo_sim:.2f}")
 
             # Add relationship-level evaluation metrics if available
             join_success = rel.get("join_success_rate")
@@ -337,11 +335,17 @@ class SemanticAgent(LLMFeature):
                 for jc in join_cols:
                     col1 = jc.get("column1", "?")
                     col2 = jc.get("column2", "?")
-                    conf = jc.get("confidence", 0.0)
+                    join_conf = jc.get("join_confidence", 0.0)
                     card = jc.get("cardinality", "unknown")
 
-                    # Basic info
-                    line = f"  - {col1} <-> {col2}: {conf:.2f} ({card})"
+                    # Basic info with value overlap score
+                    line = f"  - {col1} <-> {col2}: overlap={join_conf:.2f} ({card})"
+
+                    # Add uniqueness ratios (helps identify keys vs measures)
+                    left_uniq = jc.get("left_uniqueness")
+                    right_uniq = jc.get("right_uniqueness")
+                    if left_uniq is not None and right_uniq is not None:
+                        line += f" [uniq: L={left_uniq:.2f} R={right_uniq:.2f}]"
 
                     # Add evaluation metrics if available
                     left_ri = jc.get("left_referential_integrity")
@@ -391,8 +395,9 @@ class SemanticAgent(LLMFeature):
 
             col_data = {
                 "column_name": profile.column_ref.column_name,
-                "null_ratio": profile.null_ratio,
+                "null_ratio": round(profile.null_ratio, 4),
                 "distinct_count": profile.distinct_count,
+                "cardinality_ratio": round(profile.cardinality_ratio, 4),  # Helps identify keys
                 "sample_values": samples.get(profile.column_ref.column_name, []),
             }
 
@@ -400,10 +405,11 @@ class SemanticAgent(LLMFeature):
             if profile.numeric_stats:
                 col_data["min"] = profile.numeric_stats.min_value
                 col_data["max"] = profile.numeric_stats.max_value
-                col_data["mean"] = profile.numeric_stats.mean
+                col_data["mean"] = round(profile.numeric_stats.mean, 4)
 
-            # Note: patterns are available via SchemaProfileResult.detected_patterns
-            # but not included in ColumnProfile which is for statistics stage
+            # Add string stats if available
+            if profile.string_stats:
+                col_data["avg_length"] = round(profile.string_stats.avg_length, 1)
 
             tables_data[table_name]["columns"].append(col_data)
 

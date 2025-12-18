@@ -19,6 +19,14 @@ def find_join_columns(
     Queries distinct values directly instead of sampling rows, which preserves
     the true value overlap for join detection. Returns ALL candidates above
     min_score for the LLM to evaluate.
+
+    Returns dicts with:
+    - column1, column2: column names
+    - join_confidence: value overlap score (Jaccard/containment)
+    - cardinality: one-to-one, one-to-many, etc.
+
+    Note: topology_similarity is computed separately in finder.py where
+    DataFrame access is available.
     """
     candidates = []
 
@@ -32,13 +40,13 @@ def find_join_columns(
                     {
                         "column1": col1,
                         "column2": col2,
-                        "confidence": score,
+                        "join_confidence": score,
                         "cardinality": cardinality,
                     }
                 )
 
     def _get_conf(x: dict[str, Any]) -> float:
-        c = x["confidence"]
+        c = x["join_confidence"]
         return float(c) if isinstance(c, (int, float)) else 0.0
 
     candidates.sort(key=_get_conf, reverse=True)

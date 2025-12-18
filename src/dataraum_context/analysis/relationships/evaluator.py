@@ -86,12 +86,14 @@ def evaluate_join_candidate(
         duckdb_conn,
     )
 
-    # Return updated candidate
+    # Return updated candidate, preserving topology and join confidence
     return JoinCandidate(
         column1=join_candidate.column1,
         column2=join_candidate.column2,
         confidence=join_candidate.confidence,
         cardinality=join_candidate.cardinality,
+        topology_similarity=join_candidate.topology_similarity,
+        join_confidence=join_candidate.join_confidence,
         left_referential_integrity=round(left_ri, 2),
         right_referential_integrity=round(right_ri, 2),
         orphan_count=orphan_count,
@@ -185,7 +187,6 @@ def evaluate_relationship_candidate(
             table1=candidate.table1,
             table2=candidate.table2,
             confidence=candidate.confidence,
-            topology_similarity=candidate.topology_similarity,
             relationship_type=candidate.relationship_type,
             join_candidates=evaluated_joins,
             join_success_rate=None,
@@ -211,7 +212,6 @@ def evaluate_relationship_candidate(
         table1=candidate.table1,
         table2=candidate.table2,
         confidence=candidate.confidence,
-        topology_similarity=candidate.topology_similarity,
         relationship_type=candidate.relationship_type,
         join_candidates=evaluated_joins,
         join_success_rate=join_success_rate,

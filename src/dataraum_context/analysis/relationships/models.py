@@ -16,6 +16,11 @@ from pydantic import BaseModel, Field
 class JoinCandidate(BaseModel):
     """A potential join between two columns.
 
+    Core metrics:
+    - confidence: overall confidence = max(topology_similarity, join_confidence)
+    - topology_similarity: column feature similarity (distributional/statistical)
+    - join_confidence: value overlap (Jaccard/containment)
+
     Evaluation metrics (populated by evaluator.py):
     - left_referential_integrity: % of FK values with matching PK
     - right_referential_integrity: % of PK values that are referenced
@@ -25,8 +30,13 @@ class JoinCandidate(BaseModel):
 
     column1: str
     column2: str
-    confidence: float
+    confidence: float  # max(topology_similarity, join_confidence)
     cardinality: str  # one-to-one, one-to-many, many-to-one
+
+    # Column-level topology similarity (distributional features)
+    topology_similarity: float = 0.0
+    # Value overlap score (Jaccard/containment)
+    join_confidence: float = 0.0
 
     # Evaluation metrics (populated by evaluator.py)
     left_referential_integrity: float | None = None  # 0-100%
@@ -38,6 +48,9 @@ class JoinCandidate(BaseModel):
 class RelationshipCandidate(BaseModel):
     """A candidate relationship between two tables.
 
+    The confidence is the best confidence among join_candidates.
+    Each JoinCandidate has its own topology_similarity and join_confidence.
+
     Evaluation metrics (populated by evaluator.py):
     - join_success_rate: % of rows from table1 that match in table2
     - introduces_duplicates: whether join multiplies rows (fan trap)
@@ -45,8 +58,7 @@ class RelationshipCandidate(BaseModel):
 
     table1: str
     table2: str
-    confidence: float
-    topology_similarity: float
+    confidence: float  # Best confidence among join_candidates
     relationship_type: str
 
     join_candidates: list[JoinCandidate] = Field(default_factory=list)

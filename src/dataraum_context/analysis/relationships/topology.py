@@ -99,8 +99,41 @@ def compute_persistence(df: pd.DataFrame, max_dim: int = 2) -> dict[str, Any]:
     return {"diagrams": result["dgms"], "stats": stats}
 
 
+def column_feature_similarity(col1: pd.Series, col2: pd.Series) -> float:
+    """Compute topological feature similarity between two columns.
+
+    Extracts the same statistical/distributional features used in TDA and
+    computes similarity based on Euclidean distance in feature space.
+    This is the column-level comparison that matters for join detection:
+    two columns that could be joined should have similar distributional
+    characteristics (cardinality, entropy, value patterns).
+
+    Args:
+        col1: First column series
+        col2: Second column series
+
+    Returns:
+        Similarity score in [0, 1], where 1 = identical feature vectors
+    """
+    feat1 = extract_column_features(col1.sort_values())
+    feat2 = extract_column_features(col2.sort_values())
+
+    # Handle NaN features (can happen with empty/all-null columns)
+    feat1 = np.nan_to_num(feat1, nan=0.0)
+    feat2 = np.nan_to_num(feat2, nan=0.0)
+
+    # Euclidean distance converted to similarity
+    distance = np.linalg.norm(feat1 - feat2)
+    similarity = 1 / (1 + distance)
+
+    return float(similarity)
+
+
 def persistence_similarity(persistence1: dict[str, Any], persistence2: dict[str, Any]) -> float:
     """Compare two persistence diagrams using Wasserstein distance on death times.
+
+    NOTE: This compares table-level persistence (intra-table column structure).
+    For cross-table join detection, use column_feature_similarity() instead.
 
     In H0 (connected components), births are all 0. Death times indicate when
     components merge, which is the meaningful structural information.

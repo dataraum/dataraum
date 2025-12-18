@@ -69,12 +69,12 @@ async def detect_relationships(
         raw_results = find_relationships(duckdb_conn, tables_data, min_confidence)
 
         # Convert to typed models
+        # Each JoinCandidate now has its own topology_similarity and join_confidence
         candidates = [
             RelationshipCandidate(
                 table1=r["table1"],
                 table2=r["table2"],
                 confidence=r["confidence"],
-                topology_similarity=r["topology_similarity"],
                 relationship_type=r["relationship_type"],
                 join_candidates=[
                     JoinCandidate(
@@ -82,6 +82,8 @@ async def detect_relationships(
                         column2=j["column2"],
                         confidence=j["confidence"],
                         cardinality=j["cardinality"],
+                        topology_similarity=j["topology_similarity"],
+                        join_confidence=j["join_confidence"],
                     )
                     for j in r["join_columns"]
                 ],
@@ -141,10 +143,13 @@ async def _store_candidates(
             if not col1_id or not col2_id:
                 continue
 
-            # Build evidence with topology info and evaluation metrics
+            # Build evidence with per-column topology and value overlap metrics
+            # Each JoinCandidate now has its own topology_similarity (column feature
+            # similarity) and join_confidence (value overlap), with confidence =
+            # max(topology_similarity, join_confidence)
             evidence = {
-                "topology_similarity": candidate.topology_similarity,
-                "join_confidence": jc.confidence,
+                "topology_similarity": jc.topology_similarity,
+                "join_confidence": jc.join_confidence,
                 "cardinality": jc.cardinality,
                 "source": "tda_join_detection",
             }
@@ -173,7 +178,7 @@ async def _store_candidates(
                 to_column_id=col2_id,
                 relationship_type="candidate",
                 cardinality=jc.cardinality,
-                confidence=jc.confidence,
+                confidence=jc.confidence,  # Already max(topology_similarity, join_confidence)
                 detection_method="candidate",
                 evidence=evidence,
                 is_confirmed=False,

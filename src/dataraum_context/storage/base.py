@@ -85,6 +85,7 @@ async def init_database(engine: AsyncEngine) -> None:
     # Import all model modules to register them with SQLAlchemy Base metadata
     # These imports ensure tables are created when init_database() is called
     from dataraum_context.analysis.correlation import db_models as _correlation_models  # noqa: F401
+    from dataraum_context.analysis.quality_summary import db_models as _quality_summary_models  # noqa: F401
     from dataraum_context.analysis.slicing import db_models as _slicing_models  # noqa: F401
     from dataraum_context.analysis.statistics import db_models as _statistics_models  # noqa: F401
     from dataraum_context.analysis.temporal import db_models as _temporal_models  # noqa: F401
@@ -112,6 +113,7 @@ async def reset_database(engine: AsyncEngine) -> None:
     """
     # Import all model modules to register them with SQLAlchemy Base metadata
     from dataraum_context.analysis.correlation import db_models as _correlation_models  # noqa: F401
+    from dataraum_context.analysis.quality_summary import db_models as _quality_summary_models  # noqa: F401
     from dataraum_context.analysis.slicing import db_models as _slicing_models  # noqa: F401
     from dataraum_context.analysis.statistics import db_models as _statistics_models  # noqa: F401
     from dataraum_context.analysis.temporal import db_models as _temporal_models  # noqa: F401

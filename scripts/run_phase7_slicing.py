@@ -9,6 +9,7 @@ categorical dimensions for creating data subsets:
 - Generates DuckDB SQL for creating slice tables
 
 Prerequisites:
+    - 
     - Phase 3 must be completed (run_phase3_statistics.py)
     - Phase 5 recommended (run_phase5_semantic.py)
     - ANTHROPIC_API_KEY must be set in environment or .env file
@@ -108,14 +109,14 @@ async def main(execute_slices: bool = False) -> int:
             await session.execute(select(func.count(SliceDefinition.slice_id)))
         ).scalar() or 0
 
-        if slice_count > 0:
-            print("\n   Slicing analysis already performed!")
-            print(f"   Slice definitions: {slice_count}")
-            print_phase_status("slicing", True)
-            await _print_slicing_summary(session)
-            await print_database_summary(session, duckdb_conn)
-            await cleanup_connections()
-            return 0
+        # if slice_count > 0:
+        #     print("\n   Slicing analysis already performed!")
+        #     print(f"   Slice definitions: {slice_count}")
+        #     print_phase_status("slicing", True)
+        #     await _print_slicing_summary(session)
+        #     await print_database_summary(session, duckdb_conn)
+        #     await cleanup_connections()
+        #     return 0
 
         print_phase_status("slicing", False)
 

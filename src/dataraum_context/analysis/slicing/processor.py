@@ -107,9 +107,7 @@ async def analyze_slices(
 
         # Optionally execute slice SQL
         if execute_slices and duckdb_conn:
-            execution_results = _execute_slice_queries(
-                duckdb_conn, result.slice_queries
-            )
+            _execution_results = _execute_slice_queries(duckdb_conn, result.slice_queries)
             # Could add execution results to response if needed
 
         return Result.ok(result)
@@ -136,7 +134,7 @@ def _execute_slice_queries(
     Returns:
         Dict with execution results
     """
-    results = {
+    results: dict[str, list[Any]] = {
         "success": [],
         "failed": [],
     }
@@ -151,9 +149,7 @@ def _execute_slice_queries(
             duckdb_conn.execute(slice_sql.sql_query)
             results["success"].append(slice_sql.table_name)
         except Exception as e:
-            results["failed"].append(
-                {"table_name": slice_sql.table_name, "error": str(e)}
-            )
+            results["failed"].append({"table_name": slice_sql.table_name, "error": str(e)})
 
     return results
 
@@ -176,7 +172,7 @@ def execute_slices_from_definitions(
     Returns:
         Dict with execution results
     """
-    results = {
+    results: dict[str, list[Any]] = {
         "success": [],
         "failed": [],
     }

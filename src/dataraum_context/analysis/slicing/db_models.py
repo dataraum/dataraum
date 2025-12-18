@@ -6,7 +6,7 @@ Contains database models for slice definitions and analysis runs.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -36,9 +36,7 @@ class SliceDefinition(Base):
     __tablename__ = "slice_definitions"
     __table_args__ = {"extend_existing": True}
 
-    slice_id: Mapped[str] = mapped_column(
-        String, primary_key=True, default=lambda: str(uuid4())
-    )
+    slice_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     table_id: Mapped[str] = mapped_column(
         ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
     )
@@ -48,9 +46,7 @@ class SliceDefinition(Base):
 
     # Slice configuration
     slice_priority: Mapped[int] = mapped_column(Integer, nullable=False)
-    slice_type: Mapped[str] = mapped_column(
-        String, nullable=False, default="categorical"
-    )
+    slice_type: Mapped[str] = mapped_column(String, nullable=False, default="categorical")
     distinct_values: Mapped[list[str] | None] = mapped_column(JSON)
     value_count: Mapped[int | None] = mapped_column(Integer)
 
@@ -63,16 +59,14 @@ class SliceDefinition(Base):
     sql_template: Mapped[str | None] = mapped_column(Text)
 
     # Provenance
-    detection_source: Mapped[str] = mapped_column(
-        String, nullable=False, default="llm"
-    )
+    detection_source: Mapped[str] = mapped_column(String, nullable=False, default="llm")
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
 
     # Relationships
-    table: Mapped["Table"] = relationship()
-    column: Mapped["Column"] = relationship()
+    table: Mapped[Table] = relationship()
+    column: Mapped[Column] = relationship()
 
 
 class SlicingAnalysisRun(Base):
@@ -84,9 +78,7 @@ class SlicingAnalysisRun(Base):
     __tablename__ = "slicing_analysis_runs"
     __table_args__ = {"extend_existing": True}
 
-    run_id: Mapped[str] = mapped_column(
-        String, primary_key=True, default=lambda: str(uuid4())
-    )
+    run_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
 
     # Scope
     table_ids: Mapped[list[str] | None] = mapped_column(JSON)
@@ -94,9 +86,7 @@ class SlicingAnalysisRun(Base):
     columns_considered: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # Results
-    recommendations_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0
-    )
+    recommendations_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     slices_generated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # Timing

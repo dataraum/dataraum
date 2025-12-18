@@ -7,12 +7,12 @@ import duckdb
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.analysis.correlation.categorical import compute_categorical_associations
-from dataraum_context.analysis.correlation.derived_columns import detect_derived_columns
-from dataraum_context.analysis.correlation.functional_dependency import (
+from dataraum_context.analysis.correlation.within_table import (
+    compute_categorical_associations,
+    compute_numeric_correlations,
+    detect_derived_columns,
     detect_functional_dependencies,
 )
-from dataraum_context.analysis.correlation.numeric import compute_numeric_correlations
 from dataraum_context.storage import Column, Source, Table
 
 

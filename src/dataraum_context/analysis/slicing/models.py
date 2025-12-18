@@ -26,35 +26,25 @@ class SliceRecommendation(BaseModel):
     column_name: str
 
     # Slice metadata
-    slice_priority: int = Field(
-        description="Priority rank (1 = highest priority slice dimension)"
-    )
+    slice_priority: int = Field(description="Priority rank (1 = highest priority slice dimension)")
     distinct_values: list[str] = Field(
         default_factory=list,
         description="List of unique values that will become slices",
     )
-    value_count: int = Field(
-        description="Number of distinct values (number of slices to create)"
-    )
+    value_count: int = Field(description="Number of distinct values (number of slices to create)")
 
     # Analysis reasoning
-    reasoning: str = Field(
-        description="Why this column is a good slicing dimension"
-    )
+    reasoning: str = Field(description="Why this column is a good slicing dimension")
     business_context: str | None = Field(
         default=None,
         description="Business meaning of this dimension (from semantic analysis)",
     )
 
     # Confidence
-    confidence: float = Field(
-        ge=0.0, le=1.0, description="Confidence in this recommendation"
-    )
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence in this recommendation")
 
     # SQL for creating slices
-    sql_template: str = Field(
-        description="DuckDB SQL template for creating slice tables"
-    )
+    sql_template: str = Field(description="DuckDB SQL template for creating slice tables")
 
 
 class SliceSQL(BaseModel):

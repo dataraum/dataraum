@@ -68,7 +68,6 @@ async def main(execute_slices: bool = False) -> int:
     async with session_factory() as session:
         from dataraum_context.analysis.slicing.db_models import (
             SliceDefinition,
-            SlicingAnalysisRun,
         )
         from dataraum_context.analysis.statistics.db_models import StatisticalProfile
         from dataraum_context.storage import Table
@@ -169,7 +168,7 @@ async def main(execute_slices: bool = False) -> int:
 
             slicing_result = result.unwrap()
 
-            print(f"\n   Analysis complete!")
+            print("\n   Analysis complete!")
             print(f"   Tables analyzed: {slicing_result.tables_analyzed}")
             print(f"   Columns considered: {slicing_result.columns_considered}")
             print(f"   Recommendations: {len(slicing_result.recommendations)}")
@@ -191,7 +190,9 @@ async def main(execute_slices: bool = False) -> int:
                     if rec.distinct_values:
                         sample = rec.distinct_values[:5]
                         if len(rec.distinct_values) > 5:
-                            print(f"   Sample values: {sample} ... (+{len(rec.distinct_values) - 5} more)")
+                            print(
+                                f"   Sample values: {sample} ... (+{len(rec.distinct_values) - 5} more)"
+                            )
                         else:
                             print(f"   Values: {sample}")
 
@@ -224,6 +225,7 @@ async def main(execute_slices: bool = False) -> int:
         except Exception as e:
             print(f"   ERROR: {e}")
             import traceback
+
             traceback.print_exc()
             await cleanup_connections()
             return 1
@@ -254,9 +256,7 @@ async def _print_slicing_summary(session: Any) -> None:
     ).scalar() or 0
 
     # Get latest run
-    run_stmt = select(SlicingAnalysisRun).order_by(
-        SlicingAnalysisRun.started_at.desc()
-    ).limit(1)
+    run_stmt = select(SlicingAnalysisRun).order_by(SlicingAnalysisRun.started_at.desc()).limit(1)
     run_result = await session.execute(run_stmt)
     latest_run = run_result.scalar_one_or_none()
 

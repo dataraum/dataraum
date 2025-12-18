@@ -3,11 +3,11 @@
 import duckdb
 import pytest
 
-from dataraum_context.analysis.correlation.cross_table import (
+from dataraum_context.analysis.correlation.cross_table import analyze_relationship_quality
+from dataraum_context.analysis.correlation.models import (
     CrossTableQualityResult,
-    analyze_relationship_quality,
+    EnrichedRelationship,
 )
-from dataraum_context.analysis.correlation.models import EnrichedRelationship
 from dataraum_context.core.models.base import RelationshipType
 
 

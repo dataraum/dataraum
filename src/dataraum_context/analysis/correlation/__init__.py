@@ -1,8 +1,16 @@
 """Correlation analysis module.
 
 Analyzes relationships between columns:
-- Per-table: Numeric correlations, categorical associations, functional dependencies, derived columns
-- Post-confirmation: Cross-table quality analysis (VDP, redundant/derived columns)
+
+Within-table (pre-semantic):
+- Numeric correlations (Pearson, Spearman)
+- Categorical associations (Cramér's V)
+- Functional dependencies (A → B)
+- Derived columns
+
+Cross-table (post-semantic):
+- Cross-table quality analysis (VDP, redundant/derived columns)
+- Requires confirmed relationships from semantic agent
 
 Main entry points:
 - analyze_correlations: Within-table correlation analysis
@@ -10,12 +18,15 @@ Main entry points:
 """
 
 # Processors (main entry points)
+# Cross-table functions (for direct access)
+from dataraum_context.analysis.correlation.cross_table import (
+    analyze_relationship_quality,
+)
+
 # DB Models - Within-table
 from dataraum_context.analysis.correlation.db_models import (
     CategoricalAssociation as DBCategoricalAssociation,
 )
-
-# DB Models - Cross-table quality
 from dataraum_context.analysis.correlation.db_models import (
     ColumnCorrelation,
     CorrelationAnalysisRun,
@@ -30,8 +41,7 @@ from dataraum_context.analysis.correlation.db_models import (
     FunctionalDependency as DBFunctionalDependency,
 )
 
-# Pydantic Models - Within-table
-# Pydantic Models - Cross-table quality
+# Pydantic Models
 from dataraum_context.analysis.correlation.models import (
     CategoricalAssociation,
     CorrelationAnalysisResult,
@@ -51,10 +61,25 @@ from dataraum_context.analysis.correlation.processor import (
     analyze_cross_table_quality,
 )
 
+# Within-table functions (for direct access)
+from dataraum_context.analysis.correlation.within_table import (
+    compute_categorical_associations,
+    compute_numeric_correlations,
+    detect_derived_columns,
+    detect_functional_dependencies,
+)
+
 __all__ = [
     # Processors (main entry points)
     "analyze_correlations",
     "analyze_cross_table_quality",
+    # Within-table functions
+    "compute_numeric_correlations",
+    "compute_categorical_associations",
+    "detect_functional_dependencies",
+    "detect_derived_columns",
+    # Cross-table functions
+    "analyze_relationship_quality",
     # DB Models - Within-table
     "ColumnCorrelation",
     "DBCategoricalAssociation",

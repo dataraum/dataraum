@@ -71,9 +71,7 @@ async def _load_tables_with_columns(
 
         # Load columns for this table
         columns_stmt = (
-            select(Column)
-            .where(Column.table_id == table_id)
-            .order_by(Column.column_position)
+            select(Column).where(Column.table_id == table_id).order_by(Column.column_position)
         )
         columns_result = await session.execute(columns_stmt)
         columns = columns_result.scalars().all()
@@ -284,9 +282,7 @@ async def _load_correlations(
         )
 
     # Load numeric correlations
-    corr_stmt = select(ColumnCorrelation).where(
-        ColumnCorrelation.column1_id.in_(column_ids)
-    )
+    corr_stmt = select(ColumnCorrelation).where(ColumnCorrelation.column1_id.in_(column_ids))
     corr_result = await session.execute(corr_stmt)
     correlations = corr_result.scalars().all()
 

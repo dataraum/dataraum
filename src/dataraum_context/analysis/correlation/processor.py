@@ -23,7 +23,6 @@ import duckdb
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.analysis.correlation.categorical import compute_categorical_associations
 from dataraum_context.analysis.correlation.cross_table import analyze_relationship_quality
 from dataraum_context.analysis.correlation.db_models import (
     CorrelationAnalysisRun,
@@ -31,16 +30,17 @@ from dataraum_context.analysis.correlation.db_models import (
     MulticollinearityGroup,
     QualityIssueDB,
 )
-from dataraum_context.analysis.correlation.derived_columns import detect_derived_columns
-from dataraum_context.analysis.correlation.functional_dependency import (
-    detect_functional_dependencies,
-)
 from dataraum_context.analysis.correlation.models import (
     CorrelationAnalysisResult,
     CrossTableQualityResult,
     EnrichedRelationship,
 )
-from dataraum_context.analysis.correlation.numeric import compute_numeric_correlations
+from dataraum_context.analysis.correlation.within_table import (
+    compute_categorical_associations,
+    compute_numeric_correlations,
+    detect_derived_columns,
+    detect_functional_dependencies,
+)
 from dataraum_context.analysis.relationships.db_models import Relationship
 from dataraum_context.core.models.base import Cardinality, RelationshipType, Result
 from dataraum_context.storage import Column, Table

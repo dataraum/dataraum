@@ -40,10 +40,10 @@ class SlicingAgent(LLMFeature):
 
     def __init__(
         self,
-        config: "LLMConfig",
-        provider: "LLMProvider",
-        prompt_renderer: "PromptRenderer",
-        cache: "LLMCache",
+        config: LLMConfig,
+        provider: LLMProvider,
+        prompt_renderer: PromptRenderer,
+        cache: LLMCache,
     ) -> None:
         """Initialize slicing agent.
 
@@ -85,9 +85,7 @@ class SlicingAgent(LLMFeature):
             "tables_json": json.dumps(context_data.get("tables", []), indent=2),
             "statistics_json": json.dumps(context_data.get("statistics", []), indent=2),
             "semantic_json": json.dumps(context_data.get("semantic", []), indent=2),
-            "correlations_json": json.dumps(
-                context_data.get("correlations", []), indent=2
-            ),
+            "correlations_json": json.dumps(context_data.get("correlations", []), indent=2),
         }
 
         # Render prompt
@@ -170,9 +168,7 @@ class SlicingAgent(LLMFeature):
 
             # Build SQL template
             duckdb_table = table_info.get("duckdb_path", f"typed_{table_name}")
-            sql_template = self._build_sql_template(
-                duckdb_table, column_name, distinct_values
-            )
+            sql_template = self._build_sql_template(duckdb_table, column_name, distinct_values)
 
             recommendation = SliceRecommendation(
                 table_id=table_info.get("table_id", ""),

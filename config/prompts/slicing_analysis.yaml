@@ -1,0 +1,152 @@
+# Slicing Analysis Prompt
+#
+# Analyzes table statistics, semantic annotations, and correlations
+# to identify the best categorical dimensions for data slicing.
+
+name: slicing_analysis
+version: "1.0.0"
+description: Identify optimal categorical dimensions for slicing data into subsets
+
+# Temperature (0.0 = deterministic, 1.0 = creative)
+temperature: 0.0
+
+# The prompt template
+# Available variables: {tables_json}, {statistics_json}, {semantic_json}, {correlations_json}
+prompt: |
+  You are a data analyst tasked with identifying the best categorical columns for slicing a dataset into meaningful subsets.
+
+  ## Goal
+
+  Identify columns that would create useful data subsets when filtered by each unique value.
+  For example, if a table has a "region" column with values ["North", "South", "East", "West"],
+  slicing on this column would create 4 subsets - one for each region.
+
+  ## Tables and Columns
+
+  {tables_json}
+
+  ## Statistical Profiles
+
+  For each column, we have statistics including distinct value counts and top values:
+
+  {statistics_json}
+
+  ## Semantic Annotations
+
+  Business meaning and roles for columns (if available):
+
+  {semantic_json}
+
+  ## Correlation Analysis
+
+  Relationships between columns:
+
+  {correlations_json}
+
+  ## Selection Criteria for Good Slice Dimensions
+
+  A good slicing dimension should:
+
+  1. **Appropriate Cardinality**: Have 2-20 distinct values (not too few, not too many)
+     - Too few (1-2 values): Not useful for analysis
+     - Too many (>20 values): Creates too many slices, becomes unmanageable
+
+  2. **Business Meaning**: Represent a meaningful business dimension like:
+     - Geographic: region, country, area, location
+     - Temporal: year, quarter, month, period
+     - Organizational: department, team, division
+     - Category: product_type, customer_segment, status
+     - Source: data_source, system, channel
+
+  3. **Balanced Distribution**: Values should have reasonable row counts
+     - Avoid dimensions where one value has 99% of data
+
+  4. **Independence**: Not highly correlated with other slice dimensions
+     - Avoid redundant slicing (e.g., both "region" and "region_code")
+
+  ## Response Format
+
+  Respond with valid JSON only, no markdown formatting:
+
+  {{
+    "recommendations": [
+      {{
+        "table_name": "the_table_name",
+        "column_name": "the_column_to_slice_on",
+        "priority": 1,
+        "distinct_values": ["value1", "value2", "value3"],
+        "reasoning": "Why this is a good slicing dimension",
+        "business_context": "What this dimension represents in business terms",
+        "confidence": 0.95
+      }}
+    ]
+  }}
+
+  ## Important Notes
+
+  - Order recommendations by priority (1 = highest priority, best slice dimension)
+  - Only recommend categorical columns (VARCHAR type), not numeric or date columns
+  - Include ALL distinct values in the distinct_values array
+  - If a column has many values, include up to 20 most frequent ones
+  - If no good slicing dimensions exist, return empty recommendations array
+  - Focus on dimensions that would create analytically interesting subsets
+
+# Input variable definitions
+inputs:
+  tables_json:
+    description: JSON array of tables with columns and metadata
+    required: true
+
+  statistics_json:
+    description: JSON array of statistical profiles per column
+    required: true
+
+  semantic_json:
+    description: JSON array of semantic annotations (may be empty)
+    required: false
+    default: "[]"
+
+  correlations_json:
+    description: JSON array of correlation analysis results
+    required: false
+    default: "[]"
+
+# Expected output schema
+output_schema:
+  type: object
+  required:
+    - recommendations
+  properties:
+    recommendations:
+      type: array
+      items:
+        type: object
+        required:
+          - table_name
+          - column_name
+          - priority
+          - distinct_values
+          - reasoning
+          - confidence
+        properties:
+          table_name:
+            type: string
+          column_name:
+            type: string
+          priority:
+            type: integer
+          distinct_values:
+            type: array
+            items:
+              type: string
+          reasoning:
+            type: string
+          business_context:
+            type: string
+          confidence:
+            type: number
+
+# Validation rules
+validation:
+  slice_types:
+    - categorical

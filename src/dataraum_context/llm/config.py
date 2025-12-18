@@ -36,6 +36,7 @@ class LLMFeatures(BaseModel):
     suggested_queries: FeatureConfig
     context_summary: FeatureConfig
     filter_recommendations: FeatureConfig | None = None
+    slicing_analysis: FeatureConfig | None = None
 
 
 class LLMLimits(BaseModel):

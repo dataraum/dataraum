@@ -9,8 +9,10 @@ Pydantic models for statistical profiling data structures:
 - DetectedPattern: Pattern detection result (used by schema profiler)
 - StatisticsProfileResult: Result of statistics profiling
 
-NOTE: Statistical quality models (BenfordAnalysis, OutlierDetection, StatisticalQualityResult)
-have been moved to quality/models.py since they represent quality assessment, not statistics.
+Statistical Quality Models (moved from quality/models.py in Phase 9A):
+- BenfordAnalysis: Benford's Law compliance analysis
+- OutlierDetection: Outlier detection results (IQR + Isolation Forest)
+- StatisticalQualityResult: Comprehensive statistical quality assessment
 """
 
 from __future__ import annotations
@@ -107,3 +109,58 @@ class StatisticsProfileResult(BaseModel):
 
     column_profiles: list[ColumnProfile] = Field(default_factory=list)
     duration_seconds: float
+
+
+# =============================================================================
+# Statistical Quality Models (moved from quality/models.py in Phase 9A)
+# =============================================================================
+
+
+class BenfordAnalysis(BaseModel):
+    """Benford's Law compliance analysis."""
+
+    chi_square: float
+    p_value: float
+    is_compliant: bool  # p_value > 0.05
+    digit_distribution: dict[str, float]  # {1: 0.301, 2: 0.176, ...}
+    interpretation: str
+
+
+class OutlierDetection(BaseModel):
+    """Outlier detection results."""
+
+    # IQR Method
+    iqr_lower_fence: float
+    iqr_upper_fence: float
+    iqr_outlier_count: int
+    iqr_outlier_ratio: float
+
+    # Isolation Forest
+    isolation_forest_score: float  # Average anomaly score
+    isolation_forest_anomaly_count: int
+    isolation_forest_anomaly_ratio: float
+
+    # Sample outliers
+    outlier_samples: list[dict[str, Any]] = Field(default_factory=list)  # [{value, method, score}]
+
+
+class StatisticalQualityResult(BaseModel):
+    """Comprehensive statistical quality assessment.
+
+    This is the Pydantic source of truth for statistical quality metrics.
+    Gets serialized to StatisticalQualityMetrics.quality_data JSONB field.
+    """
+
+    column_id: str
+    column_ref: ColumnRef
+
+    # Benford's Law (for financial/count columns)
+    benford_analysis: BenfordAnalysis | None = None
+
+    # Outlier detection
+    outlier_detection: OutlierDetection | None = None
+
+    # Quality issues detected
+    quality_issues: list[dict[str, Any]] = Field(
+        default_factory=list
+    )  # [{issue_type, severity, description}]

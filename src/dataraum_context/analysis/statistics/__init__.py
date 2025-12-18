@@ -8,29 +8,47 @@ Computes column-level statistics on typed data:
 - Percentiles
 - Histograms
 
-NOTE: Statistical quality models (BenfordAnalysis, OutlierDetection, StatisticalQualityResult,
-StatisticalQualityMetrics) are in quality/models.py and quality/db_models.py - they represent
-quality assessment, not statistics computation.
+Statistical Quality (moved from quality/ in Phase 9A):
+- Benford's Law compliance (fraud detection)
+- Outlier detection (IQR + Isolation Forest)
 """
 
-from dataraum_context.analysis.statistics.db_models import StatisticalProfile
+from dataraum_context.analysis.statistics.db_models import (
+    StatisticalProfile,
+    StatisticalQualityMetrics,
+)
 from dataraum_context.analysis.statistics.models import (
+    BenfordAnalysis,
     ColumnProfile,
     DetectedPattern,
     HistogramBucket,
     NumericStats,
+    OutlierDetection,
+    StatisticalQualityResult,
     StatisticsProfileResult,
     StringStats,
     ValueCount,
 )
 from dataraum_context.analysis.statistics.processor import profile_statistics
+from dataraum_context.analysis.statistics.quality import (
+    assess_statistical_quality,
+    check_benford_law,
+    detect_outliers_iqr,
+    detect_outliers_isolation_forest,
+)
 
 __all__ = [
-    # Main entry point
+    # Main entry points
     "profile_statistics",
+    "assess_statistical_quality",
+    # Quality functions
+    "check_benford_law",
+    "detect_outliers_iqr",
+    "detect_outliers_isolation_forest",
     # DB Models
     "StatisticalProfile",
-    # Pydantic Models
+    "StatisticalQualityMetrics",
+    # Pydantic Models - Statistics
     "ColumnProfile",
     "NumericStats",
     "StringStats",
@@ -38,4 +56,8 @@ __all__ = [
     "ValueCount",
     "DetectedPattern",
     "StatisticsProfileResult",
+    # Pydantic Models - Quality
+    "BenfordAnalysis",
+    "OutlierDetection",
+    "StatisticalQualityResult",
 ]

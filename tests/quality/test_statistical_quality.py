@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from dataraum_context.quality.models import BenfordAnalysis
+from dataraum_context.analysis.statistics import BenfordAnalysis
 
 
 class TestBenfordLaw:

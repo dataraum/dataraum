@@ -4,13 +4,15 @@ This module implements focused statistical quality metrics:
 - Benford's Law compliance (fraud detection)
 - Outlier detection (IQR and Isolation Forest)
 
-Note: Distribution stability (KS test) is in quality.temporal module.
+Note: Distribution stability (KS test) is in analysis/temporal module.
 Isolation Forest is particularly valuable for financial data with non-normal
 distributions and seasonal patterns.
 
 These metrics may require additional dependencies:
 - scipy (already in core dependencies)
 - scikit-learn (optional for Isolation Forest: pip install dataraum-context[statistical-quality])
+
+Moved from quality/statistical.py in Phase 9A restructuring.
 """
 
 from datetime import UTC, datetime
@@ -20,17 +22,18 @@ from uuid import uuid4
 import duckdb
 import numpy as np
 from scipy import stats
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models.base import ColumnRef, Result
-from dataraum_context.quality.db_models import (
+from dataraum_context.analysis.statistics.db_models import (
     StatisticalQualityMetrics as DBStatisticalQualityMetrics,
 )
-from dataraum_context.quality.models import (
+from dataraum_context.analysis.statistics.models import (
     BenfordAnalysis,
     OutlierDetection,
     StatisticalQualityResult,
 )
+from dataraum_context.core.models.base import ColumnRef, Result
 from dataraum_context.storage import Column, Table
 
 # Type checking imports to avoid hard dependency on scikit-learn
@@ -359,8 +362,6 @@ async def assess_statistical_quality(
             return Result.fail(f"Table not found: {table_id}")
 
         # Get all columns
-        from sqlalchemy import select
-
         stmt = select(Column).where(Column.table_id == table_id)
         query_result = await session.execute(stmt)
         columns = query_result.scalars().all()

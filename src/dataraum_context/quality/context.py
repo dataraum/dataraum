@@ -26,7 +26,10 @@ from dataraum_context.analysis.correlation.db_models import (
 )
 
 # NOTE: CrossTableMulticollinearityMetrics removed - being replaced with per-relationship evaluation
-from dataraum_context.analysis.statistics.db_models import StatisticalProfile
+from dataraum_context.analysis.statistics.db_models import (
+    StatisticalProfile,
+    StatisticalQualityMetrics,
+)
 from dataraum_context.analysis.temporal import TemporalColumnProfile as TemporalQualityMetrics
 from dataraum_context.analysis.typing.db_models import (
     TypeCandidate,
@@ -38,7 +41,6 @@ from dataraum_context.enrichment.db_models import (
     TopologicalQualityMetrics,
 )
 from dataraum_context.enrichment.relationships.gathering import gather_relationships
-from dataraum_context.quality.db_models import StatisticalQualityMetrics
 from dataraum_context.quality.domains.db_models import DomainQualityMetrics
 from dataraum_context.quality.models import (
     ColumnQualityContext,

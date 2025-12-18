@@ -35,7 +35,7 @@ from dataraum_context.analysis.correlation import analyze_correlations
 
 # NOTE: Cross-table multicollinearity disabled - being replaced with per-relationship evaluation
 # from dataraum_context.analysis.correlation import compute_cross_table_multicollinearity
-from dataraum_context.analysis.statistics import profile_statistics
+from dataraum_context.analysis.statistics import assess_statistical_quality, profile_statistics
 from dataraum_context.analysis.temporal import (
     profile_temporal,
 )
@@ -51,7 +51,6 @@ from dataraum_context.enrichment.semantic import enrich_semantic
 from dataraum_context.enrichment.topology import enrich_topology
 from dataraum_context.quality.context import format_dataset_quality_context
 from dataraum_context.quality.domains.financial import analyze_financial_quality
-from dataraum_context.quality.statistical import assess_statistical_quality
 from dataraum_context.quality.topological import analyze_topological_quality
 from dataraum_context.sources.csv import CSVLoader
 from dataraum_context.storage import Column, Table

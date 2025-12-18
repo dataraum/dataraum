@@ -8,8 +8,8 @@ This module contains models for:
 - Topological quality analysis (Betti numbers, persistence, cycles)
 - Quality dimension and severity enums (for classification, not scoring)
 
-Note: Scoring models have been removed. This module focuses on raw analysis
-results and issue detection, not computed quality scores.
+Note: Statistical quality models (BenfordAnalysis, OutlierDetection, StatisticalQualityResult)
+have been moved to analysis/statistics/models.py as part of Phase 9A restructuring.
 """
 
 from __future__ import annotations
@@ -21,60 +21,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from dataraum_context.core.models.base import ColumnRef, DecisionSource, QualitySeverity
-
-# === Statistical Quality Models ===
-# These models represent quality assessment results (Benford's Law, outlier detection)
-
-
-class BenfordAnalysis(BaseModel):
-    """Benford's Law compliance analysis."""
-
-    chi_square: float
-    p_value: float
-    is_compliant: bool  # p_value > 0.05
-    digit_distribution: dict[str, float]  # {1: 0.301, 2: 0.176, ...}
-    interpretation: str
-
-
-class OutlierDetection(BaseModel):
-    """Outlier detection results."""
-
-    # IQR Method
-    iqr_lower_fence: float
-    iqr_upper_fence: float
-    iqr_outlier_count: int
-    iqr_outlier_ratio: float
-
-    # Isolation Forest
-    isolation_forest_score: float  # Average anomaly score
-    isolation_forest_anomaly_count: int
-    isolation_forest_anomaly_ratio: float
-
-    # Sample outliers
-    outlier_samples: list[dict[str, Any]] = Field(default_factory=list)  # [{value, method, score}]
-
-
-class StatisticalQualityResult(BaseModel):
-    """Comprehensive statistical quality assessment.
-
-    This is the Pydantic source of truth for statistical quality metrics.
-    Gets serialized to StatisticalQualityMetrics.quality_data JSONB field.
-    """
-
-    column_id: str
-    column_ref: ColumnRef
-
-    # Benford's Law (for financial/count columns)
-    benford_analysis: BenfordAnalysis | None = None
-
-    # Outlier detection
-    outlier_detection: OutlierDetection | None = None
-
-    # Quality issues detected
-    quality_issues: list[dict[str, Any]] = Field(
-        default_factory=list
-    )  # [{issue_type, severity, description}]
-
 
 # === Quality Enums ===
 

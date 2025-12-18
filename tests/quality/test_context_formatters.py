@@ -7,7 +7,10 @@ from datetime import UTC, datetime
 
 import pytest
 
-from dataraum_context.analysis.statistics.db_models import StatisticalProfile
+from dataraum_context.analysis.statistics.db_models import (
+    StatisticalProfile,
+    StatisticalQualityMetrics,
+)
 from dataraum_context.analysis.temporal import TemporalColumnProfile
 from dataraum_context.enrichment.db_models import (
     TopologicalQualityMetrics,
@@ -19,7 +22,6 @@ from dataraum_context.quality.context import (
     format_dataset_quality_context,
     format_table_quality_context,
 )
-from dataraum_context.quality.db_models import StatisticalQualityMetrics
 from dataraum_context.quality.models import (
     ColumnQualityContext,
     DatasetQualityContext,

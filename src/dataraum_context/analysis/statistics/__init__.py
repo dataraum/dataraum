@@ -29,7 +29,7 @@ from dataraum_context.analysis.statistics.models import (
     StringStats,
     ValueCount,
 )
-from dataraum_context.analysis.statistics.processor import profile_statistics
+from dataraum_context.analysis.statistics.profiler import profile_statistics
 from dataraum_context.analysis.statistics.quality import (
     assess_statistical_quality,
     check_benford_law,

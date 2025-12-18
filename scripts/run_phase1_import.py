@@ -26,13 +26,9 @@ from infra import (
 )
 
 # CSV files to load
-CSV_DIR = Path(__file__).parent.parent / "examples" / "finance_csv_example"
+CSV_DIR = Path(__file__).parent.parent / "examples" #/ "finance_csv_example"
 CSV_FILES = [
-    "customer_table.csv",
-    "vendor_table.csv",
-    "payment_method.csv",
-    "product_service_table.csv",
-    "Master_txn_table.csv",
+    "kontobuchungen.csv"
 ]
 
 # Junk columns to drop (artifacts from CSV exports)

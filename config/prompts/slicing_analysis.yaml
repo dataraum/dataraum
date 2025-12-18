@@ -47,16 +47,9 @@ prompt: |
 
   A good slicing dimension should:
 
-  1. **Appropriate Cardinality**: Have 2-20 distinct values (not too few, not too many)
-     - Too few (1-2 values): Not useful for analysis
-     - Too many (>20 values): Creates too many slices, becomes unmanageable
+  1. **Appropriate Cardinality**: Have <15 distinct values
 
-  2. **Business Meaning**: Represent a meaningful business dimension like:
-     - Geographic: region, country, area, location
-     - Temporal: year, quarter, month, period
-     - Organizational: department, team, division
-     - Category: product_type, customer_segment, status
-     - Source: data_source, system, channel
+  2. **Business Meaning**: Represent a meaningful business dimension
 
   3. **Balanced Distribution**: Values should have reasonable row counts
      - Avoid dimensions where one value has 99% of data
@@ -87,7 +80,7 @@ prompt: |
   - Order recommendations by priority (1 = highest priority, best slice dimension)
   - Only recommend categorical columns (VARCHAR type), not numeric or date columns
   - Include ALL distinct values in the distinct_values array
-  - If a column has many values, include up to 20 most frequent ones
+  - If a column has many values, include up to 5 most frequent ones
   - If no good slicing dimensions exist, return empty recommendations array
   - Focus on dimensions that would create analytically interesting subsets
 

@@ -230,6 +230,7 @@ class FinancialDomainAnalyzer(DomainAnalyzer):
             period_end_cutoff_clean=period_end_cutoff_clean,
         )
         session.add(db_metric)
+        await session.flush()  # Flush parent before adding children with FK references
 
         # Store detailed checks
         if double_entry:

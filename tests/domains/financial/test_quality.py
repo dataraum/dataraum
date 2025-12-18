@@ -23,7 +23,7 @@ from dataraum_context.domains.financial import (
     check_trial_balance,
 )
 from dataraum_context.domains.financial.models import FinancialQualityConfig
-from dataraum_context.storage import Base, Source, Table
+from dataraum_context.storage import Source, Table, init_database
 
 
 @pytest.fixture
@@ -31,8 +31,8 @@ async def db_session():
     """Create an in-memory SQLite async session for testing."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Use init_database to properly register all db_models
+    await init_database(engine)
 
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -51,6 +51,7 @@ async def db_session():
             table_id=str(uuid4()),
             source_id=source.source_id,
             table_name="test_ledger",
+            duckdb_path="test_ledger",  # Must match the DuckDB table name
             layer="raw",
             row_count=0,
         )

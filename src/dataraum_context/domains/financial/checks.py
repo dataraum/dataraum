@@ -46,12 +46,14 @@ async def check_double_entry_balance(
         Result containing double-entry balance check result
     """
     try:
-        # Get table name from metadata
+        # Get table from metadata
         table = await session.get(Table, table_id)
         if not table:
             return Result.fail(f"Table {table_id} not found")
+        if not table.duckdb_path:
+            return Result.fail(f"Table has no DuckDB path: {table_id}")
 
-        table_name = table.table_name
+        table_name = table.duckdb_path
 
         # Detect columns
         columns_query = f"DESCRIBE {table_name}"
@@ -151,8 +153,10 @@ async def check_trial_balance(
         table = await session.get(Table, table_id)
         if not table:
             return Result.fail(f"Table {table_id} not found")
+        if not table.duckdb_path:
+            return Result.fail(f"Table has no DuckDB path: {table_id}")
 
-        table_name = table.table_name
+        table_name = table.duckdb_path
 
         columns_query = f"DESCRIBE {table_name}"
         columns_df = duckdb_conn.execute(columns_query).df()
@@ -244,8 +248,10 @@ async def check_sign_conventions(
         table = await session.get(Table, table_id)
         if not table:
             return Result.fail(f"Table {table_id} not found")
+        if not table.duckdb_path:
+            return Result.fail(f"Table has no DuckDB path: {table_id}")
 
-        table_name = table.table_name
+        table_name = table.duckdb_path
 
         columns_query = f"DESCRIBE {table_name}"
         columns_df = duckdb_conn.execute(columns_query).df()
@@ -361,8 +367,10 @@ async def check_fiscal_period_integrity(
         table = await session.get(Table, table_id)
         if not table:
             return Result.fail(f"Table {table_id} not found")
+        if not table.duckdb_path:
+            return Result.fail(f"Table has no DuckDB path: {table_id}")
 
-        table_name = table.table_name
+        table_name = table.duckdb_path
 
         columns_query = f"DESCRIBE {table_name}"
         columns_df = duckdb_conn.execute(columns_query).df()
@@ -375,10 +383,10 @@ async def check_fiscal_period_integrity(
             return Result.fail("No date/timestamp columns found for period integrity check")
 
         date_col = date_columns[0]
+        # Quote column name to handle spaces and special characters
+        quoted_date_col = f'"{date_col}"'
 
-        range_query = (
-            f"SELECT MIN({date_col}) as min_date, MAX({date_col}) as max_date FROM {table_name}"
-        )
+        range_query = f"SELECT MIN({quoted_date_col}) as min_date, MAX({quoted_date_col}) as max_date FROM {table_name}"
         range_df = duckdb_conn.execute(range_query).df()
         _min_date = pd.to_datetime(range_df.iloc[0]["min_date"])
         max_date = pd.to_datetime(range_df.iloc[0]["max_date"])
@@ -398,9 +406,9 @@ async def check_fiscal_period_integrity(
         expected_days = (fiscal_year_end - fiscal_year_start).days
 
         days_query = f"""
-            SELECT COUNT(DISTINCT DATE_TRUNC('day', {date_col})) as actual_days
+            SELECT COUNT(DISTINCT DATE_TRUNC('day', {quoted_date_col})) as actual_days
             FROM {table_name}
-            WHERE {date_col} BETWEEN '{fiscal_year_start.isoformat()}' AND '{fiscal_year_end.isoformat()}'
+            WHERE {quoted_date_col} BETWEEN '{fiscal_year_start.isoformat()}' AND '{fiscal_year_end.isoformat()}'
         """
         actual_days_row = duckdb_conn.execute(days_query).fetchone()
         actual_days = actual_days_row[0] if actual_days_row else 0
@@ -411,7 +419,7 @@ async def check_fiscal_period_integrity(
         late_query = f"""
             SELECT COUNT(*) as late_count
             FROM {table_name}
-            WHERE {date_col} > '{fiscal_year_end.isoformat()}'
+            WHERE {quoted_date_col} > '{fiscal_year_end.isoformat()}'
         """
         late_transactions_row = duckdb_conn.execute(late_query).fetchone()
         late_transactions = late_transactions_row[0] if late_transactions_row else 0
@@ -419,7 +427,7 @@ async def check_fiscal_period_integrity(
         early_query = f"""
             SELECT COUNT(*) as early_count
             FROM {table_name}
-            WHERE {date_col} < '{fiscal_year_start.isoformat()}'
+            WHERE {quoted_date_col} < '{fiscal_year_start.isoformat()}'
         """
         early_transactions_row = duckdb_conn.execute(early_query).fetchone()
         early_transactions = early_transactions_row[0] if early_transactions_row else 0
@@ -431,7 +439,7 @@ async def check_fiscal_period_integrity(
                 COUNT(*) as transaction_count,
                 SUM(ABS(amount)) as total_amount
             FROM {table_name}
-            WHERE {date_col} BETWEEN '{fiscal_year_start.isoformat()}' AND '{fiscal_year_end.isoformat()}'
+            WHERE {quoted_date_col} BETWEEN '{fiscal_year_start.isoformat()}' AND '{fiscal_year_end.isoformat()}'
         """
         stats_df = duckdb_conn.execute(stats_query).df()
         transaction_count = int(stats_df.iloc[0]["transaction_count"] or 0)

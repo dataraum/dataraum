@@ -13,291 +13,36 @@ that complement the LLM's interpretive capabilities.
 """
 
 import logging
-from pathlib import Path
 from typing import Any
 
 import duckdb
-import yaml
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dataraum_context.core.models.base import Result
-from dataraum_context.domains.financial import analyze_financial_quality
-from dataraum_context.enrichment.db_models import (
+from dataraum_context.analysis.topology import analyze_topological_quality
+from dataraum_context.analysis.topology.db_models import (
     BusinessCycleClassification,
     MultiTableTopologyMetrics,
-    SemanticAnnotation,
 )
+from dataraum_context.core.models.base import Result
+from dataraum_context.domains.financial import analyze_financial_quality
+from dataraum_context.domains.financial.config import load_financial_config
+from dataraum_context.domains.financial.cycles import (
+    assess_fiscal_stability,
+    classify_cross_table_cycle_with_llm,
+    classify_financial_cycle_with_llm,
+    detect_financial_anomalies,
+    interpret_financial_quality_with_llm,
+)
+from dataraum_context.enrichment.db_models import SemanticAnnotation
 from dataraum_context.enrichment.relationships import (
-    EnrichedRelationship,
     analyze_relationship_graph,
     gather_relationships,
 )
 from dataraum_context.llm.providers.base import LLMProvider, LLMRequest
-from dataraum_context.quality.domains.financial_llm import (
-    classify_financial_cycle_with_llm,
-    interpret_financial_quality_with_llm,
-)
-from dataraum_context.quality.models import TopologicalAnomaly
-from dataraum_context.quality.topological import analyze_topological_quality
 from dataraum_context.storage import Column, Table
 
 logger = logging.getLogger(__name__)
-
-# =============================================================================
-# Configuration Loading
-# =============================================================================
-
-_FINANCIAL_CONFIG_CACHE: dict[str, Any] | None = None
-
-
-def _load_financial_config() -> dict[str, Any]:
-    """Load financial domain configuration from YAML."""
-    global _FINANCIAL_CONFIG_CACHE
-    if _FINANCIAL_CONFIG_CACHE is not None:
-        return _FINANCIAL_CONFIG_CACHE
-
-    config_paths = [
-        Path("config/domains/financial.yaml"),
-        Path(__file__).parent.parent.parent.parent.parent / "config/domains/financial.yaml",
-    ]
-
-    for path in config_paths:
-        if path.exists():
-            with open(path) as f:
-                _FINANCIAL_CONFIG_CACHE = yaml.safe_load(f)
-                return _FINANCIAL_CONFIG_CACHE
-
-    logger.warning("Financial config not found, using empty config")
-    return {}
-
-
-# =============================================================================
-# Layer 1.5: Domain Rules (Deterministic, Auditable)
-# =============================================================================
-
-
-def assess_fiscal_stability(
-    stability: Any,  # StabilityAnalysis from topological analysis
-    temporal_context: dict[str, Any],
-) -> dict[str, Any]:
-    """Enhance stability analysis with fiscal period awareness.
-
-    Distinguishes between:
-    - Fiscal period effects (expected, recurring changes)
-    - Structural changes (unexpected, permanent topology shifts)
-
-    Args:
-        stability: StabilityAnalysis object from topological analysis
-        temporal_context: Dict with fiscal calendar information
-
-    Returns:
-        Dict with enhanced stability assessment including fiscal context
-    """
-    if stability is None:
-        return {
-            "stability_level": "unknown",
-            "fiscal_context": None,
-            "is_fiscal_period_effect": False,
-            "pattern_type": "unknown",
-        }
-
-    # Extract fiscal calendar info
-    current_period = temporal_context.get("current_fiscal_period")
-    is_period_end = temporal_context.get("is_period_end", False)
-    is_quarter_end = temporal_context.get("is_quarter_end", False)
-    is_year_end = temporal_context.get("is_year_end", False)
-
-    # Determine if changes are fiscal period effects
-    fiscal_context = None
-    is_fiscal_period_effect = False
-    pattern_type = "structural_change"  # Default assumption
-
-    stability_level = getattr(stability, "stability_level", "unknown")
-
-    if is_year_end and stability_level in ["significant_changes", "unstable"]:
-        fiscal_context = "fiscal_year_end_close"
-        is_fiscal_period_effect = True
-        pattern_type = "recurring_spike"
-
-    elif is_quarter_end and stability_level in ["minor_changes", "significant_changes"]:
-        fiscal_context = "quarter_end_close"
-        is_fiscal_period_effect = True
-        pattern_type = "recurring_spike"
-
-    elif is_period_end and stability_level == "minor_changes":
-        fiscal_context = "month_end_close"
-        is_fiscal_period_effect = True
-        pattern_type = "recurring_spike"
-
-    elif stability_level in ["significant_changes", "unstable"]:
-        fiscal_context = "mid_period"
-        is_fiscal_period_effect = False
-        pattern_type = "structural_change"
-
-    # Generate interpretation
-    interpretation = _interpret_fiscal_stability(
-        stability_level, is_fiscal_period_effect, fiscal_context
-    )
-
-    return {
-        "original_stability_level": stability_level,
-        "fiscal_context": fiscal_context,
-        "is_fiscal_period_effect": is_fiscal_period_effect,
-        "pattern_type": pattern_type,
-        "affected_periods": [current_period] if current_period else [],
-        "components_added": getattr(stability, "components_added", 0),
-        "components_removed": getattr(stability, "components_removed", 0),
-        "cycles_added": getattr(stability, "cycles_added", 0),
-        "cycles_removed": getattr(stability, "cycles_removed", 0),
-        "interpretation": interpretation,
-    }
-
-
-def _interpret_fiscal_stability(
-    stability_level: str, is_fiscal_effect: bool, fiscal_context: str | None
-) -> str:
-    """Generate human-readable interpretation of stability assessment."""
-    if is_fiscal_effect:
-        if fiscal_context == "fiscal_year_end_close":
-            return (
-                "Expected topology changes due to fiscal year-end close. "
-                "Increased activity and relationship complexity is normal."
-            )
-        elif fiscal_context == "quarter_end_close":
-            return (
-                "Recurring topology changes due to quarter-end close. "
-                "Period-end spikes are expected."
-            )
-        elif fiscal_context == "month_end_close":
-            return "Minor topology changes due to month-end close. Normal recurring pattern."
-        else:
-            return "Changes appear related to fiscal period effects."
-    else:
-        if stability_level == "unstable":
-            return (
-                "ALERT: Significant structural changes detected outside normal fiscal periods. "
-                "Investigate data quality or business process changes."
-            )
-        elif stability_level == "significant_changes":
-            return (
-                "WARNING: Notable structural changes detected mid-period. "
-                "May indicate data quality issues or business changes."
-            )
-        else:
-            return "Topology is stable with minor expected variations."
-
-
-def detect_financial_anomalies(
-    topological_result: Any,  # TopologicalQualityResult
-    classified_cycles: list[dict[str, Any]],
-) -> list[TopologicalAnomaly]:
-    """Detect financial-specific topological anomalies.
-
-    Anomaly types:
-    - excessive_financial_cycles: Too many cycles for financial data
-    - unclassified_financial_cycles: Cycles couldn't be classified
-    - financial_data_fragmentation: Disconnected components
-    - missing_financial_cycles: Expected cycles not found
-    - cost_center_isolation: Orphaned components
-
-    Args:
-        topological_result: TopologicalQualityResult from analysis
-        classified_cycles: List of LLM-classified cycle dicts
-
-    Returns:
-        List of TopologicalAnomaly objects with financial context
-    """
-    anomalies: list[TopologicalAnomaly] = []
-
-    if topological_result is None:
-        return anomalies
-
-    # Get table name for affected_tables
-    table_name = getattr(topological_result, "table_name", "unknown")
-
-    # Anomaly 1: Unusual cycle complexity
-    cycle_count = len(classified_cycles)
-    unclassified = [c for c in classified_cycles if c.get("cycle_type") in [None, "UNKNOWN"]]
-
-    if cycle_count > 15:
-        anomalies.append(
-            TopologicalAnomaly(
-                anomaly_type="excessive_financial_cycles",
-                severity="high",
-                description=f"Unusually high number of cycles ({cycle_count}) for financial data",
-                evidence={"cycle_count": cycle_count, "expected_max": 10},
-                affected_tables=[table_name],
-                affected_columns=[],
-            )
-        )
-
-    if len(unclassified) > 5:
-        anomalies.append(
-            TopologicalAnomaly(
-                anomaly_type="unclassified_financial_cycles",
-                severity="medium",
-                description=f"{len(unclassified)} cycles could not be classified",
-                evidence={"unclassified_count": len(unclassified), "total_count": cycle_count},
-                affected_tables=[table_name],
-                affected_columns=[],
-            )
-        )
-
-    # Anomaly 2: Disconnected components
-    if hasattr(topological_result, "betti_numbers"):
-        betti_0 = topological_result.betti_numbers.betti_0
-        if betti_0 > 3:
-            anomalies.append(
-                TopologicalAnomaly(
-                    anomaly_type="financial_data_fragmentation",
-                    severity="high",
-                    description=f"Financial data has {betti_0} disconnected components. Expected: 1-2",
-                    evidence={
-                        "component_count": betti_0,
-                        "expected_max": 2,
-                        "interpretation": "Accounts or entities are not properly linked",
-                    },
-                    affected_tables=[table_name],
-                    affected_columns=[],
-                )
-            )
-
-    # Anomaly 3: Missing expected financial cycles
-    cycle_types = {c.get("cycle_type") for c in classified_cycles if c.get("cycle_type")}
-    expected_cycles = {"accounts_receivable_cycle", "expense_cycle", "revenue_cycle"}
-    missing_cycles = expected_cycles - cycle_types
-
-    if missing_cycles and cycle_count > 0:
-        anomalies.append(
-            TopologicalAnomaly(
-                anomaly_type="missing_financial_cycles",
-                severity="medium",
-                description=f"Expected financial cycles not detected: {', '.join(missing_cycles)}",
-                evidence={
-                    "missing_cycles": list(missing_cycles),
-                    "detected_cycles": list(cycle_types),
-                },
-                affected_tables=[table_name],
-                affected_columns=[],
-            )
-        )
-
-    # Anomaly 4: Cost center isolation
-    orphaned = getattr(topological_result, "orphaned_components", 0)
-    if orphaned > 0:
-        anomalies.append(
-            TopologicalAnomaly(
-                anomaly_type="cost_center_isolation",
-                severity="medium",
-                description=f"{orphaned} isolated components detected",
-                evidence={"orphaned_count": orphaned},
-                affected_tables=[table_name],
-                affected_columns=[],
-            )
-        )
-
-    return anomalies
 
 
 async def analyze_complete_financial_quality(
@@ -620,170 +365,6 @@ async def analyze_complete_financial_quality(
 # =============================================================================
 
 
-async def classify_cross_table_cycle_with_llm(
-    cycle_table_ids: list[str],
-    relationships: list[EnrichedRelationship],
-    table_semantics: dict[str, dict[str, Any]],
-    llm_provider: LLMProvider,
-) -> Result[dict[str, Any]]:
-    """Classify a cross-table cycle as a business process using LLM.
-
-    LLM receives:
-    - Tables involved in the cycle
-    - Relationships connecting them (with types, cardinality)
-    - Semantic context from enrichment
-    - Config patterns as vocabulary (not rules)
-
-    Args:
-        cycle_table_ids: List of table IDs forming the cycle
-        relationships: Enriched relationships between tables in the cycle
-        table_semantics: Semantic context per table {table_id: {columns, roles, ...}}
-        llm_provider: LLM provider
-
-    Returns:
-        Result containing classification dict with:
-        - cycle_types: list[dict] with type, confidence for each classification
-        - primary_type: str (highest confidence type)
-        - explanation: str
-        - business_value: str (high/medium/low)
-        - completeness: str (complete/partial/incomplete)
-        - missing_elements: list[str] | None
-    """
-    try:
-        # Load config for vocabulary
-        config = _load_financial_config()
-        cycle_patterns = config.get("cycle_patterns", {})
-        cross_table_patterns = config.get("cross_table_cycle_patterns", {})
-
-        # Build cycle context
-        cycle_tables_info = []
-        for table_id in cycle_table_ids:
-            semantics = table_semantics.get(table_id, {})
-            cycle_tables_info.append(
-                {
-                    "table_id": table_id,
-                    "table_name": semantics.get("table_name", "unknown"),
-                    "key_columns": semantics.get("key_columns", []),
-                    "semantic_roles": semantics.get("semantic_roles", {}),
-                }
-            )
-
-        # Build relationships context
-        relationships_info = []
-        for rel in relationships:
-            if rel.from_table_id in cycle_table_ids and rel.to_table_id in cycle_table_ids:
-                relationships_info.append(
-                    {
-                        "from_table": rel.from_table,
-                        "from_column": rel.from_column,
-                        "to_table": rel.to_table,
-                        "to_column": rel.to_column,
-                        "relationship_type": rel.relationship_type.value
-                        if hasattr(rel.relationship_type, "value")
-                        else str(rel.relationship_type),
-                        "cardinality": rel.cardinality.value
-                        if rel.cardinality and hasattr(rel.cardinality, "value")
-                        else str(rel.cardinality)
-                        if rel.cardinality
-                        else None,
-                        "confidence": rel.confidence,
-                    }
-                )
-
-        # Build config vocabulary context
-        patterns_context = "Known Business Cycle Types:\n"
-
-        # Single-table patterns (for reference)
-        for cycle_type, pattern_def in cycle_patterns.items():
-            patterns_context += f"\n{cycle_type}:\n"
-            patterns_context += f"  Description: {pattern_def.get('description', 'N/A')}\n"
-            patterns_context += (
-                f"  Column indicators: {', '.join(pattern_def.get('column_patterns', []))}\n"
-            )
-            patterns_context += f"  Business value: {pattern_def.get('business_value', 'medium')}\n"
-
-        # Cross-table patterns (primary reference)
-        if cross_table_patterns:
-            patterns_context += "\n\nCross-Table Cycle Patterns:\n"
-            for cycle_type, pattern_def in cross_table_patterns.items():
-                patterns_context += f"\n{cycle_type}:\n"
-                patterns_context += f"  Description: {pattern_def.get('description', 'N/A')}\n"
-                patterns_context += f"  Table patterns: {pattern_def.get('table_patterns', [])}\n"
-                patterns_context += (
-                    f"  Business value: {pattern_def.get('business_value', 'medium')}\n"
-                )
-
-        # LLM prompt
-        system_prompt = """You are a financial data expert analyzing business process cycles in multi-table datasets.
-
-Your task: Classify this cross-table cycle as one or more business processes.
-
-A cross-table cycle is a loop in the table relationship graph, e.g.:
-- transactions → customers → transactions (AR cycle)
-- transactions → vendors → transactions (AP cycle)
-- customers → orders → invoices → payments → customers (Revenue cycle)
-
-Guidelines:
-- Analyze table names, column semantics, and relationship types
-- A cycle can represent MULTIPLE business processes (multi-label)
-- Use the config patterns as vocabulary, not strict rules
-- Assess completeness: is this a full cycle or partial?
-- Explain your reasoning
-
-Return JSON with:
-{
-  "cycle_types": [
-    {"type": "accounts_receivable_cycle", "confidence": 0.85},
-    {"type": "revenue_cycle", "confidence": 0.70}
-  ],
-  "primary_type": "accounts_receivable_cycle",
-  "explanation": "This cycle connects customer and transaction tables via Customer name...",
-  "business_value": "high",
-  "completeness": "complete",
-  "missing_elements": null
-}"""
-
-        user_prompt = f"""Cross-Table Cycle Analysis:
-
-Tables in Cycle:
-{yaml.dump(cycle_tables_info, default_flow_style=False)}
-
-Relationships:
-{yaml.dump(relationships_info, default_flow_style=False)}
-
-{patterns_context}
-
-Classify this cross-table cycle. What business process(es) does it represent?"""
-
-        # Call LLM
-        request = LLMRequest(
-            prompt=f"{system_prompt}\n\n{user_prompt}",
-            max_tokens=1000,
-            temperature=0.3,
-            response_format="json",
-        )
-
-        response_result = await llm_provider.complete(request)
-
-        if not response_result.success or not response_result.value:
-            return Result.fail(f"LLM classification failed: {response_result.error}")
-
-        # Parse JSON
-        import json
-
-        response_text = response_result.value.content.strip()
-        try:
-            classification = json.loads(response_text)
-            return Result.ok(classification)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse LLM response: {e}")
-            return Result.fail(f"Invalid JSON from LLM: {e}")
-
-    except Exception as e:
-        logger.error(f"Cross-table cycle classification failed: {e}")
-        return Result.fail(f"Classification failed: {e}")
-
-
 async def analyze_complete_financial_dataset_quality(
     table_ids: list[str],
     duckdb_conn: duckdb.DuckDBPyConnection,
@@ -810,7 +391,7 @@ async def analyze_complete_financial_dataset_quality(
 
     Returns:
         Result containing:
-        - per_table_metrics: Dict of table_id → financial metrics
+        - per_table_metrics: Dict of table_id -> financial metrics
         - relationships: List of detected relationships
         - cross_table_cycles: List of detected cycles (table ID lists)
         - classified_cycles: List of LLM classifications (if LLM available)
@@ -1037,7 +618,7 @@ Cross-Table Cycles: {len(cross_table_cycles)}
             )
 
         # Expected cycles from config
-        config = _load_financial_config()
+        config = load_financial_config()
         expected_cycles: list[str] = config.get("expected_cycles", [])
         detected_types: set[str] = {
             c.get("primary_type", "UNKNOWN") for c in classified_cycles if c.get("primary_type")

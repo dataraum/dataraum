@@ -34,7 +34,7 @@ from sqlalchemy.orm import sessionmaker
 # Add src to path for development
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from dataraum_context.quality.domains.financial_orchestrator import (
+from dataraum_context.domains.financial import (
     analyze_complete_financial_dataset_quality,
 )
 from dataraum_context.staging.loaders.csv import CSVLoader

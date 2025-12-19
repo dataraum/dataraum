@@ -14,18 +14,55 @@ Usage:
         analyze_topological_quality,
         analyze_topological_quality_multi_table,
         TableTopologyExtractor,
+        BettiNumbers,
+        TopologicalQualityResult,
+        TopologicalQualityMetrics,
     )
 """
+
+# Analysis functions
+from dataraum_context.analysis.topology.analyzer import (
+    analyze_topological_quality,
+    analyze_topological_quality_multi_table,
+)
+
+# DB models
+from dataraum_context.analysis.topology.db_models import (
+    BusinessCycleClassification,
+    MultiTableTopologyMetrics,
+    TopologicalQualityMetrics,
+)
+
+# Pydantic models
+from dataraum_context.analysis.topology.models import (
+    BettiNumbers,
+    CycleDetection,
+    PersistenceDiagram,
+    PersistencePoint,
+    StabilityAnalysis,
+    TopologicalAnomaly,
+    TopologicalQualityResult,
+)
 
 # TDA extraction
 from dataraum_context.analysis.topology.tda.extractor import TableTopologyExtractor
 
-# NOTE: Other imports will be added as files are migrated
-# - analyzer.py: analyze_topological_quality, analyze_topological_quality_multi_table
-# - models.py: BettiNumbers, CycleDetection, etc.
-# - db_models.py: TopologicalQualityMetrics, etc.
-
 __all__ = [
+    # Analysis functions
+    "analyze_topological_quality",
+    "analyze_topological_quality_multi_table",
+    # DB models
+    "BusinessCycleClassification",
+    "MultiTableTopologyMetrics",
+    "TopologicalQualityMetrics",
+    # Pydantic models
+    "BettiNumbers",
+    "CycleDetection",
+    "PersistenceDiagram",
+    "PersistencePoint",
+    "StabilityAnalysis",
+    "TopologicalAnomaly",
+    "TopologicalQualityResult",
     # TDA extraction
     "TableTopologyExtractor",
 ]

@@ -13,9 +13,9 @@ import numpy as np
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataraum_context.analysis.topology.db_models import TopologicalQualityMetrics
+from dataraum_context.analysis.topology.models import StabilityAnalysis
 from dataraum_context.core.models.base import Result
-from dataraum_context.enrichment.db_models import TopologicalQualityMetrics
-from dataraum_context.quality.models import StabilityAnalysis
 
 logger = logging.getLogger(__name__)
 

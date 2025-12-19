@@ -20,6 +20,11 @@ from dataraum_context.analysis.topology.extraction import (
     extract_betti_numbers,
     process_persistence_diagrams,
 )
+from dataraum_context.analysis.topology.models import (
+    BettiNumbers,
+    TopologicalAnomaly,
+    TopologicalQualityResult,
+)
 from dataraum_context.analysis.topology.stability import (
     assess_homological_stability,
     compute_historical_complexity,
@@ -28,11 +33,6 @@ from dataraum_context.analysis.topology.stability import (
 from dataraum_context.analysis.topology.tda.extractor import TableTopologyExtractor
 from dataraum_context.core.models.base import Result
 from dataraum_context.enrichment.db_models import Relationship as RelationshipModel
-from dataraum_context.quality.models import (
-    BettiNumbers,
-    TopologicalAnomaly,
-    TopologicalQualityResult,
-)
 from dataraum_context.storage import Table
 
 logger = logging.getLogger(__name__)
@@ -288,7 +288,7 @@ async def analyze_topological_quality_multi_table(
         }
 
         # Persist to database
-        from dataraum_context.enrichment.db_models import MultiTableTopologyMetrics
+        from dataraum_context.analysis.topology.db_models import MultiTableTopologyMetrics
 
         metrics = MultiTableTopologyMetrics(
             table_ids=table_ids,

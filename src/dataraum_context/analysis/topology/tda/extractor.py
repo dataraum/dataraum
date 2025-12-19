@@ -248,7 +248,12 @@ class TableTopologyExtractor:
 
             # Compute persistence on row space
             if len(row_features_array) > 2:
-                row_persistence = ripser(row_features_array, maxdim=1)
+                # Explicitly compute distance matrix to avoid ripser warning
+                # when point cloud happens to be square
+                from scipy.spatial.distance import pdist, squareform
+
+                row_distances = squareform(pdist(row_features_array, metric="euclidean"))
+                row_persistence = ripser(row_distances, maxdim=1, distance_matrix=True)
 
                 return {
                     "row_clusters": self.identify_clusters(row_persistence),

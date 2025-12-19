@@ -13,13 +13,13 @@ from uuid import uuid4
 import numpy as np
 from scipy.stats import entropy as scipy_entropy
 
-from dataraum_context.core.models.base import Result
-from dataraum_context.quality.models import (
+from dataraum_context.analysis.topology.models import (
     BettiNumbers,
     CycleDetection,
     PersistenceDiagram,
     PersistencePoint,
 )
+from dataraum_context.core.models.base import Result
 
 
 async def extract_betti_numbers(

@@ -1,7 +1,7 @@
 """Financial cycle analysis module.
 
 This module provides:
-- Relationship gathering and graph analysis for cycle detection
+- Relationship structure analysis for LLM context
 - Fiscal stability rules (deterministic, auditable)
 - Anomaly detection for financial data
 - LLM cycle classification
@@ -9,8 +9,14 @@ This module provides:
 
 Usage:
     from dataraum_context.domains.financial.cycles import (
-        # Relationship analysis
+        # Rich structure analysis (preferred)
         gather_relationships,
+        describe_relationship_structure,
+        RelationshipStructure,
+        RelationshipInfo,
+        TableRole,
+        CyclePath,
+        # Legacy (backward compat)
         analyze_relationship_graph,
         EnrichedRelationship,
         # Fiscal rules
@@ -32,25 +38,37 @@ from dataraum_context.domains.financial.cycles.interpreter import (
     interpret_financial_quality_with_llm,
 )
 from dataraum_context.domains.financial.cycles.relationships import (
-    CONFIDENCE_THRESHOLDS,
+    # New rich models
+    CyclePath,
+    # Legacy (backward compat)
     EnrichedRelationship,
     GraphAnalysisResult,
+    RelationshipInfo,
+    RelationshipStructure,
+    TableRole,
     analyze_relationship_graph,
     analyze_relationship_graph_detailed,
     build_relationship_graph,
+    # Main functions
+    describe_relationship_structure,
     gather_relationships,
 )
 from dataraum_context.domains.financial.cycles.rules import assess_fiscal_stability
 
 __all__ = [
-    # Relationship analysis
+    # Rich structure analysis (preferred)
     "gather_relationships",
+    "describe_relationship_structure",
+    "RelationshipStructure",
+    "RelationshipInfo",
+    "TableRole",
+    "CyclePath",
+    # Legacy (backward compat)
     "analyze_relationship_graph",
     "analyze_relationship_graph_detailed",
     "build_relationship_graph",
     "EnrichedRelationship",
     "GraphAnalysisResult",
-    "CONFIDENCE_THRESHOLDS",
     # Fiscal rules
     "assess_fiscal_stability",
     "detect_financial_anomalies",

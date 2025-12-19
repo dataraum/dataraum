@@ -81,6 +81,14 @@ features:
       Identify optimal categorical dimensions for slicing
       data into meaningful subsets for targeted analysis.
 
+  quality_summary:
+    enabled: true
+    model_tier: balanced
+    prompt_file: prompts/quality_summary.yaml
+    description: >
+      Generate quality summaries per column aggregating findings
+      across all slices for UI display.
+
 # Fallback when LLM disabled or unavailable
 fallback:
   semantic_analysis: manual_only # Require config/semantic_overrides.yaml

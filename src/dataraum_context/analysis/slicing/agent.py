@@ -86,6 +86,7 @@ class SlicingAgent(LLMFeature):
             "statistics_json": json.dumps(context_data.get("statistics", []), indent=2),
             "semantic_json": json.dumps(context_data.get("semantic", []), indent=2),
             "correlations_json": json.dumps(context_data.get("correlations", []), indent=2),
+            "quality_json": json.dumps(context_data.get("quality", []), indent=2),
         }
 
         # Render prompt

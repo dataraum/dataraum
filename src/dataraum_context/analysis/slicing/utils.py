@@ -13,7 +13,10 @@ from dataraum_context.analysis.correlation.db_models import (
     ColumnCorrelation,
 )
 from dataraum_context.analysis.semantic.db_models import SemanticAnnotation
-from dataraum_context.analysis.statistics.db_models import StatisticalProfile
+from dataraum_context.analysis.statistics.db_models import (
+    StatisticalProfile,
+    StatisticalQualityMetrics,
+)
 from dataraum_context.storage import Column, Table
 
 
@@ -28,24 +31,27 @@ async def load_slicing_context(
     - Statistical profiles
     - Semantic annotations
     - Correlation analysis results
+    - Statistical quality metrics (Benford's Law, outliers)
 
     Args:
         session: Database session
         table_ids: Table IDs to load context for
 
     Returns:
-        Dict with tables, statistics, semantic, correlations keys
+        Dict with tables, statistics, semantic, correlations, quality keys
     """
     tables_data = await _load_tables_with_columns(session, table_ids)
     statistics_data = await _load_statistics(session, table_ids)
     semantic_data = await _load_semantic_annotations(session, table_ids)
     correlations_data = await _load_correlations(session, table_ids)
+    quality_data = await _load_quality_metrics(session, table_ids)
 
     return {
         "tables": tables_data,
         "statistics": statistics_data,
         "semantic": semantic_data,
         "correlations": correlations_data,
+        "quality": quality_data,
     }
 
 
@@ -302,6 +308,80 @@ async def _load_correlations(
                 "pearson_r": corr.pearson_r,
                 "spearman_rho": corr.spearman_rho,
                 "is_significant": corr.is_significant,
+            }
+        )
+
+    return result
+
+
+async def _load_quality_metrics(
+    session: AsyncSession,
+    table_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Load statistical quality metrics for tables.
+
+    Loads Benford's Law compliance and outlier detection results
+    from Phase 3b analysis.
+
+    Args:
+        session: Database session
+        table_ids: Table IDs to load quality metrics for
+
+    Returns:
+        List of quality metric dicts
+    """
+    result = []
+
+    # Get columns for these tables
+    columns_stmt = select(Column).where(Column.table_id.in_(table_ids))
+    columns_result = await session.execute(columns_stmt)
+    columns = columns_result.scalars().all()
+    column_ids = [col.column_id for col in columns]
+
+    # Build lookups
+    column_lookup = {col.column_id: col for col in columns}
+    table_lookup = {}
+    for table_id in table_ids:
+        table = await session.get(Table, table_id)
+        if table:
+            table_lookup[table_id] = table
+
+    # Load quality metrics
+    quality_stmt = select(StatisticalQualityMetrics).where(
+        StatisticalQualityMetrics.column_id.in_(column_ids)
+    )
+    quality_result = await session.execute(quality_stmt)
+    quality_metrics = quality_result.scalars().all()
+
+    for qm in quality_metrics:
+        col = column_lookup.get(qm.column_id)
+        if not col:
+            continue
+
+        table = table_lookup.get(col.table_id)
+        table_name = table.table_name if table else "unknown"
+
+        # Extract relevant data from quality_data JSON
+        quality_data = qm.quality_data or {}
+        benford_data = quality_data.get("benford_analysis", {})
+        outlier_data = quality_data.get("outlier_analysis", {})
+
+        result.append(
+            {
+                "table_id": col.table_id,
+                "table_name": table_name,
+                "column_id": qm.column_id,
+                "column_name": col.column_name,
+                "benford_compliant": qm.benford_compliant,
+                "benford_p_value": benford_data.get("p_value"),
+                "benford_chi_squared": benford_data.get("chi_squared"),
+                "has_outliers": qm.has_outliers,
+                "iqr_outlier_ratio": qm.iqr_outlier_ratio,
+                "isolation_forest_anomaly_ratio": qm.isolation_forest_anomaly_ratio,
+                "iqr_outlier_count": outlier_data.get("iqr_outlier_count"),
+                "isolation_forest_outlier_count": outlier_data.get(
+                    "isolation_forest_outlier_count"
+                ),
             }
         )
 

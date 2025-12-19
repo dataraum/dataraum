@@ -9,9 +9,10 @@ categorical dimensions for creating data subsets:
 - Generates DuckDB SQL for creating slice tables
 
 Prerequisites:
+    - Phase 1,2 must be completed (run_phase1_ingestion.py, run_phase2_typing.py)
     - Phase 3 must be completed (run_phase3_statistics.py)
     - Phase 5 recommended (run_phase5_semantic.py)
-    - ANTHROPIC_API_KEY must be set in environment or .env file
+    - Phase 6 recommended (run_phase6_correlations.py)
 
 Usage:
     uv run python scripts/run_phase7_slicing.py [--execute]
@@ -108,14 +109,14 @@ async def main(execute_slices: bool = False) -> int:
             await session.execute(select(func.count(SliceDefinition.slice_id)))
         ).scalar() or 0
 
-        if slice_count > 0:
-            print("\n   Slicing analysis already performed!")
-            print(f"   Slice definitions: {slice_count}")
-            print_phase_status("slicing", True)
-            await _print_slicing_summary(session)
-            await print_database_summary(session, duckdb_conn)
-            await cleanup_connections()
-            return 0
+        # if slice_count > 0:
+        #     print("\n   Slicing analysis already performed!")
+        #     print(f"   Slice definitions: {slice_count}")
+        #     print_phase_status("slicing", True)
+        #     await _print_slicing_summary(session)
+        #     await print_database_summary(session, duckdb_conn)
+        #     await cleanup_connections()
+        #     return 0
 
         print_phase_status("slicing", False)
 
@@ -270,7 +271,6 @@ async def _print_slicing_summary(session: Any) -> None:
         print(f"  Recommendations: {latest_run.recommendations_count}")
         if latest_run.duration_seconds:
             print(f"  Duration: {latest_run.duration_seconds:.2f}s")
-
 
 if __name__ == "__main__":
     # Check for --execute flag

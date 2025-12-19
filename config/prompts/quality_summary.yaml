@@ -1,0 +1,202 @@
+# Quality Summary Prompt
+#
+# Analyzes aggregated quality metrics across slices to generate
+# human-readable quality summaries per column.
+
+name: quality_summary
+version: "1.0.0"
+description: Generate quality summary for a column across data slices
+
+# Temperature (0.0 = deterministic, 1.0 = creative)
+temperature: 0.1
+
+# The prompt template
+prompt: |
+  You are a data quality analyst tasked with summarizing the quality of a data column across multiple data slices.
+
+  ## Context
+
+  **Column**: {column_name}
+  **Source Table**: {source_table_name}
+  **Sliced By**: {slice_column_name}
+  **Data Type**: {resolved_type}
+  **Total Slices**: {total_slices}
+  **Total Rows**: {total_rows}
+
+  **Semantic Information**:
+  - Role: {semantic_role}
+  - Business Name: {business_name}
+  - Description: {business_description}
+
+  **Quality Overview**:
+  - Benford's Law violations: {benford_violations} slices
+  - Slices with outliers: {outlier_slices}
+
+  ## Slice-by-Slice Data
+
+  {slice_data_json}
+
+  ## Your Task
+
+  Analyze the data quality across all slices and provide:
+
+  1. **Overall Quality Assessment**: Score 0.0-1.0 and grade A-F
+  2. **Summary**: 2-3 sentence overview of the column's quality
+  3. **Key Findings**: Top 3-5 observations about patterns across slices
+  4. **Quality Issues**: Specific problems found with severity and affected slices
+  5. **Slice Comparisons**: How metrics vary across slices (interesting patterns)
+  6. **Recommendations**: Actionable steps to improve data quality
+  7. **Investigation Views**: SQL queries for drilling into issues
+
+  ## Grading Scale
+
+  - **A** (0.9-1.0): Excellent - No significant issues, consistent across slices
+  - **B** (0.8-0.89): Good - Minor issues, mostly consistent
+  - **C** (0.6-0.79): Fair - Some issues need attention
+  - **D** (0.4-0.59): Poor - Significant quality problems
+  - **F** (0.0-0.39): Critical - Major data quality failures
+
+  ## Response Format
+
+  Respond with valid JSON only, no markdown formatting:
+
+  {{
+    "overall_quality_score": 0.75,
+    "quality_grade": "C",
+    "summary": "Brief 2-3 sentence summary of the column quality across slices.",
+    "key_findings": [
+      "Finding 1 about patterns across slices",
+      "Finding 2 about data distribution",
+      "Finding 3 about quality metrics"
+    ],
+    "quality_issues": [
+      {{
+        "issue_type": "benford_violation",
+        "severity": "high",
+        "description": "Description of the issue",
+        "affected_slices": ["slice_name_1", "slice_name_2"],
+        "investigation_sql": "SELECT * FROM table WHERE condition"
+      }}
+    ],
+    "slice_comparisons": [
+      {{
+        "metric_name": "null_ratio",
+        "description": "Description of how this metric varies",
+        "min_value": 0.01,
+        "max_value": 0.15,
+        "mean_value": 0.05,
+        "variance": 0.002,
+        "outlier_slices": ["slice_with_unusually_high_nulls"],
+        "notes": "Additional observations"
+      }}
+    ],
+    "recommendations": [
+      "Recommendation 1 for improving quality",
+      "Recommendation 2 for investigation"
+    ],
+    "investigation_views": [
+      {{
+        "name": "high_null_records",
+        "description": "Records with NULL values for investigation",
+        "sql": "SELECT * FROM source_table WHERE column IS NULL"
+      }}
+    ]
+  }}
+
+  ## Important Guidelines
+
+  - Focus on variations BETWEEN slices, not just within
+  - Highlight slices that deviate significantly from the norm
+  - For numeric columns, compare statistical distributions
+  - For Benford violations, consider if they indicate data anomalies
+  - Make SQL queries DuckDB-compatible
+  - Be specific about which slices have issues
+
+# Input variable definitions
+inputs:
+  column_name:
+    description: Name of the column being analyzed
+    required: true
+
+  source_table_name:
+    description: Name of the source table
+    required: true
+
+  slice_column_name:
+    description: Name of the column used for slicing
+    required: true
+
+  resolved_type:
+    description: Data type of the column
+    required: true
+
+  total_slices:
+    description: Number of slices analyzed
+    required: true
+
+  total_rows:
+    description: Total rows across all slices
+    required: true
+
+  slice_data_json:
+    description: JSON array of per-slice metrics
+    required: true
+
+  semantic_role:
+    description: Semantic role of the column
+    required: false
+    default: "unknown"
+
+  business_name:
+    description: Business name for the column
+    required: false
+    default: ""
+
+  business_description:
+    description: Business description of the column
+    required: false
+    default: ""
+
+  benford_violations:
+    description: Number of slices with Benford violations
+    required: false
+    default: "0"
+
+  outlier_slices:
+    description: Number of slices with outliers
+    required: false
+    default: "0"
+
+# Expected output schema
+output_schema:
+  type: object
+  required:
+    - overall_quality_score
+    - quality_grade
+    - summary
+    - key_findings
+  properties:
+    overall_quality_score:
+      type: number
+    quality_grade:
+      type: string
+    summary:
+      type: string
+    key_findings:
+      type: array
+      items:
+        type: string
+    quality_issues:
+      type: array
+    slice_comparisons:
+      type: array
+    recommendations:
+      type: array
+      items:
+        type: string
+    investigation_views:
+      type: array
+
+# Validation rules
+validation:
+  output_type: json

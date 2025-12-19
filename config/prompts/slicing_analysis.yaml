@@ -1,17 +1,17 @@
 # Slicing Analysis Prompt
 #
-# Analyzes table statistics, semantic annotations, and correlations
+# Analyzes table statistics, semantic annotations, correlations, and quality metrics
 # to identify the best categorical dimensions for data slicing.
 
 name: slicing_analysis
-version: "1.0.0"
+version: "1.1.0"
 description: Identify optimal categorical dimensions for slicing data into subsets
 
 # Temperature (0.0 = deterministic, 1.0 = creative)
 temperature: 0.0
 
 # The prompt template
-# Available variables: {tables_json}, {statistics_json}, {semantic_json}, {correlations_json}
+# Available variables: {tables_json}, {statistics_json}, {semantic_json}, {correlations_json}, {quality_json}
 prompt: |
   You are a data analyst tasked with identifying the best categorical columns for slicing a dataset into meaningful subsets.
 
@@ -43,6 +43,12 @@ prompt: |
 
   {correlations_json}
 
+  ## Statistical Quality Metrics
+
+  Quality analysis results including Benford's Law compliance and outlier detection:
+
+  {quality_json}
+
   ## Selection Criteria for Good Slice Dimensions
 
   A good slicing dimension should:
@@ -56,6 +62,11 @@ prompt: |
 
   4. **Independence**: Not highly correlated with other slice dimensions
      - Avoid redundant slicing (e.g., both "region" and "region_code")
+
+  5. **Quality Insight Potential**: Consider dimensions that might help explain quality issues
+     - If numeric columns have Benford violations or outliers, slicing by related
+       categorical columns could help isolate the source of data quality issues
+     - Columns related to problematic numeric columns may be valuable slice dimensions
 
   ## Response Format
 
@@ -101,6 +112,11 @@ inputs:
 
   correlations_json:
     description: JSON array of correlation analysis results
+    required: false
+    default: "[]"
+
+  quality_json:
+    description: JSON array of statistical quality metrics (Benford's Law, outliers)
     required: false
     default: "[]"
 

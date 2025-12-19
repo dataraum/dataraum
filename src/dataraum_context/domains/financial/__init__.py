@@ -40,6 +40,7 @@ Usage:
     from dataraum_context.domains.financial.cycles import (
         assess_fiscal_stability,
         detect_financial_anomalies,
+        classify_business_cycle_with_llm,
         classify_financial_cycle_with_llm,
     )
 """
@@ -60,7 +61,7 @@ from dataraum_context.domains.financial.config import (
 )
 from dataraum_context.domains.financial.cycles import (
     assess_fiscal_stability,
-    classify_cross_table_cycle_with_llm,
+    classify_business_cycle_with_llm,
     classify_financial_cycle_with_llm,
     detect_financial_anomalies,
     interpret_financial_quality_with_llm,
@@ -107,8 +108,8 @@ __all__ = [
     # Cycle functions
     "assess_fiscal_stability",
     "detect_financial_anomalies",
+    "classify_business_cycle_with_llm",
     "classify_financial_cycle_with_llm",
-    "classify_cross_table_cycle_with_llm",
     "interpret_financial_quality_with_llm",
     # DB Models
     "FinancialQualityMetrics",

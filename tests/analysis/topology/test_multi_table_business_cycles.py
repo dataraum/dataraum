@@ -17,11 +17,14 @@ from sqlalchemy.orm import sessionmaker
 
 from dataraum_context.analysis.relationships.db_models import Relationship
 from dataraum_context.core.models.base import Cardinality, RelationshipType, Result
-from dataraum_context.domains.financial import (
-    analyze_complete_financial_dataset_quality,
-    classify_cross_table_cycle_with_llm,
+from dataraum_context.domains.financial import analyze_complete_financial_dataset_quality
+from dataraum_context.domains.financial.cycles import (
+    CyclePath,
+    EnrichedRelationship,
+    RelationshipStructure,
+    classify_business_cycle_with_llm,
+    describe_relationship_structure,
 )
-from dataraum_context.domains.financial.cycles import analyze_relationship_graph
 from dataraum_context.storage import Column, Source, Table, init_database
 
 
@@ -537,7 +540,7 @@ def mock_llm_provider():
         prompt = request.prompt
 
         # Check if this is a cycle classification or interpretation request
-        if "Cross-Table Cycle Analysis" in prompt:
+        if "Cycle to Classify:" in prompt or "classify" in prompt.lower():
             # Extract table info from prompt to generate appropriate response
             # Simple heuristic: look for table names
             if "customer" in prompt.lower():
@@ -564,80 +567,142 @@ def mock_llm_provider():
 # =============================================================================
 
 
-class TestAnalyzeRelationshipGraph:
-    """Tests for the graph cycle detection algorithm."""
+class TestDescribeRelationshipStructure:
+    """Tests for the relationship structure description."""
 
     def test_detects_simple_cycle(self):
         """Test detection of a simple 2-node cycle."""
         table_ids = ["table_a", "table_b"]
 
-        # Create mock relationships that form a cycle
-        rel1 = MagicMock()
-        rel1.from_table_id = "table_a"
-        rel1.to_table_id = "table_b"
-        rel1.confidence = 0.9
-        rel1.relationship_type = "foreign_key"
-        rel1.cardinality = "many_to_one"
+        # Create relationships that form a cycle
+        relationships = [
+            EnrichedRelationship(
+                relationship_id="rel1",
+                from_table="table_a",
+                from_column="ref_b",
+                from_column_id="col1",
+                from_table_id="table_a",
+                to_table="table_b",
+                to_column="id",
+                to_column_id="col2",
+                to_table_id="table_b",
+                relationship_type=RelationshipType.FOREIGN_KEY,
+                cardinality=Cardinality.MANY_TO_ONE,
+                confidence=0.9,
+                detection_method="llm",
+                evidence={},
+            ),
+            EnrichedRelationship(
+                relationship_id="rel2",
+                from_table="table_b",
+                from_column="ref_a",
+                from_column_id="col3",
+                from_table_id="table_b",
+                to_table="table_a",
+                to_column="id",
+                to_column_id="col4",
+                to_table_id="table_a",
+                relationship_type=RelationshipType.FOREIGN_KEY,
+                cardinality=Cardinality.ONE_TO_MANY,
+                confidence=0.9,
+                detection_method="llm",
+                evidence={},
+            ),
+        ]
 
-        rel2 = MagicMock()
-        rel2.from_table_id = "table_b"
-        rel2.to_table_id = "table_a"
-        rel2.confidence = 0.9
-        rel2.relationship_type = "foreign_key"
-        rel2.cardinality = "one_to_many"
+        structure = describe_relationship_structure(table_ids, relationships)
 
-        result = analyze_relationship_graph(table_ids, [rel1, rel2])
-
-        assert "cycles" in result
-        assert len(result["cycles"]) >= 1
-        assert result["betti_0"] == 1  # One connected component
+        assert len(structure.cycles) >= 1
+        assert structure.connected_components == 1
 
     def test_detects_no_cycles_in_tree(self):
         """Test that no cycles are detected in a tree structure."""
         table_ids = ["root", "child1", "child2"]
 
         # Tree structure: root → child1, root → child2
-        rel1 = MagicMock()
-        rel1.from_table_id = "root"
-        rel1.to_table_id = "child1"
-        rel1.confidence = 0.9
-        rel1.relationship_type = "foreign_key"
-        rel1.cardinality = "one_to_many"
+        relationships = [
+            EnrichedRelationship(
+                relationship_id="rel1",
+                from_table="root",
+                from_column="ref1",
+                from_column_id="col1",
+                from_table_id="root",
+                to_table="child1",
+                to_column="id",
+                to_column_id="col2",
+                to_table_id="child1",
+                relationship_type=RelationshipType.FOREIGN_KEY,
+                cardinality=Cardinality.ONE_TO_MANY,
+                confidence=0.9,
+                detection_method="llm",
+                evidence={},
+            ),
+            EnrichedRelationship(
+                relationship_id="rel2",
+                from_table="root",
+                from_column="ref2",
+                from_column_id="col3",
+                from_table_id="root",
+                to_table="child2",
+                to_column="id",
+                to_column_id="col4",
+                to_table_id="child2",
+                relationship_type=RelationshipType.FOREIGN_KEY,
+                cardinality=Cardinality.ONE_TO_MANY,
+                confidence=0.9,
+                detection_method="llm",
+                evidence={},
+            ),
+        ]
 
-        rel2 = MagicMock()
-        rel2.from_table_id = "root"
-        rel2.to_table_id = "child2"
-        rel2.confidence = 0.9
-        rel2.relationship_type = "foreign_key"
-        rel2.cardinality = "one_to_many"
+        structure = describe_relationship_structure(table_ids, relationships)
 
-        result = analyze_relationship_graph(table_ids, [rel1, rel2])
-
-        assert result["cycles"] == []
-        assert result["betti_0"] == 1  # Still one connected component
+        assert len(structure.cycles) == 0
+        assert structure.connected_components == 1
 
     def test_detects_disconnected_components(self):
         """Test detection of disconnected graph components."""
         table_ids = ["a", "b", "c", "d"]
 
-        # Two disconnected pairs: a↔b, c↔d
-        rel1 = MagicMock()
-        rel1.from_table_id = "a"
-        rel1.to_table_id = "b"
-        rel1.confidence = 0.9
-        rel1.relationship_type = "foreign_key"
-        rel1.cardinality = "many_to_one"
+        # Two disconnected pairs: a→b, c→d
+        relationships = [
+            EnrichedRelationship(
+                relationship_id="rel1",
+                from_table="a",
+                from_column="ref",
+                from_column_id="col1",
+                from_table_id="a",
+                to_table="b",
+                to_column="id",
+                to_column_id="col2",
+                to_table_id="b",
+                relationship_type=RelationshipType.FOREIGN_KEY,
+                cardinality=Cardinality.MANY_TO_ONE,
+                confidence=0.9,
+                detection_method="llm",
+                evidence={},
+            ),
+            EnrichedRelationship(
+                relationship_id="rel2",
+                from_table="c",
+                from_column="ref",
+                from_column_id="col3",
+                from_table_id="c",
+                to_table="d",
+                to_column="id",
+                to_column_id="col4",
+                to_table_id="d",
+                relationship_type=RelationshipType.FOREIGN_KEY,
+                cardinality=Cardinality.MANY_TO_ONE,
+                confidence=0.9,
+                detection_method="llm",
+                evidence={},
+            ),
+        ]
 
-        rel2 = MagicMock()
-        rel2.from_table_id = "c"
-        rel2.to_table_id = "d"
-        rel2.confidence = 0.9
-        rel2.relationship_type = "foreign_key"
-        rel2.cardinality = "many_to_one"
+        structure = describe_relationship_structure(table_ids, relationships)
 
-        result = analyze_relationship_graph(table_ids, [rel1, rel2])
-
-        assert result["betti_0"] == 2  # Two connected components
+        assert structure.connected_components == 2
 
 
 class TestMultiTableAnalysisNoLLM:
@@ -665,7 +730,7 @@ class TestMultiTableAnalysisNoLLM:
         # Should return raw data without classification
         assert data["llm_available"] is False
         assert "per_table_metrics" in data
-        assert "relationships" in data
+        assert "relationship_structure" in data
         assert "cross_table_cycles" in data
         assert data["classified_cycles"] == []
 
@@ -696,7 +761,7 @@ class TestMultiTableAnalysisNoLLM:
         assert len(data["cross_table_cycles"]) == 0
 
         # But should have relationships
-        assert len(data["relationships"]) > 0
+        assert data["relationship_structure"]["total_relationships"] > 0
 
     @pytest.mark.asyncio
     async def test_detects_three_table_cycle(self, multi_table_with_cycle, duckdb_conn_multi_table):
@@ -719,19 +784,15 @@ class TestMultiTableAnalysisNoLLM:
         cycles = data["cross_table_cycles"]
         assert len(cycles) >= 1, "Should detect at least one cycle"
 
-        # The cycle should involve transactions, customers, and vendors
-        transactions_id = tables["transactions"].table_id
-        customers_id = tables["customers"].table_id
-        vendors_id = tables["vendors"].table_id
-
+        # The cycle should involve transactions, customers, and vendors (table names)
         # Find a cycle that includes all three tables
         has_full_cycle = any(
-            transactions_id in cycle and customers_id in cycle and vendors_id in cycle
+            "transactions" in cycle and "customers" in cycle and "vendors" in cycle
             for cycle in cycles
         )
 
         assert has_full_cycle, (
-            "Should detect a cycle involving transactions, customers, and vendors"
+            f"Should detect a cycle involving transactions, customers, and vendors. Got: {cycles}"
         )
 
 
@@ -797,38 +858,61 @@ class TestMultiTableAnalysisWithLLM:
         assert "summary" in interpretation
 
 
-class TestClassifyCrossTableCycleWithLLM:
+class TestClassifyBusinessCycleWithLLM:
     """Tests for the cycle classification function directly."""
 
     @pytest.mark.asyncio
     async def test_classification_returns_multi_label(self, mock_llm_provider):
         """Test that classification supports multiple labels."""
-        from dataraum_context.analysis.correlation.models import (
-            EnrichedRelationship,
+        # Create test cycle
+        cycle = CyclePath(
+            tables=["transactions", "customers"],
+            table_ids=["transactions_id", "customers_id"],
+            length=2,
         )
 
-        # Create test cycle
-        cycle_table_ids = ["transactions_id", "customers_id"]
+        # Create mock structure
+        from dataraum_context.domains.financial.cycles import RelationshipInfo, TableRole
 
-        # Create mock relationship
-        relationships = [
-            EnrichedRelationship(
-                relationship_id=str(uuid4()),
-                from_table="transactions",
-                from_column="customer_name",
-                from_column_id=str(uuid4()),
-                to_table="customers",
-                to_column="customer_name",
-                to_column_id=str(uuid4()),
-                from_table_id="transactions_id",
-                to_table_id="customers_id",
-                relationship_type=RelationshipType.FOREIGN_KEY,
-                cardinality=Cardinality.ONE_TO_MANY,
-                confidence=0.9,
-                detection_method="llm",
-                evidence={},
-            )
-        ]
+        structure = RelationshipStructure(
+            tables=[
+                TableRole(
+                    table_name="transactions",
+                    table_id="transactions_id",
+                    connection_count=1,
+                    connects_to=["customers"],
+                    role="hub",
+                ),
+                TableRole(
+                    table_name="customers",
+                    table_id="customers_id",
+                    connection_count=1,
+                    connects_to=["transactions"],
+                    role="dimension",
+                ),
+            ],
+            relationships=[
+                RelationshipInfo(
+                    from_table="transactions",
+                    from_column="customer_name",
+                    to_table="customers",
+                    to_column="customer_name",
+                    relationship_type="foreign_key",
+                    cardinality="one_to_many",
+                    confidence=0.9,
+                )
+            ],
+            pattern="hub_and_spoke",
+            pattern_description="Hub connected to dimension",
+            hub_tables=["transactions"],
+            leaf_tables=["customers"],
+            bridge_tables=[],
+            isolated_tables=[],
+            cycles=[cycle],
+            connected_components=1,
+            total_tables=2,
+            total_relationships=1,
+        )
 
         table_semantics = {
             "transactions_id": {
@@ -843,9 +927,9 @@ class TestClassifyCrossTableCycleWithLLM:
             },
         }
 
-        result = await classify_cross_table_cycle_with_llm(
-            cycle_table_ids=cycle_table_ids,
-            relationships=relationships,
+        result = await classify_business_cycle_with_llm(
+            cycle=cycle,
+            structure=structure,
             table_semantics=table_semantics,
             llm_provider=mock_llm_provider,
         )
@@ -923,4 +1007,4 @@ class TestEdgeCases:
 
         # No relationships = no cycles
         assert len(data["cross_table_cycles"]) == 0
-        assert len(data["relationships"]) == 0
+        assert data["relationship_structure"]["total_relationships"] == 0

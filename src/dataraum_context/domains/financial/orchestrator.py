@@ -29,15 +29,16 @@ from dataraum_context.core.models.base import Result
 from dataraum_context.domains.financial import analyze_financial_quality
 from dataraum_context.domains.financial.config import load_financial_config
 from dataraum_context.domains.financial.cycles import (
-    analyze_relationship_graph,
     assess_fiscal_stability,
-    classify_cross_table_cycle_with_llm,
+    classify_business_cycle_with_llm,
     classify_financial_cycle_with_llm,
+    describe_relationship_structure,
     detect_financial_anomalies,
     gather_relationships,
     interpret_financial_quality_with_llm,
+    interpret_relationship_structure_with_llm,
 )
-from dataraum_context.llm.providers.base import LLMProvider, LLMRequest
+from dataraum_context.llm.providers.base import LLMProvider
 from dataraum_context.storage import Column, Table
 
 logger = logging.getLogger(__name__)
@@ -464,23 +465,28 @@ async def analyze_complete_financial_dataset_quality(
         logger.info(f"Found {len(relationships)} relationships")
 
         # =====================================================================
-        # LAYER 3: CROSS-TABLE CYCLE DETECTION
+        # LAYER 3: RELATIONSHIP STRUCTURE ANALYSIS
         # =====================================================================
 
-        logger.info("Detecting cross-table cycles")
+        logger.info("Analyzing relationship structure")
 
-        # analyze_relationship_graph uses duck typing - EnrichedRelationship has
-        # the same attributes as RelationshipModel (from_table_id, to_table_id, etc.)
-        graph_analysis = analyze_relationship_graph(
-            table_ids,
-            relationships,  # type: ignore[arg-type]
+        # Build table name lookup for structure description
+        table_names: dict[str, str] = {}
+        for table_id in table_ids:
+            table = await session.get(Table, table_id)
+            if table:
+                table_names[table_id] = table.table_name
+
+        # Describe the relationship structure (provides rich context for LLM)
+        structure = describe_relationship_structure(
+            table_ids=table_ids,
+            relationships=relationships,
+            table_names=table_names,
         )
 
-        cross_table_cycles: list[list[str]] = graph_analysis.get("cycles", [])  # type: ignore[assignment]
-        betti_0: int = graph_analysis.get("betti_0", 1)  # type: ignore[assignment]
-
         logger.info(
-            f"Detected {len(cross_table_cycles)} cross-table cycles, {betti_0} connected components"
+            f"Structure: {structure.pattern}, {len(structure.cycles)} cycles, "
+            f"{structure.connected_components} components"
         )
 
         # If no LLM, return raw results
@@ -490,19 +496,8 @@ async def analyze_complete_financial_dataset_quality(
                 {
                     "per_table_metrics": per_table_metrics,
                     "per_table_topological": per_table_topological,
-                    "relationships": [
-                        {
-                            "from_table": r.from_table,
-                            "to_table": r.to_table,
-                            "from_column": r.from_column,
-                            "to_column": r.to_column,
-                            "relationship_type": str(r.relationship_type),
-                            "confidence": r.confidence,
-                        }
-                        for r in relationships
-                    ],
-                    "cross_table_cycles": cross_table_cycles,
-                    "graph_betti_0": betti_0,
+                    "relationship_structure": structure.model_dump(),
+                    "cross_table_cycles": [c.tables for c in structure.cycles],
                     "classified_cycles": [],
                     "llm_available": False,
                 }
@@ -512,7 +507,7 @@ async def analyze_complete_financial_dataset_quality(
         # LAYER 4: LLM BUSINESS CYCLE CLASSIFICATION
         # =====================================================================
 
-        logger.info("Classifying cross-table cycles with LLM")
+        logger.info("Classifying business cycles with LLM")
 
         # Build table semantics context
         table_semantics: dict[str, dict[str, Any]] = {}
@@ -551,26 +546,26 @@ async def analyze_complete_financial_dataset_quality(
                 "semantic_roles": semantic_roles,
             }
 
-        # Classify each cross-table cycle
+        # Classify each cycle using new function
         classified_cycles: list[dict[str, Any]] = []
 
-        for cycle in cross_table_cycles:
-            classification_result = await classify_cross_table_cycle_with_llm(
-                cycle_table_ids=cycle,
-                relationships=relationships,
+        for cycle in structure.cycles:
+            classification_result = await classify_business_cycle_with_llm(
+                cycle=cycle,
+                structure=structure,
                 table_semantics=table_semantics,
                 llm_provider=llm_provider,
             )
 
             if classification_result.success:
                 classification = classification_result.unwrap()
-                classification["cycle_tables"] = cycle
                 classified_cycles.append(classification)
             else:
                 logger.warning(f"Cycle classification failed: {classification_result.error}")
                 classified_cycles.append(
                     {
-                        "cycle_tables": cycle,
+                        "cycle_tables": cycle.tables,
+                        "cycle_length": cycle.length,
                         "cycle_types": [],
                         "primary_type": "UNKNOWN",
                         "explanation": f"Classification failed: {classification_result.error}",
@@ -583,37 +578,21 @@ async def analyze_complete_financial_dataset_quality(
         # LAYER 5: LLM HOLISTIC INTERPRETATION
         # =====================================================================
 
-        logger.info("Generating holistic dataset interpretation")
+        logger.info("Generating holistic structure interpretation")
 
-        # Build interpretation context
-        interpretation_context = f"""
-=== FINANCIAL DATASET ANALYSIS ===
+        # Use the new interpret function
+        interpretation_result = await interpret_relationship_structure_with_llm(
+            structure=structure,
+            table_semantics=table_semantics,
+            classified_cycles=classified_cycles,
+            llm_provider=llm_provider,
+        )
 
-Tables Analyzed: {len(table_ids)}
-Relationships Detected: {len(relationships)}
-Connected Components: {betti_0}
-Cross-Table Cycles: {len(cross_table_cycles)}
-
-=== PER-TABLE ACCOUNTING HEALTH ===
-"""
-        for table_id, metrics in per_table_metrics.items():
-            table_name = table_semantics.get(table_id, {}).get("table_name", table_id)
-            interpretation_context += f"\n{table_name}:\n"
-            for key, value in metrics.items():
-                interpretation_context += f"  {key}: {value}\n"
-
-        interpretation_context += "\n=== CLASSIFIED BUSINESS CYCLES ===\n"
-        for i, classified in enumerate(classified_cycles, 1):
-            interpretation_context += f"\nCycle {i}:\n"
-            interpretation_context += f"  Tables: {classified.get('cycle_tables', [])}\n"
-            interpretation_context += f"  Type: {classified.get('primary_type', 'UNKNOWN')}\n"
-            interpretation_context += f"  Confidence: {classified.get('cycle_types', [{}])[0].get('confidence', 0) if classified.get('cycle_types') else 0:.0%}\n"
-            interpretation_context += (
-                f"  Business Value: {classified.get('business_value', 'unknown')}\n"
-            )
-            interpretation_context += (
-                f"  Completeness: {classified.get('completeness', 'unknown')}\n"
-            )
+        interpretation = None
+        if interpretation_result.success:
+            interpretation = interpretation_result.unwrap()
+        else:
+            logger.warning(f"Structure interpretation failed: {interpretation_result.error}")
 
         # Expected cycles from config
         config = load_financial_config()
@@ -622,62 +601,6 @@ Cross-Table Cycles: {len(cross_table_cycles)}
             c.get("primary_type", "UNKNOWN") for c in classified_cycles if c.get("primary_type")
         }
         missing_expected = set(expected_cycles) - detected_types
-
-        interpretation_context += "\n=== EXPECTED VS DETECTED ===\n"
-        interpretation_context += f"Expected cycles: {', '.join(expected_cycles)}\n"
-        interpretation_context += f"Detected cycles: {', '.join(detected_types)}\n"
-        interpretation_context += (
-            f"Missing: {', '.join(missing_expected) if missing_expected else 'None'}\n"
-        )
-
-        # Generate LLM interpretation
-        system_prompt = """You are a financial data quality expert providing holistic assessment of a multi-table dataset.
-
-Your task: Interpret the business process health of this dataset based on:
-1. Per-table accounting integrity
-2. Detected business cycles (AR, AP, Revenue, etc.)
-3. Missing expected cycles
-4. Overall data connectivity
-
-Provide:
-1. Overall dataset quality score (0-1)
-2. Business process health assessment
-3. Critical issues (blocking problems)
-4. Recommendations (prioritized)
-5. Executive summary (2-3 sentences)
-
-Return JSON:
-{
-  "overall_quality_score": 0.75,
-  "business_process_health": {
-    "accounts_receivable": "healthy",
-    "accounts_payable": "partial",
-    "revenue": "missing"
-  },
-  "critical_issues": ["No revenue cycle detected"],
-  "recommendations": [
-    {"priority": "HIGH", "action": "...", "rationale": "..."}
-  ],
-  "summary": "..."
-}"""
-
-        request = LLMRequest(
-            prompt=f"{system_prompt}\n\n{interpretation_context}\n\nProvide holistic assessment.",
-            max_tokens=1500,
-            temperature=0.3,
-            response_format="json",
-        )
-
-        interpretation_response = await llm_provider.complete(request)
-
-        interpretation = None
-        if interpretation_response.success and interpretation_response.value:
-            import json
-
-            try:
-                interpretation = json.loads(interpretation_response.value.content.strip())
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse interpretation JSON")
 
         # =====================================================================
         # PERSIST MULTI-TABLE TOPOLOGY AND BUSINESS CYCLES
@@ -688,23 +611,14 @@ Return JSON:
         # Create MultiTableTopologyMetrics record
         topology_metrics = MultiTableTopologyMetrics(
             table_ids=table_ids,
-            cross_table_cycles=len(cross_table_cycles),
-            graph_betti_0=betti_0,
-            relationship_count=len(relationships),
-            has_cross_table_cycles=len(cross_table_cycles) > 0,
-            is_connected_graph=betti_0 == 1,
+            cross_table_cycles=len(structure.cycles),
+            graph_betti_0=structure.connected_components,
+            relationship_count=structure.total_relationships,
+            has_cross_table_cycles=len(structure.cycles) > 0,
+            is_connected_graph=structure.connected_components == 1,
             analysis_data={
                 "per_table_topological": per_table_topological,
-                "relationships": [
-                    {
-                        "from_table": r.from_table,
-                        "to_table": r.to_table,
-                        "from_column": r.from_column,
-                        "to_column": r.to_column,
-                    }
-                    for r in relationships
-                ],
-                "cross_table_cycles": cross_table_cycles,
+                "relationship_structure": structure.model_dump(),
             },
         )
         session.add(topology_metrics)
@@ -745,19 +659,8 @@ Return JSON:
             {
                 "per_table_metrics": per_table_metrics,
                 "per_table_topological": per_table_topological,
-                "relationships": [
-                    {
-                        "from_table": r.from_table,
-                        "to_table": r.to_table,
-                        "from_column": r.from_column,
-                        "to_column": r.to_column,
-                        "relationship_type": str(r.relationship_type),
-                        "confidence": r.confidence,
-                    }
-                    for r in relationships
-                ],
-                "cross_table_cycles": cross_table_cycles,
-                "graph_betti_0": betti_0,
+                "relationship_structure": structure.model_dump(),
+                "cross_table_cycles": [c.tables for c in structure.cycles],
                 "classified_cycles": classified_cycles,
                 "missing_expected_cycles": list(missing_expected),
                 "interpretation": interpretation,

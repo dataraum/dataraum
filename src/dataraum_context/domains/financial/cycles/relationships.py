@@ -7,7 +7,7 @@ compressed metrics that lose information.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Protocol
+from typing import Any
 
 import networkx as nx
 from pydantic import BaseModel
@@ -103,15 +103,10 @@ class RelationshipStructure(BaseModel):
     total_relationships: int
 
 
-# =============================================================================
-# Legacy Models (for backward compatibility during transition)
-# =============================================================================
-
-
 class EnrichedRelationship(BaseModel):
     """Relationship with resolved table/column names.
 
-    Note: Consider using RelationshipInfo for new code.
+    Used by gather_relationships() to return relationships with full metadata.
     """
 
     relationship_id: str
@@ -128,26 +123,6 @@ class EnrichedRelationship(BaseModel):
     confidence: float
     detection_method: str
     evidence: dict[str, Any]
-
-
-class GraphAnalysisResult(BaseModel):
-    """Legacy result model - prefer RelationshipStructure for new code."""
-
-    cycles: list[list[str]]
-    betti_0: int
-    cycle_count: int
-    node_count: int = 0
-    edge_count: int = 0
-
-
-class RelationshipLike(Protocol):
-    """Protocol for relationship objects (duck typing)."""
-
-    from_table_id: str
-    to_table_id: str
-    confidence: float
-    relationship_type: str | Any
-    cardinality: str | Any | None
 
 
 # =============================================================================
@@ -433,86 +408,3 @@ def _classify_graph_pattern(
         return "chain", "Tables connected in a linear chain"
 
     return "mesh", "Tables interconnected in a mesh pattern"
-
-
-# =============================================================================
-# Legacy Functions (for backward compatibility)
-# =============================================================================
-
-
-def build_relationship_graph(
-    table_ids: list[str],
-    relationships: Sequence[RelationshipLike],
-) -> nx.DiGraph:  # type: ignore[type-arg]
-    """Build a directed graph from table relationships.
-
-    Note: Prefer describe_relationship_structure() for new code.
-    """
-    G: nx.DiGraph = nx.DiGraph()  # type: ignore[type-arg]
-
-    for table_id in table_ids:
-        G.add_node(table_id)
-
-    for rel in relationships:
-        G.add_edge(
-            rel.from_table_id,
-            rel.to_table_id,
-            confidence=rel.confidence,
-            relationship_type=rel.relationship_type,
-            cardinality=rel.cardinality,
-        )
-
-    return G
-
-
-def analyze_relationship_graph(
-    table_ids: list[str],
-    relationships: Sequence[RelationshipLike],
-) -> dict[str, list[list[str]] | int]:
-    """Analyze the graph of table relationships to detect cycles.
-
-    Note: Prefer describe_relationship_structure() for richer context.
-    This function is kept for backward compatibility.
-    """
-    G = build_relationship_graph(table_ids, relationships)
-
-    try:
-        cycles = list(nx.simple_cycles(G))
-    except Exception:
-        cycles = []
-
-    G_undirected = G.to_undirected()
-    betti_0 = nx.number_connected_components(G_undirected)
-
-    return {
-        "cycles": cycles,
-        "betti_0": betti_0,
-        "cycle_count": len(cycles),
-    }
-
-
-def analyze_relationship_graph_detailed(
-    table_ids: list[str],
-    relationships: Sequence[RelationshipLike],
-) -> GraphAnalysisResult:
-    """Analyze relationship graph with detailed results.
-
-    Note: Prefer describe_relationship_structure() for richer context.
-    """
-    G = build_relationship_graph(table_ids, relationships)
-
-    try:
-        cycles = list(nx.simple_cycles(G))
-    except Exception:
-        cycles = []
-
-    G_undirected = G.to_undirected()
-    betti_0 = nx.number_connected_components(G_undirected)
-
-    return GraphAnalysisResult(
-        cycles=cycles,
-        betti_0=betti_0,
-        cycle_count=len(cycles),
-        node_count=G.number_of_nodes(),
-        edge_count=G.number_of_edges(),
-    )

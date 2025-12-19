@@ -374,7 +374,6 @@ async def test_analyze_topological_quality_simple(
         simple_topology_table.table_id,
         duckdb_conn,
         async_session,
-        max_dimension=2,
         min_persistence=0.1,
     )
 
@@ -404,7 +403,6 @@ async def test_analyze_topological_quality_cyclic(
         cyclic_topology_table.table_id,
         duckdb_conn,
         async_session,
-        max_dimension=2,
         min_persistence=0.05,
     )
 
@@ -426,7 +424,6 @@ async def test_analyze_topological_quality_disconnected(
         disconnected_topology_table.table_id,
         duckdb_conn,
         async_session,
-        max_dimension=1,
         min_persistence=0.1,
     )
 

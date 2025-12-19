@@ -151,9 +151,7 @@ async def aggregate_slice_results(
                 if profile:
                     slice_data["null_count"] = profile.null_count
                     slice_data["null_ratio"] = (
-                        profile.null_count / profile.total_count
-                        if profile.total_count
-                        else None
+                        profile.null_count / profile.total_count if profile.total_count else None
                     )
                     slice_data["distinct_count"] = profile.distinct_count
                     slice_data["cardinality_ratio"] = profile.cardinality_ratio

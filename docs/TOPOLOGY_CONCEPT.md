@@ -55,19 +55,99 @@ This document outlines how topological data analysis (TDA) metrics become valuab
 - `classify_financial_cycle_with_llm()` - Classify single cycle with config vocabulary
 - `interpret_financial_quality_with_llm()` - Holistic quality interpretation
 
-### What Actually Needs to Be Done
+---
 
-The restructuring is about **organization**, not implementation:
+## Concept vs Reality: Gap Analysis
 
-1. **Move files to better locations** (separation of concerns)
-2. **Update imports** across codebase
-3. **Add re-exports** for backward compatibility
-4. **Clean up after verification**
+### What Chapters 1-6 Propose vs What Already Exists
 
-This is NOT:
-- Rewriting the TDA algorithms
-- Rebuilding the LLM classification
-- Recreating the domain rules
+| Concept (Ch 1-6) | Already Exists? | Where | Gap/Opportunity |
+|------------------|-----------------|-------|-----------------|
+| **Betti numbers extraction** | ✅ Yes | `quality/topological.py:extract_betti_numbers()` | None |
+| **Persistence diagrams** | ✅ Yes | `PersistenceDiagram` model, `process_persistence_diagrams()` | None |
+| **Persistent entropy** | ✅ Yes | `compute_persistent_entropy()` | None |
+| **Cycle detection** | ✅ Yes | `CycleDetection` model, `detect_persistent_cycles()` | None |
+| **Bottleneck distance stability** | ✅ Yes | `StabilityAnalysis` model, `assess_homological_stability()` | None |
+| **Historical complexity tracking** | ✅ Yes | `complexity_mean`, `complexity_std`, `complexity_z_score` in model | None |
+| **Multi-table topology** | ✅ Yes | `analyze_topological_quality_multi_table()` | None |
+| **LLM cycle classification** | ✅ Yes | `classify_financial_cycle_with_llm()` | None |
+| **Domain vocabulary (config)** | ✅ Yes | `config/domains/financial.yaml` | None |
+| **Fiscal period rules** | ✅ Yes | `assess_fiscal_stability()` | None |
+| **Anomaly detection** | ✅ Yes | `detect_financial_anomalies()` | None |
+| **Hybrid DB storage** | ✅ Yes | `TopologicalQualityMetrics` has structured + JSONB | None |
+| **Threshold-based formatting** | ✅ Yes | `quality/formatting/topological.py` | 758 lines - could simplify |
+| **Layered information value** | ⚠️ Implicit | Scattered across functions | Could be more explicit |
+| **Future domain extensibility** | ⚠️ Partial | Financial only | Architecture supports it |
+
+### Key Finding: The Concept Documents What Exists
+
+**The concept (chapters 1-6) is essentially a description of the current implementation.** The main gaps are:
+
+1. **Organization** - Code is scattered, not architectural gaps
+2. **Clarity** - The layering is implicit in code flow, not explicit in structure
+3. **Simplification** - Some files are large (758 lines for formatter)
+
+### What's Actually New in the Concept?
+
+| New Idea | Value | Should We Add? |
+|----------|-------|----------------|
+| **Explicit 4-layer architecture** | Makes mental model clear | Yes - via module structure |
+| **Queryable computed columns** | `GENERATED ALWAYS AS` in DB | Maybe - depends on query patterns |
+| **Externalized thresholds to YAML** | Easier tuning without code changes | Yes - during consolidation |
+| **Healthcare/marketing domain examples** | Shows extensibility pattern | No - wait for actual need |
+
+### Recommendations: What to Change During Move
+
+1. **Keep algorithms unchanged** - They work, don't fix what isn't broken
+
+2. **Simplify the formatter** (758 → ~300 lines)
+   - Extract threshold configs to YAML
+   - Reduce redundant severity mapping code
+   - Keep core formatting logic
+
+3. **Make layering explicit** via module structure:
+   ```
+   analysis/topology/
+   ├── extraction.py    # Layer 1: Raw computation
+   ├── stability.py     # Layer 2: Historical context
+   └── analyzer.py      # Orchestrates layers 1-2
+
+   domains/financial/cycles/
+   ├── rules.py         # Layer 3: Domain rules
+   ├── classifier.py    # Layer 4: LLM interpretation
+   └── interpreter.py   # Layer 4: LLM interpretation
+   ```
+
+4. **Single config loader** - Remove duplicate `_load_financial_config()`
+
+5. **Consider externalizing thresholds** to `config/thresholds/topology.yaml`:
+   ```yaml
+   betti_0:
+     thresholds: {none: 1, moderate: 2, high: 3}
+     default_severity: severe
+   bottleneck:
+     thresholds: {stable: 0.1, minor_changes: 0.2, significant_changes: 0.5}
+     default_severity: unstable
+   ```
+
+### Freedom to Change (No External Dependencies)
+
+**Everything can be changed** - there are no external consumers:
+
+| Item | Can Change? | Notes |
+|------|-------------|-------|
+| TDA algorithms | ✅ Yes | Keep if working, improve if needed |
+| LLM prompts | ✅ Yes | Not tuned yet, can redesign |
+| DB table names | ✅ Yes | No migration needed, rename freely |
+| Config file locations | ✅ Yes | Move to better location if useful |
+| Pydantic model fields | ✅ Yes | Not used outside TDA, can restructure |
+
+This means during consolidation we can:
+- Rename tables/models for clarity
+- Restructure Pydantic models if current design is awkward
+- Rewrite LLM prompts if they're not well designed
+- Move configs to more logical locations
+- Simplify interfaces
 
 ---
 

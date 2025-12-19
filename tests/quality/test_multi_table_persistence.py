@@ -1,56 +1,31 @@
 """Test multi-table topology analysis persistence."""
 
-import duckdb
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
 
 from dataraum_context.enrichment.db_models import MultiTableTopologyMetrics
 from dataraum_context.quality.topological import analyze_topological_quality_multi_table
 from dataraum_context.storage import (
-    Base,
     Column,
     Source,
     Table,
 )
 
 
-@pytest.fixture
-async def session():
-    """Create an in-memory SQLite session for testing."""
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session_factory() as session:
-        yield session
-
-
-@pytest.fixture
-def duckdb_conn():
-    """Create an in-memory DuckDB connection."""
-    conn = duckdb.connect(":memory:")
-    yield conn
-    conn.close()
-
-
 @pytest.mark.asyncio
-async def test_multi_table_persistence_saves_to_database(session: AsyncSession, duckdb_conn):
+async def test_multi_table_persistence_saves_to_database(async_session, duckdb_conn):
     """Test that multi-table analysis results are saved to database."""
     # Create test source
     source = Source(source_id="test_source", name="test_db", source_type="duckdb")
-    session.add(source)
+    async_session.add(source)
 
-    # Create test tables
+    # Create test tables with duckdb_path to avoid prefix lookup
     table1 = Table(
         table_id="table1",
         source_id="test_source",
         table_name="customers",
         layer="typed",
         row_count=100,
+        duckdb_path="customers",
     )
     table2 = Table(
         table_id="table2",
@@ -58,9 +33,10 @@ async def test_multi_table_persistence_saves_to_database(session: AsyncSession, 
         table_name="orders",
         layer="typed",
         row_count=500,
+        duckdb_path="orders",
     )
 
-    session.add_all([table1, table2])
+    async_session.add_all([table1, table2])
 
     # Add some columns so analysis doesn't fail
     col1 = Column(
@@ -72,8 +48,8 @@ async def test_multi_table_persistence_saves_to_database(session: AsyncSession, 
         table_id="table2", column_name="customer_id", raw_type="INTEGER", column_position=1
     )
 
-    session.add_all([col1, col2, col3, col4])
-    await session.commit()
+    async_session.add_all([col1, col2, col3, col4])
+    await async_session.commit()
 
     # Create test data in DuckDB
     duckdb_conn.execute("CREATE TABLE customers (customer_id INTEGER, name VARCHAR)")
@@ -86,8 +62,7 @@ async def test_multi_table_persistence_saves_to_database(session: AsyncSession, 
     result = await analyze_topological_quality_multi_table(
         table_ids=["table1", "table2"],
         duckdb_conn=duckdb_conn,
-        session=session,
-        max_dimension=2,
+        session=async_session,
         min_persistence=0.1,
     )
 
@@ -99,7 +74,7 @@ async def test_multi_table_persistence_saves_to_database(session: AsyncSession, 
     from sqlalchemy import select
 
     stmt = select(MultiTableTopologyMetrics)
-    db_result = await session.execute(stmt)
+    db_result = await async_session.execute(stmt)
     metrics = db_result.scalars().all()
 
     # Should have exactly one multi-table analysis record
@@ -122,19 +97,20 @@ async def test_multi_table_persistence_saves_to_database(session: AsyncSession, 
 
 
 @pytest.mark.asyncio
-async def test_multi_table_persistence_with_cycles(session: AsyncSession, duckdb_conn):
+async def test_multi_table_persistence_with_cycles(async_session, duckdb_conn):
     """Test that cross-table cycles are properly recorded."""
     # Create test source
     source = Source(source_id="test_source", name="test_db", source_type="duckdb")
-    session.add(source)
+    async_session.add(source)
 
-    # Create test tables
+    # Create test tables with duckdb_path
     table1 = Table(
         table_id="table1",
         source_id="test_source",
         table_name="vendors",
         layer="typed",
         row_count=50,
+        duckdb_path="vendors",
     )
     table2 = Table(
         table_id="table2",
@@ -142,9 +118,10 @@ async def test_multi_table_persistence_with_cycles(session: AsyncSession, duckdb
         table_name="transactions",
         layer="typed",
         row_count=200,
+        duckdb_path="transactions",
     )
 
-    session.add_all([table1, table2])
+    async_session.add_all([table1, table2])
 
     # Add columns
     col1 = Column(table_id="table1", column_name="vendor_id", raw_type="INTEGER", column_position=0)
@@ -154,8 +131,8 @@ async def test_multi_table_persistence_with_cycles(session: AsyncSession, duckdb
     col3 = Column(table_id="table2", column_name="txn_id", raw_type="INTEGER", column_position=0)
     col4 = Column(table_id="table2", column_name="vendor_id", raw_type="INTEGER", column_position=1)
 
-    session.add_all([col1, col2, col3, col4])
-    await session.commit()
+    async_session.add_all([col1, col2, col3, col4])
+    await async_session.commit()
 
     # Create test data
     duckdb_conn.execute("CREATE TABLE vendors (vendor_id INTEGER, vendor_name VARCHAR)")
@@ -168,7 +145,7 @@ async def test_multi_table_persistence_with_cycles(session: AsyncSession, duckdb
     result = await analyze_topological_quality_multi_table(
         table_ids=["table1", "table2"],
         duckdb_conn=duckdb_conn,
-        session=session,
+        session=async_session,
     )
 
     assert result.success is True
@@ -177,7 +154,7 @@ async def test_multi_table_persistence_with_cycles(session: AsyncSession, duckdb
     from sqlalchemy import select
 
     stmt = select(MultiTableTopologyMetrics)
-    db_result = await session.execute(stmt)
+    db_result = await async_session.execute(stmt)
     metric = db_result.scalar_one()
 
     # Verify cycle tracking
@@ -186,37 +163,39 @@ async def test_multi_table_persistence_with_cycles(session: AsyncSession, duckdb
 
 
 @pytest.mark.asyncio
-async def test_multi_table_persistence_incremental_tracking(session: AsyncSession, duckdb_conn):
+async def test_multi_table_persistence_incremental_tracking(async_session, duckdb_conn):
     """Test that multiple analyses create separate records for historical tracking."""
     # Create test source
     source = Source(source_id="test_source", name="test_db", source_type="duckdb")
-    session.add(source)
+    async_session.add(source)
 
-    # Create test tables
+    # Create test tables with duckdb_path
     table1 = Table(
         table_id="table1",
         source_id="test_source",
         table_name="products",
         layer="typed",
         row_count=100,
+        duckdb_path="products",
     )
-    session.add(table1)
+    async_session.add(table1)
 
     col1 = Column(
         table_id="table1", column_name="product_id", raw_type="INTEGER", column_position=0
     )
-    session.add(col1)
-    await session.commit()
+    col2 = Column(table_id="table1", column_name="price", raw_type="DOUBLE", column_position=1)
+    async_session.add_all([col1, col2])
+    await async_session.commit()
 
-    # Create test data
-    duckdb_conn.execute("CREATE TABLE products (product_id INTEGER)")
-    duckdb_conn.execute("INSERT INTO products VALUES (1), (2), (3)")
+    # Create test data (need 2+ columns for TDA)
+    duckdb_conn.execute("CREATE TABLE products (product_id INTEGER, price DOUBLE)")
+    duckdb_conn.execute("INSERT INTO products VALUES (1, 10.0), (2, 20.0), (3, 30.0)")
 
     # Run first analysis
     result1 = await analyze_topological_quality_multi_table(
         table_ids=["table1"],
         duckdb_conn=duckdb_conn,
-        session=session,
+        session=async_session,
     )
     assert result1.success is True
 
@@ -224,7 +203,7 @@ async def test_multi_table_persistence_incremental_tracking(session: AsyncSessio
     result2 = await analyze_topological_quality_multi_table(
         table_ids=["table1"],
         duckdb_conn=duckdb_conn,
-        session=session,
+        session=async_session,
     )
     assert result2.success is True
 
@@ -232,7 +211,7 @@ async def test_multi_table_persistence_incremental_tracking(session: AsyncSessio
     from sqlalchemy import select
 
     stmt = select(MultiTableTopologyMetrics)
-    db_result = await session.execute(stmt)
+    db_result = await async_session.execute(stmt)
     metrics = db_result.scalars().all()
 
     # Should have 2 separate analysis records
@@ -250,19 +229,20 @@ async def test_multi_table_persistence_incremental_tracking(session: AsyncSessio
 
 
 @pytest.mark.asyncio
-async def test_multi_table_persistence_graph_connectivity(session: AsyncSession, duckdb_conn):
+async def test_multi_table_persistence_graph_connectivity(async_session, duckdb_conn):
     """Test that graph connectivity flag is properly set."""
     # Create test source
     source = Source(source_id="test_source", name="test_db", source_type="duckdb")
-    session.add(source)
+    async_session.add(source)
 
-    # Create disconnected tables (no relationships)
+    # Create disconnected tables (no relationships) with duckdb_path
     table1 = Table(
         table_id="table1",
         source_id="test_source",
         table_name="isolated_a",
         layer="typed",
         row_count=10,
+        duckdb_path="isolated_a",
     )
     table2 = Table(
         table_id="table2",
@@ -270,28 +250,32 @@ async def test_multi_table_persistence_graph_connectivity(session: AsyncSession,
         table_name="isolated_b",
         layer="typed",
         row_count=20,
+        duckdb_path="isolated_b",
     )
 
-    session.add_all([table1, table2])
+    async_session.add_all([table1, table2])
 
+    # TDA needs 2+ columns
     col1 = Column(table_id="table1", column_name="id", raw_type="INTEGER", column_position=0)
+    col1b = Column(table_id="table1", column_name="value", raw_type="DOUBLE", column_position=1)
     col2 = Column(table_id="table2", column_name="id", raw_type="INTEGER", column_position=0)
+    col2b = Column(table_id="table2", column_name="value", raw_type="DOUBLE", column_position=1)
 
-    session.add_all([col1, col2])
-    await session.commit()
+    async_session.add_all([col1, col1b, col2, col2b])
+    await async_session.commit()
 
-    # Create disconnected data
-    duckdb_conn.execute("CREATE TABLE isolated_a (id INTEGER)")
-    duckdb_conn.execute("INSERT INTO isolated_a VALUES (1), (2)")
+    # Create disconnected data (2+ columns for TDA)
+    duckdb_conn.execute("CREATE TABLE isolated_a (id INTEGER, value DOUBLE)")
+    duckdb_conn.execute("INSERT INTO isolated_a VALUES (1, 1.0), (2, 2.0)")
 
-    duckdb_conn.execute("CREATE TABLE isolated_b (id INTEGER)")
-    duckdb_conn.execute("INSERT INTO isolated_b VALUES (3), (4)")
+    duckdb_conn.execute("CREATE TABLE isolated_b (id INTEGER, value DOUBLE)")
+    duckdb_conn.execute("INSERT INTO isolated_b VALUES (3, 3.0), (4, 4.0)")
 
     # Run analysis
     result = await analyze_topological_quality_multi_table(
         table_ids=["table1", "table2"],
         duckdb_conn=duckdb_conn,
-        session=session,
+        session=async_session,
     )
 
     assert result.success is True
@@ -300,7 +284,7 @@ async def test_multi_table_persistence_graph_connectivity(session: AsyncSession,
     from sqlalchemy import select
 
     stmt = select(MultiTableTopologyMetrics)
-    db_result = await session.execute(stmt)
+    db_result = await async_session.execute(stmt)
     metric = db_result.scalar_one()
 
     # With no relationships, graph should be disconnected (betti_0 > 1)
@@ -310,35 +294,38 @@ async def test_multi_table_persistence_graph_connectivity(session: AsyncSession,
 
 
 @pytest.mark.asyncio
-async def test_multi_table_persistence_analysis_data_structure(session: AsyncSession, duckdb_conn):
+async def test_multi_table_persistence_analysis_data_structure(async_session, duckdb_conn):
     """Test that analysis_data JSONB contains complete structure."""
     # Create test source
     source = Source(source_id="test_source", name="test_db", source_type="duckdb")
-    session.add(source)
+    async_session.add(source)
 
-    # Create simple test case
+    # Create simple test case with duckdb_path
     table1 = Table(
         table_id="table1",
         source_id="test_source",
         table_name="test_table",
         layer="typed",
         row_count=50,
+        duckdb_path="test_table",
     )
-    session.add(table1)
+    async_session.add(table1)
 
+    # TDA needs 2+ columns
     col1 = Column(table_id="table1", column_name="id", raw_type="INTEGER", column_position=0)
-    session.add(col1)
-    await session.commit()
+    col2 = Column(table_id="table1", column_name="value", raw_type="DOUBLE", column_position=1)
+    async_session.add_all([col1, col2])
+    await async_session.commit()
 
-    # Create test data
-    duckdb_conn.execute("CREATE TABLE test_table (id INTEGER)")
-    duckdb_conn.execute("INSERT INTO test_table VALUES (1), (2), (3)")
+    # Create test data (2+ columns for TDA)
+    duckdb_conn.execute("CREATE TABLE test_table (id INTEGER, value DOUBLE)")
+    duckdb_conn.execute("INSERT INTO test_table VALUES (1, 1.0), (2, 2.0), (3, 3.0)")
 
     # Run analysis
     result = await analyze_topological_quality_multi_table(
         table_ids=["table1"],
         duckdb_conn=duckdb_conn,
-        session=session,
+        session=async_session,
     )
 
     assert result.success is True
@@ -347,7 +334,7 @@ async def test_multi_table_persistence_analysis_data_structure(session: AsyncSes
     from sqlalchemy import select
 
     stmt = select(MultiTableTopologyMetrics)
-    db_result = await session.execute(stmt)
+    db_result = await async_session.execute(stmt)
     metric = db_result.scalar_one()
 
     analysis_data = metric.analysis_data

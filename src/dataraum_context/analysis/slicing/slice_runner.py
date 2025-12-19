@@ -139,9 +139,10 @@ async def register_slice_tables(
 
                 if existing_table:
                     # Already registered
-                    row_count = duckdb_conn.execute(
+                    count_result = duckdb_conn.execute(
                         f"SELECT COUNT(*) FROM {slice_table_name}"
-                    ).fetchone()[0]
+                    ).fetchone()
+                    row_count = count_result[0] if count_result else 0
                     registered.append(
                         SliceTableInfo(
                             slice_table_id=existing_table.table_id,
@@ -156,9 +157,10 @@ async def register_slice_tables(
                     continue
 
                 # Get row count from DuckDB
-                row_count = duckdb_conn.execute(
+                count_result = duckdb_conn.execute(
                     f"SELECT COUNT(*) FROM {slice_table_name}"
-                ).fetchone()[0]
+                ).fetchone()
+                row_count = count_result[0] if count_result else 0
 
                 # Create Table entry for slice
                 slice_table = Table(

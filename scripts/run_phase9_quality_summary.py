@@ -61,7 +61,6 @@ async def main() -> int:
         from dataraum_context.analysis.quality_summary import (
             ColumnQualityReport,
             QualitySummaryAgent,
-            QualitySummaryRun,
             summarize_quality,
         )
         from dataraum_context.analysis.slicing.db_models import SliceDefinition
@@ -98,9 +97,7 @@ async def main() -> int:
 
         # Check for statistical profiles on slice tables
         slice_table_ids = [t.table_id for t in slice_tables]
-        slice_columns_stmt = select(Column.column_id).where(
-            Column.table_id.in_(slice_table_ids)
-        )
+        slice_columns_stmt = select(Column.column_id).where(Column.table_id.in_(slice_table_ids))
         slice_column_ids = (await session.execute(slice_columns_stmt)).scalars().all()
 
         profile_count = 0

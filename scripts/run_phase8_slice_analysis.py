@@ -124,10 +124,10 @@ async def main(skip_semantic: bool = False) -> int:
 
         # Check what's already analyzed
         print("\n   Slice analysis status:")
-        slice_table_ids = [s.slice_table_id for s in slice_infos]
+        _slice_table_ids = [s.slice_table_id for s in slice_infos]
 
         # Check for existing profiles
-        profiled_stmt = (
+        _profiled_stmt = (
             select(StatisticalProfile.column_id)
             .join(Table, StatisticalProfile.column_id.isnot(None))
             .where(Table.layer == "slice")
@@ -138,7 +138,7 @@ async def main(skip_semantic: bool = False) -> int:
         slice_tables_db = (await session.execute(slice_tables_stmt)).scalars().all()
 
         analyzed_count = 0
-        for st in slice_tables_db:
+        for _st in slice_tables_db:
             profile_count = (
                 await session.execute(
                     select(func.count(StatisticalProfile.profile_id))
@@ -212,7 +212,7 @@ async def main(skip_semantic: bool = False) -> int:
                 run_semantic=not skip_semantic,
             )
 
-            print(f"\n   Analysis complete!")
+            print("\n   Analysis complete!")
             print(f"   Slices analyzed: {analysis_result.slices_analyzed}")
             print(f"   Statistics computed: {analysis_result.statistics_computed}")
             print(f"   Quality assessed: {analysis_result.quality_assessed}")

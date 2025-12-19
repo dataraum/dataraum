@@ -105,7 +105,7 @@ async def main(execute_slices: bool = False) -> int:
         print(f"   Found {profile_count} statistical profiles")
 
         # Check if slicing analysis already done
-        slice_count = (
+        _slice_count = (
             await session.execute(select(func.count(SliceDefinition.slice_id)))
         ).scalar() or 0
 
@@ -271,6 +271,7 @@ async def _print_slicing_summary(session: Any) -> None:
         print(f"  Recommendations: {latest_run.recommendations_count}")
         if latest_run.duration_seconds:
             print(f"  Duration: {latest_run.duration_seconds:.2f}s")
+
 
 if __name__ == "__main__":
     # Check for --execute flag

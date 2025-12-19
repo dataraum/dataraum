@@ -36,9 +36,7 @@ class ColumnQualityReport(Base):
     __tablename__ = "column_quality_reports"
     __table_args__ = {"extend_existing": True}
 
-    report_id: Mapped[str] = mapped_column(
-        String, primary_key=True, default=lambda: str(uuid4())
-    )
+    report_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
 
     # Reference to source column (in the original typed table)
     source_column_id: Mapped[str] = mapped_column(

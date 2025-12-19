@@ -54,73 +54,143 @@ class TableTopologyExtractor:
 
     def extract_column_features(self, series: pd.Series) -> np.ndarray:
         """
-        Extract topological features from a single column
-        """
-        features = []
+        Extract topological features from a single column.
 
-        # Type-based features
-        if pd.api.types.is_numeric_dtype(series):
-            # Statistical features
-            features.extend(
-                [
-                    series.mean() if not series.empty else 0,
-                    series.std() if len(series) > 1 else 0,
-                    series.skew() if len(series) > 2 else 0,
-                    series.kurtosis() if len(series) > 3 else 0,
-                ]
-            )
+        Returns exactly 7 features for all column types:
+        [mean, std, skew, kurtosis, entropy, autocorr, null_ratio]
+        """
+        # Standard feature vector length
+        FEATURE_COUNT = 7
+
+        # Handle boolean columns separately
+        if pd.api.types.is_bool_dtype(series):
+            bool_as_int = series.astype(int)
+            bool_non_null = bool_as_int.dropna()
+            counts = bool_as_int.value_counts()
+            mean_val = float(bool_non_null.mean()) if len(bool_non_null) > 0 else 0.0
+            std_val = float(bool_non_null.std()) if len(bool_non_null) > 1 else 0.0
+            entropy_val = float(entropy(counts.to_numpy() + 1e-10)) if len(counts) > 0 else 0.0
+            features = [
+                mean_val,
+                std_val,
+                0.0,  # skew not meaningful for binary
+                0.0,  # kurtosis not meaningful for binary
+                entropy_val,
+                0.0,  # autocorr not meaningful for binary
+                float(series.isna().mean()),
+            ]
+            return np.array(features, dtype=np.float64)
+
+        # Type-based features for numeric columns
+        elif pd.api.types.is_numeric_dtype(series):
+            try:
+                numeric_series: pd.Series[float] = series.astype(float)
+            except (ValueError, TypeError):
+                # Can't convert to float, treat as unknown
+                return np.zeros(FEATURE_COUNT, dtype=np.float64)
+
+            non_null = numeric_series.dropna()
+
+            # Statistical features with NaN handling
+            mean_val = float(non_null.mean()) if len(non_null) > 0 else 0.0
+            std_val = float(non_null.std()) if len(non_null) > 1 else 0.0
+            skew_result = non_null.skew() if len(non_null) > 2 else 0.0
+            kurt_result = non_null.kurtosis() if len(non_null) > 3 else 0.0
+            skew_val = float(skew_result) if isinstance(skew_result, (int, float)) else 0.0
+            kurt_val = float(kurt_result) if isinstance(kurt_result, (int, float)) else 0.0
+
+            # Handle NaN results from stats
+            mean_val = 0.0 if np.isnan(mean_val) else mean_val
+            std_val = 0.0 if np.isnan(std_val) else std_val
+            skew_val = 0.0 if np.isnan(skew_val) else skew_val
+            kurt_val = 0.0 if np.isnan(kurt_val) else kurt_val
 
             # Distribution entropy
-            hist, _ = np.histogram(series.dropna(), bins=20)
-            features.append(entropy(hist + 1e-10))
+            if len(non_null) > 0:
+                hist, _ = np.histogram(non_null.to_numpy(), bins=20)
+                entropy_val = float(entropy(hist + 1e-10))
+            else:
+                entropy_val = 0.0
 
             # Autocorrelation (for temporal patterns)
-            if len(series) > 1:
-                features.append(series.autocorr() if not series.isna().all() else 0)
+            if len(non_null) > 1 and std_val > 0:
+                autocorr_result = numeric_series.autocorr()
+                autocorr_val = 0.0 if np.isnan(autocorr_result) else float(autocorr_result)
             else:
-                features.append(0)
+                autocorr_val = 0.0
+
+            features = [
+                mean_val,
+                std_val,
+                skew_val,
+                kurt_val,
+                entropy_val,
+                autocorr_val,
+                float(series.isna().mean()),
+            ]
+            return np.array(features, dtype=np.float64)
 
         elif pd.api.types.is_string_dtype(series):
-            # Categorical features
-            features.extend(
-                [
-                    series.nunique() / len(series) if len(series) > 0 else 0,  # Cardinality ratio
-                    series.str.len().mean() if not series.empty else 0,  # Avg length
-                    entropy(series.value_counts() + 1e-10),  # Category distribution entropy
-                    0,
-                    0,
-                    0,  # Padding to match numeric features
-                ]
+            # Categorical features (7 features total)
+            non_null = series.dropna()
+            cardinality_ratio = float(series.nunique() / len(series)) if len(series) > 0 else 0.0
+            avg_len = float(non_null.str.len().mean()) if len(non_null) > 0 else 0.0
+            avg_len = 0.0 if np.isnan(avg_len) else avg_len
+            category_entropy = (
+                float(entropy(series.value_counts().to_numpy() + 1e-10))
+                if series.nunique() > 0
+                else 0.0
             )
+            features = [
+                cardinality_ratio,  # like mean - represents distribution
+                0.0,  # std - not applicable
+                0.0,  # skew - not applicable
+                0.0,  # kurtosis - not applicable
+                category_entropy,  # entropy
+                avg_len,  # use avg_len instead of autocorr
+                float(series.isna().mean()),
+            ]
+            return np.array(features, dtype=np.float64)
 
         elif pd.api.types.is_datetime64_dtype(series):
-            # Temporal features
-            if not series.empty:
-                time_diffs = series.sort_values().diff().dt.total_seconds()
-                features.extend(
-                    [
-                        time_diffs.mean() if len(time_diffs) > 1 else 0,
-                        time_diffs.std() if len(time_diffs) > 1 else 0,
-                        entropy(
-                            pd.cut(series.dt.hour, bins=24).value_counts() + 1e-10
-                        ),  # Hour distribution
-                        entropy(
-                            pd.cut(series.dt.dayofweek, bins=7).value_counts() + 1e-10
-                        ),  # Day distribution
-                        0,
-                        0,
-                    ]
-                )
+            # Temporal features (7 features total)
+            non_null = series.dropna()
+            if len(non_null) > 1:
+                time_diffs = non_null.sort_values().diff().dt.total_seconds().dropna()
+                mean_diff = float(time_diffs.mean()) if len(time_diffs) > 0 else 0.0
+                std_diff = float(time_diffs.std()) if len(time_diffs) > 1 else 0.0
+                mean_diff = 0.0 if np.isnan(mean_diff) else mean_diff
+                std_diff = 0.0 if np.isnan(std_diff) else std_diff
+
+                # Hour and day distribution entropy
+                try:
+                    hour_counts = non_null.dt.hour.value_counts()
+                    hour_entropy = float(entropy(hour_counts.to_numpy() + 1e-10))
+                except Exception:
+                    hour_entropy = 0.0
+
+                try:
+                    day_counts = non_null.dt.dayofweek.value_counts()
+                    day_entropy = float(entropy(day_counts.to_numpy() + 1e-10))
+                except Exception:
+                    day_entropy = 0.0
+
+                features = [
+                    mean_diff,  # mean
+                    std_diff,  # std
+                    0.0,  # skew - not computed
+                    0.0,  # kurtosis - not computed
+                    hour_entropy,  # entropy of hour distribution
+                    day_entropy,  # use day entropy instead of autocorr
+                    float(series.isna().mean()),
+                ]
             else:
-                features.extend([0, 0, 0, 0, 0, 0])
+                features = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(series.isna().mean())]
+            return np.array(features, dtype=np.float64)
+
         else:
-            # Unknown type - use basic features
-            features.extend([0, 0, 0, 0, 0, 0])
-
-        # Nullability feature
-        features.append(series.isna().mean())
-
-        return np.array(features)
+            # Unknown type - return zeros
+            return np.array([0, 0, 0, 0, 0, 0, float(series.isna().mean())], dtype=np.float64)
 
     def compute_persistence(self, features: np.ndarray) -> dict[str, Any]:
         """
@@ -193,10 +263,15 @@ class TableTopologyExtractor:
         if pd.api.types.is_numeric_dtype(col1) and pd.api.types.is_numeric_dtype(col2):
             valid_mask = ~(col1.isna() | col2.isna())
             if valid_mask.sum() > 10:
-                correlation = col1[valid_mask].corr(col2[valid_mask])
-                relationship["strength"] = abs(correlation)
-                relationship["type"] = "numeric_correlation"
-                relationship["confidence"] = min(valid_mask.sum() / len(col1), 1.0)
+                c1_valid = col1[valid_mask].astype(float)
+                c2_valid = col2[valid_mask].astype(float)
+                # Check for constant columns (would cause NaN correlation)
+                if c1_valid.std() > 0 and c2_valid.std() > 0:
+                    correlation = c1_valid.corr(c2_valid)
+                    if not np.isnan(correlation):
+                        relationship["strength"] = abs(correlation)
+                        relationship["type"] = "numeric_correlation"
+                        relationship["confidence"] = min(valid_mask.sum() / len(col1), 1.0)
 
         # Categorical - check for foreign key relationship
         elif pd.api.types.is_string_dtype(col1) or pd.api.types.is_string_dtype(col2):
@@ -236,32 +311,44 @@ class TableTopologyExtractor:
         else:
             sample_df = df
 
-        # Create row feature matrix
-        row_features = []
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        # Get only truly numeric columns (exclude object, string, etc.)
+        numeric_df = sample_df.select_dtypes(include=[np.number])
 
-        if len(numeric_cols) > 0:
-            for _, row in sample_df[numeric_cols].iterrows():
-                row_features.append(row.values)
+        if numeric_df.empty or len(numeric_df.columns) == 0:
+            return {"message": "No numeric columns for row topology"}
 
-            row_features_array = np.array(row_features)
+        # Convert to float64 and handle NaN
+        try:
+            row_features_array = numeric_df.values.astype(np.float64)
+        except (ValueError, TypeError):
+            return {"message": "Could not convert to numeric array"}
 
-            # Compute persistence on row space
-            if len(row_features_array) > 2:
-                # Explicitly compute distance matrix to avoid ripser warning
-                # when point cloud happens to be square
-                from scipy.spatial.distance import pdist, squareform
+        # Replace NaN with column means (or 0 if all NaN)
+        col_means = np.nanmean(row_features_array, axis=0)
+        col_means = np.where(np.isnan(col_means), 0, col_means)
+        for col_idx in range(row_features_array.shape[1]):
+            nan_mask = np.isnan(row_features_array[:, col_idx])
+            row_features_array[nan_mask, col_idx] = col_means[col_idx]
 
-                row_distances = squareform(pdist(row_features_array, metric="euclidean"))
-                row_persistence = ripser(row_distances, maxdim=1, distance_matrix=True)
+        # Check for valid data
+        if len(row_features_array) < 3:
+            return {"message": "Not enough rows for topology analysis"}
 
-                return {
-                    "row_clusters": self.identify_clusters(row_persistence),
-                    "outlier_score": self.compute_outlier_scores(row_features_array),
-                    "row_persistence": row_persistence["dgms"],
-                }
+        if np.all(np.isnan(row_features_array)) or np.all(row_features_array == 0):
+            return {"message": "No valid numeric data for topology analysis"}
 
-        return {"message": "No numeric columns for row topology"}
+        # Compute persistence on row space
+        try:
+            row_distances = squareform(pdist(row_features_array, metric="euclidean"))
+            row_persistence = ripser(row_distances, maxdim=1, distance_matrix=True)
+
+            return {
+                "row_clusters": self.identify_clusters(row_persistence),
+                "outlier_score": self.compute_outlier_scores(row_features_array),
+                "row_persistence": row_persistence["dgms"],
+            }
+        except Exception as e:
+            return {"message": f"Row topology computation failed: {e}"}
 
     def identify_clusters(self, persistence_result: dict[str, Any]) -> dict[str, Any]:
         """

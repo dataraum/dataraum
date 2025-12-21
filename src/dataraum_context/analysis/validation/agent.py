@@ -17,6 +17,10 @@ import duckdb
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.analysis.validation.config import load_all_validation_specs
+from dataraum_context.analysis.validation.db_models import (
+    ValidationResultRecord,
+    ValidationRunRecord,
+)
 from dataraum_context.analysis.validation.models import (
     GeneratedSQL,
     ValidationResult,
@@ -138,6 +142,7 @@ class ValidationAgent(LLMFeature):
         table_ids: list[str],
         validation_ids: list[str] | None = None,
         category: str | None = None,
+        persist: bool = True,
     ) -> Result[ValidationRunResult]:
         """Run validation checks across multiple tables.
 
@@ -147,6 +152,7 @@ class ValidationAgent(LLMFeature):
             table_ids: Tables to validate (all schemas passed to LLM)
             validation_ids: Specific validations to run (None = all applicable)
             category: Filter by category (e.g., 'financial')
+            persist: Whether to save results to the database (default True)
 
         Returns:
             Result containing ValidationRunResult
@@ -219,6 +225,10 @@ class ValidationAgent(LLMFeature):
             overall_status=overall,
             has_critical_failures=has_critical,
         )
+
+        # Persist results to database
+        if persist:
+            await self._persist_results(session, run_result)
 
         return Result.ok(run_result)
 
@@ -526,6 +536,58 @@ class ValidationAgent(LLMFeature):
                 f"Custom check returned {row_count} rows",
                 {"row_count": row_count},
             )
+
+    async def _persist_results(
+        self,
+        session: AsyncSession,
+        run_result: ValidationRunResult,
+    ) -> None:
+        """Persist validation results to the database.
+
+        Args:
+            session: Database session
+            run_result: Validation run result to persist
+        """
+        # Create run record
+        run_record = ValidationRunRecord(
+            run_id=run_result.run_id,
+            table_ids=run_result.table_ids,
+            table_name=run_result.table_name,
+            started_at=run_result.started_at,
+            completed_at=run_result.completed_at,
+            total_checks=run_result.total_checks,
+            passed_checks=run_result.passed_checks,
+            failed_checks=run_result.failed_checks,
+            skipped_checks=run_result.skipped_checks,
+            error_checks=run_result.error_checks,
+            overall_status=run_result.overall_status.value,
+            has_critical_failures=run_result.has_critical_failures,
+            results=[r.model_dump(mode="json") for r in run_result.results],
+        )
+        session.add(run_record)
+
+        # Create individual result records
+        for result in run_result.results:
+            # Serialize details to ensure JSON compatibility
+            result_data = result.model_dump(mode="json")
+            result_record = ValidationResultRecord(
+                run_id=run_result.run_id,
+                validation_id=result.validation_id,
+                table_ids=result.table_ids,
+                status=result.status.value,
+                severity=result.severity.value,
+                passed=result.passed,
+                message=result.message,
+                executed_at=result.executed_at,
+                sql_used=result.sql_used,
+                details=result_data.get("details"),
+            )
+            session.add(result_record)
+
+        await session.commit()
+        logger.info(
+            f"Persisted validation run {run_result.run_id} with {len(run_result.results)} results"
+        )
 
 
 __all__ = ["ValidationAgent"]

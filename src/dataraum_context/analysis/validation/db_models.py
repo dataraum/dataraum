@@ -18,14 +18,14 @@ from dataraum_context.storage import Base
 class ValidationRunRecord(Base):
     """Record of a validation run.
 
-    Stores the results of running validations on a table.
+    Stores the results of running validations across tables.
     """
 
     __tablename__ = "validation_runs"
     __table_args__ = {"extend_existing": True}
 
     run_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    table_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    table_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     table_name: Mapped[str] = mapped_column(String, nullable=False)
 
     # Timing
@@ -60,7 +60,7 @@ class ValidationResultRecord(Base):
     result_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     validation_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    table_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    table_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
     # Result
     status: Mapped[str] = mapped_column(String, nullable=False)  # passed, failed, skipped, error

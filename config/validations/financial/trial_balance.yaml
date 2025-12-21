@@ -19,26 +19,17 @@ tags:
 
 check_type: comparison
 
-column_requirements:
-  amount:
-    semantic_role: measure
-    entity_type: amount
-    name_patterns: ["amount", "balance", "value"]
-    required: true
-
-  account_type:
-    entity_type: account_type
-    name_patterns: ["account_type", "account_category", "type"]
-    required: true
-
 parameters:
   tolerance: 0.01
-  # Account type classifications
+  # Account type classifications (hints for LLM)
   asset_types: ["asset", "assets"]
   liability_types: ["liability", "liabilities"]
   equity_types: ["equity", "stockholders equity", "shareholders equity", "capital"]
 
 sql_hints: >
+  Look for columns that represent amounts and account types/categories.
+  Check semantic annotations for entity_type: amount, account_type.
+
   Group by account_type and sum amounts for each category:
   - Assets: account types containing 'asset'
   - Liabilities: account types containing 'liability'

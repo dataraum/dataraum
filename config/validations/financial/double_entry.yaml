@@ -20,39 +20,16 @@ tags:
 
 check_type: balance
 
-# Column requirements resolved via semantic annotations
-column_requirements:
-  # Primary: Look for separate debit/credit columns
-  debit_amount:
-    entity_type: debit
-    name_patterns: ["debit", "dr", "debit_amount"]
-    required: false  # Optional if using amount + account_type
-
-  credit_amount:
-    entity_type: credit
-    name_patterns: ["credit", "cr", "credit_amount"]
-    required: false
-
-  # Alternative: Single amount with account type
-  amount:
-    semantic_role: measure
-    entity_type: amount
-    name_patterns: ["amount", "value", "balance"]
-    required: false
-
-  account_type:
-    entity_type: account_type
-    name_patterns: ["account_type", "account_category", "type", "category"]
-    required: false
-
 parameters:
   tolerance: 0.01  # Acceptable difference threshold
 
 sql_hints: >
+  Look for columns that represent debit and credit amounts. These might be:
+  - Separate columns named debit/credit, dr/cr, debit_amount/credit_amount
+  - A single amount column with an account_type column indicating debit/credit
+  - Look at semantic annotations for entity_type: debit, credit, or amount
+
   Generate SQL that calculates total debits and total credits.
-  If debit/credit columns exist: SUM(debit) vs SUM(credit).
-  If only amount + account_type exist: classify by account_type where
-  asset/expense types are typically debits and liability/equity/revenue are credits.
   Return columns: total_debits, total_credits, difference.
 
 expected_outcome: >

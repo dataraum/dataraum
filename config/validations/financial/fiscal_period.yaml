@@ -20,19 +20,6 @@ tags:
 
 check_type: aggregate
 
-column_requirements:
-  transaction_date:
-    semantic_role: temporal
-    entity_type: date
-    name_patterns: ["date", "transaction_date", "posting_date", "entry_date"]
-    required: true
-
-  amount:
-    semantic_role: measure
-    entity_type: amount
-    name_patterns: ["amount", "value", "balance"]
-    required: false
-
 parameters:
   # Default fiscal year end (December)
   fiscal_year_end_month: 12
@@ -40,6 +27,9 @@ parameters:
   max_gap_days: 5
 
 sql_hints: >
+  Look for date columns (transaction_date, posting_date, date, etc.).
+  Check semantic annotations for entity_type: date, or semantic_role: temporal.
+
   Analyze the date range and distribution:
   1. Find min and max dates to determine the fiscal period
   2. Count distinct days with transactions

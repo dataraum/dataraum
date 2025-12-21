@@ -1,6 +1,7 @@
 """Generic Validation Module.
 
-LLM-powered validation checks using semantic annotations for column resolution.
+LLM-powered validation checks that interpret table schemas
+to identify relevant columns and generate appropriate SQL.
 """
 
 from dataraum_context.analysis.validation.agent import ValidationAgent
@@ -16,13 +17,9 @@ from dataraum_context.analysis.validation.config import (
 from dataraum_context.analysis.validation.db_models import (
     ValidationResultRecord,
     ValidationRunRecord,
-    ValidationSQLCache,
 )
 from dataraum_context.analysis.validation.models import (
-    ColumnRequirement,
-    ColumnResolutionResult,
     GeneratedSQL,
-    ResolvedColumn,
     ValidationResult,
     ValidationRunResult,
     ValidationSeverity,
@@ -30,8 +27,8 @@ from dataraum_context.analysis.validation.models import (
     ValidationStatus,
 )
 from dataraum_context.analysis.validation.resolver import (
+    format_schema_for_prompt,
     get_table_schema_for_llm,
-    resolve_columns,
 )
 
 __all__ = [
@@ -46,20 +43,16 @@ __all__ = [
     "format_validation_specs_for_context",
     "clear_cache",
     # Resolver
-    "resolve_columns",
     "get_table_schema_for_llm",
+    "format_schema_for_prompt",
     # Models
-    "ColumnRequirement",
     "ValidationSpec",
-    "ResolvedColumn",
-    "ColumnResolutionResult",
     "GeneratedSQL",
     "ValidationResult",
     "ValidationRunResult",
     "ValidationSeverity",
     "ValidationStatus",
     # DB Models
-    "ValidationSQLCache",
     "ValidationRunRecord",
     "ValidationResultRecord",
 ]

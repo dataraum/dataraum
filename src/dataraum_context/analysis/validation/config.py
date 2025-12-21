@@ -12,7 +12,6 @@ from pathlib import Path
 import yaml
 
 from dataraum_context.analysis.validation.models import (
-    ColumnRequirement,
     ValidationSeverity,
     ValidationSpec,
 )
@@ -76,20 +75,6 @@ def load_validation_spec(file_path: Path) -> ValidationSpec | None:
         if not data or not isinstance(data, dict):
             return None
 
-        # Parse column requirements
-        column_reqs: dict[str, ColumnRequirement] = {}
-        for alias, req_data in data.get("column_requirements", {}).items():
-            if isinstance(req_data, dict):
-                column_reqs[alias] = ColumnRequirement(
-                    semantic_role=req_data.get("semantic_role"),
-                    entity_type=req_data.get("entity_type"),
-                    business_domain=req_data.get("business_domain"),
-                    ontology_term=req_data.get("ontology_term"),
-                    name_patterns=req_data.get("name_patterns", []),
-                    required=req_data.get("required", True),
-                    alias=alias,
-                )
-
         # Parse severity
         severity_str = data.get("severity", "error").lower()
         try:
@@ -103,7 +88,6 @@ def load_validation_spec(file_path: Path) -> ValidationSpec | None:
             description=data.get("description", ""),
             category=data.get("category", "general"),
             severity=severity,
-            column_requirements=column_reqs,
             check_type=data.get("check_type", "custom"),
             parameters=data.get("parameters", {}),
             sql_hints=data.get("sql_hints"),
@@ -185,22 +169,11 @@ def format_validation_specs_for_context(category: str | None = None) -> str:
         lines.append(f"Severity: {spec.severity.value}")
         lines.append(f"Description: {spec.description}")
 
-        if spec.column_requirements:
-            lines.append("Required columns:")
-            for alias, req in spec.column_requirements.items():
-                criteria = []
-                if req.semantic_role:
-                    criteria.append(f"role={req.semantic_role}")
-                if req.entity_type:
-                    criteria.append(f"entity={req.entity_type}")
-                if req.ontology_term:
-                    criteria.append(f"term={req.ontology_term}")
-                if req.name_patterns:
-                    criteria.append(f"patterns={req.name_patterns}")
-                lines.append(f"  - {alias}: {', '.join(criteria)}")
-
         if spec.sql_hints:
             lines.append(f"SQL hints: {spec.sql_hints}")
+
+        if spec.expected_outcome:
+            lines.append(f"Expected outcome: {spec.expected_outcome}")
 
         lines.append("")
 

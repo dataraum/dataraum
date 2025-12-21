@@ -1,12 +1,11 @@
 """Validation Agent - LLM-powered SQL generation for validation checks.
 
-This agent generates SQL queries for validation checks using semantic
-annotations for column resolution, with caching for reuse.
+This agent generates SQL queries for validation checks by passing the full
+schema to the LLM and letting it identify relevant columns.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from datetime import datetime
@@ -14,11 +13,9 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import duckdb
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.analysis.validation.config import load_all_validation_specs
-from dataraum_context.analysis.validation.db_models import ValidationSQLCache
 from dataraum_context.analysis.validation.models import (
     GeneratedSQL,
     ValidationResult,
@@ -27,7 +24,10 @@ from dataraum_context.analysis.validation.models import (
     ValidationSpec,
     ValidationStatus,
 )
-from dataraum_context.analysis.validation.resolver import get_table_schema_for_llm, resolve_columns
+from dataraum_context.analysis.validation.resolver import (
+    format_schema_for_prompt,
+    get_table_schema_for_llm,
+)
 from dataraum_context.core.models.base import Result
 from dataraum_context.llm.features._base import LLMFeature
 
@@ -45,14 +45,16 @@ SQL_GENERATION_SYSTEM = """You are an expert SQL developer specializing in data 
 Your task is to generate DuckDB SQL queries that implement validation checks.
 
 Rules:
-1. Use only the columns and tables provided in the schema
+1. Analyze the table schema and semantic annotations to identify relevant columns
 2. Use DuckDB SQL syntax
 3. The query should return validation results that can be evaluated
-4. For balance checks: return the values being compared
+4. For balance checks: return the values being compared (e.g., total_debits, total_credits, difference)
 5. For constraint checks: return violating rows
-6. For aggregate checks: return the aggregated values
-7. Always use proper quoting for column names with special characters
-8. Return a single SQL query (no multiple statements)
+6. For comparison checks: return values and a boolean indicator (equation_holds or is_valid)
+7. For aggregate checks: return the aggregated values
+8. Always use proper quoting for column names with special characters
+9. Return a single SQL query (no multiple statements)
+10. If the required columns for the validation are not found in the schema, indicate this clearly
 """
 
 SQL_GENERATION_TEMPLATE = """Generate a DuckDB SQL query for this validation check.
@@ -68,24 +70,33 @@ Parameters: {parameters}
 {expected_outcome}
 
 ## Table Schema
-Table: {table_name} (DuckDB path: {duckdb_path})
-
-Columns:
-{columns_info}
-
-## Resolved Column Mappings
-{column_mappings}
+{schema}
 
 ## Instructions
-Generate a SQL query that implements this validation. The query should:
-1. Use the actual column names from the mappings above
-2. Return results that can be evaluated (e.g., totals to compare, violating rows)
-3. Include relevant context in the output columns
+1. Analyze the schema and semantic annotations to identify which columns are relevant for this validation
+2. Generate a SQL query that implements this validation check
+3. The query should return results that can be evaluated based on the check type:
+   - balance: return totals and difference
+   - comparison: return values and equation_holds boolean
+   - constraint: return violating rows (empty = passed)
+   - aggregate: return aggregated values
 
 Return ONLY a JSON object with this structure:
 {{
   "sql": "SELECT ...",
-  "explanation": "Brief explanation of what this query checks"
+  "explanation": "Brief explanation of what this query checks",
+  "columns_used": ["col1", "col2"],
+  "can_validate": true,
+  "skip_reason": null
+}}
+
+If the schema doesn't contain the necessary columns for this validation, return:
+{{
+  "sql": null,
+  "explanation": "Why validation cannot be performed",
+  "columns_used": [],
+  "can_validate": false,
+  "skip_reason": "Missing required columns: ..."
 }}
 """
 
@@ -93,8 +104,8 @@ Return ONLY a JSON object with this structure:
 class ValidationAgent(LLMFeature):
     """LLM-powered validation agent.
 
-    Generates SQL for validation checks using semantic annotations
-    for column resolution. Caches generated SQL for reuse.
+    Generates SQL for validation checks by passing the full schema
+    to the LLM for interpretation.
     """
 
     def __init__(
@@ -138,7 +149,7 @@ class ValidationAgent(LLMFeature):
         started_at = datetime.utcnow()
         results: list[ValidationResult] = []
 
-        # Get table info for results
+        # Get table schema
         schema = await get_table_schema_for_llm(session, table_id)
         if "error" in schema:
             return Result.fail(str(schema["error"]))
@@ -163,7 +174,6 @@ class ValidationAgent(LLMFeature):
         # Run each validation
         for spec in specs:
             result = await self._run_single_validation(
-                session=session,
                 duckdb_conn=duckdb_conn,
                 table_id=table_id,
                 spec=spec,
@@ -230,7 +240,6 @@ class ValidationAgent(LLMFeature):
 
     async def _run_single_validation(
         self,
-        session: AsyncSession,
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_id: str,
         spec: ValidationSpec,
@@ -239,41 +248,18 @@ class ValidationAgent(LLMFeature):
         """Run a single validation check.
 
         Args:
-            session: Database session
             duckdb_conn: DuckDB connection
             table_id: Table being validated
             spec: Validation spec to run
-            schema: Table schema from resolver
+            schema: Table schema
 
         Returns:
             ValidationResult
         """
         table_name = schema["table_name"]
 
-        # 1. Resolve columns using semantic annotations
-        resolution = await resolve_columns(session, table_id, spec)
-
-        if not resolution.all_resolved:
-            # Fail with clear error about unresolved columns
-            return ValidationResult(
-                validation_id=spec.validation_id,
-                spec_name=spec.name,
-                status=ValidationStatus.SKIPPED,
-                severity=spec.severity,
-                table_id=table_id,
-                table_name=table_name,
-                passed=False,
-                message=resolution.error_message or "Column resolution failed",
-                details={"unresolved_columns": resolution.unresolved},
-            )
-
-        # 2. Get or generate SQL
-        sql_result = await self._get_or_generate_sql(
-            session=session,
-            spec=spec,
-            schema=schema,
-            resolution_map={alias: col.column_name for alias, col in resolution.resolved.items()},
-        )
+        # Generate SQL via LLM
+        sql_result = await self._generate_sql(spec, schema)
 
         if not sql_result.success or not sql_result.value:
             return ValidationResult(
@@ -289,13 +275,27 @@ class ValidationAgent(LLMFeature):
 
         generated = sql_result.value
 
-        # 3. Execute SQL
+        # Check if validation can be performed
+        if not generated.is_valid:
+            return ValidationResult(
+                validation_id=spec.validation_id,
+                spec_name=spec.name,
+                status=ValidationStatus.SKIPPED,
+                severity=spec.severity,
+                table_id=table_id,
+                table_name=table_name,
+                passed=False,
+                message=generated.validation_error or "Validation cannot be performed",
+                columns_used=generated.columns_used,
+            )
+
+        # Execute SQL
         try:
             result_df = duckdb_conn.execute(generated.sql_query).df()
             result_rows: list[dict[str, Any]] = result_df.to_dict(orient="records")  # type: ignore[assignment]
             row_count = len(result_rows)
 
-            # 4. Evaluate results based on check type
+            # Evaluate results based on check type
             passed, message, details = self._evaluate_result(
                 spec=spec,
                 result_rows=result_rows,
@@ -313,11 +313,9 @@ class ValidationAgent(LLMFeature):
                 message=message,
                 details=details,
                 sql_used=generated.sql_query,
+                columns_used=generated.columns_used,
                 result_rows=result_rows[:10],  # Limit stored rows
                 row_count=row_count,
-                columns_resolved={
-                    alias: col.column_name for alias, col in resolution.resolved.items()
-                },
             )
 
         except Exception as e:
@@ -332,155 +330,25 @@ class ValidationAgent(LLMFeature):
                 passed=False,
                 message=f"SQL execution error: {e}",
                 sql_used=generated.sql_query,
+                columns_used=generated.columns_used,
             )
-
-    async def _get_or_generate_sql(
-        self,
-        session: AsyncSession,
-        spec: ValidationSpec,
-        schema: dict[str, Any],
-        resolution_map: dict[str, str],
-    ) -> Result[GeneratedSQL]:
-        """Get SQL from cache or generate via LLM.
-
-        Args:
-            session: Database session
-            spec: Validation spec
-            schema: Table schema
-            resolution_map: Resolved column mappings
-
-        Returns:
-            Result containing GeneratedSQL
-        """
-        # Build cache key from spec + schema + resolution
-        cache_key = self._build_cache_key(spec, schema, resolution_map)
-
-        # Check cache first
-        cached = await self._get_cached_sql(session, cache_key)
-        if cached:
-            logger.debug(f"Using cached SQL for {spec.validation_id}")
-            return Result.ok(cached)
-
-        # Generate via LLM
-        sql_result = await self._generate_sql(session, spec, schema, resolution_map)
-
-        if sql_result.success and sql_result.value:
-            # Cache the generated SQL
-            await self._cache_sql(session, cache_key, sql_result.value)
-
-        return sql_result
-
-    def _build_cache_key(
-        self,
-        spec: ValidationSpec,
-        schema: dict[str, Any],
-        resolution_map: dict[str, str],
-    ) -> str:
-        """Build a cache key for SQL lookup.
-
-        Args:
-            spec: Validation spec
-            schema: Table schema
-            resolution_map: Resolved column mappings
-
-        Returns:
-            Cache key string
-        """
-        key_data = {
-            "validation_id": spec.validation_id,
-            "version": spec.version,
-            "table_name": schema["table_name"],
-            "columns": sorted(resolution_map.items()),
-        }
-        key_str = json.dumps(key_data, sort_keys=True)
-        return hashlib.sha256(key_str.encode()).hexdigest()[:32]
-
-    async def _get_cached_sql(
-        self,
-        session: AsyncSession,
-        cache_key: str,
-    ) -> GeneratedSQL | None:
-        """Get cached SQL if available.
-
-        Args:
-            session: Database session
-            cache_key: Cache key
-
-        Returns:
-            GeneratedSQL or None if not cached
-        """
-        query = select(ValidationSQLCache).where(ValidationSQLCache.cache_key == cache_key)
-        result = await session.execute(query)
-        cached = result.scalar_one_or_none()
-
-        if cached:
-            return GeneratedSQL(
-                validation_id=cached.validation_id,
-                sql_query=cached.sql_query,
-                explanation=cached.explanation,
-                generated_at=cached.generated_at,
-                model_used=cached.model_used,
-                prompt_hash=cache_key,
-            )
-
-        return None
-
-    async def _cache_sql(
-        self,
-        session: AsyncSession,
-        cache_key: str,
-        generated: GeneratedSQL,
-    ) -> None:
-        """Cache generated SQL.
-
-        Args:
-            session: Database session
-            cache_key: Cache key
-            generated: Generated SQL to cache
-        """
-        cache_entry = ValidationSQLCache(
-            cache_key=cache_key,
-            validation_id=generated.validation_id,
-            sql_query=generated.sql_query,
-            explanation=generated.explanation,
-            generated_at=generated.generated_at,
-            model_used=generated.model_used,
-        )
-        session.add(cache_entry)
-        await session.commit()
 
     async def _generate_sql(
         self,
-        session: AsyncSession,
         spec: ValidationSpec,
         schema: dict[str, Any],
-        resolution_map: dict[str, str],
     ) -> Result[GeneratedSQL]:
         """Generate SQL via LLM.
 
         Args:
-            session: Database session
             spec: Validation spec
             schema: Table schema
-            resolution_map: Resolved column mappings
 
         Returns:
             Result containing GeneratedSQL
         """
-        # Build columns info
-        columns_info = []
-        for col in schema.get("columns", []):
-            col_line = f"  - {col['column_name']} ({col.get('data_type', 'unknown')})"
-            if "semantic" in col:
-                sem = col["semantic"]
-                if sem.get("entity_type"):
-                    col_line += f" [entity: {sem['entity_type']}]"
-                if sem.get("role"):
-                    col_line += f" [role: {sem['role']}]"
-            columns_info.append(col_line)
-
-        # Build column mappings
-        mappings = [f'  {alias} -> "{actual}"' for alias, actual in resolution_map.items()]
+        # Format schema for prompt
+        schema_text = format_schema_for_prompt(schema)
 
         # Build prompt
         sql_hints = f"SQL Hints: {spec.sql_hints}" if spec.sql_hints else ""
@@ -493,10 +361,7 @@ class ValidationAgent(LLMFeature):
             parameters=json.dumps(spec.parameters) if spec.parameters else "None",
             sql_hints=sql_hints,
             expected_outcome=expected,
-            table_name=schema["table_name"],
-            duckdb_path=schema["duckdb_path"],
-            columns_info="\n".join(columns_info),
-            column_mappings="\n".join(mappings),
+            schema=schema_text,
         )
 
         # Get feature config
@@ -524,18 +389,21 @@ class ValidationAgent(LLMFeature):
         # Parse response
         try:
             response_data = json.loads(result.value.content)
-            sql = response_data.get("sql", "")
+            sql = response_data.get("sql")
             explanation = response_data.get("explanation", "")
-
-            if not sql:
-                return Result.fail("LLM did not return SQL")
+            columns_used = response_data.get("columns_used", [])
+            can_validate = response_data.get("can_validate", True)
+            skip_reason = response_data.get("skip_reason")
 
             generated = GeneratedSQL(
                 validation_id=spec.validation_id,
-                sql_query=sql,
+                sql_query=sql or "",
                 explanation=explanation,
+                columns_used=columns_used,
                 generated_at=datetime.utcnow(),
                 model_used=model,
+                is_valid=can_validate and sql is not None,
+                validation_error=skip_reason,
             )
 
             return Result.ok(generated)

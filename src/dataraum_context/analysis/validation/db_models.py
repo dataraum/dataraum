@@ -1,6 +1,6 @@
-"""SQLAlchemy models for validation SQL caching.
+"""SQLAlchemy models for validation results.
 
-Contains database models for caching LLM-generated SQL queries.
+Contains database models for storing validation run results.
 """
 
 from __future__ import annotations
@@ -13,34 +13,6 @@ from sqlalchemy import JSON, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum_context.storage import Base
-
-
-class ValidationSQLCache(Base):
-    """Cache for LLM-generated validation SQL.
-
-    Stores generated SQL queries keyed by validation spec + schema hash
-    for reuse across runs.
-    """
-
-    __tablename__ = "validation_sql_cache"
-    __table_args__ = {"extend_existing": True}
-
-    cache_key: Mapped[str] = mapped_column(String, primary_key=True)
-    validation_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-
-    # Generated SQL
-    sql_query: Mapped[str] = mapped_column(Text, nullable=False)
-    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    # Generation metadata
-    generated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(UTC)
-    )
-    model_used: Mapped[str | None] = mapped_column(String, nullable=True)
-
-    # Usage tracking
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    use_count: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class ValidationRunRecord(Base):
@@ -104,11 +76,9 @@ class ValidationResultRecord(Base):
 
     # Results
     details: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    columns_resolved: Mapped[dict[str, str] | None] = mapped_column(JSON, nullable=True)
 
 
 __all__ = [
-    "ValidationSQLCache",
     "ValidationRunRecord",
     "ValidationResultRecord",
 ]

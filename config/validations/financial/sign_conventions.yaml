@@ -20,34 +20,20 @@ tags:
 
 check_type: constraint
 
-column_requirements:
-  amount:
-    semantic_role: measure
-    entity_type: amount
-    name_patterns: ["amount", "balance", "value"]
-    required: true
-
-  account_type:
-    entity_type: account_type
-    name_patterns: ["account_type", "account_category", "type"]
-    required: true
-
-  account_identifier:
-    entity_type: account
-    name_patterns: ["account_name", "account_code", "account", "name", "code"]
-    required: false
-
 parameters:
   # Expected signs for each account type (debit = positive typically)
   debit_normal_types: ["asset", "assets", "expense", "expenses"]
   credit_normal_types: ["liability", "liabilities", "equity", "revenue", "income"]
 
 sql_hints: >
+  Look for columns that represent amounts and account types.
+  Check semantic annotations for entity_type: amount, account_type.
+
   Find records where the sign convention is violated:
   - Asset/Expense accounts with negative amounts
   - Liability/Equity/Revenue accounts with unexpected signs
 
-  Return violating rows with: account_identifier, account_type, amount,
+  Return violating rows with: account_identifier (if available), account_type, amount,
   expected_sign, actual_sign.
 
   Note: Some violations may be valid (contra accounts, adjustments).

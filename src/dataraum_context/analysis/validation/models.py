@@ -88,7 +88,7 @@ class ValidationResult(BaseModel):
     severity: ValidationSeverity
 
     # Execution details
-    table_id: str
+    table_ids: list[str] = Field(default_factory=list)
     table_name: str
     executed_at: datetime = Field(default_factory=_utc_now)
 
@@ -105,10 +105,10 @@ class ValidationResult(BaseModel):
 
 
 class ValidationRunResult(BaseModel):
-    """Result of running all validations for a table."""
+    """Result of running all validations across tables."""
 
     run_id: str
-    table_id: str
+    table_ids: list[str] = Field(default_factory=list)
     table_name: str
     started_at: datetime = Field(default_factory=_utc_now)
     completed_at: datetime | None = None

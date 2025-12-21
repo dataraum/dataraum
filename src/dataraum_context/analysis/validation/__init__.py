@@ -27,8 +27,8 @@ from dataraum_context.analysis.validation.models import (
     ValidationStatus,
 )
 from dataraum_context.analysis.validation.resolver import (
-    format_schema_for_prompt,
-    get_table_schema_for_llm,
+    format_multi_table_schema_for_prompt,
+    get_multi_table_schema_for_llm,
 )
 
 __all__ = [
@@ -43,8 +43,8 @@ __all__ = [
     "format_validation_specs_for_context",
     "clear_cache",
     # Resolver
-    "get_table_schema_for_llm",
-    "format_schema_for_prompt",
+    "get_multi_table_schema_for_llm",
+    "format_multi_table_schema_for_prompt",
     # Models
     "ValidationSpec",
     "GeneratedSQL",

@@ -179,7 +179,7 @@ async def main() -> int:
 
             # Create validation agent
             prompt_renderer = PromptRenderer()
-            cache = LLMCache(session)
+            cache = LLMCache()
             agent = ValidationAgent(
                 config=llm_config,
                 provider=provider,
@@ -192,57 +192,48 @@ async def main() -> int:
             await cleanup_connections()
             return 1
 
-        # Run validations
+        # Run validations (multi-table: all tables passed together)
         print("\n3. Running validations...")
         print("-" * 50)
 
-        all_results = []
-        total_passed = 0
-        total_failed = 0
-        total_skipped = 0
-        total_errors = 0
+        print(f"\n   Validating {len(table_ids)} tables together (cross-table JOINs enabled)...")
 
-        for i, table_id in enumerate(table_ids, 1):
-            print(f"\n   [{i}/{len(table_ids)}] Validating table {table_id[:8]}...")
+        result = await agent.run_validations(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            table_ids=table_ids,
+            validation_ids=args.validation_id,
+            category=args.category if not args.validation_id else None,
+        )
 
-            result = await agent.run_validations(
-                session=session,
-                duckdb_conn=duckdb_conn,
-                table_id=table_id,
-                validation_ids=args.validation_id,
-                category=args.category if not args.validation_id else None,
-            )
+        if not result.success:
+            print(f"   ERROR: {result.error}")
+            await cleanup_connections()
+            return 1
 
-            if not result.success:
-                print(f"      ERROR: {result.error}")
-                total_errors += 1
-                continue
+        run_result = result.unwrap()
+        all_results = [run_result.model_dump(mode="json")]
 
-            run_result = result.unwrap()
-            all_results.append(run_result.model_dump(mode="json"))
+        total_passed = run_result.passed_checks
+        total_failed = run_result.failed_checks
+        total_skipped = run_result.skipped_checks
+        total_errors = run_result.error_checks
 
-            total_passed += run_result.passed_checks
-            total_failed += run_result.failed_checks
-            total_skipped += run_result.skipped_checks
-            total_errors += run_result.error_checks
+        print(f"   Tables: {run_result.table_name}")
+        print(f"   Checks: {run_result.total_checks}")
+        print(
+            f"   Results: {run_result.passed_checks} passed, {run_result.failed_checks} failed, {run_result.skipped_checks} skipped"
+        )
 
-            print(f"      Table: {run_result.table_name}")
-            print(f"      Checks: {run_result.total_checks}")
-            print(
-                f"      Results: {run_result.passed_checks} passed, {run_result.failed_checks} failed, {run_result.skipped_checks} skipped"
-            )
-
-            # Show individual check results
-            for check_result in run_result.results:
-                status_icon = {
-                    "passed": "✓",
-                    "failed": "✗",
-                    "skipped": "○",
-                    "error": "!",
-                }.get(check_result.status.value, "?")
-                print(
-                    f"         {status_icon} {check_result.spec_name}: {check_result.message[:60]}"
-                )
+        # Show individual check results
+        for check_result in run_result.results:
+            status_icon = {
+                "passed": "✓",
+                "failed": "✗",
+                "skipped": "○",
+                "error": "!",
+            }.get(check_result.status.value, "?")
+            print(f"      {status_icon} {check_result.spec_name}: {check_result.message[:60]}")
 
         # Print summary
         print("\n" + "=" * 70)

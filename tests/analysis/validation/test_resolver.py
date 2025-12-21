@@ -3,8 +3,8 @@
 import pytest
 
 from dataraum_context.analysis.validation.resolver import (
-    format_schema_for_prompt,
-    get_table_schema_for_llm,
+    format_multi_table_schema_for_prompt,
+    get_multi_table_schema_for_llm,
 )
 from dataraum_context.storage import Column, Source, Table
 
@@ -70,143 +70,276 @@ async def table_with_columns(async_session):
     return table
 
 
-@pytest.mark.asyncio
-async def test_get_table_schema_for_llm(async_session, table_with_columns):
-    """Test fetching table schema for LLM context."""
-    table = table_with_columns
+@pytest.fixture
+async def two_tables_with_relationship(async_session):
+    """Create two tables with a relationship for multi-table tests."""
+    from dataraum_context.analysis.relationships.db_models import Relationship
+    from dataraum_context.analysis.semantic.db_models import (
+        SemanticAnnotation as SemanticAnnotationDB,
+    )
 
-    schema = await get_table_schema_for_llm(async_session, table.table_id)
-
-    assert "error" not in schema
-    assert schema["table_name"] == "transactions"
-    assert schema["table_id"] == table.table_id
-    assert schema["duckdb_path"] == "typed_transactions"
-    assert len(schema["columns"]) == 3
-
-    # Check column info
-    col_names = [c["column_name"] for c in schema["columns"]]
-    assert "transaction_id" in col_names
-    assert "amount" in col_names
-    assert "account_type" in col_names
-
-    # Check semantic annotation is included
-    amount_col = next(c for c in schema["columns"] if c["column_name"] == "amount")
-    assert "semantic" in amount_col
-    assert amount_col["semantic"]["role"] == "measure"
-    assert amount_col["semantic"]["entity_type"] == "amount"
-    assert amount_col["semantic"]["business_name"] == "Transaction Amount"
-    assert amount_col["semantic"]["domain"] == "finance"
-
-
-@pytest.mark.asyncio
-async def test_get_table_schema_for_llm_nonexistent_table(async_session):
-    """Test that nonexistent table returns error."""
-    schema = await get_table_schema_for_llm(async_session, "nonexistent-id")
-
-    assert "error" in schema
-    assert "not found" in schema["error"]
-
-
-@pytest.mark.asyncio
-async def test_get_table_schema_for_llm_table_without_duckdb_path(async_session):
-    """Test that table without DuckDB path returns error."""
+    # Create source
     source = Source(name="test_source", source_type="csv")
     async_session.add(source)
     await async_session.flush()
 
-    table = Table(
+    # Create transactions table
+    txn_table = Table(
         source_id=source.source_id,
-        table_name="no_duckdb",
-        layer="raw",
-        row_count=100,
-        duckdb_path=None,  # No DuckDB path
+        table_name="transactions",
+        layer="typed",
+        row_count=1000,
+        duckdb_path="typed_transactions",
     )
-    async_session.add(table)
+    async_session.add(txn_table)
+    await async_session.flush()
+
+    # Create accounts table
+    acct_table = Table(
+        source_id=source.source_id,
+        table_name="accounts",
+        layer="typed",
+        row_count=50,
+        duckdb_path="typed_accounts",
+    )
+    async_session.add(acct_table)
+    await async_session.flush()
+
+    # Create columns for transactions
+    txn_account_col = Column(
+        table_id=txn_table.table_id,
+        column_name="account_id",
+        column_position=0,
+        raw_type="VARCHAR",
+        resolved_type="VARCHAR",
+    )
+    txn_amount_col = Column(
+        table_id=txn_table.table_id,
+        column_name="amount",
+        column_position=1,
+        raw_type="DECIMAL",
+        resolved_type="DECIMAL(18,2)",
+    )
+    async_session.add_all([txn_account_col, txn_amount_col])
+    await async_session.flush()
+
+    # Create columns for accounts
+    acct_id_col = Column(
+        table_id=acct_table.table_id,
+        column_name="account_id",
+        column_position=0,
+        raw_type="VARCHAR",
+        resolved_type="VARCHAR",
+    )
+    acct_type_col = Column(
+        table_id=acct_table.table_id,
+        column_name="account_type",
+        column_position=1,
+        raw_type="VARCHAR",
+        resolved_type="VARCHAR",
+    )
+    async_session.add_all([acct_id_col, acct_type_col])
+    await async_session.flush()
+
+    # Add semantic annotation to amount column
+    annotation = SemanticAnnotationDB(
+        column_id=txn_amount_col.column_id,
+        semantic_role="measure",
+        entity_type="amount",
+        business_name="Transaction Amount",
+        business_domain="finance",
+    )
+    async_session.add(annotation)
+
+    # Create relationship between tables
+    relationship = Relationship(
+        from_table_id=txn_table.table_id,
+        from_column_id=txn_account_col.column_id,
+        to_table_id=acct_table.table_id,
+        to_column_id=acct_id_col.column_id,
+        relationship_type="foreign_key",
+        cardinality="many-to-one",
+        confidence=0.95,
+    )
+    async_session.add(relationship)
     await async_session.commit()
 
-    schema = await get_table_schema_for_llm(async_session, table.table_id)
+    return txn_table, acct_table
+
+
+@pytest.mark.asyncio
+async def test_get_multi_table_schema_for_llm(async_session, two_tables_with_relationship):
+    """Test fetching multi-table schema with relationships."""
+    txn_table, acct_table = two_tables_with_relationship
+
+    schema = await get_multi_table_schema_for_llm(
+        async_session, [txn_table.table_id, acct_table.table_id]
+    )
+
+    assert "error" not in schema
+    assert "tables" in schema
+    assert "relationships" in schema
+
+    # Check tables are included
+    assert len(schema["tables"]) == 2
+    table_names = [t["table_name"] for t in schema["tables"]]
+    assert "transactions" in table_names
+    assert "accounts" in table_names
+
+    # Check relationship is included
+    assert len(schema["relationships"]) == 1
+    rel = schema["relationships"][0]
+    assert rel["from_table"] == "transactions"
+    assert rel["from_column"] == "account_id"
+    assert rel["to_table"] == "accounts"
+    assert rel["to_column"] == "account_id"
+    assert rel["relationship_type"] == "foreign_key"
+    assert rel["confidence"] == 0.95
+
+
+@pytest.mark.asyncio
+async def test_get_multi_table_schema_for_llm_single_table(async_session, table_with_columns):
+    """Test fetching multi-table schema with single table (no relationships)."""
+    table = table_with_columns
+
+    schema = await get_multi_table_schema_for_llm(async_session, [table.table_id])
+
+    assert "error" not in schema
+    assert "tables" in schema
+    assert len(schema["tables"]) == 1
+    assert schema["tables"][0]["table_name"] == "transactions"
+    assert schema["relationships"] == []
+
+    # Check semantic annotations are included
+    amount_col = next(c for c in schema["tables"][0]["columns"] if c["column_name"] == "amount")
+    assert "semantic" in amount_col
+    assert amount_col["semantic"]["role"] == "measure"
+    assert amount_col["semantic"]["entity_type"] == "amount"
+
+
+@pytest.mark.asyncio
+async def test_get_multi_table_schema_for_llm_empty_list(async_session):
+    """Test fetching multi-table schema with empty list."""
+    schema = await get_multi_table_schema_for_llm(async_session, [])
 
     assert "error" in schema
-    assert "no DuckDB path" in schema["error"]
+    assert "No tables" in schema["error"]
 
 
-class TestFormatSchemaForPrompt:
-    """Tests for formatting schema as prompt text."""
+@pytest.mark.asyncio
+async def test_get_multi_table_schema_for_llm_nonexistent_tables(async_session):
+    """Test fetching multi-table schema with nonexistent table IDs."""
+    schema = await get_multi_table_schema_for_llm(async_session, ["nonexistent-id"])
 
-    def test_format_basic_schema(self):
-        """Test formatting a basic schema."""
+    assert "error" in schema
+
+
+class TestFormatMultiTableSchemaForPrompt:
+    """Tests for formatting multi-table schema as prompt text."""
+
+    def test_format_multi_table_basic(self):
+        """Test formatting a basic multi-table schema."""
         schema = {
-            "table_name": "orders",
-            "duckdb_path": "typed_orders",
-            "columns": [
-                {"column_name": "order_id", "data_type": "VARCHAR"},
-                {"column_name": "total", "data_type": "DECIMAL(18,2)"},
+            "tables": [
+                {
+                    "table_name": "orders",
+                    "duckdb_path": "typed_orders",
+                    "columns": [
+                        {"column_name": "order_id", "data_type": "VARCHAR"},
+                        {"column_name": "customer_id", "data_type": "VARCHAR"},
+                    ],
+                },
+                {
+                    "table_name": "customers",
+                    "duckdb_path": "typed_customers",
+                    "columns": [
+                        {"column_name": "customer_id", "data_type": "VARCHAR"},
+                        {"column_name": "name", "data_type": "VARCHAR"},
+                    ],
+                },
             ],
+            "relationships": [],
         }
 
-        result = format_schema_for_prompt(schema)
+        result = format_multi_table_schema_for_prompt(schema)
 
-        assert "Table: orders" in result
+        assert "## Available Tables" in result
+        assert "### orders" in result
+        assert "### customers" in result
         assert "DuckDB Path: typed_orders" in result
         assert "order_id (VARCHAR)" in result
-        assert "total (DECIMAL(18,2))" in result
+        assert "customer_id (VARCHAR)" in result
 
-    def test_format_schema_with_semantic_annotations(self):
-        """Test formatting schema with semantic annotations."""
+    def test_format_multi_table_with_relationships(self):
+        """Test formatting multi-table schema with relationships."""
         schema = {
-            "table_name": "accounts",
-            "duckdb_path": "typed_accounts",
-            "columns": [
+            "tables": [
                 {
-                    "column_name": "balance",
-                    "data_type": "DECIMAL(18,2)",
-                    "semantic": {
-                        "role": "measure",
-                        "entity_type": "amount",
-                        "business_name": "Account Balance",
-                        "domain": "finance",
-                    },
+                    "table_name": "orders",
+                    "duckdb_path": "typed_orders",
+                    "columns": [{"column_name": "customer_id", "data_type": "VARCHAR"}],
+                },
+                {
+                    "table_name": "customers",
+                    "duckdb_path": "typed_customers",
+                    "columns": [{"column_name": "customer_id", "data_type": "VARCHAR"}],
+                },
+            ],
+            "relationships": [
+                {
+                    "from_table": "orders",
+                    "from_column": "customer_id",
+                    "to_table": "customers",
+                    "to_column": "customer_id",
+                    "relationship_type": "foreign_key",
+                    "cardinality": "many-to-one",
+                    "confidence": 0.92,
                 },
             ],
         }
 
-        result = format_schema_for_prompt(schema)
+        result = format_multi_table_schema_for_prompt(schema)
 
-        assert "balance (DECIMAL(18,2))" in result
+        assert "## Detected Relationships" in result
+        assert "orders.customer_id" in result
+        assert "customers.customer_id" in result
+        assert "foreign_key" in result
+        assert "many-to-one" in result
+        assert "92%" in result  # confidence formatted as percentage
+
+    def test_format_multi_table_with_semantic_annotations(self):
+        """Test formatting multi-table schema with semantic annotations."""
+        schema = {
+            "tables": [
+                {
+                    "table_name": "accounts",
+                    "duckdb_path": "typed_accounts",
+                    "columns": [
+                        {
+                            "column_name": "balance",
+                            "data_type": "DECIMAL",
+                            "semantic": {
+                                "role": "measure",
+                                "entity_type": "amount",
+                                "business_name": "Account Balance",
+                            },
+                        },
+                    ],
+                },
+            ],
+            "relationships": [],
+        }
+
+        result = format_multi_table_schema_for_prompt(schema)
+
         assert "entity: amount" in result
         assert "role: measure" in result
         assert "business_name: Account Balance" in result
-        assert "domain: finance" in result
 
-    def test_format_schema_with_error(self):
+    def test_format_multi_table_with_error(self):
         """Test formatting an error schema."""
-        schema = {"error": "Table not found"}
+        schema = {"error": "No tables found"}
 
-        result = format_schema_for_prompt(schema)
+        result = format_multi_table_schema_for_prompt(schema)
 
-        assert "Error: Table not found" in result
-
-    def test_format_schema_with_partial_annotations(self):
-        """Test formatting with only some annotation fields."""
-        schema = {
-            "table_name": "test",
-            "duckdb_path": "test_path",
-            "columns": [
-                {
-                    "column_name": "col1",
-                    "data_type": "VARCHAR",
-                    "semantic": {
-                        "role": None,
-                        "entity_type": "customer_id",
-                        "business_name": None,
-                        "domain": None,
-                    },
-                },
-            ],
-        }
-
-        result = format_schema_for_prompt(schema)
-
-        assert "entity: customer_id" in result
-        # Should not include None values
-        assert "role: None" not in result
+        assert "Error: No tables found" in result

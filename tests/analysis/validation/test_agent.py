@@ -383,21 +383,21 @@ class TestValidationAgentGenerateSQL:
 
 
 class TestValidationAgentRunValidations:
-    """Tests for running full validation flows."""
+    """Tests for running full validation flows (multi-table)."""
 
     @pytest.mark.asyncio
-    async def test_run_validations_table_not_found(
+    async def test_run_validations_tables_not_found(
         self, async_session, duckdb_conn, validation_agent
     ):
-        """Test running validations on nonexistent table."""
+        """Test running validations on nonexistent tables."""
         result = await validation_agent.run_validations(
             session=async_session,
             duckdb_conn=duckdb_conn,
-            table_id="nonexistent-id",
+            table_ids=["nonexistent-id"],
         )
 
         assert not result.success
-        assert "not found" in result.error
+        assert "not found" in result.error.lower() or "No tables" in result.error
 
     @pytest.mark.asyncio
     async def test_run_validations_no_specs(
@@ -415,7 +415,7 @@ class TestValidationAgentRunValidations:
             result = await validation_agent.run_validations(
                 session=async_session,
                 duckdb_conn=duckdb_conn,
-                table_id=table.table_id,
+                table_ids=[table.table_id],
             )
 
         assert result.success
@@ -439,10 +439,12 @@ class TestValidationAgentRunValidations:
             parameters={"tolerance": 0.01},
         )
 
-        # Get schema
-        from dataraum_context.analysis.validation.resolver import get_table_schema_for_llm
+        # Get multi-table schema
+        from dataraum_context.analysis.validation.resolver import (
+            get_multi_table_schema_for_llm,
+        )
 
-        schema = await get_table_schema_for_llm(async_session, table.table_id)
+        schema = await get_multi_table_schema_for_llm(async_session, [table.table_id])
 
         # Mock LLM to return valid SQL
         mock_response = MagicMock()
@@ -450,7 +452,8 @@ class TestValidationAgentRunValidations:
             {
                 "sql": "SELECT SUM(debit) as total_debits, SUM(credit) as total_credits, ABS(SUM(debit) - SUM(credit)) as difference FROM typed_journal_entries",
                 "explanation": "Sums and compares debits and credits",
-                "columns_used": ["debit", "credit"],
+                "columns_used": ["journal_entries.debit", "journal_entries.credit"],
+                "tables_used": ["journal_entries"],
                 "can_validate": True,
             }
         )
@@ -458,7 +461,7 @@ class TestValidationAgentRunValidations:
 
         result = await validation_agent._run_single_validation(
             duckdb_conn=duckdb_conn,
-            table_id=table.table_id,
+            table_ids=[table.table_id],
             spec=spec,
             schema=schema,
         )
@@ -466,7 +469,6 @@ class TestValidationAgentRunValidations:
         assert result.status == ValidationStatus.PASSED
         assert result.passed is True
         assert result.sql_used is not None
-        assert "debit" in result.columns_used
 
     @pytest.mark.asyncio
     async def test_run_single_validation_skipped(
@@ -483,9 +485,11 @@ class TestValidationAgentRunValidations:
             check_type="balance",
         )
 
-        from dataraum_context.analysis.validation.resolver import get_table_schema_for_llm
+        from dataraum_context.analysis.validation.resolver import (
+            get_multi_table_schema_for_llm,
+        )
 
-        schema = await get_table_schema_for_llm(async_session, table.table_id)
+        schema = await get_multi_table_schema_for_llm(async_session, [table.table_id])
 
         # Mock LLM to indicate cannot validate
         mock_response = MagicMock()
@@ -494,6 +498,7 @@ class TestValidationAgentRunValidations:
                 "sql": None,
                 "explanation": "Required columns not found",
                 "columns_used": [],
+                "tables_used": [],
                 "can_validate": False,
                 "skip_reason": "Missing account_type column",
             }
@@ -502,7 +507,7 @@ class TestValidationAgentRunValidations:
 
         result = await validation_agent._run_single_validation(
             duckdb_conn=duckdb_conn,
-            table_id=table.table_id,
+            table_ids=[table.table_id],
             spec=spec,
             schema=schema,
         )

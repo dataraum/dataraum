@@ -1,7 +1,8 @@
 """Validation Agent - LLM-powered SQL generation for validation checks.
 
 This agent generates SQL queries for validation checks by passing the full
-schema to the LLM and letting it identify relevant columns.
+schema (potentially multiple tables) to the LLM and letting it identify
+relevant columns and generate cross-table JOINs when needed.
 """
 
 from __future__ import annotations
@@ -25,8 +26,8 @@ from dataraum_context.analysis.validation.models import (
     ValidationStatus,
 )
 from dataraum_context.analysis.validation.resolver import (
-    format_schema_for_prompt,
-    get_table_schema_for_llm,
+    format_multi_table_schema_for_prompt,
+    get_multi_table_schema_for_llm,
 )
 from dataraum_context.core.models.base import Result
 from dataraum_context.llm.features._base import LLMFeature
@@ -45,16 +46,17 @@ SQL_GENERATION_SYSTEM = """You are an expert SQL developer specializing in data 
 Your task is to generate DuckDB SQL queries that implement validation checks.
 
 Rules:
-1. Analyze the table schema and semantic annotations to identify relevant columns
+1. Analyze all available table schemas and semantic annotations to identify relevant columns
 2. Use DuckDB SQL syntax
-3. The query should return validation results that can be evaluated
-4. For balance checks: return the values being compared (e.g., total_debits, total_credits, difference)
-5. For constraint checks: return violating rows
-6. For comparison checks: return values and a boolean indicator (equation_holds or is_valid)
-7. For aggregate checks: return the aggregated values
-8. Always use proper quoting for column names with special characters
-9. Return a single SQL query (no multiple statements)
-10. If the required columns for the validation are not found in the schema, indicate this clearly
+3. You can JOIN multiple tables when needed for validation (use the detected relationships as hints)
+4. The query should return validation results that can be evaluated
+5. For balance checks: return the values being compared (e.g., total_debits, total_credits, difference)
+6. For constraint checks: return violating rows
+7. For comparison checks: return values and a boolean indicator (equation_holds or is_valid)
+8. For aggregate checks: return the aggregated values
+9. Always use proper quoting for column names with special characters
+10. Return a single SQL query (no multiple statements)
+11. If the required columns for the validation are not found across any table, indicate this clearly
 """
 
 SQL_GENERATION_TEMPLATE = """Generate a DuckDB SQL query for this validation check.
@@ -69,13 +71,14 @@ Parameters: {parameters}
 
 {expected_outcome}
 
-## Table Schema
+## Dataset Schema
 {schema}
 
 ## Instructions
-1. Analyze the schema and semantic annotations to identify which columns are relevant for this validation
-2. Generate a SQL query that implements this validation check
-3. The query should return results that can be evaluated based on the check type:
+1. Analyze ALL tables and their semantic annotations to identify which columns are relevant
+2. Use the detected relationships to JOIN tables when needed
+3. Generate a SQL query that implements this validation check
+4. The query should return results that can be evaluated based on the check type:
    - balance: return totals and difference
    - comparison: return values and equation_holds boolean
    - constraint: return violating rows (empty = passed)
@@ -83,9 +86,10 @@ Parameters: {parameters}
 
 Return ONLY a JSON object with this structure:
 {{
-  "sql": "SELECT ...",
-  "explanation": "Brief explanation of what this query checks",
-  "columns_used": ["col1", "col2"],
+  "sql": "SELECT ... FROM ... JOIN ...",
+  "explanation": "Brief explanation of what this query checks and which tables/columns are used",
+  "columns_used": ["table1.col1", "table2.col2"],
+  "tables_used": ["table1", "table2"],
   "can_validate": true,
   "skip_reason": null
 }}
@@ -95,6 +99,7 @@ If the schema doesn't contain the necessary columns for this validation, return:
   "sql": null,
   "explanation": "Why validation cannot be performed",
   "columns_used": [],
+  "tables_used": [],
   "can_validate": false,
   "skip_reason": "Missing required columns: ..."
 }}
@@ -104,8 +109,9 @@ If the schema doesn't contain the necessary columns for this validation, return:
 class ValidationAgent(LLMFeature):
     """LLM-powered validation agent.
 
-    Generates SQL for validation checks by passing the full schema
-    to the LLM for interpretation.
+    Generates SQL for validation checks by passing multiple table schemas
+    to the LLM for interpretation. The LLM can generate cross-table JOINs
+    when validations require data from multiple tables.
     """
 
     def __init__(
@@ -129,16 +135,16 @@ class ValidationAgent(LLMFeature):
         self,
         session: AsyncSession,
         duckdb_conn: duckdb.DuckDBPyConnection,
-        table_id: str,
+        table_ids: list[str],
         validation_ids: list[str] | None = None,
         category: str | None = None,
     ) -> Result[ValidationRunResult]:
-        """Run validation checks on a table.
+        """Run validation checks across multiple tables.
 
         Args:
             session: Database session
             duckdb_conn: DuckDB connection for executing SQL
-            table_id: Table to validate
+            table_ids: Tables to validate (all schemas passed to LLM)
             validation_ids: Specific validations to run (None = all applicable)
             category: Filter by category (e.g., 'financial')
 
@@ -149,12 +155,14 @@ class ValidationAgent(LLMFeature):
         started_at = datetime.now(UTC)
         results: list[ValidationResult] = []
 
-        # Get table schema
-        schema = await get_table_schema_for_llm(session, table_id)
+        # Get multi-table schema with relationships
+        schema = await get_multi_table_schema_for_llm(session, table_ids)
         if "error" in schema:
             return Result.fail(str(schema["error"]))
 
-        table_name = schema["table_name"]
+        # Get table names for result
+        table_names = [t["table_name"] for t in schema.get("tables", [])]
+        combined_table_name = ", ".join(table_names)
 
         # Determine which validations to run
         specs = self._get_applicable_specs(validation_ids, category)
@@ -163,8 +171,8 @@ class ValidationAgent(LLMFeature):
             return Result.ok(
                 ValidationRunResult(
                     run_id=run_id,
-                    table_id=table_id,
-                    table_name=table_name,
+                    table_ids=table_ids,
+                    table_name=combined_table_name,
                     started_at=started_at,
                     completed_at=datetime.now(UTC),
                     total_checks=0,
@@ -175,7 +183,7 @@ class ValidationAgent(LLMFeature):
         for spec in specs:
             result = await self._run_single_validation(
                 duckdb_conn=duckdb_conn,
-                table_id=table_id,
+                table_ids=table_ids,
                 spec=spec,
                 schema=schema,
             )
@@ -198,8 +206,8 @@ class ValidationAgent(LLMFeature):
 
         run_result = ValidationRunResult(
             run_id=run_id,
-            table_id=table_id,
-            table_name=table_name,
+            table_ids=table_ids,
+            table_name=combined_table_name,
             started_at=started_at,
             completed_at=datetime.now(UTC),
             results=results,
@@ -241,7 +249,7 @@ class ValidationAgent(LLMFeature):
     async def _run_single_validation(
         self,
         duckdb_conn: duckdb.DuckDBPyConnection,
-        table_id: str,
+        table_ids: list[str],
         spec: ValidationSpec,
         schema: dict[str, Any],
     ) -> ValidationResult:
@@ -249,14 +257,15 @@ class ValidationAgent(LLMFeature):
 
         Args:
             duckdb_conn: DuckDB connection
-            table_id: Table being validated
+            table_ids: Table IDs being validated
             spec: Validation spec to run
-            schema: Table schema
+            schema: Multi-table schema
 
         Returns:
             ValidationResult
         """
-        table_name = schema["table_name"]
+        table_names = [t["table_name"] for t in schema.get("tables", [])]
+        combined_table_name = ", ".join(table_names)
 
         # Generate SQL via LLM
         sql_result = await self._generate_sql(spec, schema)
@@ -267,8 +276,8 @@ class ValidationAgent(LLMFeature):
                 spec_name=spec.name,
                 status=ValidationStatus.ERROR,
                 severity=spec.severity,
-                table_id=table_id,
-                table_name=table_name,
+                table_ids=table_ids,
+                table_name=combined_table_name,
                 passed=False,
                 message=sql_result.error or "SQL generation failed",
             )
@@ -282,8 +291,8 @@ class ValidationAgent(LLMFeature):
                 spec_name=spec.name,
                 status=ValidationStatus.SKIPPED,
                 severity=spec.severity,
-                table_id=table_id,
-                table_name=table_name,
+                table_ids=table_ids,
+                table_name=combined_table_name,
                 passed=False,
                 message=generated.validation_error or "Validation cannot be performed",
                 columns_used=generated.columns_used,
@@ -307,8 +316,8 @@ class ValidationAgent(LLMFeature):
                 spec_name=spec.name,
                 status=ValidationStatus.PASSED if passed else ValidationStatus.FAILED,
                 severity=spec.severity,
-                table_id=table_id,
-                table_name=table_name,
+                table_ids=table_ids,
+                table_name=combined_table_name,
                 passed=passed,
                 message=message,
                 details=details,
@@ -325,8 +334,8 @@ class ValidationAgent(LLMFeature):
                 spec_name=spec.name,
                 status=ValidationStatus.ERROR,
                 severity=spec.severity,
-                table_id=table_id,
-                table_name=table_name,
+                table_ids=table_ids,
+                table_name=combined_table_name,
                 passed=False,
                 message=f"SQL execution error: {e}",
                 sql_used=generated.sql_query,
@@ -342,13 +351,13 @@ class ValidationAgent(LLMFeature):
 
         Args:
             spec: Validation spec
-            schema: Table schema
+            schema: Multi-table schema with relationships
 
         Returns:
             Result containing GeneratedSQL
         """
         # Format schema for prompt
-        schema_text = format_schema_for_prompt(schema)
+        schema_text = format_multi_table_schema_for_prompt(schema)
 
         # Build prompt
         sql_hints = f"SQL Hints: {spec.sql_hints}" if spec.sql_hints else ""

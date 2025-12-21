@@ -1,0 +1,507 @@
+# Business Cycle Vocabulary
+# Provides domain knowledge to the cycles agent for enhanced detection.
+# The agent uses this as context, not as strict matching rules.
+
+# =============================================================================
+# CORE CYCLE TYPES
+# =============================================================================
+# Standard business cycle patterns the agent should recognize.
+# Each cycle type includes:
+#   - description: What this cycle represents
+#   - business_value: Importance (high/medium/low)
+#   - typical_stages: Common stages in order
+#   - participating_entities: Entity types that flow through this cycle
+#   - completion_indicators: Column values that indicate cycle completion
+#   - related_tables: Table name patterns (for context, not matching)
+
+cycle_types:
+  # Revenue/Sales Cycles
+  order_to_cash:
+    description: "Complete revenue cycle from customer order through payment collection"
+    business_value: high
+    aliases:
+      - revenue_cycle
+      - sales_cycle
+      - o2c
+    typical_stages:
+      - name: "Order Placed"
+        order: 1
+        indicators: ["ordered", "new", "created", "pending"]
+      - name: "Order Confirmed"
+        order: 2
+        indicators: ["confirmed", "accepted", "approved"]
+      - name: "Shipped/Fulfilled"
+        order: 3
+        indicators: ["shipped", "fulfilled", "delivered", "completed"]
+      - name: "Invoiced"
+        order: 4
+        indicators: ["invoiced", "billed"]
+      - name: "Payment Received"
+        order: 5
+        indicators: ["paid", "collected", "closed", "settled"]
+    participating_entities:
+      - customer
+      - order
+      - product
+      - invoice
+      - payment
+    completion_indicators:
+      - "paid"
+      - "collected"
+      - "closed"
+      - "settled"
+      - "complete"
+    related_tables:
+      - customer
+      - order
+      - sales
+      - invoice
+      - payment
+      - receipt
+
+  accounts_receivable:
+    description: "AR collection cycle: Invoice creation through payment collection"
+    business_value: high
+    aliases:
+      - ar_cycle
+      - receivables_cycle
+      - collection_cycle
+    typical_stages:
+      - name: "Invoice Created"
+        order: 1
+        indicators: ["created", "new", "open", "issued"]
+      - name: "Invoice Sent"
+        order: 2
+        indicators: ["sent", "delivered", "notified"]
+      - name: "Payment Due"
+        order: 3
+        indicators: ["due", "outstanding", "pending"]
+      - name: "Payment Received"
+        order: 4
+        indicators: ["paid", "received", "collected", "cleared"]
+    participating_entities:
+      - customer
+      - invoice
+      - payment
+      - receivable
+    completion_indicators:
+      - "paid"
+      - "collected"
+      - "cleared"
+      - "closed"
+    related_tables:
+      - customer
+      - invoice
+      - receivable
+      - payment
+      - collection
+
+  # Expense/Procurement Cycles
+  procure_to_pay:
+    description: "Complete procurement cycle from purchase requisition through vendor payment"
+    business_value: high
+    aliases:
+      - p2p
+      - procurement_cycle
+      - purchasing_cycle
+    typical_stages:
+      - name: "Requisition Created"
+        order: 1
+        indicators: ["requested", "requisitioned", "new"]
+      - name: "PO Created"
+        order: 2
+        indicators: ["ordered", "po_created", "approved"]
+      - name: "Goods Received"
+        order: 3
+        indicators: ["received", "delivered", "grn"]
+      - name: "Invoice Matched"
+        order: 4
+        indicators: ["matched", "verified", "invoiced"]
+      - name: "Payment Made"
+        order: 5
+        indicators: ["paid", "disbursed", "settled"]
+    participating_entities:
+      - vendor
+      - supplier
+      - purchase_order
+      - invoice
+      - payment
+    completion_indicators:
+      - "paid"
+      - "disbursed"
+      - "settled"
+      - "closed"
+    related_tables:
+      - vendor
+      - supplier
+      - purchase
+      - po
+      - invoice
+      - payment
+      - disbursement
+
+  accounts_payable:
+    description: "AP payment cycle: Vendor invoice through payment disbursement"
+    business_value: high
+    aliases:
+      - ap_cycle
+      - payables_cycle
+      - payment_cycle
+    typical_stages:
+      - name: "Invoice Received"
+        order: 1
+        indicators: ["received", "new", "open"]
+      - name: "Invoice Approved"
+        order: 2
+        indicators: ["approved", "verified", "matched"]
+      - name: "Scheduled for Payment"
+        order: 3
+        indicators: ["scheduled", "queued", "pending"]
+      - name: "Payment Disbursed"
+        order: 4
+        indicators: ["paid", "disbursed", "cleared"]
+    participating_entities:
+      - vendor
+      - invoice
+      - payment
+      - payable
+    completion_indicators:
+      - "paid"
+      - "disbursed"
+      - "cleared"
+      - "closed"
+    related_tables:
+      - vendor
+      - payable
+      - invoice
+      - payment
+      - check
+
+  # Inventory Cycles
+  inventory_cycle:
+    description: "Inventory flow from procurement through sale or consumption"
+    business_value: medium
+    aliases:
+      - stock_cycle
+      - inventory_management
+    typical_stages:
+      - name: "Received"
+        order: 1
+        indicators: ["received", "stocked", "available"]
+      - name: "In Stock"
+        order: 2
+        indicators: ["in_stock", "available", "on_hand"]
+      - name: "Reserved/Allocated"
+        order: 3
+        indicators: ["reserved", "allocated", "committed"]
+      - name: "Shipped/Consumed"
+        order: 4
+        indicators: ["shipped", "sold", "consumed", "issued"]
+    participating_entities:
+      - product
+      - item
+      - sku
+      - warehouse
+      - location
+    completion_indicators:
+      - "shipped"
+      - "sold"
+      - "consumed"
+      - "issued"
+    related_tables:
+      - product
+      - inventory
+      - stock
+      - warehouse
+      - movement
+
+  # HR/Payroll Cycles
+  hire_to_retire:
+    description: "Employee lifecycle from hiring through separation"
+    business_value: medium
+    aliases:
+      - employee_lifecycle
+      - h2r
+    typical_stages:
+      - name: "Hired"
+        order: 1
+        indicators: ["hired", "onboarded", "active"]
+      - name: "Active"
+        order: 2
+        indicators: ["active", "employed", "working"]
+      - name: "Terminated/Retired"
+        order: 3
+        indicators: ["terminated", "retired", "separated", "inactive"]
+    participating_entities:
+      - employee
+      - department
+      - position
+    completion_indicators:
+      - "terminated"
+      - "retired"
+      - "separated"
+      - "inactive"
+    related_tables:
+      - employee
+      - staff
+      - personnel
+      - hr
+
+  payroll_cycle:
+    description: "Payroll processing from time entry through payment"
+    business_value: medium
+    aliases:
+      - compensation_cycle
+      - pay_cycle
+    typical_stages:
+      - name: "Time Recorded"
+        order: 1
+        indicators: ["submitted", "recorded", "entered"]
+      - name: "Time Approved"
+        order: 2
+        indicators: ["approved", "verified"]
+      - name: "Payroll Calculated"
+        order: 3
+        indicators: ["calculated", "processed"]
+      - name: "Payment Issued"
+        order: 4
+        indicators: ["paid", "disbursed", "deposited"]
+    participating_entities:
+      - employee
+      - timesheet
+      - payroll
+    completion_indicators:
+      - "paid"
+      - "disbursed"
+      - "deposited"
+    related_tables:
+      - employee
+      - timesheet
+      - payroll
+      - salary
+      - compensation
+
+  # Asset Cycles
+  asset_lifecycle:
+    description: "Fixed asset lifecycle from acquisition through disposal"
+    business_value: medium
+    aliases:
+      - capital_cycle
+      - fixed_asset_cycle
+    typical_stages:
+      - name: "Acquired"
+        order: 1
+        indicators: ["acquired", "purchased", "capitalized"]
+      - name: "In Service"
+        order: 2
+        indicators: ["active", "in_service", "operational"]
+      - name: "Depreciated"
+        order: 3
+        indicators: ["depreciated", "amortized"]
+      - name: "Disposed"
+        order: 4
+        indicators: ["disposed", "retired", "sold", "written_off"]
+    participating_entities:
+      - asset
+      - equipment
+      - property
+    completion_indicators:
+      - "disposed"
+      - "retired"
+      - "sold"
+      - "written_off"
+    related_tables:
+      - asset
+      - equipment
+      - property
+      - depreciation
+      - fixed_asset
+
+# =============================================================================
+# COMPLETION INDICATOR PATTERNS
+# =============================================================================
+# Common values that indicate cycle completion across domains.
+# Agent uses these as hints, not exact matches.
+
+completion_indicators:
+  payment_complete:
+    - "paid"
+    - "collected"
+    - "settled"
+    - "cleared"
+    - "disbursed"
+    - "deposited"
+
+  order_complete:
+    - "completed"
+    - "fulfilled"
+    - "delivered"
+    - "shipped"
+    - "closed"
+
+  approval_complete:
+    - "approved"
+    - "accepted"
+    - "verified"
+    - "confirmed"
+
+  lifecycle_complete:
+    - "terminated"
+    - "retired"
+    - "disposed"
+    - "inactive"
+    - "closed"
+    - "archived"
+
+# =============================================================================
+# ENTITY ROLE MAPPINGS
+# =============================================================================
+# Maps semantic entity types to their typical role in cycles.
+
+entity_roles:
+  # Dimension entities (master data)
+  dimensions:
+    - customer
+    - client
+    - account
+    - vendor
+    - supplier
+    - employee
+    - product
+    - item
+    - sku
+    - asset
+    - department
+    - cost_center
+
+  # Transaction entities (events/facts)
+  transactions:
+    - order
+    - invoice
+    - payment
+    - receipt
+    - shipment
+    - journal_entry
+    - transaction
+
+  # Status/state entities (cycle tracking)
+  status_indicators:
+    - status
+    - state
+    - stage
+    - phase
+    - flag
+
+# =============================================================================
+# DOMAIN-SPECIFIC EXTENSIONS
+# =============================================================================
+# Additional context for specific domains.
+
+domains:
+  financial:
+    expected_cycles:
+      - order_to_cash
+      - procure_to_pay
+      - accounts_receivable
+      - accounts_payable
+
+    key_entities:
+      - customer
+      - vendor
+      - account
+      - invoice
+      - payment
+      - journal_entry
+
+    # GL-specific cycle patterns
+    additional_cycles:
+      journal_entry_cycle:
+        description: "GL journal entry from creation through posting"
+        business_value: high
+        typical_stages:
+          - name: "Created"
+            order: 1
+            indicators: ["created", "drafted", "new"]
+          - name: "Reviewed"
+            order: 2
+            indicators: ["reviewed", "verified"]
+          - name: "Approved"
+            order: 3
+            indicators: ["approved"]
+          - name: "Posted"
+            order: 4
+            indicators: ["posted", "final", "closed"]
+        completion_indicators:
+          - "posted"
+          - "final"
+          - "closed"
+
+      intercompany_cycle:
+        description: "Intercompany transaction settlement"
+        business_value: high
+        typical_stages:
+          - name: "Transaction Created"
+            order: 1
+            indicators: ["created", "initiated"]
+          - name: "Matched"
+            order: 2
+            indicators: ["matched", "reconciled"]
+          - name: "Eliminated"
+            order: 3
+            indicators: ["eliminated", "settled", "cleared"]
+        participating_entities:
+          - entity
+          - subsidiary
+          - company
+        completion_indicators:
+          - "eliminated"
+          - "settled"
+          - "cleared"
+
+  retail:
+    expected_cycles:
+      - order_to_cash
+      - inventory_cycle
+
+    key_entities:
+      - customer
+      - product
+      - store
+      - order
+      - transaction
+
+  manufacturing:
+    expected_cycles:
+      - procure_to_pay
+      - inventory_cycle
+
+    key_entities:
+      - vendor
+      - product
+      - work_order
+      - bom
+
+# =============================================================================
+# ANALYSIS HINTS
+# =============================================================================
+# Guidance for the agent on what to look for.
+
+analysis_hints:
+  # High-value signals for cycle detection
+  strong_indicators:
+    - "Status columns with values like: paid, pending, approved, closed"
+    - "Date columns paired with status columns suggest stage progression"
+    - "Foreign keys from fact tables to dimension tables show entity participation"
+    - "Transaction type columns often represent cycle stages"
+
+  # What makes a cycle "healthy"
+  health_factors:
+    - "High completion rate (>80%) indicates healthy cycle"
+    - "Low orphan rate indicates good referential integrity"
+    - "Balanced stage distribution suggests proper workflow"
+
+  # Red flags
+  warning_signs:
+    - "Many records stuck in intermediate stages"
+    - "Missing status values or NULLs in status columns"
+    - "Cycles with <50% completion rate"

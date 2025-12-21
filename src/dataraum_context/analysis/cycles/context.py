@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataraum_context.analysis.cycles.config import format_cycle_vocabulary_for_context
+
 if TYPE_CHECKING:
     import duckdb
 
@@ -19,6 +21,8 @@ async def build_cycle_detection_context(
     session: AsyncSession,
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_ids: list[str],
+    *,
+    domain: str | None = None,
 ) -> dict[str, Any]:
     """Build context for the business cycle detection agent.
 
@@ -29,6 +33,8 @@ async def build_cycle_detection_context(
         session: SQLAlchemy async session
         duckdb_conn: DuckDB connection for data queries
         table_ids: Tables to analyze
+        domain: Optional domain name for domain-specific vocabulary
+                (e.g., "financial", "retail", "manufacturing")
 
     Returns:
         Context dictionary with:
@@ -37,6 +43,7 @@ async def build_cycle_detection_context(
         - entity_classifications: Fact/dimension table types
         - status_columns: Detected status/state columns
         - relationship_graph: Column-to-column relationships
+        - domain_vocabulary: Cycle type definitions and hints (if available)
     """
     from dataraum_context.analysis.relationships.db_models import Relationship
     from dataraum_context.analysis.semantic.db_models import (
@@ -207,6 +214,11 @@ async def build_cycle_detection_context(
         ),
     }
 
+    # 6. Domain vocabulary (cycle types, completion indicators, hints)
+    vocabulary = format_cycle_vocabulary_for_context(domain)
+    context["domain_vocabulary"] = vocabulary
+    context["domain"] = domain
+
     return context
 
 
@@ -220,6 +232,18 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
         Formatted string suitable for LLM prompt
     """
     lines = []
+
+    # Domain vocabulary first (provides reference framework)
+    vocabulary = context.get("domain_vocabulary", "")
+    if vocabulary:
+        lines.append("# DOMAIN KNOWLEDGE")
+        lines.append("")
+        lines.append(vocabulary)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+        lines.append("# DATASET CONTEXT")
+        lines.append("")
 
     # Summary
     summary = context.get("summary", {})

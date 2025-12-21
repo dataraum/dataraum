@@ -174,6 +174,8 @@ class BusinessCycleAgent:
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_ids: list[str],
         max_tool_calls: int = 10,
+        *,
+        domain: str | None = None,
     ) -> Result[BusinessCycleAnalysis]:
         """Analyze tables for business cycles.
 
@@ -182,6 +184,8 @@ class BusinessCycleAgent:
             duckdb_conn: DuckDB connection
             table_ids: Tables to analyze
             max_tool_calls: Maximum tool calls allowed
+            domain: Optional domain for enhanced vocabulary
+                    (e.g., "financial", "retail", "manufacturing")
 
         Returns:
             Result containing BusinessCycleAnalysis
@@ -190,8 +194,10 @@ class BusinessCycleAgent:
         tool_calls_made: list[dict[str, Any]] = []
 
         try:
-            # 1. Build context from metadata
-            context = await build_cycle_detection_context(session, duckdb_conn, table_ids)
+            # 1. Build context from metadata (with optional domain vocabulary)
+            context = await build_cycle_detection_context(
+                session, duckdb_conn, table_ids, domain=domain
+            )
             context_str = format_context_for_prompt(context)
 
             # 2. Initialize tools

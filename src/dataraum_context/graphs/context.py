@@ -20,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 if TYPE_CHECKING:
     import duckdb
 
+    from dataraum_context.graphs.field_mapping import FieldMappings
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +43,9 @@ class ColumnContext:
     semantic_role: str | None = None  # key, measure, dimension, timestamp, etc.
     entity_type: str | None = None  # customer, product, transaction, etc.
 
+    # Ontology mapping (for financial metrics)
+    ontology_term: str | None = None  # e.g., 'revenue', 'accounts_receivable'
+
     # Statistical metrics
     null_ratio: float | None = None
     cardinality_ratio: float | None = None
@@ -49,6 +54,14 @@ class ColumnContext:
     # Temporal metrics
     is_stale: bool | None = None
     detected_granularity: str | None = None
+
+    # Quality grade from quality_summary module
+    quality_grade: str | None = None  # A, B, C, D, F
+    quality_score: float | None = None  # 0.0 - 1.0
+
+    # Derived column info from correlation analysis
+    is_derived: bool = False
+    derived_formula: str | None = None  # e.g., "quantity * unit_price"
 
     # Quality flags
     flags: list[str] = field(default_factory=list)
@@ -89,6 +102,27 @@ class RelationshipContext:
 
 
 @dataclass
+class SliceContext:
+    """Available slice dimension for filtering/grouping."""
+
+    column_name: str
+    table_name: str
+    priority: int = 0  # Higher = more recommended for slicing
+    value_count: int = 0  # Number of distinct values
+    business_context: str | None = None  # e.g., "Regional breakdown"
+
+
+@dataclass
+class BusinessCycleContext:
+    """Detected business cycle/process."""
+
+    cycle_name: str
+    cycle_type: str  # e.g., "order_to_cash", "procure_to_pay"
+    tables_involved: list[str] = field(default_factory=list)
+    completion_rate: float | None = None  # What % of cycles complete
+
+
+@dataclass
 class GraphExecutionContext:
     """Complete context for graph execution.
 
@@ -119,6 +153,15 @@ class GraphExecutionContext:
     # Slice context (if filtering by dimension)
     slice_column: str | None = None
     slice_value: str | None = None
+
+    # Available slice dimensions (from slicing analysis)
+    available_slices: list[SliceContext] = field(default_factory=list)
+
+    # Business cycles (from cycles analysis)
+    business_cycles: list[BusinessCycleContext] = field(default_factory=list)
+
+    # Field mappings (ontology_term → column mappings for financial metrics)
+    field_mappings: FieldMappings | None = None
 
     # Metadata
     built_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -157,17 +200,22 @@ async def build_execution_context(
         GraphExecutionContext with all relevant metadata
     """
     # Lazy imports to avoid circular dependencies
+    from dataraum_context.analysis.correlation.db_models import DerivedColumn
+    from dataraum_context.analysis.cycles.db_models import DetectedBusinessCycle
+    from dataraum_context.analysis.quality_summary.db_models import ColumnQualityReport
     from dataraum_context.analysis.relationships.db_models import Relationship
     from dataraum_context.analysis.relationships.graph_topology import (
         analyze_graph_topology,
     )
     from dataraum_context.analysis.semantic.db_models import SemanticAnnotation, TableEntity
+    from dataraum_context.analysis.slicing.db_models import SliceDefinition
     from dataraum_context.analysis.statistics.db_models import (
         StatisticalProfile,
         StatisticalQualityMetrics,
     )
     from dataraum_context.analysis.temporal import TemporalColumnProfile
     from dataraum_context.analysis.typing.db_models import TypeDecision
+    from dataraum_context.graphs.field_mapping import load_semantic_mappings
     from dataraum_context.storage import Column, Table
 
     if not table_ids:
@@ -273,7 +321,75 @@ async def build_execution_context(
                     }
                 )
 
-    # 10. Compute graph topology
+    # 10. Load slice definitions
+    slice_contexts: list[SliceContext] = []
+    slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
+    for slice_def in (await session.execute(slice_stmt)).scalars().all():
+        slice_col = next((c for c in columns if c.column_id == slice_def.column_id), None)
+        slice_tbl = table_map.get(slice_def.table_id)
+        if slice_col and slice_tbl:
+            slice_contexts.append(
+                SliceContext(
+                    column_name=slice_col.column_name,
+                    table_name=slice_tbl.table_name,
+                    priority=slice_def.slice_priority,
+                    value_count=slice_def.value_count or 0,
+                    business_context=slice_def.business_context,
+                )
+            )
+    # Sort by priority descending
+    slice_contexts.sort(key=lambda s: s.priority, reverse=True)
+
+    # 11. Load quality grades from quality_summary
+    quality_grades: dict[str, tuple[str, float]] = {}  # column_id -> (grade, score)
+    if column_ids:
+        grade_stmt = select(ColumnQualityReport).where(
+            ColumnQualityReport.source_column_id.in_(column_ids)
+        )
+        for report in (await session.execute(grade_stmt)).scalars().all():
+            quality_grades[report.source_column_id] = (
+                report.quality_grade,
+                report.overall_quality_score,
+            )
+
+    # 12. Load derived columns from correlation analysis
+    derived_columns: dict[str, str] = {}  # column_id -> formula
+    if column_ids:
+        derived_stmt = select(DerivedColumn).where(DerivedColumn.derived_column_id.in_(column_ids))
+        for derived in (await session.execute(derived_stmt)).scalars().all():
+            derived_columns[derived.derived_column_id] = derived.formula
+
+    # 13. Load business cycles
+    business_cycle_contexts: list[BusinessCycleContext] = []
+    # Get the most recent analysis run for these tables
+    from dataraum_context.analysis.cycles.db_models import BusinessCycleAnalysisRun
+
+    # Find analysis runs that include any of our tables
+    cycle_run_stmt = (
+        select(BusinessCycleAnalysisRun)
+        .where(BusinessCycleAnalysisRun.completed_at.isnot(None))
+        .order_by(BusinessCycleAnalysisRun.completed_at.desc())
+        .limit(1)
+    )
+    latest_run = (await session.execute(cycle_run_stmt)).scalar_one_or_none()
+    if latest_run:
+        cycles_stmt = select(DetectedBusinessCycle).where(
+            DetectedBusinessCycle.analysis_id == latest_run.analysis_id
+        )
+        for cycle in (await session.execute(cycles_stmt)).scalars().all():
+            business_cycle_contexts.append(
+                BusinessCycleContext(
+                    cycle_name=cycle.cycle_name,
+                    cycle_type=cycle.canonical_type or cycle.cycle_type,
+                    tables_involved=cycle.tables_involved,
+                    completion_rate=cycle.completion_rate,
+                )
+            )
+
+    # 14. Load field mappings
+    field_mappings = await load_semantic_mappings(session, table_ids)
+
+    # 15. Compute graph topology
     table_names = [t.table_name for t in tables]
     graph_structure = analyze_graph_topology(
         table_ids=table_names,
@@ -336,6 +452,11 @@ async def build_execution_context(
                 cardinality_ratio=cardinality_ratio,
             )
 
+            # Add derived column flag
+            is_derived = col.column_id in derived_columns
+            if is_derived:
+                flags.append("derived_column")
+
             # Aggregate issue counts
             if quality and quality.quality_data:
                 issues = quality.quality_data.get("quality_issues", [])
@@ -346,6 +467,11 @@ async def build_execution_context(
             if flags:
                 quality_flags.extend(flags)
 
+            # Get quality grade if available
+            col_quality = quality_grades.get(col.column_id)
+            quality_grade = col_quality[0] if col_quality else None
+            quality_score = col_quality[1] if col_quality else None
+
             column_contexts.append(
                 ColumnContext(
                     column_id=col.column_id,
@@ -354,6 +480,7 @@ async def build_execution_context(
                     data_type=type_dec.decided_type if type_dec else None,
                     semantic_role=sem_ann.semantic_role if sem_ann else None,
                     entity_type=sem_ann.entity_type if sem_ann else None,
+                    ontology_term=sem_ann.ontology_term if sem_ann else None,
                     null_ratio=null_ratio,
                     cardinality_ratio=cardinality_ratio,
                     outlier_ratio=outlier_ratio,
@@ -361,6 +488,10 @@ async def build_execution_context(
                     detected_granularity=temp_profile.detected_granularity
                     if temp_profile
                     else None,
+                    quality_grade=quality_grade,
+                    quality_score=quality_score,
+                    is_derived=is_derived,
+                    derived_formula=derived_columns.get(col.column_id),
                     flags=flags,
                 )
             )
@@ -403,6 +534,9 @@ async def build_execution_context(
         quality_flags=list(set(quality_flags)),  # Deduplicate
         slice_column=slice_column,
         slice_value=slice_value,
+        available_slices=slice_contexts,
+        business_cycles=business_cycle_contexts,
+        field_mappings=field_mappings,
     )
 
 
@@ -508,8 +642,11 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
         for col in table.columns:
             role = f" [{col.semantic_role}]" if col.semantic_role else ""
             dtype = f" ({col.data_type})" if col.data_type else ""
+            ontology = f" → {col.ontology_term}" if col.ontology_term else ""
+            grade = f" [Grade: {col.quality_grade}]" if col.quality_grade else ""
+            derived = f" (derived: {col.derived_formula})" if col.is_derived else ""
             flags_str = f" - FLAGS: {', '.join(col.flags)}" if col.flags else ""
-            lines.append(f"  - {col.column_name}{dtype}{role}{flags_str}")
+            lines.append(f"  - {col.column_name}{dtype}{role}{ontology}{grade}{derived}{flags_str}")
 
     # Relationships
     if context.relationships:
@@ -522,6 +659,29 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
                 f"({rel.cardinality or '?'}, conf={rel.confidence:.2f})"
             )
 
+    # Available slices
+    if context.available_slices:
+        lines.append("")
+        lines.append("## AVAILABLE SLICES")
+        lines.append("Recommended dimensions for filtering/grouping:")
+        for slice_ctx in context.available_slices[:5]:  # Show top 5
+            context_str = f" - {slice_ctx.business_context}" if slice_ctx.business_context else ""
+            lines.append(
+                f"  - {slice_ctx.table_name}.{slice_ctx.column_name} "
+                f"(priority: {slice_ctx.priority}, values: {slice_ctx.value_count}){context_str}"
+            )
+
+    # Business cycles
+    if context.business_cycles:
+        lines.append("")
+        lines.append("## DETECTED BUSINESS CYCLES")
+        for cycle in context.business_cycles:
+            tables_str = ", ".join(cycle.tables_involved[:3])
+            if len(cycle.tables_involved) > 3:
+                tables_str += f" +{len(cycle.tables_involved) - 3} more"
+            completion = f" ({cycle.completion_rate:.0%} complete)" if cycle.completion_rate else ""
+            lines.append(f"  - {cycle.cycle_name} ({cycle.cycle_type}): {tables_str}{completion}")
+
     return "\n".join(lines)
 
 
@@ -529,6 +689,8 @@ __all__ = [
     "ColumnContext",
     "TableContext",
     "RelationshipContext",
+    "SliceContext",
+    "BusinessCycleContext",
     "GraphExecutionContext",
     "build_execution_context",
     "format_context_for_prompt",

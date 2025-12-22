@@ -260,8 +260,22 @@ class GraphAgent(LLMFeature):
             from dataraum_context.graphs.context import format_context_for_prompt
 
             prompt_context["rich_context"] = format_context_for_prompt(context.rich_context)
+
+            # Add field mappings if available (for resolving standard_field references)
+            if (
+                hasattr(context.rich_context, "field_mappings")
+                and context.rich_context.field_mappings
+            ):
+                from dataraum_context.graphs.field_mapping import format_mappings_for_prompt
+
+                prompt_context["field_mappings"] = format_mappings_for_prompt(
+                    context.rich_context.field_mappings
+                )
+            else:
+                prompt_context["field_mappings"] = ""
         else:
             prompt_context["rich_context"] = ""
+            prompt_context["field_mappings"] = ""
 
         # Render prompt
         try:

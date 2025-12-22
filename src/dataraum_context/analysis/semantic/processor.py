@@ -81,6 +81,7 @@ async def enrich_semantic(
             business_name=annotation.business_name,
             business_description=annotation.business_description,
             business_domain=annotation.business_domain,
+            ontology_term=annotation.ontology_term,
             annotation_source=annotation.annotation_source.value,
             annotated_by=annotation.annotated_by,
             confidence=annotation.confidence,

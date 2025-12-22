@@ -59,7 +59,8 @@ prompt: |
   For each **column**, determine:
   - **semantic_role**: One of: measure, dimension, key, foreign_key, timestamp, attribute
   - **entity_type**: What does this column represent? (customer_id, product_name, etc.)
-  - **business_term**: Map to ontology concept if applicable, otherwise suggest one
+  - **business_term**: Human-readable business name for the column
+  - **ontology_term**: Map to standard ontology concept from the list above (e.g., 'revenue', 'accounts_receivable', 'cost_of_goods_sold'). Use exact term names from the ontology. Set null if no match.
   - **description**: One sentence human-readable description
   - **confidence**: Your confidence in this analysis (0.0-1.0)
 
@@ -97,6 +98,7 @@ prompt: |
             "semantic_role": "key|foreign_key|measure|dimension|timestamp|attribute",
             "entity_type": "...",
             "business_term": "...",
+            "ontology_term": "accounts_receivable",
             "description": "...",
             "confidence": 0.95
           }}

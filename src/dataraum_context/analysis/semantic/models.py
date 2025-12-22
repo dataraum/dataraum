@@ -30,6 +30,9 @@ class SemanticAnnotation(BaseModel):
     business_description: str | None = None  # LLM-generated description
     business_domain: str | None = None  # 'finance', 'marketing', 'operations'
 
+    # Ontology mapping - maps to standard field names (e.g., 'accounts_receivable', 'revenue')
+    ontology_term: str | None = None
+
     annotation_source: DecisionSource
     annotated_by: str | None = None  # e.g., 'claude-sonnet-4-20250514' or 'user@example.com'
     confidence: float

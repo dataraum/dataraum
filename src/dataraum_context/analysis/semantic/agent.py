@@ -580,6 +580,7 @@ class SemanticAgent(LLMFeature):
                         entity_type=col_data.get("entity_type"),
                         business_name=col_data.get("business_term"),
                         business_description=col_data.get("description"),
+                        ontology_term=col_data.get("ontology_term"),
                         annotation_source=DecisionSource.LLM,
                         annotated_by=model_name,
                         confidence=col_data.get("confidence", 0.8),

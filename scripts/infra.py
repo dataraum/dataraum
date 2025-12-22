@@ -133,6 +133,7 @@ async def get_test_session(
 def _import_all_models() -> None:
     """Import all DB model modules to register them with SQLAlchemy."""
     from dataraum_context.analysis.correlation import db_models as _correlation_models  # noqa: F401
+    from dataraum_context.analysis.cycles import db_models as _cycles_models  # noqa: F401
     from dataraum_context.analysis.quality_summary import (
         db_models as _quality_summary_models,  # noqa: F401
     )
@@ -140,6 +141,7 @@ def _import_all_models() -> None:
     from dataraum_context.analysis.semantic import db_models as _semantic_models  # noqa: F401
     from dataraum_context.analysis.slicing import db_models as _slicing_models  # noqa: F401
     from dataraum_context.analysis.statistics import db_models as _statistics_models  # noqa: F401
+    from dataraum_context.analysis.temporal import db_models as _temporal_models  # noqa: F401
     from dataraum_context.analysis.topology import db_models as _topology_models  # noqa: F401
     from dataraum_context.analysis.typing import db_models as _typing_models  # noqa: F401
     from dataraum_context.analysis.validation import db_models as _validation_models  # noqa: F401

@@ -142,6 +142,9 @@ def _import_all_models() -> None:
     from dataraum_context.analysis.slicing import db_models as _slicing_models  # noqa: F401
     from dataraum_context.analysis.statistics import db_models as _statistics_models  # noqa: F401
     from dataraum_context.analysis.temporal import db_models as _temporal_models  # noqa: F401
+    from dataraum_context.analysis.temporal_slicing import (
+        db_models as _temporal_slicing_models,  # noqa: F401
+    )
     from dataraum_context.analysis.topology import db_models as _topology_models  # noqa: F401
     from dataraum_context.analysis.typing import db_models as _typing_models  # noqa: F401
     from dataraum_context.analysis.validation import db_models as _validation_models  # noqa: F401

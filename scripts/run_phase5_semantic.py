@@ -171,7 +171,7 @@ async def main() -> int:
             session=session,
             agent=agent,
             table_ids=table_ids,
-            ontology="general",
+            ontology="financial_reporting",
             relationship_candidates=relationship_candidates,
         )
 

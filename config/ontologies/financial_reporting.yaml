@@ -126,6 +126,113 @@ concepts:
       - CHF
       - JPY
 
+  # Balance Sheet Concepts
+  - name: accounts_receivable
+    description: Money owed to the company by customers
+    indicators:
+      - accounts_receivable
+      - ar
+      - a/r
+      - receivables
+      - trade_receivables
+      - customer_balance
+      - ar_paid
+      - a/r_paid
+    temporal_behavior: point_in_time
+    typical_role: measure
+
+  - name: accounts_payable
+    description: Money owed by the company to suppliers
+    indicators:
+      - accounts_payable
+      - ap
+      - a/p
+      - payables
+      - trade_payables
+      - vendor_balance
+      - ap_paid
+      - a/p_paid
+    temporal_behavior: point_in_time
+    typical_role: measure
+
+  - name: inventory
+    description: Goods held for sale or production
+    indicators:
+      - inventory
+      - stock
+      - goods_on_hand
+      - wip
+      - work_in_progress
+      - finished_goods
+    temporal_behavior: point_in_time
+    typical_role: measure
+
+  - name: current_assets
+    description: Assets expected to be converted to cash within one year
+    indicators:
+      - current_assets
+      - short_term_assets
+      - liquid_assets
+    temporal_behavior: point_in_time
+    typical_role: measure
+
+  - name: current_liabilities
+    description: Obligations due within one year
+    indicators:
+      - current_liabilities
+      - short_term_liabilities
+      - current_debt
+    temporal_behavior: point_in_time
+    typical_role: measure
+
+  - name: cash
+    description: Cash and cash equivalents
+    indicators:
+      - cash
+      - bank_balance
+      - cash_balance
+      - cash_equivalents
+    temporal_behavior: point_in_time
+    typical_role: measure
+
+  - name: open_balance
+    description: Outstanding balance on an account or transaction
+    indicators:
+      - open_balance
+      - outstanding_balance
+      - balance_due
+      - remaining_balance
+      - unpaid
+    temporal_behavior: point_in_time
+    typical_role: measure
+
+  - name: transaction_amount
+    description: Monetary value of a transaction
+    indicators:
+      - amount
+      - transaction_amount
+      - total
+      - value
+      - price
+    temporal_behavior: additive
+    typical_role: measure
+
+  - name: debit
+    description: Debit entry in double-entry accounting
+    indicators:
+      - debit
+      - dr
+    temporal_behavior: additive
+    typical_role: measure
+
+  - name: credit
+    description: Credit entry in double-entry accounting
+    indicators:
+      - credit
+      - cr
+    temporal_behavior: additive
+    typical_role: measure
+
 # Metrics define calculations that can be performed
 metrics:
   - name: gross_profit

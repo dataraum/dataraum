@@ -45,7 +45,8 @@ def test_prompt_renderer_loads_templates(mock_anthropic_key):
     # Load semantic analysis template
     template = renderer.load_template("semantic_analysis")
     assert template.name == "semantic_analysis"
-    assert template.prompt
+    # Template can use either legacy `prompt` or new `system_prompt`/`user_prompt` format
+    assert template.prompt or (template.system_prompt or template.user_prompt)
     assert template.temperature >= 0
 
 
@@ -55,8 +56,10 @@ def test_prompt_renderer_renders_template(mock_anthropic_key):
 
     context = {
         "tables_json": "[]",
-        "ontology_name": "test",
-        "ontology_concepts": "None",
+        "ontology_name": "financial_reporting",
+        "ontology_concepts": "- revenue: Total income from sales",
+        "relationship_candidates": "No candidates detected",
+        "within_table_correlations": "No correlations detected",
     }
 
     rendered, temperature = renderer.render("semantic_analysis", context)

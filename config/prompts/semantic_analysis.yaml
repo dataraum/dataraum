@@ -1,124 +1,99 @@
 # Semantic Analysis Prompt
 #
 # Analyzes table and column semantics across the entire schema.
-# Customize this prompt to match your domain or existing prompt libraries.
+# Uses Pydantic tool for structured output with business_concept mapping.
 
 name: semantic_analysis
-version: "1.0.0"
+version: "2.0.0"
 description: Analyze table and column semantics for AI-driven analytics
 
 # Temperature (0.0 = deterministic, 1.0 = creative)
 temperature: 0.0
 
-# The prompt template
-# Available variables: {tables_json}, {ontology_name}, {ontology_concepts}, {relationship_candidates}
-prompt: |
-  You are a data analyst examining a database schema. Your task is to analyze the semantic meaning of each table and column to enable AI-driven data analytics.
+# System prompt - defines role and behavior
+system_prompt: |
+  You are a senior data analyst with expertise in database schema analysis.
+  Your task is to analyze database schemas and determine the semantic meaning
+  of each table and column to enable AI-driven data analytics.
 
-  ## Schema to Analyze
+  <role>
+  - Analyze tables to identify what business entities they represent
+  - Classify columns by their structural role (key, measure, dimension, etc.)
+  - Map columns to standard business concepts from the provided ontology
+  - Detect relationships between tables based on naming patterns and data overlap
+  </role>
 
+  <semantic_roles>
+  The following roles describe the structural purpose of each column:
+  - key: Primary identifier for the table (unique, non-null)
+  - foreign_key: References another table's key column
+  - measure: Numeric value for aggregation (sum, avg, count)
+  - dimension: Categorical attribute for grouping/filtering
+  - timestamp: Date or datetime for time-based analysis
+  - attribute: Descriptive field not typically used for aggregation
+  </semantic_roles>
+
+  <business_concept_mapping>
+  For each column, determine if it matches a concept from the provided ontology.
+  Match based on SEMANTIC MEANING, not just column name patterns.
+
+  Examples of correct mapping:
+  - Column "ar_balance" with description "Outstanding customer receivables" -> accounts_receivable
+  - Column "total_sales" with sample values showing revenue figures -> revenue
+  - Column "txn_date" with date values -> fiscal_period
+  - Column "cust_id" that references customers -> (no concept, it's a key)
+
+  Only set business_concept to null if no ontology concept applies.
+  </business_concept_mapping>
+
+  <relationship_evaluation>
+  Evaluate pre-computed relationship candidates and determine:
+  - Is this a real foreign key relationship? (e.g., customer_id -> customers.id)
+  - Is this shared reference data? (e.g., both tables have country codes)
+  - Is this coincidental overlap? (e.g., row IDs happen to overlap with dates)
+
+  Not all candidates are real relationships. Use column names, data types,
+  and semantic context to decide which to confirm.
+  </relationship_evaluation>
+
+  Use the analyze_schema tool to provide your analysis.
+
+# User prompt - provides data and context
+user_prompt: |
+  <task>
+  Analyze the following database schema and provide semantic annotations
+  for each table and column. Map columns to business concepts where applicable.
+  </task>
+
+  <schema>
   {tables_json}
+  </schema>
 
-  ## Target Ontology: {ontology_name}
+  <ontology name="{ontology_name}">
+  Map columns to these domain concepts where applicable.
+  Use the EXACT concept name when a column matches semantically.
 
-  Map columns to these domain concepts where applicable:
   {ontology_concepts}
+  </ontology>
 
-  ## Pre-computed Relationship Candidates
-
-  The following relationship candidates were detected by analyzing actual data values.
-  Each candidate shows the value overlap score (1.0 = perfect containment or match).
+  <relationship_candidates>
+  Pre-computed relationship candidates based on actual data value overlap.
+  Each candidate shows the value overlap score (1.0 = perfect containment).
 
   {relationship_candidates}
+  </relationship_candidates>
 
-  **Your task**: Evaluate each candidate and determine:
-  - Is this a real foreign key relationship? (e.g., customer_id → customers.id)
-  - Is this shared reference data? (e.g., both tables have US state codes)
-  - Is this coincidental overlap? (e.g., row IDs happen to overlap with business IDs)
-
-  Not all candidates are real relationships. Use column names and semantic context to decide.
-
-  ## Within-Table Correlation Analysis
-
-  The following shows within-table patterns detected by analyzing actual data:
-  - **Functional dependencies**: Column A → B means values in A uniquely determine B (helps identify keys)
-  - **Strong correlations**: Highly correlated numeric columns (may indicate derived or redundant data)
-  - **Derived columns**: Columns that appear to be computed from others (e.g., total = qty * price)
+  <within_table_patterns>
+  Detected patterns within tables that may help identify keys and derived columns:
 
   {within_table_correlations}
+  </within_table_patterns>
 
-  ## Analysis Instructions
+  <graph_topology>
+  {graph_topology}
+  </graph_topology>
 
-  For each **table**, determine:
-  - **entity_type**: What real-world entity does this table represent?
-  - **description**: One sentence describing the table's purpose
-  - **is_fact_table**: Is this a fact table (transactions/events) or dimension table?
-  - **grain**: Which column(s) define the unique grain of the table?
-  - **time_column**: Primary timestamp column, if any
-
-  For each **column**, determine:
-  - **semantic_role**: One of: measure, dimension, key, foreign_key, timestamp, attribute
-  - **entity_type**: What does this column represent? (customer_id, product_name, etc.)
-  - **business_term**: Human-readable business name for the column
-  - **ontology_term**: Map to standard ontology concept from the list above (e.g., 'revenue', 'accounts_receivable', 'cost_of_goods_sold'). Use exact term names from the ontology. Set null if no match.
-  - **description**: One sentence human-readable description
-  - **confidence**: Your confidence in this analysis (0.0-1.0)
-
-  For **relationships**, evaluate the pre-computed candidates above and:
-  - **Confirm real FKs**: Candidates where column names indicate a key reference
-  - **Mark shared data**: Candidates that are lookup/reference values (states, codes)
-  - **Reject coincidental**: Candidates with no semantic connection
-  - **Add missing**: Any relationships you detect that weren't in the candidates
-
-  ## Semantic Role Definitions
-
-  - **key**: Primary identifier for the table (usually unique, non-null)
-  - **foreign_key**: References another table's key
-  - **measure**: Numeric value that can be aggregated (summed, averaged)
-  - **dimension**: Categorical attribute for grouping/filtering
-  - **timestamp**: Date or datetime for time-based analysis
-  - **attribute**: Descriptive field, not typically used for aggregation or grouping
-
-  ## Response Format
-
-  Respond with valid JSON only, no markdown formatting:
-
-  {{
-    "tables": [
-      {{
-        "table_name": "...",
-        "entity_type": "...",
-        "description": "...",
-        "is_fact_table": true,
-        "grain": ["col1"],
-        "time_column": "created_at",
-        "columns": [
-          {{
-            "column_name": "...",
-            "semantic_role": "key|foreign_key|measure|dimension|timestamp|attribute",
-            "entity_type": "...",
-            "business_term": "...",
-            "ontology_term": "accounts_receivable",
-            "description": "...",
-            "confidence": 0.95
-          }}
-        ]
-      }}
-    ],
-    "relationships": [
-      {{
-        "from_table": "transactions",
-        "from_column": "customer_id",
-        "to_table": "customers",
-        "to_column": "id",
-        "relationship_type": "foreign_key",
-        "cardinality": "many_to_one",
-        "confidence": 0.95,
-        "reasoning": "customer_id in transactions references customers.id primary key"
-      }}
-    ],
-    "summary": "Brief overview of the schema structure and domain"
-  }}
+  Analyze this schema using the analyze_schema tool.
 
 # Input variable definitions
 inputs:
@@ -127,57 +102,25 @@ inputs:
     required: true
 
   ontology_name:
-    description: Name of the target ontology
+    description: Name of the target ontology (must exist in config/ontologies/)
     required: true
-    default: "general"
 
   ontology_concepts:
-    description: List of concepts from the ontology
-    required: false
-    default: "No specific ontology concepts defined"
+    description: List of concepts from the ontology with descriptions
+    required: true
 
   relationship_candidates:
     description: Pre-computed relationship candidates from TDA and join detection
-    required: false
-    default: "No pre-computed relationship candidates available."
+    required: true
 
   within_table_correlations:
-    description: Within-table correlations (functional dependencies, strong correlations, derived columns)
+    description: Within-table correlations (functional dependencies, derived columns)
+    required: true
+
+  graph_topology:
+    description: Graph structure analysis from relationship candidates
     required: false
-    default: "No within-table correlation data available."
+    default: ""
 
-# Expected output schema (for validation)
-output_schema:
-  type: object
-  required:
-    - tables
-  properties:
-    tables:
-      type: array
-      items:
-        type: object
-        required:
-          - table_name
-          - columns
-    relationships:
-      type: array
-    summary:
-      type: string
-
-# Validation rules
-validation:
-  semantic_role_values:
-    - measure
-    - dimension
-    - key
-    - foreign_key
-    - timestamp
-    - attribute
-  relationship_types:
-    - foreign_key
-    - hierarchy
-  cardinality_values:
-    - one_to_one
-    - one_to_many
-    - many_to_one
-    - many_to_many
+# Output is defined by the Pydantic tool schema (SemanticAnalysisOutput)
+# No output_schema needed here since we use tool-based output

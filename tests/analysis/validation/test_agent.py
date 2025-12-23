@@ -102,13 +102,11 @@ async def table_with_data(async_session, duckdb_conn):
         column_id=col_debit.column_id,
         semantic_role="measure",
         entity_type="debit",
-        business_domain="finance",
     )
     ann_credit = SemanticAnnotationDB(
         column_id=col_credit.column_id,
         semantic_role="measure",
         entity_type="credit",
-        business_domain="finance",
     )
     async_session.add_all([ann_debit, ann_credit])
     await async_session.commit()

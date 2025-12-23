@@ -131,7 +131,6 @@ def _format_table_schema(table: Table) -> dict[str, Any]:
                 "role": ann.semantic_role,
                 "entity_type": ann.entity_type,
                 "business_name": ann.business_name,
-                "domain": ann.business_domain,
             }
 
         columns.append(col_info)

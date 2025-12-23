@@ -1,10 +1,10 @@
 """Field mapping for graph execution.
 
-Maps ontology terms (e.g., 'revenue', 'accounts_receivable') to concrete
+Maps business concepts (e.g., 'revenue', 'accounts_receivable') to concrete
 columns in the dataset based on semantic annotations.
 
-This enables financial metrics (DSO, DPO, current_ratio, etc.) that use
-`standard_field` references to resolve to actual column names.
+This enables metrics that use `standard_field` references to resolve to
+actual column names based on the LLM-detected business_concept mappings.
 """
 
 from __future__ import annotations
@@ -36,68 +36,73 @@ class ColumnCandidate:
 
 @dataclass
 class FieldMappings:
-    """Collection of ontology term → column mappings."""
+    """Collection of business concept → column mappings."""
 
-    # Maps ontology_term → list of matching columns
+    # Maps business_concept → list of matching columns
     mappings: dict[str, list[ColumnCandidate]] = field(default_factory=dict)
 
     # Tracks which tables were scanned
     table_ids: list[str] = field(default_factory=list)
 
-    def get_column(self, ontology_term: str) -> ColumnCandidate | None:
-        """Get best matching column for an ontology term.
+    def get_column(self, business_concept: str) -> ColumnCandidate | None:
+        """Get best matching column for a business concept.
 
         Args:
-            ontology_term: Standard field name (e.g., 'revenue')
+            business_concept: Standard field name (e.g., 'revenue')
 
         Returns:
             Best matching column or None if no match
         """
-        candidates = self.mappings.get(ontology_term, [])
+        candidates = self.mappings.get(business_concept, [])
         if not candidates:
             return None
         # Return highest confidence match
         return max(candidates, key=lambda c: c.confidence)
 
-    def get_column_name(self, ontology_term: str) -> str | None:
-        """Get column name for an ontology term.
+    def get_column_name(self, business_concept: str) -> str | None:
+        """Get column name for a business concept.
 
         Args:
-            ontology_term: Standard field name (e.g., 'revenue')
+            business_concept: Standard field name (e.g., 'revenue')
 
         Returns:
             Column name or None if no match
         """
-        candidate = self.get_column(ontology_term)
+        candidate = self.get_column(business_concept)
         return candidate.column_name if candidate else None
 
-    def get_all_columns(self, ontology_term: str) -> list[ColumnCandidate]:
-        """Get all matching columns for an ontology term.
+    def get_all_columns(self, business_concept: str) -> list[ColumnCandidate]:
+        """Get all matching columns for a business concept.
 
         Args:
-            ontology_term: Standard field name (e.g., 'revenue')
+            business_concept: Standard field name (e.g., 'revenue')
 
         Returns:
             List of matching columns, sorted by confidence
         """
-        candidates = self.mappings.get(ontology_term, [])
+        candidates = self.mappings.get(business_concept, [])
         return sorted(candidates, key=lambda c: c.confidence, reverse=True)
 
-    def has_mapping(self, ontology_term: str) -> bool:
-        """Check if an ontology term has any mappings.
+    def has_mapping(self, business_concept: str) -> bool:
+        """Check if a business concept has any mappings.
 
         Args:
-            ontology_term: Standard field name
+            business_concept: Standard field name
 
         Returns:
-            True if at least one column maps to this term
+            True if at least one column maps to this concept
         """
-        return bool(self.mappings.get(ontology_term))
+        return bool(self.mappings.get(business_concept))
+
+    @property
+    def available_concepts(self) -> list[str]:
+        """List all business concepts that have mappings."""
+        return [concept for concept, cols in self.mappings.items() if cols]
 
     @property
     def available_terms(self) -> list[str]:
-        """List all ontology terms that have mappings."""
-        return [term for term, cols in self.mappings.items() if cols]
+        """Alias for available_concepts (backward compatibility)."""
+        return self.available_concepts
 
     @property
     def total_mappings(self) -> int:
@@ -109,29 +114,29 @@ async def load_semantic_mappings(
     session: AsyncSession,
     table_ids: list[str],
 ) -> FieldMappings:
-    """Load ontology_term → column mappings from semantic annotations.
+    """Load business_concept → column mappings from semantic annotations.
 
     Queries the semantic_annotations table for all columns in the specified
-    tables that have an ontology_term set, and groups them by term.
+    tables that have a business_concept set, and groups them by concept.
 
     Args:
         session: Database session
         table_ids: Table IDs to load mappings for
 
     Returns:
-        FieldMappings with ontology_term → column mappings
+        FieldMappings with business_concept → column mappings
     """
     if not table_ids:
         return FieldMappings(table_ids=[])
 
-    # Query semantic annotations with ontology_term set
+    # Query semantic annotations with business_concept set
     stmt = (
         select(SemanticAnnotation, Column, Table)
         .join(Column, SemanticAnnotation.column_id == Column.column_id)
         .join(Table, Column.table_id == Table.table_id)
         .where(
             Table.table_id.in_(table_ids),
-            SemanticAnnotation.ontology_term.isnot(None),
+            SemanticAnnotation.business_concept.isnot(None),
         )
     )
 
@@ -141,12 +146,12 @@ async def load_semantic_mappings(
     mappings: dict[str, list[ColumnCandidate]] = {}
 
     for annotation, column, table in rows:
-        term = annotation.ontology_term
-        if not term:
+        concept = annotation.business_concept
+        if not concept:
             continue
 
-        if term not in mappings:
-            mappings[term] = []
+        if concept not in mappings:
+            mappings[concept] = []
 
         candidate = ColumnCandidate(
             column_id=column.column_id,
@@ -156,7 +161,7 @@ async def load_semantic_mappings(
             semantic_role=annotation.semantic_role,
             entity_type=annotation.entity_type,
         )
-        mappings[term].append(candidate)
+        mappings[concept].append(candidate)
 
     return FieldMappings(mappings=mappings, table_ids=table_ids)
 
@@ -173,22 +178,22 @@ def format_mappings_for_prompt(field_mappings: FieldMappings) -> str:
     Returns:
         Formatted string for prompt context
     """
-    if not field_mappings.available_terms:
+    if not field_mappings.available_concepts:
         return "No semantic field mappings available. Standard field references cannot be resolved."
 
     lines = ["## Semantic Field Mappings", ""]
-    lines.append("The following ontology terms have been mapped to concrete columns:")
+    lines.append("The following business concepts have been mapped to concrete columns:")
     lines.append("")
 
-    for term in sorted(field_mappings.available_terms):
-        candidates = field_mappings.get_all_columns(term)
+    for concept in sorted(field_mappings.available_concepts):
+        candidates = field_mappings.get_all_columns(concept)
         if len(candidates) == 1:
             c = candidates[0]
             lines.append(
-                f"- **{term}** → `{c.table_name}.{c.column_name}` (confidence: {c.confidence:.2f})"
+                f"- **{concept}** → `{c.table_name}.{c.column_name}` (confidence: {c.confidence:.2f})"
             )
         else:
-            lines.append(f"- **{term}** (multiple candidates):")
+            lines.append(f"- **{concept}** (multiple candidates):")
             for c in candidates[:3]:  # Show top 3
                 lines.append(
                     f"  - `{c.table_name}.{c.column_name}` (confidence: {c.confidence:.2f})"
@@ -198,7 +203,7 @@ def format_mappings_for_prompt(field_mappings: FieldMappings) -> str:
 
     lines.append("")
     lines.append(
-        f"Total mappings: {field_mappings.total_mappings} columns across {len(field_mappings.available_terms)} ontology terms"
+        f"Total mappings: {field_mappings.total_mappings} columns across {len(field_mappings.available_concepts)} business concepts"
     )
 
     return "\n".join(lines)

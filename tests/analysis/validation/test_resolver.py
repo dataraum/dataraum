@@ -62,7 +62,6 @@ async def table_with_columns(async_session):
         semantic_role="measure",
         entity_type="amount",
         business_name="Transaction Amount",
-        business_domain="finance",
     )
     async_session.add(annotation)
     await async_session.commit()
@@ -147,7 +146,6 @@ async def two_tables_with_relationship(async_session):
         semantic_role="measure",
         entity_type="amount",
         business_name="Transaction Amount",
-        business_domain="finance",
     )
     async_session.add(annotation)
 

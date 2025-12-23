@@ -43,8 +43,8 @@ class ColumnContext:
     semantic_role: str | None = None  # key, measure, dimension, timestamp, etc.
     entity_type: str | None = None  # customer, product, transaction, etc.
 
-    # Ontology mapping (for financial metrics)
-    ontology_term: str | None = None  # e.g., 'revenue', 'accounts_receivable'
+    # Business concept mapping (from ontology, for metric calculations)
+    business_concept: str | None = None  # e.g., 'revenue', 'accounts_receivable'
 
     # Statistical metrics
     null_ratio: float | None = None
@@ -160,7 +160,7 @@ class GraphExecutionContext:
     # Business cycles (from cycles analysis)
     business_cycles: list[BusinessCycleContext] = field(default_factory=list)
 
-    # Field mappings (ontology_term → column mappings for financial metrics)
+    # Field mappings (business_concept → column mappings for metrics)
     field_mappings: FieldMappings | None = None
 
     # Metadata
@@ -480,7 +480,7 @@ async def build_execution_context(
                     data_type=type_dec.decided_type if type_dec else None,
                     semantic_role=sem_ann.semantic_role if sem_ann else None,
                     entity_type=sem_ann.entity_type if sem_ann else None,
-                    ontology_term=sem_ann.ontology_term if sem_ann else None,
+                    business_concept=sem_ann.business_concept if sem_ann else None,
                     null_ratio=null_ratio,
                     cardinality_ratio=cardinality_ratio,
                     outlier_ratio=outlier_ratio,
@@ -642,11 +642,11 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
         for col in table.columns:
             role = f" [{col.semantic_role}]" if col.semantic_role else ""
             dtype = f" ({col.data_type})" if col.data_type else ""
-            ontology = f" → {col.ontology_term}" if col.ontology_term else ""
+            concept = f" → {col.business_concept}" if col.business_concept else ""
             grade = f" [Grade: {col.quality_grade}]" if col.quality_grade else ""
             derived = f" (derived: {col.derived_formula})" if col.is_derived else ""
             flags_str = f" - FLAGS: {', '.join(col.flags)}" if col.flags else ""
-            lines.append(f"  - {col.column_name}{dtype}{role}{ontology}{grade}{derived}{flags_str}")
+            lines.append(f"  - {col.column_name}{dtype}{role}{concept}{grade}{derived}{flags_str}")
 
     # Relationships
     if context.relationships:

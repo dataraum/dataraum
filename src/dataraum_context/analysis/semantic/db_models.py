@@ -58,13 +58,10 @@ class SemanticAnnotation(Base):
     # Business terms
     business_name: Mapped[str | None] = mapped_column(String)
     business_description: Mapped[str | None] = mapped_column(Text)
-    business_domain: Mapped[str | None] = mapped_column(
-        String
-    )  # 'finance', 'marketing', 'operations'
 
-    # Ontology mapping
-    ontology_term: Mapped[str | None] = mapped_column(String)
-    ontology_uri: Mapped[str | None] = mapped_column(String)
+    # Business concept mapping - maps to standard domain concepts
+    # from the active ontology (e.g., 'accounts_receivable', 'revenue', 'fiscal_period')
+    business_concept: Mapped[str | None] = mapped_column(String)
 
     # Provenance
     annotation_source: Mapped[str | None] = mapped_column(

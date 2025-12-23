@@ -4,6 +4,8 @@ This agent follows the same pattern as graphs/agent.py:
 - It extends LLMFeature from the llm module
 - It depends on llm module, but llm module does not depend on it
 - Used directly by analysis/semantic/processor.py
+
+Uses Pydantic tool for structured output via Anthropic tool use API.
 """
 
 import json
@@ -21,6 +23,7 @@ from dataraum_context.analysis.relationships.graph_topology import (
 from dataraum_context.analysis.semantic.models import (
     EntityDetection,
     Relationship,
+    SemanticAnalysisOutput,
     SemanticAnnotation,
     SemanticEnrichmentResult,
 )
@@ -37,6 +40,11 @@ from dataraum_context.core.models.base import (
 )
 from dataraum_context.llm.features._base import LLMFeature
 from dataraum_context.llm.privacy import DataSampler
+from dataraum_context.llm.providers.base import (
+    ConversationRequest,
+    Message,
+    ToolDefinition,
+)
 from dataraum_context.storage import Column, Table
 
 if TYPE_CHECKING:
@@ -144,6 +152,15 @@ class SemanticAgent(LLMFeature):
         tables_json = self._build_tables_json(profiles, samples)
         ontology_def = self._ontology_loader.load(ontology)
 
+        # Ontology is required for business_concept mapping
+        if ontology_def is None:
+            available = self._ontology_loader.list_ontologies()
+            return Result.fail(
+                f"Ontology '{ontology}' not found. "
+                f"Available ontologies: {available}. "
+                f"Create config/ontologies/{ontology}.yaml or use an existing ontology."
+            )
+
         # Compute graph topology from relationship candidates
         graph_topology_context = ""
         if relationship_candidates:
@@ -174,34 +191,34 @@ class SemanticAgent(LLMFeature):
             "graph_topology": graph_topology_context,
         }
 
-        # Render prompt
+        # Render prompt with system/user split
         try:
-            prompt, temperature = self.renderer.render("semantic_analysis", context)
+            system_prompt, user_prompt, temperature = self.renderer.render_split(
+                "semantic_analysis", context
+            )
         except Exception as e:
             return Result.fail(f"Failed to render prompt: {e}")
 
-        # Call LLM
-        response_result = await self._call_llm(
-            session=session,
-            feature_name="semantic_analysis",
-            prompt=prompt,
+        # Create tool definition from Pydantic model
+        tool = self._create_tool_definition()
+
+        # Call LLM with tool use
+        response_result = await self._call_with_tool(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            tool=tool,
             temperature=temperature,
             model_tier=feature_config.model_tier,
-            table_ids=table_ids,
-            ontology=ontology,
         )
 
         if not response_result.success or not response_result.value:
-            return Result.fail(response_result.error if response_result.error else "Unknown Error")
+            return Result.fail(response_result.error or "Unknown Error")
 
-        response = response_result.value
+        tool_output, model_name = response_result.value
 
         try:
-            parsed = json.loads(response.content)
-            return self._parse_semantic_response(parsed, response.model)
-        except json.JSONDecodeError as e:
-            # Log the problematic content for debugging
-            return Result.fail(f"Failed to parse LLM response as JSON: {e}")
+            # Parse tool output into our internal models
+            return self._parse_tool_output(tool_output, model_name)
         except Exception as e:
             return Result.fail(f"Failed to parse semantic response: {e}")
 
@@ -527,103 +544,175 @@ class SemanticAgent(LLMFeature):
 
         return list(tables_data.values())
 
-    def _parse_semantic_response(
-        self, parsed: dict[str, Any], model_name: str
-    ) -> Result[SemanticEnrichmentResult]:
-        """Parse LLM response into structured result.
+    def _create_tool_definition(self) -> ToolDefinition:
+        """Create tool definition from SemanticAnalysisOutput Pydantic model.
+
+        Returns:
+            ToolDefinition with JSON schema from the Pydantic model
+        """
+        # Generate JSON schema from Pydantic model
+        schema = SemanticAnalysisOutput.model_json_schema()
+
+        return ToolDefinition(
+            name="analyze_schema",
+            description=(
+                "Provide semantic analysis results for the database schema. "
+                "Analyze each table and column, map to business concepts, "
+                "and identify relationships."
+            ),
+            input_schema=schema,
+        )
+
+    async def _call_with_tool(
+        self,
+        system_prompt: str | None,
+        user_prompt: str,
+        tool: ToolDefinition,
+        temperature: float,
+        model_tier: str,
+    ) -> Result[tuple[dict[str, Any], str]]:
+        """Call LLM with tool use and extract tool output.
 
         Args:
-            parsed: Parsed JSON response
+            system_prompt: System message (role/instructions)
+            user_prompt: User message (data/context)
+            tool: Tool definition for structured output
+            temperature: Sampling temperature
+            model_tier: Model tier to use
+
+        Returns:
+            Result containing (tool_output_dict, model_name)
+        """
+        # Get model for tier
+        model = self.provider.get_model_for_tier(model_tier)
+
+        # Build conversation request
+        request = ConversationRequest(
+            messages=[Message(role="user", content=user_prompt)],
+            system=system_prompt,
+            tools=[tool],
+            max_tokens=8192,  # Semantic analysis can produce large output
+            temperature=temperature,
+            model=model,
+        )
+
+        # Call LLM
+        response_result = await self.provider.converse(request)
+
+        if not response_result.success or not response_result.value:
+            return Result.fail(response_result.error or "LLM call failed")
+
+        response = response_result.value
+
+        # Extract tool call result
+        if not response.tool_calls:
+            # LLM didn't use the tool - try to parse text response as fallback
+            if response.content:
+                try:
+                    parsed = json.loads(response.content)
+                    return Result.ok((parsed, response.model))
+                except json.JSONDecodeError:
+                    pass
+            return Result.fail(
+                f"LLM did not use the analyze_schema tool. Response: {response.content[:500]}"
+            )
+
+        # Get the first tool call (should be analyze_schema)
+        tool_call = response.tool_calls[0]
+        if tool_call.name != "analyze_schema":
+            return Result.fail(f"Unexpected tool call: {tool_call.name}")
+
+        return Result.ok((tool_call.input, response.model))
+
+    def _parse_tool_output(
+        self, tool_output: dict[str, Any], model_name: str
+    ) -> Result[SemanticEnrichmentResult]:
+        """Parse tool output into SemanticEnrichmentResult.
+
+        Args:
+            tool_output: Raw tool output dict from LLM
             model_name: Model that generated the response
 
         Returns:
             Result containing SemanticEnrichmentResult
         """
         try:
+            # Validate with Pydantic model
+            analysis = SemanticAnalysisOutput.model_validate(tool_output)
+
             annotations = []
             entity_detections = []
             relationships = []
 
-            # Parse table-level entities
-            for table_data in parsed.get("tables", []):
+            # Convert tool output to internal models
+            for table in analysis.tables:
                 # Create entity detection
                 entity = EntityDetection(
                     table_id="",  # Filled by caller
-                    table_name=table_data["table_name"],
-                    entity_type=table_data.get("entity_type", "unknown"),
-                    description=table_data.get("description"),
-                    confidence=0.8,
+                    table_name=table.table_name,
+                    entity_type=table.entity_type,
+                    description=table.description,
+                    confidence=0.9,  # Tool-based output has higher confidence
                     evidence={},
-                    grain_columns=table_data.get("grain", []),
-                    is_fact_table=table_data.get("is_fact_table", False),
-                    is_dimension_table=not table_data.get("is_fact_table", False),
-                    time_column=table_data.get("time_column"),
+                    grain_columns=table.grain,
+                    is_fact_table=table.is_fact_table,
+                    is_dimension_table=not table.is_fact_table,
+                    time_column=table.time_column,
                 )
                 entity_detections.append(entity)
 
                 # Parse column annotations
-                for col_data in table_data.get("columns", []):
-                    # Parse semantic role
-                    role_str = col_data.get("semantic_role", "unknown")
+                for col in table.columns:
                     try:
-                        semantic_role = SemanticRole(role_str)
+                        semantic_role = SemanticRole(col.semantic_role)
                     except ValueError:
                         semantic_role = SemanticRole.UNKNOWN
 
                     annotation = SemanticAnnotation(
                         column_id="",  # Filled by caller
                         column_ref=ColumnRef(
-                            table_name=table_data["table_name"],
-                            column_name=col_data["column_name"],
+                            table_name=table.table_name,
+                            column_name=col.column_name,
                         ),
                         semantic_role=semantic_role,
-                        entity_type=col_data.get("entity_type"),
-                        business_name=col_data.get("business_term"),
-                        business_description=col_data.get("description"),
-                        ontology_term=col_data.get("ontology_term"),
+                        entity_type=col.entity_type,
+                        business_name=col.business_term,
+                        business_description=col.description,
+                        business_concept=col.business_concept,
                         annotation_source=DecisionSource.LLM,
                         annotated_by=model_name,
-                        confidence=col_data.get("confidence", 0.8),
+                        confidence=col.confidence,
                     )
                     annotations.append(annotation)
 
             # Parse relationships
-            for rel_data in parsed.get("relationships", []):
-                # Parse relationship type
-                rel_type_str = rel_data.get("relationship_type", "foreign_key")
+            for rel in analysis.relationships:
                 try:
-                    rel_type = RelationshipType(rel_type_str)
+                    rel_type = RelationshipType(rel.relationship_type)
                 except ValueError:
                     rel_type = RelationshipType.FOREIGN_KEY
 
-                # Parse cardinality
-                card_str = rel_data.get("cardinality", "many_to_one")
                 cardinality = None
-                if card_str == "one_to_one":
+                if rel.cardinality == "one_to_one":
                     cardinality = Cardinality.ONE_TO_ONE
-                elif card_str == "one_to_many":
+                elif rel.cardinality == "one_to_many":
                     cardinality = Cardinality.ONE_TO_MANY
-                elif card_str == "many_to_one":
+                elif rel.cardinality == "many_to_one":
                     cardinality = Cardinality.ONE_TO_MANY  # Flip perspective
-                elif card_str == "many_to_many":
+                elif rel.cardinality == "many_to_many":
                     cardinality = Cardinality.MANY_TO_MANY
-
-                # Build evidence dict with reasoning if provided
-                evidence = {"source": "semantic_analysis"}
-                if "reasoning" in rel_data:
-                    evidence["reasoning"] = rel_data["reasoning"]
 
                 relationship = Relationship(
                     relationship_id=str(uuid4()),
-                    from_table=rel_data["from_table"],
-                    from_column=rel_data["from_column"],
-                    to_table=rel_data["to_table"],
-                    to_column=rel_data["to_column"],
+                    from_table=rel.from_table,
+                    from_column=rel.from_column,
+                    to_table=rel.to_table,
+                    to_column=rel.to_column,
                     relationship_type=rel_type,
                     cardinality=cardinality,
-                    confidence=rel_data.get("confidence", 0.8),
-                    detection_method="llm",
-                    evidence=evidence,
+                    confidence=rel.confidence,
+                    detection_method="llm_tool",
+                    evidence={"source": "semantic_analysis", "reasoning": rel.reasoning},
                 )
                 relationships.append(relationship)
 
@@ -637,4 +726,4 @@ class SemanticAgent(LLMFeature):
             )
 
         except Exception as e:
-            return Result.fail(f"Failed to parse semantic response: {e}")
+            return Result.fail(f"Failed to parse tool output: {e}")

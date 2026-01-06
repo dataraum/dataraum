@@ -21,9 +21,12 @@ from dataraum_context.analysis.quality_summary.db_models import (
 from dataraum_context.analysis.quality_summary.models import (
     AggregatedColumnData,
     QualitySummaryResult,
+    SliceColumnMatrix,
+    SliceQualityCell,
 )
 from dataraum_context.analysis.semantic.db_models import SemanticAnnotation
 from dataraum_context.analysis.slicing.db_models import SliceDefinition
+from sqlalchemy import distinct as sql_distinct
 from dataraum_context.analysis.statistics.db_models import (
     StatisticalProfile,
     StatisticalQualityMetrics,
@@ -61,10 +64,19 @@ async def aggregate_slice_results(
         if not source_table or not slice_column:
             return Result.fail("Source table or slice column not found")
 
-        # Get all columns from source table
+        # Get all slice definition column IDs to exclude from analysis
+        # These are columns used for slicing - same values in each slice, so redundant
+        all_slice_def_cols_stmt = select(sql_distinct(SliceDefinition.column_id)).where(
+            SliceDefinition.table_id == source_table.table_id
+        )
+        all_slice_def_cols_result = await session.execute(all_slice_def_cols_stmt)
+        slice_definition_column_ids = set(all_slice_def_cols_result.scalars().all())
+
+        # Get all columns from source table, excluding slice columns
         source_cols_stmt = (
             select(Column)
             .where(Column.table_id == source_table.table_id)
+            .where(Column.column_id.notin_(slice_definition_column_ids))
             .order_by(Column.column_position)
         )
         source_cols_result = await session.execute(source_cols_stmt)
@@ -84,6 +96,9 @@ async def aggregate_slice_results(
             safe_column = re.sub(r"_+", "_", safe_column).strip("_").lower()
             safe_value = re.sub(r"[^a-zA-Z0-9]", "_", str(value))
             safe_value = re.sub(r"_+", "_", safe_value).strip("_").lower()
+            # Match SlicingAgent fallback for empty values
+            if not safe_value:
+                safe_value = "unknown"
 
             slice_table_name = f"slice_{safe_column}_{safe_value}"
 
@@ -332,6 +347,8 @@ async def summarize_quality(
                 col_id = col_id_map.get(summary.column_name)
 
                 # Store report in database
+                # Note: slice_metrics are NOT stored in report_data as they can be
+                # accessed from the statistical_profiles table via column joins
                 report = ColumnQualityReport(
                     source_column_id=col_id,
                     slice_column_id=slice_column.column_id,
@@ -347,7 +364,8 @@ async def summarize_quality(
                         "quality_issues": [qi.model_dump() for qi in summary.quality_issues],
                         "slice_comparisons": [sc.model_dump() for sc in summary.slice_comparisons],
                         "recommendations": summary.recommendations,
-                        "slice_metrics": [sm.model_dump() for sm in summary.slice_metrics],
+                        # slice_values for easy lookup (just the values, not full metrics)
+                        "slice_values": [sm.slice_value for sm in summary.slice_metrics],
                     },
                     investigation_views=summary.investigation_views,
                 )
@@ -382,7 +400,181 @@ async def summarize_quality(
         return Result.fail(f"Quality summary failed: {e}")
 
 
+async def build_quality_matrix(
+    session: AsyncSession,
+    slice_definition: SliceDefinition,
+) -> Result[SliceColumnMatrix]:
+    """Build a slice values x columns quality matrix.
+
+    Creates a matrix showing quality metrics across all slice values and columns.
+    Rows = slice values, Columns = source table columns (excluding slice columns)
+
+    Args:
+        session: Database session
+        slice_definition: The slice definition to build matrix for
+
+    Returns:
+        Result containing SliceColumnMatrix
+    """
+    try:
+        # Get source table and slice column info
+        source_table = await session.get(Table, slice_definition.table_id)
+        slice_column = await session.get(Column, slice_definition.column_id)
+
+        if not source_table or not slice_column:
+            return Result.fail("Source table or slice column not found")
+
+        # Get all slice definition column IDs to exclude
+        all_slice_def_cols_stmt = select(sql_distinct(SliceDefinition.column_id)).where(
+            SliceDefinition.table_id == source_table.table_id
+        )
+        all_slice_def_cols_result = await session.execute(all_slice_def_cols_stmt)
+        slice_definition_column_ids = set(all_slice_def_cols_result.scalars().all())
+
+        # Get source columns (excluding slice columns)
+        source_cols_stmt = (
+            select(Column)
+            .where(Column.table_id == source_table.table_id)
+            .where(Column.column_id.notin_(slice_definition_column_ids))
+            .order_by(Column.column_position)
+        )
+        source_cols_result = await session.execute(source_cols_stmt)
+        source_columns = list(source_cols_result.scalars().all())
+
+        slice_values = slice_definition.distinct_values or []
+        column_names = [c.column_name for c in source_columns]
+
+        # Initialize matrix
+        matrix = SliceColumnMatrix(
+            source_table_name=source_table.table_name,
+            slice_column_name=slice_column.column_name,
+            slice_values=slice_values,
+            column_names=column_names,
+            cells={},
+            total_rows_per_slice={},
+            avg_quality_per_column={},
+        )
+
+        # Build slice table name lookup
+        import re
+
+        slice_table_lookup: dict[str, tuple[Table, str]] = {}
+        for value in slice_values:
+            safe_column = re.sub(r"[^a-zA-Z0-9]", "_", slice_column.column_name)
+            safe_column = re.sub(r"_+", "_", safe_column).strip("_").lower()
+            safe_value = re.sub(r"[^a-zA-Z0-9]", "_", str(value))
+            safe_value = re.sub(r"_+", "_", safe_value).strip("_").lower()
+
+            slice_table_name = f"slice_{safe_column}_{safe_value}"
+
+            slice_table_stmt = select(Table).where(
+                Table.table_name == slice_table_name,
+                Table.layer == "slice",
+            )
+            slice_table_result = await session.execute(slice_table_stmt)
+            slice_table = slice_table_result.scalar_one_or_none()
+
+            if slice_table:
+                slice_table_lookup[value] = (slice_table, value)
+                matrix.total_rows_per_slice[value] = slice_table.row_count or 0
+
+        # Build cells for each slice value x column combination
+        quality_scores_by_column: dict[str, list[float]] = {c: [] for c in column_names}
+
+        for slice_value, (slice_table, _) in slice_table_lookup.items():
+            matrix.cells[slice_value] = {}
+
+            for source_col in source_columns:
+                # Find corresponding column in slice table
+                slice_col_stmt = select(Column).where(
+                    Column.table_id == slice_table.table_id,
+                    Column.column_name == source_col.column_name,
+                )
+                slice_col_result = await session.execute(slice_col_stmt)
+                slice_col = slice_col_result.scalar_one_or_none()
+
+                if not slice_col:
+                    continue
+
+                # Get statistical profile
+                profile_stmt = (
+                    select(StatisticalProfile)
+                    .where(StatisticalProfile.column_id == slice_col.column_id)
+                    .limit(1)
+                )
+                profile_result = await session.execute(profile_stmt)
+                profile = profile_result.scalar_one_or_none()
+
+                # Get quality metrics
+                quality_stmt = (
+                    select(StatisticalQualityMetrics)
+                    .where(StatisticalQualityMetrics.column_id == slice_col.column_id)
+                    .limit(1)
+                )
+                quality_result = await session.execute(quality_stmt)
+                quality = quality_result.scalar_one_or_none()
+
+                # Calculate cell values
+                row_count = slice_table.row_count or 0
+                null_ratio = None
+                distinct_count = None
+                quality_score = 1.0  # Start with perfect score
+                has_issues = False
+                issue_count = 0
+
+                if profile:
+                    if profile.total_count and profile.total_count > 0:
+                        null_ratio = profile.null_count / profile.total_count
+                        # Penalize for high null ratio
+                        if null_ratio > 0.5:
+                            quality_score -= 0.3
+                            issue_count += 1
+                            has_issues = True
+                        elif null_ratio > 0.2:
+                            quality_score -= 0.1
+                            issue_count += 1
+                    distinct_count = profile.distinct_count
+
+                if quality:
+                    if quality.has_outliers:
+                        quality_score -= 0.2
+                        issue_count += 1
+                        has_issues = True
+                    if quality.benford_compliant is False:
+                        quality_score -= 0.1
+                        issue_count += 1
+                        has_issues = True
+
+                quality_score = max(0.0, min(1.0, quality_score))
+
+                cell = SliceQualityCell(
+                    slice_value=slice_value,
+                    column_name=source_col.column_name,
+                    row_count=row_count,
+                    null_ratio=null_ratio,
+                    distinct_count=distinct_count,
+                    quality_score=quality_score,
+                    has_issues=has_issues,
+                    issue_count=issue_count,
+                )
+                matrix.cells[slice_value][source_col.column_name] = cell
+
+                if quality_score is not None:
+                    quality_scores_by_column[source_col.column_name].append(quality_score)
+
+        # Calculate average quality per column
+        for col_name, scores in quality_scores_by_column.items():
+            if scores:
+                matrix.avg_quality_per_column[col_name] = sum(scores) / len(scores)
+
+        return Result.ok(matrix)
+
+    except Exception as e:
+        return Result.fail(f"Failed to build quality matrix: {e}")
+
+
 __all__ = [
     "aggregate_slice_results",
     "summarize_quality",
+    "build_quality_matrix",
 ]

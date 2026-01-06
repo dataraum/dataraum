@@ -139,6 +139,79 @@ class AggregatedColumnData:
     business_description: str | None = None
 
 
+class SliceQualityCell(BaseModel):
+    """Quality metrics for a single cell in the slice x column matrix."""
+
+    slice_value: str
+    column_name: str
+    row_count: int = 0
+    null_ratio: float | None = None
+    distinct_count: int | None = None
+    quality_score: float | None = None  # 0-1 score derived from metrics
+    has_issues: bool = False
+    issue_count: int = 0
+
+
+class SliceColumnMatrix(BaseModel):
+    """Matrix of slice values x columns with quality metrics.
+
+    Provides a compact view of quality across all slices and columns.
+    Structure: rows = slice values, columns = source columns
+    """
+
+    source_table_name: str
+    slice_column_name: str
+
+    # Axis labels
+    slice_values: list[str] = Field(default_factory=list)  # Row labels
+    column_names: list[str] = Field(default_factory=list)  # Column labels
+
+    # Matrix data: dict[slice_value, dict[column_name, SliceQualityCell]]
+    cells: dict[str, dict[str, SliceQualityCell]] = Field(default_factory=dict)
+
+    # Summary statistics
+    total_rows_per_slice: dict[str, int] = Field(default_factory=dict)
+    avg_quality_per_column: dict[str, float] = Field(default_factory=dict)
+
+    def get_cell(self, slice_value: str, column_name: str) -> SliceQualityCell | None:
+        """Get cell for specific slice value and column."""
+        return self.cells.get(slice_value, {}).get(column_name)
+
+    def to_dataframe_dict(self) -> dict[str, Any]:
+        """Convert to dict format suitable for pandas DataFrame.
+
+        Returns dict with structure:
+        {
+            'slice_value': [...],
+            'column1_score': [...],
+            'column1_nulls': [...],
+            'column2_score': [...],
+            ...
+        }
+        """
+        result: dict[str, list[Any]] = {"slice_value": []}
+
+        for col_name in self.column_names:
+            result[f"{col_name}_score"] = []
+            result[f"{col_name}_null_ratio"] = []
+            result[f"{col_name}_issues"] = []
+
+        for slice_val in self.slice_values:
+            result["slice_value"].append(slice_val)
+            for col_name in self.column_names:
+                cell = self.get_cell(slice_val, col_name)
+                if cell:
+                    result[f"{col_name}_score"].append(cell.quality_score)
+                    result[f"{col_name}_null_ratio"].append(cell.null_ratio)
+                    result[f"{col_name}_issues"].append(cell.issue_count)
+                else:
+                    result[f"{col_name}_score"].append(None)
+                    result[f"{col_name}_null_ratio"].append(None)
+                    result[f"{col_name}_issues"].append(None)
+
+        return result
+
+
 __all__ = [
     "SliceMetrics",
     "SliceComparison",
@@ -146,4 +219,6 @@ __all__ = [
     "ColumnQualitySummary",
     "QualitySummaryResult",
     "AggregatedColumnData",
+    "SliceQualityCell",
+    "SliceColumnMatrix",
 ]

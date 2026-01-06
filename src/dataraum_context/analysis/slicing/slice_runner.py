@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 import duckdb
@@ -19,6 +20,18 @@ from dataraum_context.storage import Column, Table
 
 if TYPE_CHECKING:
     from dataraum_context.analysis.semantic.agent import SemanticAgent
+
+
+@dataclass
+class TemporalSlicesResult:
+    """Result from running temporal analysis on multiple slices."""
+
+    slices_analyzed: int
+    periods_analyzed: int
+    incomplete_periods: int
+    anomalies_detected: int
+    drift_detected_count: int
+    errors: list[str]
 
 
 @dataclass
@@ -283,27 +296,84 @@ async def run_semantic_on_slices(
     session: AsyncSession,
     agent: SemanticAgent,
 ) -> Result[Any]:
-    """Run semantic analysis on slice tables.
+    """Copy semantic annotations from parent table to slice tables.
+
+    Since slice tables contain the same columns as the parent table,
+    we copy semantic annotations rather than re-running LLM analysis.
+    This is more efficient and ensures consistency.
 
     Args:
         slice_infos: List of slice table infos
         session: Database session
-        agent: Semantic agent
+        agent: Semantic agent (unused, kept for API compatibility)
 
     Returns:
-        Result containing semantic result
+        Result containing count of copied annotations
     """
-    from dataraum_context.analysis.semantic import enrich_semantic
+    from dataraum_context.analysis.semantic.db_models import SemanticAnnotation
+    from dataraum_context.storage import Column
 
-    table_ids = [s.slice_table_id for s in slice_infos]
+    _ = agent  # Not used - we copy instead of running LLM
 
-    result = await enrich_semantic(
-        session=session,
-        agent=agent,
-        table_ids=table_ids,
-        ontology="general",
+    if not slice_infos:
+        return Result.ok(0)
+
+    # Get parent table ID from first slice
+    parent_table_id = slice_infos[0].source_table_id
+
+    # Load semantic annotations from parent table
+    parent_columns = await session.execute(
+        select(Column.column_id, Column.column_name)
+        .where(Column.table_id == parent_table_id)
     )
-    return result
+    parent_col_map = {row.column_name: row.column_id for row in parent_columns}
+
+    # Load existing annotations for parent columns
+    parent_annotations = await session.execute(
+        select(SemanticAnnotation)
+        .where(SemanticAnnotation.column_id.in_(list(parent_col_map.values())))
+    )
+    annotation_by_name: dict[str, SemanticAnnotation] = {}
+    for ann in parent_annotations.scalars():
+        # Find column name for this annotation
+        for col_name, col_id in parent_col_map.items():
+            if col_id == ann.column_id:
+                annotation_by_name[col_name] = ann
+                break
+
+    if not annotation_by_name:
+        return Result.ok(0)  # No annotations to copy
+
+    copied_count = 0
+
+    # Copy annotations to each slice table
+    for slice_info in slice_infos:
+        # Load slice columns
+        slice_columns = await session.execute(
+            select(Column.column_id, Column.column_name)
+            .where(Column.table_id == slice_info.slice_table_id)
+        )
+
+        for row in slice_columns:
+            if row.column_name in annotation_by_name:
+                parent_ann = annotation_by_name[row.column_name]
+                # Create new annotation for slice column
+                slice_ann = SemanticAnnotation(
+                    column_id=row.column_id,
+                    semantic_role=parent_ann.semantic_role,
+                    entity_type=parent_ann.entity_type,
+                    business_name=parent_ann.business_name,
+                    business_description=parent_ann.business_description,
+                    business_concept=parent_ann.business_concept,
+                    annotation_source=parent_ann.annotation_source,
+                    annotated_by="copied_from_parent",
+                    confidence=parent_ann.confidence,
+                )
+                session.add(slice_ann)
+                copied_count += 1
+
+    await session.commit()
+    return Result.ok(copied_count)
 
 
 async def run_analysis_on_slices(
@@ -373,12 +443,101 @@ async def run_analysis_on_slices(
     )
 
 
+async def run_temporal_analysis_on_slices(
+    session: AsyncSession,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    slice_infos: list[SliceTableInfo],
+    time_column: str,
+    period_start: date,
+    period_end: date,
+    time_grain: str = "monthly",
+) -> TemporalSlicesResult:
+    """Run temporal analysis on all slice tables.
+
+    Args:
+        session: Database session
+        duckdb_conn: DuckDB connection
+        slice_infos: List of slice tables to analyze
+        time_column: Name of the time/date column
+        period_start: Start date for analysis
+        period_end: End date for analysis
+        time_grain: Time granularity (daily, weekly, monthly)
+
+    Returns:
+        TemporalSlicesResult with aggregated metrics
+    """
+    from dataraum_context.analysis.temporal_slicing import (
+        TemporalSliceConfig,
+        TimeGrain,
+        analyze_temporal_slices,
+    )
+
+    # Convert time_grain string to enum
+    grain_map = {
+        "daily": TimeGrain.DAILY,
+        "weekly": TimeGrain.WEEKLY,
+        "monthly": TimeGrain.MONTHLY,
+    }
+    grain = grain_map.get(time_grain, TimeGrain.MONTHLY)
+
+    errors: list[str] = []
+    total_periods = 0
+    total_incomplete = 0
+    total_anomalies = 0
+    total_drift = 0
+    slices_analyzed = 0
+
+    for slice_info in slice_infos:
+        config = TemporalSliceConfig(
+            time_column=time_column,
+            period_start=period_start,
+            period_end=period_end,
+            time_grain=grain,
+        )
+
+        result = await analyze_temporal_slices(
+            duckdb_conn=duckdb_conn,
+            session=session,
+            slice_table_name=slice_info.slice_table_name,
+            config=config,
+            slice_column_name=slice_info.slice_column_name,
+            persist=True,
+        )
+
+        if result.success:
+            slices_analyzed += 1
+            analysis = result.value
+            total_periods = max(total_periods, analysis.total_periods)
+            total_incomplete += len(
+                [c for c in analysis.completeness_results if not c.is_complete]
+            )
+            total_anomalies += len(
+                [v for v in analysis.volume_anomalies if v.is_anomaly]
+            )
+            total_drift += len(
+                [d for d in analysis.drift_results if d.has_significant_drift]
+            )
+        else:
+            errors.append(f"{slice_info.slice_table_name}: {result.error}")
+
+    return TemporalSlicesResult(
+        slices_analyzed=slices_analyzed,
+        periods_analyzed=total_periods,
+        incomplete_periods=total_incomplete,
+        anomalies_detected=total_anomalies,
+        drift_detected_count=total_drift,
+        errors=errors,
+    )
+
+
 __all__ = [
     "SliceTableInfo",
     "SliceAnalysisResult",
+    "TemporalSlicesResult",
     "register_slice_tables",
     "run_analysis_on_slices",
     "run_statistics_on_slice",
     "run_quality_on_slice",
     "run_semantic_on_slices",
+    "run_temporal_analysis_on_slices",
 ]

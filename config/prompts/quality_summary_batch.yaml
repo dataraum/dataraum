@@ -1,0 +1,117 @@
+# Quality Summary Batch Prompt
+#
+# Analyzes aggregated quality metrics across slices for MULTIPLE columns
+# in a single LLM call to reduce API overhead.
+
+name: quality_summary_batch
+version: "1.0.0"
+description: Generate quality summaries for multiple columns in one call
+
+# Temperature (0.0 = deterministic, 1.0 = creative)
+temperature: 0.1
+
+# The prompt template
+prompt: |
+  You are a data quality analyst tasked with summarizing the quality of multiple data columns across data slices.
+
+  ## Context
+
+  **Source Table**: {source_table_name}
+  **Sliced By**: {slice_column_name}
+  **Total Slices**: {total_slices}
+
+  ## Columns to Analyze
+
+  {columns_json}
+
+  ## Your Task
+
+  For EACH column in the list above, provide a quality assessment including:
+
+  1. **Overall Quality Score**: 0.0-1.0
+  2. **Quality Grade**: A-F based on:
+     - **A** (0.9-1.0): Excellent - No significant issues
+     - **B** (0.8-0.89): Good - Minor issues
+     - **C** (0.6-0.79): Fair - Some issues need attention
+     - **D** (0.4-0.59): Poor - Significant problems
+     - **F** (0.0-0.39): Critical - Major failures
+  3. **Summary**: 1-2 sentence overview
+  4. **Key Findings**: Top 2-3 observations
+  5. **Quality Issues**: Problems found with severity
+  6. **Recommendations**: 1-2 actionable steps
+
+  ## Response Format
+
+  Respond with a JSON object containing an array of column summaries:
+
+  {{
+    "columns": [
+      {{
+        "column_name": "exact_column_name_from_input",
+        "overall_quality_score": 0.75,
+        "quality_grade": "C",
+        "summary": "Brief summary of the column quality.",
+        "key_findings": ["Finding 1", "Finding 2"],
+        "quality_issues": [
+          {{
+            "issue_type": "high_null_rate",
+            "severity": "medium",
+            "description": "Description of issue",
+            "affected_slices": ["slice1", "slice2"]
+          }}
+        ],
+        "slice_comparisons": [
+          {{
+            "metric_name": "null_ratio",
+            "description": "How null ratio varies across slices",
+            "min_value": 0.01,
+            "max_value": 0.15,
+            "outlier_slices": ["slice_with_high_nulls"]
+          }}
+        ],
+        "recommendations": ["Recommendation 1"]
+      }}
+    ]
+  }}
+
+  ## Important Guidelines
+
+  - Process ALL columns in the input
+  - Match column_name EXACTLY as provided
+  - Focus on cross-slice patterns
+  - Be concise - this is a batch operation
+  - Skip investigation_views for batch mode (they can be generated separately)
+
+# Input variable definitions
+inputs:
+  source_table_name:
+    description: Name of the source table
+    required: true
+
+  slice_column_name:
+    description: Name of the column used for slicing
+    required: true
+
+  total_slices:
+    description: Number of slices
+    required: true
+
+  columns_json:
+    description: JSON array of column data to analyze
+    required: true
+
+# Expected output schema
+output_schema:
+  type: object
+  required:
+    - columns
+  properties:
+    columns:
+      type: array
+      items:
+        type: object
+        required:
+          - column_name
+          - overall_quality_score
+          - quality_grade
+          - summary

@@ -13,8 +13,10 @@ Prerequisites:
 
 Usage:
     uv run python scripts/run_phase9_quality_summary.py
+    uv run python scripts/run_phase9_quality_summary.py --regenerate
 """
 
+import argparse
 import asyncio
 import os
 import sys
@@ -34,8 +36,11 @@ from sqlalchemy import func, select
 load_dotenv()
 
 
-async def main() -> int:
+async def main(regenerate: bool = False) -> int:
     """Run Phase 9: Quality Summary.
+
+    Args:
+        regenerate: If True, regenerate reports even if they exist.
 
     Returns:
         Exit code (0 = success, 1 = error)
@@ -173,8 +178,15 @@ async def main() -> int:
         print("\n3. Generating quality summaries...")
         print("-" * 50)
 
+        from dataraum_context.analysis.quality_summary import build_quality_matrix
+
         total_reports = 0
         total_columns = 0
+        skipped_columns = 0
+        all_matrices = []
+
+        if report_count > 0 and not regenerate:
+            print(f"\n   NOTE: {report_count} existing reports found. Use --regenerate to recreate.")
 
         for slice_def in slice_defs:
             # Get info for display
@@ -193,6 +205,7 @@ async def main() -> int:
                     session=session,
                     agent=agent,
                     slice_definition=slice_def,
+                    skip_existing=not regenerate,
                 )
 
                 if not result.success:
@@ -200,10 +213,24 @@ async def main() -> int:
                     continue
 
                 summary_result = result.unwrap()
-                total_columns += len(summary_result.column_summaries)
-                total_reports += len(summary_result.column_summaries)
+                generated = len(summary_result.column_summaries)
+                total_columns += generated
+                total_reports += generated
 
-                print(f"      Generated {len(summary_result.column_summaries)} column reports")
+                if generated == 0 and not regenerate:
+                    # Count existing reports for this slice column
+                    existing_for_slice = (
+                        await session.execute(
+                            select(func.count(ColumnQualityReport.report_id)).where(
+                                ColumnQualityReport.slice_column_id == slice_column.column_id
+                            )
+                        )
+                    ).scalar() or 0
+                    skipped_columns += existing_for_slice
+                    print(f"      Skipped {existing_for_slice} columns (already have reports)")
+                else:
+                    print(f"      Generated {generated} column reports")
+
                 if summary_result.duration_seconds:
                     print(f"      Duration: {summary_result.duration_seconds:.2f}s")
 
@@ -217,6 +244,11 @@ async def main() -> int:
                 if len(summary_result.column_summaries) > 3:
                     print(f"      ... and {len(summary_result.column_summaries) - 3} more")
 
+                # Build quality matrix for this slice definition
+                matrix_result = await build_quality_matrix(session, slice_def)
+                if matrix_result.success:
+                    all_matrices.append(matrix_result.unwrap())
+
             except Exception as e:
                 print(f"      ERROR: {e}")
                 import traceback
@@ -226,6 +258,15 @@ async def main() -> int:
 
         print(f"\n   Total reports generated: {total_reports}")
         print(f"   Total columns analyzed: {total_columns}")
+        if skipped_columns > 0:
+            print(f"   Columns skipped (existing): {skipped_columns}")
+
+        # Print quality matrices
+        if all_matrices:
+            print("\n4. Quality Matrices (Slice x Column):")
+            print("-" * 50)
+            for matrix in all_matrices:
+                _print_quality_matrix(matrix)
 
         # Print summary
         await _print_quality_summary(session)
@@ -240,6 +281,46 @@ async def main() -> int:
     print("Reports are stored in column_quality_reports table.")
     print("Use the investigation_views SQL for UI drill-down.")
     return 0
+
+
+def _print_quality_matrix(matrix: Any) -> None:
+    """Print a quality matrix in a readable format."""
+    print(f"\n   Matrix: {matrix.source_table_name} by {matrix.slice_column_name}")
+    print(f"   Dimensions: {len(matrix.slice_values)} slices x {len(matrix.column_names)} columns")
+
+    if not matrix.slice_values or not matrix.column_names:
+        print("   (empty matrix)")
+        return
+
+    # Print header (first 10 columns)
+    display_cols = matrix.column_names[:10]
+    header = "   Slice Value".ljust(20) + " | " + " | ".join(c[:8].ljust(8) for c in display_cols)
+    print(header)
+    print("   " + "-" * len(header))
+
+    # Print rows (first 10 slices)
+    for slice_val in matrix.slice_values[:10]:
+        row_data = [str(slice_val)[:18].ljust(20)]
+        for col_name in display_cols:
+            cell = matrix.get_cell(slice_val, col_name)
+            if cell and cell.quality_score is not None:
+                score_str = f"{cell.quality_score:.1%}"
+                if cell.has_issues:
+                    score_str += "*"
+                row_data.append(score_str.ljust(8))
+            else:
+                row_data.append("-".ljust(8))
+        print("   " + " | ".join(row_data))
+
+    if len(matrix.slice_values) > 10:
+        print(f"   ... and {len(matrix.slice_values) - 10} more slices")
+    if len(matrix.column_names) > 10:
+        print(f"   ... and {len(matrix.column_names) - 10} more columns")
+
+    # Print column averages
+    print("\n   Average quality per column:")
+    for col_name, avg in list(matrix.avg_quality_per_column.items())[:10]:
+        print(f"      {col_name}: {avg:.1%}")
 
 
 async def _print_quality_summary(session: Any) -> None:
@@ -287,5 +368,13 @@ async def _print_quality_summary(session: Any) -> None:
 
 
 if __name__ == "__main__":
-    exit_code = asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Phase 9: Quality Summary")
+    parser.add_argument(
+        "--regenerate",
+        action="store_true",
+        help="Regenerate reports even if they already exist",
+    )
+    args = parser.parse_args()
+
+    exit_code = asyncio.run(main(regenerate=args.regenerate))
     sys.exit(exit_code)

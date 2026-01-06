@@ -12,10 +12,13 @@ from dataraum_context.analysis.quality_summary.db_models import (
 from dataraum_context.analysis.quality_summary.models import (
     ColumnQualitySummary,
     QualitySummaryResult,
+    SliceColumnMatrix,
     SliceComparison,
+    SliceQualityCell,
 )
 from dataraum_context.analysis.quality_summary.processor import (
     aggregate_slice_results,
+    build_quality_matrix,
     summarize_quality,
 )
 
@@ -23,11 +26,14 @@ __all__ = [
     # Main entry points
     "summarize_quality",
     "aggregate_slice_results",
+    "build_quality_matrix",
     "QualitySummaryAgent",
     # Models
     "ColumnQualitySummary",
     "SliceComparison",
     "QualitySummaryResult",
+    "SliceColumnMatrix",
+    "SliceQualityCell",
     # DB Models
     "ColumnQualityReport",
     "QualitySummaryRun",

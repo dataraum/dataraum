@@ -231,7 +231,7 @@ async def _load_semantic_annotations(
                 "entity_type": ann.entity_type,
                 "business_name": ann.business_name,
                 "business_description": ann.business_description,
-                "business_domain": ann.business_domain,
+                "business_concept": ann.business_concept,
             }
         )
 

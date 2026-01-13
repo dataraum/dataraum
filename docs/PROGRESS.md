@@ -14,9 +14,10 @@ This file tracks completed work and session notes for the dataraum-context proje
 ## Current Sprint: Entropy Layer Foundation
 
 ### In Progress
-- [ ] Phase 1.2: Core Models and Storage
+- [ ] Phase 1.3: Detector Infrastructure
 
 ### Completed
+- [x] Phase 1.2: Core Models and Storage (2025-01-13)
 - [x] Phase 1.1: File migrations (2025-01-13)
 - [x] Staff engineer review of entropy implementation plan (2025-01-07)
 - [x] Updated ENTROPY_IMPLEMENTATION_PLAN.md with gap fixes (2025-01-07)
@@ -81,9 +82,60 @@ This file tracks completed work and session notes for the dataraum-context proje
 - `tests/quality/test_temporal_formatter.py`
 
 **Next Steps:**
-- Phase 1.2: Create entropy core models (EntropyObject, ResolutionOption, etc.)
-- Phase 1.2: Create entropy db_models (SQLAlchemy)
-- Phase 1.3: Create detector infrastructure
+- Phase 1.3: Create detector infrastructure (EntropyDetector ABC, DetectorRegistry)
+- Phase 1.4: Implement high-priority detectors
+
+---
+
+### 2025-01-13 (Session 2)
+
+**Focus:** Phase 1.2 - Core Models and Storage
+
+**Completed:**
+1. Created `entropy/__init__.py` with public API exports
+2. Created `entropy/models.py` with all core dataclasses:
+   - EntropyObject - core measurement with evidence and resolution options
+   - ResolutionOption - actionable fix with effort and cascade tracking
+   - LLMContext / HumanContext - context for different consumers
+   - ColumnEntropyProfile - aggregated entropy per column
+   - TableEntropyProfile - aggregated entropy per table
+   - RelationshipEntropyProfile - entropy for joins
+   - CompoundRisk - dangerous dimension combinations
+   - CompoundRiskDefinition - config-driven risk patterns
+   - ResolutionCascade - single fix affecting multiple dimensions
+   - EntropyContext - complete context for graph agent
+3. Created `entropy/db_models.py` with SQLAlchemy models:
+   - EntropyObjectRecord - persisted entropy measurements
+   - CompoundRiskRecord - persisted compound risks
+   - EntropySnapshotRecord - entropy state snapshots for trending
+4. Created `entropy/compound_risk.py`:
+   - CompoundRiskDetector class with YAML config loading
+   - Default risk definitions (units+aggregations, nulls+aggregations, etc.)
+   - detect_compound_risks_for_column/table functions
+5. Created `entropy/resolution.py`:
+   - ResolutionFinder class for cascade detection
+   - find_top_resolutions function
+   - Resolution formatting utilities
+6. Verified all modules import and work correctly
+7. All lint checks pass
+
+**Files Created:**
+- `src/dataraum_context/entropy/__init__.py`
+- `src/dataraum_context/entropy/models.py`
+- `src/dataraum_context/entropy/db_models.py`
+- `src/dataraum_context/entropy/compound_risk.py`
+- `src/dataraum_context/entropy/resolution.py`
+
+**Key Design Decisions:**
+- EntropyObject includes both LLMContext and HumanContext for different consumers
+- ResolutionOption includes cascade_dimensions for cross-dimension impact tracking
+- CompoundRisk uses configurable multipliers for risk amplification
+- DB models include versioning fields for history tracking
+- EntropySnapshotRecord added for entropy trending (future use)
+
+**Next Steps:**
+- Phase 1.3: Create detector infrastructure (EntropyDetector ABC, registry)
+- Phase 1.4: Implement high-priority detectors (TypeFidelity, NullRatio, etc.)
 
 ---
 

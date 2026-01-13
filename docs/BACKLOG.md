@@ -20,22 +20,26 @@ Prioritized backlog for the dataraum-context project. Items are organized by pri
 - [x] Update all imports referencing moved files
 - [x] Run tests to verify no breakage (144 tests passed)
 
-### Step 1.2: Core Models and Storage
-- [ ] Create `entropy/__init__.py` with public API
-- [ ] Create `entropy/models.py` per [ENTROPY_MODELS.md](./ENTROPY_MODELS.md)
-  - [ ] EntropyObject dataclass
-  - [ ] ResolutionOption dataclass
-  - [ ] LLMContext and HumanContext dataclasses
-  - [ ] ColumnEntropyProfile dataclass
-  - [ ] TableEntropyProfile dataclass
-  - [ ] CompoundRisk dataclass
-  - [ ] EntropyContext dataclass
-- [ ] Create `entropy/db_models.py` with SQLAlchemy models
-  - [ ] EntropyObjectRecord
-  - [ ] CompoundRiskRecord
-- [ ] Create database migration for entropy tables
-- [ ] Create `entropy/compound_risk.py` for dangerous combination detection
-- [ ] Create `entropy/resolution.py` for cascade tracking
+### Step 1.2: Core Models and Storage ✅ COMPLETED 2025-01-13
+- [x] Create `entropy/__init__.py` with public API
+- [x] Create `entropy/models.py` per [ENTROPY_MODELS.md](./ENTROPY_MODELS.md)
+  - [x] EntropyObject dataclass
+  - [x] ResolutionOption dataclass
+  - [x] LLMContext and HumanContext dataclasses
+  - [x] ColumnEntropyProfile dataclass
+  - [x] TableEntropyProfile dataclass
+  - [x] CompoundRisk dataclass
+  - [x] EntropyContext dataclass
+  - [x] RelationshipEntropyProfile dataclass
+  - [x] CompoundRiskDefinition dataclass
+  - [x] ResolutionCascade dataclass
+- [x] Create `entropy/db_models.py` with SQLAlchemy models
+  - [x] EntropyObjectRecord
+  - [x] CompoundRiskRecord
+  - [x] EntropySnapshotRecord
+- [ ] Create database migration for entropy tables (deferred - tables auto-create in dev)
+- [x] Create `entropy/compound_risk.py` for dangerous combination detection
+- [x] Create `entropy/resolution.py` for cascade tracking
 
 ### Step 1.3: Detector Infrastructure
 - [ ] Create `entropy/detectors/__init__.py`

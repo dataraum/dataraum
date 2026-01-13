@@ -1,0 +1,57 @@
+"""Entropy layer for quantifying uncertainty in data.
+
+This module provides tools for measuring and managing data entropy across
+multiple dimensions (structural, semantic, value, computational) to enable
+LLM-driven analytics to make deterministic, reliable decisions.
+
+Key concepts:
+- EntropyObject: Core measurement for a specific dimension/target
+- ResolutionOption: Actionable fix that can reduce entropy
+- CompoundRisk: Dangerous combination of high-entropy dimensions
+- EntropyContext: Aggregated entropy for graph agent consumption
+
+Usage:
+    from dataraum_context.entropy import (
+        EntropyObject,
+        ResolutionOption,
+        ColumnEntropyProfile,
+        TableEntropyProfile,
+        EntropyContext,
+        CompoundRisk,
+    )
+
+See docs/ENTROPY_IMPLEMENTATION_PLAN.md for architecture details.
+"""
+
+from dataraum_context.entropy.models import (
+    ColumnEntropyProfile,
+    CompoundRisk,
+    CompoundRiskDefinition,
+    EntropyContext,
+    EntropyObject,
+    HumanContext,
+    LLMContext,
+    RelationshipEntropyProfile,
+    ResolutionCascade,
+    ResolutionOption,
+    TableEntropyProfile,
+)
+
+__all__ = [
+    # Core models
+    "EntropyObject",
+    "ResolutionOption",
+    "LLMContext",
+    "HumanContext",
+    # Aggregation models
+    "ColumnEntropyProfile",
+    "TableEntropyProfile",
+    "RelationshipEntropyProfile",
+    # Compound risk
+    "CompoundRisk",
+    "CompoundRiskDefinition",
+    # Resolution
+    "ResolutionCascade",
+    # Context
+    "EntropyContext",
+]

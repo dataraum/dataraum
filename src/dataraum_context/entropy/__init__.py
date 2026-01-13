@@ -23,6 +23,11 @@ Usage:
 See docs/ENTROPY_IMPLEMENTATION_PLAN.md for architecture details.
 """
 
+from dataraum_context.entropy.context import (
+    build_entropy_context,
+    get_column_entropy_summary,
+    get_table_entropy_summary,
+)
 from dataraum_context.entropy.models import (
     ColumnEntropyProfile,
     CompoundRisk,
@@ -54,4 +59,8 @@ __all__ = [
     "ResolutionCascade",
     # Context
     "EntropyContext",
+    # Context builder
+    "build_entropy_context",
+    "get_column_entropy_summary",
+    "get_table_entropy_summary",
 ]

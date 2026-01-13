@@ -328,6 +328,61 @@ class ClassificationSummary:
         return self.clean_count / self.total_count if self.total_count > 0 else 0.0
 
 
+class AssumptionBasis(str, Enum):
+    """Basis for an assumption made during query execution."""
+
+    SYSTEM_DEFAULT = "system_default"  # Default from system configuration
+    INFERRED = "inferred"  # Inferred from context or data patterns
+    USER_SPECIFIED = "user_specified"  # Explicitly set by user
+
+
+@dataclass
+class QueryAssumption:
+    """An assumption made during query execution due to data entropy.
+
+    Tracks assumptions the agent makes when data has uncertainty,
+    allowing them to be reviewed, corrected, or promoted to permanent rules.
+    """
+
+    assumption_id: str
+    execution_id: str
+
+    # What was assumed
+    dimension: str  # e.g., "semantic.units", "structural.relations"
+    target: str  # e.g., "column:orders.amount", "relationship:orders->customers"
+    assumption: str  # Human-readable: "Currency is EUR"
+
+    # Basis for assumption
+    basis: AssumptionBasis
+    confidence: float  # 0.0 to 1.0
+
+    # For promotion to permanent rule
+    can_promote: bool = True
+    promoted_at: datetime | None = None
+    promoted_by: str | None = None
+
+    @classmethod
+    def create(
+        cls,
+        execution_id: str,
+        dimension: str,
+        target: str,
+        assumption: str,
+        basis: AssumptionBasis,
+        confidence: float,
+    ) -> QueryAssumption:
+        """Create a new assumption with generated ID."""
+        return cls(
+            assumption_id=str(uuid4()),
+            execution_id=execution_id,
+            dimension=dimension,
+            target=target,
+            assumption=assumption,
+            basis=basis,
+            confidence=confidence,
+        )
+
+
 @dataclass
 class GraphExecution:
     """Result of executing a transformation graph."""
@@ -360,6 +415,11 @@ class GraphExecution:
 
     # Links to other executions
     depends_on_executions: list[str] = field(default_factory=list)
+
+    # Entropy-related tracking
+    assumptions: list[QueryAssumption] = field(default_factory=list)
+    max_entropy_score: float = 0.0  # Highest entropy encountered
+    entropy_warnings: list[str] = field(default_factory=list)
 
     @classmethod
     def create(

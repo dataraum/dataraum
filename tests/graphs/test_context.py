@@ -8,6 +8,7 @@ from dataraum_context.graphs.context import (
     RelationshipContext,
     TableContext,
     format_context_for_prompt,
+    format_entropy_for_prompt,
 )
 
 
@@ -268,3 +269,200 @@ class TestFormatContextForPrompt:
 
         assert "star_schema" in result
         assert "fact_sales" in result
+
+
+class TestFormatEntropyForPrompt:
+    """Tests for format_entropy_for_prompt function."""
+
+    def test_no_entropy_returns_empty(self) -> None:
+        """No entropy data returns empty string."""
+        ctx = GraphExecutionContext()
+        result = format_entropy_for_prompt(ctx)
+        assert result == ""
+
+    def test_ready_status(self) -> None:
+        """Ready status shows appropriate message."""
+        ctx = GraphExecutionContext(
+            entropy_summary={
+                "overall_readiness": "ready",
+                "high_entropy_count": 0,
+                "critical_entropy_count": 0,
+                "compound_risk_count": 0,
+                "readiness_blockers": [],
+            }
+        )
+        result = format_entropy_for_prompt(ctx)
+
+        assert "READY" in result
+        assert "sufficient for reliable answers" in result
+
+    def test_investigate_status(self) -> None:
+        """Investigate status shows appropriate message."""
+        ctx = GraphExecutionContext(
+            entropy_summary={
+                "overall_readiness": "investigate",
+                "high_entropy_count": 3,
+                "critical_entropy_count": 0,
+                "compound_risk_count": 1,
+                "readiness_blockers": [],
+            }
+        )
+        result = format_entropy_for_prompt(ctx)
+
+        assert "INVESTIGATE" in result
+        assert "assumptions" in result.lower()
+        assert "High entropy columns: 3" in result
+
+    def test_blocked_status(self) -> None:
+        """Blocked status shows appropriate message."""
+        ctx = GraphExecutionContext(
+            entropy_summary={
+                "overall_readiness": "blocked",
+                "high_entropy_count": 5,
+                "critical_entropy_count": 2,
+                "compound_risk_count": 2,
+                "readiness_blockers": ["orders.amount", "orders.currency"],
+            }
+        )
+        result = format_entropy_for_prompt(ctx)
+
+        assert "BLOCKED" in result
+        assert "Critical entropy columns: 2" in result
+        assert "orders.amount" in result or "BLOCKING" in result
+
+    def test_high_entropy_columns_shown(self) -> None:
+        """High entropy columns are listed."""
+        col = ColumnContext(
+            column_id="col-1",
+            column_name="amount",
+            table_name="orders",
+            entropy_scores={
+                "composite_score": 0.75,
+                "high_entropy_dimensions": ["semantic.units", "value.nulls"],
+                "readiness": "investigate",
+            },
+        )
+        table = TableContext(
+            table_id="tbl-1",
+            table_name="orders",
+            columns=[col],
+        )
+        ctx = GraphExecutionContext(
+            tables=[table],
+            entropy_summary={
+                "overall_readiness": "investigate",
+                "high_entropy_count": 1,
+                "critical_entropy_count": 0,
+                "compound_risk_count": 0,
+                "readiness_blockers": [],
+            },
+        )
+        result = format_entropy_for_prompt(ctx)
+
+        assert "orders.amount" in result
+        assert "0.75" in result
+
+    def test_compound_risks_shown(self) -> None:
+        """Compound risks are listed."""
+        table = TableContext(
+            table_id="tbl-1",
+            table_name="orders",
+            columns=[],
+            table_entropy={
+                "compound_risk_count": 2,
+                "blocked_columns": ["amount", "currency"],
+                "readiness": "blocked",
+            },
+        )
+        ctx = GraphExecutionContext(
+            tables=[table],
+            entropy_summary={
+                "overall_readiness": "blocked",
+                "high_entropy_count": 2,
+                "critical_entropy_count": 2,
+                "compound_risk_count": 2,
+                "readiness_blockers": [],
+            },
+        )
+        result = format_entropy_for_prompt(ctx)
+
+        assert "DANGEROUS COMBINATIONS" in result or "compound risks" in result.lower()
+
+
+class TestEntropyInlineIndicators:
+    """Tests for inline entropy indicators in formatted output."""
+
+    def test_column_with_warning_indicator(self) -> None:
+        """Column with high entropy shows warning indicator."""
+        col = ColumnContext(
+            column_id="col-1",
+            column_name="amount",
+            table_name="orders",
+            entropy_scores={
+                "composite_score": 0.65,
+                "readiness": "investigate",
+            },
+        )
+        table = TableContext(
+            table_id="tbl-1",
+            table_name="orders",
+            columns=[col],
+        )
+        ctx = GraphExecutionContext(
+            tables=[table],
+            total_tables=1,
+            total_columns=1,
+        )
+        result = format_context_for_prompt(ctx)
+
+        # Should have warning indicator
+        assert "⚠" in result
+
+    def test_column_with_blocked_indicator(self) -> None:
+        """Column with critical entropy shows blocked indicator."""
+        col = ColumnContext(
+            column_id="col-1",
+            column_name="amount",
+            table_name="orders",
+            entropy_scores={
+                "composite_score": 0.9,
+                "readiness": "blocked",
+            },
+        )
+        table = TableContext(
+            table_id="tbl-1",
+            table_name="orders",
+            columns=[col],
+        )
+        ctx = GraphExecutionContext(
+            tables=[table],
+            total_tables=1,
+            total_columns=1,
+        )
+        result = format_context_for_prompt(ctx)
+
+        # Should have blocked indicator
+        assert "⛔" in result
+
+    def test_relationship_with_warning(self) -> None:
+        """Relationship with non-deterministic join shows warning."""
+        rel = RelationshipContext(
+            from_table="orders",
+            from_column="customer_id",
+            to_table="customers",
+            to_column="id",
+            relationship_type="foreign_key",
+            confidence=0.7,
+            relationship_entropy={
+                "is_deterministic": False,
+                "composite_score": 0.6,
+            },
+        )
+        ctx = GraphExecutionContext(
+            relationships=[rel],
+            total_relationships=1,
+        )
+        result = format_context_for_prompt(ctx)
+
+        # Should have warning on relationship line
+        assert "⚠" in result

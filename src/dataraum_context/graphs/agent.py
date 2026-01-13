@@ -32,9 +32,16 @@ from dataraum_context.llm.features._base import LLMFeature
 from dataraum_context.llm.prompts import PromptRenderer
 from dataraum_context.llm.providers.base import LLMProvider
 
+from .entropy_behavior import (
+    EntropyBehaviorConfig,
+    format_entropy_sql_comments,
+    get_default_config,
+)
 from .models import (
+    AssumptionBasis,
     DatasetSchemaMapping,
     GraphExecution,
+    QueryAssumption,
     StepResult,
     StepType,
     TransformationGraph,
@@ -83,7 +90,11 @@ class ExecutionContext:
     # - Statistical profiles (null ratios, outliers)
     # - Table relationships and topology
     # - Quality flags
+    # - Entropy scores and data readiness
     rich_context: Any | None = None  # GraphExecutionContext from graphs.context
+
+    # Entropy behavior configuration (controls how agent responds to uncertainty)
+    entropy_behavior: EntropyBehaviorConfig | None = None
 
     @classmethod
     async def with_rich_context(
@@ -92,6 +103,7 @@ class ExecutionContext:
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_name: str,
         table_ids: list[str],
+        entropy_behavior_mode: str = "balanced",
         **kwargs: Any,
     ) -> ExecutionContext:
         """Create ExecutionContext with rich metadata loaded from analysis modules.
@@ -104,10 +116,11 @@ class ExecutionContext:
             duckdb_conn: DuckDB connection for queries
             table_name: Primary table name for execution
             table_ids: List of table IDs to include in context
+            entropy_behavior_mode: One of "strict", "balanced", "lenient"
             **kwargs: Additional ExecutionContext arguments
 
         Returns:
-            ExecutionContext with rich_context populated
+            ExecutionContext with rich_context and entropy_behavior populated
         """
         from dataraum_context.graphs.context import build_execution_context
 
@@ -119,10 +132,13 @@ class ExecutionContext:
             slice_value=kwargs.pop("slice_value", None),
         )
 
+        entropy_behavior = get_default_config(entropy_behavior_mode)
+
         return cls(
             duckdb_conn=duckdb_conn,
             table_name=table_name,
             rich_context=rich_context,
+            entropy_behavior=entropy_behavior,
             **kwargs,
         )
 
@@ -257,9 +273,19 @@ class GraphAgent(LLMFeature):
 
         # Add rich context if available (provides semantic, statistical, relational metadata)
         if context.rich_context is not None:
-            from dataraum_context.graphs.context import format_context_for_prompt
+            from dataraum_context.graphs.context import (
+                format_context_for_prompt,
+                format_entropy_for_prompt,
+            )
 
             prompt_context["rich_context"] = format_context_for_prompt(context.rich_context)
+
+            # Add entropy warnings if entropy data is available
+            entropy_section = format_entropy_for_prompt(context.rich_context)
+            if entropy_section:
+                prompt_context["entropy_warnings"] = entropy_section
+            else:
+                prompt_context["entropy_warnings"] = ""
 
             # Add field mappings if available (for resolving standard_field references)
             if (
@@ -276,6 +302,7 @@ class GraphAgent(LLMFeature):
         else:
             prompt_context["rich_context"] = ""
             prompt_context["field_mappings"] = ""
+            prompt_context["entropy_warnings"] = ""
 
         # Render prompt
         try:
@@ -341,6 +368,26 @@ class GraphAgent(LLMFeature):
         if context.filter_execution_id:
             execution.depends_on_executions.append(context.filter_execution_id)
 
+        # Extract entropy information from rich context
+        entropy_info = self._extract_entropy_info(context)
+        execution.max_entropy_score = entropy_info.get("max_entropy", 0.0)
+        execution.entropy_warnings = entropy_info.get("warnings", [])
+
+        # Create assumptions from high-entropy columns
+        execution.assumptions = self._create_assumptions_from_entropy(
+            execution.execution_id, entropy_info, context
+        )
+
+        # Add entropy comments to SQL
+        entropy_comments = format_entropy_sql_comments(
+            execution.max_entropy_score,
+            assumptions=[
+                {"dimension": a.dimension, "assumption": a.assumption}
+                for a in execution.assumptions
+            ],
+            warnings=execution.entropy_warnings,
+        )
+
         # Execute each step
         step_values: dict[str, Any] = {}
 
@@ -348,17 +395,23 @@ class GraphAgent(LLMFeature):
             step_id = step_info.get("step_id", "unknown")
             sql = step_info.get("sql", "")
 
+            # Prepend entropy comments to first step only
+            if step_info == generated_code.steps[0] and entropy_comments:
+                sql_with_comments = entropy_comments + sql
+            else:
+                sql_with_comments = sql
+
             try:
                 result = context.duckdb_conn.execute(sql).fetchone()
                 value = result[0] if result else None
                 step_values[step_id] = value
 
-                # Create step result
+                # Create step result (store original SQL with comments for tracing)
                 step_result = StepResult(
                     step_id=step_id,
                     level=1,  # All generated steps are level 1 for now
                     step_type=StepType.FORMULA,
-                    source_query=sql,
+                    source_query=sql_with_comments,
                     inputs_used={"sql": sql},
                 )
 
@@ -391,6 +444,126 @@ class GraphAgent(LLMFeature):
         )
 
         return Result.ok(execution)
+
+    def _extract_entropy_info(self, context: ExecutionContext) -> dict[str, Any]:
+        """Extract entropy information from the execution context.
+
+        Returns dict with:
+            - max_entropy: Highest entropy score encountered
+            - warnings: List of warning messages
+            - high_entropy_columns: List of columns with entropy > 0.6
+            - compound_risks: List of compound risk descriptions
+        """
+        result: dict[str, Any] = {
+            "max_entropy": 0.0,
+            "warnings": [],
+            "high_entropy_columns": [],
+            "compound_risks": [],
+        }
+
+        if context.rich_context is None:
+            return result
+
+        # Check for entropy_summary
+        entropy_summary = getattr(context.rich_context, "entropy_summary", None)
+        if not entropy_summary:
+            return result
+
+        # Extract high entropy count
+        high_count = entropy_summary.get("high_entropy_count", 0)
+        critical_count = entropy_summary.get("critical_entropy_count", 0)
+        compound_count = entropy_summary.get("compound_risk_count", 0)
+        blockers = entropy_summary.get("readiness_blockers", [])
+
+        # Build warnings
+        if critical_count > 0:
+            result["warnings"].append(f"{critical_count} columns have critical entropy")
+        if high_count > 0:
+            result["warnings"].append(f"{high_count} columns have high uncertainty")
+        if compound_count > 0:
+            result["warnings"].append(f"{compound_count} dangerous column combinations")
+
+        # Find max entropy from tables
+        tables = getattr(context.rich_context, "tables", [])
+        for table in tables:
+            for col in getattr(table, "columns", []):
+                entropy_scores = getattr(col, "entropy_scores", None)
+                if entropy_scores:
+                    score = entropy_scores.get("composite_score", 0.0)
+                    if score > result["max_entropy"]:
+                        result["max_entropy"] = score
+                    if score >= 0.6:
+                        result["high_entropy_columns"].append(
+                            {
+                                "table": getattr(table, "table_name", "unknown"),
+                                "column": getattr(col, "column_name", "unknown"),
+                                "score": score,
+                                "dimensions": entropy_scores.get("high_entropy_dimensions", []),
+                            }
+                        )
+
+        # Add blockers as compound risks
+        result["compound_risks"] = blockers
+
+        return result
+
+    def _create_assumptions_from_entropy(
+        self,
+        execution_id: str,
+        entropy_info: dict[str, Any],
+        context: ExecutionContext,
+    ) -> list[QueryAssumption]:
+        """Create assumptions for high-entropy columns.
+
+        When entropy is elevated, we need to make assumptions to proceed.
+        This creates QueryAssumption records that can be reviewed later.
+        """
+        assumptions: list[QueryAssumption] = []
+
+        # Check if auto-assumption is enabled
+        behavior = context.entropy_behavior or get_default_config("balanced")
+        if not behavior.auto_assume:
+            return assumptions
+
+        for col_info in entropy_info.get("high_entropy_columns", []):
+            dimensions = col_info.get("dimensions", [])
+            table = col_info.get("table", "unknown")
+            column = col_info.get("column", "unknown")
+            score = col_info.get("score", 0.0)
+
+            # Create assumptions based on high-entropy dimensions
+            for dim in dimensions:
+                assumption_text = self._get_default_assumption_for_dimension(dim)
+                if assumption_text:
+                    assumptions.append(
+                        QueryAssumption.create(
+                            execution_id=execution_id,
+                            dimension=dim,
+                            target=f"column:{table}.{column}",
+                            assumption=assumption_text,
+                            basis=AssumptionBasis.SYSTEM_DEFAULT,
+                            confidence=max(0.3, 1.0 - score),  # Lower confidence for higher entropy
+                        )
+                    )
+
+        return assumptions
+
+    def _get_default_assumption_for_dimension(self, dimension: str) -> str | None:
+        """Get default assumption text for a high-entropy dimension.
+
+        These are reasonable defaults that can be overridden by users.
+        """
+        defaults = {
+            "semantic.units": "Using system default currency (EUR)",
+            "semantic.business_meaning": "Interpreting based on column name",
+            "semantic.temporal": "Using calendar quarters/years",
+            "structural.relations": "Using primary key relationship",
+            "value.nulls": "Excluding null values from aggregations",
+            "value.outliers": "Including outliers in calculations",
+            "computational.derived_values": "Using detected formula",
+            "computational.aggregations": "Using SUM for monetary values",
+        }
+        return defaults.get(dimension)
 
     def _get_table_schema(self, context: ExecutionContext) -> Result[TableSchema]:
         """Get schema information from the actual table."""

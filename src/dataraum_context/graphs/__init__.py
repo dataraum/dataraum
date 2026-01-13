@@ -47,11 +47,23 @@ from .context import (
     build_execution_context,
     format_context_for_prompt,
 )
+from .entropy_behavior import (
+    BehaviorMode,
+    CompoundRiskAction,
+    CompoundRiskBehavior,
+    DimensionBehavior,
+    EntropyAction,
+    EntropyBehaviorConfig,
+    format_assumptions_for_response,
+    format_entropy_sql_comments,
+    get_default_config,
+)
 from .export import export_graph_definition, export_to_react_flow
 from .loader import GraphLoader, GraphLoadError
 from .models import (
     AggregationDefinition,
     AppliesTo,
+    AssumptionBasis,
     Classification,
     ClassificationSummary,
     ColumnMapping,
@@ -68,6 +80,7 @@ from .models import (
     OutputDef,
     OutputType,
     ParameterDef,
+    QueryAssumption,
     SchemaMapping,
     StepResult,
     StepSource,
@@ -93,6 +106,16 @@ __all__ = [
     "RelationshipContext",
     "build_execution_context",
     "format_context_for_prompt",
+    # Entropy behavior
+    "BehaviorMode",
+    "EntropyAction",
+    "EntropyBehaviorConfig",
+    "DimensionBehavior",
+    "CompoundRiskAction",
+    "CompoundRiskBehavior",
+    "format_entropy_sql_comments",
+    "format_assumptions_for_response",
+    "get_default_config",
     # Enums
     "GraphType",
     "GraphSource",
@@ -116,6 +139,9 @@ __all__ = [
     "GraphExecution",
     "StepResult",
     "ClassificationSummary",
+    # Assumption tracking
+    "QueryAssumption",
+    "AssumptionBasis",
     # Schema mapping models
     "ColumnMapping",
     "AggregationDefinition",

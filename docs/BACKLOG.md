@@ -75,14 +75,20 @@ Prioritized backlog for the dataraum-context project. Items are organized by pri
 - [x] `register_builtin_detectors()` function for auto-registration
 - [x] Comprehensive test coverage (97 entropy tests total)
 
-### Step 1.5: Medium-Priority Detectors
+### Step 1.5: Medium-Priority Detectors ⏸️ DEFERRED
+
+> **Deferred**: Proceeding with end-to-end integration first. These detectors are valuable but we want to learn from initial integration before expanding detector coverage. Will revisit once we have clarity on which dimensions matter most in practice.
+
 - [ ] `PatternConsistencyDetector` (value/patterns.py)
 - [ ] `UnitDeclaredDetector` (semantic/units.py)
 - [ ] `TemporalClarityDetector` (semantic/temporal.py)
 - [ ] `RangeBoundsDetector` (value/ranges.py)
 - [ ] `FreshnessDetector` (semantic/temporal.py) - uses existing `is_stale`
 
-### Step 1.6: Compound Risk Detection
+### Step 1.6: Compound Risk Detection ⏸️ DEFERRED (MVP in place)
+
+> **Deferred**: Basic compound risk detection already exists in `compound_risk.py` with hardcoded defaults. YAML configuration and additional risk patterns deferred until we learn which combinations actually matter from real usage. Current MVP is sufficient for initial integration.
+
 - [ ] Create `config/entropy/compound_risks.yaml` with risk definitions
 - [ ] Implement detection for critical: Units + Aggregations
 - [ ] Implement detection for high: Relations + Filters
@@ -90,7 +96,10 @@ Prioritized backlog for the dataraum-context project. Items are organized by pri
 - [ ] Implement detection for medium: Temporal + Ranges
 - [ ] Create compound risk scoring with multipliers
 
-### Step 1.7: Aggregation and Scoring
+### Step 1.7: Aggregation and Scoring ⏸️ DEFERRED (MVP in place)
+
+> **Deferred**: Core aggregation and scoring already implemented in `processor.py` (layer averaging, weighted composite, readiness classification). Separate files and additional sophistication deferred until we understand real-world scoring needs. Current MVP is sufficient for initial integration.
+
 - [ ] Create `entropy/aggregation.py`
   - [ ] Dimension-level aggregation
   - [ ] Column-level composite scoring (weighted average)
@@ -104,35 +113,49 @@ Prioritized backlog for the dataraum-context project. Items are organized by pri
 
 ## Priority 2: Phase 2 Context Integration
 
-### Step 2.1: Entropy Context Builder
-- [ ] Create `entropy/context.py` with `build_entropy_context()`
-- [ ] Add `entropy_scores` field to `graphs/context.py:ColumnContext`
-- [ ] Add `resolution_hints` field to `ColumnContext`
-- [ ] Add `table_entropy` field to `TableContext`
-- [ ] Add `readiness_for_use` field to `TableContext`
-- [ ] Add `relationship_entropy` field to `RelationshipContext`
-- [ ] Modify `build_execution_context()` to call entropy builder
+### Step 2.1: Entropy Context Builder ✅ COMPLETED 2025-01-13
+- [x] Create `entropy/context.py` with `build_entropy_context()`
+- [x] Add `entropy_scores` field to `graphs/context.py:ColumnContext`
+- [x] Add `resolution_hints` field to `ColumnContext`
+- [x] Add `table_entropy` field to `TableContext`
+- [x] Add `readiness_for_use` field to `TableContext`
+- [x] Add `relationship_entropy` field to `RelationshipContext`
+- [x] Add `entropy_summary` field to `GraphExecutionContext`
+- [x] Modify `build_execution_context()` to call entropy builder
+- [x] Create tests for entropy context integration (102 entropy tests total)
 
-### Step 2.2: Prompt Formatting
-- [ ] Create `format_entropy_for_prompt()` function
-- [ ] Create entropy summary section template
-- [ ] Create dangerous combination warning template
-- [ ] Create assumption disclosure template
-- [ ] Integrate into `format_context_for_prompt()`
+### Step 2.2: Prompt Formatting ✅ COMPLETED 2025-01-13
+- [x] Create `format_entropy_for_prompt()` function
+- [x] Create entropy summary section template (DATA READINESS header)
+- [x] Create dangerous combination warning template (DANGEROUS COMBINATIONS section)
+- [x] Create high-entropy column listing (HIGH UNCERTAINTY COLUMNS section)
+- [x] Create inline entropy indicators (⚠ and ⛔ symbols)
+- [x] Integrate into `format_context_for_prompt()`
+- [x] Create tests for prompt formatting (9 new tests)
 
-### Step 2.3: Contract Evaluation
+### Step 2.3: Contract Evaluation ⏸️ DEFERRED
+
+> **Deferred**: Contract evaluation is about policy enforcement (what entropy levels are acceptable for different use cases). Deferring until we have real usage patterns to inform contract thresholds. The spec in [ENTROPY_CONTRACTS.md](./ENTROPY_CONTRACTS.md) remains valid but implementation will benefit from learnings.
+
 - [ ] Create `entropy/contracts.py` per [ENTROPY_CONTRACTS.md](./ENTROPY_CONTRACTS.md)
 - [ ] Create `config/entropy/contracts.yaml` with 5 standard profiles
 - [ ] Implement `evaluate_contract()` function
 - [ ] Implement `get_path_to_compliance()` function
 - [ ] Add contract compliance to EntropyContext
 
-### Step 2.4: Graph Agent Enhancement
-- [ ] Update `graphs/agent.py` to read entropy context
-- [ ] Add entropy warnings to SQL comments
-- [ ] Implement query-time behavior per [ENTROPY_QUERY_BEHAVIOR.md](./ENTROPY_QUERY_BEHAVIOR.md)
-- [ ] Track assumptions in execution metadata
-- [ ] Create `QueryAssumption` model for assumption logging
+### Step 2.4: Graph Agent Enhancement ✅ COMPLETED 2025-01-13
+- [x] Update `graphs/agent.py` to read entropy context
+- [x] Add entropy warnings to SQL comments (`format_entropy_sql_comments()`)
+- [x] Implement query-time behavior per [ENTROPY_QUERY_BEHAVIOR.md](./ENTROPY_QUERY_BEHAVIOR.md)
+  - [x] `EntropyBehaviorConfig` with strict/balanced/lenient modes
+  - [x] `determine_action()` based on entropy level and compound risks
+  - [x] Dimension-specific thresholds for currency/relations
+- [x] Track assumptions in execution metadata
+  - [x] `GraphExecution.assumptions`, `max_entropy_score`, `entropy_warnings`
+- [x] Create `QueryAssumption` model for assumption logging
+  - [x] `AssumptionBasis` enum (system_default, inferred, user_specified)
+  - [x] Factory method and promotion tracking
+- [x] Create tests (34 new tests, 550 total)
 
 ---
 

@@ -66,6 +66,10 @@ class ColumnContext:
     # Quality flags
     flags: list[str] = field(default_factory=list)
 
+    # Entropy scores (from entropy layer)
+    entropy_scores: dict[str, Any] | None = None  # Layer scores and composite
+    resolution_hints: list[dict[str, Any]] = field(default_factory=list)  # Top fixes
+
 
 @dataclass
 class TableContext:
@@ -87,6 +91,10 @@ class TableContext:
     # Quality flags
     flags: list[str] = field(default_factory=list)
 
+    # Entropy (from entropy layer)
+    table_entropy: dict[str, Any] | None = None  # Aggregated entropy scores
+    readiness_for_use: str | None = None  # ready, investigate, blocked
+
 
 @dataclass
 class RelationshipContext:
@@ -99,6 +107,9 @@ class RelationshipContext:
     relationship_type: str
     cardinality: str | None = None
     confidence: float = 0.0
+
+    # Entropy (from entropy layer)
+    relationship_entropy: dict[str, Any] | None = None  # Join path entropy
 
 
 @dataclass
@@ -149,6 +160,9 @@ class GraphExecutionContext:
     # Quality summary (aggregated from analysis modules)
     quality_issues_by_severity: dict[str, int] = field(default_factory=dict)
     quality_flags: list[str] = field(default_factory=list)
+
+    # Entropy summary (from entropy layer)
+    entropy_summary: dict[str, Any] | None = None  # Overall entropy and readiness
 
     # Slice context (if filtering by dimension)
     slice_column: str | None = None
@@ -396,7 +410,52 @@ async def build_execution_context(
         relationships=rel_list_for_topology,
     )
 
-    # 11. Build table contexts
+    # 16. Build entropy context
+    from dataraum_context.entropy.context import (
+        build_entropy_context as build_entropy_ctx,
+    )
+    from dataraum_context.entropy.context import (
+        get_column_entropy_summary,
+        get_table_entropy_summary,
+    )
+
+    entropy_context = await build_entropy_ctx(session, table_ids)
+
+    # Build column-level entropy lookup
+    column_entropy_lookup: dict[str, dict[str, Any]] = {}
+    for col_key, col_entropy_profile in entropy_context.column_profiles.items():
+        column_entropy_lookup[col_key] = get_column_entropy_summary(col_entropy_profile)
+
+    # Build table-level entropy lookup
+    table_entropy_lookup: dict[str, dict[str, Any]] = {}
+    for tbl_name, tbl_entropy_profile in entropy_context.table_profiles.items():
+        table_entropy_lookup[tbl_name] = get_table_entropy_summary(tbl_entropy_profile)
+
+    # Update relationship contexts with entropy data
+    for rel_ctx in relationships:
+        rel_key = (
+            f"{rel_ctx.from_table}.{rel_ctx.from_column}->{rel_ctx.to_table}.{rel_ctx.to_column}"
+        )
+        rel_profile = entropy_context.relationship_profiles.get(rel_key)
+        if rel_profile:
+            rel_ctx.relationship_entropy = {
+                "composite_score": rel_profile.composite_score,
+                "cardinality_entropy": rel_profile.cardinality_entropy,
+                "join_path_entropy": rel_profile.join_path_entropy,
+                "is_deterministic": rel_profile.is_deterministic,
+                "join_warning": rel_profile.join_warning,
+            }
+
+    # Build entropy summary
+    entropy_summary_dict: dict[str, Any] = {
+        "overall_readiness": entropy_context.overall_readiness,
+        "high_entropy_count": entropy_context.high_entropy_count,
+        "critical_entropy_count": entropy_context.critical_entropy_count,
+        "compound_risk_count": entropy_context.compound_risk_count,
+        "readiness_blockers": entropy_context.readiness_blockers,
+    }
+
+    # 17. Build table contexts
     table_contexts: list[TableContext] = []
     quality_issues_by_severity: dict[str, int] = {}
     quality_flags: list[str] = []
@@ -472,6 +531,10 @@ async def build_execution_context(
             quality_grade = col_quality[0] if col_quality else None
             quality_score = col_quality[1] if col_quality else None
 
+            # Get entropy data for this column
+            entropy_key = f"{table.table_name}.{col.column_name}"
+            col_entropy = column_entropy_lookup.get(entropy_key)
+
             column_contexts.append(
                 ColumnContext(
                     column_id=col.column_id,
@@ -493,6 +556,8 @@ async def build_execution_context(
                     is_derived=is_derived,
                     derived_formula=derived_columns.get(col.column_id),
                     flags=flags,
+                    entropy_scores=col_entropy,
+                    resolution_hints=col_entropy.get("resolution_hints", []) if col_entropy else [],
                 )
             )
 
@@ -507,6 +572,9 @@ async def build_execution_context(
             if table_entity.is_dimension_table:
                 table_flags.append("dimension_table")
 
+        # Get table entropy data
+        tbl_entropy = table_entropy_lookup.get(table.table_name)
+
         table_contexts.append(
             TableContext(
                 table_id=table_id,
@@ -518,6 +586,8 @@ async def build_execution_context(
                 entity_type=table_entity.detected_entity_type if table_entity else None,
                 columns=column_contexts,
                 flags=table_flags,
+                table_entropy=tbl_entropy,
+                readiness_for_use=tbl_entropy.get("readiness") if tbl_entropy else None,
             )
         )
 
@@ -532,6 +602,7 @@ async def build_execution_context(
         total_relationships=len(relationships),
         quality_issues_by_severity=quality_issues_by_severity,
         quality_flags=list(set(quality_flags)),  # Deduplicate
+        entropy_summary=entropy_summary_dict,
         slice_column=slice_column,
         slice_value=slice_value,
         available_slices=slice_contexts,
@@ -585,6 +656,164 @@ def _generate_column_flags(
 # =============================================================================
 
 
+def format_entropy_for_prompt(context: GraphExecutionContext) -> str:
+    """Format entropy information for LLM prompts.
+
+    Creates a concise entropy summary that helps the LLM understand:
+    - Overall data readiness
+    - High-entropy columns that need assumptions
+    - Dangerous combinations (compound risks)
+    - Columns that may block reliable answers
+
+    Args:
+        context: GraphExecutionContext with entropy data
+
+    Returns:
+        Formatted string for entropy section, or empty string if no entropy data
+    """
+    if not context.entropy_summary:
+        return ""
+
+    summary = context.entropy_summary
+    lines = []
+
+    # Overall readiness header
+    readiness = summary.get("overall_readiness", "unknown")
+    if readiness == "ready":
+        lines.append("## DATA READINESS: ✓ READY")
+        lines.append("Data quality is sufficient for reliable answers.")
+    elif readiness == "investigate":
+        lines.append("## DATA READINESS: ⚠ INVESTIGATE")
+        lines.append("Some columns have elevated uncertainty - state assumptions when using them.")
+    else:  # blocked
+        lines.append("## DATA READINESS: ✗ BLOCKED")
+        lines.append(
+            "Critical data quality issues exist - consider refusing or asking clarification."
+        )
+
+    lines.append("")
+
+    # Stats summary
+    high_count = summary.get("high_entropy_count", 0)
+    critical_count = summary.get("critical_entropy_count", 0)
+    compound_count = summary.get("compound_risk_count", 0)
+
+    if high_count > 0 or critical_count > 0:
+        lines.append(f"- High entropy columns: {high_count}")
+        if critical_count > 0:
+            lines.append(f"- Critical entropy columns: {critical_count}")
+        if compound_count > 0:
+            lines.append(f"- Compound risks: {compound_count}")
+        lines.append("")
+
+    # Blocked columns (critical)
+    blockers = summary.get("readiness_blockers", [])
+    if blockers:
+        lines.append("### BLOCKING ISSUES")
+        lines.append("These columns have critical uncertainty and should be clarified before use:")
+        for blocker in blockers[:5]:  # Limit to 5
+            lines.append(f"  - {blocker}")
+        lines.append("")
+
+    # High entropy columns with details
+    high_entropy_cols = _collect_high_entropy_columns(context)
+    if high_entropy_cols:
+        lines.append("### HIGH UNCERTAINTY COLUMNS")
+        lines.append("State assumptions when using these columns:")
+        for col_info in high_entropy_cols[:10]:  # Limit to 10
+            dims = ", ".join(col_info["dimensions"][:2])  # Show first 2 dimensions
+            lines.append(f"  - {col_info['name']} (entropy: {col_info['score']:.2f}) - {dims}")
+        lines.append("")
+
+    # Compound risks
+    compound_warnings = _format_compound_risks(context)
+    if compound_warnings:
+        lines.append("### DANGEROUS COMBINATIONS")
+        lines.append("These dimension combinations create multiplicative risk:")
+        lines.extend(compound_warnings)
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _collect_high_entropy_columns(context: GraphExecutionContext) -> list[dict[str, Any]]:
+    """Collect columns with high entropy from the context.
+
+    Args:
+        context: GraphExecutionContext
+
+    Returns:
+        List of dicts with column name, score, and high entropy dimensions
+    """
+    high_cols: list[dict[str, Any]] = []
+
+    for table in context.tables:
+        for col in table.columns:
+            if col.entropy_scores:
+                score = col.entropy_scores.get("composite_score", 0.0)
+                if score >= 0.5:  # High entropy threshold
+                    high_cols.append(
+                        {
+                            "name": f"{table.table_name}.{col.column_name}",
+                            "score": score,
+                            "dimensions": col.entropy_scores.get("high_entropy_dimensions", []),
+                            "readiness": col.entropy_scores.get("readiness", "unknown"),
+                        }
+                    )
+
+    # Sort by score descending
+    high_cols.sort(key=lambda x: x["score"], reverse=True)
+    return high_cols
+
+
+def _format_compound_risks(context: GraphExecutionContext) -> list[str]:
+    """Format compound risk warnings.
+
+    Args:
+        context: GraphExecutionContext
+
+    Returns:
+        List of warning lines
+    """
+    warnings: list[str] = []
+
+    # Check table-level compound risks
+    for table in context.tables:
+        if table.table_entropy:
+            risk_count = table.table_entropy.get("compound_risk_count", 0)
+            if risk_count > 0:
+                blocked = table.table_entropy.get("blocked_columns", [])
+                if blocked:
+                    warnings.append(
+                        f"  - Table '{table.table_name}': {risk_count} compound risks "
+                        f"affecting columns: {', '.join(blocked[:3])}"
+                    )
+
+    return warnings
+
+
+def _format_column_entropy_inline(col: ColumnContext) -> str:
+    """Format inline entropy indicator for a column.
+
+    Args:
+        col: ColumnContext with entropy data
+
+    Returns:
+        Short entropy indicator string or empty string
+    """
+    if not col.entropy_scores:
+        return ""
+
+    score = col.entropy_scores.get("composite_score", 0.0)
+    readiness = col.entropy_scores.get("readiness", "ready")
+
+    if readiness == "blocked":
+        return " ⛔"
+    elif readiness == "investigate" or score >= 0.5:
+        return " ⚠"
+    return ""
+
+
 def format_context_for_prompt(context: GraphExecutionContext) -> str:
     """Format execution context as a readable string for LLM prompts.
 
@@ -622,6 +851,11 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
             lines.append(f"- {sev}: {count} issues")
         lines.append("")
 
+    # Entropy/Data readiness section
+    entropy_section = format_entropy_for_prompt(context)
+    if entropy_section:
+        lines.append(entropy_section)
+
     # Tables
     lines.append("## TABLES")
     for table in context.tables:
@@ -646,16 +880,25 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
             grade = f" [Grade: {col.quality_grade}]" if col.quality_grade else ""
             derived = f" (derived: {col.derived_formula})" if col.is_derived else ""
             flags_str = f" - FLAGS: {', '.join(col.flags)}" if col.flags else ""
-            lines.append(f"  - {col.column_name}{dtype}{role}{concept}{grade}{derived}{flags_str}")
+            entropy_indicator = _format_column_entropy_inline(col)
+            lines.append(
+                f"  - {col.column_name}{entropy_indicator}{dtype}{role}"
+                f"{concept}{grade}{derived}{flags_str}"
+            )
 
     # Relationships
     if context.relationships:
         lines.append("")
         lines.append("## RELATIONSHIPS")
         for rel in context.relationships:
+            # Add entropy warning for non-deterministic joins
+            rel_warning = ""
+            if rel.relationship_entropy:
+                if not rel.relationship_entropy.get("is_deterministic", True):
+                    rel_warning = " ⚠"
             lines.append(
                 f"- {rel.from_table}.{rel.from_column} → "
-                f"{rel.to_table}.{rel.to_column} "
+                f"{rel.to_table}.{rel.to_column}{rel_warning} "
                 f"({rel.cardinality or '?'}, conf={rel.confidence:.2f})"
             )
 
@@ -694,4 +937,5 @@ __all__ = [
     "GraphExecutionContext",
     "build_execution_context",
     "format_context_for_prompt",
+    "format_entropy_for_prompt",
 ]

@@ -11,12 +11,15 @@ This file tracks completed work and session notes for the dataraum-context proje
 
 ---
 
-## Current Sprint: Entropy Layer Foundation
+## Current Sprint: Entropy Layer Integration
 
 ### In Progress
-- [ ] Phase 1.5: Medium-Priority Detectors
+- [ ] Phase 3: Cleanup and API (next steps)
 
 ### Completed
+- [x] Phase 2.4: Graph Agent Enhancement (2025-01-13)
+- [x] Phase 2.2: Prompt Formatting (2025-01-13)
+- [x] Phase 2.1: Entropy Context Builder (2025-01-13)
 - [x] Phase 1.4: High-Priority Detectors (2025-01-13)
 - [x] Phase 1.3: Detector Infrastructure (2025-01-13)
 - [x] Phase 1.2: Core Models and Storage (2025-01-13)
@@ -38,7 +41,61 @@ This file tracks completed work and session notes for the dataraum-context proje
 
 ## Session Log
 
-### 2025-01-13
+### 2025-01-13 (Session 7)
+
+**Focus:** Step 2.4 - Graph Agent Enhancement with Entropy Awareness
+
+**Completed:**
+1. Created `QueryAssumption` model in `graphs/models.py`
+   - Tracks assumptions made during query execution
+   - `AssumptionBasis` enum: system_default, inferred, user_specified
+   - Factory method `create()` with auto-generated ID
+   - Promotion tracking for converting assumptions to permanent rules
+2. Added entropy fields to `GraphExecution` model
+   - `assumptions: list[QueryAssumption]`
+   - `max_entropy_score: float`
+   - `entropy_warnings: list[str]`
+3. Created `graphs/entropy_behavior.py` module
+   - `EntropyBehaviorConfig` with strict/balanced/lenient modes
+   - `determine_action()` based on entropy and compound risks
+   - `DimensionBehavior` for dimension-specific thresholds
+   - `CompoundRiskBehavior` configuration
+   - `format_entropy_sql_comments()` for SQL annotations
+   - `format_assumptions_for_response()` for user-facing output
+4. Updated `GraphAgent` in `agent.py`
+   - Added `entropy_behavior` field to `ExecutionContext`
+   - Updated `with_rich_context()` to accept behavior mode
+   - Added entropy warnings to prompt context
+   - `_extract_entropy_info()` to gather entropy from context
+   - `_create_assumptions_from_entropy()` for automatic assumptions
+   - `_get_default_assumption_for_dimension()` with sensible defaults
+5. Created comprehensive tests (34 new tests)
+   - `test_entropy_behavior.py` - behavior config, actions, SQL comments
+   - `test_query_assumption.py` - model tests, execution integration
+
+**Files Created:**
+- `src/dataraum_context/graphs/entropy_behavior.py`
+- `tests/graphs/test_entropy_behavior.py`
+- `tests/graphs/test_query_assumption.py`
+
+**Files Modified:**
+- `src/dataraum_context/graphs/models.py` - added QueryAssumption, AssumptionBasis, execution fields
+- `src/dataraum_context/graphs/agent.py` - entropy awareness in execution
+- `src/dataraum_context/graphs/__init__.py` - new exports
+
+**Test Results:** 550 tests pass (34 new entropy behavior tests)
+
+---
+
+### 2025-01-13 (Sessions 5-6)
+
+**Focus:** Steps 2.1-2.2 - Entropy Context Builder and Prompt Formatting
+
+(See previous session log entries)
+
+---
+
+### 2025-01-13 (Sessions 1-4)
 
 **Focus:** Phase 1.1 - File migrations for entropy layer foundation
 
@@ -282,6 +339,98 @@ This file tracks completed work and session notes for the dataraum-context proje
 - Phase 1.5: Implement medium-priority detectors (PatternConsistency, UnitDeclared, etc.)
 - Phase 1.6: Compound risk detection with YAML config
 - Phase 1.7: Aggregation and scoring
+
+---
+
+### 2025-01-13 (Session 5)
+
+**Focus:** Phase 2.1 - Entropy Context Builder
+
+**Completed:**
+1. Created `entropy/context.py` with entropy-to-graph context bridge:
+   - `build_entropy_context()` function that loads analysis data and calls EntropyProcessor
+   - `_load_analysis_data()` helper to load typing, statistics, semantic, correlation data
+   - `_compute_relationship_entropy()` for join path entropy
+   - `get_column_entropy_summary()` and `get_table_entropy_summary()` helpers
+
+2. Added entropy fields to `graphs/context.py` dataclasses:
+   - `ColumnContext`: `entropy_scores`, `resolution_hints`
+   - `TableContext`: `table_entropy`, `readiness_for_use`
+   - `RelationshipContext`: `relationship_entropy`
+   - `GraphExecutionContext`: `entropy_summary`
+
+3. Wired entropy into `build_execution_context()`:
+   - Calls `build_entropy_context()` after loading analysis data
+   - Populates column, table, and relationship entropy fields
+   - Adds overall entropy summary to returned context
+
+4. Created tests for entropy context integration:
+   - `test_context.py` with 5 tests for helper functions and context building
+
+5. All tests pass (507 total, 102 entropy tests)
+6. All type checks pass
+7. All lint checks pass
+
+**Files Created:**
+- `src/dataraum_context/entropy/context.py`
+- `tests/entropy/test_context.py`
+
+**Files Modified:**
+- `src/dataraum_context/entropy/__init__.py` - Added context builder exports
+- `src/dataraum_context/graphs/context.py` - Added entropy fields and integration
+
+**Key Design Decisions:**
+- Entropy context is built using the full EntropyProcessor with all registered detectors
+- Context integration uses dict summaries (not full profile objects) for serialization compatibility
+- Relationship entropy uses detection_method confidence as proxy for join reliability
+- All entropy data is optional (None if not computed) to maintain backward compatibility
+
+**Next Steps:**
+- Phase 2.2: Prompt Formatting - Create format_entropy_for_prompt() function
+- Phase 2.4: Graph Agent Enhancement - Wire entropy warnings into agent
+
+---
+
+### 2025-01-13 (Session 6)
+
+**Focus:** Phase 2.2 - Prompt Formatting
+
+**Completed:**
+1. Created `format_entropy_for_prompt()` function:
+   - DATA READINESS header (✓ READY, ⚠ INVESTIGATE, ✗ BLOCKED)
+   - High/critical entropy counts and compound risk counts
+   - BLOCKING ISSUES section for critical columns
+   - HIGH UNCERTAINTY COLUMNS section with entropy scores and dimensions
+   - DANGEROUS COMBINATIONS section for compound risks
+
+2. Created helper functions:
+   - `_collect_high_entropy_columns()` - Gathers columns with score >= 0.5
+   - `_format_compound_risks()` - Formats table-level compound risks
+   - `_format_column_entropy_inline()` - Returns ⚠ or ⛔ indicators
+
+3. Integrated entropy into `format_context_for_prompt()`:
+   - Added entropy section after quality summary
+   - Added inline entropy indicators to column listings
+   - Added entropy warnings to relationship listings
+
+4. Created comprehensive tests (9 new tests):
+   - TestFormatEntropyForPrompt: 6 tests
+   - TestEntropyInlineIndicators: 3 tests
+
+5. All tests pass (516 total)
+6. All lint checks pass
+
+**Files Modified:**
+- `src/dataraum_context/graphs/context.py` - Added formatting functions and integration
+
+**Key Design Decisions:**
+- Entropy section appears after quality summary, before tables
+- Inline indicators (⚠ ⛔) provide quick visual scanning
+- Column listing limited to 10, blocking issues limited to 5
+- Readiness levels follow ENTROPY_QUERY_BEHAVIOR.md spec
+
+**Next Steps:**
+- Phase 2.4: Graph Agent Enhancement - Wire entropy context into agent behavior
 
 ---
 

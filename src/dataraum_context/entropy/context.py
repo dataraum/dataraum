@@ -10,15 +10,27 @@ Usage:
 
     entropy_ctx = await build_entropy_context(session, table_ids)
     # Use entropy_ctx.column_profiles, entropy_ctx.table_profiles, etc.
+
+    # With LLM interpretation:
+    entropy_ctx = await build_entropy_context(
+        session, table_ids,
+        interpreter=interpreter,  # EntropyInterpreter instance
+    )
 """
 
+from __future__ import annotations
+
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dataraum_context.entropy.detectors import register_builtin_detectors
+from dataraum_context.entropy.interpretation import (
+    InterpretationInput,
+    create_fallback_interpretation,
+)
 from dataraum_context.entropy.models import (
     ColumnEntropyProfile,
     EntropyContext,
@@ -27,12 +39,18 @@ from dataraum_context.entropy.models import (
 )
 from dataraum_context.entropy.processor import EntropyProcessor
 
+if TYPE_CHECKING:
+    from dataraum_context.entropy.interpretation import EntropyInterpreter
+
 logger = logging.getLogger(__name__)
 
 
 async def build_entropy_context(
     session: AsyncSession,
     table_ids: list[str],
+    *,
+    interpreter: EntropyInterpreter | None = None,
+    use_fallback_interpretation: bool = True,
 ) -> EntropyContext:
     """Build entropy context for the given tables.
 
@@ -42,6 +60,10 @@ async def build_entropy_context(
     Args:
         session: SQLAlchemy async session
         table_ids: List of table IDs to process
+        interpreter: Optional EntropyInterpreter for LLM-powered interpretation.
+            If provided, generates interpretations for each column.
+        use_fallback_interpretation: If True and interpreter fails or is None,
+            generate basic fallback interpretations. Default True.
 
     Returns:
         EntropyContext with column, table, and relationship entropy profiles
@@ -81,6 +103,16 @@ async def build_entropy_context(
     # Add relationship entropy
     relationship_profiles = await _compute_relationship_entropy(session, table_ids, analysis_data)
     entropy_context.relationship_profiles = relationship_profiles
+
+    # Generate interpretations if requested
+    if interpreter is not None or use_fallback_interpretation:
+        await _build_interpretations(
+            session=session,
+            entropy_context=entropy_context,
+            analysis_data=analysis_data,
+            interpreter=interpreter,
+            use_fallback=use_fallback_interpretation,
+        )
 
     return entropy_context
 
@@ -399,3 +431,79 @@ def get_table_entropy_summary(
         "blocked_columns": profile.blocked_columns,
         "compound_risk_count": len(profile.compound_risks),
     }
+
+
+async def _build_interpretations(
+    session: AsyncSession,
+    entropy_context: EntropyContext,
+    analysis_data: dict[str, Any],
+    interpreter: EntropyInterpreter | None,
+    use_fallback: bool,
+) -> None:
+    """Build LLM interpretations for all column profiles.
+
+    Args:
+        session: SQLAlchemy async session
+        entropy_context: The entropy context to populate with interpretations
+        analysis_data: Pre-loaded analysis data (for type/description info)
+        interpreter: Optional EntropyInterpreter for LLM interpretation
+        use_fallback: Whether to use fallback when LLM fails/unavailable
+    """
+    # Build lookup for analysis data by column key
+    column_analysis: dict[str, dict[str, Any]] = {}
+    for _table_id, table_data in analysis_data.items():
+        table_name = table_data["table_name"]
+        for col_data in table_data["columns"]:
+            col_name = col_data["name"]
+            key = f"{table_name}.{col_name}"
+            column_analysis[key] = col_data.get("analysis_results", {})
+
+    # Process each column profile
+    for key, profile in entropy_context.column_profiles.items():
+        # Get additional metadata from analysis
+        analysis = column_analysis.get(key, {})
+        typing_info = analysis.get("typing", {})
+        semantic_info = analysis.get("semantic", {})
+
+        detected_type = typing_info.get("data_type", "unknown")
+        business_description = semantic_info.get("business_description")
+
+        # Build raw metrics for interpretation
+        raw_metrics: dict[str, Any] = {}
+        if typing_info:
+            raw_metrics["parse_success_rate"] = typing_info.get("parse_success_rate")
+            raw_metrics["detected_unit"] = typing_info.get("detected_unit")
+        stats_info = analysis.get("statistics", {})
+        if stats_info:
+            raw_metrics["null_ratio"] = stats_info.get("null_ratio")
+            raw_metrics["outlier_ratio"] = stats_info.get("iqr_outlier_ratio")
+
+        # Create interpretation input
+        input_data = InterpretationInput.from_profile(
+            profile=profile,
+            detected_type=detected_type,
+            business_description=business_description,
+            raw_metrics=raw_metrics,
+        )
+
+        # Try LLM interpretation first
+        interpretation = None
+        if interpreter is not None:
+            result = await interpreter.interpret(session, input_data)
+            if result.success and result.value:
+                interpretation = result.value
+            elif result.error:
+                logger.warning(
+                    "LLM interpretation failed for %s: %s",
+                    key,
+                    result.error,
+                )
+
+        # Fall back to basic interpretation if needed
+        if interpretation is None and use_fallback:
+            interpretation = create_fallback_interpretation(input_data)
+
+        # Store interpretation
+        if interpretation is not None:
+            profile.interpretation = interpretation
+            entropy_context.column_interpretations[key] = interpretation

@@ -144,6 +144,95 @@ class TestBuildEntropyContext:
         assert len(context.relationship_profiles) == 0
 
 
+class TestColumnEntropyProfileInterpretation:
+    """Tests for interpretation field on ColumnEntropyProfile."""
+
+    def test_default_interpretation_is_none(self) -> None:
+        """Interpretation should default to None."""
+        profile = ColumnEntropyProfile(
+            column_name="amount",
+            table_name="orders",
+        )
+        assert profile.interpretation is None
+
+    def test_can_set_interpretation(self) -> None:
+        """Should be able to set interpretation."""
+        from dataraum_context.entropy.interpretation import (
+            EntropyInterpretation,
+        )
+
+        profile = ColumnEntropyProfile(
+            column_name="amount",
+            table_name="orders",
+        )
+
+        interpretation = EntropyInterpretation(
+            column_name="amount",
+            table_name="orders",
+            assumptions=[],
+            resolution_actions=[],
+            explanation="Test explanation",
+            composite_score=0.5,
+            readiness="investigate",
+        )
+
+        profile.interpretation = interpretation
+
+        assert profile.interpretation is not None
+        assert profile.interpretation.explanation == "Test explanation"
+
+
+class TestEntropyContextInterpretations:
+    """Tests for column_interpretations in EntropyContext."""
+
+    def test_default_interpretations_is_empty(self) -> None:
+        """column_interpretations should default to empty dict."""
+        context = EntropyContext()
+        assert context.column_interpretations == {}
+
+    def test_can_add_interpretations(self) -> None:
+        """Should be able to add interpretations to context."""
+        from dataraum_context.entropy.interpretation import (
+            EntropyInterpretation,
+        )
+
+        context = EntropyContext()
+
+        interpretation = EntropyInterpretation(
+            column_name="amount",
+            table_name="orders",
+            assumptions=[],
+            resolution_actions=[],
+            explanation="Test explanation",
+            composite_score=0.5,
+            readiness="investigate",
+        )
+
+        context.column_interpretations["orders.amount"] = interpretation
+
+        assert len(context.column_interpretations) == 1
+        assert "orders.amount" in context.column_interpretations
+
+
+class TestBuildEntropyContextWithInterpretation:
+    """Tests for build_entropy_context with interpretation support."""
+
+    @pytest.mark.asyncio
+    async def test_fallback_interpretation_disabled(
+        self,
+        mock_session: MockSession,  # noqa: F821
+    ) -> None:
+        """When use_fallback_interpretation=False, no interpretations generated."""
+        context = await build_entropy_context(
+            mock_session,  # type: ignore
+            [],
+            use_fallback_interpretation=False,
+        )
+
+        assert isinstance(context, EntropyContext)
+        assert len(context.column_interpretations) == 0
+
+
 # Fixtures for mocking database session
 @pytest.fixture
 def mock_session():

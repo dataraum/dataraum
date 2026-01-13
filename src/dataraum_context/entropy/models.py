@@ -20,6 +20,7 @@ from uuid import uuid4
 
 if TYPE_CHECKING:
     from dataraum_context.entropy.config import EntropyConfig
+    from dataraum_context.entropy.interpretation import EntropyInterpretation
 
 
 def _get_config() -> EntropyConfig:
@@ -182,6 +183,9 @@ class ColumnEntropyProfile:
 
     # Readiness classification
     readiness: str = "investigate"  # ready, investigate, blocked
+
+    # LLM-generated interpretation (optional, populated by EntropyInterpreter)
+    interpretation: EntropyInterpretation | None = None
 
     def calculate_composite(self, weights: dict[str, float] | None = None) -> float:
         """Calculate composite score from layer scores.
@@ -477,6 +481,9 @@ class EntropyContext:
 
     # Top resolution hints (across all targets)
     top_resolution_hints: list[ResolutionCascade] = field(default_factory=list)
+
+    # LLM-generated interpretations (optional, keyed by "{table_name}.{column_name}")
+    column_interpretations: dict[str, EntropyInterpretation] = field(default_factory=dict)
 
     # Summary statistics
     total_entropy_objects: int = 0

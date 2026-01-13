@@ -29,7 +29,6 @@ if TYPE_CHECKING:
         TypeCandidate,
         TypeDecision,
     )
-    from dataraum_context.quality.db_models import QualityRule
 
 
 class Source(Base):
@@ -95,11 +94,6 @@ class Table(Base):
         back_populates="table", cascade="all, delete-orphan"
     )
 
-    # Quality rules relationships
-    quality_rules: Mapped[list[QualityRule]] = relationship(
-        back_populates="table", cascade="all, delete-orphan"
-    )
-
 
 class Column(Base):
     """Columns in tables.
@@ -146,11 +140,6 @@ class Column(Base):
     # Semantic context relationships
     semantic_annotation: Mapped[SemanticAnnotation | None] = relationship(
         back_populates="column", uselist=False, cascade="all, delete-orphan"
-    )
-
-    # Quality rules relationships
-    quality_rules: Mapped[list[QualityRule]] = relationship(
-        back_populates="column", cascade="all, delete-orphan"
     )
 
     # Relationship tracking

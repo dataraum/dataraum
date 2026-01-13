@@ -19,7 +19,6 @@ from dataraum_context.analysis.typing.db_models import (
     TypeDecision,
 )
 from dataraum_context.llm.db_models import LLMCache
-from dataraum_context.quality.db_models import QualityResult, QualityRule
 from dataraum_context.storage import Column, Source, Table
 
 
@@ -322,69 +321,6 @@ class TestTemporalModels:
         assert saved.detected_granularity == "day"
         assert saved.completeness_ratio == 0.96
         assert saved.has_seasonality is True
-
-
-class TestQualityModels:
-    """Test quality metadata models."""
-
-    async def test_create_quality_rule(self, session: AsyncSession):
-        source = Source(name="test_source", source_type="csv")
-        table = Table(source=source, table_name="sales", layer="raw")
-        column = Column(table=table, column_name="amount", column_position=1)
-        session.add_all([source, table, column])
-        await session.flush()
-
-        rule = QualityRule(
-            table=table,
-            column=column,
-            rule_name="amount_non_negative",
-            rule_type="range",
-            rule_expression="amount >= 0",
-            rule_parameters={"min": 0},
-            severity="error",
-            source="llm",
-            description="Sale amounts should be non-negative",
-            is_active=True,
-        )
-        session.add(rule)
-        await session.commit()
-
-        result = await session.execute(select(QualityRule))
-        saved = result.scalar_one()
-
-        assert saved.rule_name == "amount_non_negative"
-        assert saved.rule_type == "range"
-        assert saved.severity == "error"
-
-    async def test_create_quality_result(self, session: AsyncSession):
-        source = Source(name="test_source", source_type="csv")
-        table = Table(source=source, table_name="sales", layer="raw")
-        rule = QualityRule(
-            table=table,
-            rule_name="test_rule",
-            rule_type="range",
-            rule_expression="amount >= 0",
-            source="manual",
-        )
-        session.add_all([source, table, rule])
-        await session.flush()
-
-        result = QualityResult(
-            rule=rule,
-            total_records=1000,
-            passed_records=950,
-            failed_records=50,
-            pass_rate=0.95,
-            failure_samples=[{"row": 1, "value": -10}],
-        )
-        session.add(result)
-        await session.commit()
-
-        saved_result = await session.execute(select(QualityResult))
-        saved = saved_result.scalar_one()
-
-        assert saved.total_records == 1000
-        assert saved.pass_rate == 0.95
 
 
 class TestLLMCache:

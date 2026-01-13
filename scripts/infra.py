@@ -150,7 +150,6 @@ def _import_all_models() -> None:
     from dataraum_context.analysis.validation import db_models as _validation_models  # noqa: F401
     from dataraum_context.graphs import db_models as _graphs_models  # noqa: F401
     from dataraum_context.llm import db_models as _llm_models  # noqa: F401
-    from dataraum_context.quality import db_models as _quality_models  # noqa: F401
 
 
 async def check_tables_exist(

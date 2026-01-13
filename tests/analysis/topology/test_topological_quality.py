@@ -12,8 +12,7 @@ from dataraum_context.analysis.topology.extraction import (
     extract_betti_numbers,
     process_persistence_diagrams,
 )
-from dataraum_context.analysis.topology.stability import assess_homological_stability
-from dataraum_context.quality.models import (
+from dataraum_context.analysis.topology.models import (
     BettiNumbers,
     CycleDetection,
     PersistenceDiagram,
@@ -21,6 +20,7 @@ from dataraum_context.quality.models import (
     StabilityAnalysis,
     TopologicalQualityResult,
 )
+from dataraum_context.analysis.topology.stability import assess_homological_stability
 from dataraum_context.storage import Column, Source, Table
 
 

@@ -4,6 +4,7 @@ Measures uncertainty from outlier values.
 High outlier rate indicates data quality issues that affect aggregations.
 """
 
+from dataraum_context.entropy.config import get_entropy_config
 from dataraum_context.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum_context.entropy.models import EntropyObject, ResolutionOption
 
@@ -16,9 +17,10 @@ class OutlierRateDetector(EntropyDetector):
     that can skew aggregations.
 
     Source: statistics/quality.iqr_outlier_ratio
-    Formula: entropy = min(1.0, outlier_ratio * 10)
+    Formula: entropy = min(1.0, outlier_ratio * multiplier)
 
-    The 10x multiplier amplifies the impact: 10% outliers = max entropy.
+    Multiplier is configurable in config/entropy/thresholds.yaml.
+    Default: 10x (10% outliers = max entropy).
     """
 
     detector_id = "outlier_rate"
@@ -37,6 +39,21 @@ class OutlierRateDetector(EntropyDetector):
         Returns:
             List with single EntropyObject for outlier rate
         """
+        # Load configuration
+        config = get_entropy_config()
+        detector_config = config.detector("outlier_rate")
+
+        # Get configurable thresholds
+        multiplier = detector_config.get("multiplier", 10.0)
+        impact_minimal = detector_config.get("impact_minimal", 0.01)
+        impact_moderate = detector_config.get("impact_moderate", 0.05)
+        impact_significant = detector_config.get("impact_significant", 0.10)
+        suggest_winsorize = detector_config.get("suggest_winsorize_threshold", 0.2)
+        suggest_exclude = detector_config.get("suggest_exclude_threshold", 0.5)
+        reduction_winsorize = detector_config.get("reduction_winsorize", 0.7)
+        reduction_exclude = detector_config.get("reduction_exclude", 0.9)
+        reduction_investigate = detector_config.get("reduction_investigate", 0.5)
+
         stats = context.get_analysis("statistics", {})
 
         # Extract outlier information
@@ -68,17 +85,17 @@ class OutlierRateDetector(EntropyDetector):
             lower_fence = stats.get("iqr_lower_fence")
             upper_fence = stats.get("iqr_upper_fence")
 
-        # Calculate entropy: amplify outlier ratio (10% outliers = max entropy)
-        score = min(1.0, outlier_ratio * 10)
+        # Calculate entropy using configurable multiplier
+        score = min(1.0, outlier_ratio * multiplier)
 
-        # Classify outlier impact
+        # Classify outlier impact using configurable thresholds
         if outlier_ratio == 0:
             outlier_impact = "none"
-        elif outlier_ratio < 0.01:
+        elif outlier_ratio < impact_minimal:
             outlier_impact = "minimal"
-        elif outlier_ratio < 0.05:
+        elif outlier_ratio < impact_moderate:
             outlier_impact = "moderate"
-        elif outlier_ratio < 0.10:
+        elif outlier_ratio < impact_significant:
             outlier_impact = "significant"
         else:
             outlier_impact = "critical"
@@ -94,10 +111,10 @@ class OutlierRateDetector(EntropyDetector):
             }
         ]
 
-        # Build resolution options
+        # Build resolution options using configurable thresholds
         resolution_options: list[ResolutionOption] = []
 
-        if score > 0.2:
+        if score > suggest_winsorize:
             # Some outliers - suggest capping or exclusion
             resolution_options.append(
                 ResolutionOption(
@@ -107,13 +124,13 @@ class OutlierRateDetector(EntropyDetector):
                         "lower_percentile": 1,
                         "upper_percentile": 99,
                     },
-                    expected_entropy_reduction=score * 0.7,
+                    expected_entropy_reduction=score * reduction_winsorize,
                     effort="low",
                     description="Cap extreme values at specified percentiles",
                 )
             )
 
-        if score > 0.5:
+        if score > suggest_exclude:
             # High outliers - suggest review or removal
             resolution_options.append(
                 ResolutionOption(
@@ -123,7 +140,7 @@ class OutlierRateDetector(EntropyDetector):
                         "method": "iqr",
                         "multiplier": 1.5,
                     },
-                    expected_entropy_reduction=score * 0.9,
+                    expected_entropy_reduction=score * reduction_exclude,
                     effort="low",
                     description="Exclude IQR-based outliers from aggregations",
                 )
@@ -134,7 +151,7 @@ class OutlierRateDetector(EntropyDetector):
                     parameters={
                         "column": context.column_name,
                     },
-                    expected_entropy_reduction=score * 0.5,
+                    expected_entropy_reduction=score * reduction_investigate,
                     effort="high",
                     description="Manual review of outlier values for data quality issues",
                 )

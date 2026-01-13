@@ -9,12 +9,24 @@ Key models:
 - CompoundRisk: Dangerous dimension combination with multiplied impact
 - ResolutionCascade: Single fix affecting multiple entropy dimensions
 - EntropyContext: Aggregated entropy for graph agent consumption
+
+Default thresholds loaded from config/entropy/thresholds.yaml.
 """
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from dataraum_context.entropy.config import EntropyConfig
+
+
+def _get_config() -> EntropyConfig:
+    """Get entropy config, avoiding circular import."""
+    from dataraum_context.entropy.config import get_entropy_config
+
+    return get_entropy_config()
 
 
 @dataclass
@@ -83,8 +95,10 @@ class ResolutionOption:
         """Calculate priority based on reduction vs effort.
 
         Higher score = higher priority.
+        Effort factors loaded from config/entropy/thresholds.yaml.
         """
-        effort_factor = {"low": 1.0, "medium": 2.0, "high": 4.0}.get(self.effort, 2.0)
+        config = _get_config()
+        effort_factor = config.effort_factor(self.effort)
         return self.expected_entropy_reduction / effort_factor
 
 
@@ -172,18 +186,11 @@ class ColumnEntropyProfile:
     def calculate_composite(self, weights: dict[str, float] | None = None) -> float:
         """Calculate composite score from layer scores.
 
-        Default weights:
-        - structural: 0.25
-        - semantic: 0.30
-        - value: 0.30
-        - computational: 0.15
+        Default weights loaded from config/entropy/thresholds.yaml.
         """
-        weights = weights or {
-            "structural": 0.25,
-            "semantic": 0.30,
-            "value": 0.30,
-            "computational": 0.15,
-        }
+        if weights is None:
+            config = _get_config()
+            weights = config.composite_weights
         self.composite_score = (
             self.structural_entropy * weights["structural"]
             + self.semantic_entropy * weights["semantic"]
@@ -192,20 +199,25 @@ class ColumnEntropyProfile:
         )
         return self.composite_score
 
-    def update_high_entropy_dimensions(self, threshold: float = 0.5) -> None:
-        """Update list of high-entropy dimensions based on threshold."""
+    def update_high_entropy_dimensions(self, threshold: float | None = None) -> None:
+        """Update list of high-entropy dimensions based on threshold.
+
+        Default threshold loaded from config/entropy/thresholds.yaml.
+        """
+        if threshold is None:
+            config = _get_config()
+            threshold = config.high_entropy_threshold
         self.high_entropy_dimensions = [
             dim for dim, score in self.dimension_scores.items() if score >= threshold
         ]
 
     def update_readiness(self) -> None:
-        """Update readiness classification based on composite score."""
-        if self.composite_score < 0.3:
-            self.readiness = "ready"
-        elif self.composite_score < 0.6:
-            self.readiness = "investigate"
-        else:
-            self.readiness = "blocked"
+        """Update readiness classification based on composite score.
+
+        Thresholds loaded from config/entropy/thresholds.yaml.
+        """
+        config = _get_config()
+        self.readiness = config.get_readiness(self.composite_score)
 
 
 @dataclass
@@ -246,9 +258,16 @@ class TableEntropyProfile:
     readiness_blockers: list[str] = field(default_factory=list)
 
     def calculate_aggregates(self) -> None:
-        """Calculate aggregate scores from column profiles."""
+        """Calculate aggregate scores from column profiles.
+
+        Thresholds loaded from config/entropy/thresholds.yaml.
+        """
         if not self.column_profiles:
             return
+
+        config = _get_config()
+        high_threshold = config.high_entropy_threshold
+        critical_threshold = config.critical_entropy_threshold
 
         n = len(self.column_profiles)
 
@@ -268,12 +287,12 @@ class TableEntropyProfile:
         self.max_computational_entropy = max(p.computational_entropy for p in self.column_profiles)
         self.max_composite_score = max(p.composite_score for p in self.column_profiles)
 
-        # Identify high-entropy and blocked columns
+        # Identify high-entropy and blocked columns using config thresholds
         self.high_entropy_columns = [
-            p.column_name for p in self.column_profiles if p.composite_score >= 0.5
+            p.column_name for p in self.column_profiles if p.composite_score >= high_threshold
         ]
         self.blocked_columns = [
-            p.column_name for p in self.column_profiles if p.composite_score >= 0.8
+            p.column_name for p in self.column_profiles if p.composite_score >= critical_threshold
         ]
 
         # Update readiness
@@ -481,8 +500,14 @@ class EntropyContext:
         key = f"{table}.{column}"
         return self.column_profiles.get(key)
 
-    def get_high_entropy_columns(self, threshold: float = 0.5) -> list[str]:
-        """Get list of columns with entropy above threshold."""
+    def get_high_entropy_columns(self, threshold: float | None = None) -> list[str]:
+        """Get list of columns with entropy above threshold.
+
+        Default threshold loaded from config/entropy/thresholds.yaml.
+        """
+        if threshold is None:
+            config = _get_config()
+            threshold = config.high_entropy_threshold
         return [
             key
             for key, profile in self.column_profiles.items()
@@ -494,15 +519,22 @@ class EntropyContext:
         return any(r.risk_level == "critical" for r in self.compound_risks)
 
     def update_summary_stats(self) -> None:
-        """Update summary statistics from profiles."""
-        self.high_entropy_count = len(self.get_high_entropy_columns(0.5))
-        self.critical_entropy_count = len(self.get_high_entropy_columns(0.8))
+        """Update summary statistics from profiles.
+
+        Thresholds loaded from config/entropy/thresholds.yaml.
+        """
+        config = _get_config()
+        high_threshold = config.high_entropy_threshold
+        critical_threshold = config.critical_entropy_threshold
+
+        self.high_entropy_count = len(self.get_high_entropy_columns(high_threshold))
+        self.critical_entropy_count = len(self.get_high_entropy_columns(critical_threshold))
         self.compound_risk_count = len(self.compound_risks)
 
         # Update overall readiness
         if self.critical_entropy_count > 0 or self.has_critical_risks():
             self.overall_readiness = "blocked"
-            self.readiness_blockers = self.get_high_entropy_columns(0.8)
+            self.readiness_blockers = self.get_high_entropy_columns(critical_threshold)
         elif self.high_entropy_count > 0:
             self.overall_readiness = "investigate"
         else:

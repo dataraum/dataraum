@@ -6,6 +6,7 @@ Low match rate indicates the detected formula may not be correct.
 
 from typing import Any
 
+from dataraum_context.entropy.config import get_entropy_config
 from dataraum_context.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum_context.entropy.models import EntropyObject, ResolutionOption
 
@@ -18,6 +19,8 @@ class DerivedValueDetector(EntropyDetector):
 
     Source: correlation/DerivedColumn.formula, match_rate
     Formula: entropy = 1.0 - match_rate (or 1.0 if no formula detected)
+
+    Thresholds configurable in config/entropy/thresholds.yaml.
     """
 
     detector_id = "derived_value"
@@ -36,6 +39,18 @@ class DerivedValueDetector(EntropyDetector):
         Returns:
             List with single EntropyObject for derived value reliability
         """
+        # Load configuration
+        config = get_entropy_config()
+        detector_config = config.detector("derived_value")
+
+        # Get configurable thresholds
+        match_exact = detector_config.get("match_exact", 0.99)
+        match_near_exact = detector_config.get("match_near_exact", 0.95)
+        match_approximate = detector_config.get("match_approximate", 0.80)
+        reduction_declare = detector_config.get("reduction_declare_formula", 0.8)
+        reduction_verify = detector_config.get("reduction_verify_formula", 0.7)
+        reduction_investigate = detector_config.get("reduction_investigate", 0.5)
+
         correlation = context.get_analysis("correlation", {})
 
         # Extract derived column information
@@ -79,12 +94,12 @@ class DerivedValueDetector(EntropyDetector):
             # Calculate entropy from match rate
             score = 1.0 - match_rate
 
-            # Classify match quality
-            if match_rate >= 0.99:
+            # Classify match quality using configurable thresholds
+            if match_rate >= match_exact:
                 status = "exact"
-            elif match_rate >= 0.95:
+            elif match_rate >= match_near_exact:
                 status = "near_exact"
-            elif match_rate >= 0.80:
+            elif match_rate >= match_approximate:
                 status = "approximate"
             else:
                 status = "poor"
@@ -105,7 +120,7 @@ class DerivedValueDetector(EntropyDetector):
             elif isinstance(current_derived, dict) and "derivation_type" in current_derived:
                 evidence[0]["derivation_type"] = current_derived["derivation_type"]
 
-        # Build resolution options
+        # Build resolution options using configurable reductions
         resolution_options: list[ResolutionOption] = []
 
         if status == "no_formula":
@@ -116,7 +131,7 @@ class DerivedValueDetector(EntropyDetector):
                         "column": context.column_name,
                         "table": context.table_name,
                     },
-                    expected_entropy_reduction=0.8,
+                    expected_entropy_reduction=reduction_declare,
                     effort="medium",
                     description="Declare the computation formula for this column",
                     cascade_dimensions=["semantic.business_meaning"],
@@ -130,7 +145,7 @@ class DerivedValueDetector(EntropyDetector):
                         "column": context.column_name,
                         "detected_formula": formula,
                     },
-                    expected_entropy_reduction=score * 0.7,
+                    expected_entropy_reduction=score * reduction_verify,
                     effort="medium",
                     description="Verify or correct the detected formula",
                 )
@@ -142,7 +157,7 @@ class DerivedValueDetector(EntropyDetector):
                         "column": context.column_name,
                         "formula": formula,
                     },
-                    expected_entropy_reduction=score * 0.5,
+                    expected_entropy_reduction=score * reduction_investigate,
                     effort="high",
                     description="Investigate rows where the formula doesn't match",
                 )

@@ -8,6 +8,7 @@ The score calculation is provisional - Phase 2.5 will use LLM to
 evaluate semantic quality rather than character counting.
 """
 
+from dataraum_context.entropy.config import get_entropy_config
 from dataraum_context.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum_context.entropy.models import EntropyObject, ResolutionOption
 
@@ -19,6 +20,7 @@ class BusinessMeaningDetector(EntropyDetector):
     Score is provisional - will be refined by LLM in Phase 2.5.
 
     Source: semantic/SemanticAnnotation.business_description
+    Scores configurable in config/entropy/thresholds.yaml.
     """
 
     detector_id = "business_meaning"
@@ -41,6 +43,18 @@ class BusinessMeaningDetector(EntropyDetector):
         Returns:
             List with single EntropyObject for business meaning
         """
+        # Load configuration
+        config = get_entropy_config()
+        detector_config = config.detector("business_meaning")
+
+        # Get configurable scores and reductions
+        score_missing = detector_config.get("score_missing", 1.0)
+        score_partial = detector_config.get("score_partial", 0.6)
+        score_documented = detector_config.get("score_documented", 0.2)
+        reduction_description = detector_config.get("reduction_add_description", 0.8)
+        reduction_business_name = detector_config.get("reduction_add_business_name", 0.2)
+        reduction_entity_type = detector_config.get("reduction_add_entity_type", 0.15)
+
         semantic = context.get_analysis("semantic", {})
 
         # Extract raw metrics from semantic annotation
@@ -73,11 +87,11 @@ class BusinessMeaningDetector(EntropyDetector):
         # Provisional score: binary based on presence of description
         # TODO (Phase 2.5): LLM will evaluate semantic quality
         if not raw_metrics["has_description"]:
-            score = 1.0  # No description = high entropy
+            score = score_missing  # No description = high entropy
         elif not raw_metrics["has_business_name"] and not raw_metrics["has_entity_type"]:
-            score = 0.6  # Description but no other context
+            score = score_partial  # Description but no other context
         else:
-            score = 0.2  # Has description and additional context
+            score = score_documented  # Has description and additional context
 
         # Build evidence with raw metrics for LLM interpretation
         evidence = [
@@ -105,7 +119,7 @@ class BusinessMeaningDetector(EntropyDetector):
                         "column": context.column_name,
                         "table": context.table_name,
                     },
-                    expected_entropy_reduction=0.8,  # Provisional estimate
+                    expected_entropy_reduction=reduction_description,
                     effort="low",
                     description="Add a business description for this column",
                     cascade_dimensions=["computational.aggregations"],
@@ -120,7 +134,7 @@ class BusinessMeaningDetector(EntropyDetector):
                         "column": context.column_name,
                         "table": context.table_name,
                     },
-                    expected_entropy_reduction=0.2,  # Provisional estimate
+                    expected_entropy_reduction=reduction_business_name,
                     effort="low",
                     description="Add a human-readable business name",
                 )
@@ -134,7 +148,7 @@ class BusinessMeaningDetector(EntropyDetector):
                         "column": context.column_name,
                         "table": context.table_name,
                     },
-                    expected_entropy_reduction=0.15,  # Provisional estimate
+                    expected_entropy_reduction=reduction_entity_type,
                     effort="low",
                     description="Classify the entity type for this column",
                 )

@@ -22,10 +22,11 @@ Usage:
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from dataraum_context.entropy.compound_risk import detect_compound_risks_for_column
+from dataraum_context.entropy.config import get_entropy_config
 from dataraum_context.entropy.detectors.base import (
     DetectorContext,
     DetectorRegistry,
@@ -44,27 +45,37 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ProcessorConfig:
-    """Configuration for entropy processor."""
+    """Configuration for entropy processor.
+
+    Defaults are loaded from config/entropy/thresholds.yaml.
+    Can be overridden by passing explicit values.
+    """
 
     # Score weights for composite calculation
-    layer_weights: dict[str, float] = field(
-        default_factory=lambda: {
-            "structural": 0.25,
-            "semantic": 0.30,
-            "value": 0.30,
-            "computational": 0.15,
-        }
-    )
+    layer_weights: dict[str, float] | None = None
 
     # Thresholds
-    high_entropy_threshold: float = 0.5
-    critical_entropy_threshold: float = 0.8
+    high_entropy_threshold: float | None = None
+    critical_entropy_threshold: float | None = None
 
     # Resolution settings
     max_resolution_hints: int = 3
 
     # Parallel execution
     max_concurrent_detectors: int = 10
+
+    def __post_init__(self) -> None:
+        """Load defaults from config if not explicitly set."""
+        config = get_entropy_config()
+
+        if self.layer_weights is None:
+            self.layer_weights = config.composite_weights
+
+        if self.high_entropy_threshold is None:
+            self.high_entropy_threshold = config.high_entropy_threshold
+
+        if self.critical_entropy_threshold is None:
+            self.critical_entropy_threshold = config.critical_entropy_threshold
 
 
 class EntropyProcessor:

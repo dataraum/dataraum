@@ -80,7 +80,31 @@ class CompoundRiskDetector:
             self._load_default_definitions()
 
     def _load_default_definitions(self) -> None:
-        """Load built-in default risk definitions."""
+        """Load default risk definitions from config/entropy/thresholds.yaml."""
+        from dataraum_context.entropy.config import get_entropy_config
+
+        config = get_entropy_config()
+
+        # Load from config if available
+        if config.compound_risks:
+            self.risk_definitions = [
+                CompoundRiskDefinition(
+                    risk_type=risk_config.risk_type,
+                    dimensions=risk_config.dimensions,
+                    threshold=risk_config.threshold,
+                    risk_level=risk_config.risk_level,
+                    impact_template=risk_config.impact_template,
+                    multiplier=risk_config.multiplier,
+                )
+                for risk_config in config.compound_risks.values()
+            ]
+            self.config_loaded = True
+            logger.info(
+                f"Loaded {len(self.risk_definitions)} compound risk definitions from config"
+            )
+            return
+
+        # Fallback to hardcoded defaults if config is empty
         self.risk_definitions = [
             # Critical: Units + Aggregations
             CompoundRiskDefinition(

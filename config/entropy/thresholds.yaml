@@ -1,0 +1,213 @@
+# Entropy Detection Thresholds Configuration
+#
+# This file contains all configurable thresholds for the entropy detection system.
+# Values were previously hardcoded across multiple files. Centralizing them here
+# enables tuning without code changes.
+#
+# See BACKLOG.md Step 2.5.1 for context on this configuration.
+
+# ============================================================================
+# COMPOSITE SCORING
+# ============================================================================
+# Weights for combining layer scores into composite score.
+# Must sum to 1.0.
+composite_weights:
+  structural: 0.25      # Schema, types, relations
+  semantic: 0.30        # Business meaning, units, temporal
+  value: 0.30           # Nulls, outliers, ranges
+  computational: 0.15   # Derived values, aggregations
+
+# ============================================================================
+# READINESS CLASSIFICATION
+# ============================================================================
+# Thresholds for classifying data readiness based on composite score.
+# ready:       score < ready_threshold
+# investigate: ready_threshold <= score < blocked_threshold
+# blocked:     score >= blocked_threshold
+readiness:
+  ready_threshold: 0.3
+  blocked_threshold: 0.6
+
+# High entropy and critical entropy thresholds (for flagging/warnings)
+entropy_levels:
+  high_entropy: 0.5     # Columns flagged as high entropy
+  critical_entropy: 0.8 # Columns flagged as critical/blocked
+
+# ============================================================================
+# DETECTOR CONFIGURATIONS
+# ============================================================================
+# Each detector has its own section with formula parameters and thresholds.
+
+detectors:
+  # --------------------------------------------------------------------------
+  # TYPE FIDELITY DETECTOR (structural.types.type_fidelity)
+  # --------------------------------------------------------------------------
+  # Formula: entropy = 1.0 - parse_success_rate
+  type_fidelity:
+    # Thresholds for resolution suggestions
+    suggest_override_threshold: 0.3      # Score above which to suggest type override
+    suggest_quarantine_threshold: 0.1    # Score above which to suggest quarantine
+    # Expected entropy reduction factors (multiplied by score)
+    reduction_override: 0.8
+    reduction_quarantine: 0.9
+
+  # --------------------------------------------------------------------------
+  # NULL RATIO DETECTOR (value.nulls.null_ratio)
+  # --------------------------------------------------------------------------
+  # Formula: entropy = min(1.0, null_ratio * multiplier)
+  null_ratio:
+    # Multiplier: 50% nulls = max entropy
+    multiplier: 2.0
+    # Impact classification thresholds
+    impact_minimal: 0.05      # < 5% nulls = minimal impact
+    impact_moderate: 0.20     # < 20% nulls = moderate impact
+    impact_significant: 0.50  # < 50% nulls = significant impact
+    # >= 50% = critical impact
+    # Resolution thresholds
+    suggest_declare_threshold: 0.1     # Score above which to suggest null meaning declaration
+    suggest_filter_threshold: 0.4      # Score above which to suggest filtering
+    # Expected entropy reduction factors
+    reduction_declare: 0.3
+    reduction_filter: 0.8
+    reduction_impute: 0.6
+
+  # --------------------------------------------------------------------------
+  # OUTLIER RATE DETECTOR (value.outliers.outlier_rate)
+  # --------------------------------------------------------------------------
+  # Formula: entropy = min(1.0, outlier_ratio * multiplier)
+  outlier_rate:
+    # Multiplier: 10% outliers = max entropy
+    multiplier: 10.0
+    # Impact classification thresholds (based on ratio, not score)
+    impact_minimal: 0.01      # < 1% outliers = minimal impact
+    impact_moderate: 0.05     # < 5% outliers = moderate impact
+    impact_significant: 0.10  # < 10% outliers = significant impact
+    # >= 10% = critical impact
+    # Resolution thresholds (based on score)
+    suggest_winsorize_threshold: 0.2   # Score above which to suggest winsorization
+    suggest_exclude_threshold: 0.5     # Score above which to suggest exclusion
+    # Expected entropy reduction factors
+    reduction_winsorize: 0.7
+    reduction_exclude: 0.9
+    reduction_investigate: 0.5
+
+  # --------------------------------------------------------------------------
+  # JOIN PATH DETERMINISM DETECTOR (structural.relations.join_path_determinism)
+  # --------------------------------------------------------------------------
+  # Score assigned by relationship count
+  join_path:
+    score_orphan: 0.9         # No relationships (isolated table)
+    score_single: 0.1         # Single clear join path
+    score_few: 0.4            # 2-3 relationships (some ambiguity)
+    score_multiple: 0.7       # 4+ relationships (high ambiguity)
+    # Path count boundaries
+    few_path_max: 3           # <= 3 paths considered "few"
+    # Expected entropy reduction
+    reduction_declare_relationship: 0.8
+    reduction_declare_preferred_path: 0.5
+
+  # --------------------------------------------------------------------------
+  # DERIVED VALUE DETECTOR (computational.derived_values.formula_match)
+  # --------------------------------------------------------------------------
+  # Formula: entropy = 1.0 - match_rate
+  derived_value:
+    # Match quality classification thresholds
+    match_exact: 0.99         # >= 99% = exact match
+    match_near_exact: 0.95    # >= 95% = near exact
+    match_approximate: 0.80   # >= 80% = approximate
+    # < 80% = poor match
+    # Expected entropy reduction
+    reduction_declare_formula: 0.8
+    reduction_verify_formula: 0.7     # Multiplied by score
+    reduction_investigate: 0.5        # Multiplied by score
+
+  # --------------------------------------------------------------------------
+  # BUSINESS MEANING DETECTOR (semantic.business_meaning.naming_clarity)
+  # --------------------------------------------------------------------------
+  # Score assigned by documentation presence
+  business_meaning:
+    score_missing: 1.0        # No description = high entropy
+    score_partial: 0.6        # Description only, no business_name/entity_type
+    score_documented: 0.2     # Has description + business_name or entity_type
+    # Expected entropy reduction
+    reduction_add_description: 0.8
+    reduction_add_business_name: 0.2
+    reduction_add_entity_type: 0.15
+
+# ============================================================================
+# COMPOUND RISK DEFINITIONS
+# ============================================================================
+# Dangerous combinations of entropy dimensions that create multiplicative risk.
+# Each risk pattern specifies which dimensions must both be high.
+
+compound_risks:
+  # Critical: Unknown units being summed
+  units_aggregations:
+    dimensions:
+      - semantic.units
+      - computational.aggregations
+    threshold: 0.5
+    multiplier: 2.0
+    risk_level: critical
+    impact_template: >
+      Unknown currencies/units being summed without conversion.
+      Results could be off by 20-40%.
+
+  # High: Non-deterministic joins with filtering
+  relations_filters:
+    dimensions:
+      - structural.relations
+      - computational.filters
+    threshold: 0.5
+    multiplier: 1.8
+    risk_level: high
+    impact_template: >
+      Non-deterministic join paths combined with filtering.
+      Different query paths may give different results.
+
+  # High: High nulls in aggregated columns
+  nulls_aggregations:
+    dimensions:
+      - value.nulls
+      - computational.aggregations
+    threshold: 0.5
+    multiplier: 1.5
+    risk_level: high
+    impact_template: >
+      High null ratio in aggregated columns.
+      Results may exclude significant data or misrepresent averages.
+
+  # Medium: Unclear time periods with outlier values
+  temporal_ranges:
+    dimensions:
+      - semantic.temporal
+      - value.ranges
+    threshold: 0.5
+    multiplier: 1.3
+    risk_level: medium
+    impact_template: >
+      Unclear time periods combined with outlier values.
+      May include or exclude data incorrectly.
+
+  # High: Type issues in aggregated columns
+  types_aggregations:
+    dimensions:
+      - structural.types
+      - computational.aggregations
+    threshold: 0.6
+    multiplier: 1.5
+    risk_level: high
+    impact_template: >
+      Type inference issues in columns being aggregated.
+      Some values may fail to parse, skewing results.
+
+# ============================================================================
+# RESOLUTION EFFORT FACTORS
+# ============================================================================
+# Used to calculate priority_score = entropy_reduction / effort_factor
+# Higher priority_score = more worthwhile to implement
+
+effort_factors:
+  low: 1.0
+  medium: 2.0
+  high: 4.0

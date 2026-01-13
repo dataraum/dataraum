@@ -23,6 +23,12 @@ Usage:
 See docs/ENTROPY_IMPLEMENTATION_PLAN.md for architecture details.
 """
 
+from dataraum_context.entropy.config import (
+    EntropyConfig,
+    clear_config_cache,
+    get_entropy_config,
+    load_entropy_config,
+)
 from dataraum_context.entropy.context import (
     build_entropy_context,
     get_column_entropy_summary,
@@ -43,6 +49,11 @@ from dataraum_context.entropy.models import (
 )
 
 __all__ = [
+    # Configuration
+    "EntropyConfig",
+    "get_entropy_config",
+    "load_entropy_config",
+    "clear_config_cache",
     # Core models
     "EntropyObject",
     "ResolutionOption",

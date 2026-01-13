@@ -34,6 +34,14 @@ from dataraum_context.entropy.context import (
     get_column_entropy_summary,
     get_table_entropy_summary,
 )
+from dataraum_context.entropy.interpretation import (
+    Assumption,
+    EntropyInterpretation,
+    EntropyInterpreter,
+    InterpretationInput,
+    ResolutionAction,
+    create_fallback_interpretation,
+)
 from dataraum_context.entropy.models import (
     ColumnEntropyProfile,
     CompoundRisk,
@@ -74,4 +82,11 @@ __all__ = [
     "build_entropy_context",
     "get_column_entropy_summary",
     "get_table_entropy_summary",
+    # Interpretation (LLM-powered)
+    "EntropyInterpreter",
+    "EntropyInterpretation",
+    "InterpretationInput",
+    "Assumption",
+    "ResolutionAction",
+    "create_fallback_interpretation",
 ]

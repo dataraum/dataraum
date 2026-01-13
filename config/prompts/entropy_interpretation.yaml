@@ -1,0 +1,167 @@
+# Entropy Interpretation Prompt
+#
+# Interprets entropy metrics to generate assumptions, resolution actions,
+# and explanations for data uncertainty. This enables LLM-powered semantic
+# interpretation rather than hardcoded heuristics.
+#
+# See BACKLOG.md Step 2.5.3 for context.
+
+name: entropy_interpretation
+version: "1.0.0"
+description: Interpret entropy metrics to generate contextual assumptions and resolutions
+
+# Temperature (0.0 = deterministic for consistent interpretations)
+temperature: 0.0
+
+# System prompt - defines role and behavior
+system_prompt: |
+  You are a data quality expert specializing in data uncertainty analysis.
+  Your task is to interpret entropy metrics and provide actionable insights
+  for data analysts and AI systems working with uncertain data.
+
+  <role>
+  - Analyze entropy metrics from data profiling
+  - Generate appropriate assumptions when data is uncertain
+  - Suggest resolution actions to reduce uncertainty
+  - Provide clear explanations of data quality issues
+  </role>
+
+  <entropy_context>
+  Entropy measures uncertainty in data. A score of 0.0 means fully deterministic
+  data, while 1.0 means maximum uncertainty. The entropy framework has four layers:
+
+  - structural: Schema, types, relationships (can the data be parsed correctly?)
+  - semantic: Business meaning, units, temporal clarity (do we understand what it means?)
+  - value: Nulls, outliers, ranges (is the data complete and reasonable?)
+  - computational: Derived values, aggregations (can we compute reliably with it?)
+  </entropy_context>
+
+  <assumption_guidelines>
+  When generating assumptions:
+  - Be specific to the column context (use column name, table name, data type)
+  - State assumptions that would be made if the query proceeds
+  - Include confidence level (high/medium/low) based on entropy score
+  - For currency/unit columns: state the assumed unit
+  - For temporal columns: state the assumed granularity or timezone
+  - For nullable columns: state how nulls would be handled
+  </assumption_guidelines>
+
+  <resolution_guidelines>
+  When suggesting resolutions:
+  - Prioritize low-effort, high-impact actions
+  - Be specific about what metadata needs to be added
+  - Consider cascade effects (fixing one thing may help others)
+  - For each action, explain what entropy dimension it addresses
+  </resolution_guidelines>
+
+  Use the interpret_entropy tool to provide your analysis.
+
+# User prompt - provides entropy data and context
+user_prompt: |
+  <task>
+  Analyze the entropy metrics for this column and provide:
+  1. Assumptions that would be made when querying this data
+  2. Resolution actions to reduce uncertainty
+  3. A human-readable explanation of the data quality situation
+  </task>
+
+  <column_context>
+  Table: {table_name}
+  Column: {column_name}
+  Detected Type: {detected_type}
+  Business Description: {business_description}
+  </column_context>
+
+  <entropy_profile>
+  Composite Score: {composite_score} (0.0=deterministic, 1.0=max uncertainty)
+  Readiness: {readiness} (ready/investigate/blocked)
+
+  Layer Scores:
+  - Structural: {structural_entropy}
+  - Semantic: {semantic_entropy}
+  - Value: {value_entropy}
+  - Computational: {computational_entropy}
+  </entropy_profile>
+
+  <raw_metrics>
+  {raw_metrics_json}
+  </raw_metrics>
+
+  <high_entropy_dimensions>
+  {high_entropy_dimensions}
+  </high_entropy_dimensions>
+
+  <compound_risks>
+  {compound_risks}
+  </compound_risks>
+
+  <query_context>
+  {query_context}
+  </query_context>
+
+  Interpret this entropy profile using the interpret_entropy tool.
+
+# Input variable definitions
+inputs:
+  table_name:
+    description: Name of the table containing the column
+    required: true
+
+  column_name:
+    description: Name of the column being analyzed
+    required: true
+
+  detected_type:
+    description: Detected data type (e.g., INTEGER, VARCHAR, TIMESTAMP)
+    required: true
+
+  business_description:
+    description: Business description if available, else "Not documented"
+    required: false
+    default: "Not documented"
+
+  composite_score:
+    description: Overall entropy score (0.0-1.0)
+    required: true
+
+  readiness:
+    description: Readiness classification (ready/investigate/blocked)
+    required: true
+
+  structural_entropy:
+    description: Structural layer entropy score
+    required: true
+
+  semantic_entropy:
+    description: Semantic layer entropy score
+    required: true
+
+  value_entropy:
+    description: Value layer entropy score
+    required: true
+
+  computational_entropy:
+    description: Computational layer entropy score
+    required: true
+
+  raw_metrics_json:
+    description: JSON object with raw metrics from all detectors
+    required: true
+
+  high_entropy_dimensions:
+    description: List of dimensions with high entropy scores
+    required: false
+    default: "None"
+
+  compound_risks:
+    description: Detected compound risks and their impacts
+    required: false
+    default: "None"
+
+  query_context:
+    description: Optional query context for query-time refinement
+    required: false
+    default: "Analysis-time baseline (no specific query context)"
+
+# Output is defined by the Pydantic tool schema (EntropyInterpretationOutput)
+# No output_schema needed here since we use tool-based output

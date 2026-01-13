@@ -98,6 +98,15 @@ features:
       annotations for column resolution. Supports financial and
       domain-specific validation rules.
 
+  entropy_interpretation:
+    enabled: true
+    model_tier: balanced
+    prompt_file: prompts/entropy_interpretation.yaml
+    description: >
+      Interpret entropy metrics to generate contextual assumptions,
+      resolution actions, and explanations. Replaces hardcoded
+      heuristics with LLM-powered semantic interpretation.
+
 # Fallback when LLM disabled or unavailable
 fallback:
   semantic_analysis: manual_only # Require config/semantic_overrides.yaml

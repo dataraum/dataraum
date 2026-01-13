@@ -2,8 +2,8 @@
 
 from datetime import datetime
 
-from dataraum_context.quality.formatting.base import ThresholdConfig
-from dataraum_context.quality.formatting.config import (
+from dataraum_context.core.formatting.base import ThresholdConfig
+from dataraum_context.core.formatting.config import (
     FormatterConfig,
     MetricGroupConfig,
 )

@@ -3,11 +3,14 @@
 Provides reusable utilities for formatting quality metrics and issues
 into structured, interpretable context for LLM consumption.
 
-Note: Calculation graphs and schema mapping have moved to
-      dataraum_context.calculations
+Note: Base formatting utilities (ThresholdConfig, SeverityLevel, etc.) have
+      been moved to dataraum_context.core.formatting for shared use by
+      quality and entropy layers. They are re-exported here for backwards
+      compatibility.
 """
 
-from dataraum_context.quality.formatting.base import (
+# Re-export base utilities from core.formatting (moved for shared use)
+from dataraum_context.core.formatting.base import (
     THRESHOLDS,
     CommonThresholds,
     SeverityLevel,
@@ -18,18 +21,18 @@ from dataraum_context.quality.formatting.base import (
     map_to_severity,
     severity_emoji,
 )
+from dataraum_context.core.formatting.config import (
+    FormatterConfig,
+    MetricGroupConfig,
+    get_default_config,
+    load_formatter_config,
+)
 from dataraum_context.quality.formatting.business_cycles import (
     BusinessCycleContext,
     BusinessCyclesOutput,
     format_business_cycles_as_context_string,
     format_business_cycles_for_llm,
     format_single_cycle,
-)
-from dataraum_context.quality.formatting.config import (
-    FormatterConfig,
-    MetricGroupConfig,
-    get_default_config,
-    load_formatter_config,
 )
 from dataraum_context.quality.formatting.domain import (
     format_compliance_group,

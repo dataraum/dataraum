@@ -2,10 +2,10 @@
 
 from pathlib import Path
 
-from dataraum_context.quality.formatting.config import (
+from dataraum_context.core.formatting.base import ThresholdConfig
+from dataraum_context.core.formatting.config import (
     FormatterConfig,
     MetricGroupConfig,
-    ThresholdConfig,
     _merge_configs,
     _parse_config_data,
     get_default_config,

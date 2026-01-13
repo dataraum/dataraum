@@ -25,7 +25,7 @@ Usage:
 from dataclasses import dataclass
 from typing import Any
 
-from dataraum_context.quality.formatting.config import FormatterConfig, get_default_config
+from dataraum_context.core.formatting.config import FormatterConfig, get_default_config
 
 
 @dataclass

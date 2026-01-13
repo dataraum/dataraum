@@ -13,12 +13,12 @@ Prioritized backlog for the dataraum-context project. Items are organized by pri
 
 ## Priority 1: Phase 1 Foundation (Current Focus)
 
-### Step 1.1: File Migrations (Do First)
-- [ ] Move `quality/formatting/base.py` → `core/formatting/base.py`
-- [ ] Move `quality/formatting/config.py` → `core/formatting/config.py`
-- [ ] Create `core/formatting/__init__.py` with exports
-- [ ] Update all imports referencing moved files
-- [ ] Run tests to verify no breakage
+### Step 1.1: File Migrations (Do First) ✅ COMPLETED 2025-01-13
+- [x] Move `quality/formatting/base.py` → `core/formatting/base.py`
+- [x] Move `quality/formatting/config.py` → `core/formatting/config.py`
+- [x] Create `core/formatting/__init__.py` with exports
+- [x] Update all imports referencing moved files
+- [x] Run tests to verify no breakage (144 tests passed)
 
 ### Step 1.2: Core Models and Storage
 - [ ] Create `entropy/__init__.py` with public API

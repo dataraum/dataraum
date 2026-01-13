@@ -1,6 +1,6 @@
 """Tests for quality formatting utilities."""
 
-from dataraum_context.quality.formatting import (
+from dataraum_context.core.formatting import (
     THRESHOLDS,
     ThresholdConfig,
     format_list_with_overflow,

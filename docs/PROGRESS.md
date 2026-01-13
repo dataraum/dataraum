@@ -14,9 +14,10 @@ This file tracks completed work and session notes for the dataraum-context proje
 ## Current Sprint: Entropy Layer Integration
 
 ### In Progress
-- [ ] Phase 3: Cleanup and API (next steps)
+- [ ] Phase 2.5: LLM-Assisted Entropy Interpretation (NEW - see BACKLOG.md)
 
 ### Completed
+- [x] Phase 2.4 Review: Identified 44 heuristics, created Phase 2.5 plan (2025-01-13)
 - [x] Phase 2.4: Graph Agent Enhancement (2025-01-13)
 - [x] Phase 2.2: Prompt Formatting (2025-01-13)
 - [x] Phase 2.1: Entropy Context Builder (2025-01-13)
@@ -40,6 +41,47 @@ This file tracks completed work and session notes for the dataraum-context proje
 ---
 
 ## Session Log
+
+### 2025-01-13 (Session 8)
+
+**Focus:** Heuristics Review and Architecture Planning for LLM-Assisted Interpretation
+
+**Problem Identified:**
+Phase 2.4 implementation used hardcoded heuristics where LLM judgment is needed.
+Analysis found 44 distinct heuristics including:
+- Arbitrary multipliers (null_ratio * 2, outlier_ratio * 10)
+- Character-counting as semantic quality proxy
+- Hardcoded assumption text ("Currency is EUR")
+- Magic thresholds (0.3, 0.5, 0.6, 0.8)
+
+**Architecture Decision:**
+Adopt Formula + LLM Hybrid approach:
+- Layer 1: Deterministic metrics & confidence (formula-based, configurable)
+- Layer 2: LLM interpretation (assumptions, resolutions, explanations)
+- Layer 3: Structured output for Graph Agent and Dashboards
+
+**Cleanup Completed:**
+1. Removed `_get_default_assumption_for_dimension()` from agent.py
+2. Simplified `_create_assumptions_from_entropy()` to placeholder for LLM
+3. Refactored `BusinessMeaningDetector`:
+   - Removed character-counting heuristics
+   - Now collects raw metrics in evidence
+   - Uses simple binary scoring (provisional)
+   - Added `raw_metrics` field for LLM interpretation
+4. Updated tests for new detector behavior
+
+**Backlog Added:**
+Created Step 2.5: LLM-Assisted Entropy Interpretation with sub-steps:
+- 2.5.1: Configuration extraction (thresholds to YAML)
+- 2.5.2: Code cleanup (remaining heuristics)
+- 2.5.3: LLM interpretation feature
+- 2.5.4: Analysis-time baseline
+- 2.5.5: Query-time refinement
+- 2.5.6: Dashboard models
+
+**Test Results:** 551 tests pass
+
+---
 
 ### 2025-01-13 (Session 7)
 

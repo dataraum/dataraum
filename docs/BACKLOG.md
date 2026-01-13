@@ -157,6 +157,52 @@ Prioritized backlog for the dataraum-context project. Items are organized by pri
   - [x] Factory method and promotion tracking
 - [x] Create tests (34 new tests, 550 total)
 
+### Step 2.5: LLM-Assisted Entropy Interpretation (NEW)
+
+> **Rationale**: Phase 2.4 review revealed 44 hardcoded heuristics (arbitrary multipliers, thresholds, assumption text). Formula-based confidence is valuable for determinism, but semantic interpretation (assumptions, resolutions, explanations) should be LLM-generated.
+
+**Architecture: Formula + LLM Hybrid**
+- Layer 1: Deterministic metrics & confidence (formula-based, configurable)
+- Layer 2: LLM interpretation (assumptions, resolutions, explanations)
+- Layer 3: Structured output for Graph Agent and Dashboards
+
+**Step 2.5.1: Configuration Extraction**
+- [ ] Create `config/entropy/thresholds.yaml` with all scoring parameters
+- [ ] Extract detector multipliers (null_ratio * 2, outlier_ratio * 10, etc.)
+- [ ] Extract composite score weights (structural, semantic, value, computational)
+- [ ] Extract readiness thresholds (0.3, 0.6, 0.8)
+- [ ] Update detectors to read from config
+
+**Step 2.5.2: Code Cleanup**
+- [ ] Remove `_get_default_assumption_for_dimension()` from agent.py
+- [ ] Remove `_create_assumptions_from_entropy()` hardcoded logic
+- [ ] Simplify `BusinessMeaningDetector` to collect raw data (remove char counting scores)
+- [ ] Remove hardcoded impact descriptions from compound_risk.py
+- [ ] Add `raw_metrics` field to detector output (separate from computed score)
+
+**Step 2.5.3: LLM Entropy Interpretation Feature**
+- [ ] Create `entropy/interpretation.py` with LLM feature
+- [ ] Create prompt template `config/prompts/entropy_interpretation.yaml`
+- [ ] Input: raw metrics, computed confidence, column/table context
+- [ ] Output: assumptions, resolution_actions, explanation (structured JSON)
+- [ ] Cache interpretations with column profile
+
+**Step 2.5.4: Analysis-Time Baseline**
+- [ ] Integrate LLM interpretation into `build_entropy_context()`
+- [ ] Store cached interpretations in database
+- [ ] Add `EntropyInterpretation` model with assumptions, actions, explanation
+
+**Step 2.5.5: Query-Time Refinement**
+- [ ] Create `refine_entropy_interpretation()` for query context
+- [ ] Input: baseline interpretation + query + columns used + aggregation type
+- [ ] Output: query-specific assumptions, caveats, SQL comments
+- [ ] Integrate into GraphAgent execution flow
+
+**Step 2.5.6: Dashboard Models**
+- [ ] Add `explanation: str` field to entropy context models
+- [ ] Add `resolution_actions: list[ResolutionAction]` with LLM-generated descriptions
+- [ ] Create dashboard-friendly serialization format
+
 ---
 
 ## Priority 3: Phase 3 Cleanup and API

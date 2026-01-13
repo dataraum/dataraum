@@ -78,6 +78,42 @@ class EntropyInterpretation:
     model_used: str | None = None
     from_cache: bool = False
 
+    def to_dashboard_dict(self) -> dict[str, Any]:
+        """Convert interpretation to dashboard-friendly dictionary.
+
+        Returns a clean structure suitable for JSON serialization and UI display.
+        """
+        return {
+            "column_key": f"{self.table_name}.{self.column_name}",
+            "table_name": self.table_name,
+            "column_name": self.column_name,
+            "explanation": self.explanation,
+            "composite_score": round(self.composite_score, 2),
+            "readiness": self.readiness,
+            "assumptions": [
+                {
+                    "dimension": a.dimension,
+                    "text": a.assumption_text,
+                    "confidence": a.confidence,
+                    "impact": a.impact,
+                }
+                for a in self.assumptions
+            ],
+            "resolution_actions": [
+                {
+                    "action": r.action,
+                    "description": r.description,
+                    "priority": r.priority,
+                    "effort": r.effort,
+                }
+                for r in self.resolution_actions
+            ],
+            "metadata": {
+                "model_used": self.model_used,
+                "from_cache": self.from_cache,
+            },
+        }
+
 
 @dataclass
 class InterpretationInput:

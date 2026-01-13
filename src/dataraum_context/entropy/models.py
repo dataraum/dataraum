@@ -546,3 +546,85 @@ class EntropyContext:
             self.overall_readiness = "investigate"
         else:
             self.overall_readiness = "ready"
+
+    def to_dashboard_dict(self) -> dict[str, Any]:
+        """Convert entropy context to dashboard-friendly dictionary.
+
+        Returns a clean structure suitable for JSON serialization and UI display.
+        Includes summary, tables, and interpretations.
+        """
+        # Build table summaries
+        tables: list[dict[str, Any]] = []
+        for table_name, table_profile in self.table_profiles.items():
+            table_data: dict[str, Any] = {
+                "table_name": table_name,
+                "avg_entropy": round(table_profile.avg_composite_score, 2),
+                "max_entropy": round(table_profile.max_composite_score, 2),
+                "readiness": table_profile.readiness,
+                "column_count": len(table_profile.column_profiles),
+                "high_entropy_columns": table_profile.high_entropy_columns,
+                "blocked_columns": table_profile.blocked_columns,
+            }
+            tables.append(table_data)
+
+        # Build column summaries with interpretations
+        columns: list[dict[str, Any]] = []
+        for col_key, col_profile in self.column_profiles.items():
+            col_data: dict[str, Any] = {
+                "column_key": col_key,
+                "table_name": col_profile.table_name,
+                "column_name": col_profile.column_name,
+                "composite_score": round(col_profile.composite_score, 2),
+                "readiness": col_profile.readiness,
+                "high_entropy_dimensions": col_profile.high_entropy_dimensions,
+            }
+
+            # Add interpretation if available
+            interpretation = self.column_interpretations.get(col_key)
+            if interpretation:
+                col_data["interpretation"] = interpretation.to_dashboard_dict()
+
+            columns.append(col_data)
+
+        # Build compound risks summary
+        risks: list[dict[str, Any]] = []
+        for risk in self.compound_risks:
+            risks.append(
+                {
+                    "target": risk.target,
+                    "dimensions": risk.dimensions,
+                    "risk_level": risk.risk_level,
+                    "impact": risk.impact,
+                    "combined_score": round(risk.combined_score, 2),
+                }
+            )
+
+        # Build top resolution hints
+        hints: list[dict[str, Any]] = []
+        for hint in self.top_resolution_hints[:5]:
+            hints.append(
+                {
+                    "targets": hint.affected_targets,
+                    "action": hint.action,
+                    "description": hint.description,
+                    "priority_score": hint.priority_score,
+                    "effort": hint.effort,
+                    "total_reduction": hint.total_reduction,
+                }
+            )
+
+        return {
+            "summary": {
+                "overall_readiness": self.overall_readiness,
+                "total_columns": len(self.column_profiles),
+                "high_entropy_count": self.high_entropy_count,
+                "critical_entropy_count": self.critical_entropy_count,
+                "compound_risk_count": self.compound_risk_count,
+                "readiness_blockers": self.readiness_blockers,
+                "computed_at": self.computed_at.isoformat(),
+            },
+            "tables": tables,
+            "columns": columns,
+            "compound_risks": risks,
+            "top_resolution_hints": hints,
+        }

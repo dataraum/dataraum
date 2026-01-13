@@ -392,7 +392,7 @@ def get_column_entropy_summary(
     Returns:
         Dict with key entropy fields for context
     """
-    return {
+    summary: dict[str, Any] = {
         "composite_score": profile.composite_score,
         "readiness": profile.readiness,
         "structural_entropy": profile.structural_entropy,
@@ -410,6 +410,34 @@ def get_column_entropy_summary(
             for hint in profile.top_resolution_hints[:3]
         ],
     }
+
+    # Include LLM interpretation if available
+    if profile.interpretation is not None:
+        summary["interpretation"] = {
+            "explanation": profile.interpretation.explanation,
+            "assumptions": [
+                {
+                    "dimension": a.dimension,
+                    "assumption_text": a.assumption_text,
+                    "confidence": a.confidence,
+                    "impact": a.impact,
+                    "basis": a.basis,
+                }
+                for a in profile.interpretation.assumptions
+            ],
+            "resolution_actions": [
+                {
+                    "action": r.action,
+                    "description": r.description,
+                    "priority": r.priority,
+                    "effort": r.effort,
+                    "expected_impact": r.expected_impact,
+                }
+                for r in profile.interpretation.resolution_actions
+            ],
+        }
+
+    return summary
 
 
 def get_table_entropy_summary(

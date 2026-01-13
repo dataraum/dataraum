@@ -53,25 +53,27 @@ Prioritized backlog for the dataraum-context project. Items are organized by pri
   - [x] sample_entropy_object, sample_column_profile, high_entropy_column_profile
 - [x] Create comprehensive test suite (43 entropy tests total)
 
-### Step 1.4: High-Priority Detectors
-- [ ] `TypeFidelityDetector` (structural/types.py)
+### Step 1.4: High-Priority Detectors ✅ COMPLETED 2025-01-13
+- [x] `TypeFidelityDetector` (structural/types.py)
   - Source: `typing/TypeCandidate.parse_success_rate`
   - Formula: `entropy = 1.0 - parse_success_rate`
-- [ ] `NullRatioDetector` (value/null_semantics.py)
+- [x] `NullRatioDetector` (value/null_semantics.py)
   - Source: `statistics/ColumnProfile.null_ratio`
   - Formula: `entropy = min(1.0, null_ratio * 2)`
-- [ ] `OutlierRateDetector` (value/outliers.py)
+- [x] `OutlierRateDetector` (value/outliers.py)
   - Source: `statistics/quality.iqr_outlier_ratio`
   - Formula: `entropy = min(1.0, outlier_ratio * 10)`
-- [ ] `BusinessMeaningDetector` (semantic/business_meaning.py)
+- [x] `BusinessMeaningDetector` (semantic/business_meaning.py)
   - Source: `semantic/SemanticAnnotation.business_description`
   - Formula: `entropy = 1.0 if empty, 0.7 if brief, 0.2 if substantial`
-- [ ] `DerivedValueDetector` (computational/derived_values.py)
+- [x] `DerivedValueDetector` (computational/derived_values.py)
   - Source: `correlation/DerivedColumn.formula, match_rate`
   - Formula: `entropy = 1.0 - match_rate` (or 1.0 if no formula)
-- [ ] `JoinPathDeterminismDetector` (structural/relations.py)
+- [x] `JoinPathDeterminismDetector` (structural/relations.py)
   - Source: `relationships` + graph_topology analysis
   - Formula: `entropy = 0.7 if multiple paths, 0.9 if no path, 0.1 if single path`
+- [x] `register_builtin_detectors()` function for auto-registration
+- [x] Comprehensive test coverage (97 entropy tests total)
 
 ### Step 1.5: Medium-Priority Detectors
 - [ ] `PatternConsistencyDetector` (value/patterns.py)

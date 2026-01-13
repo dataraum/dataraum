@@ -14,9 +14,10 @@ This file tracks completed work and session notes for the dataraum-context proje
 ## Current Sprint: Entropy Layer Foundation
 
 ### In Progress
-- [ ] Phase 1.4: High-Priority Detectors
+- [ ] Phase 1.5: Medium-Priority Detectors
 
 ### Completed
+- [x] Phase 1.4: High-Priority Detectors (2025-01-13)
 - [x] Phase 1.3: Detector Infrastructure (2025-01-13)
 - [x] Phase 1.2: Core Models and Storage (2025-01-13)
 - [x] Phase 1.1: File migrations (2025-01-13)
@@ -203,6 +204,84 @@ This file tracks completed work and session notes for the dataraum-context proje
 
 **Next Steps:**
 - Phase 1.4: Implement high-priority detectors (TypeFidelityDetector, NullRatioDetector, etc.)
+
+---
+
+### 2025-01-13 (Session 4)
+
+**Focus:** Phase 1.4 - High-Priority Detectors
+
+**Completed:**
+1. Created directory structure for detector layers:
+   - `entropy/detectors/structural/` - TypeFidelityDetector, JoinPathDeterminismDetector
+   - `entropy/detectors/value/` - NullRatioDetector, OutlierRateDetector
+   - `entropy/detectors/semantic/` - BusinessMeaningDetector
+   - `entropy/detectors/computational/` - DerivedValueDetector
+
+2. Implemented all 6 high-priority detectors:
+   - **TypeFidelityDetector**: Measures parse failure rate from typing analysis
+     - Formula: `entropy = 1.0 - parse_success_rate`
+     - Resolution options: override_type, quarantine_values
+   - **NullRatioDetector**: Measures null value prevalence
+     - Formula: `entropy = min(1.0, null_ratio * 2)` (50% nulls = max)
+     - Resolution options: declare_null_meaning, filter_nulls, impute_values
+   - **OutlierRateDetector**: Measures IQR-based outlier rate
+     - Formula: `entropy = min(1.0, outlier_ratio * 10)` (10% outliers = max)
+     - Resolution options: winsorize, exclude_outliers, investigate_outliers
+   - **BusinessMeaningDetector**: Measures description quality
+     - Formula: 1.0 (missing), 0.7 (brief), 0.4 (moderate), 0.2 (substantial)
+     - Adjustments for business_name, entity_type, confidence
+     - Resolution options: add_description, add_business_name, add_entity_type
+   - **DerivedValueDetector**: Measures formula match rate
+     - Formula: `entropy = 1.0 - match_rate` (or 1.0 if no formula)
+     - Resolution options: declare_formula, verify_formula, investigate_mismatches
+   - **JoinPathDeterminismDetector**: Measures join path clarity
+     - Formula: 0.1 (single), 0.4 (few), 0.7 (multiple), 0.9 (orphan)
+     - Resolution options: declare_relationship, declare_preferred_path
+
+3. Created `BUILTIN_DETECTORS` list and `register_builtin_detectors()` function
+
+4. Created comprehensive test suites:
+   - `test_structural_detectors.py` - 10 tests
+   - `test_value_detectors.py` - 12 tests
+   - `test_semantic_detectors.py` - 10 tests
+   - `test_computational_detectors.py` - 9 tests
+   - `test_builtin_detectors.py` - 13 tests (registration and requirements)
+
+5. All tests pass (97 entropy tests, 502 total)
+6. All lint checks pass
+
+**Files Created:**
+- `src/dataraum_context/entropy/detectors/structural/__init__.py`
+- `src/dataraum_context/entropy/detectors/structural/types.py`
+- `src/dataraum_context/entropy/detectors/structural/relations.py`
+- `src/dataraum_context/entropy/detectors/value/__init__.py`
+- `src/dataraum_context/entropy/detectors/value/null_semantics.py`
+- `src/dataraum_context/entropy/detectors/value/outliers.py`
+- `src/dataraum_context/entropy/detectors/semantic/__init__.py`
+- `src/dataraum_context/entropy/detectors/semantic/business_meaning.py`
+- `src/dataraum_context/entropy/detectors/computational/__init__.py`
+- `src/dataraum_context/entropy/detectors/computational/derived_values.py`
+- `tests/entropy/test_structural_detectors.py`
+- `tests/entropy/test_value_detectors.py`
+- `tests/entropy/test_semantic_detectors.py`
+- `tests/entropy/test_computational_detectors.py`
+- `tests/entropy/test_builtin_detectors.py`
+
+**Files Modified:**
+- `src/dataraum_context/entropy/detectors/__init__.py` - Added all detector exports and registration
+
+**Key Design Decisions:**
+- All detectors support both Pydantic model objects and dict analysis results
+- Resolution options include cascade_dimensions for cross-dimension impact
+- Entropy formulas use multipliers to normalize different metrics to 0-1 scale
+- Evidence includes all raw values for debugging and explanation
+- Each detector independently tests required_analyses availability via can_run()
+
+**Next Steps:**
+- Phase 1.5: Implement medium-priority detectors (PatternConsistency, UnitDeclared, etc.)
+- Phase 1.6: Compound risk detection with YAML config
+- Phase 1.7: Aggregation and scoring
 
 ---
 

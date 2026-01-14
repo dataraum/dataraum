@@ -42,7 +42,7 @@ from sqlalchemy.ext.asyncio import (
 
 from dataraum_context.pipeline.base import PhaseStatus
 from dataraum_context.pipeline.orchestrator import Pipeline, PipelineConfig
-from dataraum_context.pipeline.phases import ImportPhase, TypingPhase
+from dataraum_context.pipeline.phases import ImportPhase, StatisticsPhase, TypingPhase
 from dataraum_context.storage import init_database
 
 # Default junk columns to remove from CSV imports
@@ -136,8 +136,30 @@ def create_pipeline(config: RunConfig) -> Pipeline:
     # Register available phases
     pipeline.register(ImportPhase())
     pipeline.register(TypingPhase())
+    pipeline.register(StatisticsPhase())
 
     return pipeline
+
+
+def get_latest_implemented_phase(pipeline: Pipeline) -> str:
+    """Get the latest phase in the DAG that has an implementation.
+
+    This allows running the pipeline without specifying a target phase,
+    limiting execution to phases that actually have implementations.
+
+    Args:
+        pipeline: Pipeline with registered phases
+
+    Returns:
+        Name of the latest implemented phase
+    """
+    from dataraum_context.pipeline.base import PIPELINE_DAG
+
+    latest = None
+    for phase_def in PIPELINE_DAG:
+        if phase_def.name in pipeline.phases:
+            latest = phase_def.name
+    return latest or "import"
 
 
 async def run(config: RunConfig) -> RunResult:
@@ -177,6 +199,9 @@ async def run(config: RunConfig) -> RunResult:
         # Create pipeline
         pipeline = create_pipeline(config)
 
+        # Determine target phase - use specified or latest implemented
+        target_phase = config.target_phase or get_latest_implemented_phase(pipeline)
+
         # Build run configuration
         run_config = {
             "source_path": str(config.source_path),
@@ -190,7 +215,7 @@ async def run(config: RunConfig) -> RunResult:
                 session=session,
                 duckdb_conn=duckdb_conn,
                 source_id=source_id,
-                target_phase=config.target_phase,
+                target_phase=target_phase,
                 run_config=run_config,
             )
 

@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import (
 
 from dataraum_context.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum_context.pipeline.orchestrator import Pipeline, PipelineConfig
-from dataraum_context.pipeline.phases import ImportPhase, TypingPhase
+from dataraum_context.pipeline.phases import ImportPhase, StatisticsPhase, TypingPhase
 from dataraum_context.storage import init_database
 
 # Paths to test data
@@ -200,6 +200,7 @@ def integration_pipeline() -> Pipeline:
     pipeline = Pipeline(config=PipelineConfig(skip_llm_phases=True))
     pipeline.register(ImportPhase())
     pipeline.register(TypingPhase())
+    pipeline.register(StatisticsPhase())
     return pipeline
 
 

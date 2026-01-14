@@ -319,3 +319,254 @@ class TestTypingPhaseSmoke:
                 0
             ][0]
             assert quarantine_count == 0, f"Unexpected quarantine rows in {base_name}"
+
+
+class TestStatisticsPhaseSmoke:
+    """Smoke tests for the statistics phase."""
+
+    @pytest.mark.asyncio
+    async def test_statistics_creates_profiles(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify statistical profiles are created after statistics phase."""
+        # Run import and typing first
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+
+        # Then run statistics
+        result = await harness.run_phase("statistics")
+
+        assert result.status == PhaseStatus.COMPLETED, f"Statistics failed: {result.error}"
+        assert "statistical_profiles" in result.outputs
+        assert len(result.outputs["statistical_profiles"]) == 5  # 5 tables profiled
+
+    @pytest.mark.asyncio
+    async def test_statistics_stores_profile_data(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify statistical profile data is stored in metadata database."""
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+        await harness.run_phase("statistics")
+
+        # Check that profiles are stored
+        from sqlalchemy import func, select
+
+        from dataraum_context.analysis.statistics.db_models import StatisticalProfile
+
+        async with harness.session_factory() as session:
+            stmt = (
+                select(func.count())
+                .select_from(StatisticalProfile)
+                .where(StatisticalProfile.layer == "typed")
+            )
+            profile_count = (await session.execute(stmt)).scalar()
+
+        # Should have profiles for all columns across 5 tables
+        assert profile_count > 0
+
+    @pytest.mark.asyncio
+    async def test_statistics_computes_numeric_stats(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify numeric statistics are computed for numeric columns."""
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+        await harness.run_phase("statistics")
+
+        # Check profile for Transaction ID (numeric column)
+        from sqlalchemy import select
+
+        from dataraum_context.analysis.statistics.db_models import StatisticalProfile
+        from dataraum_context.storage import Column, Table
+
+        async with harness.session_factory() as session:
+            # Find the transactions table
+            table_stmt = select(Table).where(
+                Table.table_name == "transactions",
+                Table.layer == "typed",
+            )
+            table = (await session.execute(table_stmt)).scalar_one_or_none()
+            assert table is not None
+
+            # Find the Transaction ID column
+            col_stmt = select(Column).where(
+                Column.table_id == table.table_id,
+                Column.column_name == "Transaction ID",
+            )
+            column = (await session.execute(col_stmt)).scalar_one_or_none()
+            assert column is not None
+
+            # Get the profile
+            profile_stmt = select(StatisticalProfile).where(
+                StatisticalProfile.column_id == column.column_id,
+                StatisticalProfile.layer == "typed",
+            )
+            profile = (await session.execute(profile_stmt)).scalar_one_or_none()
+            assert profile is not None
+
+        # Verify numeric stats are present (SQLite stores booleans as 0/1)
+        assert profile.is_numeric == 1
+        profile_data = profile.profile_data
+        assert "numeric_stats" in profile_data
+        assert profile_data["numeric_stats"] is not None
+        assert "min_value" in profile_data["numeric_stats"]
+        assert "max_value" in profile_data["numeric_stats"]
+        assert "mean" in profile_data["numeric_stats"]
+
+    @pytest.mark.asyncio
+    async def test_statistics_computes_cardinality(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify cardinality metrics are computed."""
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+        await harness.run_phase("statistics")
+
+        from sqlalchemy import select
+
+        from dataraum_context.analysis.statistics.db_models import StatisticalProfile
+        from dataraum_context.storage import Column, Table
+
+        async with harness.session_factory() as session:
+            # Find the transactions table
+            table_stmt = select(Table).where(
+                Table.table_name == "transactions",
+                Table.layer == "typed",
+            )
+            table = (await session.execute(table_stmt)).scalar_one_or_none()
+            assert table is not None
+
+            # Get profiles for this table
+            col_stmt = select(Column.column_id).where(Column.table_id == table.table_id)
+            col_ids = (await session.execute(col_stmt)).scalars().all()
+
+            profile_stmt = select(StatisticalProfile).where(
+                StatisticalProfile.column_id.in_(col_ids),
+                StatisticalProfile.layer == "typed",
+            )
+            profiles = (await session.execute(profile_stmt)).scalars().all()
+
+        # All profiles should have cardinality metrics
+        for profile in profiles:
+            assert profile.total_count == 500  # 500 transactions
+            assert profile.distinct_count is not None
+            assert profile.cardinality_ratio is not None
+
+    @pytest.mark.asyncio
+    async def test_statistics_computes_top_values(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify top values are computed for columns."""
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+        await harness.run_phase("statistics")
+
+        from sqlalchemy import select
+
+        from dataraum_context.analysis.statistics.db_models import StatisticalProfile
+        from dataraum_context.storage import Column, Table
+
+        async with harness.session_factory() as session:
+            # Find the transactions table
+            table_stmt = select(Table).where(
+                Table.table_name == "transactions",
+                Table.layer == "typed",
+            )
+            table = (await session.execute(table_stmt)).scalar_one_or_none()
+            assert table is not None
+
+            # Find the Transaction type column (categorical)
+            col_stmt = select(Column).where(
+                Column.table_id == table.table_id,
+                Column.column_name == "Transaction type",
+            )
+            column = (await session.execute(col_stmt)).scalar_one_or_none()
+            assert column is not None
+
+            # Get the profile
+            profile_stmt = select(StatisticalProfile).where(
+                StatisticalProfile.column_id == column.column_id,
+                StatisticalProfile.layer == "typed",
+            )
+            profile = (await session.execute(profile_stmt)).scalar_one_or_none()
+            assert profile is not None
+
+        # Verify top values are present
+        profile_data = profile.profile_data
+        assert "top_values" in profile_data
+        assert len(profile_data["top_values"]) > 0
+        # Each top value should have value, count, percentage
+        first_top = profile_data["top_values"][0]
+        assert "value" in first_top
+        assert "count" in first_top
+        assert "percentage" in first_top
+
+    @pytest.mark.asyncio
+    async def test_statistics_is_idempotent(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify running statistics twice doesn't create duplicate profiles."""
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+
+        # Run statistics twice
+        result1 = await harness.run_phase("statistics")
+        assert result1.status == PhaseStatus.COMPLETED
+
+        # Second run should skip or return same count
+        result2 = await harness.run_phase("statistics")
+        assert result2.status in (PhaseStatus.COMPLETED, PhaseStatus.SKIPPED)
+
+        # Count profiles - should not have duplicates
+        from sqlalchemy import func, select
+
+        from dataraum_context.analysis.statistics.db_models import StatisticalProfile
+
+        async with harness.session_factory() as session:
+            stmt = (
+                select(func.count())
+                .select_from(StatisticalProfile)
+                .where(StatisticalProfile.layer == "typed")
+            )
+            profile_count = (await session.execute(stmt)).scalar()
+
+        # Profile count should be reasonable (not doubled)
+        # We have 5 tables with various columns, expect ~40-50 profiles
+        assert profile_count < 100

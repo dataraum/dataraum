@@ -46,6 +46,8 @@ from dataraum_context.pipeline.phases import (
     CorrelationsPhase,
     ImportPhase,
     RelationshipsPhase,
+    SemanticPhase,
+    SlicingPhase,
     StatisticalQualityPhase,
     StatisticsPhase,
     TemporalPhase,
@@ -152,6 +154,8 @@ def create_pipeline(config: RunConfig) -> Pipeline:
     pipeline.register(RelationshipsPhase())
     pipeline.register(CorrelationsPhase())
     pipeline.register(TemporalPhase())
+    pipeline.register(SemanticPhase())
+    pipeline.register(SlicingPhase())
 
     return pipeline
 

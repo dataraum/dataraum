@@ -344,6 +344,16 @@ Items that depend on external work or decisions.
 
 ---
 
+## Evaluation Notes
+
+Items to evaluate during implementation:
+
+- [ ] **Cycles as Context**: Evaluate if BusinessCycleAgent output (detected cycles, entity flows,
+  business processes) should feed into context assembly. Could help LLM understand data semantics
+  better when generating queries or interpreting results. Cycles depend on semantic phase.
+
+---
+
 ## Infrastructure: Concurrency Design
 
 > **Problem Statement**: The current pipeline orchestrator has concurrency limitations that need architectural design work.

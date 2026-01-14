@@ -344,6 +344,87 @@ Items that depend on external work or decisions.
 
 ---
 
+## Infrastructure: Concurrency Design
+
+> **Problem Statement**: The current pipeline orchestrator has concurrency limitations that need architectural design work.
+
+### Current Workaround
+- `max_parallel=1` forces sequential execution
+- Works but leaves performance on the table
+
+### Issues to Solve
+
+**1. SQLAlchemy Session Conflicts**
+- Multiple async coroutines sharing one session causes "Session is already flushing" errors
+- `session.flush()` vs `session.commit()` semantics need clarity across phases
+- `run_sync()` usage with ORM queries causes issues in concurrent contexts
+
+**2. DuckDB Thread Safety**
+- DuckDB is not thread-safe for concurrent writes
+- Multiple phases writing to different tables still conflict
+- Options: connection pooling, write queue, or explicit locking
+
+### Design Options
+
+**Option A: Session-per-Phase**
+- Each phase gets its own SQLAlchemy session
+- Requires careful transaction boundaries
+- May need distributed transaction coordination
+
+**Option B: DBOS Integration**
+- [DBOS](https://docs.dbos.dev/) provides durable execution with automatic checkpointing
+- Built-in workflow orchestration with reliability guarantees
+- Would replace custom checkpoint logic
+- Trade-off: external dependency vs. custom code
+
+**Option C: Explicit Write Queue**
+- All DuckDB writes go through a serialized queue
+- Phases can run analytics in parallel, queue writes
+- Simpler but potentially slower
+
+### Decision Pending
+- Need benchmarks to understand actual parallelism gains
+- Need to evaluate DBOS learning curve vs. building custom
+- Consider whether true parallelism is needed given typical data sizes
+
+---
+
+## Infrastructure: CLI Improvements
+
+> **Goal**: Better developer experience and operational visibility.
+
+### Progress Reporting
+- [ ] Real-time phase progress with elapsed time
+- [ ] Row counts and throughput metrics
+- [ ] Clear indication of which phase is running
+- [ ] Summary statistics on completion
+
+### Resume from Checkpoint
+- [ ] Detect incomplete runs on startup
+- [ ] Offer to resume from last checkpoint
+- [ ] Show what work would be skipped/redone
+- [ ] `--force-restart` flag to ignore checkpoints
+
+### Phase Selection
+- [ ] `--phases typing,statistics` to run specific phases
+- [ ] `--skip-phases semantic` to exclude phases
+- [ ] `--from-phase typing` to start from a phase
+- [ ] `--to-phase statistics` to stop at a phase
+
+### Output Verbosity
+- [ ] `--quiet` for minimal output (errors only)
+- [ ] Default: progress summary per phase
+- [ ] `--verbose` for detailed per-table output
+- [ ] `--debug` for full logging including SQL
+
+### Pipeline Status Command
+- [ ] `pipeline status` shows current state
+- [ ] Lists completed/pending/failed phases
+- [ ] Shows checkpoint timestamps
+- [ ] Estimates remaining work
+
+---
+
 ## Technical Debt
 
 Items that should be addressed when time permits.

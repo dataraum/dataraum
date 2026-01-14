@@ -43,36 +43,6 @@ features:
       Analyze column roles, entity types, business terms,
       and relationships across tables.
 
-  quality_rule_generation:
-    enabled: true
-    model_tier: balanced
-    prompt_file: prompts/quality_rules.yaml
-    description: >
-      Generate domain-specific quality rules based on
-      semantic understanding and ontology.
-
-  suggested_queries:
-    enabled: true
-    model_tier: fast
-    prompt_file: prompts/suggested_queries.yaml
-    description: >
-      Generate useful starting queries for data exploration.
-
-  context_summary:
-    enabled: true
-    model_tier: fast
-    prompt_file: prompts/context_summary.yaml
-    description: >
-      Generate natural language overview of the dataset.
-
-  filter_recommendations:
-    enabled: true
-    model_tier: fast
-    prompt_file: prompts/filter_recommendations.yaml
-    description: >
-      Generate SQL WHERE clauses to filter problematic data
-      based on quality issues detected.
-
   slicing_analysis:
     enabled: true
     model_tier: balanced
@@ -92,7 +62,7 @@ features:
   validation:
     enabled: true
     model_tier: balanced
-    prompt_file: prompts/validation.yaml
+    # Note: ValidationAgent uses inline prompts, not a yaml file
     description: >
       Generate SQL queries for validation checks using semantic
       annotations for column resolution. Supports financial and
@@ -119,9 +89,6 @@ features:
 # Fallback when LLM disabled or unavailable
 fallback:
   semantic_analysis: manual_only # Require config/semantic_overrides.yaml
-  quality_rule_generation: default_rules # Use config/rules/default.yaml
-  suggested_queries: skip # Don't generate
-  context_summary: skip # Don't generate
 
 # Cost and rate controls
 limits:

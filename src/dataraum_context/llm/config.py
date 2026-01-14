@@ -24,18 +24,15 @@ class FeatureConfig(BaseModel):
 
     enabled: bool = True
     model_tier: str = "balanced"
-    prompt_file: str
+    prompt_file: str | None = None  # Some features use inline prompts
     description: str = ""
 
 
 class LLMFeatures(BaseModel):
     """All LLM features configuration."""
 
+    # Active features with implementations
     semantic_analysis: FeatureConfig
-    quality_rule_generation: FeatureConfig
-    suggested_queries: FeatureConfig
-    context_summary: FeatureConfig
-    filter_recommendations: FeatureConfig | None = None
     slicing_analysis: FeatureConfig | None = None
     quality_summary: FeatureConfig | None = None
     validation: FeatureConfig | None = None

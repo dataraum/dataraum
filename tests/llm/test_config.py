@@ -30,7 +30,9 @@ def test_llm_features_enabled():
     """Test that LLM features are configured."""
     config = load_llm_config()
 
+    # Core implemented features
     assert config.features.semantic_analysis.enabled
-    assert config.features.quality_rule_generation.enabled
-    assert config.features.suggested_queries.enabled
-    assert config.features.context_summary.enabled
+    assert config.features.slicing_analysis is not None
+    assert config.features.quality_summary is not None
+    assert config.features.validation is not None
+    assert config.features.entropy_interpretation is not None

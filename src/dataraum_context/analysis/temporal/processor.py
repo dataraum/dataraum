@@ -86,15 +86,17 @@ async def profile_temporal(
             return Result.fail(f"Temporal profiling requires typed tables. Got: {table.layer}")
 
         # Get all temporal columns for this table
-        columns = await session.run_sync(
-            lambda sync_session: sync_session.query(Column)
-            .filter(
+        temporal_types = ["DATE", "TIMESTAMP", "TIMESTAMPTZ"]
+        column_stmt = (
+            select(Column)
+            .where(
                 Column.table_id == table.table_id,
-                Column.resolved_type.in_(["DATE", "TIMESTAMP", "TIMESTAMPTZ"]),
+                Column.resolved_type.in_(temporal_types),
             )
             .order_by(Column.column_position)
-            .all()
         )
+        column_result = await session.execute(column_stmt)
+        columns = column_result.scalars().all()
 
         if not columns:
             return Result.ok(
@@ -106,12 +108,13 @@ async def profile_temporal(
             )
 
         profiled_at = datetime.now(UTC)
-        profiles = []
+        profiles: list[TemporalAnalysisResult] = []
+        db_profiles: list[TemporalColumnProfile] = []
         import time
 
         start_time = time.time()
 
-        # Profile each temporal column
+        # Profile each temporal column (collect results, don't add to session yet)
         for column in columns:
             profile_result = await _profile_temporal_column(
                 table=table,
@@ -127,7 +130,7 @@ async def profile_temporal(
             if not profile:
                 continue
 
-            # Store in database
+            # Create DB object but don't add yet
             db_profile = TemporalColumnProfile(
                 profile_id=profile.metric_id,
                 column_id=column.column_id,
@@ -145,16 +148,24 @@ async def profile_temporal(
                 is_stale=profile.update_frequency.is_stale if profile.update_frequency else False,
                 profile_data=profile.model_dump(mode="json"),
             )
-            session.add(db_profile)
+            db_profiles.append(db_profile)
             profiles.append(profile)
 
-        # Compute and persist table-level summary
+        # Compute table-level summary
         table_summary = None
         if profiles:
             table_summary = _compute_table_summary(table, profiles, profiled_at)
+
+        # Now add all objects to session at once (avoids autoflush issues)
+        for db_profile in db_profiles:
+            session.add(db_profile)
+
+        if table_summary:
             await _persist_table_summary(table_summary, session)
 
-        await session.commit()
+        # Flush to ensure data is persisted, but don't commit
+        # The caller (phase/orchestrator) manages the transaction
+        await session.flush()
 
         duration = time.time() - start_time
 

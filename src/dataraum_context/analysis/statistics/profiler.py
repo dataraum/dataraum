@@ -86,12 +86,13 @@ async def profile_statistics(
             return Result.fail(f"Statistics profiling requires typed tables. Got: {table.layer}")
 
         # Get all columns for this table
-        columns = await session.run_sync(
-            lambda sync_session: sync_session.query(Column)
-            .filter(Column.table_id == table.table_id)
-            .order_by(Column.column_position)
-            .all()
+        from sqlalchemy import select
+
+        column_stmt = (
+            select(Column).where(Column.table_id == table.table_id).order_by(Column.column_position)
         )
+        column_result = await session.execute(column_stmt)
+        columns = column_result.scalars().all()
 
         if not columns:
             return Result.fail(f"No columns found for table {table.table_id}")
@@ -141,7 +142,10 @@ async def profile_statistics(
 
         # Update table's last_profiled_at
         table.last_profiled_at = profiled_at
-        await session.commit()
+
+        # Flush to ensure data is persisted, but don't commit
+        # The caller (phase/orchestrator) manages the transaction
+        await session.flush()
 
         duration = time.time() - start_time
 

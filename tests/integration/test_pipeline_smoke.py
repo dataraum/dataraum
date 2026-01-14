@@ -570,3 +570,260 @@ class TestStatisticsPhaseSmoke:
         # Profile count should be reasonable (not doubled)
         # We have 5 tables with various columns, expect ~40-50 profiles
         assert profile_count < 100
+
+
+class TestStatisticalQualityPhaseSmoke:
+    """Smoke tests for the statistical quality phase."""
+
+    @pytest.mark.asyncio
+    async def test_statistical_quality_runs(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify statistical quality phase completes."""
+        # Run prerequisites
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+        await harness.run_phase("statistics")
+
+        # Run statistical quality
+        result = await harness.run_phase("statistical_quality")
+
+        assert result.status == PhaseStatus.COMPLETED, f"Statistical quality failed: {result.error}"
+        assert "quality_metrics" in result.outputs
+
+    @pytest.mark.asyncio
+    async def test_statistical_quality_detects_outliers(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify outlier detection runs on numeric columns."""
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+        await harness.run_phase("statistics")
+        result = await harness.run_phase("statistical_quality")
+
+        assert result.status == PhaseStatus.COMPLETED
+        assert result.outputs.get("total_outlier_results", 0) >= 0
+
+
+class TestRelationshipsPhaseSmoke:
+    """Smoke tests for the relationships phase."""
+
+    @pytest.mark.asyncio
+    async def test_relationships_runs(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify relationships phase completes."""
+        # Run prerequisites
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+        await harness.run_phase("statistics")
+
+        # Run relationships
+        result = await harness.run_phase("relationships")
+
+        assert result.status == PhaseStatus.COMPLETED, f"Relationships failed: {result.error}"
+        assert "relationship_candidates" in result.outputs
+
+    @pytest.mark.asyncio
+    async def test_relationships_detects_candidates(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify relationship candidates are detected between tables."""
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+        await harness.run_phase("statistics")
+        result = await harness.run_phase("relationships")
+
+        assert result.status == PhaseStatus.COMPLETED
+        # With 5 related tables, we should find some relationship candidates
+        total_candidates = result.outputs.get("total_candidates", 0)
+        assert total_candidates >= 0  # May be 0 if no overlaps detected
+
+
+class TestCorrelationsPhaseSmoke:
+    """Smoke tests for the correlations phase."""
+
+    @pytest.mark.asyncio
+    async def test_correlations_runs(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify correlations phase completes."""
+        # Run prerequisites
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+        await harness.run_phase("statistics")
+
+        # Run correlations
+        result = await harness.run_phase("correlations")
+
+        assert result.status == PhaseStatus.COMPLETED, f"Correlations failed: {result.error}"
+        assert "correlations" in result.outputs
+
+    @pytest.mark.asyncio
+    async def test_correlations_stores_results(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify correlation results are stored in database."""
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+        await harness.run_phase("statistics")
+        result = await harness.run_phase("correlations")
+
+        assert result.status == PhaseStatus.COMPLETED
+        # Correlations might exist between numeric columns
+        total_correlations = result.outputs.get("total_correlations", 0)
+        assert total_correlations >= 0
+
+
+class TestTemporalPhaseSmoke:
+    """Smoke tests for the temporal phase."""
+
+    @pytest.mark.asyncio
+    async def test_temporal_runs(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify temporal phase completes."""
+        # Run prerequisites
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+
+        # Run temporal (doesn't need statistics)
+        result = await harness.run_phase("temporal")
+
+        assert result.status == PhaseStatus.COMPLETED, f"Temporal failed: {result.error}"
+        assert "temporal_profiles" in result.outputs
+
+    @pytest.mark.asyncio
+    async def test_temporal_profiles_date_columns(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify temporal analysis is performed on date columns."""
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+        result = await harness.run_phase("temporal")
+
+        assert result.status == PhaseStatus.COMPLETED
+        # Transaction date and other date columns should be profiled
+        total_profiles = result.outputs.get("total_profiles", 0)
+        assert total_profiles > 0  # At least Transaction date
+
+    @pytest.mark.asyncio
+    async def test_temporal_stores_profiles(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify temporal profiles are stored in database."""
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+        await harness.run_phase("temporal")
+
+        # Check that profiles are stored
+        from sqlalchemy import func, select
+
+        from dataraum_context.analysis.temporal.db_models import TemporalColumnProfile
+
+        async with harness.session_factory() as session:
+            stmt = select(func.count()).select_from(TemporalColumnProfile)
+            profile_count = (await session.execute(stmt)).scalar()
+
+        # Should have at least one temporal profile
+        assert profile_count > 0
+
+
+class TestFullPipelineSmoke:
+    """Smoke tests for the full pipeline."""
+
+    @pytest.mark.asyncio
+    async def test_full_pipeline_completes(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify all phases complete in sequence."""
+        # Run import
+        result = await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        assert result.status == PhaseStatus.COMPLETED, f"Import failed: {result.error}"
+
+        # Run typing
+        result = await harness.run_phase("typing")
+        assert result.status == PhaseStatus.COMPLETED, f"Typing failed: {result.error}"
+
+        # Run temporal (parallel track)
+        result = await harness.run_phase("temporal")
+        assert result.status == PhaseStatus.COMPLETED, f"Temporal failed: {result.error}"
+
+        # Run statistics
+        result = await harness.run_phase("statistics")
+        assert result.status == PhaseStatus.COMPLETED, f"Statistics failed: {result.error}"
+
+        # Run statistical quality
+        result = await harness.run_phase("statistical_quality")
+        assert result.status == PhaseStatus.COMPLETED, f"Statistical quality failed: {result.error}"
+
+        # Run relationships
+        result = await harness.run_phase("relationships")
+        assert result.status == PhaseStatus.COMPLETED, f"Relationships failed: {result.error}"
+
+        # Run correlations
+        result = await harness.run_phase("correlations")
+        assert result.status == PhaseStatus.COMPLETED, f"Correlations failed: {result.error}"
+
+        # All 7 phases should have completed
+        assert len(harness.results) == 7

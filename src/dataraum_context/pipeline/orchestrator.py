@@ -238,6 +238,11 @@ class Pipeline:
             if not phase_def:
                 continue
 
+            # Check if phase has an implementation
+            if name not in self.phases:
+                self._skipped.add(name)
+                continue
+
             # Check if LLM phase should be skipped
             if self.config.skip_llm_phases and phase_def.requires_llm:
                 self._skipped.add(name)
@@ -333,11 +338,23 @@ def get_pipeline() -> Pipeline:
 
 def _register_builtin_phases(pipeline: Pipeline) -> None:
     """Register all built-in phase implementations."""
-    from dataraum_context.pipeline.phases import ImportPhase, StatisticsPhase, TypingPhase
+    from dataraum_context.pipeline.phases import (
+        CorrelationsPhase,
+        ImportPhase,
+        RelationshipsPhase,
+        StatisticalQualityPhase,
+        StatisticsPhase,
+        TemporalPhase,
+        TypingPhase,
+    )
 
     pipeline.register(ImportPhase())
     pipeline.register(TypingPhase())
     pipeline.register(StatisticsPhase())
+    pipeline.register(StatisticalQualityPhase())
+    pipeline.register(RelationshipsPhase())
+    pipeline.register(CorrelationsPhase())
+    pipeline.register(TemporalPhase())
 
 
 async def run_pipeline(

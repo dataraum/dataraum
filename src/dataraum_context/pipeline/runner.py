@@ -42,7 +42,15 @@ from sqlalchemy.ext.asyncio import (
 
 from dataraum_context.pipeline.base import PhaseStatus
 from dataraum_context.pipeline.orchestrator import Pipeline, PipelineConfig
-from dataraum_context.pipeline.phases import ImportPhase, StatisticsPhase, TypingPhase
+from dataraum_context.pipeline.phases import (
+    CorrelationsPhase,
+    ImportPhase,
+    RelationshipsPhase,
+    StatisticalQualityPhase,
+    StatisticsPhase,
+    TemporalPhase,
+    TypingPhase,
+)
 from dataraum_context.storage import init_database
 
 # Default junk columns to remove from CSV imports
@@ -129,6 +137,9 @@ def create_pipeline(config: RunConfig) -> Pipeline:
         skip_llm_phases=config.skip_llm,
         skip_completed=True,
         fail_fast=True,
+        # Sequential execution to avoid SQLAlchemy session conflicts
+        # (async sessions don't support concurrent operations from multiple coroutines)
+        max_parallel=1,
     )
 
     pipeline = Pipeline(config=pipeline_config)
@@ -137,6 +148,10 @@ def create_pipeline(config: RunConfig) -> Pipeline:
     pipeline.register(ImportPhase())
     pipeline.register(TypingPhase())
     pipeline.register(StatisticsPhase())
+    pipeline.register(StatisticalQualityPhase())
+    pipeline.register(RelationshipsPhase())
+    pipeline.register(CorrelationsPhase())
+    pipeline.register(TemporalPhase())
 
     return pipeline
 
@@ -199,8 +214,8 @@ async def run(config: RunConfig) -> RunResult:
         # Create pipeline
         pipeline = create_pipeline(config)
 
-        # Determine target phase - use specified or latest implemented
-        target_phase = config.target_phase or get_latest_implemented_phase(pipeline)
+        # Use target phase if specified, otherwise run all implemented phases
+        target_phase = config.target_phase
 
         # Build run configuration
         run_config = {

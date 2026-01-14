@@ -41,9 +41,8 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from dataraum_context.pipeline.base import PhaseStatus
-from dataraum_context.pipeline.orchestrator import Pipeline, PipelineConfig, run_pipeline
-from dataraum_context.pipeline.phases import ImportPhase
-from dataraum_context.pipeline.status import get_pipeline_status
+from dataraum_context.pipeline.orchestrator import Pipeline, PipelineConfig
+from dataraum_context.pipeline.phases import ImportPhase, TypingPhase
 from dataraum_context.storage import init_database
 
 # Default junk columns to remove from CSV imports
@@ -136,7 +135,7 @@ def create_pipeline(config: RunConfig) -> Pipeline:
 
     # Register available phases
     pipeline.register(ImportPhase())
-    # TODO: Register more phases as they are implemented
+    pipeline.register(TypingPhase())
 
     return pipeline
 
@@ -154,15 +153,15 @@ async def run(config: RunConfig) -> RunResult:
     source_id = str(uuid4())
 
     if config.verbose:
-        print(f"Pipeline Run")
-        print(f"=" * 60)
+        print("Pipeline Run")
+        print("=" * 60)
         print(f"Source: {config.source_path}")
         print(f"Output: {config.output_dir}")
         print(f"Source ID: {source_id}")
         if config.target_phase:
             print(f"Target Phase: {config.target_phase}")
         if config.skip_llm:
-            print(f"LLM Phases: Skipped")
+            print("LLM Phases: Skipped")
         print()
 
     try:
@@ -195,9 +194,6 @@ async def run(config: RunConfig) -> RunResult:
                 run_config=run_config,
             )
 
-            # Get final status
-            status = await get_pipeline_status(session, source_id)
-
         # Close connections
         duckdb_conn.close()
         await engine.dispose()
@@ -210,8 +206,8 @@ async def run(config: RunConfig) -> RunResult:
         skipped = sum(1 for r in results.values() if r.status == PhaseStatus.SKIPPED)
 
         if config.verbose:
-            print(f"Results")
-            print(f"-" * 60)
+            print("Results")
+            print("-" * 60)
             for phase_name, result in results.items():
                 status_icon = {
                     PhaseStatus.COMPLETED: "✓",
@@ -223,14 +219,14 @@ async def run(config: RunConfig) -> RunResult:
                     print(f"      Error: {result.error}")
 
             print()
-            print(f"Summary")
-            print(f"-" * 60)
+            print("Summary")
+            print("-" * 60)
             print(f"  Completed: {completed}")
             print(f"  Failed: {failed}")
             print(f"  Skipped: {skipped}")
             print(f"  Duration: {duration:.2f}s")
             print()
-            print(f"Output files:")
+            print("Output files:")
             print(f"  Metadata: {config.output_dir / 'metadata.db'}")
             print(f"  Data: {config.output_dir / 'data.duckdb'}")
 

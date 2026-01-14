@@ -195,3 +195,127 @@ class TestImportPhaseRealData:
 
         # The master table should have many thousands of rows
         assert row_count > 10000
+
+
+class TestTypingPhaseSmoke:
+    """Smoke tests for the typing phase."""
+
+    @pytest.mark.asyncio
+    async def test_typing_creates_typed_tables(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify typed tables are created after typing phase."""
+        # First import
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+
+        # Then type
+        result = await harness.run_phase("typing")
+
+        assert result.status == PhaseStatus.COMPLETED, f"Typing failed: {result.error}"
+        assert "typed_tables" in result.outputs
+        assert len(result.outputs["typed_tables"]) == 5  # 5 tables typed
+
+    @pytest.mark.asyncio
+    async def test_typing_creates_quarantine_tables(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify quarantine tables are created."""
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+
+        tables = harness.get_duckdb_tables()
+
+        # Should have raw, typed, and quarantine tables
+        raw_tables = [t for t in tables if t.startswith("raw_")]
+        typed_tables = [t for t in tables if t.startswith("typed_")]
+        quarantine_tables = [t for t in tables if t.startswith("quarantine_")]
+
+        assert len(raw_tables) == 5
+        assert len(typed_tables) == 5
+        assert len(quarantine_tables) == 5
+
+    @pytest.mark.asyncio
+    async def test_typing_infers_correct_types(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify types are correctly inferred."""
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+
+        # Check transaction table types
+        columns = harness.query_duckdb("DESCRIBE typed_transactions")
+        col_types = {row[0]: row[1] for row in columns}
+
+        # Transaction ID should be integer
+        assert col_types["Transaction ID"] == "BIGINT"
+
+        # Transaction date should be date
+        assert col_types["Transaction date"] == "DATE"
+
+        # Amount should be numeric
+        assert col_types["Amount"] == "DOUBLE"
+
+    @pytest.mark.asyncio
+    async def test_typing_preserves_row_counts(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify row counts are preserved (typed + quarantine = raw)."""
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+
+        for base_name in ["customers", "vendors", "products", "transactions", "payment_methods"]:
+            raw_count = harness.query_duckdb(f"SELECT COUNT(*) FROM raw_{base_name}")[0][0]
+            typed_count = harness.query_duckdb(f"SELECT COUNT(*) FROM typed_{base_name}")[0][0]
+            quarantine_count = harness.query_duckdb(f"SELECT COUNT(*) FROM quarantine_{base_name}")[
+                0
+            ][0]
+
+            # Typed + quarantine should equal raw
+            assert typed_count + quarantine_count == raw_count, (
+                f"{base_name}: typed({typed_count}) + quarantine({quarantine_count}) != raw({raw_count})"
+            )
+
+    @pytest.mark.asyncio
+    async def test_typing_with_clean_data_has_no_quarantine(
+        self,
+        harness: PipelineTestHarness,
+        small_finance_path: Path,
+    ):
+        """Verify clean synthetic data has no quarantined rows."""
+        await harness.run_import(
+            source_path=small_finance_path,
+            source_name="small_finance",
+            junk_columns=FINANCE_JUNK_COLUMNS,
+        )
+        await harness.run_phase("typing")
+
+        # All quarantine tables should be empty for clean data
+        for base_name in ["customers", "vendors", "products", "transactions", "payment_methods"]:
+            quarantine_count = harness.query_duckdb(f"SELECT COUNT(*) FROM quarantine_{base_name}")[
+                0
+            ][0]
+            assert quarantine_count == 0, f"Unexpected quarantine rows in {base_name}"

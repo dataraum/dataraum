@@ -266,7 +266,7 @@ def random_date(start_year=2023, end_year=2024):
 def generate_customers():
     """Generate customer fixture data."""
     rows = []
-    for i in range(NUM_CUSTOMERS):
+    for _ in range(NUM_CUSTOMERS):
         name = random_name()
         bill_city, bill_state, bill_zip = random_city_state_zip()
         ship_city, ship_state, ship_zip = random_city_state_zip()
@@ -294,7 +294,7 @@ def generate_customers():
 def generate_vendors():
     """Generate vendor fixture data."""
     rows = []
-    for i in range(NUM_VENDORS):
+    for _ in range(NUM_VENDORS):
         city, state, zip_code = random_city_state_zip()
         business_id = random.randint(1, 3)
 
@@ -317,7 +317,7 @@ def generate_products():
     rows = []
     used_names = set()
 
-    for i in range(NUM_PRODUCTS):
+    for _ in range(NUM_PRODUCTS):
         # Ensure unique product names
         name = random.choice(PRODUCT_NAMES)
         while name in used_names:

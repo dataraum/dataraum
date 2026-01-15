@@ -49,6 +49,7 @@ load_dotenv()
 async def main(
     skip_semantic: bool = False,
     run_temporal: bool = False,
+    run_topology: bool = False,
     time_column: str | None = None,
     period_start: date | None = None,
     period_end: date | None = None,
@@ -58,6 +59,7 @@ async def main(
 
     Args:
         skip_semantic: Whether to skip semantic analysis
+        run_topology: Whether to run topological analysis on slices
         run_temporal: Whether to run temporal analysis
         time_column: Name of temporal column for temporal analysis
         period_start: Start date for temporal analysis
@@ -321,11 +323,133 @@ async def main(
                         if len(temporal_result.errors) > 3:
                             print(f"      ... and {len(temporal_result.errors) - 3} more")
 
+                    # Run temporal topology analysis if topology is also enabled
+                    if run_topology:
+                        try:
+                            from dataraum_context.analysis.temporal_slicing import (
+                                analyze_temporal_topology,
+                            )
+                            from dataraum_context.storage import Column
+
+                            print("\n   Running temporal topology analysis...")
+
+                            temporal_topo_results: list[dict[str, Any]] = []
+                            grain_map = {
+                                "daily": "day",
+                                "weekly": "week",
+                                "monthly": "month",
+                            }
+                            period_grain = grain_map.get(time_grain, "month")
+
+                            for slice_info in slice_infos[:3]:  # Limit to first 3 for demo
+                                # Get numeric columns for this slice
+                                cols_stmt = select(Column).where(
+                                    Column.table_id == slice_info.slice_table_id
+                                )
+                                cols_result = await session.execute(cols_stmt)
+                                cols = list(cols_result.scalars().all())
+
+                                numeric_types = {
+                                    "INTEGER", "FLOAT", "DECIMAL", "NUMERIC",
+                                    "DOUBLE", "BIGINT", "INT", "REAL",
+                                }
+                                numeric_cols = [
+                                    c.column_name for c in cols
+                                    if (c.resolved_type or c.raw_type or "").upper() in numeric_types
+                                ]
+
+                                if len(numeric_cols) >= 3:
+                                    topo_result = analyze_temporal_topology(
+                                        duck_conn=duckdb_conn,
+                                        table_name=slice_info.slice_table_name,
+                                        time_column=time_column,
+                                        numeric_columns=numeric_cols,
+                                        period=period_grain,
+                                    )
+
+                                    temporal_topo_results.append({
+                                        "slice": slice_info.slice_table_name,
+                                        "periods": topo_result.periods_analyzed,
+                                        "trend": topo_result.trend_direction or "unknown",
+                                        "drifts": len(topo_result.topology_drifts),
+                                        "anomalies": len(topo_result.structural_anomaly_periods),
+                                    })
+
+                            if temporal_topo_results:
+                                print(f"   Temporal topology analyzed: {len(temporal_topo_results)} slices")
+                                for r in temporal_topo_results[:3]:
+                                    print(
+                                        f"      - {r['slice']}: {r['periods']} periods, "
+                                        f"trend={r['trend']}, {r['drifts']} drifts, "
+                                        f"{r['anomalies']} anomalies"
+                                    )
+
+                        except Exception as topo_err:
+                            print(f"   WARNING: Temporal topology failed: {topo_err}")
+
                 except Exception as e:
                     print(f"   ERROR in temporal analysis: {e}")
                     import traceback
 
                     traceback.print_exc()
+
+        # Run topology analysis if enabled
+        if run_topology:
+            step_num += 1
+            print(f"\n{step_num}. Running topology analysis on slice tables...")
+            print("-" * 50)
+
+            try:
+                from dataraum_context.analysis.slicing.slice_runner import (
+                    run_topology_on_slices,
+                )
+
+                topo_result = await run_topology_on_slices(
+                    session=session,
+                    duckdb_conn=duckdb_conn,
+                    slice_infos=slice_infos,
+                )
+
+                print(f"   Slices analyzed: {topo_result.slices_analyzed}")
+                print(f"   Slices with anomalies: {topo_result.slices_with_anomalies}")
+
+                if topo_result.average_topology:
+                    avg = topo_result.average_topology
+                    print(f"\n   Average topology across slices:")
+                    print(f"      Betti-0 (components): {avg['betti_0']:.1f}")
+                    print(f"      Betti-1 (cycles): {avg['betti_1']:.1f}")
+                    print(f"      Complexity: {avg['complexity']:.1f}")
+
+                if topo_result.structural_drift:
+                    print(
+                        f"\n   Structural drift detected "
+                        f"({len(topo_result.structural_drift)} deviations):"
+                    )
+                    for drift in topo_result.structural_drift[:5]:
+                        print(
+                            f"      - {drift['slice_value']}: {drift['metric']} = "
+                            f"{drift['value']:.1f} (avg: {drift['average']:.1f}, "
+                            f"{drift['deviation_pct']:.0f}% deviation)"
+                        )
+                    if len(topo_result.structural_drift) > 5:
+                        print(
+                            f"      ... and {len(topo_result.structural_drift) - 5} more"
+                        )
+
+                if topo_result.errors:
+                    print(f"\n   Topology warnings ({len(topo_result.errors)}):")
+                    for err in topo_result.errors[:3]:
+                        print(f"      - {err}")
+                    if len(topo_result.errors) > 3:
+                        print(f"      ... and {len(topo_result.errors) - 3} more")
+
+            except ImportError as e:
+                print(f"   Skipped: {e}")
+            except Exception as e:
+                print(f"   ERROR in topology analysis: {e}")
+                import traceback
+
+                traceback.print_exc()
 
         # Summary
         await _print_slice_analysis_summary(session, duckdb_conn)
@@ -402,6 +526,11 @@ if __name__ == "__main__":
         help="Enable temporal analysis",
     )
     parser.add_argument(
+        "--topology",
+        action="store_true",
+        help="Enable topological analysis on slice tables",
+    )
+    parser.add_argument(
         "--time-column",
         type=str,
         help="Name of the temporal column (required with --temporal)",
@@ -443,6 +572,7 @@ if __name__ == "__main__":
         main(
             skip_semantic=args.skip_semantic,
             run_temporal=args.temporal,
+            run_topology=args.topology,
             time_column=args.time_column,
             period_start=period_start,
             period_end=period_end,

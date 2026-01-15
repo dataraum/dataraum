@@ -525,14 +525,284 @@ async def run_temporal_analysis_on_slices(
     )
 
 
+@dataclass
+class TopologySlicesResult:
+    """Result from running topology analysis on multiple slices."""
+
+    slices_analyzed: int
+    slices_with_anomalies: int
+    topology_by_slice: dict[str, dict[str, Any]]
+    structural_drift: list[dict[str, Any]]
+    average_topology: dict[str, float] | None
+    errors: list[str]
+
+
+async def run_topology_on_slices(
+    session: AsyncSession,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    slice_infos: list[SliceTableInfo],
+    correlation_threshold: float = 0.5,
+) -> TopologySlicesResult:
+    """Run topological analysis on slice tables to detect structural differences.
+
+    Computes per-slice topology metrics to identify:
+    - Slices with anomalous correlation structure
+    - Structural differences between business segments
+    - Topological complexity variations
+
+    Args:
+        session: SQLAlchemy session
+        duckdb_conn: DuckDB connection
+        slice_infos: List of slice table info from registration
+        correlation_threshold: Min correlation to create edge (default 0.5)
+
+    Returns:
+        TopologySlicesResult with topology results and cross-slice comparison
+    """
+    topology_by_slice: dict[str, dict[str, Any]] = {}
+    structural_drift: list[dict[str, Any]] = []
+    errors: list[str] = []
+    slices_with_anomalies = 0
+
+    # Collect topology for all slices
+    slice_topologies: list[dict[str, Any]] = []
+
+    for slice_info in slice_infos:
+        try:
+            # Get numeric columns for this slice table
+            columns_stmt = select(Column).where(Column.table_id == slice_info.slice_table_id)
+            columns_result = await session.execute(columns_stmt)
+            columns = list(columns_result.scalars().all())
+
+            numeric_types = {
+                "INTEGER",
+                "FLOAT",
+                "DECIMAL",
+                "NUMERIC",
+                "DOUBLE",
+                "BIGINT",
+                "INT",
+                "REAL",
+            }
+            numeric_columns = [
+                c for c in columns if (c.resolved_type or c.raw_type or "").upper() in numeric_types
+            ]
+
+            if len(numeric_columns) < 3:
+                errors.append(
+                    f"{slice_info.slice_table_name}: Not enough numeric columns "
+                    f"({len(numeric_columns)}) for topology"
+                )
+                continue
+
+            col_names = [c.column_name for c in numeric_columns]
+
+            # Compute correlations
+            correlations: dict[tuple[str, str], float] = {}
+            correlation_values: list[float] = []
+
+            for i, col1 in enumerate(col_names):
+                for col2 in col_names[i + 1 :]:
+                    try:
+                        result = duckdb_conn.execute(f"""
+                            SELECT CORR("{col1}", "{col2}") as corr
+                            FROM "{slice_info.slice_table_name}"
+                            WHERE "{col1}" IS NOT NULL AND "{col2}" IS NOT NULL
+                        """).fetchone()
+                        if result and result[0] is not None:
+                            corr_val = float(result[0])
+                            correlations[(col1, col2)] = corr_val
+                            correlation_values.append(abs(corr_val))
+                    except Exception:
+                        pass
+
+            # Build adjacency for strong correlations
+            edges: list[tuple[str, str]] = [
+                (c1, c2)
+                for (c1, c2), v in correlations.items()
+                if abs(v) >= correlation_threshold
+            ]
+
+            # Compute Betti numbers using Union-Find
+            if edges:
+                parent: dict[str, str] = {}
+
+                def find(x: str) -> str:
+                    if x not in parent:
+                        parent[x] = x
+                    if parent[x] != x:
+                        parent[x] = find(parent[x])
+                    return parent[x]
+
+                def union(x: str, y: str) -> None:
+                    px, py = find(x), find(y)
+                    if px != py:
+                        parent[px] = py
+
+                for col in col_names:
+                    find(col)
+                for c1, c2 in edges:
+                    union(c1, c2)
+
+                betti_0 = len(set(find(c) for c in col_names))
+
+                # Count triangles for Betti-1
+                edge_set = set(edges) | {(b, a) for a, b in edges}
+                triangles = 0
+                cols = list(set(c for e in edges for c in e))
+                for i, a in enumerate(cols):
+                    for j, b in enumerate(cols[i + 1 :], i + 1):
+                        for c in cols[j + 1 :]:
+                            if (
+                                (a, b) in edge_set
+                                and (b, c) in edge_set
+                                and (a, c) in edge_set
+                            ):
+                                triangles += 1
+                betti_1 = triangles
+            else:
+                betti_0 = len(col_names)
+                betti_1 = 0
+
+            betti_2 = 0
+            structural_complexity = betti_0 + betti_1 + betti_2
+            avg_corr = (
+                sum(correlation_values) / len(correlation_values)
+                if correlation_values
+                else 0.0
+            )
+
+            # Check for anomalies (disconnected or highly cyclic)
+            has_anomalies = betti_0 > len(col_names) * 0.7 or betti_1 > 5
+
+            # Store result
+            slice_topo = {
+                "table_name": slice_info.slice_table_name,
+                "slice_value": slice_info.slice_value,
+                "row_count": slice_info.row_count,
+                "betti_0": betti_0,
+                "betti_1": betti_1,
+                "betti_2": betti_2,
+                "complexity": structural_complexity,
+                "num_correlations": len(edges),
+                "avg_correlation": avg_corr,
+                "has_anomalies": has_anomalies,
+            }
+
+            slice_topologies.append(slice_topo)
+            topology_by_slice[slice_info.slice_table_name] = slice_topo
+
+            if has_anomalies:
+                slices_with_anomalies += 1
+
+            # Store in database if topology models are available
+            try:
+                from dataraum_context.analysis.topology.db_models import (
+                    TopologicalQualityMetrics,
+                )
+
+                existing_stmt = select(TopologicalQualityMetrics).where(
+                    TopologicalQualityMetrics.table_id == slice_info.slice_table_id
+                )
+                existing_result = await session.execute(existing_stmt)
+                existing = existing_result.scalar_one_or_none()
+
+                if existing:
+                    existing.betti_0 = betti_0
+                    existing.betti_1 = betti_1
+                    existing.betti_2 = betti_2
+                    existing.structural_complexity = structural_complexity
+                    existing.has_cycles = betti_1 > 0
+                    existing.has_anomalies = has_anomalies
+                    existing.topology_data = slice_topo
+                else:
+                    metric = TopologicalQualityMetrics(
+                        table_id=slice_info.slice_table_id,
+                        betti_0=betti_0,
+                        betti_1=betti_1,
+                        betti_2=betti_2,
+                        structural_complexity=structural_complexity,
+                        orphaned_components=betti_0 - 1 if betti_0 > 1 else 0,
+                        has_cycles=betti_1 > 0,
+                        has_anomalies=has_anomalies,
+                        homologically_stable=not has_anomalies,
+                        topology_data=slice_topo,
+                    )
+                    session.add(metric)
+            except ImportError:
+                pass  # Topology module not available
+
+        except Exception as e:
+            errors.append(f"{slice_info.slice_table_name}: {str(e)}")
+
+    await session.commit()
+
+    # Compute structural drift (compare topology across slices)
+    average_topology: dict[str, float] | None = None
+
+    if len(slice_topologies) >= 2:
+        avg_betti_0 = sum(t["betti_0"] for t in slice_topologies) / len(slice_topologies)
+        avg_betti_1 = sum(t["betti_1"] for t in slice_topologies) / len(slice_topologies)
+        avg_complexity = sum(t["complexity"] for t in slice_topologies) / len(
+            slice_topologies
+        )
+
+        average_topology = {
+            "betti_0": avg_betti_0,
+            "betti_1": avg_betti_1,
+            "complexity": avg_complexity,
+        }
+
+        # Find slices that deviate significantly
+        for topo in slice_topologies:
+            if avg_betti_0 > 0:
+                betti_0_diff = abs(topo["betti_0"] - avg_betti_0) / avg_betti_0
+                if betti_0_diff > 0.5:
+                    structural_drift.append(
+                        {
+                            "slice": topo["table_name"],
+                            "slice_value": topo["slice_value"],
+                            "metric": "betti_0",
+                            "value": topo["betti_0"],
+                            "average": avg_betti_0,
+                            "deviation_pct": betti_0_diff * 100,
+                        }
+                    )
+
+            if avg_complexity > 0:
+                complexity_diff = abs(topo["complexity"] - avg_complexity) / avg_complexity
+                if complexity_diff > 0.5:
+                    structural_drift.append(
+                        {
+                            "slice": topo["table_name"],
+                            "slice_value": topo["slice_value"],
+                            "metric": "complexity",
+                            "value": topo["complexity"],
+                            "average": avg_complexity,
+                            "deviation_pct": complexity_diff * 100,
+                        }
+                    )
+
+    return TopologySlicesResult(
+        slices_analyzed=len(slice_topologies),
+        slices_with_anomalies=slices_with_anomalies,
+        topology_by_slice=topology_by_slice,
+        structural_drift=structural_drift,
+        average_topology=average_topology,
+        errors=errors,
+    )
+
+
 __all__ = [
     "SliceTableInfo",
     "SliceAnalysisResult",
     "TemporalSlicesResult",
+    "TopologySlicesResult",
     "register_slice_tables",
     "run_analysis_on_slices",
     "run_statistics_on_slice",
     "run_quality_on_slice",
     "run_semantic_on_slices",
     "run_temporal_analysis_on_slices",
+    "run_topology_on_slices",
 ]

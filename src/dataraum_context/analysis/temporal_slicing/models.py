@@ -218,6 +218,49 @@ class AggregatedTemporalData:
     hidden_trend_insights: list[str] = field(default_factory=list)
 
 
+@dataclass
+class PeriodTopology:
+    """Topology metrics for a single time period."""
+
+    period_start: str
+    period_end: str
+    betti_0: int  # Connected components
+    betti_1: int  # Cycles
+    betti_2: int  # Voids
+    structural_complexity: int
+    num_correlations: int  # Edges in correlation graph
+    avg_correlation: float
+    has_anomalies: bool = False
+
+
+@dataclass
+class TopologyDrift:
+    """Detected change in topology between periods."""
+
+    period_from: str
+    period_to: str
+    metric: str  # betti_0, betti_1, complexity, correlation_density
+    value_from: float
+    value_to: float
+    change_pct: float
+    is_significant: bool = False
+
+
+@dataclass
+class TemporalTopologyResult:
+    """Result of temporal topology analysis."""
+
+    table_name: str
+    time_column: str
+    periods_analyzed: int = 0
+    period_topologies: list[PeriodTopology] = field(default_factory=list)
+    topology_drifts: list[TopologyDrift] = field(default_factory=list)
+    trend_direction: str = "stable"  # increasing, decreasing, stable, volatile
+    avg_complexity: float = 0.0
+    complexity_variance: float = 0.0
+    structural_anomaly_periods: list[str] = field(default_factory=list)
+
+
 __all__ = [
     "TimeGrain",
     "TemporalSliceConfig",
@@ -229,4 +272,7 @@ __all__ = [
     "VolumeAnomalyResult",
     "TemporalAnalysisResult",
     "AggregatedTemporalData",
+    "PeriodTopology",
+    "TopologyDrift",
+    "TemporalTopologyResult",
 ]

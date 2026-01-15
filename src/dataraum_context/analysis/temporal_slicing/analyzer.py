@@ -870,9 +870,286 @@ def aggregate_temporal_data(
     )
 
 
+# =============================================================================
+# LEVEL 5: TEMPORAL TOPOLOGY ANALYSIS
+# =============================================================================
+
+
+def analyze_temporal_topology(
+    duck_conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    time_column: str,
+    numeric_columns: list[str],
+    period: str = "month",
+    correlation_threshold: float = 0.5,
+    min_samples: int = 10,
+) -> "TemporalTopologyResult":
+    """Analyze how data topology changes over time periods.
+
+    Computes correlation-based topology for each time period and detects:
+    - Structural drift (Betti number changes)
+    - Complexity trends (increasing/decreasing structure)
+    - Anomalous periods (unusual topology)
+
+    Args:
+        duck_conn: DuckDB connection
+        table_name: Table to analyze
+        time_column: Temporal column for period grouping
+        numeric_columns: Columns to include in correlation analysis
+        period: Time granularity ('day', 'week', 'month', 'quarter', 'year')
+        correlation_threshold: Min correlation to form edge
+        min_samples: Min rows per period for valid analysis
+
+    Returns:
+        TemporalTopologyResult with per-period topology and drift detection
+    """
+    from dataraum_context.analysis.temporal_slicing.models import (
+        PeriodTopology,
+        TemporalTopologyResult,
+        TopologyDrift,
+    )
+
+    result = TemporalTopologyResult(
+        table_name=table_name,
+        time_column=time_column,
+    )
+
+    if len(numeric_columns) < 3:
+        return result  # Need at least 3 columns for meaningful topology
+
+    # Get time period boundaries
+    period_trunc = {
+        "day": "DAY",
+        "week": "WEEK",
+        "month": "MONTH",
+        "quarter": "QUARTER",
+        "year": "YEAR",
+    }.get(period, "MONTH")
+
+    try:
+        periods_df = duck_conn.execute(f"""
+            SELECT
+                DATE_TRUNC('{period_trunc}', "{time_column}") as period_start,
+                DATE_TRUNC('{period_trunc}', "{time_column}") + INTERVAL '1 {period}' as period_end,
+                COUNT(*) as row_count
+            FROM "{table_name}"
+            WHERE "{time_column}" IS NOT NULL
+            GROUP BY 1, 2
+            HAVING COUNT(*) >= {min_samples}
+            ORDER BY 1
+        """).fetchdf()
+    except Exception:
+        return result
+
+    if periods_df.empty:
+        return result
+
+    period_topologies: list[PeriodTopology] = []
+
+    for _, row in periods_df.iterrows():
+        period_start = str(row["period_start"])[:10]
+        period_end = str(row["period_end"])[:10]
+
+        # Compute correlations for this period
+        correlations: dict[tuple[str, str], float] = {}
+        correlation_values: list[float] = []
+
+        for i, col1 in enumerate(numeric_columns):
+            for col2 in numeric_columns[i + 1 :]:
+                try:
+                    corr_result = duck_conn.execute(f"""
+                        SELECT CORR("{col1}", "{col2}") as corr
+                        FROM "{table_name}"
+                        WHERE "{time_column}" >= '{period_start}'
+                          AND "{time_column}" < '{period_end}'
+                          AND "{col1}" IS NOT NULL
+                          AND "{col2}" IS NOT NULL
+                    """).fetchone()
+
+                    if corr_result and corr_result[0] is not None:
+                        corr_val = float(corr_result[0])
+                        correlations[(col1, col2)] = corr_val
+                        correlation_values.append(abs(corr_val))
+                except Exception:
+                    pass
+
+        # Build adjacency for strong correlations
+        edges: list[tuple[str, str]] = [
+            (c1, c2)
+            for (c1, c2), v in correlations.items()
+            if abs(v) >= correlation_threshold
+        ]
+
+        # Compute connected components (Betti-0) using Union-Find
+        if edges:
+            parent: dict[str, str] = {}
+
+            def find(x: str) -> str:
+                if x not in parent:
+                    parent[x] = x
+                if parent[x] != x:
+                    parent[x] = find(parent[x])
+                return parent[x]
+
+            def union(x: str, y: str) -> None:
+                px, py = find(x), find(y)
+                if px != py:
+                    parent[px] = py
+
+            # Add all columns as nodes
+            for col in numeric_columns:
+                find(col)
+
+            # Union connected columns
+            for c1, c2 in edges:
+                union(c1, c2)
+
+            # Count unique components
+            components = len(set(find(c) for c in numeric_columns))
+            betti_0 = components
+
+            # Count triangles for Betti-1 (cycles)
+            edge_set = set(edges) | {(b, a) for a, b in edges}
+            triangles = 0
+            cols = list(set(c for e in edges for c in e))
+            for i, a in enumerate(cols):
+                for j, b in enumerate(cols[i + 1 :], i + 1):
+                    for c in cols[j + 1 :]:
+                        if (a, b) in edge_set and (b, c) in edge_set and (a, c) in edge_set:
+                            triangles += 1
+
+            betti_1 = triangles
+        else:
+            betti_0 = len(numeric_columns)  # All disconnected
+            betti_1 = 0
+
+        betti_2 = 0  # Higher-order voids rarely relevant for tabular data
+        structural_complexity = betti_0 + betti_1 + betti_2
+
+        avg_corr = (
+            sum(correlation_values) / len(correlation_values) if correlation_values else 0.0
+        )
+
+        period_topo = PeriodTopology(
+            period_start=period_start,
+            period_end=period_end,
+            betti_0=betti_0,
+            betti_1=betti_1,
+            betti_2=betti_2,
+            structural_complexity=structural_complexity,
+            num_correlations=len(edges),
+            avg_correlation=avg_corr,
+        )
+        period_topologies.append(period_topo)
+
+    result.period_topologies = period_topologies
+    result.periods_analyzed = len(period_topologies)
+
+    if not period_topologies:
+        return result
+
+    # Compute drift between consecutive periods
+    drifts: list[TopologyDrift] = []
+    for i in range(1, len(period_topologies)):
+        prev = period_topologies[i - 1]
+        curr = period_topologies[i]
+
+        # Check Betti-0 drift (connectivity changes)
+        if prev.betti_0 > 0:
+            b0_change = (curr.betti_0 - prev.betti_0) / prev.betti_0
+            if abs(b0_change) > 0.2:  # >20% change
+                drifts.append(
+                    TopologyDrift(
+                        period_from=prev.period_start,
+                        period_to=curr.period_start,
+                        metric="betti_0",
+                        value_from=prev.betti_0,
+                        value_to=curr.betti_0,
+                        change_pct=b0_change * 100,
+                        is_significant=abs(b0_change) > 0.5,
+                    )
+                )
+
+        # Check complexity drift
+        if prev.structural_complexity > 0:
+            cx_change = (
+                curr.structural_complexity - prev.structural_complexity
+            ) / prev.structural_complexity
+            if abs(cx_change) > 0.2:
+                drifts.append(
+                    TopologyDrift(
+                        period_from=prev.period_start,
+                        period_to=curr.period_start,
+                        metric="complexity",
+                        value_from=prev.structural_complexity,
+                        value_to=curr.structural_complexity,
+                        change_pct=cx_change * 100,
+                        is_significant=abs(cx_change) > 0.5,
+                    )
+                )
+
+        # Check correlation density drift
+        if prev.num_correlations > 0:
+            corr_change = (
+                curr.num_correlations - prev.num_correlations
+            ) / prev.num_correlations
+            if abs(corr_change) > 0.3:  # >30% change in edge count
+                drifts.append(
+                    TopologyDrift(
+                        period_from=prev.period_start,
+                        period_to=curr.period_start,
+                        metric="correlation_density",
+                        value_from=prev.num_correlations,
+                        value_to=curr.num_correlations,
+                        change_pct=corr_change * 100,
+                        is_significant=abs(corr_change) > 0.5,
+                    )
+                )
+
+    result.topology_drifts = drifts
+
+    # Compute overall trend
+    complexities = [t.structural_complexity for t in period_topologies]
+    result.avg_complexity = sum(complexities) / len(complexities)
+
+    if len(complexities) > 1:
+        mean_c = result.avg_complexity
+        result.complexity_variance = (
+            sum((c - mean_c) ** 2 for c in complexities) / len(complexities)
+        )
+
+        # Determine trend
+        first_half = complexities[: len(complexities) // 2]
+        second_half = complexities[len(complexities) // 2 :]
+
+        if first_half and second_half:
+            first_avg = sum(first_half) / len(first_half)
+            second_avg = sum(second_half) / len(second_half)
+
+            if second_avg > first_avg * 1.2:
+                result.trend_direction = "increasing"
+            elif second_avg < first_avg * 0.8:
+                result.trend_direction = "decreasing"
+            elif result.complexity_variance > mean_c * 0.5:
+                result.trend_direction = "volatile"
+            else:
+                result.trend_direction = "stable"
+
+    # Flag anomalous periods (>2 std dev from mean)
+    if result.complexity_variance > 0:
+        std_dev = result.complexity_variance**0.5
+        for topo in period_topologies:
+            if abs(topo.structural_complexity - result.avg_complexity) > 2 * std_dev:
+                topo.has_anomalies = True
+                result.structural_anomaly_periods.append(topo.period_start)
+
+    return result
+
+
 __all__ = [
     "TemporalSliceAnalyzer",
     "TemporalSliceContext",
     "analyze_temporal_slices",
     "aggregate_temporal_data",
+    "analyze_temporal_topology",
 ]

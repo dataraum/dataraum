@@ -114,9 +114,45 @@ class SliceTimeMatrixEntry(Base):
     period_over_period_change: Mapped[float] = mapped_column(Float, nullable=True)
 
 
+class TemporalTopologyAnalysis(Base):
+    """Temporal topology analysis results.
+
+    Tracks how data structure (correlation topology) changes over time.
+    Detects structural drift, complexity trends, and anomalous periods.
+    """
+
+    __tablename__ = "temporal_topology_analyses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(Integer, nullable=True, index=True)
+    slice_table_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+
+    # Analysis parameters
+    time_column: Mapped[str] = mapped_column(String(255), nullable=False)
+    period_granularity: Mapped[str] = mapped_column(String(50), default="month")
+    correlation_threshold: Mapped[float] = mapped_column(Float, default=0.5)
+
+    # Summary metrics
+    periods_analyzed: Mapped[int] = mapped_column(Integer, default=0)
+    avg_complexity: Mapped[float] = mapped_column(Float, nullable=True)
+    complexity_variance: Mapped[float] = mapped_column(Float, nullable=True)
+    trend_direction: Mapped[str] = mapped_column(String(50), default="stable")
+    num_drifts_detected: Mapped[int] = mapped_column(Integer, default=0)
+    num_anomaly_periods: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Detailed data (JSON)
+    period_topologies_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    topology_drifts_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    anomaly_periods_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
+    # Metadata
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 __all__ = [
     "TemporalSliceRun",
     "TemporalSliceAnalysis",
     "TemporalDriftAnalysis",
     "SliceTimeMatrixEntry",
+    "TemporalTopologyAnalysis",
 ]

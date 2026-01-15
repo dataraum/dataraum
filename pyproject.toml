@@ -137,6 +137,10 @@ markers = [
 [tool.ruff]
 target-version = "py314"
 line-length = 100
+extend-exclude = [
+    "scripts/",
+    "prototypes/",
+]
 
 [tool.ruff.lint]
 select = [

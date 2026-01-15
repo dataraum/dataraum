@@ -220,7 +220,11 @@ class AggregatedTemporalData:
 
 @dataclass
 class PeriodTopology:
-    """Topology metrics for a single time period."""
+    """Topology metrics for a single time period.
+
+    Uses TDA (via ripser) to extract persistence diagrams for the period's data,
+    then computes Betti numbers and entropy from the diagrams.
+    """
 
     period_start: str
     period_end: str
@@ -228,27 +232,34 @@ class PeriodTopology:
     betti_1: int  # Cycles
     betti_2: int  # Voids
     structural_complexity: int
-    num_correlations: int  # Edges in correlation graph
-    avg_correlation: float
+    persistent_entropy: float = 0.0  # Information complexity from TDA
+    row_count: int = 0
     has_anomalies: bool = False
 
 
 @dataclass
 class TopologyDrift:
-    """Detected change in topology between periods."""
+    """Detected change in topology between periods.
+
+    Uses bottleneck distance to compare persistence diagrams between consecutive periods.
+    """
 
     period_from: str
     period_to: str
-    metric: str  # betti_0, betti_1, complexity, correlation_density
+    metric: str  # bottleneck_distance, betti_0, betti_1, complexity, entropy
     value_from: float
     value_to: float
     change_pct: float
+    bottleneck_distance: float | None = None  # Actual TDA distance metric
     is_significant: bool = False
 
 
 @dataclass
 class TemporalTopologyResult:
-    """Result of temporal topology analysis."""
+    """Result of temporal topology analysis.
+
+    Uses TDA with bottleneck distance to detect structural drift over time.
+    """
 
     table_name: str
     time_column: str
@@ -257,7 +268,9 @@ class TemporalTopologyResult:
     topology_drifts: list[TopologyDrift] = field(default_factory=list)
     trend_direction: str = "stable"  # increasing, decreasing, stable, volatile
     avg_complexity: float = 0.0
+    avg_entropy: float = 0.0
     complexity_variance: float = 0.0
+    max_bottleneck_distance: float = 0.0  # Maximum drift between consecutive periods
     structural_anomaly_periods: list[str] = field(default_factory=list)
 
 

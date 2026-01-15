@@ -6,13 +6,11 @@ This module provides domain-agnostic topological analysis for tabular data:
 - Homological stability assessment
 - Cycle detection
 
-For domain-specific analysis (e.g., financial cycle classification),
-see domains/financial/cycles/.
+For cross-table schema analysis, see relationships/graph_topology.py.
 
 Usage:
     from dataraum_context.analysis.topology import (
         analyze_topological_quality,
-        analyze_topological_quality_multi_table,
         TableTopologyExtractor,
         BettiNumbers,
         TopologicalQualityResult,
@@ -21,17 +19,10 @@ Usage:
 """
 
 # Analysis functions
-from dataraum_context.analysis.topology.analyzer import (
-    analyze_topological_quality,
-    analyze_topological_quality_multi_table,
-)
+from dataraum_context.analysis.topology.analyzer import analyze_topological_quality
 
 # DB models
-from dataraum_context.analysis.topology.db_models import (
-    BusinessCycleClassification,
-    MultiTableTopologyMetrics,
-    TopologicalQualityMetrics,
-)
+from dataraum_context.analysis.topology.db_models import TopologicalQualityMetrics
 
 # Pydantic models
 from dataraum_context.analysis.topology.models import (
@@ -44,16 +35,16 @@ from dataraum_context.analysis.topology.models import (
     TopologicalQualityResult,
 )
 
+# Stability functions (for temporal topology)
+from dataraum_context.analysis.topology.stability import compute_bottleneck_distance
+
 # TDA extraction
 from dataraum_context.analysis.topology.tda.extractor import TableTopologyExtractor
 
 __all__ = [
     # Analysis functions
     "analyze_topological_quality",
-    "analyze_topological_quality_multi_table",
     # DB models
-    "BusinessCycleClassification",
-    "MultiTableTopologyMetrics",
     "TopologicalQualityMetrics",
     # Pydantic models
     "BettiNumbers",
@@ -63,6 +54,8 @@ __all__ = [
     "StabilityAnalysis",
     "TopologicalAnomaly",
     "TopologicalQualityResult",
+    # Stability
+    "compute_bottleneck_distance",
     # TDA extraction
     "TableTopologyExtractor",
 ]

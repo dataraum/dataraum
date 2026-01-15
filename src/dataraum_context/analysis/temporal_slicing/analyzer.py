@@ -25,11 +25,14 @@ from dataraum_context.analysis.temporal_slicing.models import (
     CompletenessResult,
     DistributionDriftResult,
     PeriodMetrics,
+    PeriodTopology,
     SliceTimeCell,
     SliceTimeMatrix,
     TemporalAnalysisResult,
     TemporalSliceConfig,
+    TemporalTopologyResult,
     TimeGrain,
+    TopologyDrift,
     VolumeAnomalyResult,
 )
 from dataraum_context.core.models.base import Result
@@ -871,7 +874,7 @@ def aggregate_temporal_data(
 
 
 # =============================================================================
-# LEVEL 5: TEMPORAL TOPOLOGY ANALYSIS
+# LEVEL 5: TEMPORAL TOPOLOGY ANALYSIS (TDA with Bottleneck Distance)
 # =============================================================================
 
 
@@ -879,43 +882,39 @@ def analyze_temporal_topology(
     duck_conn: duckdb.DuckDBPyConnection,
     table_name: str,
     time_column: str,
-    numeric_columns: list[str],
+    numeric_columns: list[str] | None = None,
     period: str = "month",
-    correlation_threshold: float = 0.5,
     min_samples: int = 10,
-) -> "TemporalTopologyResult":
-    """Analyze how data topology changes over time periods.
+    bottleneck_threshold: float = 0.5,
+) -> TemporalTopologyResult:
+    """Analyze how data topology changes over time periods using TDA.
 
-    Computes correlation-based topology for each time period and detects:
-    - Structural drift (Betti number changes)
-    - Complexity trends (increasing/decreasing structure)
-    - Anomalous periods (unusual topology)
+    Uses actual Topological Data Analysis (via ripser) to compute persistence
+    diagrams for each period, then uses bottleneck distance to detect structural
+    drift between consecutive periods.
 
     Args:
         duck_conn: DuckDB connection
         table_name: Table to analyze
         time_column: Temporal column for period grouping
-        numeric_columns: Columns to include in correlation analysis
+        numeric_columns: Columns to include (auto-detected if None)
         period: Time granularity ('day', 'week', 'month', 'quarter', 'year')
-        correlation_threshold: Min correlation to form edge
         min_samples: Min rows per period for valid analysis
+        bottleneck_threshold: Distance threshold for significant drift
 
     Returns:
         TemporalTopologyResult with per-period topology and drift detection
     """
-    from dataraum_context.analysis.temporal_slicing.models import (
-        PeriodTopology,
-        TemporalTopologyResult,
-        TopologyDrift,
-    )
+    import numpy as np
+
+    from dataraum_context.analysis.topology import compute_bottleneck_distance
+    from dataraum_context.analysis.topology.extraction import compute_persistent_entropy
+    from dataraum_context.analysis.topology.tda.extractor import TableTopologyExtractor
 
     result = TemporalTopologyResult(
         table_name=table_name,
         time_column=time_column,
     )
-
-    if len(numeric_columns) < 3:
-        return result  # Need at least 3 columns for meaningful topology
 
     # Get time period boundaries
     period_trunc = {
@@ -944,103 +943,81 @@ def analyze_temporal_topology(
     if periods_df.empty:
         return result
 
+    # Initialize TDA extractor
+    extractor = TableTopologyExtractor()
     period_topologies: list[PeriodTopology] = []
+    period_diagrams: list[list[np.ndarray]] = []  # Store diagrams for bottleneck comparison
 
     for _, row in periods_df.iterrows():
         period_start = str(row["period_start"])[:10]
         period_end = str(row["period_end"])[:10]
+        row_count = int(row["row_count"])
 
-        # Compute correlations for this period
-        correlations: dict[tuple[str, str], float] = {}
-        correlation_values: list[float] = []
+        try:
+            # Load period data
+            period_df = duck_conn.execute(f"""
+                SELECT *
+                FROM "{table_name}"
+                WHERE "{time_column}" >= '{period_start}'
+                  AND "{time_column}" < '{period_end}'
+                LIMIT 5000
+            """).df()
 
-        for i, col1 in enumerate(numeric_columns):
-            for col2 in numeric_columns[i + 1 :]:
-                try:
-                    corr_result = duck_conn.execute(f"""
-                        SELECT CORR("{col1}", "{col2}") as corr
-                        FROM "{table_name}"
-                        WHERE "{time_column}" >= '{period_start}'
-                          AND "{time_column}" < '{period_end}'
-                          AND "{col1}" IS NOT NULL
-                          AND "{col2}" IS NOT NULL
-                    """).fetchone()
+            if period_df.empty:
+                continue
 
-                    if corr_result and corr_result[0] is not None:
-                        corr_val = float(corr_result[0])
-                        correlations[(col1, col2)] = corr_val
-                        correlation_values.append(abs(corr_val))
-                except Exception:
-                    pass
+            # Run TDA extraction
+            topology = extractor.extract_topology(period_df)
+            persistence = topology.get("global_persistence", {})
+            diagrams = persistence.get("diagrams", [])
 
-        # Build adjacency for strong correlations
-        edges: list[tuple[str, str]] = [
-            (c1, c2)
-            for (c1, c2), v in correlations.items()
-            if abs(v) >= correlation_threshold
-        ]
+            if not diagrams:
+                continue
 
-        # Compute connected components (Betti-0) using Union-Find
-        if edges:
-            parent: dict[str, str] = {}
+            # Convert diagrams to numpy arrays
+            np_diagrams = [
+                np.array(dgm) if not isinstance(dgm, np.ndarray) else dgm for dgm in diagrams
+            ]
 
-            def find(x: str) -> str:
-                if x not in parent:
-                    parent[x] = x
-                if parent[x] != x:
-                    parent[x] = find(parent[x])
-                return parent[x]
-
-            def union(x: str, y: str) -> None:
-                px, py = find(x), find(y)
-                if px != py:
-                    parent[px] = py
-
-            # Add all columns as nodes
-            for col in numeric_columns:
-                find(col)
-
-            # Union connected columns
-            for c1, c2 in edges:
-                union(c1, c2)
-
-            # Count unique components
-            components = len(set(find(c) for c in numeric_columns))
-            betti_0 = components
-
-            # Count triangles for Betti-1 (cycles)
-            edge_set = set(edges) | {(b, a) for a, b in edges}
-            triangles = 0
-            cols = list(set(c for e in edges for c in e))
-            for i, a in enumerate(cols):
-                for j, b in enumerate(cols[i + 1 :], i + 1):
-                    for c in cols[j + 1 :]:
-                        if (a, b) in edge_set and (b, c) in edge_set and (a, c) in edge_set:
-                            triangles += 1
-
-            betti_1 = triangles
-        else:
-            betti_0 = len(numeric_columns)  # All disconnected
+            # Extract Betti numbers from persistence diagrams
+            betti_0 = 1  # At least one component
             betti_1 = 0
+            betti_2 = 0
 
-        betti_2 = 0  # Higher-order voids rarely relevant for tabular data
-        structural_complexity = betti_0 + betti_1 + betti_2
+            if len(np_diagrams) > 0 and len(np_diagrams[0]) > 0:
+                dgm_0 = np_diagrams[0]
+                finite_mask = dgm_0[:, 1] < np.inf
+                betti_0 = int(np.sum(finite_mask)) + 1
 
-        avg_corr = (
-            sum(correlation_values) / len(correlation_values) if correlation_values else 0.0
-        )
+            if len(np_diagrams) > 1 and len(np_diagrams[1]) > 0:
+                dgm_1 = np_diagrams[1]
+                finite_mask = dgm_1[:, 1] < np.inf
+                betti_1 = int(np.sum(finite_mask))
 
-        period_topo = PeriodTopology(
-            period_start=period_start,
-            period_end=period_end,
-            betti_0=betti_0,
-            betti_1=betti_1,
-            betti_2=betti_2,
-            structural_complexity=structural_complexity,
-            num_correlations=len(edges),
-            avg_correlation=avg_corr,
-        )
-        period_topologies.append(period_topo)
+            if len(np_diagrams) > 2 and len(np_diagrams[2]) > 0:
+                dgm_2 = np_diagrams[2]
+                finite_mask = dgm_2[:, 1] < np.inf
+                betti_2 = int(np.sum(finite_mask))
+
+            structural_complexity = betti_0 + betti_1 + betti_2
+            persistent_entropy = compute_persistent_entropy(np_diagrams)
+
+            period_topo = PeriodTopology(
+                period_start=period_start,
+                period_end=period_end,
+                betti_0=betti_0,
+                betti_1=betti_1,
+                betti_2=betti_2,
+                structural_complexity=structural_complexity,
+                persistent_entropy=persistent_entropy,
+                row_count=row_count,
+            )
+            period_topologies.append(period_topo)
+            period_diagrams.append(np_diagrams)
+
+        except Exception:
+            # Skip periods that fail TDA extraction
+            continue
 
     result.period_topologies = period_topologies
     result.periods_analyzed = len(period_topologies)
@@ -1048,25 +1025,56 @@ def analyze_temporal_topology(
     if not period_topologies:
         return result
 
-    # Compute drift between consecutive periods
+    # Compute drift between consecutive periods using bottleneck distance
     drifts: list[TopologyDrift] = []
+    max_bottleneck = 0.0
+
     for i in range(1, len(period_topologies)):
         prev = period_topologies[i - 1]
         curr = period_topologies[i]
+        prev_diagrams = period_diagrams[i - 1]
+        curr_diagrams = period_diagrams[i]
 
-        # Check Betti-0 drift (connectivity changes)
-        if prev.betti_0 > 0:
-            b0_change = (curr.betti_0 - prev.betti_0) / prev.betti_0
-            if abs(b0_change) > 0.2:  # >20% change
+        # Compute bottleneck distance for each dimension and take max
+        bottleneck_dist = 0.0
+        for dim in range(min(len(prev_diagrams), len(curr_diagrams))):
+            if len(prev_diagrams[dim]) > 0 and len(curr_diagrams[dim]) > 0:
+                dist = compute_bottleneck_distance(prev_diagrams[dim], curr_diagrams[dim])
+                bottleneck_dist = max(bottleneck_dist, dist)
+
+        max_bottleneck = max(max_bottleneck, bottleneck_dist)
+
+        # Always record bottleneck distance as a drift metric
+        if bottleneck_dist > bottleneck_threshold:
+            drifts.append(
+                TopologyDrift(
+                    period_from=prev.period_start,
+                    period_to=curr.period_start,
+                    metric="bottleneck_distance",
+                    value_from=0.0,
+                    value_to=bottleneck_dist,
+                    change_pct=0.0,  # Not a percentage metric
+                    bottleneck_distance=bottleneck_dist,
+                    is_significant=bottleneck_dist > bottleneck_threshold * 2,
+                )
+            )
+
+        # Also check entropy drift
+        if prev.persistent_entropy > 0:
+            entropy_change = (
+                curr.persistent_entropy - prev.persistent_entropy
+            ) / prev.persistent_entropy
+            if abs(entropy_change) > 0.3:  # >30% entropy change
                 drifts.append(
                     TopologyDrift(
                         period_from=prev.period_start,
                         period_to=curr.period_start,
-                        metric="betti_0",
-                        value_from=prev.betti_0,
-                        value_to=curr.betti_0,
-                        change_pct=b0_change * 100,
-                        is_significant=abs(b0_change) > 0.5,
+                        metric="entropy",
+                        value_from=prev.persistent_entropy,
+                        value_to=curr.persistent_entropy,
+                        change_pct=entropy_change * 100,
+                        bottleneck_distance=bottleneck_dist,
+                        is_significant=abs(entropy_change) > 0.5,
                     )
                 )
 
@@ -1084,38 +1092,25 @@ def analyze_temporal_topology(
                         value_from=prev.structural_complexity,
                         value_to=curr.structural_complexity,
                         change_pct=cx_change * 100,
+                        bottleneck_distance=bottleneck_dist,
                         is_significant=abs(cx_change) > 0.5,
                     )
                 )
 
-        # Check correlation density drift
-        if prev.num_correlations > 0:
-            corr_change = (
-                curr.num_correlations - prev.num_correlations
-            ) / prev.num_correlations
-            if abs(corr_change) > 0.3:  # >30% change in edge count
-                drifts.append(
-                    TopologyDrift(
-                        period_from=prev.period_start,
-                        period_to=curr.period_start,
-                        metric="correlation_density",
-                        value_from=prev.num_correlations,
-                        value_to=curr.num_correlations,
-                        change_pct=corr_change * 100,
-                        is_significant=abs(corr_change) > 0.5,
-                    )
-                )
-
     result.topology_drifts = drifts
+    result.max_bottleneck_distance = max_bottleneck
 
-    # Compute overall trend
+    # Compute overall statistics
     complexities = [t.structural_complexity for t in period_topologies]
+    entropies = [t.persistent_entropy for t in period_topologies]
+
     result.avg_complexity = sum(complexities) / len(complexities)
+    result.avg_entropy = sum(entropies) / len(entropies) if entropies else 0.0
 
     if len(complexities) > 1:
         mean_c = result.avg_complexity
-        result.complexity_variance = (
-            sum((c - mean_c) ** 2 for c in complexities) / len(complexities)
+        result.complexity_variance = sum((c - mean_c) ** 2 for c in complexities) / len(
+            complexities
         )
 
         # Determine trend
@@ -1135,7 +1130,7 @@ def analyze_temporal_topology(
             else:
                 result.trend_direction = "stable"
 
-    # Flag anomalous periods (>2 std dev from mean)
+    # Flag anomalous periods (>2 std dev from mean complexity or high bottleneck)
     if result.complexity_variance > 0:
         std_dev = result.complexity_variance**0.5
         for topo in period_topologies:

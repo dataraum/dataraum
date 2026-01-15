@@ -619,9 +619,7 @@ async def run_topology_on_slices(
     if len(slice_topologies) >= 2:
         avg_betti_0 = sum(t["betti_0"] for t in slice_topologies) / len(slice_topologies)
         avg_betti_1 = sum(t["betti_1"] for t in slice_topologies) / len(slice_topologies)
-        avg_complexity = sum(t["complexity"] for t in slice_topologies) / len(
-            slice_topologies
-        )
+        avg_complexity = sum(t["complexity"] for t in slice_topologies) / len(slice_topologies)
         avg_entropy = sum(t["persistent_entropy"] or 0 for t in slice_topologies) / len(
             slice_topologies
         )

@@ -2,8 +2,8 @@
 
 This module contains database models for storing topological analysis results:
 - TopologicalQualityMetrics: Single-table topology metrics
-- MultiTableTopologyMetrics: Cross-table topology analysis
-- BusinessCycleClassification: LLM-classified business cycles
+
+For cross-table schema analysis, see relationships/graph_topology.py.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
-    Float,
     ForeignKey,
     Integer,
     String,
@@ -67,92 +66,6 @@ class TopologicalQualityMetrics(Base):
     topology_data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
 
-class MultiTableTopologyMetrics(Base):
-    """Multi-table topology analysis results.
-
-    Tracks cross-table relationships, graph topology, and business process detection
-    across multiple related tables. Enables historical tracking of schema evolution,
-    relationship changes, and business process patterns over time.
-    """
-
-    __tablename__ = "multi_table_topology_metrics"
-
-    analysis_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    computed_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(UTC)
-    )
-
-    # Table IDs included in analysis (JSON array of strings)
-    table_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-
-    # STRUCTURED: Queryable cross-table metrics
-    cross_table_cycles: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    graph_betti_0: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=1
-    )  # Graph connectivity
-    relationship_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-    # Flags for filtering
-    has_cross_table_cycles: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    is_connected_graph: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True
-    )  # graph_betti_0 == 1
-
-    # JSONB: Full multi-table analysis result
-    # Stores: per_table results (references), cross_table details, domain_analysis, business_processes
-    analysis_data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-
-
-class BusinessCycleClassification(Base):
-    """LLM-classified business cycle from cross-table topology.
-
-    Stores business process cycles detected in multi-table analysis,
-    classified by LLM (e.g., accounts_receivable_cycle, revenue_cycle).
-
-    These classifications provide context for:
-    - Filter generation (which business process is this data part of?)
-    - Quality assessment (is the cycle complete?)
-    - Downstream calculations (which tables feed into which calculations?)
-    """
-
-    __tablename__ = "business_cycle_classifications"
-
-    cycle_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    analysis_id: Mapped[str] = mapped_column(
-        ForeignKey("multi_table_topology_metrics.analysis_id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    classified_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(UTC)
-    )
-
-    # Classification result
-    cycle_type: Mapped[str] = mapped_column(
-        String, nullable=False
-    )  # e.g., "accounts_receivable_cycle"
-    confidence: Mapped[float] = mapped_column(Float, nullable=False)  # 0.0 to 1.0
-    business_value: Mapped[str] = mapped_column(String, nullable=False)  # "high", "medium", "low"
-    completeness: Mapped[str] = mapped_column(
-        String, nullable=False
-    )  # "complete", "partial", "incomplete"
-
-    # Tables involved in this cycle (JSON array of table_ids)
-    table_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-
-    # LLM explanation
-    explanation: Mapped[str | None] = mapped_column(String, nullable=True)
-
-    # Missing elements if incomplete
-    missing_elements: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
-
-    # Source tracking
-    llm_model: Mapped[str | None] = mapped_column(
-        String, nullable=True
-    )  # Model used for classification
-
-
 __all__ = [
     "TopologicalQualityMetrics",
-    "MultiTableTopologyMetrics",
-    "BusinessCycleClassification",
 ]

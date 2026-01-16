@@ -14,10 +14,12 @@ This file tracks completed work and session notes for the dataraum-context proje
 ## Current Sprint: Pipeline & Infrastructure
 
 ### In Progress
-- [ ] Step 3.2: Topology Module Simplification
-- [ ] Step 3.5.4: Pipeline CLI and API
+- [ ] Step 3.5.5: Pipeline API endpoints
 
 ### Completed
+- [x] CLI and Concurrency Infrastructure (2025-01-16)
+- [x] Step 3.2: Topology Simplification (2025-01-15)
+- [x] Step 3.5.4: CLI Commands (2025-01-16)
 - [x] Step 3.5.1-3.5.3: Pipeline Orchestrator & Phase Migration (2025-01-16)
 - [x] Phase 2.5: LLM-Assisted Entropy Interpretation (2025-01-14)
 - [x] Phase 2.4 Review: Identified 44 heuristics, created Phase 2.5 plan (2025-01-13)
@@ -44,6 +46,59 @@ This file tracks completed work and session notes for the dataraum-context proje
 ---
 
 ## Session Log
+
+### 2025-01-16 (Session 10)
+
+**Focus:** CLI Module & Concurrency Infrastructure
+
+**Completed:**
+1. Created thread-safe `ConnectionManager` in `core/connections.py`:
+   - `ConnectionConfig` dataclass for SQLite/DuckDB paths and pool settings
+   - `session_scope()` for pooled SQLAlchemy async sessions
+   - `duckdb_cursor()` for thread-safe reads via cursor()
+   - `duckdb_write()` for serialized writes via mutex
+   - SQLite WAL mode for concurrent reads with writes
+   - Exported from `core/__init__.py`
+
+2. Created CLI module in `src/dataraum_context/cli.py`:
+   - `dataraum run` - run pipeline with --phase, --skip-llm, --output, --quiet
+   - `dataraum status` - show tables, columns, phase history with durations
+   - `dataraum inspect` - show graphs, filter coverage, execution context
+   - `dataraum phases` - list all phases with dependencies
+   - Rich tables for formatted output
+   - Changed command from `dataraum-context` to `dataraum`
+
+3. Created CLI documentation at `docs/CLI.md`
+
+4. Deleted migrated scripts:
+   - `scripts/run_graph_agent.py` (migrated to `dataraum inspect`)
+   - `scripts/infra.py` (replaced by `core/connections.py`)
+   - Removed empty `scripts/` folder
+
+5. Fixed type errors in cli.py and connections.py
+
+**Files Created:**
+- `src/dataraum_context/core/connections.py`
+- `src/dataraum_context/cli.py`
+- `docs/CLI.md`
+
+**Files Modified:**
+- `src/dataraum_context/core/__init__.py` - exported ConnectionManager
+- `pyproject.toml` - changed command to `dataraum`
+- `CLAUDE.md` - added CLI quick reference
+
+**Topology Simplification Decision (Session 9, 2025-01-15):**
+- Standalone TDA on single tables provides limited value
+- TDA is meaningful in comparison contexts:
+  1. Comparing topology across slices (detecting structural changes)
+  2. Temporal stability analysis (bottleneck distance between periods)
+- Kept: β₁ (Betti-1), stability metrics, bottleneck distance
+- Removed: standalone run_phase10_topology.py
+- Topology now consumed by SliceAnalysisPhase and TemporalSliceAnalysisPhase
+
+**Test Results:** 546 passed, 1 skipped
+
+---
 
 ### 2025-01-16 (Session 9)
 

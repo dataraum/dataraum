@@ -93,6 +93,30 @@ dataraum inspect [OUTPUT_DIR]
 dataraum inspect ./pipeline_output
 ```
 
+### `reset` - Reset Pipeline Output
+
+Delete database files to start fresh.
+
+```bash
+dataraum reset [OUTPUT_DIR] [OPTIONS]
+```
+
+**Arguments:**
+- `OUTPUT_DIR` - Output directory to reset (default: `./pipeline_output`)
+
+**Options:**
+- `-f, --force` - Skip confirmation prompt
+
+**Example:**
+
+```bash
+# Interactive reset (asks for confirmation)
+dataraum reset ./pipeline_output
+
+# Force reset without confirmation
+dataraum reset ./pipeline_output --force
+```
+
 ### `phases` - List Pipeline Phases
 
 Display all available pipeline phases with their dependencies and LLM requirements.

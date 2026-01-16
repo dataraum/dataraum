@@ -213,11 +213,18 @@ Prioritized backlog for the dataraum-context project. Items are organized by pri
 - [x] Updated imports (scripts/infra.py, test_topological_quality.py)
 - [x] Kept `core/formatting/` (reusable threshold/config infrastructure)
 
-### Step 3.2: Topology Module Simplification
-- [ ] Document which outputs feed entropy detection
-- [ ] Keep: β₁ (Betti-1), stability metrics, connectivity
-- [ ] Remove: Full persistence diagrams, β₂, complex homology
-- [ ] Update tests for simplified interface
+### Step 3.2: Topology Module Simplification ✅ COMPLETED 2025-01-15
+- [x] Simplified topology API to focus on slice-based analysis
+- [x] Kept: β₁ (Betti-1), stability metrics, bottleneck distance for temporal comparison
+- [x] Topology now integrated into SliceAnalysisPhase and TemporalSliceAnalysisPhase
+- [x] Removed standalone run_phase10_topology.py (TDA only useful in comparison context)
+- [x] Full persistence diagrams retained for temporal stability analysis
+
+**Decision:** Standalone TDA on single tables has limited value. TDA becomes meaningful when:
+1. Comparing topology across slices (detecting structural changes)
+2. Temporal stability analysis (bottleneck distance between time periods)
+
+The topology module is now consumed by slice analysis phases, not as a standalone pipeline phase.
 
 ### Step 3.3: API Endpoints
 - [ ] Create `api/routes/entropy.py`
@@ -286,9 +293,15 @@ Prioritized backlog for the dataraum-context project. Items are organized by pri
 - `run_subsets_pipeline.py` - Old utility (likely obsolete)
 - `infra.py` - Test infrastructure utilities
 
-**Step 3.5.4: CLI and API** (Remaining)
-- [ ] Create `python -m dataraum_context.pipeline` CLI
-- [ ] Add `run`, `status`, `reset`, `graph` subcommands
+**Step 3.5.4: CLI** ✅ COMPLETED 2025-01-16
+- [x] Created `dataraum` CLI command via Typer
+- [x] `dataraum run` - Run pipeline with phase selection, skip-llm, output dir
+- [x] `dataraum status` - Show pipeline status, tables, phase history
+- [x] `dataraum inspect` - Show graphs, filter coverage, execution context
+- [x] `dataraum phases` - List all phases with dependencies
+- [x] Created `docs/CLI.md` documentation
+
+**Step 3.5.5: Pipeline API** (Remaining)
 - [ ] Create `api/routes/pipeline.py` endpoints
 - [ ] Add WebSocket for live progress updates
 
@@ -381,84 +394,68 @@ Items to evaluate during implementation:
 
 ---
 
-## Infrastructure: Concurrency Design
+## Infrastructure: Concurrency Design ✅ ADDRESSED 2025-01-16
 
-> **Problem Statement**: The current pipeline orchestrator has concurrency limitations that need architectural design work.
+> **Solution Implemented**: Created `core/connections.py` with thread-safe ConnectionManager.
 
-### Current Workaround
-- `max_parallel=1` forces sequential execution
-- Works but leaves performance on the table
+### Implementation
 
-### Issues to Solve
+**ConnectionManager** (`src/dataraum_context/core/connections.py`):
+- Thread-safe connection management for SQLAlchemy + DuckDB
+- Exported from `core/__init__.py`
 
-**1. SQLAlchemy Session Conflicts**
-- Multiple async coroutines sharing one session causes "Session is already flushing" errors
-- `session.flush()` vs `session.commit()` semantics need clarity across phases
-- `run_sync()` usage with ORM queries causes issues in concurrent contexts
+**SQLAlchemy Sessions:**
+- `session_scope()` - async context manager for pooled sessions
+- `get_session()` - manual session management
+- Connection pooling with configurable pool_size, max_overflow
+- SQLite WAL mode for concurrent reads with writes
+- Busy timeout for lock contention
 
-**2. DuckDB Thread Safety**
-- DuckDB is not thread-safe for concurrent writes
-- Multiple phases writing to different tables still conflict
-- Options: connection pooling, write queue, or explicit locking
+**DuckDB Concurrency:**
+- `duckdb_cursor()` - thread-safe read access via cursor()
+- `duckdb_write()` - serialized writes via mutex (threading.Lock)
+- Single connection, cursor() for reads is concurrent-safe
 
-### Design Options
-
-**Option A: Session-per-Phase**
-- Each phase gets its own SQLAlchemy session
-- Requires careful transaction boundaries
-- May need distributed transaction coordination
-
-**Option B: DBOS Integration**
-- [DBOS](https://docs.dbos.dev/) provides durable execution with automatic checkpointing
-- Built-in workflow orchestration with reliability guarantees
-- Would replace custom checkpoint logic
-- Trade-off: external dependency vs. custom code
-
-**Option C: Explicit Write Queue**
-- All DuckDB writes go through a serialized queue
-- Phases can run analytics in parallel, queue writes
-- Simpler but potentially slower
-
-### Decision Pending
-- Need benchmarks to understand actual parallelism gains
-- Need to evaluate DBOS learning curve vs. building custom
-- Consider whether true parallelism is needed given typical data sizes
+**Design Decision:** Session-per-phase with mutex for DuckDB writes (Option A + C hybrid)
+- Simple, predictable behavior
+- No external dependencies
+- Sufficient for current data sizes
+- Can add parallelism later if benchmarks show benefit
 
 ---
 
-## Infrastructure: CLI Improvements
+## Infrastructure: CLI Improvements ✅ PARTIALLY COMPLETED 2025-01-16
 
 > **Goal**: Better developer experience and operational visibility.
 
-### Progress Reporting
-- [ ] Real-time phase progress with elapsed time
-- [ ] Row counts and throughput metrics
-- [ ] Clear indication of which phase is running
-- [ ] Summary statistics on completion
+### Completed
 
-### Resume from Checkpoint
-- [ ] Detect incomplete runs on startup
-- [ ] Offer to resume from last checkpoint
-- [ ] Show what work would be skipped/redone
+**CLI Module** (`src/dataraum_context/cli.py`):
+- [x] `dataraum run` with `--phase`, `--skip-llm`, `--output`, `--quiet` options
+- [x] `dataraum status` shows tables, columns, phase history with durations
+- [x] `dataraum inspect` shows graphs, filter coverage, execution context
+- [x] `dataraum phases` lists all phases with dependencies and LLM requirements
+- [x] Rich tables for formatted output
+- [x] Documentation at `docs/CLI.md`
+
+**Phase Selection:**
+- [x] `--phase typing` to run up to a specific phase
+- [x] `--skip-llm` to exclude LLM phases
+
+**Output Verbosity:**
+- [x] `--quiet` for minimal output
+- [x] Default: progress summary per phase
+
+**Status Command:**
+- [x] `dataraum status` shows current state
+- [x] Lists completed phases with durations
+- [x] Shows table counts by layer
+
+### Remaining
+- [ ] Real-time progress with elapsed time (live updates)
+- [ ] `--from-phase` to start from a specific phase
 - [ ] `--force-restart` flag to ignore checkpoints
-
-### Phase Selection
-- [ ] `--phases typing,statistics` to run specific phases
-- [ ] `--skip-phases semantic` to exclude phases
-- [ ] `--from-phase typing` to start from a phase
-- [ ] `--to-phase statistics` to stop at a phase
-
-### Output Verbosity
-- [ ] `--quiet` for minimal output (errors only)
-- [ ] Default: progress summary per phase
-- [ ] `--verbose` for detailed per-table output
-- [ ] `--debug` for full logging including SQL
-
-### Pipeline Status Command
-- [ ] `pipeline status` shows current state
-- [ ] Lists completed/pending/failed phases
-- [ ] Shows checkpoint timestamps
-- [ ] Estimates remaining work
+- [ ] Remaining work estimation
 
 ---
 

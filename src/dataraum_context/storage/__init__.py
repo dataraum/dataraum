@@ -3,13 +3,13 @@
 This module provides:
 - Base: SQLAlchemy declarative base for all models
 - Source, Table, Column: Core entity models
-- get_engine: Database engine management
 - init_database, reset_database: Schema management
+
+Note: Engine and session management is handled by core.connections.ConnectionManager.
 """
 
 from dataraum_context.storage.base import (
     Base,
-    get_engine,
     init_database,
     metadata_obj,
     reset_database,
@@ -25,7 +25,6 @@ __all__ = [
     "Table",
     "Column",
     # Database management
-    "get_engine",
     "init_database",
     "reset_database",
 ]

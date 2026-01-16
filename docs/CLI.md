@@ -1,6 +1,6 @@
 # CLI Reference
 
-The `dataraum-context` command provides a command-line interface for running and inspecting the metadata extraction pipeline.
+The `dataraum` command provides a command-line interface for running and inspecting the metadata extraction pipeline.
 
 ## Installation
 
@@ -17,7 +17,7 @@ uv pip install -e .
 Execute the pipeline on CSV data sources.
 
 ```bash
-dataraum-context run SOURCE [OPTIONS]
+dataraum run SOURCE [OPTIONS]
 ```
 
 **Arguments:**
@@ -34,16 +34,16 @@ dataraum-context run SOURCE [OPTIONS]
 
 ```bash
 # Run full pipeline on a directory
-dataraum-context run /path/to/csv/directory
+dataraum run /path/to/csv/directory
 
 # Run on a single file with custom output
-dataraum-context run /path/to/file.csv --output ./my_output
+dataraum run /path/to/file.csv --output ./my_output
 
 # Run only up to the statistics phase
-dataraum-context run /path/to/data --phase statistics
+dataraum run /path/to/data --phase statistics
 
 # Run without LLM phases (faster, no API calls)
-dataraum-context run /path/to/data --skip-llm
+dataraum run /path/to/data --skip-llm
 ```
 
 ### `status` - Show Pipeline Status
@@ -51,7 +51,7 @@ dataraum-context run /path/to/data --skip-llm
 Display information about a completed or in-progress pipeline run.
 
 ```bash
-dataraum-context status [OUTPUT_DIR]
+dataraum status [OUTPUT_DIR]
 ```
 
 **Arguments:**
@@ -66,7 +66,7 @@ dataraum-context status [OUTPUT_DIR]
 **Example:**
 
 ```bash
-dataraum-context status ./pipeline_output
+dataraum status ./pipeline_output
 ```
 
 ### `inspect` - Inspect Graphs and Context
@@ -74,7 +74,7 @@ dataraum-context status ./pipeline_output
 Show loaded graph definitions, filter coverage, and execution context for a dataset.
 
 ```bash
-dataraum-context inspect [OUTPUT_DIR]
+dataraum inspect [OUTPUT_DIR]
 ```
 
 **Arguments:**
@@ -90,7 +90,7 @@ dataraum-context inspect [OUTPUT_DIR]
 **Example:**
 
 ```bash
-dataraum-context inspect ./pipeline_output
+dataraum inspect ./pipeline_output
 ```
 
 ### `phases` - List Pipeline Phases
@@ -98,7 +98,7 @@ dataraum-context inspect ./pipeline_output
 Display all available pipeline phases with their dependencies and LLM requirements.
 
 ```bash
-dataraum-context phases
+dataraum phases
 ```
 
 **Output includes:**
@@ -122,7 +122,7 @@ The command name can be changed in `pyproject.toml`:
 
 ```toml
 [project.scripts]
-dataraum-context = "dataraum_context.cli:app"
+dataraum = "dataraum_context.cli:app"
 ```
 
-Change `dataraum-context` to your preferred command name (e.g., `dataraum`).
+Change `dataraum` to your preferred command name (e.g., `dataraum`).

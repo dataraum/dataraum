@@ -409,15 +409,15 @@ dependencies = [
 ]
 
 # Optional: LLM providers
-# pip install dataraum-context[anthropic]  # Claude
-# pip install dataraum-context[openai]     # OpenAI
-# pip install dataraum-context[llm]        # Both
+# pip install dataraum[anthropic]  # Claude
+# pip install dataraum[openai]     # OpenAI
+# pip install dataraum[llm]        # Both
 
 # Optional: Synthetic data for privacy
-# pip install dataraum-context[privacy]    # SDV
+# pip install dataraum[privacy]    # SDV
 
 # Optional: Everything
-# pip install dataraum-context[all]
+# pip install dataraum[all]
 ```
 
 ## Quick Reference
@@ -425,16 +425,16 @@ dependencies = [
 ### Run pipeline (CLI)
 ```bash
 # Run on CSV data
-dataraum-context run /path/to/data --output ./output
+dataraum run /path/to/data --output ./output
 
 # Check status
-dataraum-context status ./output
+dataraum status ./output
 
 # Inspect graphs and context
-dataraum-context inspect ./output
+dataraum inspect ./output
 
 # List phases
-dataraum-context phases
+dataraum phases
 ```
 
 See `docs/CLI.md` for full CLI documentation.

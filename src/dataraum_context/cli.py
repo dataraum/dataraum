@@ -1,4 +1,4 @@
-"""CLI for dataraum-context pipeline.
+"""CLI for dataraum pipeline.
 
 Provides commands for running, inspecting, and monitoring the pipeline.
 

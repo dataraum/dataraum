@@ -117,8 +117,6 @@ async def compute_numeric_correlations(
             )
             session.add(db_corr)
 
-        await session.commit()
-
         return Result.ok(correlations)
 
     except Exception as e:

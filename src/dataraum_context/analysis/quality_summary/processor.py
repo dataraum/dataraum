@@ -278,7 +278,6 @@ async def summarize_quality(
             run.status = "failed"
             run.error_message = agg_result.error
             run.completed_at = datetime.now(UTC)
-            await session.commit()
             return Result.fail(agg_result.error or "Aggregation failed")
 
         aggregated_columns = agg_result.unwrap()
@@ -306,7 +305,6 @@ async def summarize_quality(
             run.status = "completed"
             run.completed_at = datetime.now(UTC)
             run.duration_seconds = (run.completed_at - started_at).total_seconds()
-            await session.commit()
             return Result.ok(
                 QualitySummaryResult(
                     source_table_id=source_table.table_id,
@@ -379,8 +377,6 @@ async def summarize_quality(
         run.completed_at = datetime.now(UTC)
         run.duration_seconds = (run.completed_at - started_at).total_seconds()
 
-        await session.commit()
-
         return Result.ok(
             QualitySummaryResult(
                 source_table_id=source_table.table_id,
@@ -397,7 +393,6 @@ async def summarize_quality(
         run.error_message = str(e)
         run.completed_at = datetime.now(UTC)
         run.duration_seconds = (run.completed_at - started_at).total_seconds()
-        await session.commit()
         return Result.fail(f"Quality summary failed: {e}")
 
 

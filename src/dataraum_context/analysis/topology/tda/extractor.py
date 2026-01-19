@@ -156,7 +156,7 @@ class TableTopologyExtractor:
             # Temporal features (7 features total)
             non_null = series.dropna()
             if len(non_null) > 1:
-                time_diffs = non_null.sort_values().diff().dt.total_seconds().dropna()
+                time_diffs = non_null.sort_values().diff().dt.total_seconds().dropna()  # type: ignore[arg-type]
                 mean_diff = float(time_diffs.mean()) if len(time_diffs) > 0 else 0.0
                 std_diff = float(time_diffs.std()) if len(time_diffs) > 1 else 0.0
                 mean_diff = 0.0 if np.isnan(mean_diff) else mean_diff
@@ -164,13 +164,13 @@ class TableTopologyExtractor:
 
                 # Hour and day distribution entropy
                 try:
-                    hour_counts = non_null.dt.hour.value_counts()
+                    hour_counts = non_null.dt.hour.value_counts()  # type: ignore[arg-type]
                     hour_entropy = float(entropy(hour_counts.to_numpy() + 1e-10))
                 except Exception:
                     hour_entropy = 0.0
 
                 try:
-                    day_counts = non_null.dt.dayofweek.value_counts()
+                    day_counts = non_null.dt.dayofweek.value_counts()  # type: ignore[arg-type]
                     day_entropy = float(entropy(day_counts.to_numpy() + 1e-10))
                 except Exception:
                     day_entropy = 0.0

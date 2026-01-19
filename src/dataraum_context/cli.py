@@ -242,6 +242,31 @@ async def _status_async(output_dir: Path) -> None:
 
                     console.print(phase_table)
 
+                    # Timing summary
+                    completed = [
+                        p for p in phases if p.status == "completed" and p.duration_seconds
+                    ]
+                    if completed:
+                        total = sum(p.duration_seconds for p in completed)
+                        sorted_phases = sorted(
+                            completed, key=lambda p: p.duration_seconds, reverse=True
+                        )
+
+                        console.print("\n[bold]Phase Timing (slowest first):[/bold]")
+                        timing_table = RichTable(show_header=True, header_style="bold")
+                        timing_table.add_column("Phase")
+                        timing_table.add_column("Duration", justify="right")
+                        timing_table.add_column("% of Total", justify="right")
+
+                        for p in sorted_phases[:10]:
+                            pct = (p.duration_seconds / total * 100) if total > 0 else 0
+                            timing_table.add_row(
+                                p.phase_name, f"{p.duration_seconds:.2f}s", f"{pct:.1f}%"
+                            )
+
+                        console.print(timing_table)
+                        console.print(f"\n[cyan]Total:[/cyan] {total:.2f}s")
+
                 console.print()
     finally:
         await manager.close()

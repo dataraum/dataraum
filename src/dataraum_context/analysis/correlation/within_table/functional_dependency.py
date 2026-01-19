@@ -139,8 +139,6 @@ async def detect_functional_dependencies(
                     )
                     session.add(db_fd)
 
-        await session.commit()
-
         return Result.ok(dependencies)
 
     except Exception as e:

@@ -130,6 +130,4 @@ async def enrich_semantic(
         )
         session.add(db_rel)
 
-    await session.commit()
-
     return Result.ok(enrichment)

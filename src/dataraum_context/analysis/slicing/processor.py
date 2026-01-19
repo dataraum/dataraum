@@ -74,7 +74,6 @@ async def analyze_slices(
             run.error_message = llm_result.error
             run.completed_at = datetime.now(UTC)
             run.duration_seconds = (run.completed_at - started_at).total_seconds()
-            await session.commit()
             return Result.fail(llm_result.error or "Slicing analysis failed")
 
         result = llm_result.unwrap()
@@ -103,8 +102,6 @@ async def analyze_slices(
         run.completed_at = datetime.now(UTC)
         run.duration_seconds = (run.completed_at - started_at).total_seconds()
 
-        await session.commit()
-
         # Optionally execute slice SQL
         if execute_slices and duckdb_conn:
             _execution_results = _execute_slice_queries(duckdb_conn, result.slice_queries)
@@ -117,7 +114,6 @@ async def analyze_slices(
         run.error_message = str(e)
         run.completed_at = datetime.now(UTC)
         run.duration_seconds = (run.completed_at - started_at).total_seconds()
-        await session.commit()
         return Result.fail(f"Slicing analysis failed: {e}")
 
 

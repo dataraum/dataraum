@@ -422,7 +422,7 @@ async def analyze_update_frequency(
             return Result.fail("Insufficient data for update frequency analysis")
 
         timestamps = time_series.index
-        intervals_seconds = timestamps.to_series().diff().dt.total_seconds().dropna()
+        intervals_seconds = timestamps.to_series().diff().dt.total_seconds().dropna()  # type: ignore[arg-type]
 
         if len(intervals_seconds) == 0:
             return Result.fail("No intervals found")

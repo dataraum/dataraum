@@ -146,8 +146,6 @@ async def detect_derived_columns(
                             )
                             session.add(db_derived)
 
-        await session.commit()
-
         return Result.ok(derived_columns)
 
     except Exception as e:

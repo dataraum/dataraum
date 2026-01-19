@@ -115,7 +115,6 @@ async def infer_type_candidates(
 
             all_candidates.extend(candidates)
 
-        await session.commit()
         return Result.ok(all_candidates)
 
     except Exception as e:

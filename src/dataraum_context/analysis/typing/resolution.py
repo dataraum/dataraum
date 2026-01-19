@@ -256,8 +256,6 @@ async def resolve_types(
     )
     session.add(quarantine_meta_col)
 
-    await session.commit()
-
     # Build column results
     column_results = []
     for spec in specs:

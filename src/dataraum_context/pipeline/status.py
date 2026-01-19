@@ -178,5 +178,4 @@ async def reset_pipeline(session: AsyncSession, source_id: str) -> int:
     for run in runs:
         await session.delete(run)
 
-    await session.commit()
     return count

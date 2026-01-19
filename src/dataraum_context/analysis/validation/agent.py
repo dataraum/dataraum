@@ -584,7 +584,6 @@ class ValidationAgent(LLMFeature):
             )
             session.add(result_record)
 
-        await session.commit()
         logger.info(
             f"Persisted validation run {run_result.run_id} with {len(run_result.results)} results"
         )

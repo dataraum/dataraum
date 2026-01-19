@@ -214,7 +214,6 @@ async def register_slice_tables(
                     )
                 )
 
-        await session.commit()
         return Result.ok(registered)
 
     except Exception as e:
@@ -373,7 +372,6 @@ async def run_semantic_on_slices(
                 session.add(slice_ann)
                 copied_count += 1
 
-    await session.commit()
     return Result.ok(copied_count)
 
 
@@ -610,8 +608,6 @@ async def run_topology_on_slices(
 
         except Exception as e:
             errors.append(f"{slice_info.slice_table_name}: {str(e)}")
-
-    await session.commit()
 
     # Compute structural drift (compare topology across slices)
     average_topology: dict[str, float] | None = None

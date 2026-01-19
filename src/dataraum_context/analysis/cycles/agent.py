@@ -526,5 +526,3 @@ class BusinessCycleAgent:
                 evidence=cycle.evidence,
             )
             session.add(db_cycle)
-
-        await session.commit()

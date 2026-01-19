@@ -459,7 +459,6 @@ async def _assess_column_quality(
             quality_data=quality_result.model_dump(mode="json"),
         )
         session.add(db_metric)
-        await session.commit()
 
         return Result.ok(quality_result)
 

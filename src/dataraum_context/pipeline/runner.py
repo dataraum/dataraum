@@ -31,15 +31,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import duckdb
-from sqlalchemy import event
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
-
+from dataraum_context.core.connections import ConnectionConfig, ConnectionManager
 from dataraum_context.pipeline.base import PhaseStatus
 from dataraum_context.pipeline.orchestrator import Pipeline, PipelineConfig
 from dataraum_context.pipeline.phases import (
@@ -62,7 +54,6 @@ from dataraum_context.pipeline.phases import (
     TypingPhase,
     ValidationPhase,
 )
-from dataraum_context.storage import init_database
 
 # Default junk columns to remove from CSV imports
 DEFAULT_JUNK_COLUMNS = [
@@ -101,40 +92,6 @@ class RunResult:
     phase_results: dict[str, Any] = field(default_factory=dict)
 
 
-async def setup_databases(output_dir: Path) -> tuple[AsyncEngine, duckdb.DuckDBPyConnection]:
-    """Set up SQLite and DuckDB databases in the output directory.
-
-    Args:
-        output_dir: Directory for database files
-
-    Returns:
-        Tuple of (SQLAlchemy engine, DuckDB connection)
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # SQLite for metadata
-    sqlite_path = output_dir / "metadata.db"
-    engine = create_async_engine(
-        f"sqlite+aiosqlite:///{sqlite_path}",
-        echo=False,
-        future=True,
-    )
-
-    @event.listens_for(engine.sync_engine, "connect")
-    def set_sqlite_pragma(dbapi_conn: Any, connection_record: Any) -> None:
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
-
-    await init_database(engine)
-
-    # DuckDB for data
-    duckdb_path = output_dir / "data.duckdb"
-    duckdb_conn = duckdb.connect(str(duckdb_path))
-
-    return engine, duckdb_conn
-
-
 def create_pipeline(config: RunConfig) -> Pipeline:
     """Create and configure the pipeline.
 
@@ -148,9 +105,10 @@ def create_pipeline(config: RunConfig) -> Pipeline:
         skip_llm_phases=config.skip_llm,
         skip_completed=True,
         fail_fast=True,
-        # Sequential execution to avoid SQLAlchemy session conflicts
-        # (async sessions don't support concurrent operations from multiple coroutines)
-        max_parallel=1,
+        # Parallel execution using ThreadPoolExecutor
+        # Each phase gets its own thread with its own event loop and session
+        # With free-threaded Python (python3.14t), this enables true parallelism
+        max_parallel=4,
     )
 
     pipeline = Pipeline(config=pipeline_config)
@@ -233,14 +191,11 @@ async def run(config: RunConfig) -> RunResult:
         print()
 
     try:
-        # Setup databases
-        engine, duckdb_conn = await setup_databases(config.output_dir)
-
-        session_factory = async_sessionmaker(
-            engine,
-            class_=AsyncSession,
-            expire_on_commit=False,
-        )
+        # Setup connection manager
+        config.output_dir.mkdir(parents=True, exist_ok=True)
+        conn_config = ConnectionConfig.for_directory(config.output_dir)
+        manager = ConnectionManager(conn_config)
+        await manager.initialize()
 
         # Create pipeline
         pipeline = create_pipeline(config)
@@ -256,18 +211,15 @@ async def run(config: RunConfig) -> RunResult:
         }
 
         # Execute pipeline
-        async with session_factory() as session:
-            results = await pipeline.run(
-                session=session,
-                duckdb_conn=duckdb_conn,
-                source_id=source_id,
-                target_phase=target_phase,
-                run_config=run_config,
-            )
+        results = await pipeline.run(
+            manager=manager,
+            source_id=source_id,
+            target_phase=target_phase,
+            run_config=run_config,
+        )
 
         # Close connections
-        duckdb_conn.close()
-        await engine.dispose()
+        await manager.close()
 
         duration = time.time() - start_time
 

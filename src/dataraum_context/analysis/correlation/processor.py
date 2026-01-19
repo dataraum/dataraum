@@ -315,5 +315,3 @@ async def _store_cross_table_results(
             detected_at=now,
         )
         session.add(db_issue)
-
-    await session.commit()

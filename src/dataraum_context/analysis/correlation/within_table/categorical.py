@@ -141,8 +141,6 @@ async def compute_categorical_associations(
                 )
                 session.add(db_assoc)
 
-        await session.commit()
-
         return Result.ok(associations)
 
     except Exception as e:

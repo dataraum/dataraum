@@ -184,8 +184,6 @@ async def _store_candidates(
             )
             session.add(db_rel)
 
-    await session.commit()
-
 
 async def _load_tables(
     session: AsyncSession,

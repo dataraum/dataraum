@@ -43,11 +43,11 @@ class StatisticsPhase(BasePhase):
     def outputs(self) -> list[str]:
         return ["statistical_profiles"]
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all typed tables already have profiles."""
         # Get typed tables
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -56,14 +56,14 @@ class StatisticsPhase(BasePhase):
         # Check which tables already have profiles
         typed_table_ids = [t.table_id for t in typed_tables]
         columns_stmt = select(Column).where(Column.table_id.in_(typed_table_ids))
-        columns = (await ctx.session.execute(columns_stmt)).scalars().all()
+        columns = ctx.session.execute(columns_stmt).scalars().all()
 
         profiled_stmt = (
             select(StatisticalProfile.column_id)
             .where(StatisticalProfile.layer == "typed")
             .distinct()
         )
-        profiled_column_ids = set((await ctx.session.execute(profiled_stmt)).scalars().all())
+        profiled_column_ids = set(ctx.session.execute(profiled_stmt).scalars().all())
 
         # Check if any table has unprofiled columns
         for tt in typed_tables:
@@ -74,11 +74,11 @@ class StatisticsPhase(BasePhase):
 
         return "All typed tables already profiled"
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run statistical profiling on typed tables."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -87,7 +87,7 @@ class StatisticsPhase(BasePhase):
         # Get all columns for typed tables
         typed_table_ids = [t.table_id for t in typed_tables]
         columns_stmt = select(Column).where(Column.table_id.in_(typed_table_ids))
-        all_columns = (await ctx.session.execute(columns_stmt)).scalars().all()
+        all_columns = ctx.session.execute(columns_stmt).scalars().all()
 
         # Get already profiled columns
         profiled_stmt = (
@@ -95,7 +95,7 @@ class StatisticsPhase(BasePhase):
             .where(StatisticalProfile.layer == "typed")
             .distinct()
         )
-        profiled_column_ids = set((await ctx.session.execute(profiled_stmt)).scalars().all())
+        profiled_column_ids = set(ctx.session.execute(profiled_stmt).scalars().all())
 
         # Find tables that need profiling
         unprofiled_tables = []
@@ -120,7 +120,7 @@ class StatisticsPhase(BasePhase):
         warnings = []
 
         for typed_table in unprofiled_tables:
-            stats_result = await profile_statistics(
+            stats_result = profile_statistics(
                 table_id=typed_table.table_id,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,

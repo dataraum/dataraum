@@ -5,7 +5,7 @@ Orchestrates semantic analysis using the SemanticAgent and stores results.
 
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.relationships.db_models import Relationship as RelationshipModel
 from dataraum_context.analysis.semantic.agent import SemanticAgent
@@ -20,8 +20,8 @@ from dataraum_context.analysis.semantic.utils import load_column_mappings, load_
 from dataraum_context.core.models.base import Result
 
 
-async def enrich_semantic(
-    session: AsyncSession,
+def enrich_semantic(
+    session: Session,
     agent: SemanticAgent,
     table_ids: list[str],
     ontology: str = "general",
@@ -49,7 +49,7 @@ async def enrich_semantic(
         Result containing semantic enrichment data
     """
     # Call semantic agent with relationship candidates
-    llm_result = await agent.analyze(
+    llm_result = agent.analyze(
         session=session,
         table_ids=table_ids,
         ontology=ontology,
@@ -62,8 +62,8 @@ async def enrich_semantic(
     enrichment = llm_result.unwrap()
 
     # Load column ID mappings
-    column_map = await load_column_mappings(session, table_ids)
-    table_map = await load_table_mappings(session, table_ids)
+    column_map = load_column_mappings(session, table_ids)
+    table_map = load_table_mappings(session, table_ids)
 
     # Store annotations
     for annotation in enrichment.annotations:

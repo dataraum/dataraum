@@ -8,7 +8,7 @@ import json
 import re
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.slicing.models import (
     SliceRecommendation,
@@ -55,9 +55,9 @@ class SlicingAgent(LLMFeature):
         """
         super().__init__(config, provider, prompt_renderer, cache)
 
-    async def analyze(
+    def analyze(
         self,
-        session: AsyncSession,
+        session: Session,
         table_ids: list[str],
         context_data: dict[str, Any],
     ) -> Result[SlicingAnalysisResult]:
@@ -96,7 +96,7 @@ class SlicingAgent(LLMFeature):
             return Result.fail(f"Failed to render prompt: {e}")
 
         # Call LLM
-        response_result = await self._call_llm(
+        response_result = self._call_llm(
             session=session,
             feature_name="slicing_analysis",
             prompt=prompt,

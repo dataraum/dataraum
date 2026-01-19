@@ -2,9 +2,8 @@
 
 from datetime import datetime, timedelta
 
-import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.temporal import (
     TemporalAnalysisResult,
@@ -14,15 +13,14 @@ from dataraum_context.analysis.temporal import (
 )
 from dataraum_context.storage import Column, Source, Table
 
-# Use shared fixtures from conftest.py: async_session, duckdb_conn
+# Use shared fixtures from conftest.py: session, duckdb_conn
 
 
-@pytest.mark.asyncio
-async def test_profile_temporal_daily_granularity(async_session: AsyncSession, duckdb_conn):
+def test_profile_temporal_daily_granularity(session: Session, duckdb_conn):
     """Test temporal profiling with daily granularity data."""
     # Create test source
     source = Source(source_id="test_source", name="test_db", source_type="duckdb")
-    async_session.add(source)
+    session.add(source)
 
     # Create test table
     table1 = Table(
@@ -33,7 +31,7 @@ async def test_profile_temporal_daily_granularity(async_session: AsyncSession, d
         duckdb_path="typed_sales",
         row_count=30,
     )
-    async_session.add(table1)
+    session.add(table1)
 
     # Add columns including a timestamp column
     col1 = Column(
@@ -51,8 +49,8 @@ async def test_profile_temporal_daily_granularity(async_session: AsyncSession, d
         column_position=1,
     )
 
-    async_session.add_all([col1, col2])
-    await async_session.commit()
+    session.add_all([col1, col2])
+    session.commit()
 
     # Create test data with daily granularity (30 consecutive days)
     duckdb_conn.execute("CREATE TABLE typed_sales (sale_date DATE, amount DECIMAL)")
@@ -65,10 +63,10 @@ async def test_profile_temporal_daily_granularity(async_session: AsyncSession, d
         )
 
     # Run temporal profiling
-    result = await profile_temporal(
+    result = profile_temporal(
         table_id="table1",
         duckdb_conn=duckdb_conn,
-        session=async_session,
+        session=session,
     )
 
     # Verify result
@@ -89,12 +87,11 @@ async def test_profile_temporal_daily_granularity(async_session: AsyncSession, d
     assert profile.completeness.completeness_ratio >= 0.95  # Should be nearly complete
 
 
-@pytest.mark.asyncio
-async def test_profile_temporal_weekly_granularity(async_session: AsyncSession, duckdb_conn):
+def test_profile_temporal_weekly_granularity(session: Session, duckdb_conn):
     """Test temporal profiling with weekly granularity data."""
     # Create test source
     source = Source(source_id="test_source", name="test_db", source_type="duckdb")
-    async_session.add(source)
+    session.add(source)
 
     # Create test table
     table1 = Table(
@@ -105,7 +102,7 @@ async def test_profile_temporal_weekly_granularity(async_session: AsyncSession, 
         duckdb_path="typed_weekly_reports",
         row_count=10,
     )
-    async_session.add(table1)
+    session.add(table1)
 
     # Add timestamp column
     col1 = Column(
@@ -116,8 +113,8 @@ async def test_profile_temporal_weekly_granularity(async_session: AsyncSession, 
         column_position=0,
     )
 
-    async_session.add(col1)
-    await async_session.commit()
+    session.add(col1)
+    session.commit()
 
     # Create test data with weekly granularity (10 weeks)
     duckdb_conn.execute("CREATE TABLE typed_weekly_reports (report_date TIMESTAMP)")
@@ -130,10 +127,10 @@ async def test_profile_temporal_weekly_granularity(async_session: AsyncSession, 
         )
 
     # Run temporal profiling
-    result = await profile_temporal(
+    result = profile_temporal(
         table_id="table1",
         duckdb_conn=duckdb_conn,
-        session=async_session,
+        session=session,
     )
 
     # Verify result
@@ -143,12 +140,11 @@ async def test_profile_temporal_weekly_granularity(async_session: AsyncSession, 
     assert profile.granularity_confidence > 0.5
 
 
-@pytest.mark.asyncio
-async def test_profile_temporal_with_gaps(async_session: AsyncSession, duckdb_conn):
+def test_profile_temporal_with_gaps(session: Session, duckdb_conn):
     """Test temporal profiling detects gaps in time series."""
     # Create test source and table
     source = Source(source_id="test_source", name="test_db", source_type="duckdb")
-    async_session.add(source)
+    session.add(source)
 
     table1 = Table(
         table_id="table1",
@@ -158,7 +154,7 @@ async def test_profile_temporal_with_gaps(async_session: AsyncSession, duckdb_co
         duckdb_path="typed_events",
         row_count=20,
     )
-    async_session.add(table1)
+    session.add(table1)
 
     col1 = Column(
         table_id="table1",
@@ -168,8 +164,8 @@ async def test_profile_temporal_with_gaps(async_session: AsyncSession, duckdb_co
         column_position=0,
     )
 
-    async_session.add(col1)
-    await async_session.commit()
+    session.add(col1)
+    session.commit()
 
     # Create data with gaps (daily data with a 7-day gap and a 14-day gap)
     duckdb_conn.execute("CREATE TABLE typed_events (event_time TIMESTAMP)")
@@ -187,10 +183,10 @@ async def test_profile_temporal_with_gaps(async_session: AsyncSession, duckdb_co
         duckdb_conn.execute(f"INSERT INTO typed_events VALUES (TIMESTAMP '{date.isoformat()}')")
 
     # Run temporal profiling
-    result = await profile_temporal(
+    result = profile_temporal(
         table_id="table1",
         duckdb_conn=duckdb_conn,
-        session=async_session,
+        session=session,
     )
 
     # Verify result
@@ -208,12 +204,11 @@ async def test_profile_temporal_with_gaps(async_session: AsyncSession, duckdb_co
     assert largest_gap >= 5  # Should detect the 7-day gap
 
 
-@pytest.mark.asyncio
-async def test_profile_temporal_no_temporal_columns(async_session: AsyncSession, duckdb_conn):
+def test_profile_temporal_no_temporal_columns(session: Session, duckdb_conn):
     """Test temporal profiling with no temporal columns."""
     # Create test source and table
     source = Source(source_id="test_source", name="test_db", source_type="duckdb")
-    async_session.add(source)
+    session.add(source)
 
     table1 = Table(
         table_id="table1",
@@ -223,7 +218,7 @@ async def test_profile_temporal_no_temporal_columns(async_session: AsyncSession,
         duckdb_path="typed_products",
         row_count=10,
     )
-    async_session.add(table1)
+    session.add(table1)
 
     # Add only non-temporal columns
     col1 = Column(
@@ -241,18 +236,18 @@ async def test_profile_temporal_no_temporal_columns(async_session: AsyncSession,
         column_position=1,
     )
 
-    async_session.add_all([col1, col2])
-    await async_session.commit()
+    session.add_all([col1, col2])
+    session.commit()
 
     # Create test data
     duckdb_conn.execute("CREATE TABLE typed_products (product_id INTEGER, name VARCHAR)")
     duckdb_conn.execute("INSERT INTO typed_products VALUES (1, 'Widget'), (2, 'Gadget')")
 
     # Run temporal profiling
-    result = await profile_temporal(
+    result = profile_temporal(
         table_id="table1",
         duckdb_conn=duckdb_conn,
-        session=async_session,
+        session=session,
     )
 
     # Should succeed but return no profiles
@@ -260,12 +255,11 @@ async def test_profile_temporal_no_temporal_columns(async_session: AsyncSession,
     assert len(result.value.column_profiles) == 0
 
 
-@pytest.mark.asyncio
-async def test_profile_temporal_multiple_columns(async_session: AsyncSession, duckdb_conn):
+def test_profile_temporal_multiple_columns(session: Session, duckdb_conn):
     """Test temporal profiling with multiple temporal columns in one table."""
     # Create test source and table
     source = Source(source_id="test_source", name="test_db", source_type="duckdb")
-    async_session.add(source)
+    session.add(source)
 
     table1 = Table(
         table_id="table1",
@@ -275,7 +269,7 @@ async def test_profile_temporal_multiple_columns(async_session: AsyncSession, du
         duckdb_path="typed_orders",
         row_count=20,
     )
-    async_session.add(table1)
+    session.add(table1)
 
     # Add multiple temporal columns
     col1 = Column(
@@ -300,8 +294,8 @@ async def test_profile_temporal_multiple_columns(async_session: AsyncSession, du
         column_position=2,
     )
 
-    async_session.add_all([col1, col2, col3])
-    await async_session.commit()
+    session.add_all([col1, col2, col3])
+    session.commit()
 
     # Create test data with multiple temporal columns
     duckdb_conn.execute(
@@ -323,10 +317,10 @@ async def test_profile_temporal_multiple_columns(async_session: AsyncSession, du
         )
 
     # Run temporal profiling
-    result = await profile_temporal(
+    result = profile_temporal(
         table_id="table1",
         duckdb_conn=duckdb_conn,
-        session=async_session,
+        session=session,
     )
 
     # Verify result - should create profiles for all 3 temporal columns
@@ -341,12 +335,11 @@ async def test_profile_temporal_multiple_columns(async_session: AsyncSession, du
         assert profile.detected_granularity == "day"
 
 
-@pytest.mark.asyncio
-async def test_profile_temporal_stores_metrics(async_session: AsyncSession, duckdb_conn):
+def test_profile_temporal_stores_metrics(session: Session, duckdb_conn):
     """Test that temporal profiling stores metrics in the database."""
     # Create test source and table
     source = Source(source_id="test_source", name="test_db", source_type="duckdb")
-    async_session.add(source)
+    session.add(source)
 
     table1 = Table(
         table_id="table1",
@@ -356,7 +349,7 @@ async def test_profile_temporal_stores_metrics(async_session: AsyncSession, duck
         duckdb_path="typed_metrics",
         row_count=10,
     )
-    async_session.add(table1)
+    session.add(table1)
 
     col1 = Column(
         table_id="table1",
@@ -366,8 +359,8 @@ async def test_profile_temporal_stores_metrics(async_session: AsyncSession, duck
         column_position=0,
     )
 
-    async_session.add(col1)
-    await async_session.commit()
+    session.add(col1)
+    session.commit()
 
     # Create test data
     duckdb_conn.execute("CREATE TABLE typed_metrics (metric_date DATE)")
@@ -380,17 +373,17 @@ async def test_profile_temporal_stores_metrics(async_session: AsyncSession, duck
         )
 
     # Run temporal profiling
-    result = await profile_temporal(
+    result = profile_temporal(
         table_id="table1",
         duckdb_conn=duckdb_conn,
-        session=async_session,
+        session=session,
     )
 
     assert result.success is True
 
     # Check that metrics were stored in database
     stmt = select(TemporalColumnProfile)
-    db_result = await async_session.execute(stmt)
+    db_result = session.execute(stmt)
     stored_metrics = db_result.scalars().all()
 
     # Should have stored 1 metric (one for the temporal column)
@@ -404,12 +397,11 @@ async def test_profile_temporal_stores_metrics(async_session: AsyncSession, duck
     assert metric.max_timestamp is not None
 
 
-@pytest.mark.asyncio
-async def test_profile_temporal_monthly_granularity(async_session: AsyncSession, duckdb_conn):
+def test_profile_temporal_monthly_granularity(session: Session, duckdb_conn):
     """Test temporal profiling with monthly granularity."""
     # Create test source and table
     source = Source(source_id="test_source", name="test_db", source_type="duckdb")
-    async_session.add(source)
+    session.add(source)
 
     table1 = Table(
         table_id="table1",
@@ -419,7 +411,7 @@ async def test_profile_temporal_monthly_granularity(async_session: AsyncSession,
         duckdb_path="typed_monthly_data",
         row_count=12,
     )
-    async_session.add(table1)
+    session.add(table1)
 
     col1 = Column(
         table_id="table1",
@@ -429,8 +421,8 @@ async def test_profile_temporal_monthly_granularity(async_session: AsyncSession,
         column_position=0,
     )
 
-    async_session.add(col1)
-    await async_session.commit()
+    session.add(col1)
+    session.commit()
 
     # Create data with monthly granularity (first day of each month for 12 months)
     duckdb_conn.execute("CREATE TABLE typed_monthly_data (month DATE)")
@@ -446,10 +438,10 @@ async def test_profile_temporal_monthly_granularity(async_session: AsyncSession,
         )
 
     # Run temporal profiling
-    result = await profile_temporal(
+    result = profile_temporal(
         table_id="table1",
         duckdb_conn=duckdb_conn,
-        session=async_session,
+        session=session,
     )
 
     # Verify result

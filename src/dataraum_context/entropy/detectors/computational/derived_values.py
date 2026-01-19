@@ -30,7 +30,7 @@ class DerivedValueDetector(EntropyDetector):
     required_analyses = ["correlation"]
     description = "Measures reliability of detected derived column formulas"
 
-    async def detect(self, context: DetectorContext) -> list[EntropyObject]:
+    def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect derived value entropy.
 
         Args:

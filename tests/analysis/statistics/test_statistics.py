@@ -2,8 +2,8 @@
 
 import duckdb
 import pytest
-from sqlalchemy import event, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.orm import sessionmaker
 
 from dataraum_context.analysis.statistics import (
     ColumnProfile,
@@ -18,36 +18,36 @@ from dataraum_context.sources.csv import CSVLoader
 from dataraum_context.storage import Table, init_database
 
 
-async def _get_typed_table_id(typed_table_name: str, session) -> str | None:
+def _get_typed_table_id(typed_table_name: str, session) -> str | None:
     """Get the table ID for a typed table by DuckDB path."""
     stmt = select(Table).where(Table.duckdb_path == typed_table_name)
-    result = await session.execute(stmt)
+    result = session.execute(stmt)
     table = result.scalar_one_or_none()
     return table.table_id if table else None
 
 
 @pytest.fixture
-async def test_session():
+def test_session():
     """Create an in-memory SQLite session for testing."""
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+    engine = create_engine(
+        "sqlite:///:memory:",
         echo=False,
     )
 
-    @event.listens_for(engine.sync_engine, "connect")
+    @event.listens_for(engine, "connect")
     def set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
-    await init_database(engine)
+    init_database(engine)
 
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
 
-    async with async_session() as session:
+    with factory() as session:
         yield session
 
-    await engine.dispose()
+    engine.dispose()
 
 
 @pytest.fixture
@@ -76,7 +76,7 @@ def simple_csv(tmp_path):
 class TestStatisticsProfiler:
     """Tests for profile_statistics function."""
 
-    async def test_profile_statistics_returns_result(self, simple_csv, test_duckdb, test_session):
+    def test_profile_statistics_returns_result(self, simple_csv, test_duckdb, test_session):
         """Test that profile_statistics returns a valid Result."""
         # Load and type the table
         loader = CSVLoader()
@@ -85,30 +85,30 @@ class TestStatisticsProfiler:
             source_type="csv",
             path=str(simple_csv),
         )
-        load_result = await loader.load(config, test_duckdb, test_session)
+        load_result = loader.load(config, test_duckdb, test_session)
         assert load_result.success
 
         staged_table = load_result.unwrap().tables[0]
 
         # Get the SQLAlchemy Table model from database
-        raw_table = await test_session.get(Table, staged_table.table_id)
+        raw_table = test_session.get(Table, staged_table.table_id)
         assert raw_table is not None
 
         # Infer types (pass Table object)
-        infer_result = await infer_type_candidates(raw_table, test_duckdb, test_session)
+        infer_result = infer_type_candidates(raw_table, test_duckdb, test_session)
         assert infer_result.success
 
         # Resolve types (pass table_id string)
-        resolve_result = await resolve_types(staged_table.table_id, test_duckdb, test_session)
+        resolve_result = resolve_types(staged_table.table_id, test_duckdb, test_session)
         assert resolve_result.success
         resolution = resolve_result.unwrap()
 
         # Get typed table ID from name
-        typed_table_id = await _get_typed_table_id(resolution.typed_table_name, test_session)
+        typed_table_id = _get_typed_table_id(resolution.typed_table_name, test_session)
         assert typed_table_id is not None
 
         # Profile statistics
-        stats_result = await profile_statistics(typed_table_id, test_duckdb, test_session)
+        stats_result = profile_statistics(typed_table_id, test_duckdb, test_session)
 
         assert stats_result.success
         result = stats_result.unwrap()
@@ -116,7 +116,7 @@ class TestStatisticsProfiler:
         assert len(result.column_profiles) > 0
         assert result.duration_seconds > 0
 
-    async def test_profile_statistics_numeric_stats(self, simple_csv, test_duckdb, test_session):
+    def test_profile_statistics_numeric_stats(self, simple_csv, test_duckdb, test_session):
         """Test that numeric columns have numeric_stats."""
         # Load and type the table
         loader = CSVLoader()
@@ -125,27 +125,27 @@ class TestStatisticsProfiler:
             source_type="csv",
             path=str(simple_csv),
         )
-        load_result = await loader.load(config, test_duckdb, test_session)
+        load_result = loader.load(config, test_duckdb, test_session)
         assert load_result.success
 
         staged_table = load_result.unwrap().tables[0]
-        raw_table = await test_session.get(Table, staged_table.table_id)
+        raw_table = test_session.get(Table, staged_table.table_id)
         assert raw_table is not None
 
         # Infer types (pass Table object), resolve (pass table_id string)
-        infer_result = await infer_type_candidates(raw_table, test_duckdb, test_session)
+        infer_result = infer_type_candidates(raw_table, test_duckdb, test_session)
         assert infer_result.success
 
-        resolve_result = await resolve_types(staged_table.table_id, test_duckdb, test_session)
+        resolve_result = resolve_types(staged_table.table_id, test_duckdb, test_session)
         assert resolve_result.success
         resolution = resolve_result.unwrap()
 
         # Get typed table ID from name
-        typed_table_id = await _get_typed_table_id(resolution.typed_table_name, test_session)
+        typed_table_id = _get_typed_table_id(resolution.typed_table_name, test_session)
         assert typed_table_id is not None
 
         # Profile statistics
-        stats_result = await profile_statistics(typed_table_id, test_duckdb, test_session)
+        stats_result = profile_statistics(typed_table_id, test_duckdb, test_session)
         assert stats_result.success
         result = stats_result.unwrap()
 
@@ -161,7 +161,7 @@ class TestStatisticsProfiler:
             assert amount_profile.numeric_stats.mean is not None
             assert amount_profile.numeric_stats.stddev is not None
 
-    async def test_profile_statistics_string_stats(self, simple_csv, test_duckdb, test_session):
+    def test_profile_statistics_string_stats(self, simple_csv, test_duckdb, test_session):
         """Test that string columns have string_stats."""
         # Load and type the table
         loader = CSVLoader()
@@ -170,25 +170,25 @@ class TestStatisticsProfiler:
             source_type="csv",
             path=str(simple_csv),
         )
-        load_result = await loader.load(config, test_duckdb, test_session)
+        load_result = loader.load(config, test_duckdb, test_session)
         assert load_result.success
 
         staged_table = load_result.unwrap().tables[0]
-        raw_table = await test_session.get(Table, staged_table.table_id)
+        raw_table = test_session.get(Table, staged_table.table_id)
         assert raw_table is not None
 
         # Infer types (pass Table object), resolve (pass table_id string)
-        await infer_type_candidates(raw_table, test_duckdb, test_session)
-        resolve_result = await resolve_types(staged_table.table_id, test_duckdb, test_session)
+        infer_type_candidates(raw_table, test_duckdb, test_session)
+        resolve_result = resolve_types(staged_table.table_id, test_duckdb, test_session)
         assert resolve_result.success
         resolution = resolve_result.unwrap()
 
         # Get typed table ID from name
-        typed_table_id = await _get_typed_table_id(resolution.typed_table_name, test_session)
+        typed_table_id = _get_typed_table_id(resolution.typed_table_name, test_session)
         assert typed_table_id is not None
 
         # Profile statistics
-        stats_result = await profile_statistics(typed_table_id, test_duckdb, test_session)
+        stats_result = profile_statistics(typed_table_id, test_duckdb, test_session)
         assert stats_result.success
         result = stats_result.unwrap()
 
@@ -202,7 +202,7 @@ class TestStatisticsProfiler:
             assert isinstance(name_profile.string_stats, StringStats)
             assert name_profile.string_stats.min_length <= name_profile.string_stats.max_length
 
-    async def test_profile_statistics_basic_counts(self, simple_csv, test_duckdb, test_session):
+    def test_profile_statistics_basic_counts(self, simple_csv, test_duckdb, test_session):
         """Test that basic counts are computed correctly."""
         # Load and type the table
         loader = CSVLoader()
@@ -211,25 +211,25 @@ class TestStatisticsProfiler:
             source_type="csv",
             path=str(simple_csv),
         )
-        load_result = await loader.load(config, test_duckdb, test_session)
+        load_result = loader.load(config, test_duckdb, test_session)
         assert load_result.success
 
         staged_table = load_result.unwrap().tables[0]
-        raw_table = await test_session.get(Table, staged_table.table_id)
+        raw_table = test_session.get(Table, staged_table.table_id)
         assert raw_table is not None
 
         # Infer types (pass Table object), resolve (pass table_id string)
-        await infer_type_candidates(raw_table, test_duckdb, test_session)
-        resolve_result = await resolve_types(staged_table.table_id, test_duckdb, test_session)
+        infer_type_candidates(raw_table, test_duckdb, test_session)
+        resolve_result = resolve_types(staged_table.table_id, test_duckdb, test_session)
         assert resolve_result.success
         resolution = resolve_result.unwrap()
 
         # Get typed table ID from name
-        typed_table_id = await _get_typed_table_id(resolution.typed_table_name, test_session)
+        typed_table_id = _get_typed_table_id(resolution.typed_table_name, test_session)
         assert typed_table_id is not None
 
         # Profile statistics
-        stats_result = await profile_statistics(typed_table_id, test_duckdb, test_session)
+        stats_result = profile_statistics(typed_table_id, test_duckdb, test_session)
         assert stats_result.success
         result = stats_result.unwrap()
 
@@ -241,9 +241,7 @@ class TestStatisticsProfiler:
             assert 0.0 <= profile.null_ratio <= 1.0
             assert 0.0 <= profile.cardinality_ratio <= 1.0
 
-    async def test_profile_statistics_requires_typed_table(
-        self, simple_csv, test_duckdb, test_session
-    ):
+    def test_profile_statistics_requires_typed_table(self, simple_csv, test_duckdb, test_session):
         """Test that profile_statistics fails on raw tables."""
         # Load but don't type the table
         loader = CSVLoader()
@@ -252,13 +250,13 @@ class TestStatisticsProfiler:
             source_type="csv",
             path=str(simple_csv),
         )
-        load_result = await loader.load(config, test_duckdb, test_session)
+        load_result = loader.load(config, test_duckdb, test_session)
         assert load_result.success
 
         raw_table = load_result.unwrap().tables[0]
 
         # Try to profile raw table (should fail)
-        stats_result = await profile_statistics(raw_table.table_id, test_duckdb, test_session)
+        stats_result = profile_statistics(raw_table.table_id, test_duckdb, test_session)
 
         assert not stats_result.success
         assert "typed" in stats_result.error.lower()

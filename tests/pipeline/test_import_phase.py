@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.pipeline.base import PhaseContext, PhaseStatus
 from dataraum_context.pipeline.phases import ImportPhase
@@ -58,22 +58,21 @@ class TestImportPhase:
         assert phase.dependencies == []
         assert phase.outputs == ["raw_tables"]
 
-    @pytest.mark.asyncio
-    async def test_import_single_csv(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection, csv_file: Path
+    def test_import_single_csv(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, csv_file: Path
     ):
         """Test importing a single CSV file."""
         phase = ImportPhase()
         source_id = str(uuid4())
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={"source_path": str(csv_file)},
         )
 
-        result = await phase.run(ctx)
+        result = phase.run(ctx)
 
         assert result.status == PhaseStatus.COMPLETED
         assert "raw_tables" in result.outputs
@@ -82,13 +81,13 @@ class TestImportPhase:
         assert result.records_created == 1  # 1 table
 
         # Verify Source was created
-        source = await async_session.get(Source, source_id)
+        source = session.get(Source, source_id)
         assert source is not None
         assert source.source_type == "csv"
 
         # Verify Table was created
         stmt = select(Table).where(Table.source_id == source_id)
-        result_tables = await async_session.execute(stmt)
+        result_tables = session.execute(stmt)
         tables = result_tables.scalars().all()
         assert len(tables) == 1
         assert tables[0].layer == "raw"
@@ -96,16 +95,15 @@ class TestImportPhase:
 
         # Verify Columns were created
         stmt = select(Column).where(Column.table_id == tables[0].table_id)
-        result_cols = await async_session.execute(stmt)
+        result_cols = session.execute(stmt)
         columns = result_cols.scalars().all()
         assert len(columns) == 3
         column_names = {c.column_name for c in columns}
         assert column_names == {"id", "name", "value"}
 
-    @pytest.mark.asyncio
-    async def test_import_directory(
+    def test_import_directory(
         self,
-        async_session: AsyncSession,
+        session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
         csv_directory: Path,
     ):
@@ -114,13 +112,13 @@ class TestImportPhase:
         source_id = str(uuid4())
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={"source_path": str(csv_directory)},
         )
 
-        result = await phase.run(ctx)
+        result = phase.run(ctx)
 
         assert result.status == PhaseStatus.COMPLETED
         assert "raw_tables" in result.outputs
@@ -129,51 +127,46 @@ class TestImportPhase:
 
         # Verify Tables were created
         stmt = select(Table).where(Table.source_id == source_id)
-        result_tables = await async_session.execute(stmt)
+        result_tables = session.execute(stmt)
         tables = result_tables.scalars().all()
         assert len(tables) == 2
 
-    @pytest.mark.asyncio
-    async def test_import_missing_path(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
-    ):
+    def test_import_missing_path(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection):
         """Test error when source_path is not provided."""
         phase = ImportPhase()
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=str(uuid4()),
             config={},
         )
 
-        result = await phase.run(ctx)
+        result = phase.run(ctx)
 
         assert result.status == PhaseStatus.FAILED
         assert "source_path not provided" in (result.error or "")
 
-    @pytest.mark.asyncio
-    async def test_import_nonexistent_path(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
+    def test_import_nonexistent_path(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test error when path doesn't exist."""
         phase = ImportPhase()
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=str(uuid4()),
             config={"source_path": "/nonexistent/path.csv"},
         )
 
-        result = await phase.run(ctx)
+        result = phase.run(ctx)
 
         assert result.status == PhaseStatus.FAILED
         assert "not found" in (result.error or "")
 
-    @pytest.mark.asyncio
-    async def test_skip_if_tables_exist(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection, csv_file: Path
+    def test_skip_if_tables_exist(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, csv_file: Path
     ):
         """Test that import is skipped if tables already exist."""
         source_id = str(uuid4())
@@ -184,7 +177,7 @@ class TestImportPhase:
             name="existing_source",
             source_type="csv",
         )
-        async_session.add(source)
+        session.add(source)
 
         table = Table(
             table_id=str(uuid4()),
@@ -194,25 +187,24 @@ class TestImportPhase:
             duckdb_path="raw_existing_table",
             row_count=10,
         )
-        async_session.add(table)
-        await async_session.commit()
+        session.add(table)
+        session.commit()
 
         # Now try to import
         phase = ImportPhase()
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={"source_path": str(csv_file)},
         )
 
-        skip_reason = await phase.should_skip(ctx)
+        skip_reason = phase.should_skip(ctx)
         assert skip_reason is not None
         assert "already has" in skip_reason
 
-    @pytest.mark.asyncio
-    async def test_force_reimport(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection, csv_file: Path
+    def test_force_reimport(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, csv_file: Path
     ):
         """Test force_reimport config bypasses skip."""
         source_id = str(uuid4())
@@ -223,7 +215,7 @@ class TestImportPhase:
             name="existing_source",
             source_type="csv",
         )
-        async_session.add(source)
+        session.add(source)
 
         table = Table(
             table_id=str(uuid4()),
@@ -233,24 +225,23 @@ class TestImportPhase:
             duckdb_path="raw_existing_table",
             row_count=10,
         )
-        async_session.add(table)
-        await async_session.commit()
+        session.add(table)
+        session.commit()
 
         # Try with force_reimport
         phase = ImportPhase()
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={"source_path": str(csv_file), "force_reimport": True},
         )
 
-        skip_reason = await phase.should_skip(ctx)
+        skip_reason = phase.should_skip(ctx)
         assert skip_reason is None  # Should not skip with force_reimport
 
-    @pytest.mark.asyncio
-    async def test_drop_junk_columns(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection, tmp_path: Path
+    def test_drop_junk_columns(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, tmp_path: Path
     ):
         """Test that junk columns are dropped."""
         # Create CSV with junk column
@@ -266,7 +257,7 @@ class TestImportPhase:
         source_id = str(uuid4())
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={
@@ -275,14 +266,14 @@ class TestImportPhase:
             },
         )
 
-        result = await phase.run(ctx)
+        result = phase.run(ctx)
 
         assert result.status == PhaseStatus.COMPLETED
 
         # Verify junk column was removed from metadata
         table_id = result.outputs["raw_tables"][0]
         stmt = select(Column).where(Column.table_id == table_id)
-        result_cols = await async_session.execute(stmt)
+        result_cols = session.execute(stmt)
         columns = result_cols.scalars().all()
 
         column_names = {c.column_name for c in columns}

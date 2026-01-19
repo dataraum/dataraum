@@ -3,8 +3,7 @@
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.pipeline.base import PhaseContext, PhaseStatus
 from dataraum_context.pipeline.phases import SlicingPhase
@@ -25,28 +24,26 @@ class TestSlicingPhase:
         assert phase.outputs == ["slice_definitions", "slice_queries"]
         assert phase.is_llm_phase is True
 
-    @pytest.mark.asyncio
-    async def test_skip_when_no_typed_tables(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
+    def test_skip_when_no_typed_tables(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test skip when no typed tables exist."""
         phase = SlicingPhase()
         source_id = str(uuid4())
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
         )
 
-        skip_reason = await phase.should_skip(ctx)
+        skip_reason = phase.should_skip(ctx)
         assert skip_reason is not None
         assert "No typed tables" in skip_reason
 
-    @pytest.mark.asyncio
-    async def test_does_not_skip_with_unsliced_tables(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
+    def test_does_not_skip_with_unsliced_tables(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test does not skip when tables exist without slice definitions."""
         phase = SlicingPhase()
@@ -58,7 +55,7 @@ class TestSlicingPhase:
             name="test_source",
             source_type="csv",
         )
-        async_session.add(source)
+        session.add(source)
 
         table = Table(
             table_id=str(uuid4()),
@@ -68,7 +65,7 @@ class TestSlicingPhase:
             duckdb_path="typed_test_table",
             row_count=100,
         )
-        async_session.add(table)
+        session.add(table)
 
         # Add some columns
         for i, name in enumerate(["category", "region", "amount"]):
@@ -80,45 +77,41 @@ class TestSlicingPhase:
                 raw_type="VARCHAR",
                 resolved_type="VARCHAR",
             )
-            async_session.add(col)
+            session.add(col)
 
-        await async_session.commit()
+        session.commit()
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
         )
 
-        skip_reason = await phase.should_skip(ctx)
+        skip_reason = phase.should_skip(ctx)
         # Should not skip - tables need slicing analysis
         assert skip_reason is None
 
-    @pytest.mark.asyncio
-    async def test_fails_when_no_typed_tables(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
+    def test_fails_when_no_typed_tables(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test failure when run without typed tables."""
         phase = SlicingPhase()
         source_id = str(uuid4())
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
         )
 
-        result = await phase.run(ctx)
+        result = phase.run(ctx)
 
         assert result.status == PhaseStatus.FAILED
         assert "No typed tables" in (result.error or "")
 
-    @pytest.mark.asyncio
-    async def test_skip_when_all_sliced(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
-    ):
+    def test_skip_when_all_sliced(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection):
         """Test skip when all tables already have slice definitions."""
         from dataraum_context.analysis.slicing.db_models import SliceDefinition
 
@@ -131,7 +124,7 @@ class TestSlicingPhase:
             name="test_source",
             source_type="csv",
         )
-        async_session.add(source)
+        session.add(source)
 
         table_id = str(uuid4())
         col_id = str(uuid4())
@@ -144,7 +137,7 @@ class TestSlicingPhase:
             duckdb_path="typed_test_table",
             row_count=100,
         )
-        async_session.add(table)
+        session.add(table)
 
         col = Column(
             column_id=col_id,
@@ -154,7 +147,7 @@ class TestSlicingPhase:
             raw_type="VARCHAR",
             resolved_type="VARCHAR",
         )
-        async_session.add(col)
+        session.add(col)
 
         # Add existing slice definition
         slice_def = SliceDefinition(
@@ -167,17 +160,17 @@ class TestSlicingPhase:
             reasoning="Test slice",
             detection_source="llm",
         )
-        async_session.add(slice_def)
-        await async_session.commit()
+        session.add(slice_def)
+        session.commit()
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
         )
 
-        skip_reason = await phase.should_skip(ctx)
+        skip_reason = phase.should_skip(ctx)
         # Should skip - all tables already have slice definitions
         assert skip_reason is not None
         assert "already have slice definitions" in skip_reason

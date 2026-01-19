@@ -24,7 +24,7 @@ class MockTypeFidelityDetector(EntropyDetector):
     sub_dimension = "type_fidelity"
     required_analyses = ["typing"]
 
-    async def detect(self, context: DetectorContext) -> list[EntropyObject]:
+    def detect(self, context: DetectorContext) -> list[EntropyObject]:
         typing_result = context.get_analysis("typing", {})
         parse_rate = typing_result.get("parse_success_rate", 1.0)
         score = 1.0 - parse_rate
@@ -47,7 +47,7 @@ class MockNullRatioDetector(EntropyDetector):
     sub_dimension = "null_ratio"
     required_analyses = ["statistics"]
 
-    async def detect(self, context: DetectorContext) -> list[EntropyObject]:
+    def detect(self, context: DetectorContext) -> list[EntropyObject]:
         stats = context.get_analysis("statistics", {})
         null_ratio = stats.get("null_ratio", 0.0)
         score = min(1.0, null_ratio * 2)  # Double the null ratio, cap at 1.0
@@ -70,7 +70,7 @@ class MockSemanticDetector(EntropyDetector):
     sub_dimension = "naming_clarity"
     required_analyses = ["semantic"]
 
-    async def detect(self, context: DetectorContext) -> list[EntropyObject]:
+    def detect(self, context: DetectorContext) -> list[EntropyObject]:
         semantic = context.get_analysis("semantic", {})
         description = semantic.get("business_description", "")
 
@@ -103,8 +103,7 @@ def test_registry() -> DetectorRegistry:
 class TestEntropyProcessor:
     """Tests for EntropyProcessor."""
 
-    @pytest.mark.asyncio
-    async def test_process_column(
+    def test_process_column(
         self,
         test_registry: DetectorRegistry,
         sample_detector_context: DetectorContext,
@@ -112,7 +111,7 @@ class TestEntropyProcessor:
         """Test processing a single column."""
         processor = EntropyProcessor(registry=test_registry)
 
-        profile = await processor.process_column(
+        profile = processor.process_column(
             table_name=sample_detector_context.table_name,
             column_name=sample_detector_context.column_name,
             analysis_results=sample_detector_context.analysis_results,
@@ -126,8 +125,7 @@ class TestEntropyProcessor:
         assert profile.composite_score >= 0
         assert profile.readiness in ["ready", "investigate", "blocked"]
 
-    @pytest.mark.asyncio
-    async def test_process_column_with_high_entropy(
+    def test_process_column_with_high_entropy(
         self,
         test_registry: DetectorRegistry,
         high_entropy_context: DetectorContext,
@@ -135,7 +133,7 @@ class TestEntropyProcessor:
         """Test processing a column with high entropy characteristics."""
         processor = EntropyProcessor(registry=test_registry)
 
-        profile = await processor.process_column(
+        profile = processor.process_column(
             table_name=high_entropy_context.table_name,
             column_name=high_entropy_context.column_name,
             analysis_results=high_entropy_context.analysis_results,
@@ -148,8 +146,7 @@ class TestEntropyProcessor:
         assert profile.value_entropy == pytest.approx(0.70, abs=0.01)
         assert profile.semantic_entropy == pytest.approx(1.0, abs=0.01)
 
-    @pytest.mark.asyncio
-    async def test_process_column_with_low_entropy(
+    def test_process_column_with_low_entropy(
         self,
         test_registry: DetectorRegistry,
         low_entropy_context: DetectorContext,
@@ -157,7 +154,7 @@ class TestEntropyProcessor:
         """Test processing a clean column with low entropy."""
         processor = EntropyProcessor(registry=test_registry)
 
-        profile = await processor.process_column(
+        profile = processor.process_column(
             table_name=low_entropy_context.table_name,
             column_name=low_entropy_context.column_name,
             analysis_results=low_entropy_context.analysis_results,
@@ -170,8 +167,7 @@ class TestEntropyProcessor:
         assert profile.value_entropy == pytest.approx(0.0, abs=0.01)
         assert profile.readiness == "ready"
 
-    @pytest.mark.asyncio
-    async def test_process_table(self, test_registry: DetectorRegistry):
+    def test_process_table(self, test_registry: DetectorRegistry):
         """Test processing a table with multiple columns."""
         processor = EntropyProcessor(registry=test_registry)
 
@@ -194,7 +190,7 @@ class TestEntropyProcessor:
             },
         ]
 
-        table_profile = await processor.process_table(
+        table_profile = processor.process_table(
             table_name="orders",
             columns=columns,
         )
@@ -204,13 +200,12 @@ class TestEntropyProcessor:
         assert table_profile.avg_composite_score >= 0
         assert table_profile.max_composite_score >= table_profile.avg_composite_score
 
-    @pytest.mark.asyncio
-    async def test_build_entropy_context(self, test_registry: DetectorRegistry):
+    def test_build_entropy_context(self, test_registry: DetectorRegistry):
         """Test building complete entropy context."""
         processor = EntropyProcessor(registry=test_registry)
 
         # Process a table
-        table_profile = await processor.process_table(
+        table_profile = processor.process_table(
             table_name="orders",
             columns=[
                 {
@@ -225,7 +220,7 @@ class TestEntropyProcessor:
         )
 
         # Build context
-        context = await processor.build_entropy_context([table_profile])
+        context = processor.build_entropy_context([table_profile])
 
         assert "orders" in context.table_profiles
         assert "orders.amount" in context.column_profiles
@@ -255,11 +250,10 @@ class TestProcessorConfig:
 class TestConvenienceFunctions:
     """Tests for convenience functions."""
 
-    @pytest.mark.asyncio
-    async def test_process_column_entropy(self):
+    def test_process_column_entropy(self):
         """Test process_column_entropy convenience function."""
         # This uses the default (empty) registry, so no detectors run
-        profile = await process_column_entropy(
+        profile = process_column_entropy(
             table_name="test",
             column_name="col",
             analysis_results={},

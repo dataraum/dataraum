@@ -42,11 +42,11 @@ class TemporalPhase(BasePhase):
     def outputs(self) -> list[str]:
         return ["temporal_profiles"]
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no temporal columns or all already profiled."""
         # Get typed tables
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -59,14 +59,14 @@ class TemporalPhase(BasePhase):
             Column.table_id.in_(typed_table_ids),
             Column.resolved_type.in_(temporal_types),
         )
-        temporal_columns = (await ctx.session.execute(temporal_columns_stmt)).scalars().all()
+        temporal_columns = (ctx.session.execute(temporal_columns_stmt)).scalars().all()
 
         if not temporal_columns:
             return "No temporal columns found"
 
         # Check existing profiles
         existing_count = (
-            await ctx.session.execute(select(func.count(TemporalColumnProfile.profile_id)))
+            ctx.session.execute(select(func.count(TemporalColumnProfile.profile_id)))
         ).scalar() or 0
 
         if existing_count >= len(temporal_columns):
@@ -74,11 +74,11 @@ class TemporalPhase(BasePhase):
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run temporal profiling on typed tables."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -91,7 +91,7 @@ class TemporalPhase(BasePhase):
             Column.table_id.in_(typed_table_ids),
             Column.resolved_type.in_(temporal_types),
         )
-        temporal_columns = (await ctx.session.execute(temporal_columns_stmt)).scalars().all()
+        temporal_columns = (ctx.session.execute(temporal_columns_stmt)).scalars().all()
 
         if not temporal_columns:
             return PhaseResult.success(
@@ -109,7 +109,7 @@ class TemporalPhase(BasePhase):
         warnings = []
 
         for typed_table in typed_tables:
-            profile_result = await profile_temporal(
+            profile_result = profile_temporal(
                 table_id=typed_table.table_id,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,

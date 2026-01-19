@@ -31,7 +31,7 @@ class AnthropicConfig(BaseModel):
 class AnthropicProvider(LLMProvider):
     """Anthropic Claude provider implementation.
 
-    Uses the Anthropic async client to make API calls to Claude models.
+    Uses the Anthropic sync client to make API calls to Claude models.
     Supports both JSON and text response formats.
     """
 
@@ -60,10 +60,10 @@ class AnthropicProvider(LLMProvider):
                 f"Set your Anthropic API key in .env file."
             )
 
-        # Create async client
-        self.client = anthropic.AsyncAnthropic(api_key=api_key)
+        # Create sync client
+        self.client = anthropic.Anthropic(api_key=api_key)
 
-    async def complete(self, request: LLMRequest) -> Result[LLMResponse]:
+    def complete(self, request: LLMRequest) -> Result[LLMResponse]:
         """Send completion request to Claude API.
 
         Args:
@@ -92,7 +92,7 @@ class AnthropicProvider(LLMProvider):
 
             # Make API call
             if system_prompt:
-                response = await self.client.messages.create(
+                response = self.client.messages.create(
                     model=model,
                     max_tokens=request.max_tokens,
                     temperature=request.temperature,
@@ -100,7 +100,7 @@ class AnthropicProvider(LLMProvider):
                     system=system_prompt,
                 )
             else:
-                response = await self.client.messages.create(
+                response = self.client.messages.create(
                     model=model,
                     max_tokens=request.max_tokens,
                     temperature=request.temperature,
@@ -149,7 +149,7 @@ class AnthropicProvider(LLMProvider):
         """
         return self.config.models.get(tier, self.config.default_model)
 
-    async def converse(self, request: ConversationRequest) -> Result[ConversationResponse]:
+    def converse(self, request: ConversationRequest) -> Result[ConversationResponse]:
         """Send a conversation request with optional tool use.
 
         Supports multi-turn conversations and tool use with Claude.
@@ -195,7 +195,7 @@ class AnthropicProvider(LLMProvider):
             if tools:
                 kwargs["tools"] = tools
 
-            response = await self.client.messages.create(**kwargs)
+            response = self.client.messages.create(**kwargs)
 
             # Extract content and tool calls from response
             text_content = ""

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import duckdb
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.slicing.db_models import SliceDefinition
 from dataraum_context.core.models.base import Result
@@ -79,8 +79,8 @@ def _get_slice_table_name(source_table_name: str, column_name: str, value: str) 
     return f"slice_{safe_column}_{safe_value}"
 
 
-async def register_slice_tables(
-    session: AsyncSession,
+def register_slice_tables(
+    session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
     slice_definitions: list[SliceDefinition] | None = None,
 ) -> Result[list[SliceTableInfo]]:
@@ -102,7 +102,7 @@ async def register_slice_tables(
         # Get slice definitions if not provided
         if slice_definitions is None:
             stmt = select(SliceDefinition).order_by(SliceDefinition.slice_priority)
-            result = await session.execute(stmt)
+            result = session.execute(stmt)
             slice_definitions = list(result.scalars().all())
 
         if not slice_definitions:
@@ -120,8 +120,8 @@ async def register_slice_tables(
 
         for slice_def in slice_definitions:
             # Load related table and column
-            source_table = await session.get(Table, slice_def.table_id)
-            source_column = await session.get(Column, slice_def.column_id)
+            source_table = session.get(Table, slice_def.table_id)
+            source_column = session.get(Column, slice_def.column_id)
 
             if not source_table or not source_column:
                 continue
@@ -132,7 +132,7 @@ async def register_slice_tables(
                 .where(Column.table_id == source_table.table_id)
                 .order_by(Column.column_position)
             )
-            source_columns_result = await session.execute(source_columns_stmt)
+            source_columns_result = session.execute(source_columns_stmt)
             source_columns = list(source_columns_result.scalars().all())
 
             # Process each slice value
@@ -152,7 +152,7 @@ async def register_slice_tables(
                     Table.table_name == slice_table_name,
                     Table.layer == "slice",
                 )
-                existing_result = await session.execute(existing_stmt)
+                existing_result = session.execute(existing_stmt)
                 existing_table = existing_result.scalar_one_or_none()
 
                 if existing_table:
@@ -189,7 +189,7 @@ async def register_slice_tables(
                     row_count=row_count,
                 )
                 session.add(slice_table)
-                await session.flush()  # Get the table_id
+                session.flush()  # Get the table_id
 
                 # Create Column entries (copy from parent)
                 for src_col in source_columns:
@@ -217,14 +217,14 @@ async def register_slice_tables(
         return Result.ok(registered)
 
     except Exception as e:
-        await session.rollback()
+        session.rollback()
         return Result.fail(f"Failed to register slice tables: {e}")
 
 
-async def run_statistics_on_slice(
+def run_statistics_on_slice(
     slice_info: SliceTableInfo,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
 ) -> Result[Any]:
     """Run statistical profiling on a slice table.
 
@@ -243,17 +243,17 @@ async def run_statistics_on_slice(
     # Since we registered with layer='slice', we need to handle this.
 
     # Get the slice table
-    table = await session.get(Table, slice_info.slice_table_id)
+    table = session.get(Table, slice_info.slice_table_id)
     if not table:
         return Result.fail(f"Slice table not found: {slice_info.slice_table_id}")
 
     # Temporarily set layer to 'typed' for profiling
     original_layer = table.layer
     table.layer = "typed"
-    await session.flush()
+    session.flush()
 
     try:
-        result = await profile_statistics(
+        result = profile_statistics(
             table_id=slice_info.slice_table_id,
             duckdb_conn=duckdb_conn,
             session=session,
@@ -262,13 +262,13 @@ async def run_statistics_on_slice(
     finally:
         # Restore layer
         table.layer = original_layer
-        await session.flush()
+        session.flush()
 
 
-async def run_quality_on_slice(
+def run_quality_on_slice(
     slice_info: SliceTableInfo,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
 ) -> Result[Any]:
     """Run statistical quality assessment on a slice table.
 
@@ -282,7 +282,7 @@ async def run_quality_on_slice(
     """
     from dataraum_context.analysis.statistics import assess_statistical_quality
 
-    result = await assess_statistical_quality(
+    result = assess_statistical_quality(
         table_id=slice_info.slice_table_id,
         duckdb_conn=duckdb_conn,
         session=session,
@@ -290,9 +290,9 @@ async def run_quality_on_slice(
     return result
 
 
-async def run_semantic_on_slices(
+def run_semantic_on_slices(
     slice_infos: list[SliceTableInfo],
-    session: AsyncSession,
+    session: Session,
     agent: SemanticAgent,
 ) -> Result[Any]:
     """Copy semantic annotations from parent table to slice tables.
@@ -321,13 +321,13 @@ async def run_semantic_on_slices(
     parent_table_id = slice_infos[0].source_table_id
 
     # Load semantic annotations from parent table
-    parent_columns = await session.execute(
+    parent_columns = session.execute(
         select(Column.column_id, Column.column_name).where(Column.table_id == parent_table_id)
     )
     parent_col_map = {row.column_name: row.column_id for row in parent_columns}
 
     # Load existing annotations for parent columns
-    parent_annotations = await session.execute(
+    parent_annotations = session.execute(
         select(SemanticAnnotation).where(
             SemanticAnnotation.column_id.in_(list(parent_col_map.values()))
         )
@@ -348,7 +348,7 @@ async def run_semantic_on_slices(
     # Copy annotations to each slice table
     for slice_info in slice_infos:
         # Load slice columns
-        slice_columns = await session.execute(
+        slice_columns = session.execute(
             select(Column.column_id, Column.column_name).where(
                 Column.table_id == slice_info.slice_table_id
             )
@@ -375,8 +375,8 @@ async def run_semantic_on_slices(
     return Result.ok(copied_count)
 
 
-async def run_analysis_on_slices(
-    session: AsyncSession,
+def run_analysis_on_slices(
+    session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
     slice_infos: list[SliceTableInfo],
     semantic_agent: SemanticAgent | None = None,
@@ -409,7 +409,7 @@ async def run_analysis_on_slices(
     # Run statistics on each slice
     if run_statistics:
         for slice_info in slice_infos:
-            result = await run_statistics_on_slice(slice_info, duckdb_conn, session)
+            result = run_statistics_on_slice(slice_info, duckdb_conn, session)
             if result.success:
                 stats_count += 1
             else:
@@ -418,7 +418,7 @@ async def run_analysis_on_slices(
     # Run quality on each slice
     if run_quality:
         for slice_info in slice_infos:
-            result = await run_quality_on_slice(slice_info, duckdb_conn, session)
+            result = run_quality_on_slice(slice_info, duckdb_conn, session)
             if result.success:
                 quality_count += 1
             else:
@@ -426,7 +426,7 @@ async def run_analysis_on_slices(
 
     # Run semantic on all slices at once (batched for efficiency)
     if run_semantic and semantic_agent:
-        result = await run_semantic_on_slices(slice_infos, session, semantic_agent)
+        result = run_semantic_on_slices(slice_infos, session, semantic_agent)
         if result.success:
             semantic_count = len(slice_infos)
         else:
@@ -442,8 +442,8 @@ async def run_analysis_on_slices(
     )
 
 
-async def run_temporal_analysis_on_slices(
-    session: AsyncSession,
+def run_temporal_analysis_on_slices(
+    session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
     slice_infos: list[SliceTableInfo],
     time_column: str,
@@ -494,7 +494,7 @@ async def run_temporal_analysis_on_slices(
             time_grain=grain,
         )
 
-        result = await analyze_temporal_slices(
+        result = analyze_temporal_slices(
             duckdb_conn=duckdb_conn,
             session=session,
             slice_table_name=slice_info.slice_table_name,
@@ -535,8 +535,8 @@ class TopologySlicesResult:
     errors: list[str]
 
 
-async def run_topology_on_slices(
-    session: AsyncSession,
+def run_topology_on_slices(
+    session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
     slice_infos: list[SliceTableInfo],
     correlation_threshold: float = 0.5,  # kept for API compatibility
@@ -571,7 +571,7 @@ async def run_topology_on_slices(
     for slice_info in slice_infos:
         try:
             # Use the existing topology module for full TDA analysis
-            result = await analyze_topological_quality(
+            result = analyze_topological_quality(
                 table_id=slice_info.slice_table_id,
                 duckdb_conn=duckdb_conn,
                 session=session,

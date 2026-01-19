@@ -21,7 +21,7 @@ class MockDetector(EntropyDetector):
     required_analyses = ["typing"]
     description = "Mock detector for testing"
 
-    async def detect(self, context: DetectorContext) -> list[EntropyObject]:
+    def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Return a mock entropy object."""
         typing_result = context.get_analysis("typing", {})
         parse_rate = typing_result.get("parse_success_rate", 1.0)
@@ -142,11 +142,10 @@ class TestEntropyDetector:
         detector = MockDetector()
         assert detector.dimension_path == "structural.types.mock_sub"
 
-    @pytest.mark.asyncio
-    async def test_detect(self, sample_detector_context: DetectorContext):
+    def test_detect(self, sample_detector_context: DetectorContext):
         """Test detect method returns entropy objects."""
         detector = MockDetector()
-        results = await detector.detect(sample_detector_context)
+        results = detector.detect(sample_detector_context)
 
         assert len(results) == 1
         obj = results[0]

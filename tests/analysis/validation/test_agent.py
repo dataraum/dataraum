@@ -1,7 +1,7 @@
 """Tests for the validation agent."""
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -29,7 +29,7 @@ def mock_provider():
     """Create a mock LLM provider."""
     provider = MagicMock()
     provider.get_model_for_tier = MagicMock(return_value="claude-3-haiku")
-    provider.complete = AsyncMock()
+    provider.complete = MagicMock()
     return provider
 
 
@@ -57,7 +57,7 @@ def validation_agent(mock_llm_config, mock_provider, mock_prompt_renderer, mock_
 
 
 @pytest.fixture
-async def table_with_data(async_session, duckdb_conn):
+def table_with_data(session, duckdb_conn):
     """Create a test table with data in both SQLite and DuckDB."""
     from dataraum_context.analysis.semantic.db_models import (
         SemanticAnnotation as SemanticAnnotationDB,
@@ -66,8 +66,8 @@ async def table_with_data(async_session, duckdb_conn):
 
     # Create source and table in SQLite
     source = Source(name="test_source", source_type="csv")
-    async_session.add(source)
-    await async_session.flush()
+    session.add(source)
+    session.flush()
 
     table = Table(
         source_id=source.source_id,
@@ -76,8 +76,8 @@ async def table_with_data(async_session, duckdb_conn):
         row_count=4,
         duckdb_path="typed_journal_entries",
     )
-    async_session.add(table)
-    await async_session.flush()
+    session.add(table)
+    session.flush()
 
     # Create columns
     col_debit = Column(
@@ -94,8 +94,8 @@ async def table_with_data(async_session, duckdb_conn):
         raw_type="DECIMAL",
         resolved_type="DECIMAL(18,2)",
     )
-    async_session.add_all([col_debit, col_credit])
-    await async_session.flush()
+    session.add_all([col_debit, col_credit])
+    session.flush()
 
     # Add semantic annotations
     ann_debit = SemanticAnnotationDB(
@@ -108,8 +108,8 @@ async def table_with_data(async_session, duckdb_conn):
         semantic_role="measure",
         entity_type="credit",
     )
-    async_session.add_all([ann_debit, ann_credit])
-    await async_session.commit()
+    session.add_all([ann_debit, ann_credit])
+    session.commit()
 
     # Create matching table in DuckDB with balanced data
     duckdb_conn.execute("""
@@ -254,8 +254,7 @@ class TestValidationAgentEvaluateResult:
 class TestValidationAgentGenerateSQL:
     """Tests for SQL generation via LLM."""
 
-    @pytest.mark.asyncio
-    async def test_generate_sql_success(self, validation_agent, mock_provider):
+    def test_generate_sql_success(self, validation_agent, mock_provider):
         """Test successful SQL generation."""
         spec = ValidationSpec(
             validation_id="test_check",
@@ -287,7 +286,7 @@ class TestValidationAgentGenerateSQL:
         )
         mock_provider.complete.return_value = Result.ok(mock_response)
 
-        result = await validation_agent._generate_sql(spec, schema)
+        result = validation_agent._generate_sql(spec, schema)
 
         assert result.success
         generated = result.value
@@ -295,8 +294,7 @@ class TestValidationAgentGenerateSQL:
         assert generated.columns_used == ["debit", "credit"]
         assert generated.is_valid is True
 
-    @pytest.mark.asyncio
-    async def test_generate_sql_cannot_validate(self, validation_agent, mock_provider):
+    def test_generate_sql_cannot_validate(self, validation_agent, mock_provider):
         """Test when LLM indicates validation cannot be performed."""
         spec = ValidationSpec(
             validation_id="test_check",
@@ -328,15 +326,14 @@ class TestValidationAgentGenerateSQL:
         )
         mock_provider.complete.return_value = Result.ok(mock_response)
 
-        result = await validation_agent._generate_sql(spec, schema)
+        result = validation_agent._generate_sql(spec, schema)
 
         assert result.success
         generated = result.value
         assert generated.is_valid is False
         assert "Missing required columns" in generated.validation_error
 
-    @pytest.mark.asyncio
-    async def test_generate_sql_llm_error(self, validation_agent, mock_provider):
+    def test_generate_sql_llm_error(self, validation_agent, mock_provider):
         """Test handling of LLM errors."""
         spec = ValidationSpec(
             validation_id="test",
@@ -350,13 +347,12 @@ class TestValidationAgentGenerateSQL:
 
         mock_provider.complete.return_value = Result.fail("API error")
 
-        result = await validation_agent._generate_sql(spec, schema)
+        result = validation_agent._generate_sql(spec, schema)
 
         assert not result.success
         assert "API error" in result.error
 
-    @pytest.mark.asyncio
-    async def test_generate_sql_disabled_feature(self, validation_agent):
+    def test_generate_sql_disabled_feature(self, validation_agent):
         """Test when validation feature is disabled."""
         validation_agent.config.features.validation.enabled = False
 
@@ -374,7 +370,7 @@ class TestValidationAgentGenerateSQL:
             "columns": [],
         }
 
-        result = await validation_agent._generate_sql(spec, schema)
+        result = validation_agent._generate_sql(spec, schema)
 
         assert not result.success
         assert "disabled" in result.error
@@ -383,13 +379,10 @@ class TestValidationAgentGenerateSQL:
 class TestValidationAgentRunValidations:
     """Tests for running full validation flows (multi-table)."""
 
-    @pytest.mark.asyncio
-    async def test_run_validations_tables_not_found(
-        self, async_session, duckdb_conn, validation_agent
-    ):
+    def test_run_validations_tables_not_found(self, session, duckdb_conn, validation_agent):
         """Test running validations on nonexistent tables."""
-        result = await validation_agent.run_validations(
-            session=async_session,
+        result = validation_agent.run_validations(
+            session=session,
             duckdb_conn=duckdb_conn,
             table_ids=["nonexistent-id"],
         )
@@ -397,9 +390,8 @@ class TestValidationAgentRunValidations:
         assert not result.success
         assert "not found" in result.error.lower() or "No tables" in result.error
 
-    @pytest.mark.asyncio
-    async def test_run_validations_no_specs(
-        self, async_session, duckdb_conn, validation_agent, table_with_data
+    def test_run_validations_no_specs(
+        self, session, duckdb_conn, validation_agent, table_with_data
     ):
         """Test running validations with no matching specs."""
         table = table_with_data
@@ -410,8 +402,8 @@ class TestValidationAgentRunValidations:
         ) as mock_load:
             mock_load.return_value = {}
 
-            result = await validation_agent.run_validations(
-                session=async_session,
+            result = validation_agent.run_validations(
+                session=session,
                 duckdb_conn=duckdb_conn,
                 table_ids=[table.table_id],
             )
@@ -420,9 +412,8 @@ class TestValidationAgentRunValidations:
         run_result = result.value
         assert run_result.total_checks == 0
 
-    @pytest.mark.asyncio
-    async def test_run_single_validation_success(
-        self, async_session, duckdb_conn, validation_agent, mock_provider, table_with_data
+    def test_run_single_validation_success(
+        self, session, duckdb_conn, validation_agent, mock_provider, table_with_data
     ):
         """Test running a single validation that passes."""
         table = table_with_data
@@ -442,7 +433,7 @@ class TestValidationAgentRunValidations:
             get_multi_table_schema_for_llm,
         )
 
-        schema = await get_multi_table_schema_for_llm(async_session, [table.table_id])
+        schema = get_multi_table_schema_for_llm(session, [table.table_id])
 
         # Mock LLM to return valid SQL
         mock_response = MagicMock()
@@ -457,7 +448,7 @@ class TestValidationAgentRunValidations:
         )
         mock_provider.complete.return_value = Result.ok(mock_response)
 
-        result = await validation_agent._run_single_validation(
+        result = validation_agent._run_single_validation(
             duckdb_conn=duckdb_conn,
             table_ids=[table.table_id],
             spec=spec,
@@ -468,9 +459,8 @@ class TestValidationAgentRunValidations:
         assert result.passed is True
         assert result.sql_used is not None
 
-    @pytest.mark.asyncio
-    async def test_run_single_validation_skipped(
-        self, async_session, duckdb_conn, validation_agent, mock_provider, table_with_data
+    def test_run_single_validation_skipped(
+        self, session, duckdb_conn, validation_agent, mock_provider, table_with_data
     ):
         """Test running a validation that gets skipped."""
         table = table_with_data
@@ -487,7 +477,7 @@ class TestValidationAgentRunValidations:
             get_multi_table_schema_for_llm,
         )
 
-        schema = await get_multi_table_schema_for_llm(async_session, [table.table_id])
+        schema = get_multi_table_schema_for_llm(session, [table.table_id])
 
         # Mock LLM to indicate cannot validate
         mock_response = MagicMock()
@@ -503,7 +493,7 @@ class TestValidationAgentRunValidations:
         )
         mock_provider.complete.return_value = Result.ok(mock_response)
 
-        result = await validation_agent._run_single_validation(
+        result = validation_agent._run_single_validation(
             duckdb_conn=duckdb_conn,
             table_ids=[table.table_id],
             spec=spec,

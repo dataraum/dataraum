@@ -19,7 +19,7 @@ from uuid import uuid4
 import duckdb
 import pandas as pd
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.temporal.db_models import (
     TemporalColumnProfile,
@@ -49,10 +49,10 @@ from dataraum_context.core.models.base import ColumnRef, Result
 from dataraum_context.storage import Column, Table
 
 
-async def profile_temporal(
+def profile_temporal(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
 ) -> Result[TemporalProfileResult]:
     """Profile temporal columns in a table.
 
@@ -75,7 +75,7 @@ async def profile_temporal(
     """
     try:
         # Get table from metadata
-        table = await session.get(Table, str(table_id))
+        table = session.get(Table, str(table_id))
         if not table:
             return Result.fail(f"Table not found: {table_id}")
 
@@ -95,7 +95,7 @@ async def profile_temporal(
             )
             .order_by(Column.column_position)
         )
-        column_result = await session.execute(column_stmt)
+        column_result = session.execute(column_stmt)
         columns = column_result.scalars().all()
 
         if not columns:
@@ -116,7 +116,7 @@ async def profile_temporal(
 
         # Profile each temporal column (collect results, don't add to session yet)
         for column in columns:
-            profile_result = await _profile_temporal_column(
+            profile_result = _profile_temporal_column(
                 table=table,
                 column=column,
                 duckdb_conn=duckdb_conn,
@@ -161,11 +161,11 @@ async def profile_temporal(
             session.add(db_profile)
 
         if table_summary:
-            await _persist_table_summary(table_summary, session)
+            _persist_table_summary(table_summary, session)
 
         # Flush to ensure data is persisted, but don't commit
         # The caller (phase/orchestrator) manages the transaction
-        await session.flush()
+        session.flush()
 
         duration = time.time() - start_time
 
@@ -181,7 +181,7 @@ async def profile_temporal(
         return Result.fail(f"Temporal profiling failed: {e}")
 
 
-async def _profile_temporal_column(
+def _profile_temporal_column(
     table: Table,
     column: Column,
     duckdb_conn: duckdb.DuckDBPyConnection,
@@ -203,7 +203,7 @@ async def _profile_temporal_column(
         actual_table = table.duckdb_path or f"typed_{table.table_name}"
 
         # Load time series
-        ts_result = await _load_time_series(
+        ts_result = _load_time_series(
             duckdb_conn,
             actual_table,
             column.column_name,
@@ -233,26 +233,26 @@ async def _profile_temporal_column(
         metric_id = str(uuid4())
 
         # Run pattern analyses
-        seasonality_result = await analyze_seasonality(time_series)
+        seasonality_result = analyze_seasonality(time_series)
         seasonality = seasonality_result.value if seasonality_result.success else None
 
-        trend_result = await analyze_trend(time_series)
+        trend_result = analyze_trend(time_series)
         trend = trend_result.value if trend_result.success else None
 
-        changes_result = await detect_change_points(time_series)
+        changes_result = detect_change_points(time_series)
         change_points = changes_result.unwrap() if changes_result.success else []
 
-        frequency_result = await analyze_update_frequency(time_series)
+        frequency_result = analyze_update_frequency(time_series)
         update_frequency = frequency_result.value if frequency_result.success else None
 
-        fiscal_result = await detect_fiscal_calendar(time_series)
+        fiscal_result = detect_fiscal_calendar(time_series)
         fiscal_calendar = fiscal_result.value if fiscal_result.success else None
 
-        stability_result = await analyze_distribution_stability(time_series)
+        stability_result = analyze_distribution_stability(time_series)
         distribution_stability = stability_result.value if stability_result.success else None
 
         # Run basic temporal analysis for completeness
-        basic_result = await analyze_basic_temporal(duckdb_conn, actual_table, column.column_name)
+        basic_result = analyze_basic_temporal(duckdb_conn, actual_table, column.column_name)
         completeness = (
             basic_result.value.get("completeness")
             if basic_result.success and basic_result.value
@@ -304,7 +304,7 @@ async def _profile_temporal_column(
         return Result.fail(f"Failed to profile column {column.column_name}: {e}")
 
 
-async def _load_time_series(
+def _load_time_series(
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_name: str,
     column_name: str,
@@ -509,14 +509,14 @@ def _compute_table_summary(
     )
 
 
-async def _persist_table_summary(
+def _persist_table_summary(
     summary: TemporalTableSummary,
-    session: AsyncSession,
+    session: Session,
 ) -> None:
     """Persist table-level temporal summary to database."""
     # Check if record exists (upsert pattern)
     stmt = select(DBTemporalTableSummary).where(DBTemporalTableSummary.table_id == summary.table_id)
-    result = await session.execute(stmt)
+    result = session.execute(stmt)
     existing = result.scalar_one_or_none()
 
     if existing:

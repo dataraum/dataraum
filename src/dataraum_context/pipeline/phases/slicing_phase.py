@@ -51,11 +51,11 @@ class SlicingPhase(BasePhase):
     def is_llm_phase(self) -> bool:
         return True
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all tables already have slice definitions."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -67,20 +67,20 @@ class SlicingPhase(BasePhase):
         sliced_stmt = select(SliceDefinition.table_id.distinct()).where(
             SliceDefinition.table_id.in_(table_ids)
         )
-        sliced_ids = set((await ctx.session.execute(sliced_stmt)).scalars().all())
+        sliced_ids = set((ctx.session.execute(sliced_stmt)).scalars().all())
 
         if len(sliced_ids) >= len(table_ids):
             return "All tables already have slice definitions"
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run slicing analysis using LLM."""
         start_time = datetime.now(UTC)
 
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -92,7 +92,7 @@ class SlicingPhase(BasePhase):
         sliced_stmt = select(SliceDefinition.table_id.distinct()).where(
             SliceDefinition.table_id.in_(table_ids)
         )
-        sliced_ids = set((await ctx.session.execute(sliced_stmt)).scalars().all())
+        sliced_ids = set((ctx.session.execute(sliced_stmt)).scalars().all())
         unsliced_tables = [t for t in typed_tables if t.table_id not in sliced_ids]
 
         if not unsliced_tables:
@@ -142,7 +142,7 @@ class SlicingPhase(BasePhase):
         )
 
         # Build context data for the agent
-        context_data = await self._build_context_data(ctx, unsliced_tables)
+        context_data = self._build_context_data(ctx, unsliced_tables)
 
         # Create analysis run record
         run_record = SlicingAnalysisRun(
@@ -153,10 +153,10 @@ class SlicingPhase(BasePhase):
             status="running",
         )
         ctx.session.add(run_record)
-        await ctx.session.flush()
+        ctx.session.flush()
 
         # Run slicing analysis
-        analysis_result = await agent.analyze(
+        analysis_result = agent.analyze(
             session=ctx.session,
             table_ids=[t.table_id for t in unsliced_tables],
             context_data=context_data,
@@ -166,7 +166,7 @@ class SlicingPhase(BasePhase):
             run_record.status = "failed"
             run_record.error_message = analysis_result.error
             run_record.completed_at = datetime.now(UTC)
-            await ctx.session.commit()
+            ctx.session.commit()
             return PhaseResult.failed(analysis_result.error or "Slicing analysis failed")
 
         slicing = analysis_result.unwrap()
@@ -197,7 +197,7 @@ class SlicingPhase(BasePhase):
         run_record.recommendations_count = len(slicing.recommendations)
         run_record.slices_generated = len(slicing.slice_queries)
 
-        await ctx.session.commit()
+        ctx.session.commit()
 
         return PhaseResult.success(
             outputs={
@@ -209,7 +209,7 @@ class SlicingPhase(BasePhase):
             records_created=len(slicing.recommendations),
         )
 
-    async def _build_context_data(self, ctx: PhaseContext, tables: list[Table]) -> dict[str, Any]:
+    def _build_context_data(self, ctx: PhaseContext, tables: list[Table]) -> dict[str, Any]:
         """Build context data for the slicing agent.
 
         Loads statistics, semantic annotations, correlations, and quality metrics.
@@ -232,7 +232,7 @@ class SlicingPhase(BasePhase):
         for table in tables:
             # Get columns for this table
             col_stmt = select(Column).where(Column.table_id == table.table_id)
-            columns = (await ctx.session.execute(col_stmt)).scalars().all()
+            columns = (ctx.session.execute(col_stmt)).scalars().all()
             column_count += len(columns)
 
             columns_list = []
@@ -260,7 +260,7 @@ class SlicingPhase(BasePhase):
             stats_stmt = select(StatisticalProfile).where(
                 StatisticalProfile.column_id.in_([c.column_id for c in columns])
             )
-            profiles = (await ctx.session.execute(stats_stmt)).scalars().all()
+            profiles = (ctx.session.execute(stats_stmt)).scalars().all()
 
             for profile in profiles:
                 profile_col: Column | None = next(
@@ -289,7 +289,7 @@ class SlicingPhase(BasePhase):
             sem_stmt = select(SemanticAnnotation).where(
                 SemanticAnnotation.column_id.in_([c.column_id for c in columns])
             )
-            annotations = (await ctx.session.execute(sem_stmt)).scalars().all()
+            annotations = (ctx.session.execute(sem_stmt)).scalars().all()
 
             for ann in annotations:
                 ann_col: Column | None = next(
@@ -312,7 +312,7 @@ class SlicingPhase(BasePhase):
         # Get correlations for all tables
         # Functional dependencies
         fd_stmt = select(FunctionalDependency).where(FunctionalDependency.table_id.in_(table_ids))
-        fds = (await ctx.session.execute(fd_stmt)).scalars().all()
+        fds = (ctx.session.execute(fd_stmt)).scalars().all()
 
         for fd in fds:
             correlations_data.append(
@@ -327,7 +327,7 @@ class SlicingPhase(BasePhase):
 
         # Column correlations (numeric)
         cc_stmt = select(ColumnCorrelation).where(ColumnCorrelation.table_id.in_(table_ids))
-        ccs = (await ctx.session.execute(cc_stmt)).scalars().all()
+        ccs = (ctx.session.execute(cc_stmt)).scalars().all()
 
         for cc in ccs:
             correlations_data.append(
@@ -343,7 +343,7 @@ class SlicingPhase(BasePhase):
 
         # Derived columns
         dc_stmt = select(DerivedColumn).where(DerivedColumn.table_id.in_(table_ids))
-        dcs = (await ctx.session.execute(dc_stmt)).scalars().all()
+        dcs = (ctx.session.execute(dc_stmt)).scalars().all()
 
         for dc in dcs:
             correlations_data.append(

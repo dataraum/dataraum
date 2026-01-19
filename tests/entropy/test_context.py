@@ -130,13 +130,12 @@ class TestGetTableEntropySummary:
 class TestBuildEntropyContext:
     """Tests for build_entropy_context function."""
 
-    @pytest.mark.asyncio
-    async def test_empty_table_ids_returns_empty_context(
+    def test_empty_table_ids_returns_empty_context(
         self,
         mock_session: MockSession,  # noqa: F821
     ) -> None:
         """Empty table_ids should return empty EntropyContext."""
-        context = await build_entropy_context(mock_session, [])  # type: ignore
+        context = build_entropy_context(mock_session, [])  # type: ignore
 
         assert isinstance(context, EntropyContext)
         assert len(context.column_profiles) == 0
@@ -217,13 +216,12 @@ class TestEntropyContextInterpretations:
 class TestBuildEntropyContextWithInterpretation:
     """Tests for build_entropy_context with interpretation support."""
 
-    @pytest.mark.asyncio
-    async def test_fallback_interpretation_disabled(
+    def test_fallback_interpretation_disabled(
         self,
         mock_session: MockSession,  # noqa: F821
     ) -> None:
         """When use_fallback_interpretation=False, no interpretations generated."""
-        context = await build_entropy_context(
+        context = build_entropy_context(
             mock_session,  # type: ignore
             [],
             use_fallback_interpretation=False,
@@ -237,8 +235,8 @@ class TestBuildEntropyContextWithInterpretation:
 @pytest.fixture
 def mock_session():
     """Create a mock session that returns no data."""
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import MagicMock
 
     session = MagicMock()
-    session.execute = AsyncMock(return_value=MagicMock(scalars=lambda: MagicMock(all=lambda: [])))
+    session.execute = MagicMock(return_value=MagicMock(scalars=lambda: MagicMock(all=lambda: [])))
     return session

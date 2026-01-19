@@ -114,7 +114,7 @@ def calculate_expected_periods(
     return int(total_seconds / seconds) + 1
 
 
-async def analyze_basic_temporal(
+def analyze_basic_temporal(
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_name: str,
     column_name: str,

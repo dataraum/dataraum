@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.semantic.db_models import SemanticAnnotation
 from dataraum_context.storage import Column, Table
@@ -110,8 +110,8 @@ class FieldMappings:
         return sum(len(cols) for cols in self.mappings.values())
 
 
-async def load_semantic_mappings(
-    session: AsyncSession,
+def load_semantic_mappings(
+    session: Session,
     table_ids: list[str],
 ) -> FieldMappings:
     """Load business_concept → column mappings from semantic annotations.
@@ -140,7 +140,7 @@ async def load_semantic_mappings(
         )
     )
 
-    result = await session.execute(stmt)
+    result = session.execute(stmt)
     rows = result.all()
 
     mappings: dict[str, list[ColumnCandidate]] = {}

@@ -23,7 +23,7 @@ import duckdb
 import numpy as np
 from scipy import stats
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.statistics.db_models import (
     StatisticalQualityMetrics as DBStatisticalQualityMetrics,
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 # ============================================================================
 
 
-async def check_benford_law(
+def check_benford_law(
     table: Table,
     column: Column,
     duckdb_conn: duckdb.DuckDBPyConnection,
@@ -136,7 +136,7 @@ async def check_benford_law(
 # ============================================================================
 
 
-async def detect_outliers_iqr(
+def detect_outliers_iqr(
     table: Table,
     column: Column,
     duckdb_conn: duckdb.DuckDBPyConnection,
@@ -246,7 +246,7 @@ async def detect_outliers_iqr(
         return Result.fail(f"IQR outlier detection failed: {e}")
 
 
-async def detect_outliers_isolation_forest(
+def detect_outliers_isolation_forest(
     table: Table,
     column: Column,
     duckdb_conn: duckdb.DuckDBPyConnection,
@@ -333,10 +333,10 @@ async def detect_outliers_isolation_forest(
 # ============================================================================
 
 
-async def assess_statistical_quality(
+def assess_statistical_quality(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
 ) -> Result[list[StatisticalQualityResult]]:
     """Assess statistical quality for all numeric columns in a table.
 
@@ -357,13 +357,13 @@ async def assess_statistical_quality(
     """
     try:
         # Get table from metadata
-        table = await session.get(Table, str(table_id))
+        table = session.get(Table, str(table_id))
         if not table:
             return Result.fail(f"Table not found: {table_id}")
 
         # Get all columns
         stmt = select(Column).where(Column.table_id == table_id)
-        query_result = await session.execute(stmt)
+        query_result = session.execute(stmt)
         columns = query_result.scalars().all()
 
         results = []
@@ -374,7 +374,7 @@ async def assess_statistical_quality(
                 continue
 
             # Run quality assessment for this column
-            quality_result = await _assess_column_quality(
+            quality_result = _assess_column_quality(
                 table=table,
                 column=column,
                 duckdb_conn=duckdb_conn,
@@ -390,11 +390,11 @@ async def assess_statistical_quality(
         return Result.fail(f"Statistical quality assessment failed: {e}")
 
 
-async def _assess_column_quality(
+def _assess_column_quality(
     table: Table,
     column: Column,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
 ) -> Result[StatisticalQualityResult]:
     """Assess statistical quality for a single column.
 
@@ -404,15 +404,15 @@ async def _assess_column_quality(
         computed_at = datetime.now(UTC)
 
         # Run Benford's Law test
-        benford_result = await check_benford_law(table, column, duckdb_conn)
+        benford_result = check_benford_law(table, column, duckdb_conn)
         benford_analysis = benford_result.value if benford_result.success else None
 
         # Run IQR outlier detection
-        iqr_result = await detect_outliers_iqr(table, column, duckdb_conn)
+        iqr_result = detect_outliers_iqr(table, column, duckdb_conn)
         outlier_detection = iqr_result.value if iqr_result.success else None
 
         # Run Isolation Forest outlier detection and merge into OutlierDetection
-        iso_forest_data = await detect_outliers_isolation_forest(table, column, duckdb_conn)
+        iso_forest_data = detect_outliers_isolation_forest(table, column, duckdb_conn)
         if iso_forest_data and outlier_detection:
             avg_score, anomaly_count, anomaly_ratio, iso_samples = iso_forest_data
             # Update the outlier_detection with Isolation Forest results

@@ -13,13 +13,9 @@ from uuid import uuid4
 
 import duckdb
 import pytest
-from sqlalchemy import event
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy import create_engine, event
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum_context.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum_context.pipeline.orchestrator import Pipeline, PipelineConfig
@@ -59,8 +55,8 @@ class PipelineTestHarness:
     - Query results and verify outputs
     """
 
-    engine: AsyncEngine
-    session_factory: async_sessionmaker[AsyncSession]
+    engine: Engine
+    session_factory: sessionmaker[Session]
     duckdb_conn: duckdb.DuckDBPyConnection
     pipeline: Pipeline
     source_id: str = field(default_factory=lambda: str(uuid4()))
@@ -68,7 +64,7 @@ class PipelineTestHarness:
     # Track phase results
     results: dict[str, PhaseResult] = field(default_factory=dict)
 
-    async def run_phase(
+    def run_phase(
         self,
         phase_name: str,
         config: dict[str, Any] | None = None,
@@ -88,7 +84,7 @@ class PipelineTestHarness:
         if not phase:
             raise ValueError(f"Phase '{phase_name}' not registered")
 
-        async with self.session_factory() as session:
+        with self.session_factory() as session:
             # Build previous outputs from stored results
             previous_outputs = {
                 name: result.outputs
@@ -106,18 +102,18 @@ class PipelineTestHarness:
             )
 
             # Check skip condition
-            skip_reason = await phase.should_skip(ctx)
+            skip_reason = phase.should_skip(ctx)
             if skip_reason:
                 result = PhaseResult.skipped(skip_reason)
             else:
-                result = await phase.run(ctx)
+                result = phase.run(ctx)
 
-            await session.commit()
+            session.commit()
 
         self.results[phase_name] = result
         return result
 
-    async def run_import(
+    def run_import(
         self,
         source_path: str | Path,
         source_name: str | None = None,
@@ -140,7 +136,7 @@ class PipelineTestHarness:
         if source_name:
             config["source_name"] = source_name
 
-        return await self.run_phase("import", config=config)
+        return self.run_phase("import", config=config)
 
     def get_duckdb_tables(self) -> list[str]:
         """Get list of tables in DuckDB."""
@@ -151,47 +147,47 @@ class PipelineTestHarness:
         """Execute a SQL query against DuckDB."""
         return self.duckdb_conn.execute(sql).fetchall()
 
-    async def get_table_count(self) -> int:
+    def get_table_count(self) -> int:
         """Get count of tables in metadata database."""
         from sqlalchemy import func, select
 
         from dataraum_context.storage import Table
 
-        async with self.session_factory() as session:
+        with self.session_factory() as session:
             stmt = select(func.count()).select_from(Table)
-            result = await session.execute(stmt)
+            result = session.execute(stmt)
             return result.scalar() or 0
 
-    async def get_column_count(self) -> int:
+    def get_column_count(self) -> int:
         """Get count of columns in metadata database."""
         from sqlalchemy import func, select
 
         from dataraum_context.storage import Column
 
-        async with self.session_factory() as session:
+        with self.session_factory() as session:
             stmt = select(func.count()).select_from(Column)
-            result = await session.execute(stmt)
+            result = session.execute(stmt)
             return result.scalar() or 0
 
 
 @pytest.fixture
-async def integration_engine() -> AsyncEngine:
+def integration_engine() -> Engine:
     """Create an in-memory SQLite engine for integration tests."""
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+    engine = create_engine(
+        "sqlite:///:memory:",
         echo=False,
         future=True,
     )
 
-    @event.listens_for(engine.sync_engine, "connect")
+    @event.listens_for(engine, "connect")
     def set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
-    await init_database(engine)
+    init_database(engine)
     yield engine
-    await engine.dispose()
+    engine.dispose()
 
 
 @pytest.fixture
@@ -217,8 +213,8 @@ def integration_pipeline() -> Pipeline:
 
 
 @pytest.fixture
-async def harness(
-    integration_engine: AsyncEngine,
+def harness(
+    integration_engine: Engine,
     integration_duckdb: duckdb.DuckDBPyConnection,
     integration_pipeline: Pipeline,
 ) -> PipelineTestHarness:
@@ -229,9 +225,8 @@ async def harness(
     - Pre-configured pipeline
     - Convenience methods for running phases
     """
-    session_factory = async_sessionmaker(
-        integration_engine,
-        class_=AsyncSession,
+    session_factory = sessionmaker(
+        bind=integration_engine,
         expire_on_commit=False,
     )
 

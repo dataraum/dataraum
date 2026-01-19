@@ -7,35 +7,35 @@ from pathlib import Path
 
 import duckdb
 import pytest
-from sqlalchemy import event
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
 
 from dataraum_context.sources.csv import CSVLoader
 from dataraum_context.storage import init_database
 
 
 @pytest.fixture
-async def test_session():
+def test_session():
     """Create an in-memory SQLite session for testing."""
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+    engine = create_engine(
+        "sqlite:///:memory:",
         echo=False,
     )
 
-    @event.listens_for(engine.sync_engine, "connect")
+    @event.listens_for(engine, "connect")
     def set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
-    await init_database(engine)
+    init_database(engine)
 
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
 
-    async with async_session() as session:
+    with factory() as session:
         yield session
 
-    await engine.dispose()
+    engine.dispose()
 
 
 @pytest.fixture
@@ -55,7 +55,7 @@ def finance_csv_directory():
 class TestCSVDirectoryLoader:
     """Tests for CSVLoader.load_directory() method."""
 
-    async def test_load_directory_all_files(
+    def test_load_directory_all_files(
         self,
         finance_csv_directory,
         test_duckdb,
@@ -66,7 +66,7 @@ class TestCSVDirectoryLoader:
             pytest.skip("Finance CSV example directory not found")
 
         loader = CSVLoader()
-        result = await loader.load_directory(
+        result = loader.load_directory(
             directory_path=str(finance_csv_directory),
             source_name="finance",
             duckdb_conn=test_duckdb,
@@ -89,7 +89,7 @@ class TestCSVDirectoryLoader:
         for table in staging_result.tables:
             assert table.raw_table_name in table_names
 
-    async def test_load_directory_with_pattern(
+    def test_load_directory_with_pattern(
         self,
         finance_csv_directory,
         test_duckdb,
@@ -100,7 +100,7 @@ class TestCSVDirectoryLoader:
             pytest.skip("Finance CSV example directory not found")
 
         loader = CSVLoader()
-        result = await loader.load_directory(
+        result = loader.load_directory(
             directory_path=str(finance_csv_directory),
             source_name="tables_only",
             duckdb_conn=test_duckdb,
@@ -127,14 +127,14 @@ class TestCSVDirectoryLoader:
         }
         assert table_names == expected
 
-    async def test_load_directory_not_found(
+    def test_load_directory_not_found(
         self,
         test_duckdb,
         test_session,
     ):
         """Test loading from non-existent directory."""
         loader = CSVLoader()
-        result = await loader.load_directory(
+        result = loader.load_directory(
             directory_path="/nonexistent/path",
             source_name="test",
             duckdb_conn=test_duckdb,
@@ -144,7 +144,7 @@ class TestCSVDirectoryLoader:
         assert not result.success
         assert "not found" in result.error.lower() or "does not exist" in result.error.lower()
 
-    async def test_load_directory_empty_pattern(
+    def test_load_directory_empty_pattern(
         self,
         finance_csv_directory,
         test_duckdb,
@@ -155,7 +155,7 @@ class TestCSVDirectoryLoader:
             pytest.skip("Finance CSV example directory not found")
 
         loader = CSVLoader()
-        result = await loader.load_directory(
+        result = loader.load_directory(
             directory_path=str(finance_csv_directory),
             source_name="no_match",
             duckdb_conn=test_duckdb,

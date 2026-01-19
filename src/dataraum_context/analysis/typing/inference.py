@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import duckdb
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.typing.db_models import TypeCandidate as DBTypeCandidate
 from dataraum_context.analysis.typing.models import TypeCandidate as TypeCandidateModel
@@ -40,10 +40,10 @@ class ParseResult:
         self.failed_examples = failed_examples
 
 
-async def infer_type_candidates(
+def infer_type_candidates(
     table: Table,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
 ) -> Result[list[TypeCandidateModel]]:
     """Infer type candidates for all VARCHAR columns in a table.
 
@@ -67,8 +67,8 @@ async def infer_type_candidates(
 
     try:
         # Get all VARCHAR columns
-        columns = await session.run_sync(
-            lambda sync_session: sync_session.query(Column)
+        columns = (
+            session.query(Column)
             .filter(Column.table_id == table.table_id)
             .filter(Column.raw_type == "VARCHAR")
             .all()
@@ -81,7 +81,7 @@ async def infer_type_candidates(
 
         for column in columns:
             # Infer types for this column
-            candidates_result = await _infer_column_types(
+            candidates_result = _infer_column_types(
                 table=table,
                 column=column,
                 duckdb_conn=duckdb_conn,
@@ -121,7 +121,7 @@ async def infer_type_candidates(
         return Result.fail(f"Type inference failed: {e}")
 
 
-async def _infer_column_types(
+def _infer_column_types(
     table: Table,
     column: Column,
     duckdb_conn: duckdb.DuckDBPyConnection,
@@ -194,7 +194,7 @@ async def _infer_column_types(
                 continue
 
             # Test parsing with DuckDB
-            parse_result = await _test_type_cast(
+            parse_result = _test_type_cast(
                 table_name=table_name,
                 col_name=col_name,
                 target_type=pattern.inferred_type,
@@ -288,7 +288,7 @@ async def _infer_column_types(
         return Result.fail(f"Failed to infer types for column {column.column_name}: {e}")
 
 
-async def _test_type_cast(
+def _test_type_cast(
     table_name: str,
     col_name: str,
     target_type: DataType,

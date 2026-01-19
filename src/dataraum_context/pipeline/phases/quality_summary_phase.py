@@ -47,11 +47,11 @@ class QualitySummaryPhase(BasePhase):
     def is_llm_phase(self) -> bool:
         return True
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no slice definitions exist or summaries already generated."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -61,7 +61,7 @@ class QualitySummaryPhase(BasePhase):
 
         # Check for slice definitions
         slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
-        slice_defs = (await ctx.session.execute(slice_stmt)).scalars().all()
+        slice_defs = (ctx.session.execute(slice_stmt)).scalars().all()
 
         if not slice_defs:
             return "No slice definitions found"
@@ -70,18 +70,18 @@ class QualitySummaryPhase(BasePhase):
         run_stmt = select(func.count(QualitySummaryRun.run_id)).where(
             QualitySummaryRun.source_table_id.in_(table_ids)
         )
-        run_count = (await ctx.session.execute(run_stmt)).scalar() or 0
+        run_count = (ctx.session.execute(run_stmt)).scalar() or 0
 
         if run_count >= len(slice_defs):
             return "Quality summaries already generated"
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Generate quality summaries using LLM."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -91,7 +91,7 @@ class QualitySummaryPhase(BasePhase):
 
         # Get slice definitions
         slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
-        slice_definitions = (await ctx.session.execute(slice_stmt)).scalars().all()
+        slice_definitions = (ctx.session.execute(slice_stmt)).scalars().all()
 
         if not slice_definitions:
             return PhaseResult.success(
@@ -141,7 +141,7 @@ class QualitySummaryPhase(BasePhase):
         errors = []
 
         for slice_def in slice_definitions:
-            summary_result = await summarize_quality(
+            summary_result = summarize_quality(
                 session=ctx.session,
                 agent=agent,
                 slice_definition=slice_def,

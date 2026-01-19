@@ -29,8 +29,7 @@ class TestBusinessMeaningDetector:
         """Create detector instance."""
         return BusinessMeaningDetector()
 
-    @pytest.mark.asyncio
-    async def test_no_description(self, detector: BusinessMeaningDetector):
+    def test_no_description(self, detector: BusinessMeaningDetector):
         """Test max entropy for missing description."""
         context = DetectorContext(
             table_name="orders",
@@ -42,14 +41,13 @@ class TestBusinessMeaningDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(1.0, abs=0.01)
         assert results[0].evidence[0]["provisional_assessment"] == "missing"
 
-    @pytest.mark.asyncio
-    async def test_empty_description(self, detector: BusinessMeaningDetector):
+    def test_empty_description(self, detector: BusinessMeaningDetector):
         """Test max entropy for empty description."""
         context = DetectorContext(
             table_name="orders",
@@ -61,13 +59,12 @@ class TestBusinessMeaningDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(1.0, abs=0.01)
 
-    @pytest.mark.asyncio
-    async def test_description_only(self, detector: BusinessMeaningDetector):
+    def test_description_only(self, detector: BusinessMeaningDetector):
         """Test moderate entropy for description without additional context."""
         context = DetectorContext(
             table_name="orders",
@@ -81,15 +78,14 @@ class TestBusinessMeaningDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         # Has description but no business_name/entity_type = 0.6
         assert results[0].score == pytest.approx(0.6, abs=0.01)
         assert results[0].evidence[0]["provisional_assessment"] == "partial"
 
-    @pytest.mark.asyncio
-    async def test_description_with_business_name(self, detector: BusinessMeaningDetector):
+    def test_description_with_business_name(self, detector: BusinessMeaningDetector):
         """Test low entropy for description with business name."""
         context = DetectorContext(
             table_name="orders",
@@ -103,15 +99,14 @@ class TestBusinessMeaningDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         # Has description + business_name = 0.2
         assert results[0].score == pytest.approx(0.2, abs=0.01)
         assert results[0].evidence[0]["provisional_assessment"] == "documented"
 
-    @pytest.mark.asyncio
-    async def test_description_with_entity_type(self, detector: BusinessMeaningDetector):
+    def test_description_with_entity_type(self, detector: BusinessMeaningDetector):
         """Test low entropy for description with entity type."""
         context = DetectorContext(
             table_name="orders",
@@ -125,14 +120,13 @@ class TestBusinessMeaningDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         # Has description + entity_type = 0.2
         assert results[0].score == pytest.approx(0.2, abs=0.01)
 
-    @pytest.mark.asyncio
-    async def test_full_documentation(self, detector: BusinessMeaningDetector):
+    def test_full_documentation(self, detector: BusinessMeaningDetector):
         """Test low entropy for fully documented column."""
         context = DetectorContext(
             table_name="orders",
@@ -149,13 +143,12 @@ class TestBusinessMeaningDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.2, abs=0.01)
 
-    @pytest.mark.asyncio
-    async def test_raw_metrics_collected(self, detector: BusinessMeaningDetector):
+    def test_raw_metrics_collected(self, detector: BusinessMeaningDetector):
         """Test that raw metrics are collected for LLM interpretation."""
         context = DetectorContext(
             table_name="orders",
@@ -171,7 +164,7 @@ class TestBusinessMeaningDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         raw_metrics = results[0].evidence[0]["raw_metrics"]
         assert raw_metrics["description"] == "Order amount"
@@ -184,8 +177,7 @@ class TestBusinessMeaningDetector:
         assert raw_metrics["semantic_role"] == "measure"
         assert raw_metrics["semantic_confidence"] == 0.95
 
-    @pytest.mark.asyncio
-    async def test_resolution_options_for_missing(self, detector: BusinessMeaningDetector):
+    def test_resolution_options_for_missing(self, detector: BusinessMeaningDetector):
         """Test resolution options for missing description."""
         context = DetectorContext(
             table_name="orders",
@@ -197,15 +189,14 @@ class TestBusinessMeaningDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         actions = [opt.action for opt in results[0].resolution_options]
         assert "add_description" in actions
         assert "add_business_name" in actions
         assert "add_entity_type" in actions
 
-    @pytest.mark.asyncio
-    async def test_resolution_options_with_description(self, detector: BusinessMeaningDetector):
+    def test_resolution_options_with_description(self, detector: BusinessMeaningDetector):
         """Test resolution options when description exists but not others."""
         context = DetectorContext(
             table_name="orders",
@@ -219,7 +210,7 @@ class TestBusinessMeaningDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         actions = [opt.action for opt in results[0].resolution_options]
         # Has description, so add_description not suggested
@@ -228,8 +219,7 @@ class TestBusinessMeaningDetector:
         assert "add_business_name" in actions
         assert "add_entity_type" in actions
 
-    @pytest.mark.asyncio
-    async def test_cascade_dimensions(self, detector: BusinessMeaningDetector):
+    def test_cascade_dimensions(self, detector: BusinessMeaningDetector):
         """Test resolution options include cascade dimensions."""
         context = DetectorContext(
             table_name="orders",
@@ -241,7 +231,7 @@ class TestBusinessMeaningDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         add_desc_opt = next(
             (opt for opt in results[0].resolution_options if opt.action == "add_description"),

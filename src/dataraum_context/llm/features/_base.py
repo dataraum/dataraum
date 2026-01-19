@@ -1,6 +1,6 @@
 """Base class for LLM features with common functionality."""
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.core.models.base import Result
 from dataraum_context.llm.cache import LLMCache
@@ -38,9 +38,9 @@ class LLMFeature:
         self.renderer = prompt_renderer
         self.cache = cache
 
-    async def _call_llm(
+    def _call_llm(
         self,
-        session: AsyncSession,
+        session: Session,
         feature_name: str,
         prompt: str,
         temperature: float,
@@ -68,7 +68,7 @@ class LLMFeature:
         model = self.provider.get_model_for_tier(model_tier)
 
         # Check cache first
-        cached = await self.cache.get(
+        cached = self.cache.get(
             session=session,
             feature=feature_name,
             prompt=prompt,
@@ -87,12 +87,12 @@ class LLMFeature:
             response_format="json",
         )
 
-        result = await self.provider.complete(request)
+        result = self.provider.complete(request)
         if not result.success or not result.value:
             return result
 
         # Store in cache
-        await self.cache.put(
+        self.cache.put(
             session=session,
             feature=feature_name,
             prompt=prompt,

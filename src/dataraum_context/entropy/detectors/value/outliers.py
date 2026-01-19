@@ -30,7 +30,7 @@ class OutlierRateDetector(EntropyDetector):
     required_analyses = ["statistics"]
     description = "Measures uncertainty from outlier values"
 
-    async def detect(self, context: DetectorContext) -> list[EntropyObject]:
+    def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect outlier rate entropy.
 
         Args:

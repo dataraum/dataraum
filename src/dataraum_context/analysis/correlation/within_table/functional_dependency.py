@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import duckdb
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.correlation.db_models import (
     FunctionalDependency as DBFunctionalDependency,
@@ -20,10 +20,10 @@ from dataraum_context.core.models.base import Result
 from dataraum_context.storage import Column, Table
 
 
-async def detect_functional_dependencies(
+def detect_functional_dependencies(
     table: Table,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
     min_confidence: float = 0.95,
     max_determinant_columns: int = 3,
 ) -> Result[list[FunctionalDependency]]:
@@ -35,7 +35,7 @@ async def detect_functional_dependencies(
     Args:
         table: Table to analyze
         duckdb_conn: DuckDB connection
-        session: AsyncSession
+        session: Session
         min_confidence: Minimum confidence (1.0 = exact FD)
         max_determinant_columns: Maximum columns in determinant
 
@@ -45,7 +45,7 @@ async def detect_functional_dependencies(
     try:
         # Get all columns
         stmt = select(Column).where(Column.table_id == table.table_id)
-        result = await session.execute(stmt)
+        result = session.execute(stmt)
         columns = result.scalars().all()
 
         if len(columns) < 2:

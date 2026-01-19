@@ -10,16 +10,15 @@ import logging
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import Session, selectinload
 
 from dataraum_context.storage import Column, Table
 
 logger = logging.getLogger(__name__)
 
 
-async def get_multi_table_schema_for_llm(
-    session: AsyncSession,
+def get_multi_table_schema_for_llm(
+    session: Session,
     table_ids: list[str],
 ) -> dict[str, Any]:
     """Get schemas for multiple tables with semantic annotations and relationships.
@@ -47,7 +46,7 @@ async def get_multi_table_schema_for_llm(
         .where(Table.table_id.in_(table_ids))
         .options(selectinload(Table.columns).selectinload(Column.semantic_annotation))
     )
-    table_result = await session.execute(table_query)
+    table_result = session.execute(table_query)
     tables = table_result.scalars().all()
 
     if not tables:
@@ -81,7 +80,7 @@ async def get_multi_table_schema_for_llm(
         Relationship.from_table_id.in_(table_ids),
         Relationship.to_table_id.in_(table_ids),
     )
-    rel_result = await session.execute(rel_query)
+    rel_result = session.execute(rel_query)
     relationships = rel_result.scalars().all()
 
     # Format relationships

@@ -3,13 +3,13 @@
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.storage import Column, Table
 
 
-async def load_table_mappings(
-    session: AsyncSession,
+def load_table_mappings(
+    session: Session,
     table_ids: list[str],
 ) -> dict[str, str]:
     """Load mapping of table_name -> table_id.
@@ -22,12 +22,12 @@ async def load_table_mappings(
         Dictionary mapping table_name to table_id
     """
     stmt = select(Table.table_name, Table.table_id).where(Table.table_id.in_(table_ids))
-    result = await session.execute(stmt)
+    result = session.execute(stmt)
     return dict(result.tuples().all())
 
 
-async def load_column_mappings(
-    session: AsyncSession,
+def load_column_mappings(
+    session: Session,
     table_ids: list[str],
 ) -> dict[tuple[str, str], str]:
     """Load mapping of (table_name, column_name) -> column_id.
@@ -44,12 +44,12 @@ async def load_column_mappings(
         .join(Column)
         .where(Table.table_id.in_(table_ids))
     )
-    result = await session.execute(stmt)
+    result = session.execute(stmt)
     return {(table_name, col_name): col_id for table_name, col_name, col_id in result.all()}
 
 
-async def load_correlations_for_semantic(
-    session: AsyncSession,
+def load_correlations_for_semantic(
+    session: Session,
     table_ids: list[str],
 ) -> dict[str, dict[str, Any]]:
     """Load within-table correlation data for semantic analysis context.
@@ -80,7 +80,7 @@ async def load_correlations_for_semantic(
     )
 
     # Load table name mapping
-    table_map = await load_table_mappings(session, table_ids)
+    table_map = load_table_mappings(session, table_ids)
     table_id_to_name = {v: k for k, v in table_map.items()}
 
     # Load column name mapping
@@ -89,7 +89,7 @@ async def load_correlations_for_semantic(
         .join(Table)
         .where(Table.table_id.in_(table_ids))
     )
-    col_result = await session.execute(col_stmt)
+    col_result = session.execute(col_stmt)
     col_id_to_name = {col_id: col_name for col_id, col_name, _ in col_result.all()}
 
     result: dict[str, dict[str, Any]] = {}
@@ -104,7 +104,7 @@ async def load_correlations_for_semantic(
 
     # Load functional dependencies
     fd_stmt = select(FunctionalDependency).where(FunctionalDependency.table_id.in_(table_ids))
-    fd_result = await session.execute(fd_stmt)
+    fd_result = session.execute(fd_stmt)
 
     for fd in fd_result.scalars().all():
         table_name_opt = table_id_to_name.get(fd.table_id)
@@ -133,7 +133,7 @@ async def load_correlations_for_semantic(
         ColumnCorrelation.table_id.in_(table_ids),
         ColumnCorrelation.correlation_strength.in_(["strong", "very_strong"]),
     )
-    corr_result = await session.execute(corr_stmt)
+    corr_result = session.execute(corr_stmt)
 
     for corr in corr_result.scalars().all():
         table_name_opt = table_id_to_name.get(corr.table_id)
@@ -156,7 +156,7 @@ async def load_correlations_for_semantic(
 
     # Load derived columns
     derived_stmt = select(DerivedColumn).where(DerivedColumn.table_id.in_(table_ids))
-    derived_result = await session.execute(derived_stmt)
+    derived_result = session.execute(derived_stmt)
 
     for derived in derived_result.scalars().all():
         table_name_opt = table_id_to_name.get(derived.table_id)

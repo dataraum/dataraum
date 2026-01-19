@@ -30,7 +30,7 @@ class BusinessMeaningDetector(EntropyDetector):
     required_analyses = ["semantic"]
     description = "Measures clarity of business meaning and description"
 
-    async def detect(self, context: DetectorContext) -> list[EntropyObject]:
+    def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect business meaning entropy.
 
         Collects raw metrics about semantic annotations.

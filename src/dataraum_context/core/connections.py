@@ -1,7 +1,7 @@
 """Thread-safe connection management for SQLAlchemy + DuckDB.
 
 This module provides concurrent-ready connection management:
-- SQLAlchemy async sessions with connection pooling
+- SQLAlchemy sync sessions (thread-safe with ThreadPoolExecutor)
 - DuckDB with read cursors and serialized writes
 - WAL mode for SQLite to enable concurrent reads with writes
 
@@ -10,10 +10,10 @@ Usage:
 
     config = ConnectionConfig.for_directory(Path("./output"))
     manager = ConnectionManager(config)
-    await manager.initialize()
+    manager.initialize()
 
-    # Get a session (from pool)
-    async with manager.session_scope() as session:
+    # Get a session (thread-safe)
+    with manager.session_scope() as session:
         # Use session...
 
     # Read from DuckDB (concurrent-safe via cursor)
@@ -24,33 +24,24 @@ Usage:
     with manager.duckdb_write() as conn:
         conn.execute("INSERT INTO table VALUES (...)")
 
-    await manager.close()
+    manager.close()
 """
 
 from __future__ import annotations
 
-import asyncio
 import threading
 from collections.abc import Generator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import duckdb
-from sqlalchemy import event, text
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
-from sqlalchemy.pool import NullPool
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum_context.storage import Base
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
 
 
 @dataclass
@@ -122,21 +113,21 @@ class ConnectionManager:
     """Thread-safe connection management for SQLAlchemy + DuckDB.
 
     Provides:
-    - SQLAlchemy async session factory with connection pooling
+    - SQLAlchemy sync session factory (thread-safe)
     - DuckDB read access via cursors (concurrent-safe)
     - DuckDB write access via mutex (serialized)
     - Proper cleanup on close
 
     Thread Safety:
-    - SQLAlchemy sessions: One session per async task (from pool)
+    - SQLAlchemy sessions: One session per thread via session_scope()
     - DuckDB reads: Use cursor() which is thread-safe for reads
     - DuckDB writes: Serialized via _write_lock mutex
 
     Usage:
         manager = ConnectionManager(config)
-        await manager.initialize()
+        manager.initialize()
 
-        async with manager.session_scope() as session:
+        with manager.session_scope() as session:
             # SQLAlchemy operations...
 
         with manager.duckdb_cursor() as cursor:
@@ -145,20 +136,18 @@ class ConnectionManager:
         with manager.duckdb_write() as conn:
             conn.execute("INSERT ...")
 
-        await manager.close()
+        manager.close()
     """
 
     config: ConnectionConfig
-    _engine: AsyncEngine | None = field(default=None, init=False, repr=False)
-    _session_factory: async_sessionmaker[AsyncSession] | None = field(
-        default=None, init=False, repr=False
-    )
+    _engine: Engine | None = field(default=None, init=False, repr=False)
+    _session_factory: sessionmaker[Session] | None = field(default=None, init=False, repr=False)
     _duckdb_conn: duckdb.DuckDBPyConnection | None = field(default=None, init=False, repr=False)
     _write_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _init_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _initialized: bool = field(default=False, init=False, repr=False)
-    _init_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
-    async def initialize(self) -> None:
+    def initialize(self) -> None:
         """Initialize connection pools and databases.
 
         Creates SQLAlchemy engine with connection pool and DuckDB connection.
@@ -167,38 +156,38 @@ class ConnectionManager:
         Raises:
             RuntimeError: If initialization fails
         """
-        async with self._init_lock:
+        with self._init_lock:
             if self._initialized:
                 return
 
             try:
-                await self._init_sqlalchemy()
+                self._init_sqlalchemy()
                 self._init_duckdb()
                 self._initialized = True
             except Exception as e:
-                await self.close()
+                self.close()
                 raise RuntimeError(f"Failed to initialize connections: {e}") from e
 
-    async def _init_sqlalchemy(self) -> None:
-        """Initialize SQLAlchemy async engine with connection pool."""
+    def _init_sqlalchemy(self) -> None:
+        """Initialize SQLAlchemy sync engine with connection pool."""
         # Handle in-memory vs file-based SQLite
         if self.config.sqlite_path == Path(":memory:"):
-            db_url = "sqlite+aiosqlite:///:memory:"
+            db_url = "sqlite:///:memory:"
         else:
             self.config.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-            db_url = f"sqlite+aiosqlite:///{self.config.sqlite_path}"
+            db_url = f"sqlite:///{self.config.sqlite_path}"
 
-        # Use NullPool to allow the engine to work across multiple event loops
-        # (required for ThreadPoolExecutor with asyncio.run() in each thread)
-        # See: https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html#using-multiple-asyncio-event-loops
-        self._engine = create_async_engine(
+        self._engine = create_engine(
             db_url,
             echo=self.config.echo_sql,
-            poolclass=NullPool,
+            pool_size=self.config.pool_size,
+            max_overflow=self.config.max_overflow,
+            pool_timeout=self.config.pool_timeout,
+            pool_pre_ping=True,
         )
 
         # Configure SQLite pragmas on each connection
-        @event.listens_for(self._engine.sync_engine, "connect")
+        @event.listens_for(self._engine, "connect")
         def configure_sqlite(dbapi_conn: Any, connection_record: Any) -> None:
             cursor = dbapi_conn.cursor()
             # Enable foreign keys
@@ -215,13 +204,11 @@ class ConnectionManager:
         self._import_all_models()
 
         # Create tables
-        async with self._engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+        Base.metadata.create_all(self._engine)
 
         # Create session factory
-        self._session_factory = async_sessionmaker(
+        self._session_factory = sessionmaker(
             self._engine,
-            class_=AsyncSession,
             expire_on_commit=False,
         )
 
@@ -263,22 +250,24 @@ class ConnectionManager:
         """Raise if not initialized."""
         if not self._initialized:
             raise RuntimeError(
-                "ConnectionManager not initialized. Call await manager.initialize() first."
+                "ConnectionManager not initialized. Call manager.initialize() first."
             )
 
-    @asynccontextmanager
-    async def session_scope(self) -> AsyncGenerator[AsyncSession]:
-        """Get a session from the pool with automatic cleanup.
+    @contextmanager
+    def session_scope(self) -> Generator[Session]:
+        """Get a session with automatic cleanup.
+
+        Thread-safe: each call creates a new session.
 
         Yields:
-            AsyncSession from the connection pool
+            Session from the connection pool
 
         Raises:
             RuntimeError: If manager not initialized
 
         Example:
-            async with manager.session_scope() as session:
-                result = await session.execute(select(Table))
+            with manager.session_scope() as session:
+                result = session.execute(select(Table))
         """
         self._ensure_initialized()
         assert self._session_factory is not None
@@ -286,21 +275,21 @@ class ConnectionManager:
         session = self._session_factory()
         try:
             yield session
-            await session.commit()
+            session.commit()
         except Exception:
-            await session.rollback()
+            session.rollback()
             raise
         finally:
-            await session.close()
+            session.close()
 
-    async def get_session(self) -> AsyncSession:
+    def get_session(self) -> Session:
         """Get a new session from the pool.
 
         The caller is responsible for committing/closing the session.
         Prefer session_scope() for automatic cleanup.
 
         Returns:
-            New AsyncSession from pool
+            New Session from pool
 
         Raises:
             RuntimeError: If manager not initialized
@@ -376,11 +365,11 @@ class ConnectionManager:
         return self._duckdb_conn
 
     @property
-    def engine(self) -> AsyncEngine:
-        """Get the SQLAlchemy async engine.
+    def engine(self) -> Engine:
+        """Get the SQLAlchemy engine.
 
         Returns:
-            The AsyncEngine instance
+            The Engine instance
 
         Raises:
             RuntimeError: If manager not initialized
@@ -389,7 +378,7 @@ class ConnectionManager:
         assert self._engine is not None
         return self._engine
 
-    async def close(self) -> None:
+    def close(self) -> None:
         """Close all connections and dispose of pools.
 
         Safe to call multiple times.
@@ -403,7 +392,7 @@ class ConnectionManager:
 
         if self._engine is not None:
             try:
-                await self._engine.dispose()
+                self._engine.dispose()
             except Exception:
                 pass
             self._engine = None
@@ -411,7 +400,7 @@ class ConnectionManager:
         self._session_factory = None
         self._initialized = False
 
-    async def execute_sqlite(self, sql: str) -> Any:
+    def execute_sqlite(self, sql: str) -> Any:
         """Execute raw SQL on SQLite (for debugging/admin).
 
         Args:
@@ -423,10 +412,10 @@ class ConnectionManager:
         self._ensure_initialized()
         assert self._engine is not None
 
-        async with self._engine.begin() as conn:
-            return await conn.execute(text(sql))
+        with self._engine.begin() as conn:
+            return conn.execute(text(sql))
 
-    async def get_stats(self) -> dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Get connection pool statistics.
 
         Returns:
@@ -449,7 +438,7 @@ class ConnectionManager:
 _default_manager: ConnectionManager | None = None
 
 
-async def get_connection_manager(
+def get_connection_manager(
     output_dir: Path | None = None,
     config: ConnectionConfig | None = None,
 ) -> ConnectionManager:
@@ -474,17 +463,17 @@ async def get_connection_manager(
             config = ConnectionConfig.for_directory(output_dir)
 
         _default_manager = ConnectionManager(config)
-        await _default_manager.initialize()
+        _default_manager.initialize()
 
     return _default_manager
 
 
-async def close_default_manager() -> None:
+def close_default_manager() -> None:
     """Close the default ConnectionManager if it exists."""
     global _default_manager
 
     if _default_manager is not None:
-        await _default_manager.close()
+        _default_manager.close()
         _default_manager = None
 
 

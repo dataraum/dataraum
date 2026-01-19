@@ -46,25 +46,25 @@ class BasePhase(ABC):
         """List of output keys this phase produces."""
         ...
 
-    async def run(self, ctx: PhaseContext) -> PhaseResult:
+    def run(self, ctx: PhaseContext) -> PhaseResult:
         """Execute the phase.
 
         Wraps _run with common error handling.
         """
         try:
-            return await self._run(ctx)
+            return self._run(ctx)
         except Exception as e:
             return PhaseResult.failed(str(e))
 
     @abstractmethod
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Execute the phase logic.
 
         Subclasses implement this method.
         """
         ...
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Check if this phase should be skipped.
 
         Default implementation: never skip.

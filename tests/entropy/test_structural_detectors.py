@@ -17,8 +17,7 @@ class TestTypeFidelityDetector:
         """Create detector instance."""
         return TypeFidelityDetector()
 
-    @pytest.mark.asyncio
-    async def test_perfect_parse_rate(self, detector: TypeFidelityDetector):
+    def test_perfect_parse_rate(self, detector: TypeFidelityDetector):
         """Test entropy is 0 for perfect parse rate."""
         context = DetectorContext(
             table_name="orders",
@@ -32,15 +31,14 @@ class TestTypeFidelityDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.0, abs=0.01)
         assert results[0].layer == "structural"
         assert results[0].dimension == "types"
 
-    @pytest.mark.asyncio
-    async def test_low_parse_rate(self, detector: TypeFidelityDetector):
+    def test_low_parse_rate(self, detector: TypeFidelityDetector):
         """Test high entropy for low parse rate."""
         context = DetectorContext(
             table_name="orders",
@@ -54,15 +52,14 @@ class TestTypeFidelityDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.4, abs=0.01)
         # Should have resolution options for significant failure rate
         assert len(results[0].resolution_options) >= 1
 
-    @pytest.mark.asyncio
-    async def test_resolution_options_at_high_entropy(self, detector: TypeFidelityDetector):
+    def test_resolution_options_at_high_entropy(self, detector: TypeFidelityDetector):
         """Test resolution options are provided for high entropy."""
         context = DetectorContext(
             table_name="orders",
@@ -75,15 +72,14 @@ class TestTypeFidelityDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         # Should have override_type and quarantine_values options
         actions = [opt.action for opt in results[0].resolution_options]
         assert "override_type" in actions
         assert "quarantine_values" in actions
 
-    @pytest.mark.asyncio
-    async def test_evidence_includes_failure_samples(self, detector: TypeFidelityDetector):
+    def test_evidence_includes_failure_samples(self, detector: TypeFidelityDetector):
         """Test evidence includes failure samples."""
         context = DetectorContext(
             table_name="test",
@@ -96,7 +92,7 @@ class TestTypeFidelityDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         evidence = results[0].evidence[0]
         assert "failed_examples" in evidence
@@ -118,8 +114,7 @@ class TestJoinPathDeterminismDetector:
         """Create detector instance."""
         return JoinPathDeterminismDetector()
 
-    @pytest.mark.asyncio
-    async def test_single_path(self, detector: JoinPathDeterminismDetector):
+    def test_single_path(self, detector: JoinPathDeterminismDetector):
         """Test low entropy for single join path."""
         context = DetectorContext(
             table_name="orders",
@@ -135,14 +130,13 @@ class TestJoinPathDeterminismDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.1, abs=0.01)
         assert results[0].evidence[0]["path_status"] == "single"
 
-    @pytest.mark.asyncio
-    async def test_no_paths_orphan(self, detector: JoinPathDeterminismDetector):
+    def test_no_paths_orphan(self, detector: JoinPathDeterminismDetector):
         """Test high entropy for orphan table with no paths."""
         context = DetectorContext(
             table_name="isolated",
@@ -156,7 +150,7 @@ class TestJoinPathDeterminismDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.9, abs=0.01)
@@ -165,8 +159,7 @@ class TestJoinPathDeterminismDetector:
         actions = [opt.action for opt in results[0].resolution_options]
         assert "declare_relationship" in actions
 
-    @pytest.mark.asyncio
-    async def test_multiple_paths(self, detector: JoinPathDeterminismDetector):
+    def test_multiple_paths(self, detector: JoinPathDeterminismDetector):
         """Test high entropy for multiple join paths."""
         context = DetectorContext(
             table_name="transactions",
@@ -185,7 +178,7 @@ class TestJoinPathDeterminismDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.7, abs=0.01)
@@ -194,8 +187,7 @@ class TestJoinPathDeterminismDetector:
         actions = [opt.action for opt in results[0].resolution_options]
         assert "declare_preferred_path" in actions
 
-    @pytest.mark.asyncio
-    async def test_few_paths(self, detector: JoinPathDeterminismDetector):
+    def test_few_paths(self, detector: JoinPathDeterminismDetector):
         """Test medium entropy for few paths."""
         context = DetectorContext(
             table_name="orders",
@@ -208,7 +200,7 @@ class TestJoinPathDeterminismDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.4, abs=0.01)

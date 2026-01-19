@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import duckdb
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.core.models import Result, SourceConfig
 from dataraum_context.sources.base import ColumnInfo, LoaderBase, TypeSystemStrength
@@ -26,7 +26,7 @@ class CSVLoader(LoaderBase):
         """CSV files are untyped."""
         return TypeSystemStrength.UNTYPED
 
-    async def get_schema(
+    def get_schema(
         self,
         source_config: SourceConfig,
     ) -> Result[list[ColumnInfo]]:
@@ -76,11 +76,11 @@ class CSVLoader(LoaderBase):
         except Exception as e:
             return Result.fail(f"Failed to read CSV schema: {e}")
 
-    async def load(
+    def load(
         self,
         source_config: SourceConfig,
         duckdb_conn: duckdb.DuckDBPyConnection,
-        session: AsyncSession,
+        session: Session,
     ) -> Result[StagingResult]:
         """Load CSV file into DuckDB as all VARCHAR columns.
 
@@ -114,7 +114,7 @@ class CSVLoader(LoaderBase):
 
             # Load the file
             null_config = load_null_value_config()
-            file_result = await self._load_single_file(
+            file_result = self._load_single_file(
                 file_path=path,
                 source_id=source_id,
                 duckdb_conn=duckdb_conn,
@@ -126,7 +126,7 @@ class CSVLoader(LoaderBase):
                 return Result.fail(file_result.error or "Failed to load CSV")
 
             staged_table = file_result.unwrap()
-            await session.commit()
+            session.commit()
 
             return Result.ok(
                 StagingResult(
@@ -140,12 +140,12 @@ class CSVLoader(LoaderBase):
         except Exception as e:
             return Result.fail(f"Failed to load CSV: {e}")
 
-    async def load_directory(
+    def load_directory(
         self,
         directory_path: str,
         source_name: str,
         duckdb_conn: duckdb.DuckDBPyConnection,
-        session: AsyncSession,
+        session: Session,
         file_pattern: str = "*.csv",
     ) -> Result[StagingResult]:
         """Load all CSV files from a directory into DuckDB.
@@ -199,7 +199,7 @@ class CSVLoader(LoaderBase):
             total_rows = 0
 
             for csv_file in csv_files:
-                file_result = await self._load_single_file(
+                file_result = self._load_single_file(
                     file_path=csv_file,
                     source_id=source_id,
                     duckdb_conn=duckdb_conn,
@@ -218,7 +218,7 @@ class CSVLoader(LoaderBase):
             if not staged_tables:
                 return Result.fail("No CSV files were successfully loaded")
 
-            await session.commit()
+            session.commit()
 
             duration = time.time() - start_time
 
@@ -234,12 +234,12 @@ class CSVLoader(LoaderBase):
         except Exception as e:
             return Result.fail(f"Failed to load CSV directory: {e}")
 
-    async def _load_single_file(
+    def _load_single_file(
         self,
         file_path: Path,
         source_id: str,
         duckdb_conn: duckdb.DuckDBPyConnection,
-        session: AsyncSession,
+        session: Session,
         null_config: NullValueConfig,
     ) -> Result[StagedTable]:
         """Load a single CSV file into an existing source.
@@ -263,7 +263,7 @@ class CSVLoader(LoaderBase):
                 source_type="csv",
                 path=str(file_path),
             )
-            schema_result = await self.get_schema(temp_config)
+            schema_result = self.get_schema(temp_config)
             if not schema_result.success:
                 return Result.fail(schema_result.error or "Failed to get schema")
 

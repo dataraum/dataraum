@@ -22,7 +22,7 @@ from uuid import uuid4
 import duckdb
 import yaml
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.core.models.base import Result
 from dataraum_context.graphs.db_models import GeneratedCodeRecord
@@ -97,9 +97,9 @@ class ExecutionContext:
     entropy_behavior: EntropyBehaviorConfig | None = None
 
     @classmethod
-    async def with_rich_context(
+    def with_rich_context(
         cls,
-        session: Any,  # AsyncSession
+        session: Any,  # Session
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_name: str,
         table_ids: list[str],
@@ -112,7 +112,7 @@ class ExecutionContext:
         the LLM to have access to semantic, statistical, and relational metadata.
 
         Args:
-            session: SQLAlchemy async session
+            session: SQLAlchemy session
             duckdb_conn: DuckDB connection for queries
             table_name: Primary table name for execution
             table_ids: List of table IDs to include in context
@@ -124,7 +124,7 @@ class ExecutionContext:
         """
         from dataraum_context.graphs.context import build_execution_context
 
-        rich_context = await build_execution_context(
+        rich_context = build_execution_context(
             session=session,
             table_ids=table_ids,
             duckdb_conn=duckdb_conn,
@@ -174,9 +174,9 @@ class GraphAgent(LLMFeature):
         super().__init__(config, provider, prompt_renderer, cache)
         self._code_cache: dict[str, GeneratedCode] = {}  # In-memory cache
 
-    async def execute(
+    def execute(
         self,
-        session: AsyncSession,
+        session: Session,
         graph: TransformationGraph,
         context: ExecutionContext,
         parameters: dict[str, Any] | None = None,
@@ -212,7 +212,7 @@ class GraphAgent(LLMFeature):
 
             # Check database cache if not in memory
             if generated_code is None:
-                db_code = await self._load_from_db(
+                db_code = self._load_from_db(
                     session, graph.graph_id, graph.version, schema_mapping_id
                 )
                 if db_code:
@@ -221,7 +221,7 @@ class GraphAgent(LLMFeature):
 
         if generated_code is None:
             # Generate SQL using LLM
-            gen_result = await self._generate_sql(session, graph, context, resolved_params)
+            gen_result = self._generate_sql(session, graph, context, resolved_params)
             if not gen_result.success or not gen_result.value:
                 return Result.fail(gen_result.error or "SQL generation failed")
 
@@ -229,7 +229,7 @@ class GraphAgent(LLMFeature):
             self._code_cache[cache_key] = generated_code
 
             # Persist to database
-            await self._save_to_db(session, generated_code)
+            self._save_to_db(session, generated_code)
 
         # Execute the generated SQL
         exec_result = self._execute_sql(generated_code, context, graph, resolved_params)
@@ -238,9 +238,9 @@ class GraphAgent(LLMFeature):
 
         return exec_result
 
-    async def _generate_sql(
+    def _generate_sql(
         self,
-        session: AsyncSession,
+        session: Session,
         graph: TransformationGraph,
         context: ExecutionContext,
         parameters: dict[str, Any],
@@ -314,7 +314,7 @@ class GraphAgent(LLMFeature):
         prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:16]
 
         # Call LLM
-        response_result = await self._call_llm(
+        response_result = self._call_llm(
             session=session,
             feature_name="graph_sql_generation",
             prompt=prompt,
@@ -749,9 +749,9 @@ class GraphAgent(LLMFeature):
             json.dumps(hash_input, sort_keys=True, default=str).encode()
         ).hexdigest()[:16]
 
-    async def _load_from_db(
+    def _load_from_db(
         self,
-        session: AsyncSession,
+        session: Session,
         graph_id: str,
         graph_version: str,
         schema_mapping_id: str,
@@ -762,7 +762,7 @@ class GraphAgent(LLMFeature):
             GeneratedCodeRecord.graph_version == graph_version,
             GeneratedCodeRecord.schema_mapping_id == schema_mapping_id,
         )
-        result = await session.execute(stmt)
+        result = session.execute(stmt)
         record = result.scalar_one_or_none()
 
         if record is None:
@@ -783,9 +783,9 @@ class GraphAgent(LLMFeature):
             validation_errors=record.validation_errors,
         )
 
-    async def _save_to_db(
+    def _save_to_db(
         self,
-        session: AsyncSession,
+        session: Session,
         generated_code: GeneratedCode,
     ) -> None:
         """Save generated code to database cache."""
@@ -804,4 +804,4 @@ class GraphAgent(LLMFeature):
             validation_errors=generated_code.validation_errors,
         )
         session.add(record)
-        await session.flush()
+        session.flush()

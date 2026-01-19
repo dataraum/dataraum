@@ -10,7 +10,7 @@ from typing import Any
 import duckdb
 import numpy as np
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.topology.extraction import (
     compute_persistent_entropy,
@@ -38,10 +38,10 @@ logger = logging.getLogger(__name__)
 _extractor = TableTopologyExtractor()
 
 
-async def analyze_topological_quality(
+def analyze_topological_quality(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
     min_persistence: float = 0.1,
     stability_threshold: float = 0.1,
 ) -> Result[TopologicalQualityResult]:
@@ -69,7 +69,7 @@ async def analyze_topological_quality(
         stmt = select(Table.table_name, Table.layer, Table.duckdb_path).where(
             Table.table_id == table_id
         )
-        result = await session.execute(stmt)
+        result = session.execute(stmt)
         row = result.fetchone()
 
         if row is None:
@@ -104,28 +104,28 @@ async def analyze_topological_quality(
         ]
 
         # Extract Betti numbers
-        betti_result = await extract_betti_numbers(np_diagrams)
+        betti_result = extract_betti_numbers(np_diagrams)
         if not betti_result.success or betti_result.value is None:
             return Result.fail(f"Betti extraction failed: {betti_result.error}")
 
         betti_numbers = betti_result.value
 
         # Process persistence diagrams
-        diagrams_result = await process_persistence_diagrams(np_diagrams)
+        diagrams_result = process_persistence_diagrams(np_diagrams)
         persistence_diagrams = diagrams_result.value if diagrams_result.success else []
 
         # Compute persistent entropy
         persistent_entropy = compute_persistent_entropy(np_diagrams)
 
         # Detect cycles
-        cycles_result = await detect_persistent_cycles(np_diagrams, min_persistence)
+        cycles_result = detect_persistent_cycles(np_diagrams, min_persistence)
         persistent_cycles = cycles_result.value if cycles_result.success else []
 
         # Get previous topology for stability assessment
-        previous_diagrams = await get_previous_topology(session, table_id)
+        previous_diagrams = get_previous_topology(session, table_id)
 
         # Assess stability
-        stability_result = await assess_homological_stability(
+        stability_result = assess_homological_stability(
             np_diagrams,
             previous_diagrams=previous_diagrams,
             threshold=stability_threshold,
@@ -134,7 +134,7 @@ async def analyze_topological_quality(
 
         # Compute historical complexity statistics
         current_complexity = betti_numbers.total_complexity
-        history_result = await compute_historical_complexity(session, table_id, current_complexity)
+        history_result = compute_historical_complexity(session, table_id, current_complexity)
         history: dict[str, Any] = (
             history_result.value if (history_result.success and history_result.value) else {}
         )

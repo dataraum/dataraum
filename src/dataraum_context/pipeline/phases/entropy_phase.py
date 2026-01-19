@@ -55,11 +55,11 @@ class EntropyPhase(BasePhase):
     def is_llm_phase(self) -> bool:
         return False
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all columns already have entropy profiles."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -69,7 +69,7 @@ class EntropyPhase(BasePhase):
 
         # Count columns in these tables
         col_count_stmt = select(func.count(Column.column_id)).where(Column.table_id.in_(table_ids))
-        total_columns = (await ctx.session.execute(col_count_stmt)).scalar() or 0
+        total_columns = (ctx.session.execute(col_count_stmt)).scalar() or 0
 
         if total_columns == 0:
             return "No columns found in typed tables"
@@ -80,18 +80,18 @@ class EntropyPhase(BasePhase):
                 select(Column.column_id).where(Column.table_id.in_(table_ids))
             )
         )
-        entropy_count = (await ctx.session.execute(entropy_stmt)).scalar() or 0
+        entropy_count = (ctx.session.execute(entropy_stmt)).scalar() or 0
 
         if entropy_count >= total_columns:
             return "All columns already have entropy profiles"
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run entropy detection on all columns."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -101,7 +101,7 @@ class EntropyPhase(BasePhase):
 
         # Load all metadata needed for entropy detection
         columns_stmt = select(Column).where(Column.table_id.in_(table_ids))
-        all_columns = (await ctx.session.execute(columns_stmt)).scalars().all()
+        all_columns = (ctx.session.execute(columns_stmt)).scalars().all()
 
         if not all_columns:
             return PhaseResult.failed("No columns found in typed tables.")
@@ -111,19 +111,19 @@ class EntropyPhase(BasePhase):
         # Load statistical profiles
         stat_profiles: dict[str, StatisticalProfile] = {}
         stat_stmt = select(StatisticalProfile).where(StatisticalProfile.column_id.in_(column_ids))
-        for profile in (await ctx.session.execute(stat_stmt)).scalars().all():
+        for profile in (ctx.session.execute(stat_stmt)).scalars().all():
             stat_profiles[profile.column_id] = profile
 
         # Load type decisions
         type_decisions: dict[str, TypeDecision] = {}
         type_stmt = select(TypeDecision).where(TypeDecision.column_id.in_(column_ids))
-        for decision in (await ctx.session.execute(type_stmt)).scalars().all():
+        for decision in (ctx.session.execute(type_stmt)).scalars().all():
             type_decisions[decision.column_id] = decision
 
         # Load semantic annotations
         semantic_annotations: dict[str, SemanticAnnotation] = {}
         sem_stmt = select(SemanticAnnotation).where(SemanticAnnotation.column_id.in_(column_ids))
-        for ann in (await ctx.session.execute(sem_stmt)).scalars().all():
+        for ann in (ctx.session.execute(sem_stmt)).scalars().all():
             semantic_annotations[ann.column_id] = ann
 
         # Load relationships (for structural entropy)
@@ -131,7 +131,7 @@ class EntropyPhase(BasePhase):
             (Relationship.from_column_id.in_(column_ids))
             | (Relationship.to_column_id.in_(column_ids))
         )
-        relationships = (await ctx.session.execute(relationships_stmt)).scalars().all()
+        relationships = (ctx.session.execute(relationships_stmt)).scalars().all()
 
         # Build relationships by column
         relationships_by_column: dict[str, list[Relationship]] = {}
@@ -146,7 +146,7 @@ class EntropyPhase(BasePhase):
         # Load derived columns (for computational entropy)
         derived_stmt = select(DerivedColumn).where(DerivedColumn.derived_column_id.in_(column_ids))
         derived_columns: dict[str, DerivedColumn] = {}
-        for dc in (await ctx.session.execute(derived_stmt)).scalars().all():
+        for dc in (ctx.session.execute(derived_stmt)).scalars().all():
             derived_columns[dc.derived_column_id] = dc
 
         # Initialize processor
@@ -234,7 +234,7 @@ class EntropyPhase(BasePhase):
                 )
 
             # Process the table
-            table_profile = await processor.process_table(
+            table_profile = processor.process_table(
                 table_name=table.table_name,
                 columns=columns_data,
                 source_id=ctx.source_id,
@@ -283,7 +283,7 @@ class EntropyPhase(BasePhase):
                     total_compound_risks += 1
 
         # Build entropy context
-        entropy_context = await processor.build_entropy_context(table_profiles)
+        entropy_context = processor.build_entropy_context(table_profiles)
 
         # Update summary stats in entropy context
         entropy_context.update_summary_stats()
@@ -299,7 +299,7 @@ class EntropyPhase(BasePhase):
         )
         ctx.session.add(snapshot)
 
-        await ctx.session.commit()
+        ctx.session.commit()
 
         return PhaseResult.success(
             outputs={

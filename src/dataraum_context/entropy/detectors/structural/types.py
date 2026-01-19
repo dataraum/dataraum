@@ -28,7 +28,7 @@ class TypeFidelityDetector(EntropyDetector):
     required_analyses = ["typing"]
     description = "Measures uncertainty in type inference based on parse success rate"
 
-    async def detect(self, context: DetectorContext) -> list[EntropyObject]:
+    def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect type fidelity entropy.
 
         Args:

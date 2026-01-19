@@ -6,7 +6,7 @@ Provides helpers for loading context data from previous analysis phases.
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.correlation.db_models import (
     CategoricalAssociation,
@@ -20,8 +20,8 @@ from dataraum_context.analysis.statistics.db_models import (
 from dataraum_context.storage import Column, Table
 
 
-async def load_slicing_context(
-    session: AsyncSession,
+def load_slicing_context(
+    session: Session,
     table_ids: list[str],
 ) -> dict[str, Any]:
     """Load all context data needed for slicing analysis.
@@ -40,11 +40,11 @@ async def load_slicing_context(
     Returns:
         Dict with tables, statistics, semantic, correlations, quality keys
     """
-    tables_data = await _load_tables_with_columns(session, table_ids)
-    statistics_data = await _load_statistics(session, table_ids)
-    semantic_data = await _load_semantic_annotations(session, table_ids)
-    correlations_data = await _load_correlations(session, table_ids)
-    quality_data = await _load_quality_metrics(session, table_ids)
+    tables_data = _load_tables_with_columns(session, table_ids)
+    statistics_data = _load_statistics(session, table_ids)
+    semantic_data = _load_semantic_annotations(session, table_ids)
+    correlations_data = _load_correlations(session, table_ids)
+    quality_data = _load_quality_metrics(session, table_ids)
 
     return {
         "tables": tables_data,
@@ -55,8 +55,8 @@ async def load_slicing_context(
     }
 
 
-async def _load_tables_with_columns(
-    session: AsyncSession,
+def _load_tables_with_columns(
+    session: Session,
     table_ids: list[str],
 ) -> list[dict[str, Any]]:
     """Load table metadata with column information.
@@ -71,7 +71,7 @@ async def _load_tables_with_columns(
     result = []
 
     for table_id in table_ids:
-        table = await session.get(Table, table_id)
+        table = session.get(Table, table_id)
         if not table:
             continue
 
@@ -79,7 +79,7 @@ async def _load_tables_with_columns(
         columns_stmt = (
             select(Column).where(Column.table_id == table_id).order_by(Column.column_position)
         )
-        columns_result = await session.execute(columns_stmt)
+        columns_result = session.execute(columns_stmt)
         columns = columns_result.scalars().all()
 
         columns_data = [
@@ -106,8 +106,8 @@ async def _load_tables_with_columns(
     return result
 
 
-async def _load_statistics(
-    session: AsyncSession,
+def _load_statistics(
+    session: Session,
     table_ids: list[str],
 ) -> list[dict[str, Any]]:
     """Load statistical profiles for tables.
@@ -123,7 +123,7 @@ async def _load_statistics(
 
     # Get columns for these tables
     columns_stmt = select(Column).where(Column.table_id.in_(table_ids))
-    columns_result = await session.execute(columns_stmt)
+    columns_result = session.execute(columns_stmt)
     columns = columns_result.scalars().all()
     column_ids = [col.column_id for col in columns]
 
@@ -133,7 +133,7 @@ async def _load_statistics(
     # Get table lookup
     table_lookup = {}
     for table_id in table_ids:
-        table = await session.get(Table, table_id)
+        table = session.get(Table, table_id)
         if table:
             table_lookup[table_id] = table
 
@@ -143,7 +143,7 @@ async def _load_statistics(
         .where(StatisticalProfile.column_id.in_(column_ids))
         .where(StatisticalProfile.layer == "typed")
     )
-    profiles_result = await session.execute(profiles_stmt)
+    profiles_result = session.execute(profiles_stmt)
     profiles = profiles_result.scalars().all()
 
     for profile in profiles:
@@ -177,8 +177,8 @@ async def _load_statistics(
     return result
 
 
-async def _load_semantic_annotations(
-    session: AsyncSession,
+def _load_semantic_annotations(
+    session: Session,
     table_ids: list[str],
 ) -> list[dict[str, Any]]:
     """Load semantic annotations for tables.
@@ -194,7 +194,7 @@ async def _load_semantic_annotations(
 
     # Get columns for these tables
     columns_stmt = select(Column).where(Column.table_id.in_(table_ids))
-    columns_result = await session.execute(columns_stmt)
+    columns_result = session.execute(columns_stmt)
     columns = columns_result.scalars().all()
     column_ids = [col.column_id for col in columns]
 
@@ -202,7 +202,7 @@ async def _load_semantic_annotations(
     column_lookup = {col.column_id: col for col in columns}
     table_lookup = {}
     for table_id in table_ids:
-        table = await session.get(Table, table_id)
+        table = session.get(Table, table_id)
         if table:
             table_lookup[table_id] = table
 
@@ -210,7 +210,7 @@ async def _load_semantic_annotations(
     annotations_stmt = select(SemanticAnnotation).where(
         SemanticAnnotation.column_id.in_(column_ids)
     )
-    annotations_result = await session.execute(annotations_stmt)
+    annotations_result = session.execute(annotations_stmt)
     annotations = annotations_result.scalars().all()
 
     for ann in annotations:
@@ -238,8 +238,8 @@ async def _load_semantic_annotations(
     return result
 
 
-async def _load_correlations(
-    session: AsyncSession,
+def _load_correlations(
+    session: Session,
     table_ids: list[str],
 ) -> list[dict[str, Any]]:
     """Load correlation analysis results for tables.
@@ -255,7 +255,7 @@ async def _load_correlations(
 
     # Get columns for these tables
     columns_stmt = select(Column).where(Column.table_id.in_(table_ids))
-    columns_result = await session.execute(columns_stmt)
+    columns_result = session.execute(columns_stmt)
     columns = columns_result.scalars().all()
     column_ids = [col.column_id for col in columns]
 
@@ -266,7 +266,7 @@ async def _load_correlations(
     assoc_stmt = select(CategoricalAssociation).where(
         CategoricalAssociation.column1_id.in_(column_ids)
     )
-    assoc_result = await session.execute(assoc_stmt)
+    assoc_result = session.execute(assoc_stmt)
     associations = assoc_result.scalars().all()
 
     for assoc in associations:
@@ -289,7 +289,7 @@ async def _load_correlations(
 
     # Load numeric correlations
     corr_stmt = select(ColumnCorrelation).where(ColumnCorrelation.column1_id.in_(column_ids))
-    corr_result = await session.execute(corr_stmt)
+    corr_result = session.execute(corr_stmt)
     correlations = corr_result.scalars().all()
 
     for corr in correlations:
@@ -314,8 +314,8 @@ async def _load_correlations(
     return result
 
 
-async def _load_quality_metrics(
-    session: AsyncSession,
+def _load_quality_metrics(
+    session: Session,
     table_ids: list[str],
 ) -> list[dict[str, Any]]:
     """Load statistical quality metrics for tables.
@@ -334,7 +334,7 @@ async def _load_quality_metrics(
 
     # Get columns for these tables
     columns_stmt = select(Column).where(Column.table_id.in_(table_ids))
-    columns_result = await session.execute(columns_stmt)
+    columns_result = session.execute(columns_stmt)
     columns = columns_result.scalars().all()
     column_ids = [col.column_id for col in columns]
 
@@ -342,7 +342,7 @@ async def _load_quality_metrics(
     column_lookup = {col.column_id: col for col in columns}
     table_lookup = {}
     for table_id in table_ids:
-        table = await session.get(Table, table_id)
+        table = session.get(Table, table_id)
         if table:
             table_lookup[table_id] = table
 
@@ -350,7 +350,7 @@ async def _load_quality_metrics(
     quality_stmt = select(StatisticalQualityMetrics).where(
         StatisticalQualityMetrics.column_id.in_(column_ids)
     )
-    quality_result = await session.execute(quality_stmt)
+    quality_result = session.execute(quality_stmt)
     quality_metrics = quality_result.scalars().all()
 
     for qm in quality_metrics:

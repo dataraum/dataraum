@@ -52,11 +52,11 @@ class CrossTableQualityPhase(BasePhase):
         # This is actually a non-LLM phase - it's statistical analysis
         return False
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no confirmed relationships exist."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -70,18 +70,18 @@ class CrossTableQualityPhase(BasePhase):
             & (Relationship.to_table_id.in_(table_ids))
             & ((Relationship.detection_method == "llm") | (Relationship.confidence > 0.7))
         )
-        relationships = (await ctx.session.execute(rel_stmt)).scalars().all()
+        relationships = ctx.session.execute(rel_stmt).scalars().all()
 
         if not relationships:
             return "No confirmed relationships to analyze"
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run cross-table quality analysis on confirmed relationships."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -95,7 +95,7 @@ class CrossTableQualityPhase(BasePhase):
             & (Relationship.to_table_id.in_(table_ids))
             & ((Relationship.detection_method == "llm") | (Relationship.confidence > 0.7))
         )
-        relationships = (await ctx.session.execute(rel_stmt)).scalars().all()
+        relationships = ctx.session.execute(rel_stmt).scalars().all()
 
         if not relationships:
             return PhaseResult.success(
@@ -124,7 +124,7 @@ class CrossTableQualityPhase(BasePhase):
         errors = []
 
         for rel in relationships:
-            quality_result = await analyze_cross_table_quality(
+            quality_result = analyze_cross_table_quality(
                 relationship=rel,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,

@@ -3,21 +3,20 @@
 Runs phases in dependency order with parallel execution where possible.
 
 Uses ThreadPoolExecutor for true parallel execution of CPU-bound phases.
-Each phase runs in its own thread with its own event loop and SQLAlchemy session.
+Each phase runs in its own thread with its own SQLAlchemy session.
 With free-threaded Python (python3.14t), this enables real parallelism.
 """
 
 from __future__ import annotations
 
-import asyncio
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.core.connections import ConnectionManager
 from dataraum_context.pipeline.base import (
@@ -87,7 +86,7 @@ class Pipeline:
 
         return phases
 
-    async def run(
+    def run(
         self,
         manager: ConnectionManager,
         source_id: str,
@@ -98,7 +97,8 @@ class Pipeline:
         """Run the pipeline.
 
         Uses ThreadPoolExecutor for true parallel execution of CPU-bound phases.
-        Each phase runs in its own thread with its own event loop and session.
+        Each phase runs in its own thread with its own session.
+        With free-threaded Python (python3.14t), this enables real parallelism.
 
         Args:
             manager: Connection manager for database access
@@ -118,19 +118,19 @@ class Pipeline:
         self._outputs = {}
 
         # Create pipeline run record (needs its own session)
-        async with manager.session_scope() as session:
+        with manager.session_scope() as session:
             run = PipelineRun(
                 source_id=source_id,
                 target_phase=target_phase,
                 config=run_config or {},
             )
             session.add(run)
-            await session.flush()
+            session.flush()
             run_id = run.run_id  # Capture before session closes
 
             # Load existing checkpoints if resuming
             if self.config.skip_completed:
-                await self._load_completed_checkpoints(session, source_id)
+                self._load_completed_checkpoints(session, source_id)
 
         # Get phases to run
         phases_to_run = self.get_phases_to_run(target_phase)
@@ -140,16 +140,14 @@ class Pipeline:
 
         try:
             with ThreadPoolExecutor(max_workers=self.config.max_parallel) as pool:
-                loop = asyncio.get_event_loop()
-
                 while not self._is_complete(phases_to_run):
                     # Find phases ready to run
                     ready = self._get_ready_phases(phases_to_run)
 
                     if not ready:
                         if self._running:
-                            # Wait for running phases
-                            await asyncio.sleep(0.1)
+                            # Wait for running phases by checking futures
+                            time.sleep(0.1)
                             continue
                         else:
                             # Deadlock or all remaining phases blocked by failures
@@ -158,12 +156,15 @@ class Pipeline:
                     # Limit parallel execution
                     batch = list(ready)[: self.config.max_parallel - len(self._running)]
 
+                    # Mark phases as running
+                    for name in batch:
+                        self._running.add(name)
+
                     # Run batch in parallel using ThreadPoolExecutor
-                    # Each phase runs in its own thread with its own event loop
-                    futures = [
-                        loop.run_in_executor(
-                            pool,
-                            self._run_phase_sync,
+                    # Each phase runs in its own thread with its own session
+                    futures = {
+                        pool.submit(
+                            self._run_phase,
                             name,
                             manager,
                             source_id,
@@ -171,19 +172,19 @@ class Pipeline:
                             run_id,
                             run_config or {},
                             self._outputs.copy(),
-                        )
+                        ): name
                         for name in batch
-                    ]
+                    }
 
-                    batch_results = await asyncio.gather(*futures, return_exceptions=True)
-
-                    for name, batch_result in zip(batch, batch_results, strict=True):
+                    # Collect results as they complete
+                    for future in as_completed(futures):
+                        name = futures[future]
                         self._running.discard(name)
 
-                        if isinstance(batch_result, BaseException):
-                            phase_result = PhaseResult.failed(str(batch_result))
-                        else:
-                            phase_result = batch_result
+                        try:
+                            phase_result = future.result()
+                        except Exception as e:
+                            phase_result = PhaseResult.failed(str(e))
 
                         results[name] = phase_result
 
@@ -201,7 +202,7 @@ class Pipeline:
                         break
 
             # Update run record with final status
-            async with manager.session_scope() as session:
+            with manager.session_scope() as session:
                 from sqlalchemy import update
 
                 status = "completed" if not self._failed else "failed"
@@ -229,11 +230,11 @@ class Pipeline:
                         error=error_msg,
                     )
                 )
-                await session.execute(stmt)
+                session.execute(stmt)
 
         except Exception as e:
             # Update run record with error
-            async with manager.session_scope() as session:
+            with manager.session_scope() as session:
                 from sqlalchemy import update
 
                 stmt = (
@@ -246,12 +247,12 @@ class Pipeline:
                         error=str(e),
                     )
                 )
-                await session.execute(stmt)
+                session.execute(stmt)
             raise
 
         return results
 
-    def _run_phase_sync(
+    def _run_phase(
         self,
         phase_name: str,
         manager: ConnectionManager,
@@ -261,10 +262,10 @@ class Pipeline:
         run_config: dict[str, Any],
         previous_outputs: dict[str, dict[str, Any]],
     ) -> PhaseResult:
-        """Run phase synchronously in a thread with its own event loop.
+        """Run a single phase in its own thread with its own session.
 
-        This method is called from ThreadPoolExecutor. It creates a new
-        event loop for async code within the thread.
+        This method is called from ThreadPoolExecutor. Each phase runs in
+        its own thread with its own SQLAlchemy session and DuckDB cursor.
 
         Args:
             phase_name: Name of the phase to run
@@ -278,43 +279,6 @@ class Pipeline:
         Returns:
             PhaseResult from the phase execution
         """
-        return asyncio.run(
-            self._run_phase_async(
-                phase_name,
-                manager,
-                source_id,
-                table_ids,
-                run_id,
-                run_config,
-                previous_outputs,
-            )
-        )
-
-    async def _run_phase_async(
-        self,
-        phase_name: str,
-        manager: ConnectionManager,
-        source_id: str,
-        table_ids: list[str],
-        run_id: str,
-        run_config: dict[str, Any],
-        previous_outputs: dict[str, dict[str, Any]],
-    ) -> PhaseResult:
-        """Run a single phase with its own session.
-
-        Args:
-            phase_name: Name of the phase to run
-            manager: Connection manager for database access
-            source_id: Source identifier
-            table_ids: List of table IDs to process
-            run_id: Pipeline run ID
-            run_config: Runtime configuration
-            previous_outputs: Outputs from previous phases
-
-        Returns:
-            PhaseResult from the phase execution
-        """
-        self._running.add(phase_name)
         start_time = time.time()
         started_at = datetime.now(UTC)
 
@@ -325,8 +289,9 @@ class Pipeline:
 
         try:
             # Each phase gets its own session and DuckDB cursor
-            # Cursors are thread-safe, connections are not
-            async with manager.session_scope() as session:
+            # Sessions are thread-safe when each thread has its own
+            # DuckDB cursors are thread-safe for reads
+            with manager.session_scope() as session:
                 with manager.duckdb_cursor() as cursor:
                     # Build context with this phase's session and cursor
                     ctx = PhaseContext(
@@ -339,12 +304,12 @@ class Pipeline:
                     )
 
                     # Check if should skip
-                    skip_reason = await phase.should_skip(ctx)
+                    skip_reason = phase.should_skip(ctx)
                     if skip_reason:
                         result = PhaseResult.skipped(skip_reason)
                     else:
                         # Run the phase
-                        result = await phase.run(ctx)
+                        result = phase.run(ctx)
                         result.duration_seconds = time.time() - start_time
 
                 # Save checkpoint (outside cursor context, inside session)
@@ -369,7 +334,7 @@ class Pipeline:
             result = PhaseResult.failed(str(e), duration=time.time() - start_time)
             # Save failed checkpoint
             try:
-                async with manager.session_scope() as session:
+                with manager.session_scope() as session:
                     checkpoint = PhaseCheckpoint(
                         run_id=run_id,
                         source_id=source_id,
@@ -386,13 +351,13 @@ class Pipeline:
 
         return result
 
-    async def _load_completed_checkpoints(self, session: AsyncSession, source_id: str) -> None:
+    def _load_completed_checkpoints(self, session: Session, source_id: str) -> None:
         """Load previously completed checkpoints."""
         stmt = select(PhaseCheckpoint).where(
             PhaseCheckpoint.source_id == source_id,
             PhaseCheckpoint.status == "completed",
         )
-        result = await session.execute(stmt)
+        result = session.execute(stmt)
         checkpoints = result.scalars().all()
 
         for cp in checkpoints:
@@ -475,7 +440,7 @@ def _register_builtin_phases(pipeline: Pipeline) -> None:
     pipeline.register(TemporalPhase())
 
 
-async def run_pipeline(
+def run_pipeline(
     manager: ConnectionManager,
     source_id: str,
     table_ids: list[str] | None = None,
@@ -502,7 +467,7 @@ async def run_pipeline(
     if config:
         pipeline.config = config
 
-    return await pipeline.run(
+    return pipeline.run(
         manager=manager,
         source_id=source_id,
         table_ids=table_ids,

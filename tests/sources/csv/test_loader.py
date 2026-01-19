@@ -7,8 +7,8 @@ from pathlib import Path
 
 import duckdb
 import pytest
-from sqlalchemy import event
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
 
 from dataraum_context.core.models import SourceConfig
 from dataraum_context.sources.csv import CSVLoader
@@ -16,30 +16,30 @@ from dataraum_context.storage import init_database
 
 
 @pytest.fixture
-async def test_session():
+def test_session():
     """Create an in-memory SQLite session for testing."""
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+    engine = create_engine(
+        "sqlite:///:memory:",
         echo=False,
     )
 
     # Enable foreign keys for SQLite
-    @event.listens_for(engine.sync_engine, "connect")
+    @event.listens_for(engine, "connect")
     def set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
     # Initialize database schema
-    await init_database(engine)
+    init_database(engine)
 
     # Create session
-    async_session = async_sessionmaker(engine, expire_on_commit=False)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
 
-    async with async_session() as session:
+    with factory() as session:
         yield session
 
-    await engine.dispose()
+    engine.dispose()
 
 
 @pytest.fixture
@@ -65,12 +65,12 @@ def customer_table_csv():
 class TestCSVLoader:
     """Tests for CSVLoader."""
 
-    async def test_type_system_strength(self):
+    def test_type_system_strength(self):
         """CSV loader should be classified as untyped."""
         loader = CSVLoader()
         assert loader.type_system_strength.value == "untyped"
 
-    async def test_get_schema_payment_method(self, payment_method_csv):
+    def test_get_schema_payment_method(self, payment_method_csv):
         """Test getting schema from payment_method.csv."""
         if not payment_method_csv.exists():
             pytest.skip("Example CSV not found")
@@ -82,7 +82,7 @@ class TestCSVLoader:
             path=str(payment_method_csv),
         )
 
-        result = await loader.get_schema(config)
+        result = loader.get_schema(config)
 
         assert result.success
         columns = result.value
@@ -99,7 +99,7 @@ class TestCSVLoader:
         # Check we have sample values
         assert len(columns[0].sample_values) > 0
 
-    async def test_get_schema_missing_file(self):
+    def test_get_schema_missing_file(self):
         """Test error handling for missing file."""
         loader = CSVLoader()
         config = SourceConfig(
@@ -108,13 +108,13 @@ class TestCSVLoader:
             path="nonexistent.csv",
         )
 
-        result = await loader.get_schema(config)
+        result = loader.get_schema(config)
 
         assert not result.success
         assert result.error
         assert "not found" in result.error.lower()
 
-    async def test_load_payment_method(
+    def test_load_payment_method(
         self,
         payment_method_csv,
         test_duckdb,
@@ -131,7 +131,7 @@ class TestCSVLoader:
             path=str(payment_method_csv),
         )
 
-        result = await loader.load(config, test_duckdb, test_session)
+        result = loader.load(config, test_duckdb, test_session)
 
         assert result.success, f"Load failed: {result.error}"
 
@@ -166,7 +166,7 @@ class TestCSVLoader:
         for col_name, data_type in schema:
             assert data_type == "VARCHAR", f"Column {col_name} is {data_type}, expected VARCHAR"
 
-    async def test_load_with_null_values(
+    def test_load_with_null_values(
         self,
         customer_table_csv,
         test_duckdb,
@@ -183,7 +183,7 @@ class TestCSVLoader:
             path=str(customer_table_csv),
         )
 
-        result = await loader.load(config, test_duckdb, test_session)
+        result = loader.load(config, test_duckdb, test_session)
 
         assert result.success, f"Load failed: {result.error}"
 
@@ -197,7 +197,7 @@ class TestCSVLoader:
         # Should have null values (-- gets converted to NULL)
         assert null_count > 0, "Expected some NULL values in Balance column"
 
-    async def test_sanitize_table_name(self):
+    def test_sanitize_table_name(self):
         """Test table name sanitization."""
         loader = CSVLoader()
 

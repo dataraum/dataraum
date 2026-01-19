@@ -1,4 +1,4 @@
-"""Async entry point for relationship detection."""
+"""Entry point for relationship detection."""
 
 import time
 from datetime import UTC, datetime
@@ -7,7 +7,7 @@ from uuid import uuid4
 import duckdb
 import pandas as pd
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.relationships.db_models import (
     Relationship as RelationshipDB,
@@ -24,10 +24,10 @@ from dataraum_context.core.models.base import Result
 from dataraum_context.storage import Table
 
 
-async def detect_relationships(
+def detect_relationships(
     table_ids: list[str],
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
     min_confidence: float = 0.3,
     sample_percent: float = 10.0,
     evaluate: bool = True,
@@ -52,7 +52,7 @@ async def detect_relationships(
 
     try:
         # Load tables with paths and sampled data
-        tables_data = await _load_tables(session, duckdb_conn, table_ids, sample_percent)
+        tables_data = _load_tables(session, duckdb_conn, table_ids, sample_percent)
 
         if len(tables_data) < 2:
             return Result.ok(
@@ -93,7 +93,7 @@ async def detect_relationships(
             candidates = evaluate_candidates(candidates, table_paths, duckdb_conn)
 
         # Store candidates in database
-        await _store_candidates(session, table_ids, candidates)
+        _store_candidates(session, table_ids, candidates)
 
         # Count high confidence candidates
         high_conf_count = sum(
@@ -115,8 +115,8 @@ async def detect_relationships(
         return Result.fail(f"Relationship detection failed: {e}")
 
 
-async def _store_candidates(
-    session: AsyncSession,
+def _store_candidates(
+    session: Session,
     table_ids: list[str],
     candidates: list[RelationshipCandidate],
 ) -> None:
@@ -126,8 +126,8 @@ async def _store_candidates(
     detection_method='candidate' to distinguish from confirmed relationships.
     """
     # Load mappings
-    column_map = await load_column_mappings(session, table_ids)
-    table_map = await load_table_mappings(session, table_ids)
+    column_map = load_column_mappings(session, table_ids)
+    table_map = load_table_mappings(session, table_ids)
 
     for candidate in candidates:
         table1_id = table_map.get(candidate.table1)
@@ -185,8 +185,8 @@ async def _store_candidates(
             session.add(db_rel)
 
 
-async def _load_tables(
-    session: AsyncSession,
+def _load_tables(
+    session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_ids: list[str],
     sample_percent: float,
@@ -197,7 +197,7 @@ async def _load_tables(
     plus sampled DataFrame for uniqueness calculation.
     """
     stmt = select(Table.table_name, Table.duckdb_path).where(Table.table_id.in_(table_ids))
-    result = await session.execute(stmt)
+    result = session.execute(stmt)
 
     tables_data: dict[str, tuple[str, pd.DataFrame]] = {}
     for table_name, duckdb_path in result.all():

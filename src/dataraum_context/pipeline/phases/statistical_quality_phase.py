@@ -39,11 +39,11 @@ class StatisticalQualityPhase(BasePhase):
     def outputs(self) -> list[str]:
         return ["quality_metrics"]
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all numeric columns already have quality metrics."""
         # Get typed tables
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -52,7 +52,7 @@ class StatisticalQualityPhase(BasePhase):
         # Get all columns for typed tables
         typed_table_ids = [t.table_id for t in typed_tables]
         columns_stmt = select(Column).where(Column.table_id.in_(typed_table_ids))
-        all_columns = (await ctx.session.execute(columns_stmt)).scalars().all()
+        all_columns = (ctx.session.execute(columns_stmt)).scalars().all()
 
         # Filter to numeric columns only
         numeric_columns = [
@@ -64,7 +64,7 @@ class StatisticalQualityPhase(BasePhase):
 
         # Check which already have quality metrics
         assessed_stmt = select(StatisticalQualityMetrics.column_id).distinct()
-        assessed_ids = set((await ctx.session.execute(assessed_stmt)).scalars().all())
+        assessed_ids = set((ctx.session.execute(assessed_stmt)).scalars().all())
 
         numeric_ids = {c.column_id for c in numeric_columns}
         if not (numeric_ids - assessed_ids):
@@ -72,11 +72,11 @@ class StatisticalQualityPhase(BasePhase):
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run statistical quality assessment on typed tables."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -85,11 +85,11 @@ class StatisticalQualityPhase(BasePhase):
         # Get all columns for typed tables
         typed_table_ids = [t.table_id for t in typed_tables]
         columns_stmt = select(Column).where(Column.table_id.in_(typed_table_ids))
-        all_columns = (await ctx.session.execute(columns_stmt)).scalars().all()
+        all_columns = (ctx.session.execute(columns_stmt)).scalars().all()
 
         # Check which already have quality metrics
         assessed_stmt = select(StatisticalQualityMetrics.column_id).distinct()
-        assessed_ids = set((await ctx.session.execute(assessed_stmt)).scalars().all())
+        assessed_ids = set((ctx.session.execute(assessed_stmt)).scalars().all())
 
         # Find tables with unassessed numeric columns
         unassessed_tables = []
@@ -120,7 +120,7 @@ class StatisticalQualityPhase(BasePhase):
         warnings = []
 
         for typed_table in unassessed_tables:
-            quality_result = await assess_statistical_quality(
+            quality_result = assess_statistical_quality(
                 table_id=typed_table.table_id,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
@@ -148,7 +148,7 @@ class StatisticalQualityPhase(BasePhase):
 
         # Get total metrics count
         metrics_count = (
-            await ctx.session.execute(select(func.count(StatisticalQualityMetrics.metric_id)))
+            ctx.session.execute(select(func.count(StatisticalQualityMetrics.metric_id)))
         ).scalar() or 0
 
         return PhaseResult.success(

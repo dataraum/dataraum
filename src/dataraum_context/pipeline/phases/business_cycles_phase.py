@@ -50,11 +50,11 @@ class BusinessCyclesPhase(BasePhase):
     def is_llm_phase(self) -> bool:
         return True
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if business cycles have already been detected."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -66,18 +66,18 @@ class BusinessCyclesPhase(BasePhase):
         run_stmt = select(func.count(BusinessCycleAnalysisRun.analysis_id)).where(
             BusinessCycleAnalysisRun.table_ids.contains(table_ids)
         )
-        run_count = (await ctx.session.execute(run_stmt)).scalar() or 0
+        run_count = (ctx.session.execute(run_stmt)).scalar() or 0
 
         if run_count > 0:
             return "Business cycle analysis already run for these tables"
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run business cycle detection using LLM agent."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -111,7 +111,7 @@ class BusinessCyclesPhase(BasePhase):
         max_tool_calls = ctx.config.get("max_tool_calls", 10)
 
         # Run analysis
-        analysis_result = await agent.analyze(
+        analysis_result = agent.analyze(
             session=ctx.session,
             duckdb_conn=ctx.duckdb_conn,
             table_ids=table_ids,

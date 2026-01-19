@@ -13,7 +13,7 @@ from uuid import uuid4
 import duckdb
 import numpy as np
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.correlation.algorithms import (
     compute_pairwise_correlations,
@@ -26,10 +26,10 @@ from dataraum_context.core.models.base import Result
 from dataraum_context.storage import Column, Table
 
 
-async def compute_numeric_correlations(
+def compute_numeric_correlations(
     table: Table,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
     min_correlation: float = 0.3,
 ) -> Result[list[NumericCorrelation]]:
     """Compute Pearson and Spearman correlations for all numeric column pairs.
@@ -49,7 +49,7 @@ async def compute_numeric_correlations(
             Column.table_id == table.table_id,
             Column.resolved_type.in_(["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]),
         )
-        result = await session.execute(stmt)
+        result = session.execute(stmt)
         numeric_columns = list(result.scalars().all())
 
         if len(numeric_columns) < 2:

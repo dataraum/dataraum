@@ -23,7 +23,6 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
 import sys
 import time
 from dataclasses import dataclass, field
@@ -165,7 +164,7 @@ def get_latest_implemented_phase(pipeline: Pipeline) -> str:
     return latest or "import"
 
 
-async def run(config: RunConfig) -> RunResult:
+def run(config: RunConfig) -> RunResult:
     """Run the pipeline with the given configuration.
 
     Args:
@@ -194,7 +193,7 @@ async def run(config: RunConfig) -> RunResult:
         config.output_dir.mkdir(parents=True, exist_ok=True)
         conn_config = ConnectionConfig.for_directory(config.output_dir)
         manager = ConnectionManager(conn_config)
-        await manager.initialize()
+        manager.initialize()
 
         # Create pipeline
         pipeline = create_pipeline(config)
@@ -210,7 +209,7 @@ async def run(config: RunConfig) -> RunResult:
         }
 
         # Execute pipeline
-        results = await pipeline.run(
+        results = pipeline.run(
             manager=manager,
             source_id=source_id,
             target_phase=target_phase,
@@ -218,7 +217,7 @@ async def run(config: RunConfig) -> RunResult:
         )
 
         # Close connections
-        await manager.close()
+        manager.close()
 
         duration = time.time() - start_time
 
@@ -346,7 +345,7 @@ Examples:
         verbose=not args.quiet,
     )
 
-    result = asyncio.run(run(config))
+    result = run(config)
     return 0 if result.success else 1
 
 

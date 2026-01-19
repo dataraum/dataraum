@@ -22,7 +22,7 @@ Usage:
 
     # Run a specific detector
     detector = registry.get_detector("type_fidelity")
-    results = await detector.detect(context)
+    results = detector.detect(context)
 """
 
 from dataraum_context.entropy.detectors.base import (

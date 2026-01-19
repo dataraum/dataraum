@@ -94,7 +94,7 @@ class EntropyDetector(ABC):
         self.config = config or {}
 
     @abstractmethod
-    async def detect(self, context: DetectorContext) -> list[EntropyObject]:
+    def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Run detection and return entropy objects.
 
         Args:

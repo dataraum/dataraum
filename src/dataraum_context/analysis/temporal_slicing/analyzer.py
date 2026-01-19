@@ -12,7 +12,7 @@ from datetime import date, timedelta
 
 import duckdb
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.temporal_slicing.db_models import (
     SliceTimeMatrixEntry,
@@ -49,7 +49,7 @@ class TemporalSliceContext:
     time_column: str
     config: TemporalSliceConfig
     duckdb_conn: duckdb.DuckDBPyConnection
-    session: AsyncSession
+    session: Session
 
 
 class TemporalSliceAnalyzer:
@@ -65,12 +65,12 @@ class TemporalSliceAnalyzer:
     def __init__(
         self,
         duckdb_conn: duckdb.DuckDBPyConnection,
-        session: AsyncSession,
+        session: Session,
     ):
         self.duckdb_conn = duckdb_conn
         self.session = session
 
-    async def analyze(
+    def analyze(
         self,
         slice_table_name: str,
         config: TemporalSliceConfig,
@@ -88,7 +88,7 @@ class TemporalSliceAnalyzer:
         """
         try:
             # Get table info
-            table = await self._get_table(slice_table_name)
+            table = self._get_table(slice_table_name)
             if not table:
                 return Result.fail(f"Table not found: {slice_table_name}")
 
@@ -96,7 +96,7 @@ class TemporalSliceAnalyzer:
             periods = self._generate_periods(config)
 
             # Level 1: Compute period metrics
-            period_metrics = await self._compute_period_metrics(
+            period_metrics = self._compute_period_metrics(
                 slice_table_name, config.time_column, periods, config
             )
 
@@ -104,15 +104,15 @@ class TemporalSliceAnalyzer:
             completeness_results = self._analyze_completeness(period_metrics, config)
 
             # Level 2: Analyze distribution drift for categorical columns
-            categorical_columns = await self._get_categorical_columns(table.table_id)
-            drift_results = await self._analyze_distribution_drift(
+            categorical_columns = self._get_categorical_columns(table.table_id)
+            drift_results = self._analyze_distribution_drift(
                 slice_table_name, config.time_column, periods, categorical_columns, config
             )
 
             # Level 3: Build slice × time matrix (if we know the slice column)
             slice_time_matrix = None
             if slice_column_name:
-                slice_time_matrix = await self._build_slice_time_matrix(
+                slice_time_matrix = self._build_slice_time_matrix(
                     slice_table_name, config.time_column, slice_column_name, periods, config
                 )
 
@@ -148,7 +148,7 @@ class TemporalSliceAnalyzer:
         except Exception as e:
             return Result.fail(f"Temporal analysis failed: {e}")
 
-    async def persist_results(
+    def persist_results(
         self,
         result: TemporalAnalysisResult,
     ) -> Result[int]:
@@ -175,7 +175,7 @@ class TemporalSliceAnalyzer:
                 config_json=result.config.model_dump(mode="json"),
             )
             self.session.add(run)
-            await self.session.flush()
+            self.session.flush()
             run_id = run.id
 
             # Persist period analyses
@@ -252,26 +252,26 @@ class TemporalSliceAnalyzer:
                         )
                         self.session.add(entry)
 
-            await self.session.commit()
+            self.session.commit()
             return Result.ok(run_id)
 
         except Exception as e:
-            await self.session.rollback()
+            self.session.rollback()
             return Result.fail(f"Failed to persist results: {e}")
 
-    async def _get_table(self, table_name: str) -> Table | None:
+    def _get_table(self, table_name: str) -> Table | None:
         """Get table by DuckDB path."""
         stmt = select(Table).where(Table.duckdb_path == table_name)
-        result = await self.session.execute(stmt)
+        result = self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def _get_categorical_columns(self, table_id: str) -> list[Column]:
+    def _get_categorical_columns(self, table_id: str) -> list[Column]:
         """Get categorical columns from table (VARCHAR, low cardinality)."""
         stmt = select(Column).where(
             Column.table_id == table_id,
             Column.resolved_type.in_(["VARCHAR", "TEXT", "STRING"]),
         )
-        result = await self.session.execute(stmt)
+        result = self.session.execute(stmt)
         return list(result.scalars().all())
 
     def _generate_periods(self, config: TemporalSliceConfig) -> list[tuple[date, date, str]]:
@@ -306,7 +306,7 @@ class TemporalSliceAnalyzer:
 
         return periods
 
-    async def _compute_period_metrics(
+    def _compute_period_metrics(
         self,
         table_name: str,
         time_column: str,
@@ -456,7 +456,7 @@ class TemporalSliceAnalyzer:
 
         return results
 
-    async def _analyze_distribution_drift(
+    def _analyze_distribution_drift(
         self,
         table_name: str,
         time_column: str,
@@ -570,7 +570,7 @@ class TemporalSliceAnalyzer:
 
         return (kl_pm + kl_qm) / 2
 
-    async def _build_slice_time_matrix(
+    def _build_slice_time_matrix(
         self,
         table_name: str,
         time_column: str,
@@ -777,9 +777,9 @@ ORDER BY 1
         return queries
 
 
-async def analyze_temporal_slices(
+def analyze_temporal_slices(
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
     slice_table_name: str,
     config: TemporalSliceConfig,
     slice_column_name: str | None = None,
@@ -801,10 +801,10 @@ async def analyze_temporal_slices(
         Result containing TemporalAnalysisResult
     """
     analyzer = TemporalSliceAnalyzer(duckdb_conn, session)
-    result = await analyzer.analyze(slice_table_name, config, slice_column_name)
+    result = analyzer.analyze(slice_table_name, config, slice_column_name)
 
     if result.success and result.value is not None and persist:
-        persist_result = await analyzer.persist_results(result.value)
+        persist_result = analyzer.persist_results(result.value)
         if not persist_result.success:
             return Result.fail(persist_result.error or "Failed to persist results")
 

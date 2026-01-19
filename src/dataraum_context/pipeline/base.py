@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     import duckdb
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.orm import Session
 
 
 class PhaseStatus(str, Enum):
@@ -32,7 +32,7 @@ class PhaseContext:
     outputs from previous phases.
     """
 
-    session: AsyncSession
+    session: Session
     duckdb_conn: duckdb.DuckDBPyConnection
     source_id: str
     table_ids: list[str] = field(default_factory=list)
@@ -126,7 +126,7 @@ class Phase(Protocol):
         """List of output keys this phase produces."""
         ...
 
-    async def run(self, ctx: PhaseContext) -> PhaseResult:
+    def run(self, ctx: PhaseContext) -> PhaseResult:
         """Execute the phase.
 
         Args:
@@ -137,7 +137,7 @@ class Phase(Protocol):
         """
         ...
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Check if this phase should be skipped.
 
         Returns:

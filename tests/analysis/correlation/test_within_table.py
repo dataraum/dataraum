@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import duckdb
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.correlation.within_table import (
     compute_categorical_associations,
@@ -73,7 +73,7 @@ def test_duckdb():
 
 
 @pytest.fixture
-async def test_source(async_session: AsyncSession):
+def test_source(session: Session):
     """Create a test source for foreign key requirements."""
     source = Source(
         source_id=str(uuid4()),
@@ -81,13 +81,13 @@ async def test_source(async_session: AsyncSession):
         source_type="csv",
         connection_config={},
     )
-    async_session.add(source)
-    await async_session.commit()
+    session.add(source)
+    session.commit()
     return source
 
 
 @pytest.fixture
-async def table_numeric(async_session: AsyncSession, test_source: Source):
+def table_numeric(session: Session, test_source: Source):
     """Create Table and Column records for numeric test."""
     table = Table(
         table_id=str(uuid4()),
@@ -98,7 +98,7 @@ async def table_numeric(async_session: AsyncSession, test_source: Source):
         row_count=100,
         created_at=datetime.now(UTC),
     )
-    async_session.add(table)
+    session.add(table)
 
     columns = []
     for name, dtype in [
@@ -117,14 +117,14 @@ async def table_numeric(async_session: AsyncSession, test_source: Source):
             resolved_type=dtype,
         )
         columns.append(col)
-        async_session.add(col)
+        session.add(col)
 
-    await async_session.commit()
+    session.commit()
     return table
 
 
 @pytest.fixture
-async def table_categorical(async_session: AsyncSession, test_source: Source):
+def table_categorical(session: Session, test_source: Source):
     """Create Table and Column records for categorical test."""
     table = Table(
         table_id=str(uuid4()),
@@ -135,7 +135,7 @@ async def table_categorical(async_session: AsyncSession, test_source: Source):
         row_count=100,
         created_at=datetime.now(UTC),
     )
-    async_session.add(table)
+    session.add(table)
 
     columns = []
     for name, dtype in [
@@ -153,14 +153,14 @@ async def table_categorical(async_session: AsyncSession, test_source: Source):
             resolved_type=dtype,
         )
         columns.append(col)
-        async_session.add(col)
+        session.add(col)
 
-    await async_session.commit()
+    session.commit()
     return table
 
 
 @pytest.fixture
-async def table_fd(async_session: AsyncSession, test_source: Source):
+def table_fd(session: Session, test_source: Source):
     """Create Table and Column records for functional dependency test."""
     table = Table(
         table_id=str(uuid4()),
@@ -171,7 +171,7 @@ async def table_fd(async_session: AsyncSession, test_source: Source):
         row_count=100,
         created_at=datetime.now(UTC),
     )
-    async_session.add(table)
+    session.add(table)
 
     columns = []
     for name, dtype in [
@@ -189,18 +189,15 @@ async def table_fd(async_session: AsyncSession, test_source: Source):
             resolved_type=dtype,
         )
         columns.append(col)
-        async_session.add(col)
+        session.add(col)
 
-    await async_session.commit()
+    session.commit()
     return table
 
 
-@pytest.mark.asyncio
-async def test_compute_numeric_correlations(async_session, test_duckdb, table_numeric):
+def test_compute_numeric_correlations(session, test_duckdb, table_numeric):
     """Test numeric correlation detection."""
-    result = await compute_numeric_correlations(
-        table_numeric, test_duckdb, async_session, min_correlation=0.3
-    )
+    result = compute_numeric_correlations(table_numeric, test_duckdb, session, min_correlation=0.3)
 
     assert result.success
     correlations = result.unwrap()
@@ -214,11 +211,10 @@ async def test_compute_numeric_correlations(async_session, test_duckdb, table_nu
     assert abs(col_a_c.pearson_r - 1.0) < 0.01  # Perfect correlation
 
 
-@pytest.mark.asyncio
-async def test_compute_categorical_associations(async_session, test_duckdb, table_categorical):
+def test_compute_categorical_associations(session, test_duckdb, table_categorical):
     """Test categorical association detection."""
-    result = await compute_categorical_associations(
-        table_categorical, test_duckdb, async_session, min_cramers_v=0.1
+    result = compute_categorical_associations(
+        table_categorical, test_duckdb, session, min_cramers_v=0.1
     )
 
     assert result.success
@@ -233,12 +229,9 @@ async def test_compute_categorical_associations(async_session, test_duckdb, tabl
     assert cat1_cat2.cramers_v > 0.3  # Moderate to strong association
 
 
-@pytest.mark.asyncio
-async def test_detect_functional_dependencies(async_session, test_duckdb, table_fd):
+def test_detect_functional_dependencies(session, test_duckdb, table_fd):
     """Test functional dependency detection."""
-    result = await detect_functional_dependencies(
-        table_fd, test_duckdb, async_session, min_confidence=0.95
-    )
+    result = detect_functional_dependencies(table_fd, test_duckdb, session, min_confidence=0.95)
 
     assert result.success
     dependencies = result.unwrap()
@@ -256,12 +249,9 @@ async def test_detect_functional_dependencies(async_session, test_duckdb, table_
     assert code_name.confidence == 1.0  # Exact FD
 
 
-@pytest.mark.asyncio
-async def test_detect_derived_columns(async_session, test_duckdb, table_numeric):
+def test_detect_derived_columns(session, test_duckdb, table_numeric):
     """Test derived column detection."""
-    result = await detect_derived_columns(
-        table_numeric, test_duckdb, async_session, min_match_rate=0.95
-    )
+    result = detect_derived_columns(table_numeric, test_duckdb, session, min_match_rate=0.95)
 
     assert result.success
     derived = result.unwrap()
@@ -281,8 +271,7 @@ async def test_detect_derived_columns(async_session, test_duckdb, table_numeric)
     assert col_d_sum.match_rate > 0.99  # Near perfect match
 
 
-@pytest.mark.asyncio
-async def test_no_correlations_with_insufficient_data(async_session, test_source):
+def test_no_correlations_with_insufficient_data(session, test_source):
     """Test that analysis handles tables with insufficient data."""
     conn = duckdb.connect(":memory:")
     conn.execute("CREATE TABLE small_table (id INTEGER, val DOUBLE)")
@@ -297,7 +286,7 @@ async def test_no_correlations_with_insufficient_data(async_session, test_source
         row_count=2,
         created_at=datetime.now(UTC),
     )
-    async_session.add(table)
+    session.add(table)
 
     for i, (name, dtype) in enumerate([("id", "INTEGER"), ("val", "DOUBLE")]):
         col = Column(
@@ -308,11 +297,11 @@ async def test_no_correlations_with_insufficient_data(async_session, test_source
             raw_type="VARCHAR",
             resolved_type=dtype,
         )
-        async_session.add(col)
+        session.add(col)
 
-    await async_session.commit()
+    session.commit()
 
-    result = await compute_numeric_correlations(table, conn, async_session)
+    result = compute_numeric_correlations(table, conn, session)
     assert result.success
     # Should return empty list (not enough data points)
     assert len(result.unwrap()) == 0
@@ -320,12 +309,9 @@ async def test_no_correlations_with_insufficient_data(async_session, test_source
     conn.close()
 
 
-@pytest.mark.asyncio
-async def test_correlation_strength_classification(async_session, test_duckdb, table_numeric):
+def test_correlation_strength_classification(session, test_duckdb, table_numeric):
     """Test that correlation strength is correctly classified."""
-    result = await compute_numeric_correlations(
-        table_numeric, test_duckdb, async_session, min_correlation=0.3
-    )
+    result = compute_numeric_correlations(table_numeric, test_duckdb, session, min_correlation=0.3)
 
     assert result.success
     correlations = result.unwrap()

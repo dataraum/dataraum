@@ -19,7 +19,7 @@ class OpenAIProvider(LLMProvider):
 
     To contribute OpenAI support:
     1. Install openai package: pip install openai
-    2. Implement async complete() method using openai.AsyncOpenAI
+    2. Implement complete() method using openai.OpenAI
     3. Use native JSON mode: response_format={"type": "json_object"}
     4. Handle token counting and errors
     """
@@ -39,7 +39,7 @@ class OpenAIProvider(LLMProvider):
             "See docs/LLM_FEATURES.md for implementation guide."
         )
 
-    async def complete(self, request: LLMRequest) -> Result[LLMResponse]:
+    def complete(self, request: LLMRequest) -> Result[LLMResponse]:
         """Not implemented."""
         raise NotImplementedError()
 

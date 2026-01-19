@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import distinct as sql_distinct
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.quality_summary.db_models import (
     ColumnQualityReport,
@@ -41,8 +41,8 @@ if TYPE_CHECKING:
 BATCH_SIZE = 10
 
 
-async def aggregate_slice_results(
-    session: AsyncSession,
+def aggregate_slice_results(
+    session: Session,
     slice_definition: SliceDefinition,
 ) -> Result[list[AggregatedColumnData]]:
     """Aggregate analysis results across slices for each column.
@@ -59,8 +59,8 @@ async def aggregate_slice_results(
     """
     try:
         # Get source table and column info
-        source_table = await session.get(Table, slice_definition.table_id)
-        slice_column = await session.get(Column, slice_definition.column_id)
+        source_table = session.get(Table, slice_definition.table_id)
+        slice_column = session.get(Column, slice_definition.column_id)
 
         if not source_table or not slice_column:
             return Result.fail("Source table or slice column not found")
@@ -70,7 +70,7 @@ async def aggregate_slice_results(
         all_slice_def_cols_stmt = select(sql_distinct(SliceDefinition.column_id)).where(
             SliceDefinition.table_id == source_table.table_id
         )
-        all_slice_def_cols_result = await session.execute(all_slice_def_cols_stmt)
+        all_slice_def_cols_result = session.execute(all_slice_def_cols_stmt)
         slice_definition_column_ids = set(all_slice_def_cols_result.scalars().all())
 
         # Get all columns from source table, excluding slice columns
@@ -80,7 +80,7 @@ async def aggregate_slice_results(
             .where(Column.column_id.notin_(slice_definition_column_ids))
             .order_by(Column.column_position)
         )
-        source_cols_result = await session.execute(source_cols_stmt)
+        source_cols_result = session.execute(source_cols_stmt)
         source_columns = list(source_cols_result.scalars().all())
 
         # Get all slice tables for this definition
@@ -108,7 +108,7 @@ async def aggregate_slice_results(
                 Table.table_name == slice_table_name,
                 Table.layer == "slice",
             )
-            slice_table_result = await session.execute(slice_table_stmt)
+            slice_table_result = session.execute(slice_table_stmt)
             slice_table = slice_table_result.scalar_one_or_none()
 
             if slice_table:
@@ -134,7 +134,7 @@ async def aggregate_slice_results(
             sem_stmt = select(SemanticAnnotation).where(
                 SemanticAnnotation.column_id == source_col.column_id
             )
-            sem_result = await session.execute(sem_stmt)
+            sem_result = session.execute(sem_stmt)
             sem_ann = sem_result.scalar_one_or_none()
             if sem_ann:
                 agg_data.semantic_role = sem_ann.semantic_role
@@ -148,7 +148,7 @@ async def aggregate_slice_results(
                     Column.table_id == slice_table.table_id,
                     Column.column_name == source_col.column_name,
                 )
-                slice_col_result = await session.execute(slice_col_stmt)
+                slice_col_result = session.execute(slice_col_stmt)
                 slice_col = slice_col_result.scalar_one_or_none()
 
                 if not slice_col:
@@ -166,7 +166,7 @@ async def aggregate_slice_results(
                     .where(StatisticalProfile.column_id == slice_col.column_id)
                     .limit(1)
                 )
-                profile_result = await session.execute(profile_stmt)
+                profile_result = session.execute(profile_stmt)
                 profile = profile_result.scalar_one_or_none()
 
                 if profile:
@@ -191,7 +191,7 @@ async def aggregate_slice_results(
                     .where(StatisticalQualityMetrics.column_id == slice_col.column_id)
                     .limit(1)
                 )
-                quality_result = await session.execute(quality_stmt)
+                quality_result = session.execute(quality_stmt)
                 quality = quality_result.scalar_one_or_none()
 
                 if quality:
@@ -231,8 +231,8 @@ async def aggregate_slice_results(
         return Result.fail(f"Failed to aggregate slice results: {e}")
 
 
-async def summarize_quality(
-    session: AsyncSession,
+def summarize_quality(
+    session: Session,
     agent: QualitySummaryAgent,
     slice_definition: SliceDefinition,
     skip_existing: bool = True,
@@ -254,8 +254,8 @@ async def summarize_quality(
     started_at = datetime.now(UTC)
 
     # Get source info
-    source_table = await session.get(Table, slice_definition.table_id)
-    slice_column = await session.get(Column, slice_definition.column_id)
+    source_table = session.get(Table, slice_definition.table_id)
+    slice_column = session.get(Column, slice_definition.column_id)
 
     if not source_table or not slice_column:
         return Result.fail("Source table or slice column not found")
@@ -269,11 +269,11 @@ async def summarize_quality(
         status="running",
     )
     session.add(run)
-    await session.flush()
+    session.flush()
 
     try:
         # Aggregate results across slices
-        agg_result = await aggregate_slice_results(session, slice_definition)
+        agg_result = aggregate_slice_results(session, slice_definition)
         if not agg_result.success:
             run.status = "failed"
             run.error_message = agg_result.error
@@ -290,7 +290,7 @@ async def summarize_quality(
             existing_stmt = select(ColumnQualityReport.source_column_id).where(
                 ColumnQualityReport.slice_column_id == slice_column.column_id
             )
-            existing_result = await session.execute(existing_stmt)
+            existing_result = session.execute(existing_stmt)
             existing_column_ids = set(existing_result.scalars().all())
 
             columns_to_process = [
@@ -324,7 +324,7 @@ async def summarize_quality(
             batch = columns_to_process[i : i + BATCH_SIZE]
 
             # Call LLM for batch summary
-            batch_result = await agent.summarize_columns_batch(
+            batch_result = agent.summarize_columns_batch(
                 session=session,
                 columns_data=batch,
                 source_table_name=source_table.table_name,
@@ -396,8 +396,8 @@ async def summarize_quality(
         return Result.fail(f"Quality summary failed: {e}")
 
 
-async def build_quality_matrix(
-    session: AsyncSession,
+def build_quality_matrix(
+    session: Session,
     slice_definition: SliceDefinition,
 ) -> Result[SliceColumnMatrix]:
     """Build a slice values x columns quality matrix.
@@ -414,8 +414,8 @@ async def build_quality_matrix(
     """
     try:
         # Get source table and slice column info
-        source_table = await session.get(Table, slice_definition.table_id)
-        slice_column = await session.get(Column, slice_definition.column_id)
+        source_table = session.get(Table, slice_definition.table_id)
+        slice_column = session.get(Column, slice_definition.column_id)
 
         if not source_table or not slice_column:
             return Result.fail("Source table or slice column not found")
@@ -424,7 +424,7 @@ async def build_quality_matrix(
         all_slice_def_cols_stmt = select(sql_distinct(SliceDefinition.column_id)).where(
             SliceDefinition.table_id == source_table.table_id
         )
-        all_slice_def_cols_result = await session.execute(all_slice_def_cols_stmt)
+        all_slice_def_cols_result = session.execute(all_slice_def_cols_stmt)
         slice_definition_column_ids = set(all_slice_def_cols_result.scalars().all())
 
         # Get source columns (excluding slice columns)
@@ -434,7 +434,7 @@ async def build_quality_matrix(
             .where(Column.column_id.notin_(slice_definition_column_ids))
             .order_by(Column.column_position)
         )
-        source_cols_result = await session.execute(source_cols_stmt)
+        source_cols_result = session.execute(source_cols_stmt)
         source_columns = list(source_cols_result.scalars().all())
 
         slice_values = slice_definition.distinct_values or []
@@ -467,7 +467,7 @@ async def build_quality_matrix(
                 Table.table_name == slice_table_name,
                 Table.layer == "slice",
             )
-            slice_table_result = await session.execute(slice_table_stmt)
+            slice_table_result = session.execute(slice_table_stmt)
             slice_table = slice_table_result.scalar_one_or_none()
 
             if slice_table:
@@ -486,7 +486,7 @@ async def build_quality_matrix(
                     Column.table_id == slice_table.table_id,
                     Column.column_name == source_col.column_name,
                 )
-                slice_col_result = await session.execute(slice_col_stmt)
+                slice_col_result = session.execute(slice_col_stmt)
                 slice_col = slice_col_result.scalar_one_or_none()
 
                 if not slice_col:
@@ -498,7 +498,7 @@ async def build_quality_matrix(
                     .where(StatisticalProfile.column_id == slice_col.column_id)
                     .limit(1)
                 )
-                profile_result = await session.execute(profile_stmt)
+                profile_result = session.execute(profile_stmt)
                 profile = profile_result.scalar_one_or_none()
 
                 # Get quality metrics
@@ -507,7 +507,7 @@ async def build_quality_matrix(
                     .where(StatisticalQualityMetrics.column_id == slice_col.column_id)
                     .limit(1)
                 )
-                quality_result = await session.execute(quality_stmt)
+                quality_result = session.execute(quality_stmt)
                 quality = quality_result.scalar_one_or_none()
 
                 # Calculate cell values

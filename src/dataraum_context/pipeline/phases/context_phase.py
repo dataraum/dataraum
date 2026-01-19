@@ -49,11 +49,11 @@ class ContextPhase(BasePhase):
     def is_llm_phase(self) -> bool:
         return False
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip only if no typed tables exist."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -61,11 +61,11 @@ class ContextPhase(BasePhase):
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Build execution context from all analysis modules."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -78,7 +78,7 @@ class ContextPhase(BasePhase):
         slice_value = ctx.config.get("slice_value")
 
         # Build execution context
-        execution_context = await build_execution_context(
+        execution_context = build_execution_context(
             session=ctx.session,
             table_ids=table_ids,
             duckdb_conn=ctx.duckdb_conn,

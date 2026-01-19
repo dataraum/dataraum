@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 from sqlalchemy import desc, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.topology.db_models import TopologicalQualityMetrics
 from dataraum_context.analysis.topology.models import StabilityAnalysis
@@ -61,10 +61,10 @@ def compute_bottleneck_distance(
         return 0.0
 
 
-async def assess_homological_stability(
+def assess_homological_stability(
     current_diagrams: list[np.ndarray],
     table_id: str | None = None,
-    session: AsyncSession | None = None,
+    session: Session | None = None,
     previous_diagrams: list[np.ndarray] | None = None,
     threshold: float = 0.1,
 ) -> Result[StabilityAnalysis | None]:
@@ -85,7 +85,7 @@ async def assess_homological_stability(
     try:
         # Try to get previous diagrams from database if not provided
         if previous_diagrams is None and session is not None and table_id is not None:
-            previous_diagrams = await get_previous_topology(session, table_id)
+            previous_diagrams = get_previous_topology(session, table_id)
 
         # No previous data - return None (first analysis)
         if previous_diagrams is None:
@@ -160,8 +160,8 @@ async def assess_homological_stability(
         return Result.fail(f"Stability assessment failed: {e}")
 
 
-async def compute_historical_complexity(
-    session: AsyncSession,
+def compute_historical_complexity(
+    session: Session,
     table_id: str,
     current_complexity: int,
     window_size: int = 10,
@@ -189,7 +189,7 @@ async def compute_historical_complexity(
             .limit(window_size)
         )
 
-        result = await session.execute(stmt)
+        result = session.execute(stmt)
         historical_values = [row[0] for row in result.fetchall() if row[0] is not None]
 
         if len(historical_values) < 3:
@@ -243,8 +243,8 @@ async def compute_historical_complexity(
         return Result.fail(f"Historical complexity computation failed: {e}")
 
 
-async def get_previous_topology(
-    session: AsyncSession,
+def get_previous_topology(
+    session: Session,
     table_id: str,
 ) -> list[np.ndarray] | None:
     """Retrieve the most recent previous topology for a table.
@@ -264,7 +264,7 @@ async def get_previous_topology(
             .limit(1)
         )
 
-        result = await session.execute(stmt)
+        result = session.execute(stmt)
         row = result.fetchone()
 
         if row is None or row[0] is None:

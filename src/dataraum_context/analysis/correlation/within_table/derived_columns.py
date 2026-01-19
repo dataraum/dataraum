@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import duckdb
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.correlation.db_models import (
     DerivedColumn as DBDerivedColumn,
@@ -21,10 +21,10 @@ from dataraum_context.core.models.base import Result
 from dataraum_context.storage import Column, Table
 
 
-async def detect_derived_columns(
+def detect_derived_columns(
     table: Table,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
     min_match_rate: float = 0.95,
 ) -> Result[list[DerivedColumn]]:
     """Detect columns that are derived from other columns.
@@ -46,7 +46,7 @@ async def detect_derived_columns(
     try:
         # Get columns
         stmt = select(Column).where(Column.table_id == table.table_id)
-        result = await session.execute(stmt)
+        result = session.execute(stmt)
         columns = result.scalars().all()
 
         if len(columns) < 2:

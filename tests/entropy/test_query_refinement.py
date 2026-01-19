@@ -125,10 +125,10 @@ class TestRefineInterpretationsForQuery:
     @pytest.fixture
     def mock_session(self):
         """Create a mock session."""
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import MagicMock
 
         session = MagicMock()
-        session.execute = AsyncMock()
+        session.execute = MagicMock()
         return session
 
     @pytest.fixture
@@ -160,8 +160,7 @@ class TestRefineInterpretationsForQuery:
 
         return ctx
 
-    @pytest.mark.asyncio
-    async def test_refine_with_fallback(
+    def test_refine_with_fallback(
         self,
         mock_session,
         sample_entropy_context: EntropyContext,
@@ -169,7 +168,7 @@ class TestRefineInterpretationsForQuery:
         """Test refinement with fallback interpretation."""
         query = "SELECT SUM(amount) FROM orders WHERE status = 'active'"
 
-        result = await refine_interpretations_for_query(
+        result = refine_interpretations_for_query(
             session=mock_session,
             entropy_context=sample_entropy_context,
             query=query,
@@ -182,8 +181,7 @@ class TestRefineInterpretationsForQuery:
         assert "orders.status" in result.matched_columns
         assert len(result.column_interpretations) == 2
 
-    @pytest.mark.asyncio
-    async def test_refine_without_fallback(
+    def test_refine_without_fallback(
         self,
         mock_session,
         sample_entropy_context: EntropyContext,
@@ -191,7 +189,7 @@ class TestRefineInterpretationsForQuery:
         """Test refinement without fallback."""
         query = "SELECT amount FROM orders"
 
-        result = await refine_interpretations_for_query(
+        result = refine_interpretations_for_query(
             session=mock_session,
             entropy_context=sample_entropy_context,
             query=query,
@@ -203,8 +201,7 @@ class TestRefineInterpretationsForQuery:
         assert "orders.amount" in result.matched_columns
         assert len(result.column_interpretations) == 0
 
-    @pytest.mark.asyncio
-    async def test_fallback_interpretation_for_matched_columns(
+    def test_fallback_interpretation_for_matched_columns(
         self,
         mock_session,
         sample_entropy_context: EntropyContext,
@@ -212,7 +209,7 @@ class TestRefineInterpretationsForQuery:
         """Test that fallback interpretation is generated for matched columns."""
         query = "SELECT SUM(amount) FROM orders GROUP BY status"
 
-        result = await refine_interpretations_for_query(
+        result = refine_interpretations_for_query(
             session=mock_session,
             entropy_context=sample_entropy_context,
             query=query,
@@ -224,8 +221,7 @@ class TestRefineInterpretationsForQuery:
         interpretation = result.column_interpretations["orders.amount"]
         assert interpretation is not None
 
-    @pytest.mark.asyncio
-    async def test_no_matching_columns(
+    def test_no_matching_columns(
         self,
         mock_session,
         sample_entropy_context: EntropyContext,
@@ -233,7 +229,7 @@ class TestRefineInterpretationsForQuery:
         """Test when query has no matching columns."""
         query = "SELECT unknown FROM other_table"
 
-        result = await refine_interpretations_for_query(
+        result = refine_interpretations_for_query(
             session=mock_session,
             entropy_context=sample_entropy_context,
             query=query,

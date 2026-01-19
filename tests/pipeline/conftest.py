@@ -40,7 +40,7 @@ class MockPhase(BasePhase):
     def outputs(self) -> list[str]:
         return self._outputs
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         self.run_count += 1
         if self._should_fail:
             return PhaseResult.failed("Intentional failure")
@@ -50,7 +50,7 @@ class MockPhase(BasePhase):
             records_created=5,
         )
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         return self._skip_reason
 
 

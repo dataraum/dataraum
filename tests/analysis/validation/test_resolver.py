@@ -10,7 +10,7 @@ from dataraum_context.storage import Column, Source, Table
 
 
 @pytest.fixture
-async def table_with_columns(async_session):
+def table_with_columns(session):
     """Create a test table with columns and semantic annotations."""
     from dataraum_context.analysis.semantic.db_models import (
         SemanticAnnotation as SemanticAnnotationDB,
@@ -18,8 +18,8 @@ async def table_with_columns(async_session):
 
     # Create source and table
     source = Source(name="test_source", source_type="csv")
-    async_session.add(source)
-    await async_session.flush()
+    session.add(source)
+    session.flush()
 
     table = Table(
         source_id=source.source_id,
@@ -28,8 +28,8 @@ async def table_with_columns(async_session):
         row_count=1000,
         duckdb_path="typed_transactions",
     )
-    async_session.add(table)
-    await async_session.flush()
+    session.add(table)
+    session.flush()
 
     # Create columns
     col1 = Column(
@@ -53,8 +53,8 @@ async def table_with_columns(async_session):
         raw_type="VARCHAR",
         resolved_type="VARCHAR",
     )
-    async_session.add_all([col1, col2, col3])
-    await async_session.flush()
+    session.add_all([col1, col2, col3])
+    session.flush()
 
     # Add semantic annotation to amount column
     annotation = SemanticAnnotationDB(
@@ -63,14 +63,14 @@ async def table_with_columns(async_session):
         entity_type="amount",
         business_name="Transaction Amount",
     )
-    async_session.add(annotation)
-    await async_session.commit()
+    session.add(annotation)
+    session.commit()
 
     return table
 
 
 @pytest.fixture
-async def two_tables_with_relationship(async_session):
+def two_tables_with_relationship(session):
     """Create two tables with a relationship for multi-table tests."""
     from dataraum_context.analysis.relationships.db_models import Relationship
     from dataraum_context.analysis.semantic.db_models import (
@@ -79,8 +79,8 @@ async def two_tables_with_relationship(async_session):
 
     # Create source
     source = Source(name="test_source", source_type="csv")
-    async_session.add(source)
-    await async_session.flush()
+    session.add(source)
+    session.flush()
 
     # Create transactions table
     txn_table = Table(
@@ -90,8 +90,8 @@ async def two_tables_with_relationship(async_session):
         row_count=1000,
         duckdb_path="typed_transactions",
     )
-    async_session.add(txn_table)
-    await async_session.flush()
+    session.add(txn_table)
+    session.flush()
 
     # Create accounts table
     acct_table = Table(
@@ -101,8 +101,8 @@ async def two_tables_with_relationship(async_session):
         row_count=50,
         duckdb_path="typed_accounts",
     )
-    async_session.add(acct_table)
-    await async_session.flush()
+    session.add(acct_table)
+    session.flush()
 
     # Create columns for transactions
     txn_account_col = Column(
@@ -119,8 +119,8 @@ async def two_tables_with_relationship(async_session):
         raw_type="DECIMAL",
         resolved_type="DECIMAL(18,2)",
     )
-    async_session.add_all([txn_account_col, txn_amount_col])
-    await async_session.flush()
+    session.add_all([txn_account_col, txn_amount_col])
+    session.flush()
 
     # Create columns for accounts
     acct_id_col = Column(
@@ -137,8 +137,8 @@ async def two_tables_with_relationship(async_session):
         raw_type="VARCHAR",
         resolved_type="VARCHAR",
     )
-    async_session.add_all([acct_id_col, acct_type_col])
-    await async_session.flush()
+    session.add_all([acct_id_col, acct_type_col])
+    session.flush()
 
     # Add semantic annotation to amount column
     annotation = SemanticAnnotationDB(
@@ -147,7 +147,7 @@ async def two_tables_with_relationship(async_session):
         entity_type="amount",
         business_name="Transaction Amount",
     )
-    async_session.add(annotation)
+    session.add(annotation)
 
     # Create relationship between tables
     relationship = Relationship(
@@ -159,20 +159,17 @@ async def two_tables_with_relationship(async_session):
         cardinality="many-to-one",
         confidence=0.95,
     )
-    async_session.add(relationship)
-    await async_session.commit()
+    session.add(relationship)
+    session.commit()
 
     return txn_table, acct_table
 
 
-@pytest.mark.asyncio
-async def test_get_multi_table_schema_for_llm(async_session, two_tables_with_relationship):
+def test_get_multi_table_schema_for_llm(session, two_tables_with_relationship):
     """Test fetching multi-table schema with relationships."""
     txn_table, acct_table = two_tables_with_relationship
 
-    schema = await get_multi_table_schema_for_llm(
-        async_session, [txn_table.table_id, acct_table.table_id]
-    )
+    schema = get_multi_table_schema_for_llm(session, [txn_table.table_id, acct_table.table_id])
 
     assert "error" not in schema
     assert "tables" in schema
@@ -195,12 +192,11 @@ async def test_get_multi_table_schema_for_llm(async_session, two_tables_with_rel
     assert rel["confidence"] == 0.95
 
 
-@pytest.mark.asyncio
-async def test_get_multi_table_schema_for_llm_single_table(async_session, table_with_columns):
+def test_get_multi_table_schema_for_llm_single_table(session, table_with_columns):
     """Test fetching multi-table schema with single table (no relationships)."""
     table = table_with_columns
 
-    schema = await get_multi_table_schema_for_llm(async_session, [table.table_id])
+    schema = get_multi_table_schema_for_llm(session, [table.table_id])
 
     assert "error" not in schema
     assert "tables" in schema
@@ -215,19 +211,17 @@ async def test_get_multi_table_schema_for_llm_single_table(async_session, table_
     assert amount_col["semantic"]["entity_type"] == "amount"
 
 
-@pytest.mark.asyncio
-async def test_get_multi_table_schema_for_llm_empty_list(async_session):
+def test_get_multi_table_schema_for_llm_empty_list(session):
     """Test fetching multi-table schema with empty list."""
-    schema = await get_multi_table_schema_for_llm(async_session, [])
+    schema = get_multi_table_schema_for_llm(session, [])
 
     assert "error" in schema
     assert "No tables" in schema["error"]
 
 
-@pytest.mark.asyncio
-async def test_get_multi_table_schema_for_llm_nonexistent_tables(async_session):
+def test_get_multi_table_schema_for_llm_nonexistent_tables(session):
     """Test fetching multi-table schema with nonexistent table IDs."""
-    schema = await get_multi_table_schema_for_llm(async_session, ["nonexistent-id"])
+    schema = get_multi_table_schema_for_llm(session, ["nonexistent-id"])
 
     assert "error" in schema
 

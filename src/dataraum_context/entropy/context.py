@@ -8,11 +8,11 @@ This module provides the bridge between:
 Usage:
     from dataraum_context.entropy.context import build_entropy_context
 
-    entropy_ctx = await build_entropy_context(session, table_ids)
+    entropy_ctx = build_entropy_context(session, table_ids)
     # Use entropy_ctx.column_profiles, entropy_ctx.table_profiles, etc.
 
     # With LLM interpretation:
-    entropy_ctx = await build_entropy_context(
+    entropy_ctx = build_entropy_context(
         session, table_ids,
         interpreter=interpreter,  # EntropyInterpreter instance
     )
@@ -24,7 +24,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.entropy.detectors import register_builtin_detectors
 from dataraum_context.entropy.interpretation import (
@@ -45,8 +45,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-async def build_entropy_context(
-    session: AsyncSession,
+def build_entropy_context(
+    session: Session,
     table_ids: list[str],
     *,
     interpreter: EntropyInterpreter | None = None,
@@ -58,7 +58,7 @@ async def build_entropy_context(
     to produce a complete EntropyContext.
 
     Args:
-        session: SQLAlchemy async session
+        session: SQLAlchemy session
         table_ids: List of table IDs to process
         interpreter: Optional EntropyInterpreter for LLM-powered interpretation.
             If provided, generates interpretations for each column.
@@ -75,7 +75,7 @@ async def build_entropy_context(
     register_builtin_detectors()
 
     # Load all analysis data needed for entropy detection
-    analysis_data = await _load_analysis_data(session, table_ids)
+    analysis_data = _load_analysis_data(session, table_ids)
 
     # Create processor and process tables
     processor = EntropyProcessor()
@@ -90,7 +90,7 @@ async def build_entropy_context(
         columns = table_data["columns"]
 
         # Process each column
-        table_profile = await processor.process_table(
+        table_profile = processor.process_table(
             table_name=table_name,
             columns=columns,
             table_id=table_id,
@@ -98,15 +98,15 @@ async def build_entropy_context(
         table_profiles.append(table_profile)
 
     # Build the entropy context
-    entropy_context = await processor.build_entropy_context(table_profiles)
+    entropy_context = processor.build_entropy_context(table_profiles)
 
     # Add relationship entropy
-    relationship_profiles = await _compute_relationship_entropy(session, table_ids, analysis_data)
+    relationship_profiles = _compute_relationship_entropy(session, table_ids, analysis_data)
     entropy_context.relationship_profiles = relationship_profiles
 
     # Generate interpretations if requested
     if interpreter is not None or use_fallback_interpretation:
-        await _build_interpretations(
+        _build_interpretations(
             session=session,
             entropy_context=entropy_context,
             analysis_data=analysis_data,
@@ -117,14 +117,14 @@ async def build_entropy_context(
     return entropy_context
 
 
-async def _load_analysis_data(
-    session: AsyncSession,
+def _load_analysis_data(
+    session: Session,
     table_ids: list[str],
 ) -> dict[str, Any]:
     """Load all analysis data needed for entropy detection.
 
     Args:
-        session: SQLAlchemy async session
+        session: SQLAlchemy session
         table_ids: List of table IDs
 
     Returns:
@@ -143,12 +143,12 @@ async def _load_analysis_data(
 
     # Load tables
     tables_stmt = select(Table).where(Table.table_id.in_(table_ids))
-    tables = (await session.execute(tables_stmt)).scalars().all()
+    tables = session.execute(tables_stmt).scalars().all()
     table_map = {t.table_id: t for t in tables}
 
     # Load columns
     columns_stmt = select(Column).where(Column.table_id.in_(table_ids))
-    columns = (await session.execute(columns_stmt)).scalars().all()
+    columns = session.execute(columns_stmt).scalars().all()
     columns_by_table: dict[str, list[Column]] = {}
     for col in columns:
         if col.table_id not in columns_by_table:
@@ -161,7 +161,7 @@ async def _load_analysis_data(
     stat_profiles: dict[str, StatisticalProfile] = {}
     if column_ids:
         stat_stmt = select(StatisticalProfile).where(StatisticalProfile.column_id.in_(column_ids))
-        for profile in (await session.execute(stat_stmt)).scalars().all():
+        for profile in session.execute(stat_stmt).scalars().all():
             stat_profiles[profile.column_id] = profile
 
     # Load statistical quality metrics
@@ -170,21 +170,21 @@ async def _load_analysis_data(
         qual_stmt = select(StatisticalQualityMetrics).where(
             StatisticalQualityMetrics.column_id.in_(column_ids)
         )
-        for metrics in (await session.execute(qual_stmt)).scalars().all():
+        for metrics in session.execute(qual_stmt).scalars().all():
             stat_quality[metrics.column_id] = metrics
 
     # Load semantic annotations
     semantic: dict[str, SemanticAnnotation] = {}
     if column_ids:
         sem_stmt = select(SemanticAnnotation).where(SemanticAnnotation.column_id.in_(column_ids))
-        for ann in (await session.execute(sem_stmt)).scalars().all():
+        for ann in session.execute(sem_stmt).scalars().all():
             semantic[ann.column_id] = ann
 
     # Load type candidates (best by confidence)
     type_candidates: dict[str, TypeCandidate] = {}
     if column_ids:
         cand_stmt = select(TypeCandidate).where(TypeCandidate.column_id.in_(column_ids))
-        for cand in (await session.execute(cand_stmt)).scalars().all():
+        for cand in session.execute(cand_stmt).scalars().all():
             if cand.column_id not in type_candidates:
                 type_candidates[cand.column_id] = cand
             elif cand.confidence > type_candidates[cand.column_id].confidence:
@@ -194,14 +194,14 @@ async def _load_analysis_data(
     derived_columns: dict[str, DerivedColumn] = {}
     if column_ids:
         derived_stmt = select(DerivedColumn).where(DerivedColumn.derived_column_id.in_(column_ids))
-        for derived in (await session.execute(derived_stmt)).scalars().all():
+        for derived in session.execute(derived_stmt).scalars().all():
             derived_columns[derived.derived_column_id] = derived
 
     # Load relationships for table-level counts
     rel_stmt = select(Relationship).where(
         (Relationship.from_table_id.in_(table_ids)) | (Relationship.to_table_id.in_(table_ids))
     )
-    relationships = (await session.execute(rel_stmt)).scalars().all()
+    relationships = session.execute(rel_stmt).scalars().all()
     rel_count_by_table: dict[str, int] = {}
     for rel in relationships:
         rel_count_by_table[rel.from_table_id] = rel_count_by_table.get(rel.from_table_id, 0) + 1
@@ -298,15 +298,15 @@ async def _load_analysis_data(
     return result
 
 
-async def _compute_relationship_entropy(
-    session: AsyncSession,
+def _compute_relationship_entropy(
+    session: Session,
     table_ids: list[str],
     analysis_data: dict[str, Any],
 ) -> dict[str, RelationshipEntropyProfile]:
     """Compute entropy for relationships between tables.
 
     Args:
-        session: SQLAlchemy async session
+        session: SQLAlchemy session
         table_ids: List of table IDs
         analysis_data: Pre-loaded analysis data
 
@@ -319,7 +319,7 @@ async def _compute_relationship_entropy(
     rel_stmt = select(Relationship).where(
         (Relationship.from_table_id.in_(table_ids)) & (Relationship.to_table_id.in_(table_ids))
     )
-    relationships = (await session.execute(rel_stmt)).scalars().all()
+    relationships = session.execute(rel_stmt).scalars().all()
 
     # Get table names
     table_names: dict[str, str] = {}
@@ -461,8 +461,8 @@ def get_table_entropy_summary(
     }
 
 
-async def _build_interpretations(
-    session: AsyncSession,
+def _build_interpretations(
+    session: Session,
     entropy_context: EntropyContext,
     analysis_data: dict[str, Any],
     interpreter: EntropyInterpreter | None,
@@ -471,7 +471,7 @@ async def _build_interpretations(
     """Build LLM interpretations for all column profiles in a single batch.
 
     Args:
-        session: SQLAlchemy async session
+        session: SQLAlchemy session
         entropy_context: The entropy context to populate with interpretations
         analysis_data: Pre-loaded analysis data (for type/description info)
         interpreter: Optional EntropyInterpreter for LLM interpretation
@@ -525,7 +525,7 @@ async def _build_interpretations(
     # Try batch LLM interpretation
     interpretations: dict[str, Any] = {}
     if interpreter is not None:
-        result = await interpreter.interpret_batch(session, inputs)
+        result = interpreter.interpret_batch(session, inputs)
         if result.success and result.value:
             interpretations = result.value
         elif result.error:

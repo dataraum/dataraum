@@ -2,54 +2,49 @@
 
 import duckdb
 import pytest
-from sqlalchemy import event
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy import create_engine, event
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum_context.storage import init_database
 
 
 @pytest.fixture(scope="function")
-async def engine() -> AsyncEngine:
+def engine() -> Engine:
     """Create an in-memory SQLite engine for testing.
 
     Creates a fresh database for each test function.
     """
-    test_engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+    test_engine = create_engine(
+        "sqlite:///:memory:",
         echo=False,
         future=True,
     )
 
     # Enable foreign keys for SQLite
-    @event.listens_for(test_engine.sync_engine, "connect")
+    @event.listens_for(test_engine, "connect")
     def set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
-    await init_database(test_engine)
+    init_database(test_engine)
     yield test_engine
-    await test_engine.dispose()
+    test_engine.dispose()
 
 
 @pytest.fixture
-async def async_session(engine: AsyncEngine) -> AsyncSession:
+def session(engine: Engine) -> Session:
     """Create a test database session.
 
     Creates a session tied to the test's engine.
     """
-    factory = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
+    factory = sessionmaker(
+        bind=engine,
         expire_on_commit=False,
     )
-    async with factory() as session:
-        yield session
+    with factory() as sess:
+        yield sess
 
 
 @pytest.fixture

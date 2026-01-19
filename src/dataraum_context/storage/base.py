@@ -8,7 +8,7 @@ This module provides:
 """
 
 from sqlalchemy import MetaData
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase
 
 # Naming convention for constraints
@@ -30,7 +30,7 @@ class Base(DeclarativeBase):
     metadata = metadata_obj
 
 
-async def init_database(engine: AsyncEngine) -> None:
+def init_database(engine: Engine) -> None:
     """
     Initialize database schema.
 
@@ -38,7 +38,7 @@ async def init_database(engine: AsyncEngine) -> None:
     Safe to call multiple times - only creates missing tables.
 
     Args:
-        engine: Async SQLAlchemy engine
+        engine: SQLAlchemy engine
     """
     # Import all model modules to register them with SQLAlchemy Base metadata
     # These imports ensure tables are created when init_database() is called
@@ -65,18 +65,18 @@ async def init_database(engine: AsyncEngine) -> None:
     from dataraum_context.pipeline import db_models as _pipeline_models  # noqa: F401
     from dataraum_context.storage import models as _storage_models  # noqa: F401
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    with engine.begin() as conn:
+        Base.metadata.create_all(conn)
 
 
-async def reset_database(engine: AsyncEngine) -> None:
+def reset_database(engine: Engine) -> None:
     """
     Drop and recreate all tables.
 
     WARNING: This destroys all data. Use only in development/testing.
 
     Args:
-        engine: Async SQLAlchemy engine
+        engine: SQLAlchemy engine
     """
     # Import all model modules to register them with SQLAlchemy Base metadata
     from dataraum_context.analysis.correlation import db_models as _correlation_models  # noqa: F401
@@ -102,6 +102,6 @@ async def reset_database(engine: AsyncEngine) -> None:
     from dataraum_context.pipeline import db_models as _pipeline_models  # noqa: F401
     from dataraum_context.storage import models as _storage_models  # noqa: F401
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+    with engine.begin() as conn:
+        Base.metadata.drop_all(conn)
+        Base.metadata.create_all(conn)

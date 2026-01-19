@@ -41,11 +41,11 @@ class RelationshipsPhase(BasePhase):
     def outputs(self) -> list[str]:
         return ["relationship_candidates"]
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if relationships already detected for this source."""
         # Get typed tables
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -57,7 +57,7 @@ class RelationshipsPhase(BasePhase):
         # Check if relationships already detected
         table_ids = [t.table_id for t in typed_tables]
         existing_count = (
-            await ctx.session.execute(
+            ctx.session.execute(
                 select(func.count(Relationship.relationship_id)).where(
                     Relationship.from_table_id.in_(table_ids),
                     Relationship.detection_method == "candidate",
@@ -70,11 +70,11 @@ class RelationshipsPhase(BasePhase):
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run relationship detection on typed tables."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -94,7 +94,7 @@ class RelationshipsPhase(BasePhase):
         sample_percent = ctx.config.get("sample_percent", 10.0)
 
         # Run relationship detection
-        detection_result = await detect_relationships(
+        detection_result = detect_relationships(
             table_ids=table_ids,
             duckdb_conn=ctx.duckdb_conn,
             session=ctx.session,

@@ -59,11 +59,11 @@ class TemporalSliceAnalysisPhase(BasePhase):
     def is_llm_phase(self) -> bool:
         return False
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no slice definitions or no temporal columns."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -73,7 +73,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
         # Check for slice definitions
         slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
-        slice_defs = (await ctx.session.execute(slice_stmt)).scalars().all()
+        slice_defs = (ctx.session.execute(slice_stmt)).scalars().all()
 
         if not slice_defs:
             return "No slice definitions found"
@@ -81,14 +81,14 @@ class TemporalSliceAnalysisPhase(BasePhase):
         # Check for temporal columns
         column_ids = []
         cols_stmt = select(Column.column_id).where(Column.table_id.in_(table_ids))
-        for col_id in (await ctx.session.execute(cols_stmt)).scalars().all():
+        for col_id in (ctx.session.execute(cols_stmt)).scalars().all():
             column_ids.append(col_id)
 
         if column_ids:
             temp_stmt = select(TemporalColumnProfile).where(
                 TemporalColumnProfile.column_id.in_(column_ids)
             )
-            temporal_cols = (await ctx.session.execute(temp_stmt)).scalars().all()
+            temporal_cols = (ctx.session.execute(temp_stmt)).scalars().all()
 
             if not temporal_cols:
                 return "No temporal columns detected"
@@ -97,11 +97,11 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run temporal and topology analysis on slices."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -111,7 +111,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
         # Get slice definitions
         slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
-        slice_definitions = (await ctx.session.execute(slice_stmt)).scalars().all()
+        slice_definitions = (ctx.session.execute(slice_stmt)).scalars().all()
 
         if not slice_definitions:
             return PhaseResult.success(
@@ -131,19 +131,19 @@ class TemporalSliceAnalysisPhase(BasePhase):
             # Auto-detect from temporal profiles
             column_ids = []
             cols_stmt = select(Column.column_id).where(Column.table_id.in_(table_ids))
-            for col_id in (await ctx.session.execute(cols_stmt)).scalars().all():
+            for col_id in (ctx.session.execute(cols_stmt)).scalars().all():
                 column_ids.append(col_id)
 
             if column_ids:
                 temp_stmt = select(TemporalColumnProfile).where(
                     TemporalColumnProfile.column_id.in_(column_ids)
                 )
-                temporal_cols = (await ctx.session.execute(temp_stmt)).scalars().all()
+                temporal_cols = (ctx.session.execute(temp_stmt)).scalars().all()
 
                 if temporal_cols:
                     # Find the best temporal column (prefer date/timestamp types)
                     col_stmt = select(Column).where(Column.column_id == temporal_cols[0].column_id)
-                    best_col = (await ctx.session.execute(col_stmt)).scalar_one_or_none()
+                    best_col = (ctx.session.execute(col_stmt)).scalar_one_or_none()
                     if best_col:
                         time_column = best_col.column_name
 
@@ -187,7 +187,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 Table.layer == "slice",
                 Table.source_id == ctx.source_id,
             )
-            slice_tables = (await ctx.session.execute(slice_tables_stmt)).scalars().all()
+            slice_tables = (ctx.session.execute(slice_tables_stmt)).scalars().all()
 
             # Build slice info list
             slice_infos = []
@@ -195,7 +195,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 # Check if this slice table is related to the slice definition
                 # by matching the naming convention
                 slice_column_stmt = select(Column).where(Column.column_id == slice_def.column_id)
-                slice_col = (await ctx.session.execute(slice_column_stmt)).scalar_one_or_none()
+                slice_col = (ctx.session.execute(slice_column_stmt)).scalar_one_or_none()
 
                 if slice_col and slice_col.column_name.lower() in st.table_name.lower():
                     # Find source table for this slice
@@ -221,7 +221,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
             # 1. Run temporal analysis on slices
             try:
-                temporal_result = await run_temporal_analysis_on_slices(
+                temporal_result = run_temporal_analysis_on_slices(
                     session=ctx.session,
                     duckdb_conn=ctx.duckdb_conn,
                     slice_infos=slice_infos,
@@ -236,7 +236,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
             # 2. Run topology on slices (cross-slice comparison)
             try:
-                topology_result = await run_topology_on_slices(
+                topology_result = run_topology_on_slices(
                     session=ctx.session,
                     duckdb_conn=ctx.duckdb_conn,
                     slice_infos=slice_infos,

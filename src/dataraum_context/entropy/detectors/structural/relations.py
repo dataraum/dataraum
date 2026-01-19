@@ -28,7 +28,7 @@ class JoinPathDeterminismDetector(EntropyDetector):
     required_analyses = ["relationships"]
     description = "Measures uncertainty in join paths between tables"
 
-    async def detect(self, context: DetectorContext) -> list[EntropyObject]:
+    def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect join path determinism entropy.
 
         Args:

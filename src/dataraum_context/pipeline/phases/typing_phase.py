@@ -50,7 +50,7 @@ class TypingPhase(BasePhase):
     def outputs(self) -> list[str]:
         return ["typed_tables", "type_decisions"]
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if typed tables already exist for all raw tables."""
         raw_table_ids = ctx.get_output("import", "raw_tables", [])
         if not raw_table_ids:
@@ -58,7 +58,7 @@ class TypingPhase(BasePhase):
 
         # Check if all raw tables have corresponding typed tables
         for table_id in raw_table_ids:
-            raw_table = await ctx.session.get(Table, table_id)
+            raw_table = ctx.session.get(Table, table_id)
             if not raw_table:
                 continue
 
@@ -68,7 +68,7 @@ class TypingPhase(BasePhase):
                 Table.table_name == raw_table.table_name,
                 Table.layer == "typed",
             )
-            result = await ctx.session.execute(stmt)
+            result = ctx.session.execute(stmt)
             typed_table = result.scalar_one_or_none()
 
             if not typed_table:
@@ -76,7 +76,7 @@ class TypingPhase(BasePhase):
 
         return "All tables already typed"
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run type inference and resolution.
 
         Args:
@@ -107,7 +107,7 @@ class TypingPhase(BasePhase):
             stmt = (
                 select(Table).where(Table.table_id == table_id).options(selectinload(Table.columns))
             )
-            result = await ctx.session.execute(stmt)
+            result = ctx.session.execute(stmt)
             table = result.scalar_one_or_none()
 
             if not table:
@@ -119,7 +119,7 @@ class TypingPhase(BasePhase):
                 continue
 
             # Phase 1: Infer type candidates
-            inference_result = await infer_type_candidates(
+            inference_result = infer_type_candidates(
                 table=table,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
@@ -132,7 +132,7 @@ class TypingPhase(BasePhase):
                 continue
 
             # Phase 2: Resolve types (create typed + quarantine tables)
-            resolution_result = await resolve_types(
+            resolution_result = resolve_types(
                 table_id=table_id,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
@@ -153,7 +153,7 @@ class TypingPhase(BasePhase):
                 Table.table_name == table.table_name,
                 Table.layer == "typed",
             )
-            typed_result = await ctx.session.execute(stmt)
+            typed_result = ctx.session.execute(stmt)
             typed_table = typed_result.scalar_one_or_none()
 
             if typed_table:

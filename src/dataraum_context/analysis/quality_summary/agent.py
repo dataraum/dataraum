@@ -12,7 +12,7 @@ import json
 import re
 from typing import TYPE_CHECKING
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.quality_summary.models import (
     AggregatedColumnData,
@@ -58,9 +58,9 @@ class QualitySummaryAgent(LLMFeature):
         """
         super().__init__(config, provider, prompt_renderer, cache)
 
-    async def summarize_column(
+    def summarize_column(
         self,
-        session: AsyncSession,
+        session: Session,
         column_data: AggregatedColumnData,
     ) -> Result[ColumnQualitySummary]:
         """Generate quality summary for a column across slices.
@@ -100,7 +100,7 @@ class QualitySummaryAgent(LLMFeature):
             return Result.fail(f"Failed to render prompt: {e}")
 
         # Call LLM
-        response_result = await self._call_llm(
+        response_result = self._call_llm(
             session=session,
             feature_name="quality_summary",
             prompt=prompt,
@@ -116,9 +116,9 @@ class QualitySummaryAgent(LLMFeature):
         # Parse response
         return self._parse_response(column_data, response.content)
 
-    async def summarize_columns_batch(
+    def summarize_columns_batch(
         self,
-        session: AsyncSession,
+        session: Session,
         columns_data: list[AggregatedColumnData],
         source_table_name: str,
         slice_column_name: str,
@@ -184,7 +184,7 @@ class QualitySummaryAgent(LLMFeature):
             return Result.fail(f"Failed to render batch prompt: {e}")
 
         # Call LLM
-        response_result = await self._call_llm(
+        response_result = self._call_llm(
             session=session,
             feature_name="quality_summary",
             prompt=prompt,

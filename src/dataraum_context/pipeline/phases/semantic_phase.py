@@ -53,11 +53,11 @@ class SemanticPhase(BasePhase):
     def is_llm_phase(self) -> bool:
         return True
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all columns already have semantic annotations."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -67,7 +67,7 @@ class SemanticPhase(BasePhase):
 
         # Count columns in these tables
         col_count_stmt = select(func.count(Column.column_id)).where(Column.table_id.in_(table_ids))
-        total_columns = (await ctx.session.execute(col_count_stmt)).scalar() or 0
+        total_columns = ctx.session.execute(col_count_stmt).scalar() or 0
 
         if total_columns == 0:
             return "No columns found in typed tables"
@@ -81,18 +81,18 @@ class SemanticPhase(BasePhase):
                 SemanticAnnotation.annotation_source == "llm",
             )
         )
-        annotated_count = (await ctx.session.execute(annotated_stmt)).scalar() or 0
+        annotated_count = ctx.session.execute(annotated_stmt).scalar() or 0
 
         if annotated_count >= total_columns:
             return "All columns already have semantic annotations"
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run semantic analysis using LLM."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -109,11 +109,11 @@ class SemanticPhase(BasePhase):
                 SemanticAnnotation.annotation_source == "llm",
             )
         )
-        annotated_col_ids = set((await ctx.session.execute(annotated_cols_stmt)).scalars().all())
+        annotated_col_ids = set(ctx.session.execute(annotated_cols_stmt).scalars().all())
 
         # Get columns needing analysis
         cols_stmt = select(Column).where(Column.table_id.in_(table_ids))
-        all_columns = (await ctx.session.execute(cols_stmt)).scalars().all()
+        all_columns = ctx.session.execute(cols_stmt).scalars().all()
         unannotated_columns = [c for c in all_columns if c.column_id not in annotated_col_ids]
 
         if not unannotated_columns:
@@ -164,7 +164,7 @@ class SemanticPhase(BasePhase):
         )
 
         # Load relationship candidates from relationships phase
-        relationship_candidates = await load_relationship_candidates_for_semantic(
+        relationship_candidates = load_relationship_candidates_for_semantic(
             session=ctx.session,
             table_ids=table_ids,
             detection_method="candidate",
@@ -174,7 +174,7 @@ class SemanticPhase(BasePhase):
         ontology = ctx.config.get("ontology", "financial_reporting")
 
         # Run semantic enrichment
-        enrich_result = await enrich_semantic(
+        enrich_result = enrich_semantic(
             session=ctx.session,
             agent=agent,
             table_ids=table_ids,

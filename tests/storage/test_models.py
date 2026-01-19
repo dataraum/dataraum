@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.relationships.db_models import Relationship
 from dataraum_context.analysis.semantic.db_models import (
@@ -25,16 +25,16 @@ from dataraum_context.storage import Column, Source, Table
 class TestCoreModels:
     """Test core models: Source, Table, Column."""
 
-    async def test_create_source(self, session: AsyncSession):
+    def test_create_source(self, session: Session):
         source = Source(
             name="test_csv",
             source_type="csv",
             connection_config={"path": "/data/test.csv"},
         )
         session.add(source)
-        await session.commit()
+        session.commit()
 
-        result = await session.execute(select(Source).where(Source.name == "test_csv"))
+        result = session.execute(select(Source).where(Source.name == "test_csv"))
         saved = result.scalar_one()
 
         assert saved.name == "test_csv"
@@ -43,10 +43,10 @@ class TestCoreModels:
         assert saved.connection_config["path"] == "/data/test.csv"
         assert saved.source_id is not None
 
-    async def test_create_table_with_source(self, session: AsyncSession):
+    def test_create_table_with_source(self, session: Session):
         source = Source(name="test_source", source_type="csv")
         session.add(source)
-        await session.flush()
+        session.flush()
 
         table = Table(
             source=source,
@@ -55,9 +55,9 @@ class TestCoreModels:
             row_count=1000,
         )
         session.add(table)
-        await session.commit()
+        session.commit()
 
-        result = await session.execute(select(Table).where(Table.table_name == "sales"))
+        result = session.execute(select(Table).where(Table.table_name == "sales"))
         saved = result.scalar_one()
 
         assert saved.table_name == "sales"
@@ -65,7 +65,7 @@ class TestCoreModels:
         assert saved.row_count == 1000
         assert saved.source.name == "test_source"
 
-    async def test_create_column(self, session: AsyncSession):
+    def test_create_column(self, session: Session):
         source = Source(name="test_source", source_type="csv")
         table = Table(source=source, table_name="sales", layer="raw")
         column = Column(
@@ -76,9 +76,9 @@ class TestCoreModels:
             resolved_type="DOUBLE",
         )
         session.add_all([source, table, column])
-        await session.commit()
+        session.commit()
 
-        result = await session.execute(select(Column).where(Column.column_name == "amount"))
+        result = session.execute(select(Column).where(Column.column_name == "amount"))
         saved = result.scalar_one()
 
         assert saved.column_name == "amount"
@@ -87,21 +87,21 @@ class TestCoreModels:
         assert saved.resolved_type == "DOUBLE"
         assert saved.table.table_name == "sales"
 
-    async def test_cascade_delete_source(self, session: AsyncSession):
+    def test_cascade_delete_source(self, session: Session):
         """Test that deleting a source deletes its tables and columns."""
         source = Source(name="test_source", source_type="csv")
         table = Table(source=source, table_name="sales", layer="raw")
         column = Column(table=table, column_name="amount", column_position=1)
         session.add_all([source, table, column])
-        await session.commit()
+        session.commit()
 
         # Delete source
-        await session.delete(source)
-        await session.commit()
+        session.delete(source)
+        session.commit()
 
         # Verify cascade
-        tables = await session.execute(select(Table))
-        columns = await session.execute(select(Column))
+        tables = session.execute(select(Table))
+        columns = session.execute(select(Column))
 
         assert len(tables.scalars().all()) == 0
         assert len(columns.scalars().all()) == 0
@@ -110,12 +110,12 @@ class TestCoreModels:
 class TestStatisticalModels:
     """Test statistical metadata models."""
 
-    async def test_create_column_profile(self, session: AsyncSession):
+    def test_create_column_profile(self, session: Session):
         source = Source(name="test_source", source_type="csv")
         table = Table(source=source, table_name="sales", layer="raw")
         column = Column(table=table, column_name="amount", column_position=1)
         session.add_all([source, table, column])
-        await session.flush()
+        session.flush()
 
         profile = StatisticalProfile(
             column=column,
@@ -127,9 +127,9 @@ class TestStatisticalModels:
             profile_data={"percentiles": {"p50": 100.0, "p95": 500.0}},
         )
         session.add(profile)
-        await session.commit()
+        session.commit()
 
-        result = await session.execute(select(StatisticalProfile))
+        result = session.execute(select(StatisticalProfile))
         saved = result.scalar_one()
 
         assert saved.total_count == 1000
@@ -138,12 +138,12 @@ class TestStatisticalModels:
         assert saved.profile_data["percentiles"]
         assert saved.profile_data["percentiles"]["p50"] == 100.0
 
-    async def test_create_type_candidate(self, session: AsyncSession):
+    def test_create_type_candidate(self, session: Session):
         source = Source(name="test_source", source_type="csv")
         table = Table(source=source, table_name="sales", layer="raw")
         column = Column(table=table, column_name="amount", column_position=1)
         session.add_all([source, table, column])
-        await session.flush()
+        session.flush()
 
         candidate = TypeCandidate(
             column=column,
@@ -155,21 +155,21 @@ class TestStatisticalModels:
             unit_confidence=0.85,
         )
         session.add(candidate)
-        await session.commit()
+        session.commit()
 
-        result = await session.execute(select(TypeCandidate))
+        result = session.execute(select(TypeCandidate))
         saved = result.scalar_one()
 
         assert saved.data_type == "DOUBLE"
         assert saved.confidence == 0.95
         assert saved.detected_unit == "USD"
 
-    async def test_create_type_decision(self, session: AsyncSession):
+    def test_create_type_decision(self, session: Session):
         source = Source(name="test_source", source_type="csv")
         table = Table(source=source, table_name="sales", layer="raw")
         column = Column(table=table, column_name="amount", column_position=1)
         session.add_all([source, table, column])
-        await session.flush()
+        session.flush()
 
         decision = TypeDecision(
             column=column,
@@ -179,9 +179,9 @@ class TestStatisticalModels:
             decision_reason="High confidence from pattern detection",
         )
         session.add(decision)
-        await session.commit()
+        session.commit()
 
-        result = await session.execute(select(TypeDecision))
+        result = session.execute(select(TypeDecision))
         saved = result.scalar_one()
 
         assert saved.decided_type == "DOUBLE"
@@ -191,12 +191,12 @@ class TestStatisticalModels:
 class TestSemanticModels:
     """Test semantic metadata models."""
 
-    async def test_create_semantic_annotation(self, session: AsyncSession):
+    def test_create_semantic_annotation(self, session: Session):
         source = Source(name="test_source", source_type="csv")
         table = Table(source=source, table_name="sales", layer="raw")
         column = Column(table=table, column_name="amount", column_position=1)
         session.add_all([source, table, column])
-        await session.flush()
+        session.flush()
 
         annotation = SemanticAnnotation(
             column=column,
@@ -209,20 +209,20 @@ class TestSemanticModels:
             confidence=0.92,
         )
         session.add(annotation)
-        await session.commit()
+        session.commit()
 
-        result = await session.execute(select(SemanticAnnotation))
+        result = session.execute(select(SemanticAnnotation))
         saved = result.scalar_one()
 
         assert saved.semantic_role == "measure"
         assert saved.business_name == "Sale Amount"
         assert saved.annotation_source == "llm"
 
-    async def test_create_table_entity(self, session: AsyncSession):
+    def test_create_table_entity(self, session: Session):
         source = Source(name="test_source", source_type="csv")
         table = Table(source=source, table_name="sales", layer="raw")
         session.add_all([source, table])
-        await session.flush()
+        session.flush()
 
         entity = TableEntity(
             table=table,
@@ -235,9 +235,9 @@ class TestSemanticModels:
             detection_source="llm",
         )
         session.add(entity)
-        await session.commit()
+        session.commit()
 
-        result = await session.execute(select(TableEntity))
+        result = session.execute(select(TableEntity))
         saved = result.scalar_one()
 
         assert saved.detected_entity_type == "transaction"
@@ -248,7 +248,7 @@ class TestSemanticModels:
 class TestTopologicalModels:
     """Test topological metadata models."""
 
-    async def test_create_relationship(self, session: AsyncSession):
+    def test_create_relationship(self, session: Session):
         source = Source(name="test_source", source_type="csv")
         sales_table = Table(source=source, table_name="sales", layer="raw")
         customer_table = Table(source=source, table_name="customers", layer="raw")
@@ -256,7 +256,7 @@ class TestTopologicalModels:
         id_col = Column(table=customer_table, column_name="id", column_position=1)
 
         session.add_all([source, sales_table, customer_table, customer_id_col, id_col])
-        await session.flush()
+        session.flush()
 
         # Now IDs are populated, we can use them for the Relationship
         relationship = Relationship(
@@ -271,9 +271,9 @@ class TestTopologicalModels:
             evidence={"overlap_rate": 0.98},
         )
         session.add(relationship)
-        await session.commit()
+        session.commit()
 
-        result = await session.execute(select(Relationship))
+        result = session.execute(select(Relationship))
         saved = result.scalar_one()
 
         assert saved.relationship_type == "foreign_key"
@@ -284,12 +284,12 @@ class TestTopologicalModels:
 class TestTemporalModels:
     """Test temporal metadata models."""
 
-    async def test_create_temporal_profile(self, session: AsyncSession):
+    def test_create_temporal_profile(self, session: Session):
         source = Source(name="test_source", source_type="csv")
         table = Table(source=source, table_name="sales", layer="raw")
         column = Column(table=table, column_name="sale_date", column_position=1)
         session.add_all([source, table, column])
-        await session.flush()
+        session.flush()
 
         from uuid import uuid4
 
@@ -313,9 +313,9 @@ class TestTemporalModels:
             },
         )
         session.add(temporal)
-        await session.commit()
+        session.commit()
 
-        result = await session.execute(select(TemporalColumnProfile))
+        result = session.execute(select(TemporalColumnProfile))
         saved = result.scalar_one()
 
         assert saved.detected_granularity == "day"
@@ -326,10 +326,10 @@ class TestTemporalModels:
 class TestLLMCache:
     """Test LLM cache model."""
 
-    async def test_create_llm_cache(self, session: AsyncSession):
+    def test_create_llm_cache(self, session: Session):
         source = Source(name="test_source", source_type="csv")
         session.add(source)
-        await session.flush()
+        session.flush()
 
         cache = LLMCache(
             cache_key="abc123",
@@ -346,9 +346,9 @@ class TestLLMCache:
             is_valid=True,
         )
         session.add(cache)
-        await session.commit()
+        session.commit()
 
-        result = await session.execute(select(LLMCache).where(LLMCache.cache_key == "abc123"))
+        result = session.execute(select(LLMCache).where(LLMCache.cache_key == "abc123"))
         saved = result.scalar_one()
 
         assert saved.feature == "semantic_analysis"

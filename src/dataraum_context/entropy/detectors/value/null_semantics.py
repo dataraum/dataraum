@@ -29,7 +29,7 @@ class NullRatioDetector(EntropyDetector):
     required_analyses = ["statistics"]
     description = "Measures uncertainty from null/missing values"
 
-    async def detect(self, context: DetectorContext) -> list[EntropyObject]:
+    def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect null ratio entropy.
 
         Args:

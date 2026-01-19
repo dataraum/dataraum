@@ -51,11 +51,11 @@ class SliceAnalysisPhase(BasePhase):
     def is_llm_phase(self) -> bool:
         return False
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no slice definitions exist or all slices already analyzed."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -65,7 +65,7 @@ class SliceAnalysisPhase(BasePhase):
 
         # Check for slice definitions
         slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
-        slice_result = await ctx.session.execute(slice_stmt)
+        slice_result = ctx.session.execute(slice_stmt)
         slice_defs = slice_result.scalars().all()
 
         if not slice_defs:
@@ -80,7 +80,7 @@ class SliceAnalysisPhase(BasePhase):
         existing_stmt = select(Table).where(
             Table.layer == "slice", Table.source_id == ctx.source_id
         )
-        existing_result = await ctx.session.execute(existing_stmt)
+        existing_result = ctx.session.execute(existing_stmt)
         existing_slices = len(list(existing_result.scalars().all()))
 
         if existing_slices >= total_slices:
@@ -88,11 +88,11 @@ class SliceAnalysisPhase(BasePhase):
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run slice analysis."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -106,7 +106,7 @@ class SliceAnalysisPhase(BasePhase):
             .where(SliceDefinition.table_id.in_(table_ids))
             .order_by(SliceDefinition.slice_priority)
         )
-        slice_result = await ctx.session.execute(slice_stmt)
+        slice_result = ctx.session.execute(slice_stmt)
         slice_defs = list(slice_result.scalars().all())
 
         if not slice_defs:
@@ -138,7 +138,7 @@ class SliceAnalysisPhase(BasePhase):
                     errors.append(f"Failed to create slice for {value}: {e}")
 
         # Register slice tables in metadata
-        register_result = await register_slice_tables(
+        register_result = register_slice_tables(
             session=ctx.session,
             duckdb_conn=ctx.duckdb_conn,
             slice_definitions=slice_defs,
@@ -162,7 +162,7 @@ class SliceAnalysisPhase(BasePhase):
 
         # Run analysis on slice tables
         # Note: semantic_agent is None since we copy annotations, not re-analyze
-        analysis_result = await run_analysis_on_slices(
+        analysis_result = run_analysis_on_slices(
             session=ctx.session,
             duckdb_conn=ctx.duckdb_conn,
             slice_infos=slice_infos,

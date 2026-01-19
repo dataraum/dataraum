@@ -41,7 +41,7 @@ from dataraum_context.llm.providers.base import (
 
 if TYPE_CHECKING:
     import duckdb
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.orm import Session
 
     from dataraum_context.llm.providers.base import LLMProvider
 
@@ -169,9 +169,9 @@ class BusinessCycleAgent:
         self._provider = provider
         self._model = model
 
-    async def analyze(
+    def analyze(
         self,
-        session: AsyncSession,
+        session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_ids: list[str],
         max_tool_calls: int = 10,
@@ -181,7 +181,7 @@ class BusinessCycleAgent:
         """Analyze tables for business cycles.
 
         Args:
-            session: SQLAlchemy async session
+            session: SQLAlchemy session
             duckdb_conn: DuckDB connection
             table_ids: Tables to analyze
             max_tool_calls: Maximum tool calls allowed
@@ -196,9 +196,7 @@ class BusinessCycleAgent:
 
         try:
             # 1. Build context from metadata (with optional domain vocabulary)
-            context = await build_cycle_detection_context(
-                session, duckdb_conn, table_ids, domain=domain
-            )
+            context = build_cycle_detection_context(session, duckdb_conn, table_ids, domain=domain)
             context_str = format_context_for_prompt(context)
 
             # 2. Initialize tools
@@ -235,7 +233,7 @@ class BusinessCycleAgent:
                     model=self._model,
                 )
 
-                result = await self._provider.converse(request)
+                result = self._provider.converse(request)
 
                 if not result.success:
                     return Result.fail(f"LLM call failed: {result.error}")
@@ -260,7 +258,7 @@ class BusinessCycleAgent:
                         print(f"     → {tool_name}({tool_input})")
 
                         # Execute the tool
-                        tool_output = await self._execute_tool(tools, tool_name, tool_input)
+                        tool_output = self._execute_tool(tools, tool_name, tool_input)
 
                         tool_calls_made.append(
                             {
@@ -307,14 +305,14 @@ class BusinessCycleAgent:
             )
 
             # 7. Persist to database
-            await self._persist_results(session, analysis, table_ids)
+            self._persist_results(session, analysis, table_ids)
 
             return Result.ok(analysis)
 
         except Exception as e:
             return Result.fail(f"Business cycle analysis failed: {e}")
 
-    async def _execute_tool(
+    def _execute_tool(
         self,
         tools: CycleDetectionTools,
         tool_name: str,
@@ -331,20 +329,20 @@ class BusinessCycleAgent:
             Tool result
         """
         if tool_name == "get_column_value_distribution":
-            return await tools.get_column_value_distribution(
+            return tools.get_column_value_distribution(
                 table_name=tool_input["table_name"],
                 column_name=tool_input["column_name"],
                 limit=tool_input.get("limit", 20),
             )
         elif tool_name == "get_cycle_completion_metrics":
-            return await tools.get_cycle_completion_metrics(
+            return tools.get_cycle_completion_metrics(
                 table_name=tool_input["table_name"],
                 entity_column=tool_input["entity_column"],
                 status_column=tool_input["status_column"],
                 completion_value=tool_input["completion_value"],
             )
         elif tool_name == "get_entity_transaction_flow":
-            return await tools.get_entity_transaction_flow(
+            return tools.get_entity_transaction_flow(
                 table_name=tool_input["table_name"],
                 entity_column=tool_input["entity_column"],
                 type_column=tool_input["type_column"],
@@ -352,7 +350,7 @@ class BusinessCycleAgent:
                 sample_size=tool_input.get("sample_size", 5),
             )
         elif tool_name == "get_functional_dependencies":
-            return await tools.get_functional_dependencies(
+            return tools.get_functional_dependencies(
                 table_name=tool_input["table_name"],
             )
         else:
@@ -467,16 +465,16 @@ class BusinessCycleAgent:
 
         return analysis
 
-    async def _persist_results(
+    def _persist_results(
         self,
-        session: AsyncSession,
+        session: Session,
         analysis: BusinessCycleAnalysis,
         table_ids: list[str],
     ) -> None:
         """Persist analysis results to database.
 
         Args:
-            session: SQLAlchemy async session
+            session: SQLAlchemy session
             analysis: The analysis results to persist
             table_ids: Table IDs that were analyzed
         """

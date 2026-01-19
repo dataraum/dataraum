@@ -9,7 +9,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.llm.db_models import LLMCache as LLMCacheModel
 from dataraum_context.llm.providers.base import LLMResponse
@@ -58,9 +58,9 @@ class LLMCache:
         key_json = json.dumps(key_data, sort_keys=True)
         return hashlib.sha256(key_json.encode()).hexdigest()
 
-    async def get(
+    def get(
         self,
-        session: AsyncSession,
+        session: Session,
         feature: str,
         prompt: str,
         model: str,
@@ -87,7 +87,7 @@ class LLMCache:
             LLMCacheModel.expires_at > datetime.now(UTC),
         )
 
-        result = await session.execute(stmt)
+        result = session.execute(stmt)
         cache_entry = result.scalar_one_or_none()
 
         if cache_entry is None:
@@ -103,9 +103,9 @@ class LLMCache:
             provider_cached=False,
         )
 
-    async def put(
+    def put(
         self,
-        session: AsyncSession,
+        session: Session,
         feature: str,
         prompt: str,
         response: LLMResponse,
@@ -152,11 +152,11 @@ class LLMCache:
         )
 
         session.add(cache_entry)
-        await session.commit()
+        session.commit()
 
-    async def invalidate_for_source(
+    def invalidate_for_source(
         self,
-        session: AsyncSession,
+        session: Session,
         source_id: str,
     ) -> int:
         """Invalidate all cache entries for a source.
@@ -172,7 +172,7 @@ class LLMCache:
         """
         stmt = select(LLMCacheModel).where(LLMCacheModel.source_id == source_id)
 
-        result = await session.execute(stmt)
+        result = session.execute(stmt)
         entries = result.scalars().all()
 
         count = 0
@@ -180,12 +180,12 @@ class LLMCache:
             entry.is_valid = False
             count += 1
 
-        await session.commit()
+        session.commit()
         return count
 
-    async def invalidate_for_tables(
+    def invalidate_for_tables(
         self,
-        session: AsyncSession,
+        session: Session,
         table_ids: list[str],
     ) -> int:
         """Invalidate cache entries containing any of the given table IDs.
@@ -200,7 +200,7 @@ class LLMCache:
         # Query all cache entries and check if they contain any of the table IDs
         stmt = select(LLMCacheModel).where(LLMCacheModel.is_valid == True)  # noqa: E712
 
-        result = await session.execute(stmt)
+        result = session.execute(stmt)
         entries = result.scalars().all()
 
         count = 0
@@ -211,5 +211,5 @@ class LLMCache:
                     entry.is_valid = False
                     count += 1
 
-        await session.commit()
+        session.commit()
         return count

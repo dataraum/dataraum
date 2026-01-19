@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 if TYPE_CHECKING:
     import duckdb
@@ -24,14 +24,14 @@ class CycleDetectionTools:
 
     def __init__(
         self,
-        session: AsyncSession,
+        session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_id_to_name: dict[str, str],
     ) -> None:
         """Initialize tools.
 
         Args:
-            session: SQLAlchemy async session for metadata queries
+            session: SQLAlchemy session for metadata queries
             duckdb_conn: DuckDB connection for data queries
             table_id_to_name: Mapping of table_id to DuckDB table name
         """
@@ -39,7 +39,7 @@ class CycleDetectionTools:
         self._duckdb = duckdb_conn
         self._table_map = table_id_to_name
 
-    async def get_column_value_distribution(
+    def get_column_value_distribution(
         self,
         table_name: str,
         column_name: str,
@@ -92,7 +92,7 @@ class CycleDetectionTools:
         except Exception as e:
             return {"error": str(e), "table": table_name, "column": column_name}
 
-    async def get_cycle_completion_metrics(
+    def get_cycle_completion_metrics(
         self,
         table_name: str,
         entity_column: str,
@@ -161,7 +161,7 @@ class CycleDetectionTools:
         except Exception as e:
             return {"error": str(e)}
 
-    async def get_entity_transaction_flow(
+    def get_entity_transaction_flow(
         self,
         table_name: str,
         entity_column: str,
@@ -234,7 +234,7 @@ class CycleDetectionTools:
         except Exception as e:
             return {"error": str(e)}
 
-    async def get_correlation_between_columns(
+    def get_correlation_between_columns(
         self,
         table_name: str,
         column1: str,
@@ -261,7 +261,7 @@ class CycleDetectionTools:
         try:
             # Get column IDs
             table_stmt = select(Table).where(Table.table_name == table_name)
-            table = (await self._session.execute(table_stmt)).scalar_one_or_none()
+            table = self._session.execute(table_stmt).scalar_one_or_none()
             if not table:
                 return {"error": f"Table {table_name} not found"}
 
@@ -273,8 +273,8 @@ class CycleDetectionTools:
                 Column.table_id == table.table_id,
                 Column.column_name == column2,
             )
-            col1 = (await self._session.execute(col1_stmt)).scalar_one_or_none()
-            col2 = (await self._session.execute(col2_stmt)).scalar_one_or_none()
+            col1 = self._session.execute(col1_stmt).scalar_one_or_none()
+            col2 = self._session.execute(col2_stmt).scalar_one_or_none()
 
             if not col1 or not col2:
                 return {"error": "Column(s) not found"}
@@ -285,7 +285,7 @@ class CycleDetectionTools:
                 ColumnCorrelation.column1_id == col1.column_id,
                 ColumnCorrelation.column2_id == col2.column_id,
             )
-            corr = (await self._session.execute(corr_stmt)).scalar_one_or_none()
+            corr = self._session.execute(corr_stmt).scalar_one_or_none()
 
             # Check categorical association
             assoc_stmt = select(CategoricalAssociation).where(
@@ -293,7 +293,7 @@ class CycleDetectionTools:
                 CategoricalAssociation.column1_id == col1.column_id,
                 CategoricalAssociation.column2_id == col2.column_id,
             )
-            assoc = (await self._session.execute(assoc_stmt)).scalar_one_or_none()
+            assoc = self._session.execute(assoc_stmt).scalar_one_or_none()
 
             result: dict[str, Any] = {
                 "table": table_name,
@@ -324,7 +324,7 @@ class CycleDetectionTools:
         except Exception as e:
             return {"error": str(e)}
 
-    async def get_functional_dependencies(
+    def get_functional_dependencies(
         self,
         table_name: str,
     ) -> dict[str, Any]:
@@ -344,7 +344,7 @@ class CycleDetectionTools:
 
         try:
             table_stmt = select(Table).where(Table.table_name == table_name)
-            table = (await self._session.execute(table_stmt)).scalar_one_or_none()
+            table = self._session.execute(table_stmt).scalar_one_or_none()
             if not table:
                 return {"error": f"Table {table_name} not found"}
 
@@ -352,11 +352,11 @@ class CycleDetectionTools:
                 FunctionalDependency.table_id == table.table_id,
                 FunctionalDependency.confidence > 0.9,
             )
-            deps = (await self._session.execute(deps_stmt)).scalars().all()
+            deps = self._session.execute(deps_stmt).scalars().all()
 
             # Get column names
             cols_stmt = select(Column).where(Column.table_id == table.table_id)
-            cols = (await self._session.execute(cols_stmt)).scalars().all()
+            cols = self._session.execute(cols_stmt).scalars().all()
             col_map = {c.column_id: c.column_name for c in cols}
 
             return {

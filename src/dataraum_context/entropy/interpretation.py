@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.core.models.base import Result
 from dataraum_context.entropy.models import ColumnEntropyProfile, CompoundRisk
@@ -210,9 +210,9 @@ class EntropyInterpreter:
         self.renderer = prompt_renderer
         self.cache = cache
 
-    async def interpret_batch(
+    def interpret_batch(
         self,
-        session: AsyncSession,
+        session: Session,
         inputs: list[InterpretationInput],
         query: str | None = None,
     ) -> Result[dict[str, EntropyInterpretation]]:
@@ -287,7 +287,7 @@ class EntropyInterpreter:
             return Result.fail(f"Failed to render prompt: {e}")
 
         # Call LLM
-        response_result = await self._call_llm(
+        response_result = self._call_llm(
             session=session,
             feature_name=feature_name,
             prompt=prompt,
@@ -379,9 +379,9 @@ class EntropyInterpreter:
         except Exception as e:
             return Result.fail(f"Failed to parse batch response: {e}")
 
-    async def _call_llm(
+    def _call_llm(
         self,
-        session: AsyncSession,
+        session: Session,
         feature_name: str,
         prompt: str,
         temperature: float,
@@ -397,7 +397,7 @@ class EntropyInterpreter:
         model = self.provider.get_model_for_tier(model_tier)
 
         # Check cache first
-        cached = await self.cache.get(
+        cached = self.cache.get(
             session=session,
             feature=feature_name,
             prompt=prompt,
@@ -416,12 +416,12 @@ class EntropyInterpreter:
             response_format="json",
         )
 
-        result = await self.provider.complete(request)
+        result = self.provider.complete(request)
         if not result.success or not result.value:
             return result
 
         # Store in cache
-        await self.cache.put(
+        self.cache.put(
             session=session,
             feature=feature_name,
             prompt=prompt,

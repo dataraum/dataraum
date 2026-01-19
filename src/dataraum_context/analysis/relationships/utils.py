@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.relationships.db_models import Relationship
 from dataraum_context.storage import Column, Table
@@ -25,9 +25,9 @@ class EnrichedRelationship(BaseModel):
     confidence: float
 
 
-async def gather_relationships(
+def gather_relationships(
     table_ids: list[str],
-    session: AsyncSession,
+    session: Session,
     *,
     detection_method: str = "llm",
 ) -> list[EnrichedRelationship]:
@@ -38,7 +38,7 @@ async def gather_relationships(
 
     Args:
         table_ids: List of table IDs to analyze
-        session: Async database session
+        session: Database session
         detection_method: Filter by detection method (default: "llm")
 
     Returns:
@@ -54,7 +54,7 @@ async def gather_relationships(
         .order_by(Relationship.confidence.desc())
     )
 
-    result = await session.execute(stmt)
+    result = session.execute(stmt)
     db_relationships = result.scalars().all()
 
     # Dedupe bidirectional relationships
@@ -69,10 +69,10 @@ async def gather_relationships(
             continue
 
         # Load column/table metadata
-        from_col = await session.get(Column, db_rel.from_column_id)
-        to_col = await session.get(Column, db_rel.to_column_id)
-        from_table = await session.get(Table, db_rel.from_table_id)
-        to_table = await session.get(Table, db_rel.to_table_id)
+        from_col = session.get(Column, db_rel.from_column_id)
+        to_col = session.get(Column, db_rel.to_column_id)
+        from_table = session.get(Table, db_rel.from_table_id)
+        to_table = session.get(Table, db_rel.to_table_id)
 
         if not all([from_col, to_col, from_table, to_table]):
             continue
@@ -94,8 +94,8 @@ async def gather_relationships(
     return enriched
 
 
-async def load_relationship_candidates_for_semantic(
-    session: AsyncSession,
+def load_relationship_candidates_for_semantic(
+    session: Session,
     table_ids: list[str] | None = None,
     detection_method: str = "candidate",
 ) -> list[dict[str, Any]]:
@@ -141,7 +141,7 @@ async def load_relationship_candidates_for_semantic(
             (Relationship.from_table_id.in_(table_ids)) | (Relationship.to_table_id.in_(table_ids))
         )
 
-    relationships = (await session.execute(stmt)).scalars().all()
+    relationships = session.execute(stmt).scalars().all()
 
     if not relationships:
         return []
@@ -152,19 +152,19 @@ async def load_relationship_candidates_for_semantic(
 
     for rel in relationships:
         if rel.from_table_id not in table_cache:
-            table = await session.get(Table, rel.from_table_id)
+            table = session.get(Table, rel.from_table_id)
             if table:
                 table_cache[rel.from_table_id] = table.table_name
         if rel.to_table_id not in table_cache:
-            table = await session.get(Table, rel.to_table_id)
+            table = session.get(Table, rel.to_table_id)
             if table:
                 table_cache[rel.to_table_id] = table.table_name
         if rel.from_column_id not in column_cache:
-            col = await session.get(Column, rel.from_column_id)
+            col = session.get(Column, rel.from_column_id)
             if col:
                 column_cache[rel.from_column_id] = col.column_name
         if rel.to_column_id not in column_cache:
-            col = await session.get(Column, rel.to_column_id)
+            col = session.get(Column, rel.to_column_id)
             if col:
                 column_cache[rel.to_column_id] = col.column_name
 

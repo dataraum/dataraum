@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import duckdb
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.statistics.db_models import (
     StatisticalProfile as DBColumnProfile,
@@ -43,10 +43,10 @@ if TYPE_CHECKING:
     from dataraum_context.core.config import Settings
 
 
-async def profile_statistics(
+def profile_statistics(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
 ) -> Result[StatisticsProfileResult]:
     """Profile typed data to compute all row-based statistics.
 
@@ -75,7 +75,7 @@ async def profile_statistics(
 
     try:
         # Get table from metadata
-        table = await session.get(Table, str(table_id))
+        table = session.get(Table, str(table_id))
         if not table:
             return Result.fail(f"Table not found: {table_id}")
 
@@ -91,7 +91,7 @@ async def profile_statistics(
         column_stmt = (
             select(Column).where(Column.table_id == table.table_id).order_by(Column.column_position)
         )
-        column_result = await session.execute(column_stmt)
+        column_result = session.execute(column_stmt)
         columns = column_result.scalars().all()
 
         if not columns:
@@ -101,7 +101,7 @@ async def profile_statistics(
         profiles = []
 
         for column in columns:
-            profile_result = await _profile_column_stats(
+            profile_result = _profile_column_stats(
                 table=table,
                 column=column,
                 duckdb_conn=duckdb_conn,
@@ -145,7 +145,7 @@ async def profile_statistics(
 
         # Flush to ensure data is persisted, but don't commit
         # The caller (phase/orchestrator) manages the transaction
-        await session.flush()
+        session.flush()
 
         duration = time.time() - start_time
 
@@ -160,7 +160,7 @@ async def profile_statistics(
         return Result.fail(f"Statistics profiling failed: {e}")
 
 
-async def _profile_column_stats(
+def _profile_column_stats(
     table: Table,
     column: Column,
     duckdb_conn: duckdb.DuckDBPyConnection,

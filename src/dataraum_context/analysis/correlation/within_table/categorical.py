@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import duckdb
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.correlation.algorithms import (
     compute_cramers_v,
@@ -28,10 +28,10 @@ from dataraum_context.core.models.base import Result
 from dataraum_context.storage import Column, Table
 
 
-async def compute_categorical_associations(
+def compute_categorical_associations(
     table: Table,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
     max_distinct_values: int = 100,
     min_cramers_v: float = 0.1,
 ) -> Result[list[CategoricalAssociation]]:
@@ -53,7 +53,7 @@ async def compute_categorical_associations(
     try:
         # Get columns that could be categorical (VARCHAR or BOOLEAN)
         stmt = select(Column).where(Column.table_id == table.table_id)
-        result = await session.execute(stmt)
+        result = session.execute(stmt)
         all_columns = result.scalars().all()
 
         # Filter to categorical candidates

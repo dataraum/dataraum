@@ -16,8 +16,7 @@ class TestDerivedValueDetector:
         """Create detector instance."""
         return DerivedValueDetector()
 
-    @pytest.mark.asyncio
-    async def test_no_formula_detected(self, detector: DerivedValueDetector):
+    def test_no_formula_detected(self, detector: DerivedValueDetector):
         """Test max entropy when no formula is detected."""
         context = DetectorContext(
             table_name="orders",
@@ -29,7 +28,7 @@ class TestDerivedValueDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(1.0, abs=0.01)
@@ -38,8 +37,7 @@ class TestDerivedValueDetector:
         actions = [opt.action for opt in results[0].resolution_options]
         assert "declare_formula" in actions
 
-    @pytest.mark.asyncio
-    async def test_exact_formula_match(self, detector: DerivedValueDetector):
+    def test_exact_formula_match(self, detector: DerivedValueDetector):
         """Test low entropy for exact formula match."""
         context = DetectorContext(
             table_name="orders",
@@ -59,15 +57,14 @@ class TestDerivedValueDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.0, abs=0.01)
         assert results[0].evidence[0]["status"] == "exact"
         assert results[0].evidence[0]["formula"] == "quantity * unit_price"
 
-    @pytest.mark.asyncio
-    async def test_near_exact_formula_match(self, detector: DerivedValueDetector):
+    def test_near_exact_formula_match(self, detector: DerivedValueDetector):
         """Test low entropy for near-exact formula match."""
         context = DetectorContext(
             table_name="orders",
@@ -85,14 +82,13 @@ class TestDerivedValueDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.03, abs=0.01)
         assert results[0].evidence[0]["status"] == "near_exact"
 
-    @pytest.mark.asyncio
-    async def test_approximate_formula_match(self, detector: DerivedValueDetector):
+    def test_approximate_formula_match(self, detector: DerivedValueDetector):
         """Test moderate entropy for approximate formula match."""
         context = DetectorContext(
             table_name="orders",
@@ -110,7 +106,7 @@ class TestDerivedValueDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.15, abs=0.01)
@@ -119,8 +115,7 @@ class TestDerivedValueDetector:
         actions = [opt.action for opt in results[0].resolution_options]
         assert "verify_formula" in actions
 
-    @pytest.mark.asyncio
-    async def test_poor_formula_match(self, detector: DerivedValueDetector):
+    def test_poor_formula_match(self, detector: DerivedValueDetector):
         """Test high entropy for poor formula match."""
         context = DetectorContext(
             table_name="orders",
@@ -138,7 +133,7 @@ class TestDerivedValueDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.4, abs=0.01)
@@ -148,8 +143,7 @@ class TestDerivedValueDetector:
         assert "verify_formula" in actions
         assert "investigate_mismatches" in actions
 
-    @pytest.mark.asyncio
-    async def test_column_not_in_derived_list(self, detector: DerivedValueDetector):
+    def test_column_not_in_derived_list(self, detector: DerivedValueDetector):
         """Test entropy when column is not in derived columns list."""
         context = DetectorContext(
             table_name="orders",
@@ -167,15 +161,14 @@ class TestDerivedValueDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         # Column not in derived list = no formula detected
         assert len(results) == 1
         assert results[0].score == pytest.approx(1.0, abs=0.01)
         assert results[0].evidence[0]["status"] == "no_formula"
 
-    @pytest.mark.asyncio
-    async def test_evidence_includes_source_columns(self, detector: DerivedValueDetector):
+    def test_evidence_includes_source_columns(self, detector: DerivedValueDetector):
         """Test evidence includes source columns."""
         context = DetectorContext(
             table_name="orders",
@@ -194,13 +187,12 @@ class TestDerivedValueDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         evidence = results[0].evidence[0]
         assert evidence["source_columns"] == ["qty", "price"]
 
-    @pytest.mark.asyncio
-    async def test_cascade_dimensions_on_declare(self, detector: DerivedValueDetector):
+    def test_cascade_dimensions_on_declare(self, detector: DerivedValueDetector):
         """Test declare_formula resolution cascades to semantic."""
         context = DetectorContext(
             table_name="orders",
@@ -212,7 +204,7 @@ class TestDerivedValueDetector:
             },
         )
 
-        results = await detector.detect(context)
+        results = detector.detect(context)
 
         declare_opt = next(
             (opt for opt in results[0].resolution_options if opt.action == "declare_formula"),

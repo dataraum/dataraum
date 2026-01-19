@@ -37,7 +37,7 @@ from dataraum_context.core.models.base import Result
 # =============================================================================
 
 
-async def analyze_seasonality(
+def analyze_seasonality(
     time_series: pd.Series,
     period: int | None = None,
 ) -> Result[SeasonalityAnalysis]:
@@ -208,7 +208,7 @@ def _period_to_name(period: int) -> str:
 # =============================================================================
 
 
-async def analyze_trend(
+def analyze_trend(
     time_series: pd.Series,
 ) -> Result[TrendAnalysis]:
     """Analyze trend strength and direction using linear regression.
@@ -293,7 +293,7 @@ async def analyze_trend(
 # =============================================================================
 
 
-async def detect_change_points(
+def detect_change_points(
     time_series: pd.Series,
     min_size: int = 10,
     jump: int = 5,
@@ -406,7 +406,7 @@ async def detect_change_points(
 # =============================================================================
 
 
-async def analyze_update_frequency(
+def analyze_update_frequency(
     time_series: pd.Series,
 ) -> Result[UpdateFrequencyAnalysis]:
     """Analyze update frequency and regularity.
@@ -471,7 +471,7 @@ async def analyze_update_frequency(
 # =============================================================================
 
 
-async def detect_fiscal_calendar(
+def detect_fiscal_calendar(
     time_series: pd.Series,
 ) -> Result[FiscalCalendarAnalysis]:
     """Detect fiscal calendar alignment and period-end effects.
@@ -551,7 +551,7 @@ async def detect_fiscal_calendar(
 # =============================================================================
 
 
-async def analyze_distribution_stability(
+def analyze_distribution_stability(
     time_series: pd.Series,
     num_periods: int = 4,
 ) -> Result[DistributionStabilityAnalysis]:

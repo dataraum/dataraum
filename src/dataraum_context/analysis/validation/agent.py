@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import duckdb
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.validation.config import load_all_validation_specs
 from dataraum_context.analysis.validation.db_models import (
@@ -135,9 +135,9 @@ class ValidationAgent(LLMFeature):
         """
         super().__init__(config, provider, prompt_renderer, cache)
 
-    async def run_validations(
+    def run_validations(
         self,
-        session: AsyncSession,
+        session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_ids: list[str],
         validation_ids: list[str] | None = None,
@@ -162,7 +162,7 @@ class ValidationAgent(LLMFeature):
         results: list[ValidationResult] = []
 
         # Get multi-table schema with relationships
-        schema = await get_multi_table_schema_for_llm(session, table_ids)
+        schema = get_multi_table_schema_for_llm(session, table_ids)
         if "error" in schema:
             return Result.fail(str(schema["error"]))
 
@@ -187,7 +187,7 @@ class ValidationAgent(LLMFeature):
 
         # Run each validation
         for spec in specs:
-            result = await self._run_single_validation(
+            result = self._run_single_validation(
                 duckdb_conn=duckdb_conn,
                 table_ids=table_ids,
                 spec=spec,
@@ -228,7 +228,7 @@ class ValidationAgent(LLMFeature):
 
         # Persist results to database
         if persist:
-            await self._persist_results(session, run_result)
+            self._persist_results(session, run_result)
 
         return Result.ok(run_result)
 
@@ -256,7 +256,7 @@ class ValidationAgent(LLMFeature):
 
         return list(all_specs.values())
 
-    async def _run_single_validation(
+    def _run_single_validation(
         self,
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_ids: list[str],
@@ -278,7 +278,7 @@ class ValidationAgent(LLMFeature):
         combined_table_name = ", ".join(table_names)
 
         # Generate SQL via LLM
-        sql_result = await self._generate_sql(spec, schema)
+        sql_result = self._generate_sql(spec, schema)
 
         if not sql_result.success or not sql_result.value:
             return ValidationResult(
@@ -352,7 +352,7 @@ class ValidationAgent(LLMFeature):
                 columns_used=generated.columns_used,
             )
 
-    async def _generate_sql(
+    def _generate_sql(
         self,
         spec: ValidationSpec,
         schema: dict[str, Any],
@@ -401,7 +401,7 @@ class ValidationAgent(LLMFeature):
             response_format="json",
         )
 
-        result = await self.provider.complete(request)
+        result = self.provider.complete(request)
         if not result.success or not result.value:
             return Result.fail(result.error or "LLM call failed")
 
@@ -537,9 +537,9 @@ class ValidationAgent(LLMFeature):
                 {"row_count": row_count},
             )
 
-    async def _persist_results(
+    def _persist_results(
         self,
-        session: AsyncSession,
+        session: Session,
         run_result: ValidationRunResult,
     ) -> None:
         """Persist validation results to the database.

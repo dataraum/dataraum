@@ -3,8 +3,7 @@
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.pipeline.base import PhaseContext, PhaseStatus
 from dataraum_context.pipeline.phases import ContextPhase
@@ -25,48 +24,45 @@ class TestContextPhase:
         assert phase.outputs == ["execution_context"]
         assert phase.is_llm_phase is False
 
-    @pytest.mark.asyncio
-    async def test_skip_when_no_typed_tables(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
+    def test_skip_when_no_typed_tables(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test skip when no typed tables exist."""
         phase = ContextPhase()
         source_id = str(uuid4())
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
         )
 
-        skip_reason = await phase.should_skip(ctx)
+        skip_reason = phase.should_skip(ctx)
         assert skip_reason is not None
         assert "No typed tables" in skip_reason
 
-    @pytest.mark.asyncio
-    async def test_fails_when_no_typed_tables(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
+    def test_fails_when_no_typed_tables(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test failure when run without typed tables."""
         phase = ContextPhase()
         source_id = str(uuid4())
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
         )
 
-        result = await phase.run(ctx)
+        result = phase.run(ctx)
 
         assert result.status == PhaseStatus.FAILED
         assert "No typed tables" in (result.error or "")
 
-    @pytest.mark.asyncio
-    async def test_does_not_skip_with_typed_tables(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
+    def test_does_not_skip_with_typed_tables(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test does not skip when typed tables exist."""
         phase = ContextPhase()
@@ -78,7 +74,7 @@ class TestContextPhase:
             name="test_source",
             source_type="csv",
         )
-        async_session.add(source)
+        session.add(source)
 
         table = Table(
             table_id=str(uuid4()),
@@ -88,24 +84,21 @@ class TestContextPhase:
             duckdb_path="typed_test_table",
             row_count=10,
         )
-        async_session.add(table)
-        await async_session.commit()
+        session.add(table)
+        session.commit()
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
         )
 
-        skip_reason = await phase.should_skip(ctx)
+        skip_reason = phase.should_skip(ctx)
         # Should not skip - need to build context
         assert skip_reason is None
 
-    @pytest.mark.asyncio
-    async def test_success_builds_context(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
-    ):
+    def test_success_builds_context(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection):
         """Test successful context building with minimal data."""
         phase = ContextPhase()
         source_id = str(uuid4())
@@ -117,7 +110,7 @@ class TestContextPhase:
             name="test_source",
             source_type="csv",
         )
-        async_session.add(source)
+        session.add(source)
 
         # Create table in DuckDB
         duckdb_conn.execute("""
@@ -138,7 +131,7 @@ class TestContextPhase:
             duckdb_path="typed_test_table",
             row_count=2,
         )
-        async_session.add(table)
+        session.add(table)
 
         column1 = Column(
             column_id=str(uuid4()),
@@ -147,7 +140,7 @@ class TestContextPhase:
             column_position=0,
             raw_type="INTEGER",
         )
-        async_session.add(column1)
+        session.add(column1)
 
         column2 = Column(
             column_id=str(uuid4()),
@@ -156,26 +149,25 @@ class TestContextPhase:
             column_position=1,
             raw_type="VARCHAR",
         )
-        async_session.add(column2)
-        await async_session.commit()
+        session.add(column2)
+        session.commit()
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
         )
 
-        result = await phase.run(ctx)
+        result = phase.run(ctx)
 
         assert result.status == PhaseStatus.COMPLETED
         assert result.outputs["tables"] == 1
         assert result.outputs["columns"] == 2
         assert result.records_created == 1  # One context object
 
-    @pytest.mark.asyncio
-    async def test_context_with_slice_filter(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
+    def test_context_with_slice_filter(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test context building with slice filter config."""
         phase = ContextPhase()
@@ -188,7 +180,7 @@ class TestContextPhase:
             name="test_source",
             source_type="csv",
         )
-        async_session.add(source)
+        session.add(source)
 
         # Create table in DuckDB
         duckdb_conn.execute("""
@@ -209,7 +201,7 @@ class TestContextPhase:
             duckdb_path="typed_test_table",
             row_count=2,
         )
-        async_session.add(table)
+        session.add(table)
 
         column1 = Column(
             column_id=str(uuid4()),
@@ -218,7 +210,7 @@ class TestContextPhase:
             column_position=0,
             raw_type="INTEGER",
         )
-        async_session.add(column1)
+        session.add(column1)
 
         column2 = Column(
             column_id=str(uuid4()),
@@ -227,11 +219,11 @@ class TestContextPhase:
             column_position=1,
             raw_type="VARCHAR",
         )
-        async_session.add(column2)
-        await async_session.commit()
+        session.add(column2)
+        session.commit()
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={
@@ -240,7 +232,7 @@ class TestContextPhase:
             },
         )
 
-        result = await phase.run(ctx)
+        result = phase.run(ctx)
 
         assert result.status == PhaseStatus.COMPLETED
         assert result.outputs["tables"] == 1

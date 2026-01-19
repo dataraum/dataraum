@@ -43,11 +43,11 @@ class CorrelationsPhase(BasePhase):
     def outputs(self) -> list[str]:
         return ["correlations", "derived_columns"]
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all tables already have correlation analysis."""
         # Get typed tables
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -57,7 +57,7 @@ class CorrelationsPhase(BasePhase):
         analyzed_stmt = select(CorrelationAnalysisRun.target_id).where(
             CorrelationAnalysisRun.target_type == "table"
         )
-        analyzed_ids = set((await ctx.session.execute(analyzed_stmt)).scalars().all())
+        analyzed_ids = set((ctx.session.execute(analyzed_stmt)).scalars().all())
 
         unanalyzed = [t for t in typed_tables if t.table_id not in analyzed_ids]
         if not unanalyzed:
@@ -65,11 +65,11 @@ class CorrelationsPhase(BasePhase):
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run within-table correlation analysis."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -79,7 +79,7 @@ class CorrelationsPhase(BasePhase):
         analyzed_stmt = select(CorrelationAnalysisRun.target_id).where(
             CorrelationAnalysisRun.target_type == "table"
         )
-        analyzed_ids = set((await ctx.session.execute(analyzed_stmt)).scalars().all())
+        analyzed_ids = set((ctx.session.execute(analyzed_stmt)).scalars().all())
 
         unanalyzed_tables = [t for t in typed_tables if t.table_id not in analyzed_ids]
 
@@ -99,7 +99,7 @@ class CorrelationsPhase(BasePhase):
         warnings = []
 
         for typed_table in unanalyzed_tables:
-            corr_result = await analyze_correlations(
+            corr_result = analyze_correlations(
                 table_id=typed_table.table_id,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
@@ -119,7 +119,7 @@ class CorrelationsPhase(BasePhase):
 
             # Create analysis run record to track completion
             columns_stmt = select(Column).where(Column.table_id == typed_table.table_id)
-            columns = (await ctx.session.execute(columns_stmt)).scalars().all()
+            columns = (ctx.session.execute(columns_stmt)).scalars().all()
 
             run_record = CorrelationAnalysisRun(
                 target_id=typed_table.table_id,
@@ -132,7 +132,7 @@ class CorrelationsPhase(BasePhase):
             )
             ctx.session.add(run_record)
 
-        await ctx.session.commit()
+        ctx.session.commit()
 
         if not analyzed_tables and warnings:
             return PhaseResult.failed(f"All tables failed analysis: {'; '.join(warnings)}")

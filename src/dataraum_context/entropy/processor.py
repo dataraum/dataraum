@@ -10,7 +10,7 @@ Usage:
     from dataraum_context.entropy.processor import EntropyProcessor
 
     processor = EntropyProcessor()
-    context = await processor.process_column(
+    context = processor.process_column(
         table_name="orders",
         column_name="amount",
         analysis_results={
@@ -99,7 +99,7 @@ class EntropyProcessor:
         self.registry = registry or get_default_registry()
         self.config = config or ProcessorConfig()
 
-    async def process_column(
+    def process_column(
         self,
         table_name: str,
         column_name: str,
@@ -132,7 +132,7 @@ class EntropyProcessor:
         )
 
         # Run all applicable detectors
-        entropy_objects = await self._run_detectors(context)
+        entropy_objects = self._run_detectors(context)
 
         # Aggregate into profile
         profile = self._aggregate_to_profile(
@@ -164,7 +164,7 @@ class EntropyProcessor:
 
         return profile
 
-    async def process_table(
+    def process_table(
         self,
         table_name: str,
         columns: list[dict[str, Any]],
@@ -190,7 +190,7 @@ class EntropyProcessor:
             analysis_results = col_spec.get("analysis_results", {})
             column_id = col_spec.get("column_id")
 
-            profile = await self.process_column(
+            profile = self.process_column(
                 table_name=table_name,
                 column_name=column_name,
                 analysis_results=analysis_results,
@@ -210,7 +210,7 @@ class EntropyProcessor:
 
         return table_profile
 
-    async def build_entropy_context(
+    def build_entropy_context(
         self,
         tables: list[TableEntropyProfile],
     ) -> EntropyContext:
@@ -241,7 +241,7 @@ class EntropyProcessor:
 
         return context
 
-    async def _run_detectors(self, context: DetectorContext) -> list[EntropyObject]:
+    def _run_detectors(self, context: DetectorContext) -> list[EntropyObject]:
         """Run all applicable detectors and collect results.
 
         Args:
@@ -264,7 +264,7 @@ class EntropyProcessor:
 
         for detector in detectors:
             try:
-                objects = await detector.detect(context)
+                objects = detector.detect(context)
                 all_objects.extend(objects)
             except Exception as e:
                 logger.error(f"Detector {detector.detector_id} failed: {e}")
@@ -341,7 +341,7 @@ class EntropyProcessor:
         return profile
 
 
-async def process_column_entropy(
+def process_column_entropy(
     table_name: str,
     column_name: str,
     analysis_results: dict[str, Any],
@@ -359,7 +359,7 @@ async def process_column_entropy(
         ColumnEntropyProfile
     """
     processor = EntropyProcessor()
-    return await processor.process_column(
+    return processor.process_column(
         table_name=table_name,
         column_name=column_name,
         analysis_results=analysis_results,
@@ -367,7 +367,7 @@ async def process_column_entropy(
     )
 
 
-async def process_table_entropy(
+def process_table_entropy(
     table_name: str,
     columns: list[dict[str, Any]],
     **kwargs: Any,
@@ -383,7 +383,7 @@ async def process_table_entropy(
         TableEntropyProfile
     """
     processor = EntropyProcessor()
-    return await processor.process_table(
+    return processor.process_table(
         table_name=table_name,
         columns=columns,
         **kwargs,

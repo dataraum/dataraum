@@ -42,7 +42,7 @@ class LocalProvider(LLMProvider):
             "See docs/LLM_FEATURES.md for implementation guide."
         )
 
-    async def complete(self, request: LLMRequest) -> Result[LLMResponse]:
+    def complete(self, request: LLMRequest) -> Result[LLMResponse]:
         """Not implemented."""
         raise NotImplementedError()
 

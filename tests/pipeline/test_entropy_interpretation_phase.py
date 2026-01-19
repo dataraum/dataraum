@@ -3,8 +3,7 @@
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.pipeline.base import PhaseContext, PhaseStatus
 from dataraum_context.pipeline.phases import EntropyInterpretationPhase
@@ -25,48 +24,45 @@ class TestEntropyInterpretationPhase:
         assert phase.outputs == ["interpretations", "assumptions", "resolution_actions"]
         assert phase.is_llm_phase is True
 
-    @pytest.mark.asyncio
-    async def test_skip_when_no_typed_tables(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
+    def test_skip_when_no_typed_tables(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test skip when no typed tables exist."""
         phase = EntropyInterpretationPhase()
         source_id = str(uuid4())
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
         )
 
-        skip_reason = await phase.should_skip(ctx)
+        skip_reason = phase.should_skip(ctx)
         assert skip_reason is not None
         assert "No typed tables" in skip_reason
 
-    @pytest.mark.asyncio
-    async def test_fails_when_no_typed_tables(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
+    def test_fails_when_no_typed_tables(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test failure when run without typed tables."""
         phase = EntropyInterpretationPhase()
         source_id = str(uuid4())
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
         )
 
-        result = await phase.run(ctx)
+        result = phase.run(ctx)
 
         assert result.status == PhaseStatus.FAILED
         assert "No typed tables" in (result.error or "")
 
-    @pytest.mark.asyncio
-    async def test_skip_when_no_entropy_records(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
+    def test_skip_when_no_entropy_records(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test skip when no entropy records exist."""
         phase = EntropyInterpretationPhase()
@@ -78,7 +74,7 @@ class TestEntropyInterpretationPhase:
             name="test_source",
             source_type="csv",
         )
-        async_session.add(source)
+        session.add(source)
 
         table = Table(
             table_id=str(uuid4()),
@@ -88,23 +84,22 @@ class TestEntropyInterpretationPhase:
             duckdb_path="typed_test_table",
             row_count=10,
         )
-        async_session.add(table)
-        await async_session.commit()
+        session.add(table)
+        session.commit()
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
         )
 
-        skip_reason = await phase.should_skip(ctx)
+        skip_reason = phase.should_skip(ctx)
         assert skip_reason is not None
         assert "No entropy records" in skip_reason
 
-    @pytest.mark.asyncio
-    async def test_does_not_skip_with_entropy_records(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
+    def test_does_not_skip_with_entropy_records(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test does not skip when entropy records exist."""
         from dataraum_context.entropy.db_models import EntropyObjectRecord
@@ -120,7 +115,7 @@ class TestEntropyInterpretationPhase:
             name="test_source",
             source_type="csv",
         )
-        async_session.add(source)
+        session.add(source)
 
         table = Table(
             table_id=table_id,
@@ -130,7 +125,7 @@ class TestEntropyInterpretationPhase:
             duckdb_path="typed_test_table",
             row_count=10,
         )
-        async_session.add(table)
+        session.add(table)
 
         column = Column(
             column_id=column_id,
@@ -139,8 +134,8 @@ class TestEntropyInterpretationPhase:
             column_position=0,
             raw_type="VARCHAR",
         )
-        async_session.add(column)
-        await async_session.commit()
+        session.add(column)
+        session.commit()
 
         # Add entropy record (after parent records exist)
         entropy_record = EntropyObjectRecord(
@@ -154,23 +149,22 @@ class TestEntropyInterpretationPhase:
             score=0.5,
             detector_id="test",
         )
-        async_session.add(entropy_record)
-        await async_session.commit()
+        session.add(entropy_record)
+        session.commit()
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
         )
 
-        skip_reason = await phase.should_skip(ctx)
+        skip_reason = phase.should_skip(ctx)
         # Should not skip - entropy records need interpretation
         assert skip_reason is None
 
-    @pytest.mark.asyncio
-    async def test_success_no_entropy_records(
-        self, async_session: AsyncSession, duckdb_conn: duckdb.DuckDBPyConnection
+    def test_success_no_entropy_records(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test returns success when no entropy records to interpret."""
         phase = EntropyInterpretationPhase()
@@ -184,7 +178,7 @@ class TestEntropyInterpretationPhase:
             name="test_source",
             source_type="csv",
         )
-        async_session.add(source)
+        session.add(source)
 
         table = Table(
             table_id=table_id,
@@ -194,7 +188,7 @@ class TestEntropyInterpretationPhase:
             duckdb_path="typed_test_table",
             row_count=10,
         )
-        async_session.add(table)
+        session.add(table)
 
         column = Column(
             column_id=column_id,
@@ -203,17 +197,17 @@ class TestEntropyInterpretationPhase:
             column_position=0,
             raw_type="VARCHAR",
         )
-        async_session.add(column)
-        await async_session.commit()
+        session.add(column)
+        session.commit()
 
         ctx = PhaseContext(
-            session=async_session,
+            session=session,
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
         )
 
-        result = await phase.run(ctx)
+        result = phase.run(ctx)
 
         assert result.status == PhaseStatus.COMPLETED
         assert result.outputs["interpretations"] == 0

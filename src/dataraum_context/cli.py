@@ -15,7 +15,6 @@ Environment:
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -109,7 +108,7 @@ def run(
         verbose=not quiet,
     )
 
-    result = asyncio.run(run_pipeline(config))
+    result = run_pipeline(config)
     raise typer.Exit(0 if result.success else 1)
 
 
@@ -130,11 +129,11 @@ def status(
 
     Displays information about completed phases, sources, and tables.
     """
-    asyncio.run(_status_async(output_dir))
+    _status_impl(output_dir)
 
 
-async def _status_async(output_dir: Path) -> None:
-    """Async implementation of status command."""
+def _status_impl(output_dir: Path) -> None:
+    """Sync implementation of status command."""
     from sqlalchemy import func, select
 
     from dataraum_context.core import ConnectionConfig, ConnectionManager
@@ -149,12 +148,12 @@ async def _status_async(output_dir: Path) -> None:
         raise typer.Exit(1)
 
     manager = ConnectionManager(config)
-    await manager.initialize()
+    manager.initialize()
 
     try:
-        async with manager.session_scope() as session:
+        with manager.session_scope() as session:
             # Get sources
-            sources_result = await session.execute(select(Source))
+            sources_result = session.execute(select(Source))
             sources = sources_result.scalars().all()
 
             if not sources:
@@ -168,7 +167,7 @@ async def _status_async(output_dir: Path) -> None:
                 console.print(f"[cyan]Source:[/cyan] {source.name} ({source.source_id[:8]}...)")
 
                 # Tables
-                tables_result = await session.execute(
+                tables_result = session.execute(
                     select(Table).where(Table.source_id == source.source_id)
                 )
                 tables = tables_result.scalars().all()
@@ -193,7 +192,7 @@ async def _status_async(output_dir: Path) -> None:
                 console.print(table)
 
                 # Columns count
-                columns_result = await session.execute(
+                columns_result = session.execute(
                     select(func.count())
                     .select_from(Column)
                     .join(Table)
@@ -203,7 +202,7 @@ async def _status_async(output_dir: Path) -> None:
                 console.print(f"Total columns: {columns_count}")
 
                 # Phase executions
-                phases_result = await session.execute(
+                phases_result = session.execute(
                     select(PhaseCheckpoint)
                     .where(PhaseCheckpoint.source_id == source.source_id)
                     .order_by(PhaseCheckpoint.started_at)
@@ -269,7 +268,7 @@ async def _status_async(output_dir: Path) -> None:
 
                 console.print()
     finally:
-        await manager.close()
+        manager.close()
 
 
 @app.command()
@@ -348,11 +347,11 @@ def inspect(
 
     Shows loaded graphs, applicable filters, and execution context.
     """
-    asyncio.run(_inspect_async(output_dir))
+    _inspect_impl(output_dir)
 
 
-async def _inspect_async(output_dir: Path) -> None:
-    """Async implementation of inspect command."""
+def _inspect_impl(output_dir: Path) -> None:
+    """Sync implementation of inspect command."""
     from sqlalchemy import select
 
     from dataraum_context.analysis.semantic.db_models import SemanticAnnotation
@@ -368,12 +367,12 @@ async def _inspect_async(output_dir: Path) -> None:
         raise typer.Exit(1)
 
     manager = ConnectionManager(config)
-    await manager.initialize()
+    manager.initialize()
 
     try:
-        async with manager.session_scope() as session:
+        with manager.session_scope() as session:
             # Check for sources
-            sources_result = await session.execute(select(Source))
+            sources_result = session.execute(select(Source))
             sources = sources_result.scalars().all()
 
             if not sources:
@@ -381,7 +380,7 @@ async def _inspect_async(output_dir: Path) -> None:
                 return
 
             # Check for tables
-            tables_result = await session.execute(select(Table))
+            tables_result = session.execute(select(Table))
             tables = tables_result.scalars().all()
 
             if not tables:
@@ -449,20 +448,20 @@ async def _inspect_async(output_dir: Path) -> None:
 
             columns_metadata = []
             for table in tables:
-                cols_result = await session.execute(
+                cols_result = session.execute(
                     select(Column).where(Column.table_id == table.table_id)
                 )
                 columns = cols_result.scalars().all()
 
                 for col in columns:
                     # Get type decision
-                    type_result = await session.execute(
+                    type_result = session.execute(
                         select(TypeDecision).where(TypeDecision.column_id == col.column_id)
                     )
                     type_dec = type_result.scalar_one_or_none()
 
                     # Get semantic annotation
-                    sem_result = await session.execute(
+                    sem_result = session.execute(
                         select(SemanticAnnotation).where(
                             SemanticAnnotation.column_id == col.column_id
                         )
@@ -525,7 +524,7 @@ async def _inspect_async(output_dir: Path) -> None:
                 )
 
                 table_ids = [t.table_id for t in tables[:3]]
-                context = await build_execution_context(
+                context = build_execution_context(
                     session=session,
                     table_ids=table_ids,
                     duckdb_conn=manager.duckdb_conn,
@@ -546,7 +545,7 @@ async def _inspect_async(output_dir: Path) -> None:
 
             console.print()
     finally:
-        await manager.close()
+        manager.close()
 
 
 @app.command()

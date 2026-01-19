@@ -7,7 +7,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 import duckdb
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.core.models import Result, SourceConfig
 
@@ -54,18 +54,18 @@ class LoaderBase(ABC):
         pass
 
     @abstractmethod
-    async def load(
+    def load(
         self,
         source_config: SourceConfig,
         duckdb_conn: duckdb.DuckDBPyConnection,
-        session: AsyncSession,
+        session: Session,
     ) -> Result[StagingResult]:
         """Load data from source into DuckDB.
 
         Args:
             source_config: Source configuration
             duckdb_conn: DuckDB connection
-            session: SQLAlchemy async session for metadata
+            session: SQLAlchemy session for metadata
 
         Returns:
             Result containing StagingResult or error
@@ -73,7 +73,7 @@ class LoaderBase(ABC):
         pass
 
     @abstractmethod
-    async def get_schema(
+    def get_schema(
         self,
         source_config: SourceConfig,
     ) -> Result[list[ColumnInfo]]:

@@ -95,7 +95,7 @@ class LLMProvider(ABC):
     """
 
     @abstractmethod
-    async def complete(self, request: LLMRequest) -> Result[LLMResponse]:
+    def complete(self, request: LLMRequest) -> Result[LLMResponse]:
         """Send completion request to provider.
 
         Args:
@@ -106,7 +106,7 @@ class LLMProvider(ABC):
         """
         pass
 
-    async def converse(self, request: ConversationRequest) -> Result[ConversationResponse]:
+    def converse(self, request: ConversationRequest) -> Result[ConversationResponse]:
         """Send a conversation request with optional tool use.
 
         This is the preferred method for agentic interactions.

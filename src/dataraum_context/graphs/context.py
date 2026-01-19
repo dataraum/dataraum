@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 if TYPE_CHECKING:
     import duckdb
@@ -186,8 +186,8 @@ class GraphExecutionContext:
 # =============================================================================
 
 
-async def build_execution_context(
-    session: AsyncSession,
+def build_execution_context(
+    session: Session,
     table_ids: list[str],
     duckdb_conn: duckdb.DuckDBPyConnection | None = None,
     *,
@@ -204,7 +204,7 @@ async def build_execution_context(
     - Quality issues from each pillar
 
     Args:
-        session: SQLAlchemy async session
+        session: SQLAlchemy session
         table_ids: Tables to include in context
         duckdb_conn: Optional DuckDB connection for row counts
         slice_column: Optional column to filter by (for slice metrics)
@@ -237,12 +237,12 @@ async def build_execution_context(
 
     # 1. Load tables
     tables_stmt = select(Table).where(Table.table_id.in_(table_ids))
-    tables = (await session.execute(tables_stmt)).scalars().all()
+    tables = session.execute(tables_stmt).scalars().all()
     table_map = {t.table_id: t for t in tables}
 
     # 2. Load all columns for these tables
     columns_stmt = select(Column).where(Column.table_id.in_(table_ids))
-    columns = (await session.execute(columns_stmt)).scalars().all()
+    columns = session.execute(columns_stmt).scalars().all()
     columns_by_table: dict[str, list[Column]] = {}
     for col in columns:
         if col.table_id not in columns_by_table:
@@ -254,7 +254,7 @@ async def build_execution_context(
     stat_profiles: dict[str, StatisticalProfile] = {}
     if column_ids:
         stat_stmt = select(StatisticalProfile).where(StatisticalProfile.column_id.in_(column_ids))
-        for profile in (await session.execute(stat_stmt)).scalars().all():
+        for profile in session.execute(stat_stmt).scalars().all():
             stat_profiles[profile.column_id] = profile
 
     # 4. Load statistical quality metrics
@@ -263,14 +263,14 @@ async def build_execution_context(
         qual_stmt = select(StatisticalQualityMetrics).where(
             StatisticalQualityMetrics.column_id.in_(column_ids)
         )
-        for metrics in (await session.execute(qual_stmt)).scalars().all():
+        for metrics in session.execute(qual_stmt).scalars().all():
             stat_quality[metrics.column_id] = metrics
 
     # 5. Load semantic annotations
     semantic: dict[str, SemanticAnnotation] = {}
     if column_ids:
         sem_stmt = select(SemanticAnnotation).where(SemanticAnnotation.column_id.in_(column_ids))
-        for ann in (await session.execute(sem_stmt)).scalars().all():
+        for ann in session.execute(sem_stmt).scalars().all():
             semantic[ann.column_id] = ann
 
     # 6. Load temporal profiles
@@ -279,20 +279,20 @@ async def build_execution_context(
         temp_stmt = select(TemporalColumnProfile).where(
             TemporalColumnProfile.column_id.in_(column_ids)
         )
-        for temp_prof in (await session.execute(temp_stmt)).scalars().all():
+        for temp_prof in session.execute(temp_stmt).scalars().all():
             temporal[temp_prof.column_id] = temp_prof
 
     # 7. Load type decisions
     type_decisions: dict[str, TypeDecision] = {}
     if column_ids:
         type_stmt = select(TypeDecision).where(TypeDecision.column_id.in_(column_ids))
-        for decision in (await session.execute(type_stmt)).scalars().all():
+        for decision in session.execute(type_stmt).scalars().all():
             type_decisions[decision.column_id] = decision
 
     # 8. Load table entities (fact/dimension classification)
     table_entities: dict[str, TableEntity] = {}
     entity_stmt = select(TableEntity).where(TableEntity.table_id.in_(table_ids))
-    for entity in (await session.execute(entity_stmt)).scalars().all():
+    for entity in session.execute(entity_stmt).scalars().all():
         table_entities[entity.table_id] = entity
 
     # 9. Load relationships
@@ -301,7 +301,7 @@ async def build_execution_context(
         & (Relationship.to_table_id.in_(table_ids))
         & ((Relationship.detection_method == "llm") | (Relationship.confidence > 0.7))
     )
-    relationships_db = (await session.execute(rel_stmt)).scalars().all()
+    relationships_db = session.execute(rel_stmt).scalars().all()
 
     # Build relationship contexts
     relationships: list[RelationshipContext] = []
@@ -338,7 +338,7 @@ async def build_execution_context(
     # 10. Load slice definitions
     slice_contexts: list[SliceContext] = []
     slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
-    for slice_def in (await session.execute(slice_stmt)).scalars().all():
+    for slice_def in session.execute(slice_stmt).scalars().all():
         slice_col = next((c for c in columns if c.column_id == slice_def.column_id), None)
         slice_tbl = table_map.get(slice_def.table_id)
         if slice_col and slice_tbl:
@@ -360,7 +360,7 @@ async def build_execution_context(
         grade_stmt = select(ColumnQualityReport).where(
             ColumnQualityReport.source_column_id.in_(column_ids)
         )
-        for report in (await session.execute(grade_stmt)).scalars().all():
+        for report in session.execute(grade_stmt).scalars().all():
             quality_grades[report.source_column_id] = (
                 report.quality_grade,
                 report.overall_quality_score,
@@ -370,7 +370,7 @@ async def build_execution_context(
     derived_columns: dict[str, str] = {}  # column_id -> formula
     if column_ids:
         derived_stmt = select(DerivedColumn).where(DerivedColumn.derived_column_id.in_(column_ids))
-        for derived in (await session.execute(derived_stmt)).scalars().all():
+        for derived in session.execute(derived_stmt).scalars().all():
             derived_columns[derived.derived_column_id] = derived.formula
 
     # 13. Load business cycles
@@ -385,12 +385,12 @@ async def build_execution_context(
         .order_by(BusinessCycleAnalysisRun.completed_at.desc())
         .limit(1)
     )
-    latest_run = (await session.execute(cycle_run_stmt)).scalar_one_or_none()
+    latest_run = session.execute(cycle_run_stmt).scalar_one_or_none()
     if latest_run:
         cycles_stmt = select(DetectedBusinessCycle).where(
             DetectedBusinessCycle.analysis_id == latest_run.analysis_id
         )
-        for cycle in (await session.execute(cycles_stmt)).scalars().all():
+        for cycle in session.execute(cycles_stmt).scalars().all():
             business_cycle_contexts.append(
                 BusinessCycleContext(
                     cycle_name=cycle.cycle_name,
@@ -401,7 +401,7 @@ async def build_execution_context(
             )
 
     # 14. Load field mappings
-    field_mappings = await load_semantic_mappings(session, table_ids)
+    field_mappings = load_semantic_mappings(session, table_ids)
 
     # 15. Compute graph topology
     table_names = [t.table_name for t in tables]
@@ -419,7 +419,7 @@ async def build_execution_context(
         get_table_entropy_summary,
     )
 
-    entropy_context = await build_entropy_ctx(session, table_ids)
+    entropy_context = build_entropy_ctx(session, table_ids)
 
     # Build column-level entropy lookup
     column_entropy_lookup: dict[str, dict[str, Any]] = {}

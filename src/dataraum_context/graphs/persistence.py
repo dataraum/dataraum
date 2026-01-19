@@ -7,16 +7,16 @@ Usage:
     from dataraum_context.graphs.persistence import GraphExecutionRepository
 
     repo = GraphExecutionRepository(session)
-    await repo.save_execution(execution)
+    repo.save_execution(execution)
 
     # Query executions
-    executions = await repo.get_executions_for_graph("dso", period="2025-Q1")
+    executions = repo.get_executions_for_graph("dso", period="2025-Q1")
 """
 
 from __future__ import annotations
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.graphs.db_models import GraphExecutionRecord, StepResultRecord
 
@@ -134,10 +134,10 @@ def step_result_record_to_model(record: StepResultRecord) -> StepResult:
 class GraphExecutionRepository:
     """Repository for graph execution persistence operations."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: Session):
         self.session = session
 
-    async def save_execution(self, execution: GraphExecution) -> GraphExecutionRecord:
+    def save_execution(self, execution: GraphExecution) -> GraphExecutionRecord:
         """Save a graph execution with all step results.
 
         Args:
@@ -154,10 +154,10 @@ class GraphExecutionRepository:
             record.step_results.append(step_record)
 
         self.session.add(record)
-        await self.session.flush()
+        self.session.flush()
         return record
 
-    async def get_execution(self, execution_id: str) -> GraphExecution | None:
+    def get_execution(self, execution_id: str) -> GraphExecution | None:
         """Get a specific execution by ID.
 
         Args:
@@ -167,7 +167,7 @@ class GraphExecutionRepository:
             GraphExecution or None if not found
         """
         stmt = select(GraphExecutionRecord).where(GraphExecutionRecord.execution_id == execution_id)
-        result = await self.session.execute(stmt)
+        result = self.session.execute(stmt)
         record = result.scalar_one_or_none()
 
         if not record:
@@ -175,7 +175,7 @@ class GraphExecutionRepository:
 
         return record_to_execution(record)
 
-    async def get_executions_for_graph(
+    def get_executions_for_graph(
         self,
         graph_id: str,
         period: str | None = None,
@@ -201,12 +201,12 @@ class GraphExecutionRepository:
         if period:
             stmt = stmt.where(GraphExecutionRecord.period == period)
 
-        result = await self.session.execute(stmt)
+        result = self.session.execute(stmt)
         records = result.scalars().all()
 
         return [record_to_execution(record) for record in records]
 
-    async def get_latest_execution(
+    def get_latest_execution(
         self, graph_id: str, period: str | None = None
     ) -> GraphExecution | None:
         """Get the most recent execution for a graph.
@@ -218,10 +218,10 @@ class GraphExecutionRepository:
         Returns:
             Most recent GraphExecution or None
         """
-        executions = await self.get_executions_for_graph(graph_id, period, limit=1)
+        executions = self.get_executions_for_graph(graph_id, period, limit=1)
         return executions[0] if executions else None
 
-    async def get_final_period_executions(self, graph_id: str) -> list[GraphExecution]:
+    def get_final_period_executions(self, graph_id: str) -> list[GraphExecution]:
         """Get all finalized period executions for trend analysis.
 
         Args:
@@ -237,12 +237,12 @@ class GraphExecutionRepository:
             .order_by(GraphExecutionRecord.period)
         )
 
-        result = await self.session.execute(stmt)
+        result = self.session.execute(stmt)
         records = result.scalars().all()
 
         return [record_to_execution(record) for record in records]
 
-    async def delete_executions_for_graph(self, graph_id: str) -> int:
+    def delete_executions_for_graph(self, graph_id: str) -> int:
         """Delete all executions for a graph.
 
         Args:
@@ -252,11 +252,11 @@ class GraphExecutionRepository:
             Number of deleted records
         """
         stmt = select(GraphExecutionRecord).where(GraphExecutionRecord.graph_id == graph_id)
-        result = await self.session.execute(stmt)
+        result = self.session.execute(stmt)
         records = result.scalars().all()
 
         count = len(records)
         for record in records:
-            await self.session.delete(record)
+            self.session.delete(record)
 
         return count

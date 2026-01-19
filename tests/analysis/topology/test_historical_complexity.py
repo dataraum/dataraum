@@ -10,20 +10,20 @@ from dataraum_context.storage import Source, Table
 
 
 @pytest.fixture
-async def sample_source(async_session):
+def sample_source(session):
     """Create a sample source."""
     source = Source(
         source_id="test-source",
         name="test_data",
         source_type="csv",
     )
-    async_session.add(source)
-    await async_session.commit()
-    await async_session.refresh(source)
+    session.add(source)
+    session.commit()
+    session.refresh(source)
     return source
 
 
-async def create_test_table(async_session, sample_source, table_id: str, table_name: str):
+def create_test_table(session, sample_source, table_id: str, table_name: str):
     """Helper to create a test table."""
     table = Table(
         table_id=table_id,
@@ -31,16 +31,15 @@ async def create_test_table(async_session, sample_source, table_id: str, table_n
         table_name=table_name,
         layer="typed",
     )
-    async_session.add(table)
-    await async_session.commit()
+    session.add(table)
+    session.commit()
     return table
 
 
-@pytest.mark.asyncio
-async def test_compute_historical_complexity_no_data(async_session):
+def test_compute_historical_complexity_no_data(session):
     """Test compute_historical_complexity with no historical data."""
-    result = await compute_historical_complexity(
-        session=async_session,
+    result = compute_historical_complexity(
+        session=session,
         table_id="test_table_1",
         current_complexity=10,
         window_size=10,
@@ -53,11 +52,10 @@ async def test_compute_historical_complexity_no_data(async_session):
     assert data["z_score"] is None
 
 
-@pytest.mark.asyncio
-async def test_compute_historical_complexity_insufficient_data(async_session, sample_source):
+def test_compute_historical_complexity_insufficient_data(session, sample_source):
     """Test compute_historical_complexity with insufficient data points (<3)."""
     table_id = "test_table_2"
-    await create_test_table(async_session, sample_source, table_id, "test_data_2")
+    create_test_table(session, sample_source, table_id, "test_data_2")
 
     # Create 2 historical records (below the 3-point threshold)
     for i in range(2):
@@ -67,12 +65,12 @@ async def test_compute_historical_complexity_insufficient_data(async_session, sa
             structural_complexity=10 + i,
             topology_data={},
         )
-        async_session.add(metric)
+        session.add(metric)
 
-    await async_session.commit()
+    session.commit()
 
-    result = await compute_historical_complexity(
-        session=async_session,
+    result = compute_historical_complexity(
+        session=session,
         table_id=table_id,
         current_complexity=15,
         window_size=10,
@@ -85,11 +83,10 @@ async def test_compute_historical_complexity_insufficient_data(async_session, sa
     assert data["z_score"] is None
 
 
-@pytest.mark.asyncio
-async def test_compute_historical_complexity_with_data(async_session, sample_source):
+def test_compute_historical_complexity_with_data(session, sample_source):
     """Test compute_historical_complexity with sufficient historical data."""
     table_id = "test_table_3"
-    await create_test_table(async_session, sample_source, table_id, "test_data_3")
+    create_test_table(session, sample_source, table_id, "test_data_3")
 
     # Create 10 historical records with known complexity values
     # Mean: 10, Std: ~3.03
@@ -102,13 +99,13 @@ async def test_compute_historical_complexity_with_data(async_session, sample_sou
             structural_complexity=complexity,
             topology_data={},
         )
-        async_session.add(metric)
+        session.add(metric)
 
-    await async_session.commit()
+    session.commit()
 
     # Test with current complexity = 10 (at mean)
-    result = await compute_historical_complexity(
-        session=async_session,
+    result = compute_historical_complexity(
+        session=session,
         table_id=table_id,
         current_complexity=10,
         window_size=10,
@@ -121,11 +118,10 @@ async def test_compute_historical_complexity_with_data(async_session, sample_sou
     assert abs(data["z_score"]) < 0.1  # Close to 0 since current = mean
 
 
-@pytest.mark.asyncio
-async def test_compute_historical_complexity_anomaly(async_session, sample_source):
+def test_compute_historical_complexity_anomaly(session, sample_source):
     """Test compute_historical_complexity detects anomalies."""
     table_id = "test_table_4"
-    await create_test_table(async_session, sample_source, table_id, "test_data_4")
+    create_test_table(session, sample_source, table_id, "test_data_4")
 
     # Create stable baseline: 10 records with complexity around 10
     for i in range(10):
@@ -135,13 +131,13 @@ async def test_compute_historical_complexity_anomaly(async_session, sample_sourc
             structural_complexity=10,  # All same value
             topology_data={},
         )
-        async_session.add(metric)
+        session.add(metric)
 
-    await async_session.commit()
+    session.commit()
 
     # Test with current complexity = 30 (anomalously high)
-    result = await compute_historical_complexity(
-        session=async_session,
+    result = compute_historical_complexity(
+        session=session,
         table_id=table_id,
         current_complexity=30,
         window_size=10,
@@ -155,11 +151,10 @@ async def test_compute_historical_complexity_anomaly(async_session, sample_sourc
     assert data["z_score"] is None
 
 
-@pytest.mark.asyncio
-async def test_compute_historical_complexity_window_size(async_session, sample_source):
+def test_compute_historical_complexity_window_size(session, sample_source):
     """Test compute_historical_complexity respects window_size parameter."""
     table_id = "test_table_5"
-    await create_test_table(async_session, sample_source, table_id, "test_data_5")
+    create_test_table(session, sample_source, table_id, "test_data_5")
 
     # Create 20 historical records
     # First 10 (older): complexity = 5
@@ -172,13 +167,13 @@ async def test_compute_historical_complexity_window_size(async_session, sample_s
             structural_complexity=complexity,
             topology_data={},
         )
-        async_session.add(metric)
+        session.add(metric)
 
-    await async_session.commit()
+    session.commit()
 
     # Test with window_size=5 - should only see recent records (complexity=15)
-    result = await compute_historical_complexity(
-        session=async_session,
+    result = compute_historical_complexity(
+        session=session,
         table_id=table_id,
         current_complexity=16,
         window_size=5,

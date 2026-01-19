@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.cycles.config import format_cycle_vocabulary_for_context
 from dataraum_context.analysis.relationships.graph_topology import (
@@ -21,8 +21,8 @@ if TYPE_CHECKING:
     import duckdb
 
 
-async def build_cycle_detection_context(
-    session: AsyncSession,
+def build_cycle_detection_context(
+    session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_ids: list[str],
     *,
@@ -34,7 +34,7 @@ async def build_cycle_detection_context(
     for the LLM agent prompt.
 
     Args:
-        session: SQLAlchemy async session
+        session: SQLAlchemy session
         duckdb_conn: DuckDB connection for data queries
         table_ids: Tables to analyze
         domain: Optional domain name for domain-specific vocabulary
@@ -60,7 +60,7 @@ async def build_cycle_detection_context(
 
     # 1. Dataset Overview
     tables_stmt = select(Table).where(Table.table_id.in_(table_ids))
-    tables = (await session.execute(tables_stmt)).scalars().all()
+    tables = session.execute(tables_stmt).scalars().all()
 
     table_info = []
     for t in tables:
@@ -74,7 +74,7 @@ async def build_cycle_detection_context(
 
         # Get columns
         cols_stmt = select(Column).where(Column.table_id == t.table_id)
-        columns = (await session.execute(cols_stmt)).scalars().all()
+        columns = session.execute(cols_stmt).scalars().all()
 
         table_info.append(
             {
@@ -98,7 +98,7 @@ async def build_cycle_detection_context(
         .join(Table, Column.table_id == Table.table_id)
         .where(Table.table_id.in_(table_ids))
     )
-    annotations = (await session.execute(annotations_stmt)).all()
+    annotations = session.execute(annotations_stmt).all()
 
     semantic_by_table: dict[str, list[dict[str, Any]]] = {}
     status_columns: list[dict[str, Any]] = []
@@ -154,7 +154,7 @@ async def build_cycle_detection_context(
         .join(Table, TableEntity.table_id == Table.table_id)
         .where(Table.table_id.in_(table_ids))
     )
-    entities = (await session.execute(entities_stmt)).all()
+    entities = session.execute(entities_stmt).all()
 
     context["entity_classifications"] = [
         {
@@ -179,7 +179,7 @@ async def build_cycle_detection_context(
         .join(Column, Relationship.from_column_id == Column.column_id)
         .where(Relationship.from_table_id.in_(table_ids))
     )
-    relationships = (await session.execute(relationships_stmt)).all()
+    relationships = session.execute(relationships_stmt).all()
 
     # Get to-side info
     rel_list = []
@@ -187,8 +187,8 @@ async def build_cycle_detection_context(
         # Get to-table and to-column names
         to_table_stmt = select(Table.table_name).where(Table.table_id == rel.to_table_id)
         to_col_stmt = select(Column.column_name).where(Column.column_id == rel.to_column_id)
-        to_table = (await session.execute(to_table_stmt)).scalar()
-        to_col = (await session.execute(to_col_stmt)).scalar()
+        to_table = session.execute(to_table_stmt).scalar()
+        to_col = session.execute(to_col_stmt).scalar()
 
         if rel.detection_method == "llm" or rel.confidence > 0.7:
             rel_list.append(

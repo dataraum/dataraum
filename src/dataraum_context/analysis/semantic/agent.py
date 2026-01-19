@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.relationships.graph_topology import (
     analyze_graph_topology,
@@ -90,9 +90,9 @@ class SemanticAgent(LLMFeature):
         super().__init__(config, provider, prompt_renderer, cache)
         self._ontology_loader = OntologyLoader(ontologies_dir)
 
-    async def analyze(
+    def analyze(
         self,
-        session: AsyncSession,
+        session: Session,
         table_ids: list[str],
         ontology: str = "general",
         relationship_candidates: list[dict[str, Any]] | None = None,
@@ -118,7 +118,7 @@ class SemanticAgent(LLMFeature):
             return Result.fail("Semantic analysis is disabled in config")
 
         # Load column profiles from metadata
-        profiles_result = await self._load_profiles(session, table_ids)
+        profiles_result = self._load_profiles(session, table_ids)
         if not profiles_result.success or not profiles_result.value:
             return Result.fail(profiles_result.error if profiles_result.error else "Unknown Error")
 
@@ -129,7 +129,7 @@ class SemanticAgent(LLMFeature):
         samples = sampler.prepare_samples(profiles)
 
         # Load within-table correlation data (if available from Phase 4b)
-        correlations = await load_correlations_for_semantic(session, table_ids)
+        correlations = load_correlations_for_semantic(session, table_ids)
 
         # Log correlation context usage
         if correlations:
@@ -203,7 +203,7 @@ class SemanticAgent(LLMFeature):
         tool = self._create_tool_definition()
 
         # Call LLM with tool use
-        response_result = await self._call_with_tool(
+        response_result = self._call_with_tool(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             tool=tool,
@@ -222,9 +222,7 @@ class SemanticAgent(LLMFeature):
         except Exception as e:
             return Result.fail(f"Failed to parse semantic response: {e}")
 
-    async def _load_profiles(
-        self, session: AsyncSession, table_ids: list[str]
-    ) -> Result[list[ColumnProfile]]:
+    def _load_profiles(self, session: Session, table_ids: list[str]) -> Result[list[ColumnProfile]]:
         """Load column profiles from metadata.
 
         Args:
@@ -272,7 +270,7 @@ class SemanticAgent(LLMFeature):
                 .where(Table.table_id.in_(table_ids))
             )
 
-            result = await session.execute(stmt)
+            result = session.execute(stmt)
             rows = result.all()
 
             profiles = []
@@ -338,7 +336,7 @@ class SemanticAgent(LLMFeature):
                 placeholder_stmt = (
                     select(Column, Table).join(Table).where(Table.table_id.in_(table_ids))
                 )
-                placeholder_result = await session.execute(placeholder_stmt)
+                placeholder_result = session.execute(placeholder_stmt)
                 placeholder_rows = placeholder_result.all()
 
                 for col, table in placeholder_rows:
@@ -563,7 +561,7 @@ class SemanticAgent(LLMFeature):
             input_schema=schema,
         )
 
-    async def _call_with_tool(
+    def _call_with_tool(
         self,
         system_prompt: str | None,
         user_prompt: str,
@@ -597,7 +595,7 @@ class SemanticAgent(LLMFeature):
         )
 
         # Call LLM
-        response_result = await self.provider.converse(request)
+        response_result = self.provider.converse(request)
 
         if not response_result.success or not response_result.value:
             return Result.fail(response_result.error or "LLM call failed")

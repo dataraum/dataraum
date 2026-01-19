@@ -50,7 +50,7 @@ class ImportPhase(BasePhase):
     def outputs(self) -> list[str]:
         return ["raw_tables"]
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if raw tables already exist for this source."""
         # Check if source exists and has tables
         stmt = (
@@ -58,7 +58,7 @@ class ImportPhase(BasePhase):
             .join(Source)
             .where(Source.source_id == ctx.source_id, Table.layer == "raw")
         )
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         existing_tables = result.scalars().all()
 
         if existing_tables:
@@ -69,7 +69,7 @@ class ImportPhase(BasePhase):
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Load data from source.
 
         Args:
@@ -90,14 +90,14 @@ class ImportPhase(BasePhase):
         source_name = ctx.config.get("source_name", path.stem.lower())
 
         # Get or create source
-        source = await self._get_or_create_source(ctx, source_name, path)
+        source = self._get_or_create_source(ctx, source_name, path)
 
         # Load data based on path type
         loader = CSVLoader()
         junk_columns = ctx.config.get("junk_columns", [])
 
         if path.is_dir():
-            result = await self._load_directory(
+            result = self._load_directory(
                 ctx=ctx,
                 loader=loader,
                 source=source,
@@ -106,7 +106,7 @@ class ImportPhase(BasePhase):
                 junk_columns=junk_columns,
             )
         else:
-            result = await self._load_single_file(
+            result = self._load_single_file(
                 ctx=ctx,
                 loader=loader,
                 source=source,
@@ -116,12 +116,10 @@ class ImportPhase(BasePhase):
 
         return result
 
-    async def _get_or_create_source(
-        self, ctx: PhaseContext, source_name: str, path: Path
-    ) -> Source:
+    def _get_or_create_source(self, ctx: PhaseContext, source_name: str, path: Path) -> Source:
         """Get existing source or create a new one."""
         # Check for existing source with this ID
-        source = await ctx.session.get(Source, ctx.source_id)
+        source = ctx.session.get(Source, ctx.source_id)
 
         if source is None:
             # Create new source
@@ -135,7 +133,7 @@ class ImportPhase(BasePhase):
 
         return source
 
-    async def _load_directory(
+    def _load_directory(
         self,
         ctx: PhaseContext,
         loader: CSVLoader,
@@ -161,7 +159,7 @@ class ImportPhase(BasePhase):
         total_rows = 0
 
         for csv_file in csv_files:
-            result = await loader._load_single_file(
+            result = loader._load_single_file(
                 file_path=csv_file,
                 source_id=source.source_id,
                 duckdb_conn=ctx.duckdb_conn,
@@ -179,12 +177,12 @@ class ImportPhase(BasePhase):
 
             # Drop junk columns from this table
             if junk_columns:
-                await self._drop_junk_columns(ctx, [staged_table], junk_columns)
+                self._drop_junk_columns(ctx, [staged_table], junk_columns)
 
         if not table_ids:
             return PhaseResult.failed("No CSV files were successfully loaded")
 
-        await ctx.session.commit()
+        ctx.session.commit()
         duration = time.time() - start_time
 
         return PhaseResult.success(
@@ -195,7 +193,7 @@ class ImportPhase(BasePhase):
             warnings=warnings,
         )
 
-    async def _load_single_file(
+    def _load_single_file(
         self,
         ctx: PhaseContext,
         loader: CSVLoader,
@@ -208,7 +206,7 @@ class ImportPhase(BasePhase):
         null_config = load_null_value_config()
 
         # Use the loader's internal method with our source_id
-        result = await loader._load_single_file(
+        result = loader._load_single_file(
             file_path=file_path,
             source_id=source.source_id,
             duckdb_conn=ctx.duckdb_conn,
@@ -224,9 +222,9 @@ class ImportPhase(BasePhase):
 
         # Drop junk columns
         if junk_columns:
-            await self._drop_junk_columns(ctx, [staged_table], junk_columns)
+            self._drop_junk_columns(ctx, [staged_table], junk_columns)
 
-        await ctx.session.commit()
+        ctx.session.commit()
 
         return PhaseResult.success(
             outputs={"raw_tables": [str(staged_table.table_id)]},
@@ -236,7 +234,7 @@ class ImportPhase(BasePhase):
             warnings=result.warnings,
         )
 
-    async def _drop_junk_columns(
+    def _drop_junk_columns(
         self,
         ctx: PhaseContext,
         staged_tables: list[Any],
@@ -250,7 +248,7 @@ class ImportPhase(BasePhase):
 
         for staged in staged_tables:
             # Get the table record
-            table = await ctx.session.get(Table, staged.table_id)
+            table = ctx.session.get(Table, staged.table_id)
             if not table or not table.duckdb_path:
                 continue
 
@@ -264,13 +262,13 @@ class ImportPhase(BasePhase):
                         Column.table_id == table.table_id,
                         Column.column_name == junk,
                     )
-                    col_result = await ctx.session.execute(stmt)
+                    col_result = ctx.session.execute(stmt)
                     col = col_result.scalar_one_or_none()
                     if col:
-                        await ctx.session.delete(col)
+                        ctx.session.delete(col)
 
                 except Exception:
                     # Column might not exist - that's fine
                     pass
 
-        await ctx.session.commit()
+        ctx.session.commit()

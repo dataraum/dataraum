@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.pipeline.base import PIPELINE_DAG, PhaseStatus
 from dataraum_context.pipeline.db_models import PhaseCheckpoint, PipelineRun
@@ -83,11 +83,11 @@ class PipelineStatus:
         }
 
 
-async def get_pipeline_status(session: AsyncSession, source_id: str) -> PipelineStatus:
+def get_pipeline_status(session: Session, source_id: str) -> PipelineStatus:
     """Get the current pipeline status for a source.
 
     Args:
-        session: SQLAlchemy async session
+        session: SQLAlchemy session
         source_id: Source identifier
 
     Returns:
@@ -100,12 +100,12 @@ async def get_pipeline_status(session: AsyncSession, source_id: str) -> Pipeline
         .order_by(PipelineRun.started_at.desc())
         .limit(1)
     )
-    run_result = await session.execute(latest_run_stmt)
+    run_result = session.execute(latest_run_stmt)
     latest_run = run_result.scalar_one_or_none()
 
     # Get all checkpoints for this source
     checkpoints_stmt = select(PhaseCheckpoint).where(PhaseCheckpoint.source_id == source_id)
-    checkpoint_result = await session.execute(checkpoints_stmt)
+    checkpoint_result = session.execute(checkpoints_stmt)
     checkpoints: list[PhaseCheckpoint] = list(checkpoint_result.scalars().all())
 
     # Build checkpoint lookup (latest per phase)
@@ -155,11 +155,11 @@ async def get_pipeline_status(session: AsyncSession, source_id: str) -> Pipeline
     )
 
 
-async def reset_pipeline(session: AsyncSession, source_id: str) -> int:
+def reset_pipeline(session: Session, source_id: str) -> int:
     """Reset all checkpoints for a source.
 
     Args:
-        session: SQLAlchemy async session
+        session: SQLAlchemy session
         source_id: Source identifier
 
     Returns:
@@ -167,15 +167,15 @@ async def reset_pipeline(session: AsyncSession, source_id: str) -> int:
     """
     # Count checkpoints
     count_stmt = select(func.count()).where(PhaseCheckpoint.source_id == source_id)
-    result = await session.execute(count_stmt)
+    result = session.execute(count_stmt)
     count = result.scalar() or 0
 
     # Delete all runs and checkpoints (cascade)
     runs_stmt = select(PipelineRun).where(PipelineRun.source_id == source_id)
-    result = await session.execute(runs_stmt)
+    result = session.execute(runs_stmt)
     runs = result.scalars().all()
 
     for run in runs:
-        await session.delete(run)
+        session.delete(run)
 
     return count

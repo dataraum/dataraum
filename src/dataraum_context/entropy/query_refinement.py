@@ -11,7 +11,7 @@ Usage:
     )
 
     # Refine interpretations for columns used in a query
-    result = await refine_interpretations_for_query(
+    result = refine_interpretations_for_query(
         session=session,
         entropy_context=entropy_ctx,
         query=sql_query,
@@ -25,7 +25,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.entropy.interpretation import (
     EntropyInterpretation,
@@ -83,8 +83,8 @@ def find_columns_in_query(
     return matched
 
 
-async def refine_interpretations_for_query(
-    session: AsyncSession,
+def refine_interpretations_for_query(
+    session: Session,
     entropy_context: EntropyContext,
     query: str,
     *,
@@ -136,7 +136,7 @@ async def refine_interpretations_for_query(
 
     # Try batch LLM interpretation with query context
     if interpreter is not None:
-        batch_result = await interpreter.interpret_batch(
+        batch_result = interpreter.interpret_batch(
             session=session,
             inputs=inputs,
             query=query,

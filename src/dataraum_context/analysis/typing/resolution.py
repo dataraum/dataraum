@@ -16,8 +16,7 @@ from uuid import uuid4
 
 import duckdb
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import Session, selectinload
 
 from dataraum_context.analysis.typing.models import ColumnCastResult, TypeResolutionResult
 from dataraum_context.analysis.typing.patterns import Pattern, load_pattern_config
@@ -132,10 +131,10 @@ def _generate_quarantine_sql(
     return f'CREATE OR REPLACE TABLE "{quarantine_table}" AS SELECT *, CURRENT_TIMESTAMP AS _quarantined_at FROM "{raw_table}" WHERE {where}'
 
 
-async def resolve_types(
+def resolve_types(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
     min_confidence: float = 0.85,
 ) -> Result[TypeResolutionResult]:
     """Resolve types for a raw table using DuckDB SQL.
@@ -164,7 +163,7 @@ async def resolve_types(
             selectinload(Table.columns).selectinload(Column.type_decision),
         )
     )
-    result = await session.execute(stmt)
+    result = session.execute(stmt)
     table = result.scalar_one_or_none()
 
     if not table:

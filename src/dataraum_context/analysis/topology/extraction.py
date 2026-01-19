@@ -22,7 +22,7 @@ from dataraum_context.analysis.topology.models import (
 from dataraum_context.core.models.base import Result
 
 
-async def extract_betti_numbers(
+def extract_betti_numbers(
     persistence_diagrams: list[np.ndarray],
 ) -> Result[BettiNumbers]:
     """Extract Betti numbers from persistence diagrams.
@@ -86,7 +86,7 @@ async def extract_betti_numbers(
         return Result.fail(f"Betti number extraction failed: {e}")
 
 
-async def process_persistence_diagrams(
+def process_persistence_diagrams(
     persistence_diagrams: list[np.ndarray],
 ) -> Result[list[PersistenceDiagram]]:
     """Convert raw persistence diagrams to structured format.
@@ -201,7 +201,7 @@ def compute_persistent_entropy(persistence_diagrams: list[np.ndarray]) -> float:
         return 0.0
 
 
-async def detect_persistent_cycles(
+def detect_persistent_cycles(
     persistence_diagrams: list[np.ndarray],
     min_persistence: float = 0.1,
 ) -> Result[list[CycleDetection]]:

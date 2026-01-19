@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import duckdb
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.slicing.agent import SlicingAgent
 from dataraum_context.analysis.slicing.db_models import SliceDefinition, SlicingAnalysisRun
@@ -16,8 +16,8 @@ from dataraum_context.analysis.slicing.utils import load_slicing_context
 from dataraum_context.core.models.base import Result
 
 
-async def analyze_slices(
-    session: AsyncSession,
+def analyze_slices(
+    session: Session,
     agent: SlicingAgent,
     table_ids: list[str],
     duckdb_conn: duckdb.DuckDBPyConnection | None = None,
@@ -50,11 +50,11 @@ async def analyze_slices(
         status="running",
     )
     session.add(run)
-    await session.flush()
+    session.flush()
 
     try:
         # Load context from previous phases
-        context_data = await load_slicing_context(session, table_ids)
+        context_data = load_slicing_context(session, table_ids)
 
         # Update run with context stats
         run.tables_analyzed = len(context_data.get("tables", []))
@@ -63,7 +63,7 @@ async def analyze_slices(
         )
 
         # Call slicing agent
-        llm_result = await agent.analyze(
+        llm_result = agent.analyze(
             session=session,
             table_ids=table_ids,
             context_data=context_data,

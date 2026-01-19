@@ -9,11 +9,11 @@ Tests cover:
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import duckdb
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.core.models.base import Result
 from dataraum_context.graphs.agent import (
@@ -172,8 +172,7 @@ class TestTableSchema:
 class TestGraphAgentCaching:
     """Tests for GraphAgent caching behavior."""
 
-    @pytest.mark.asyncio
-    async def test_cache_key_generation(self, sample_graph):
+    def test_cache_key_generation(self, sample_graph):
         """Test that cache keys are generated correctly."""
         # Create agent with mocked dependencies
         agent = GraphAgent(
@@ -190,8 +189,7 @@ class TestGraphAgentCaching:
         assert key2 == "test_metric:1.0:mapping-2"
         assert key1 != key2
 
-    @pytest.mark.asyncio
-    async def test_db_cache_save_and_load(self, async_session: AsyncSession, sample_graph):
+    def test_db_cache_save_and_load(self, session: Session, sample_graph):
         """Test saving and loading generated code from database."""
         agent = GraphAgent(
             config=MagicMock(),
@@ -216,12 +214,12 @@ class TestGraphAgentCaching:
         )
 
         # Save to DB
-        await agent._save_to_db(async_session, code)
-        await async_session.commit()
+        agent._save_to_db(session, code)
+        session.commit()
 
         # Load from DB
-        loaded = await agent._load_from_db(
-            async_session,
+        loaded = agent._load_from_db(
+            session,
             sample_graph.graph_id,
             sample_graph.version,
             "test-mapping",
@@ -233,8 +231,7 @@ class TestGraphAgentCaching:
         assert loaded.column_mappings == code.column_mappings
         assert loaded.is_validated is True
 
-    @pytest.mark.asyncio
-    async def test_db_cache_miss(self, async_session: AsyncSession):
+    def test_db_cache_miss(self, session: Session):
         """Test that cache miss returns None."""
         agent = GraphAgent(
             config=MagicMock(),
@@ -243,8 +240,8 @@ class TestGraphAgentCaching:
             cache=MagicMock(),
         )
 
-        loaded = await agent._load_from_db(
-            async_session,
+        loaded = agent._load_from_db(
+            session,
             "nonexistent",
             "1.0",
             "mapping",
@@ -348,10 +345,9 @@ class TestGraphAgentExecution:
 class TestGraphAgentIntegration:
     """Integration tests for GraphAgent with mocked LLM."""
 
-    @pytest.mark.asyncio
-    async def test_execute_with_mocked_llm(
+    def test_execute_with_mocked_llm(
         self,
-        async_session: AsyncSession,
+        session: Session,
         duckdb_with_data,
         sample_graph,
         mock_llm_response,
@@ -363,8 +359,8 @@ class TestGraphAgentIntegration:
 
         # Mock LLM call
         mock_cache = MagicMock()
-        mock_cache.get = AsyncMock(return_value=None)
-        mock_cache.put = AsyncMock()
+        mock_cache.get = MagicMock(return_value=None)
+        mock_cache.put = MagicMock()
 
         # Create agent
         mock_config = MagicMock()
@@ -382,7 +378,7 @@ class TestGraphAgentIntegration:
         )
 
         # Mock the LLM call
-        agent.provider.complete = AsyncMock(return_value=Result.ok(mock_llm_response))
+        agent.provider.complete = MagicMock(return_value=Result.ok(mock_llm_response))
 
         context = ExecutionContext(
             duckdb_conn=duckdb_with_data,
@@ -391,7 +387,7 @@ class TestGraphAgentIntegration:
         )
 
         # Execute
-        result = await agent.execute(async_session, sample_graph, context)
+        result = agent.execute(session, sample_graph, context)
 
         assert result.success
         assert result.value is not None
@@ -399,10 +395,9 @@ class TestGraphAgentIntegration:
         assert execution.graph_id == "test_metric"
         assert execution.output_value == 600.0  # Sum of 100 + 200 + 300
 
-    @pytest.mark.asyncio
-    async def test_execute_uses_cache_on_second_call(
+    def test_execute_uses_cache_on_second_call(
         self,
-        async_session: AsyncSession,
+        session: Session,
         duckdb_with_data,
         sample_graph,
         mock_llm_response,
@@ -413,8 +408,8 @@ class TestGraphAgentIntegration:
         mock_provider.get_model_for_tier.return_value = "test-model"
 
         mock_cache = MagicMock()
-        mock_cache.get = AsyncMock(return_value=None)
-        mock_cache.put = AsyncMock()
+        mock_cache.get = MagicMock(return_value=None)
+        mock_cache.put = MagicMock()
 
         mock_config = MagicMock()
         mock_config.limits.max_output_tokens_per_request = 4000
@@ -430,7 +425,7 @@ class TestGraphAgentIntegration:
             cache=mock_cache,
         )
 
-        agent.provider.complete = AsyncMock(return_value=Result.ok(mock_llm_response))
+        agent.provider.complete = MagicMock(return_value=Result.ok(mock_llm_response))
 
         context = ExecutionContext(
             duckdb_conn=duckdb_with_data,
@@ -439,12 +434,12 @@ class TestGraphAgentIntegration:
         )
 
         # First execution - should call LLM
-        result1 = await agent.execute(async_session, sample_graph, context)
+        result1 = agent.execute(session, sample_graph, context)
         assert result1.success
         assert agent.provider.complete.call_count == 1
 
         # Second execution - should use in-memory cache
-        result2 = await agent.execute(async_session, sample_graph, context)
+        result2 = agent.execute(session, sample_graph, context)
         assert result2.success
         assert agent.provider.complete.call_count == 1  # No additional call
 

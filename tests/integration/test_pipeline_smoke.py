@@ -18,14 +18,13 @@ pytestmark = pytest.mark.integration
 class TestImportPhaseSmoke:
     """Smoke tests for the import phase."""
 
-    @pytest.mark.asyncio
-    async def test_import_small_finance_directory(
+    def test_import_small_finance_directory(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Import the small finance fixture directory."""
-        result = await harness.run_import(
+        result = harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
@@ -36,14 +35,13 @@ class TestImportPhaseSmoke:
         assert len(result.outputs["raw_tables"]) == 5  # 5 CSV files
         assert result.records_created == 5
 
-    @pytest.mark.asyncio
-    async def test_import_creates_duckdb_tables(
+    def test_import_creates_duckdb_tables(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify DuckDB tables are created after import."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
@@ -56,27 +54,25 @@ class TestImportPhaseSmoke:
         for table in tables:
             assert table.startswith("raw_")
 
-    @pytest.mark.asyncio
-    async def test_import_creates_metadata_records(
+    def test_import_creates_metadata_records(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify SQLAlchemy metadata records are created."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
 
-        table_count = await harness.get_table_count()
-        column_count = await harness.get_column_count()
+        table_count = harness.get_table_count()
+        column_count = harness.get_column_count()
 
         assert table_count == 5
         assert column_count > 0  # Each table has columns
 
-    @pytest.mark.asyncio
-    async def test_import_single_csv(
+    def test_import_single_csv(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
@@ -84,7 +80,7 @@ class TestImportPhaseSmoke:
         """Import a single CSV file."""
         csv_file = small_finance_path / "customers.csv"
 
-        result = await harness.run_import(
+        result = harness.run_import(
             source_path=csv_file,
             source_name="customers_only",
             junk_columns=FINANCE_JUNK_COLUMNS,
@@ -94,14 +90,13 @@ class TestImportPhaseSmoke:
         assert len(result.outputs["raw_tables"]) == 1
         assert result.records_processed == 100  # 100 rows in synthetic fixture
 
-    @pytest.mark.asyncio
-    async def test_import_preserves_data(
+    def test_import_preserves_data(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify imported data matches source."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
@@ -121,14 +116,13 @@ class TestImportPhaseSmoke:
                 f"{table_name}: expected {expected_rows}, got {actual_rows}"
             )
 
-    @pytest.mark.asyncio
-    async def test_import_drops_junk_columns(
+    def test_import_drops_junk_columns(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify junk columns are dropped."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
@@ -150,9 +144,8 @@ class TestImportPhaseRealData:
     They're marked as slow and can be skipped in CI.
     """
 
-    @pytest.mark.asyncio
     @pytest.mark.slow
-    async def test_import_real_finance_data(
+    def test_import_real_finance_data(
         self,
         harness: PipelineTestHarness,
         real_finance_path: Path,
@@ -161,7 +154,7 @@ class TestImportPhaseRealData:
         if not real_finance_path.exists():
             pytest.skip("Real finance data not available")
 
-        result = await harness.run_import(
+        result = harness.run_import(
             source_path=real_finance_path,
             source_name="finance_example",
             junk_columns=FINANCE_JUNK_COLUMNS,
@@ -173,9 +166,8 @@ class TestImportPhaseRealData:
         # Check we loaded significant data
         assert result.records_processed > 1000
 
-    @pytest.mark.asyncio
     @pytest.mark.slow
-    async def test_real_data_master_table_size(
+    def test_real_data_master_table_size(
         self,
         harness: PipelineTestHarness,
         real_finance_path: Path,
@@ -184,7 +176,7 @@ class TestImportPhaseRealData:
         if not real_finance_path.exists():
             pytest.skip("Real finance data not available")
 
-        await harness.run_import(
+        harness.run_import(
             source_path=real_finance_path,
             source_name="finance_example",
             junk_columns=FINANCE_JUNK_COLUMNS,
@@ -200,40 +192,38 @@ class TestImportPhaseRealData:
 class TestTypingPhaseSmoke:
     """Smoke tests for the typing phase."""
 
-    @pytest.mark.asyncio
-    async def test_typing_creates_typed_tables(
+    def test_typing_creates_typed_tables(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify typed tables are created after typing phase."""
         # First import
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
 
         # Then type
-        result = await harness.run_phase("typing")
+        result = harness.run_phase("typing")
 
         assert result.status == PhaseStatus.COMPLETED, f"Typing failed: {result.error}"
         assert "typed_tables" in result.outputs
         assert len(result.outputs["typed_tables"]) == 5  # 5 tables typed
 
-    @pytest.mark.asyncio
-    async def test_typing_creates_quarantine_tables(
+    def test_typing_creates_quarantine_tables(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify quarantine tables are created."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
+        harness.run_phase("typing")
 
         tables = harness.get_duckdb_tables()
 
@@ -246,19 +236,18 @@ class TestTypingPhaseSmoke:
         assert len(typed_tables) == 5
         assert len(quarantine_tables) == 5
 
-    @pytest.mark.asyncio
-    async def test_typing_infers_correct_types(
+    def test_typing_infers_correct_types(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify types are correctly inferred."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
+        harness.run_phase("typing")
 
         # Check transaction table types
         columns = harness.query_duckdb("DESCRIBE typed_transactions")
@@ -273,19 +262,18 @@ class TestTypingPhaseSmoke:
         # Amount should be numeric
         assert col_types["Amount"] == "DOUBLE"
 
-    @pytest.mark.asyncio
-    async def test_typing_preserves_row_counts(
+    def test_typing_preserves_row_counts(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify row counts are preserved (typed + quarantine = raw)."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
+        harness.run_phase("typing")
 
         for base_name in ["customers", "vendors", "products", "transactions", "payment_methods"]:
             raw_count = harness.query_duckdb(f"SELECT COUNT(*) FROM raw_{base_name}")[0][0]
@@ -299,19 +287,18 @@ class TestTypingPhaseSmoke:
                 f"{base_name}: typed({typed_count}) + quarantine({quarantine_count}) != raw({raw_count})"
             )
 
-    @pytest.mark.asyncio
-    async def test_typing_with_clean_data_has_no_quarantine(
+    def test_typing_with_clean_data_has_no_quarantine(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify clean synthetic data has no quarantined rows."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
+        harness.run_phase("typing")
 
         # All quarantine tables should be empty for clean data
         for base_name in ["customers", "vendors", "products", "transactions", "payment_methods"]:
@@ -324,73 +311,70 @@ class TestTypingPhaseSmoke:
 class TestStatisticsPhaseSmoke:
     """Smoke tests for the statistics phase."""
 
-    @pytest.mark.asyncio
-    async def test_statistics_creates_profiles(
+    def test_statistics_creates_profiles(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify statistical profiles are created after statistics phase."""
         # Run import and typing first
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
+        harness.run_phase("typing")
 
         # Then run statistics
-        result = await harness.run_phase("statistics")
+        result = harness.run_phase("statistics")
 
         assert result.status == PhaseStatus.COMPLETED, f"Statistics failed: {result.error}"
         assert "statistical_profiles" in result.outputs
         assert len(result.outputs["statistical_profiles"]) == 5  # 5 tables profiled
 
-    @pytest.mark.asyncio
-    async def test_statistics_stores_profile_data(
+    def test_statistics_stores_profile_data(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify statistical profile data is stored in metadata database."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
-        await harness.run_phase("statistics")
+        harness.run_phase("typing")
+        harness.run_phase("statistics")
 
         # Check that profiles are stored
         from sqlalchemy import func, select
 
         from dataraum_context.analysis.statistics.db_models import StatisticalProfile
 
-        async with harness.session_factory() as session:
+        with harness.session_factory() as session:
             stmt = (
                 select(func.count())
                 .select_from(StatisticalProfile)
                 .where(StatisticalProfile.layer == "typed")
             )
-            profile_count = (await session.execute(stmt)).scalar()
+            profile_count = (session.execute(stmt)).scalar()
 
         # Should have profiles for all columns across 5 tables
         assert profile_count > 0
 
-    @pytest.mark.asyncio
-    async def test_statistics_computes_numeric_stats(
+    def test_statistics_computes_numeric_stats(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify numeric statistics are computed for numeric columns."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
-        await harness.run_phase("statistics")
+        harness.run_phase("typing")
+        harness.run_phase("statistics")
 
         # Check profile for Transaction ID (numeric column)
         from sqlalchemy import select
@@ -398,13 +382,13 @@ class TestStatisticsPhaseSmoke:
         from dataraum_context.analysis.statistics.db_models import StatisticalProfile
         from dataraum_context.storage import Column, Table
 
-        async with harness.session_factory() as session:
+        with harness.session_factory() as session:
             # Find the transactions table
             table_stmt = select(Table).where(
                 Table.table_name == "transactions",
                 Table.layer == "typed",
             )
-            table = (await session.execute(table_stmt)).scalar_one_or_none()
+            table = (session.execute(table_stmt)).scalar_one_or_none()
             assert table is not None
 
             # Find the Transaction ID column
@@ -412,7 +396,7 @@ class TestStatisticsPhaseSmoke:
                 Column.table_id == table.table_id,
                 Column.column_name == "Transaction ID",
             )
-            column = (await session.execute(col_stmt)).scalar_one_or_none()
+            column = (session.execute(col_stmt)).scalar_one_or_none()
             assert column is not None
 
             # Get the profile
@@ -420,7 +404,7 @@ class TestStatisticsPhaseSmoke:
                 StatisticalProfile.column_id == column.column_id,
                 StatisticalProfile.layer == "typed",
             )
-            profile = (await session.execute(profile_stmt)).scalar_one_or_none()
+            profile = (session.execute(profile_stmt)).scalar_one_or_none()
             assert profile is not None
 
         # Verify numeric stats are present (SQLite stores booleans as 0/1)
@@ -432,44 +416,43 @@ class TestStatisticsPhaseSmoke:
         assert "max_value" in profile_data["numeric_stats"]
         assert "mean" in profile_data["numeric_stats"]
 
-    @pytest.mark.asyncio
-    async def test_statistics_computes_cardinality(
+    def test_statistics_computes_cardinality(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify cardinality metrics are computed."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
-        await harness.run_phase("statistics")
+        harness.run_phase("typing")
+        harness.run_phase("statistics")
 
         from sqlalchemy import select
 
         from dataraum_context.analysis.statistics.db_models import StatisticalProfile
         from dataraum_context.storage import Column, Table
 
-        async with harness.session_factory() as session:
+        with harness.session_factory() as session:
             # Find the transactions table
             table_stmt = select(Table).where(
                 Table.table_name == "transactions",
                 Table.layer == "typed",
             )
-            table = (await session.execute(table_stmt)).scalar_one_or_none()
+            table = (session.execute(table_stmt)).scalar_one_or_none()
             assert table is not None
 
             # Get profiles for this table
             col_stmt = select(Column.column_id).where(Column.table_id == table.table_id)
-            col_ids = (await session.execute(col_stmt)).scalars().all()
+            col_ids = (session.execute(col_stmt)).scalars().all()
 
             profile_stmt = select(StatisticalProfile).where(
                 StatisticalProfile.column_id.in_(col_ids),
                 StatisticalProfile.layer == "typed",
             )
-            profiles = (await session.execute(profile_stmt)).scalars().all()
+            profiles = (session.execute(profile_stmt)).scalars().all()
 
         # All profiles should have cardinality metrics
         for profile in profiles:
@@ -477,33 +460,32 @@ class TestStatisticsPhaseSmoke:
             assert profile.distinct_count is not None
             assert profile.cardinality_ratio is not None
 
-    @pytest.mark.asyncio
-    async def test_statistics_computes_top_values(
+    def test_statistics_computes_top_values(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify top values are computed for columns."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
-        await harness.run_phase("statistics")
+        harness.run_phase("typing")
+        harness.run_phase("statistics")
 
         from sqlalchemy import select
 
         from dataraum_context.analysis.statistics.db_models import StatisticalProfile
         from dataraum_context.storage import Column, Table
 
-        async with harness.session_factory() as session:
+        with harness.session_factory() as session:
             # Find the transactions table
             table_stmt = select(Table).where(
                 Table.table_name == "transactions",
                 Table.layer == "typed",
             )
-            table = (await session.execute(table_stmt)).scalar_one_or_none()
+            table = (session.execute(table_stmt)).scalar_one_or_none()
             assert table is not None
 
             # Find the Transaction type column (categorical)
@@ -511,7 +493,7 @@ class TestStatisticsPhaseSmoke:
                 Column.table_id == table.table_id,
                 Column.column_name == "Transaction type",
             )
-            column = (await session.execute(col_stmt)).scalar_one_or_none()
+            column = (session.execute(col_stmt)).scalar_one_or_none()
             assert column is not None
 
             # Get the profile
@@ -519,7 +501,7 @@ class TestStatisticsPhaseSmoke:
                 StatisticalProfile.column_id == column.column_id,
                 StatisticalProfile.layer == "typed",
             )
-            profile = (await session.execute(profile_stmt)).scalar_one_or_none()
+            profile = (session.execute(profile_stmt)).scalar_one_or_none()
             assert profile is not None
 
         # Verify top values are present
@@ -532,26 +514,25 @@ class TestStatisticsPhaseSmoke:
         assert "count" in first_top
         assert "percentage" in first_top
 
-    @pytest.mark.asyncio
-    async def test_statistics_is_idempotent(
+    def test_statistics_is_idempotent(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify running statistics twice doesn't create duplicate profiles."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
+        harness.run_phase("typing")
 
         # Run statistics twice
-        result1 = await harness.run_phase("statistics")
+        result1 = harness.run_phase("statistics")
         assert result1.status == PhaseStatus.COMPLETED
 
         # Second run should skip or return same count
-        result2 = await harness.run_phase("statistics")
+        result2 = harness.run_phase("statistics")
         assert result2.status in (PhaseStatus.COMPLETED, PhaseStatus.SKIPPED)
 
         # Count profiles - should not have duplicates
@@ -559,13 +540,13 @@ class TestStatisticsPhaseSmoke:
 
         from dataraum_context.analysis.statistics.db_models import StatisticalProfile
 
-        async with harness.session_factory() as session:
+        with harness.session_factory() as session:
             stmt = (
                 select(func.count())
                 .select_from(StatisticalProfile)
                 .where(StatisticalProfile.layer == "typed")
             )
-            profile_count = (await session.execute(stmt)).scalar()
+            profile_count = (session.execute(stmt)).scalar()
 
         # Profile count should be reasonable (not doubled)
         # We have 5 tables with various columns, expect ~40-50 profiles
@@ -575,43 +556,41 @@ class TestStatisticsPhaseSmoke:
 class TestStatisticalQualityPhaseSmoke:
     """Smoke tests for the statistical quality phase."""
 
-    @pytest.mark.asyncio
-    async def test_statistical_quality_runs(
+    def test_statistical_quality_runs(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify statistical quality phase completes."""
         # Run prerequisites
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
-        await harness.run_phase("statistics")
+        harness.run_phase("typing")
+        harness.run_phase("statistics")
 
         # Run statistical quality
-        result = await harness.run_phase("statistical_quality")
+        result = harness.run_phase("statistical_quality")
 
         assert result.status == PhaseStatus.COMPLETED, f"Statistical quality failed: {result.error}"
         assert "quality_metrics" in result.outputs
 
-    @pytest.mark.asyncio
-    async def test_statistical_quality_detects_outliers(
+    def test_statistical_quality_detects_outliers(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify outlier detection runs on numeric columns."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
-        await harness.run_phase("statistics")
-        result = await harness.run_phase("statistical_quality")
+        harness.run_phase("typing")
+        harness.run_phase("statistics")
+        result = harness.run_phase("statistical_quality")
 
         assert result.status == PhaseStatus.COMPLETED
         assert result.outputs.get("total_outlier_results", 0) >= 0
@@ -620,43 +599,41 @@ class TestStatisticalQualityPhaseSmoke:
 class TestRelationshipsPhaseSmoke:
     """Smoke tests for the relationships phase."""
 
-    @pytest.mark.asyncio
-    async def test_relationships_runs(
+    def test_relationships_runs(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify relationships phase completes."""
         # Run prerequisites
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
-        await harness.run_phase("statistics")
+        harness.run_phase("typing")
+        harness.run_phase("statistics")
 
         # Run relationships
-        result = await harness.run_phase("relationships")
+        result = harness.run_phase("relationships")
 
         assert result.status == PhaseStatus.COMPLETED, f"Relationships failed: {result.error}"
         assert "relationship_candidates" in result.outputs
 
-    @pytest.mark.asyncio
-    async def test_relationships_detects_candidates(
+    def test_relationships_detects_candidates(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify relationship candidates are detected between tables."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
-        await harness.run_phase("statistics")
-        result = await harness.run_phase("relationships")
+        harness.run_phase("typing")
+        harness.run_phase("statistics")
+        result = harness.run_phase("relationships")
 
         assert result.status == PhaseStatus.COMPLETED
         # With 5 related tables, we should find some relationship candidates
@@ -667,43 +644,41 @@ class TestRelationshipsPhaseSmoke:
 class TestCorrelationsPhaseSmoke:
     """Smoke tests for the correlations phase."""
 
-    @pytest.mark.asyncio
-    async def test_correlations_runs(
+    def test_correlations_runs(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify correlations phase completes."""
         # Run prerequisites
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
-        await harness.run_phase("statistics")
+        harness.run_phase("typing")
+        harness.run_phase("statistics")
 
         # Run correlations
-        result = await harness.run_phase("correlations")
+        result = harness.run_phase("correlations")
 
         assert result.status == PhaseStatus.COMPLETED, f"Correlations failed: {result.error}"
         assert "correlations" in result.outputs
 
-    @pytest.mark.asyncio
-    async def test_correlations_stores_results(
+    def test_correlations_stores_results(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify correlation results are stored in database."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
-        await harness.run_phase("statistics")
-        result = await harness.run_phase("correlations")
+        harness.run_phase("typing")
+        harness.run_phase("statistics")
+        result = harness.run_phase("correlations")
 
         assert result.status == PhaseStatus.COMPLETED
         # Correlations might exist between numeric columns
@@ -714,70 +689,67 @@ class TestCorrelationsPhaseSmoke:
 class TestTemporalPhaseSmoke:
     """Smoke tests for the temporal phase."""
 
-    @pytest.mark.asyncio
-    async def test_temporal_runs(
+    def test_temporal_runs(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify temporal phase completes."""
         # Run prerequisites
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
+        harness.run_phase("typing")
 
         # Run temporal (doesn't need statistics)
-        result = await harness.run_phase("temporal")
+        result = harness.run_phase("temporal")
 
         assert result.status == PhaseStatus.COMPLETED, f"Temporal failed: {result.error}"
         assert "temporal_profiles" in result.outputs
 
-    @pytest.mark.asyncio
-    async def test_temporal_profiles_date_columns(
+    def test_temporal_profiles_date_columns(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify temporal analysis is performed on date columns."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
-        result = await harness.run_phase("temporal")
+        harness.run_phase("typing")
+        result = harness.run_phase("temporal")
 
         assert result.status == PhaseStatus.COMPLETED
         # Transaction date and other date columns should be profiled
         total_profiles = result.outputs.get("total_profiles", 0)
         assert total_profiles > 0  # At least Transaction date
 
-    @pytest.mark.asyncio
-    async def test_temporal_stores_profiles(
+    def test_temporal_stores_profiles(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify temporal profiles are stored in database."""
-        await harness.run_import(
+        harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
         )
-        await harness.run_phase("typing")
-        await harness.run_phase("temporal")
+        harness.run_phase("typing")
+        harness.run_phase("temporal")
 
         # Check that profiles are stored
         from sqlalchemy import func, select
 
         from dataraum_context.analysis.temporal.db_models import TemporalColumnProfile
 
-        async with harness.session_factory() as session:
+        with harness.session_factory() as session:
             stmt = select(func.count()).select_from(TemporalColumnProfile)
-            profile_count = (await session.execute(stmt)).scalar()
+            profile_count = (session.execute(stmt)).scalar()
 
         # Should have at least one temporal profile
         assert profile_count > 0
@@ -786,15 +758,14 @@ class TestTemporalPhaseSmoke:
 class TestFullPipelineSmoke:
     """Smoke tests for the full pipeline."""
 
-    @pytest.mark.asyncio
-    async def test_full_pipeline_completes(
+    def test_full_pipeline_completes(
         self,
         harness: PipelineTestHarness,
         small_finance_path: Path,
     ):
         """Verify all phases complete in sequence."""
         # Run import
-        result = await harness.run_import(
+        result = harness.run_import(
             source_path=small_finance_path,
             source_name="small_finance",
             junk_columns=FINANCE_JUNK_COLUMNS,
@@ -802,27 +773,27 @@ class TestFullPipelineSmoke:
         assert result.status == PhaseStatus.COMPLETED, f"Import failed: {result.error}"
 
         # Run typing
-        result = await harness.run_phase("typing")
+        result = harness.run_phase("typing")
         assert result.status == PhaseStatus.COMPLETED, f"Typing failed: {result.error}"
 
         # Run temporal (parallel track)
-        result = await harness.run_phase("temporal")
+        result = harness.run_phase("temporal")
         assert result.status == PhaseStatus.COMPLETED, f"Temporal failed: {result.error}"
 
         # Run statistics
-        result = await harness.run_phase("statistics")
+        result = harness.run_phase("statistics")
         assert result.status == PhaseStatus.COMPLETED, f"Statistics failed: {result.error}"
 
         # Run statistical quality
-        result = await harness.run_phase("statistical_quality")
+        result = harness.run_phase("statistical_quality")
         assert result.status == PhaseStatus.COMPLETED, f"Statistical quality failed: {result.error}"
 
         # Run relationships
-        result = await harness.run_phase("relationships")
+        result = harness.run_phase("relationships")
         assert result.status == PhaseStatus.COMPLETED, f"Relationships failed: {result.error}"
 
         # Run correlations
-        result = await harness.run_phase("correlations")
+        result = harness.run_phase("correlations")
         assert result.status == PhaseStatus.COMPLETED, f"Correlations failed: {result.error}"
 
         # All 7 phases should have completed

@@ -46,11 +46,11 @@ class ValidationPhase(BasePhase):
     def is_llm_phase(self) -> bool:
         return True
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if validations have already been run for this source."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -62,18 +62,18 @@ class ValidationPhase(BasePhase):
         run_stmt = select(func.count(ValidationRunRecord.run_id)).where(
             ValidationRunRecord.table_ids.contains(table_ids)
         )
-        run_count = (await ctx.session.execute(run_stmt)).scalar() or 0
+        run_count = (ctx.session.execute(run_stmt)).scalar() or 0
 
         if run_count > 0:
             return "Validation already run for these tables"
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run validation checks using LLM."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -116,7 +116,7 @@ class ValidationPhase(BasePhase):
         category = ctx.config.get("validation_category")
 
         # Run validations
-        validation_result = await agent.run_validations(
+        validation_result = agent.run_validations(
             session=ctx.session,
             duckdb_conn=ctx.duckdb_conn,
             table_ids=table_ids,

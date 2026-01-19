@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 
 import duckdb
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from dataraum_context.analysis.correlation.cross_table import analyze_relationship_quality
 from dataraum_context.analysis.correlation.db_models import (
@@ -46,10 +46,10 @@ from dataraum_context.core.models.base import Cardinality, RelationshipType, Res
 from dataraum_context.storage import Column, Table
 
 
-async def analyze_correlations(
+def analyze_correlations(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
 ) -> Result[CorrelationAnalysisResult]:
     """Run complete correlation analysis on a table.
 
@@ -71,30 +71,28 @@ async def analyze_correlations(
 
     try:
         # Get table
-        table = await session.get(Table, str(table_id))
+        table = session.get(Table, str(table_id))
         if not table:
             return Result.fail(f"Table not found: {table_id}")
 
         # Run all analyses
-        numeric_corr_result = await compute_numeric_correlations(table, duckdb_conn, session)
+        numeric_corr_result = compute_numeric_correlations(table, duckdb_conn, session)
         numeric_correlations = numeric_corr_result.unwrap() if numeric_corr_result.success else []
 
-        categorical_assoc_result = await compute_categorical_associations(
-            table, duckdb_conn, session
-        )
+        categorical_assoc_result = compute_categorical_associations(table, duckdb_conn, session)
         categorical_associations = (
             categorical_assoc_result.unwrap() if categorical_assoc_result.success else []
         )
 
-        fd_result = await detect_functional_dependencies(table, duckdb_conn, session)
+        fd_result = detect_functional_dependencies(table, duckdb_conn, session)
         functional_dependencies = fd_result.unwrap() if fd_result.success else []
 
-        derived_result = await detect_derived_columns(table, duckdb_conn, session)
+        derived_result = detect_derived_columns(table, duckdb_conn, session)
         derived_columns = derived_result.unwrap() if derived_result.success else []
 
         # Summary stats
         stmt = select(Column).where(Column.table_id == table_id)
-        result = await session.execute(stmt)
+        result = session.execute(stmt)
         total_columns = len(result.scalars().all())
         total_pairs = (total_columns * (total_columns - 1)) // 2
 
@@ -128,10 +126,10 @@ async def analyze_correlations(
         return Result.fail(f"Correlation analysis failed: {e}")
 
 
-async def analyze_cross_table_quality(
+def analyze_cross_table_quality(
     relationship: Relationship,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    session: AsyncSession,
+    session: Session,
     min_correlation: float = 0.3,
     redundancy_threshold: float = 0.99,
 ) -> Result[CrossTableQualityResult]:
@@ -156,10 +154,10 @@ async def analyze_cross_table_quality(
     """
     try:
         # Load table metadata to get DuckDB paths
-        from_table = await session.get(Table, relationship.from_table_id)
-        to_table = await session.get(Table, relationship.to_table_id)
-        from_column = await session.get(Column, relationship.from_column_id)
-        to_column = await session.get(Column, relationship.to_column_id)
+        from_table = session.get(Table, relationship.from_table_id)
+        to_table = session.get(Table, relationship.to_table_id)
+        from_column = session.get(Column, relationship.from_column_id)
+        to_column = session.get(Column, relationship.to_column_id)
 
         if not all([from_table, to_table, from_column, to_column]):
             return Result.fail("Could not load relationship metadata")
@@ -217,7 +215,7 @@ async def analyze_cross_table_quality(
         duration = time.time() - start_time
 
         # Store results to DB
-        await _store_cross_table_results(
+        _store_cross_table_results(
             session=session,
             relationship=relationship,
             quality_result=quality_result,
@@ -234,8 +232,8 @@ async def analyze_cross_table_quality(
         return Result.fail(f"Cross-table quality analysis failed: {e}")
 
 
-async def _store_cross_table_results(
-    session: AsyncSession,
+def _store_cross_table_results(
+    session: Session,
     relationship: Relationship,
     quality_result: CrossTableQualityResult,
     from_table_name: str,
@@ -264,7 +262,7 @@ async def _store_cross_table_results(
         duration_seconds=duration,
     )
     session.add(run_record)
-    await session.flush()  # Get run_id for child records
+    session.flush()  # Get run_id for child records
 
     # Store cross-table correlations (skip NaN values from constant columns)
     for corr in quality_result.cross_table_correlations:

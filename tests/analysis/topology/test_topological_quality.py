@@ -36,21 +36,21 @@ def create_column(col_id: str, table_id: str, name: str, position: int, col_type
 
 
 @pytest.fixture
-async def sample_source(async_session):
+def sample_source(session):
     """Create a sample source."""
     source = Source(
         source_id="test-source",
         name="test_data",
         source_type="csv",
     )
-    async_session.add(source)
-    await async_session.commit()
-    await async_session.refresh(source)
+    session.add(source)
+    session.commit()
+    session.refresh(source)
     return source
 
 
 @pytest.fixture
-async def simple_topology_table(async_session, sample_source, duckdb_conn):
+def simple_topology_table(session, sample_source, duckdb_conn):
     """Create a table with simple topology (one component, no cycles)."""
     table = Table(
         table_id="simple-topo-table",
@@ -59,7 +59,7 @@ async def simple_topology_table(async_session, sample_source, duckdb_conn):
         layer="typed",
         duckdb_path="simple_topology_data",
     )
-    async_session.add(table)
+    session.add(table)
 
     # Create numeric columns
     columns = [
@@ -68,9 +68,9 @@ async def simple_topology_table(async_session, sample_source, duckdb_conn):
         create_column("col-z", table.table_id, "z", 2, "DOUBLE"),
     ]
     for col in columns:
-        async_session.add(col)
+        session.add(col)
 
-    await async_session.commit()
+    session.commit()
 
     # Create test data: simple linear relationship
     duckdb_conn.execute(
@@ -84,12 +84,12 @@ async def simple_topology_table(async_session, sample_source, duckdb_conn):
         """
     )
 
-    await async_session.refresh(table)
+    session.refresh(table)
     return table
 
 
 @pytest.fixture
-async def cyclic_topology_table(async_session, sample_source, duckdb_conn):
+def cyclic_topology_table(session, sample_source, duckdb_conn):
     """Create a table with cyclic structure."""
     table = Table(
         table_id="cyclic-topo-table",
@@ -98,16 +98,16 @@ async def cyclic_topology_table(async_session, sample_source, duckdb_conn):
         layer="typed",
         duckdb_path="cyclic_topology_data",
     )
-    async_session.add(table)
+    session.add(table)
 
     columns = [
         create_column("col-x", table.table_id, "x", 0, "DOUBLE"),
         create_column("col-y", table.table_id, "y", 1, "DOUBLE"),
     ]
     for col in columns:
-        async_session.add(col)
+        session.add(col)
 
-    await async_session.commit()
+    session.commit()
 
     # Create circular data pattern (points on a circle)
     duckdb_conn.execute(
@@ -120,12 +120,12 @@ async def cyclic_topology_table(async_session, sample_source, duckdb_conn):
         """
     )
 
-    await async_session.refresh(table)
+    session.refresh(table)
     return table
 
 
 @pytest.fixture
-async def disconnected_topology_table(async_session, sample_source, duckdb_conn):
+def disconnected_topology_table(session, sample_source, duckdb_conn):
     """Create a table with disconnected components."""
     table = Table(
         table_id="disconn-topo-table",
@@ -134,16 +134,16 @@ async def disconnected_topology_table(async_session, sample_source, duckdb_conn)
         layer="typed",
         duckdb_path="disconnected_topology_data",
     )
-    async_session.add(table)
+    session.add(table)
 
     columns = [
         create_column("col-x", table.table_id, "x", 0, "DOUBLE"),
         create_column("col-y", table.table_id, "y", 1, "DOUBLE"),
     ]
     for col in columns:
-        async_session.add(col)
+        session.add(col)
 
-    await async_session.commit()
+    session.commit()
 
     # Create two separate clusters
     duckdb_conn.execute(
@@ -166,7 +166,7 @@ async def disconnected_topology_table(async_session, sample_source, duckdb_conn)
         """
     )
 
-    await async_session.refresh(table)
+    session.refresh(table)
     return table
 
 
@@ -175,17 +175,15 @@ async def disconnected_topology_table(async_session, sample_source, duckdb_conn)
 # ============================================================================
 
 
-@pytest.mark.asyncio
-async def test_extract_betti_numbers_empty():
+def test_extract_betti_numbers_empty():
     """Test Betti number extraction with empty diagrams."""
-    result = await extract_betti_numbers([])
+    result = extract_betti_numbers([])
     assert not result.success
     assert result.error
     assert "No persistence diagrams" in result.error
 
 
-@pytest.mark.asyncio
-async def test_extract_betti_numbers_simple():
+def test_extract_betti_numbers_simple():
     """Test Betti number extraction with simple persistence diagrams."""
     # Create simple persistence diagrams
     # Dimension 0: 2 finite components + 1 infinite
@@ -194,7 +192,7 @@ async def test_extract_betti_numbers_simple():
     dgm_1 = np.array([[0.2, 0.8]])
     diagrams = [dgm_0, dgm_1]
 
-    result = await extract_betti_numbers(diagrams)
+    result = extract_betti_numbers(diagrams)
     assert result.success
 
     betti = result.unwrap()
@@ -206,15 +204,14 @@ async def test_extract_betti_numbers_simple():
     assert betti.has_cycles
 
 
-@pytest.mark.asyncio
-async def test_extract_betti_numbers_connected():
+def test_extract_betti_numbers_connected():
     """Test Betti numbers for connected structure."""
     # Only 1 infinite component (fully connected)
     dgm_0 = np.array([[0.0, np.inf]])
     dgm_1 = np.array([]).reshape(0, 2)  # Empty array with correct shape
     diagrams = [dgm_0, dgm_1]
 
-    result = await extract_betti_numbers(diagrams)
+    result = extract_betti_numbers(diagrams)
     assert result.success
 
     betti = result.unwrap()
@@ -224,22 +221,20 @@ async def test_extract_betti_numbers_connected():
     assert not betti.has_cycles
 
 
-@pytest.mark.asyncio
-async def test_process_persistence_diagrams_empty():
+def test_process_persistence_diagrams_empty():
     """Test processing empty diagrams."""
-    result = await process_persistence_diagrams([])
+    result = process_persistence_diagrams([])
     assert result.success
     assert result.value == []
 
 
-@pytest.mark.asyncio
-async def test_process_persistence_diagrams():
+def test_process_persistence_diagrams():
     """Test processing persistence diagrams into structured format."""
     dgm_0 = np.array([[0.0, 0.5], [0.0, 0.3]])
     dgm_1 = np.array([[0.2, 0.8], [0.1, 0.4]])
     diagrams = [dgm_0, dgm_1]
 
-    result = await process_persistence_diagrams(diagrams)
+    result = process_persistence_diagrams(diagrams)
     assert result.success
 
     processed = result.unwrap()
@@ -284,15 +279,14 @@ def test_compute_persistent_entropy_uniform():
     assert entropy > 1.0  # Should have positive entropy
 
 
-@pytest.mark.asyncio
-async def test_detect_persistent_cycles():
+def test_detect_persistent_cycles():
     """Test cycle detection."""
     # Dimension 1 diagram with cycles
     dgm_0 = np.array([[0.0, 0.5]])
     dgm_1 = np.array([[0.1, 0.8], [0.2, 0.5], [0.0, 0.15]])  # 3 cycles
     diagrams = [dgm_0, dgm_1]
 
-    result = await detect_persistent_cycles(diagrams, min_persistence=0.2)
+    result = detect_persistent_cycles(diagrams, min_persistence=0.2)
     assert result.success
 
     cycles = result.unwrap()
@@ -308,22 +302,20 @@ async def test_detect_persistent_cycles():
         assert not cycle.is_anomalous  # Default
 
 
-@pytest.mark.asyncio
-async def test_detect_persistent_cycles_no_dimension_1():
+def test_detect_persistent_cycles_no_dimension_1():
     """Test cycle detection when no H1 exists."""
     dgm_0 = np.array([[0.0, 0.5]])
     diagrams = [dgm_0]  # No dimension 1
 
-    result = await detect_persistent_cycles(diagrams)
+    result = detect_persistent_cycles(diagrams)
     assert result.success
     assert len(result.unwrap()) == 0
 
 
-@pytest.mark.asyncio
 # NOTE: assess_structural_complexity function was removed/refactored
 # This test is commented out as the function no longer exists
 # The functionality is now integrated into analyze_topological_quality
-# async def test_assess_structural_complexity_no_history(async_session):
+# def test_assess_structural_complexity_no_history(session):
 #     """Test complexity assessment with no historical data."""
 #     betti = BettiNumbers(
 #         betti_0=1,
@@ -335,8 +327,8 @@ async def test_detect_persistent_cycles_no_dimension_1():
 #         has_voids=False,
 #     )
 #
-#     result = await assess_structural_complexity(
-#         betti, persistent_entropy=1.5, table_id="test-table", session=async_session
+#     result = assess_structural_complexity(
+#         betti, persistent_entropy=1.5, table_id="test-table", session=session
 #     )
 #     assert result.success
 #
@@ -347,15 +339,12 @@ async def test_detect_persistent_cycles_no_dimension_1():
 #     assert complexity.within_bounds  # Default to True
 
 
-@pytest.mark.asyncio
-async def test_assess_homological_stability_no_previous(async_session):
+def test_assess_homological_stability_no_previous(session):
     """Test stability assessment with no previous data."""
     dgm_0 = np.array([[0.0, 0.5]])
     diagrams = [dgm_0]
 
-    result = await assess_homological_stability(
-        diagrams, table_id="test-table", session=async_session
-    )
+    result = assess_homological_stability(diagrams, table_id="test-table", session=session)
     assert result.success
     assert result.value is None  # No previous data to compare
 
@@ -365,15 +354,12 @@ async def test_assess_homological_stability_no_previous(async_session):
 # ============================================================================
 
 
-@pytest.mark.asyncio
-async def test_analyze_topological_quality_simple(
-    simple_topology_table, duckdb_conn, async_session
-):
+def test_analyze_topological_quality_simple(simple_topology_table, duckdb_conn, session):
     """Test full topological quality analysis with simple topology."""
-    result = await analyze_topological_quality(
+    result = analyze_topological_quality(
         simple_topology_table.table_id,
         duckdb_conn,
-        async_session,
+        session,
         min_persistence=0.1,
     )
 
@@ -394,15 +380,12 @@ async def test_analyze_topological_quality_simple(
     assert len(analysis.topology_description) > 0
 
 
-@pytest.mark.asyncio
-async def test_analyze_topological_quality_cyclic(
-    cyclic_topology_table, duckdb_conn, async_session
-):
+def test_analyze_topological_quality_cyclic(cyclic_topology_table, duckdb_conn, session):
     """Test analysis with cyclic topology."""
-    result = await analyze_topological_quality(
+    result = analyze_topological_quality(
         cyclic_topology_table.table_id,
         duckdb_conn,
-        async_session,
+        session,
         min_persistence=0.05,
     )
 
@@ -415,15 +398,14 @@ async def test_analyze_topological_quality_cyclic(
     assert analysis.betti_numbers.total_complexity >= 0
 
 
-@pytest.mark.asyncio
-async def test_analyze_topological_quality_disconnected(
-    disconnected_topology_table, duckdb_conn, async_session
+def test_analyze_topological_quality_disconnected(
+    disconnected_topology_table, duckdb_conn, session
 ):
     """Test analysis with disconnected components."""
-    result = await analyze_topological_quality(
+    result = analyze_topological_quality(
         disconnected_topology_table.table_id,
         duckdb_conn,
-        async_session,
+        session,
         min_persistence=0.1,
     )
 
@@ -438,23 +420,16 @@ async def test_analyze_topological_quality_disconnected(
     assert len(orphan_anomalies) > 0 or not analysis.betti_numbers.is_connected
 
 
-@pytest.mark.asyncio
-async def test_analyze_topological_quality_persistence(
-    simple_topology_table, duckdb_conn, async_session
-):
+def test_analyze_topological_quality_persistence(simple_topology_table, duckdb_conn, session):
     """Test that running analysis twice enables stability tracking."""
     # First analysis
-    result1 = await analyze_topological_quality(
-        simple_topology_table.table_id, duckdb_conn, async_session
-    )
+    result1 = analyze_topological_quality(simple_topology_table.table_id, duckdb_conn, session)
     assert result1.success
     analysis1 = result1.unwrap()
     assert analysis1.stability is None  # No previous data
 
     # Second analysis (should compare with first)
-    result2 = await analyze_topological_quality(
-        simple_topology_table.table_id, duckdb_conn, async_session
-    )
+    result2 = analyze_topological_quality(simple_topology_table.table_id, duckdb_conn, session)
     assert result2.success
     analysis2 = result2.unwrap()
 
@@ -465,17 +440,15 @@ async def test_analyze_topological_quality_persistence(
         assert analysis2.stability.bottleneck_distance >= 0.0
 
 
-@pytest.mark.asyncio
-async def test_analyze_topological_quality_table_not_found(duckdb_conn, async_session):
+def test_analyze_topological_quality_table_not_found(duckdb_conn, session):
     """Test error handling for non-existent table."""
-    result = await analyze_topological_quality("nonexistent-table", duckdb_conn, async_session)
+    result = analyze_topological_quality("nonexistent-table", duckdb_conn, session)
     assert not result.success
     assert result.error
     assert "not found" in result.error.lower()
 
 
-@pytest.mark.asyncio
-async def test_analyze_topological_quality_empty_table(async_session, sample_source, duckdb_conn):
+def test_analyze_topological_quality_empty_table(session, sample_source, duckdb_conn):
     """Test handling of empty table."""
     table = Table(
         table_id="empty-table",
@@ -484,13 +457,13 @@ async def test_analyze_topological_quality_empty_table(async_session, sample_sou
         layer="typed",
         duckdb_path="empty_data",
     )
-    async_session.add(table)
-    await async_session.commit()
+    session.add(table)
+    session.commit()
 
     # Create empty table
     duckdb_conn.execute("CREATE TABLE empty_data (x DOUBLE, y DOUBLE)")
 
-    result = await analyze_topological_quality(table.table_id, duckdb_conn, async_session)
+    result = analyze_topological_quality(table.table_id, duckdb_conn, session)
     assert not result.success
     assert result.error
     assert "empty" in result.error.lower()

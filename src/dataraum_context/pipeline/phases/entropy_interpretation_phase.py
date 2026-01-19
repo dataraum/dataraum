@@ -54,11 +54,11 @@ class EntropyInterpretationPhase(BasePhase):
     def is_llm_phase(self) -> bool:
         return True
 
-    async def should_skip(self, ctx: PhaseContext) -> str | None:
+    def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no entropy records exist."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -70,18 +70,18 @@ class EntropyInterpretationPhase(BasePhase):
         entropy_stmt = (
             select(EntropyObjectRecord).where(EntropyObjectRecord.table_id.in_(table_ids)).limit(1)
         )
-        entropy_record = (await ctx.session.execute(entropy_stmt)).scalar_one_or_none()
+        entropy_record = (ctx.session.execute(entropy_stmt)).scalar_one_or_none()
 
         if not entropy_record:
             return "No entropy records found"
 
         return None
 
-    async def _run(self, ctx: PhaseContext) -> PhaseResult:
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run entropy interpretation using LLM."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = await ctx.session.execute(stmt)
+        result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
@@ -92,7 +92,7 @@ class EntropyInterpretationPhase(BasePhase):
 
         # Get columns
         cols_stmt = select(Column).where(Column.table_id.in_(table_ids))
-        all_columns = (await ctx.session.execute(cols_stmt)).scalars().all()
+        all_columns = (ctx.session.execute(cols_stmt)).scalars().all()
         column_ids = [c.column_id for c in all_columns]
         column_map = {c.column_id: c for c in all_columns}
 
@@ -100,7 +100,7 @@ class EntropyInterpretationPhase(BasePhase):
         entropy_stmt = select(EntropyObjectRecord).where(
             EntropyObjectRecord.column_id.in_(column_ids)
         )
-        entropy_records = (await ctx.session.execute(entropy_stmt)).scalars().all()
+        entropy_records = (ctx.session.execute(entropy_stmt)).scalars().all()
 
         # Group entropy records by column
         entropy_by_column: dict[str, list[EntropyObjectRecord]] = {}
@@ -124,13 +124,13 @@ class EntropyInterpretationPhase(BasePhase):
         # Load type decisions
         type_decisions: dict[str, TypeDecision] = {}
         type_stmt = select(TypeDecision).where(TypeDecision.column_id.in_(column_ids))
-        for td in (await ctx.session.execute(type_stmt)).scalars().all():
+        for td in (ctx.session.execute(type_stmt)).scalars().all():
             type_decisions[td.column_id] = td
 
         # Load semantic annotations
         semantic_annotations: dict[str, SemanticAnnotation] = {}
         sem_stmt = select(SemanticAnnotation).where(SemanticAnnotation.column_id.in_(column_ids))
-        for ann in (await ctx.session.execute(sem_stmt)).scalars().all():
+        for ann in (ctx.session.execute(sem_stmt)).scalars().all():
             semantic_annotations[ann.column_id] = ann
 
         # Initialize LLM infrastructure
@@ -248,7 +248,7 @@ class EntropyInterpretationPhase(BasePhase):
         for i in range(0, len(inputs), batch_size):
             batch = inputs[i : i + batch_size]
 
-            interpret_result = await interpreter.interpret_batch(
+            interpret_result = interpreter.interpret_batch(
                 session=ctx.session,
                 inputs=batch,
             )

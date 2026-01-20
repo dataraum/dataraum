@@ -17,9 +17,16 @@ from dataraum_context.storage import Column, Source, Table
 
 
 @pytest.fixture
-def test_duckdb():
-    """Create in-memory DuckDB connection with test data."""
-    conn = duckdb.connect(":memory:")
+def test_duckdb(tmp_path):
+    """Create file-based DuckDB with test data.
+
+    Returns a connection that can coexist with parallel read-only connections.
+    Uses tmp_path so parallel workers can connect to the same database file.
+    """
+    db_path = str(tmp_path / "test_correlation.duckdb")
+
+    # Create and populate the database
+    conn = duckdb.connect(db_path)
 
     # Create test table with correlated numeric columns
     conn.execute("""
@@ -68,6 +75,11 @@ def test_duckdb():
     """)
     # code -> name is a functional dependency (same code always has same name)
 
+    # Close setup connection so parallel workers can open read-only connections
+    conn.close()
+
+    # Return a fresh read-only connection (compatible with parallel workers)
+    conn = duckdb.connect(db_path, read_only=True)
     yield conn
     conn.close()
 

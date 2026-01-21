@@ -301,6 +301,27 @@ PIPELINE_DAG: list[PhaseDefinition] = [
         requires_llm=True,
     ),
     # ============================================================
+    # METRIC CALCULATION
+    # ============================================================
+    PhaseDefinition(
+        name="graph_execution",
+        description="Execute metric graphs via LLM SQL generation",
+        dependencies=[
+            "semantic",
+            "statistics",
+            "statistical_quality",
+            "temporal",
+            "relationships",
+            "correlations",
+            "slicing",
+            "quality_summary",
+            "business_cycles",
+            "entropy_interpretation",
+        ],
+        outputs=["metrics_calculated", "metrics_skipped"],
+        requires_llm=True,
+    ),
+    # ============================================================
     # FINAL CONTEXT ASSEMBLY
     # ============================================================
     PhaseDefinition(

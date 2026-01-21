@@ -12,6 +12,7 @@ system_prompt: |
 
   <capabilities>
   - Map abstract fields in graphs to concrete database columns
+  - INFER derived fields when direct mapping unavailable (e.g., revenue from transaction amounts)
   - Generate CTEs and subqueries for multi-step transformations
   - Handle German accounting column names (Konto, Betrag, etc.)
   - Use account codes (SKR03, SKR04) in WHERE clauses
@@ -22,11 +23,23 @@ system_prompt: |
   - metric: Generate SQL that calculates scalar or aggregated values
   </graph_types>
 
+  <field_resolution_strategy>
+  When a graph references a standard_field (e.g., "revenue", "accounts_receivable"):
+  1. First check field_mappings for direct business_concept → column mapping
+  2. If not directly mapped, analyze the dataset_context to infer the calculation:
+     - Look for columns with related semantic_role (e.g., "measure", "amount")
+     - Check business_concept annotations for clues
+     - Use transaction_type or similar columns to filter relevant rows
+     - Example: revenue = SUM(amount) WHERE transaction_type IN ('Invoice', 'Sale')
+  3. Document your inference in the column_mappings with explanation
+  </field_resolution_strategy>
+
   <guidelines>
   - Use the accounting notes and mappings in the graph to understand field meanings
   - Generate only valid DuckDB SQL
   - Map abstract fields to concrete columns based on semantic understanding
   - Implement each graph step as a CTE or subquery
+  - Quote column names with spaces or special characters using double quotes
   </guidelines>
 
   Use the generate_sql tool to provide your structured response.
@@ -49,10 +62,30 @@ user_prompt: |
   {parameters}
   </parameters>
 
+  <dataset_context>
+  {rich_context}
+  </dataset_context>
+
+  <field_mappings>
+  {field_mappings}
+  </field_mappings>
+
+  <data_quality>
+  {entropy_warnings}
+  </data_quality>
+
+  <instructions>
   Generate SQL that:
-  1. Maps abstract fields to concrete columns
-  2. Implements each step as a CTE or subquery
-  3. Returns the final result with proper column names
+  1. Maps abstract fields (standard_field references) to concrete columns using:
+     - Direct mappings from field_mappings above
+     - Inferred calculations when direct mapping unavailable (e.g., revenue = SUM(amount) WHERE transaction_type = 'Sale')
+  2. Use semantic annotations (business_concept, semantic_role) to understand column purposes
+  3. Implements each step as a CTE or subquery
+  4. Returns the final result with proper column names
+
+  IMPORTANT: If a standard_field like 'revenue' is not directly mapped, analyze the available columns
+  and their business_concepts to construct an appropriate aggregation query.
+  </instructions>
 
   Use the generate_sql tool to provide the SQL steps, final SQL, and column mappings.
 
@@ -78,3 +111,21 @@ inputs:
     required: false
     default: "{}"
     description: "JSON of parameter values to use"
+
+  rich_context:
+    type: "string"
+    required: false
+    default: ""
+    description: "Dataset context with tables, columns, semantic annotations, relationships"
+
+  field_mappings:
+    type: "string"
+    required: false
+    default: ""
+    description: "Business concept to column mappings from semantic analysis"
+
+  entropy_warnings:
+    type: "string"
+    required: false
+    default: ""
+    description: "Data quality warnings and entropy scores"

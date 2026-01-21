@@ -40,6 +40,7 @@ from dataraum_context.pipeline.phases import (
     CrossTableQualityPhase,
     EntropyInterpretationPhase,
     EntropyPhase,
+    GraphExecutionPhase,
     ImportPhase,
     QualitySummaryPhase,
     RelationshipsPhase,
@@ -136,6 +137,9 @@ def create_pipeline(config: RunConfig) -> Pipeline:
     pipeline.register(BusinessCyclesPhase())
     pipeline.register(CrossTableQualityPhase())
     pipeline.register(QualitySummaryPhase())
+
+    # Metric calculation
+    pipeline.register(GraphExecutionPhase())
 
     # Final context assembly
     pipeline.register(ContextPhase())

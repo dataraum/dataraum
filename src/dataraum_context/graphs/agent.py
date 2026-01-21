@@ -633,7 +633,7 @@ class GraphAgent(LLMFeature):
         try:
             # Get column info
             columns_result = context.duckdb_conn.execute(
-                f"DESCRIBE {context.table_name}"
+                f'DESCRIBE "{context.table_name}"'
             ).fetchall()
 
             columns = []
@@ -641,9 +641,9 @@ class GraphAgent(LLMFeature):
                 col_name = col[0]
                 col_type = col[1]
 
-                # Get sample values
+                # Get sample values (quote column name for spaces/special chars)
                 sample_result = context.duckdb_conn.execute(
-                    f"SELECT DISTINCT {col_name} FROM {context.table_name} LIMIT 5"
+                    f'SELECT DISTINCT "{col_name}" FROM "{context.table_name}" LIMIT 5'
                 ).fetchall()
                 samples = [str(r[0]) for r in sample_result if r[0] is not None]
 
@@ -657,7 +657,7 @@ class GraphAgent(LLMFeature):
 
             # Get row count
             count_result = context.duckdb_conn.execute(
-                f"SELECT COUNT(*) FROM {context.table_name}"
+                f'SELECT COUNT(*) FROM "{context.table_name}"'
             ).fetchone()
             row_count = count_result[0] if count_result else 0
 

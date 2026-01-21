@@ -12,6 +12,7 @@ from dataraum_context.pipeline.phases.entropy_interpretation_phase import (
     EntropyInterpretationPhase,
 )
 from dataraum_context.pipeline.phases.entropy_phase import EntropyPhase
+from dataraum_context.pipeline.phases.graph_execution_phase import GraphExecutionPhase
 from dataraum_context.pipeline.phases.import_phase import ImportPhase
 from dataraum_context.pipeline.phases.quality_summary_phase import QualitySummaryPhase
 from dataraum_context.pipeline.phases.relationships_phase import RelationshipsPhase
@@ -35,6 +36,7 @@ __all__ = [
     "CrossTableQualityPhase",
     "EntropyInterpretationPhase",
     "EntropyPhase",
+    "GraphExecutionPhase",
     "ImportPhase",
     "QualitySummaryPhase",
     "RelationshipsPhase",

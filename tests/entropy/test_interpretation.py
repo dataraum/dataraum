@@ -1,7 +1,7 @@
 """Tests for entropy interpretation module.
 
 Tests the LLM-powered entropy interpretation feature including
-models, fallback interpretation, and prompt context building.
+models and prompt context building.
 """
 
 import json
@@ -11,7 +11,6 @@ from dataraum_context.entropy.interpretation import (
     EntropyInterpretation,
     InterpretationInput,
     ResolutionAction,
-    create_fallback_interpretation,
 )
 from dataraum_context.entropy.models import ColumnEntropyProfile, CompoundRisk
 
@@ -220,99 +219,6 @@ class TestInterpretationInput:
 
         assert len(input_data.compound_risks) == 1
         assert input_data.compound_risks[0].risk_level == "critical"
-
-
-class TestCreateFallbackInterpretation:
-    """Tests for fallback interpretation when LLM is unavailable."""
-
-    def test_fallback_with_high_entropy(self):
-        """Test fallback interpretation for high entropy column."""
-        input_data = InterpretationInput(
-            table_name="orders",
-            column_name="amount",
-            detected_type="DECIMAL",
-            business_description=None,
-            composite_score=0.75,
-            readiness="blocked",
-            structural_entropy=0.2,
-            semantic_entropy=0.8,
-            value_entropy=0.7,
-            computational_entropy=0.3,
-            raw_metrics={},
-            high_entropy_dimensions=[
-                "semantic.business_meaning.naming_clarity",
-                "value.nulls.null_ratio",
-            ],
-            compound_risks=[],
-        )
-
-        interpretation = create_fallback_interpretation(input_data)
-
-        assert interpretation.column_name == "amount"
-        assert interpretation.table_name == "orders"
-        assert interpretation.composite_score == 0.75
-        assert interpretation.readiness == "blocked"
-        assert len(interpretation.assumptions) == 2
-        assert len(interpretation.resolution_actions) >= 1
-        assert "amount" in interpretation.explanation
-        assert "0.75" in interpretation.explanation
-
-    def test_fallback_with_low_entropy(self):
-        """Test fallback interpretation for low entropy column."""
-        input_data = InterpretationInput(
-            table_name="orders",
-            column_name="order_id",
-            detected_type="INTEGER",
-            business_description="Primary key",
-            composite_score=0.1,
-            readiness="ready",
-            structural_entropy=0.0,
-            semantic_entropy=0.1,
-            value_entropy=0.0,
-            computational_entropy=0.0,
-            raw_metrics={},
-            high_entropy_dimensions=[],
-            compound_risks=[],
-        )
-
-        interpretation = create_fallback_interpretation(input_data)
-
-        assert interpretation.readiness == "ready"
-        assert len(interpretation.assumptions) == 0  # No high entropy dimensions
-        assert len(interpretation.resolution_actions) == 0  # Low entropy
-
-    def test_fallback_with_compound_risks(self):
-        """Test fallback interpretation includes compound risk info."""
-        risk = CompoundRisk(
-            target="column:orders.amount",
-            dimensions=["semantic.units", "computational.aggregations"],
-            dimension_scores={"semantic.units": 0.7, "computational.aggregations": 0.6},
-            risk_level="critical",
-            impact="Units issue",
-            multiplier=2.0,
-            combined_score=0.85,
-        )
-
-        input_data = InterpretationInput(
-            table_name="orders",
-            column_name="amount",
-            detected_type="DECIMAL",
-            business_description=None,
-            composite_score=0.65,
-            readiness="investigate",
-            structural_entropy=0.1,
-            semantic_entropy=0.7,
-            value_entropy=0.5,
-            computational_entropy=0.6,
-            raw_metrics={},
-            high_entropy_dimensions=["semantic.units.unit_declared"],
-            compound_risks=[risk],
-        )
-
-        interpretation = create_fallback_interpretation(input_data)
-
-        assert "compound risk" in interpretation.explanation.lower()
-        assert "1" in interpretation.explanation  # 1 compound risk
 
 
 class TestInterpretationInputFields:

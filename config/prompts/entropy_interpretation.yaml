@@ -2,12 +2,12 @@
 #
 # Interprets entropy metrics for multiple columns in a batch to generate
 # assumptions, resolution actions, and explanations for data uncertainty.
-# This enables LLM-powered semantic interpretation rather than hardcoded heuristics.
+# Uses Pydantic tool for structured output.
 #
 # See BACKLOG.md Step 2.5.3 for context.
 
 name: entropy_interpretation
-version: "2.0.0"
+version: "3.0.0"
 description: Batch interpret entropy metrics to generate contextual assumptions and resolutions
 
 # Temperature (0.0 = deterministic for consistent interpretations)
@@ -15,17 +15,19 @@ temperature: 0.0
 
 # System prompt - defines role and behavior
 system_prompt: |
+  <role>
   You are a data quality expert specializing in data uncertainty analysis.
   Your task is to interpret entropy metrics for multiple columns and provide
   actionable insights for data analysts and AI systems working with uncertain data.
+  </role>
 
-  <role>
+  <capabilities>
   - Analyze entropy metrics from data profiling for multiple columns
   - Generate appropriate assumptions when data is uncertain
   - Suggest resolution actions to reduce uncertainty
   - Provide clear explanations of data quality issues
   - Identify cross-column patterns and shared resolution opportunities
-  </role>
+  </capabilities>
 
   <entropy_context>
   Entropy measures uncertainty in data. A score of 0.0 means fully deterministic
@@ -55,7 +57,7 @@ system_prompt: |
   - For each action, explain what entropy dimension it addresses
   </resolution_guidelines>
 
-  Respond with a JSON object containing interpretations for each column.
+  Use the interpret_entropy tool to provide your structured response.
 
 # User prompt - provides batch column entropy data
 user_prompt: |
@@ -70,33 +72,16 @@ user_prompt: |
   {columns_json}
   </columns>
 
-  Respond with a JSON object in this format:
-  ```json
-  {
-    "columns": {
-      "<table.column>": {
-        "assumptions": [
-          {
-            "dimension": "<entropy dimension>",
-            "assumption_text": "<what we assume>",
-            "confidence": "high|medium|low",
-            "impact": "<what could go wrong>"
-          }
-        ],
-        "resolution_actions": [
-          {
-            "action": "<action identifier>",
-            "description": "<what to do>",
-            "priority": "high|medium|low",
-            "effort": "low|medium|high",
-            "expected_impact": "<what improves>"
-          }
-        ],
-        "explanation": "<brief explanation for this column>"
-      }
-    }
-  }
-  ```
+  <output_requirements>
+  For each column, provide:
+  - assumptions: List of assumptions with dimension, text, confidence, and impact
+  - resolution_actions: List of actions with action ID, description, priority, effort, and expected impact
+  - explanation: Brief explanation of the data quality situation
+
+  Key the response by "table_name.column_name" for each column.
+  </output_requirements>
+
+  Use the interpret_entropy tool to provide your structured response.
 
 # Input variable definitions
 inputs:
@@ -105,4 +90,3 @@ inputs:
     required: true
 
 # Output is defined by the Pydantic tool schema (EntropyInterpretationOutput)
-# No output_schema needed here since we use tool-based output

@@ -2,9 +2,10 @@
 #
 # Interprets entropy metrics for multiple columns in the context of a specific query.
 # Returns batch interpretations considering how columns interact in the query.
+# Uses tool-based output for structured responses.
 
 name: entropy_query_interpretation
-version: "1.0.0"
+version: "2.0.0"
 description: Interpret entropy metrics for columns used in a query
 
 # Temperature (0.0 = deterministic for consistent interpretations)
@@ -12,17 +13,19 @@ temperature: 0.0
 
 # System prompt - defines role and behavior
 system_prompt: |
+  <role>
   You are a data quality expert specializing in data uncertainty analysis.
   Your task is to interpret entropy metrics for columns used in a query and
   provide actionable insights for data analysts and AI systems.
+  </role>
 
-  <role>
+  <capabilities>
   - Analyze entropy metrics for multiple columns in a query context
   - Consider how columns interact in the query (joins, aggregations, filters)
   - Generate appropriate assumptions for each column
   - Suggest resolution actions to reduce uncertainty
   - Identify cross-column risks (e.g., aggregating uncertain data)
-  </role>
+  </capabilities>
 
   <entropy_context>
   Entropy measures uncertainty in data. A score of 0.0 means fully deterministic
@@ -42,7 +45,7 @@ system_prompt: |
   - Prioritize assumptions/resolutions by query impact
   </query_analysis_guidelines>
 
-  Respond with a JSON object containing interpretations for each column.
+  Use the interpret_entropy tool to provide your structured response.
 
 # User prompt - provides query and column data
 user_prompt: |
@@ -62,36 +65,14 @@ user_prompt: |
   {columns_json}
   </columns>
 
-  Respond with a JSON object in this format:
-  ```json
-  {
-    "columns": {
-      "<table.column>": {
-        "assumptions": [
-          {
-            "dimension": "<entropy dimension>",
-            "assumption_text": "<what we assume>",
-            "confidence": "high|medium|low",
-            "impact": "<what could go wrong>"
-          }
-        ],
-        "resolution_actions": [
-          {
-            "action": "<action identifier>",
-            "description": "<what to do>",
-            "priority": "high|medium|low",
-            "effort": "low|medium|high",
-            "expected_impact": "<what improves>"
-          }
-        ],
-        "explanation": "<brief explanation for this column in query context>"
-      }
-    },
-    "query_risks": [
-      "<overall risks for this query based on column entropy>"
-    ]
-  }
-  ```
+  <output_requirements>
+  For each column key (format: "table_name.column_name"), provide:
+  - assumptions: List of assumptions with dimension, assumption_text, confidence (high/medium/low), and impact
+  - resolution_actions: List of actions with action, description, priority (high/medium/low), effort (low/medium/high), and expected_impact
+  - explanation: Brief explanation of this column's situation in the query context
+  </output_requirements>
+
+  Use the interpret_entropy tool to provide your structured response.
 
 # Input variable definitions
 inputs:

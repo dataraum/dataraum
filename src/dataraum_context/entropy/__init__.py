@@ -37,10 +37,10 @@ from dataraum_context.entropy.context import (
 from dataraum_context.entropy.interpretation import (
     Assumption,
     EntropyInterpretation,
+    EntropyInterpretationOutput,
     EntropyInterpreter,
     InterpretationInput,
     ResolutionAction,
-    create_fallback_interpretation,
 )
 from dataraum_context.entropy.models import (
     ColumnEntropyProfile,
@@ -90,10 +90,10 @@ __all__ = [
     # Interpretation (LLM-powered)
     "EntropyInterpreter",
     "EntropyInterpretation",
+    "EntropyInterpretationOutput",
     "InterpretationInput",
     "Assumption",
     "ResolutionAction",
-    "create_fallback_interpretation",
     # Query-time refinement
     "QueryRefinementResult",
     "find_columns_in_query",

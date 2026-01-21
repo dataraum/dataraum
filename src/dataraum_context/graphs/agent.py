@@ -41,6 +41,7 @@ from .models import (
     AssumptionBasis,
     DatasetSchemaMapping,
     GraphExecution,
+    GraphSQLGenerationOutput,
     QueryAssumption,
     StepResult,
     StepType,
@@ -245,7 +246,13 @@ class GraphAgent(LLMFeature):
         context: ExecutionContext,
         parameters: dict[str, Any],
     ) -> Result[GeneratedCode]:
-        """Use LLM to generate SQL from graph specification."""
+        """Use LLM to generate SQL from graph specification using tool-based output."""
+        from dataraum_context.llm.providers.base import (
+            ConversationRequest,
+            Message,
+            ToolDefinition,
+        )
+
         # Get table schema
         schema_result = self._get_table_schema(context)
         if not schema_result.success or not schema_result.value:
@@ -304,43 +311,81 @@ class GraphAgent(LLMFeature):
             prompt_context["field_mappings"] = ""
             prompt_context["entropy_warnings"] = ""
 
-        # Render prompt
+        # Render prompt with system/user split
         try:
-            prompt, temperature = self.renderer.render("graph_sql_generation", prompt_context)
+            system_prompt, user_prompt, temperature = self.renderer.render_split(
+                "graph_sql_generation", prompt_context
+            )
         except Exception as e:
             return Result.fail(f"Failed to render prompt: {e}")
 
         # Compute prompt hash for reproducibility
-        prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:16]
+        prompt_hash = hashlib.sha256(user_prompt.encode()).hexdigest()[:16]
 
-        # Call LLM
-        response_result = self._call_llm(
-            session=session,
-            feature_name="graph_sql_generation",
-            prompt=prompt,
-            temperature=temperature,
-            model_tier="balanced",
+        # Define tool for structured output
+        tool = ToolDefinition(
+            name="generate_sql",
+            description="Provide generated SQL for the graph specification",
+            input_schema=GraphSQLGenerationOutput.model_json_schema(),
         )
 
-        if not response_result.success or not response_result.value:
-            return Result.fail(response_result.error or "LLM call failed")
+        # Get model for this feature (graph_sql_generation uses balanced tier)
+        model = self.provider.get_model_for_tier("balanced")
 
-        # Parse response
-        try:
-            response_data = json.loads(response_result.value.content)
-        except json.JSONDecodeError as e:
-            return Result.fail(f"Failed to parse LLM response: {e}")
+        # Call LLM with tool use
+        request = ConversationRequest(
+            messages=[Message(role="user", content=user_prompt)],
+            system=system_prompt,
+            tools=[tool],
+            max_tokens=self.config.limits.max_output_tokens_per_request,
+            temperature=temperature,
+        )
 
-        # Create GeneratedCode
+        result = self.provider.converse(request)
+        if not result.success or not result.value:
+            return Result.fail(result.error or "LLM call failed")
+
+        response = result.value
+
+        # Extract tool call result
+        if not response.tool_calls:
+            # LLM didn't use the tool - try to parse text as fallback
+            if response.content:
+                try:
+                    response_data = json.loads(response.content)
+                    output = GraphSQLGenerationOutput.model_validate(response_data)
+                except Exception:
+                    return Result.fail(f"LLM did not use tool. Response: {response.content[:200]}")
+            else:
+                return Result.fail("LLM did not use the generate_sql tool")
+        else:
+            # Parse tool response using Pydantic model
+            tool_call = response.tool_calls[0]
+            if tool_call.name != "generate_sql":
+                return Result.fail(f"Unexpected tool call: {tool_call.name}")
+
+            try:
+                output = GraphSQLGenerationOutput.model_validate(tool_call.input)
+            except Exception as e:
+                return Result.fail(f"Failed to validate tool response: {e}")
+
+        # Create GeneratedCode from Pydantic output
         generated_code = GeneratedCode(
             code_id=str(uuid4()),
             graph_id=graph.graph_id,
             graph_version=graph.version,
             schema_mapping_id=context.schema_mapping_id or "default",
-            steps=response_data.get("steps", []),
-            final_sql=response_data.get("final_sql", ""),
-            column_mappings=response_data.get("column_mappings", {}),
-            llm_model=response_result.value.model,
+            steps=[
+                {
+                    "step_id": step.step_id,
+                    "sql": step.sql,
+                    "description": step.description,
+                }
+                for step in output.steps
+            ],
+            final_sql=output.final_sql,
+            column_mappings=output.column_mappings,
+            llm_model=model,
             prompt_hash=prompt_hash,
             generated_at=datetime.now(UTC),
         )

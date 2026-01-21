@@ -368,7 +368,7 @@ class TestGraphAgentIntegration:
         mock_config.limits.cache_ttl_seconds = 3600
 
         mock_renderer = MagicMock()
-        mock_renderer.render.return_value = ("Test prompt", 0.0)
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
 
         agent = GraphAgent(
             config=mock_config,
@@ -377,8 +377,25 @@ class TestGraphAgentIntegration:
             cache=mock_cache,
         )
 
-        # Mock the LLM call
-        agent.provider.complete = MagicMock(return_value=Result.ok(mock_llm_response))
+        # Mock the LLM converse call with tool response
+        mock_tool_call = MagicMock()
+        mock_tool_call.name = "generate_sql"  # Set as attribute, not constructor kwarg
+        mock_tool_call.input = {
+            "steps": [
+                {
+                    "step_id": "sum",
+                    "sql": "SELECT SUM(amount) FROM test_data",
+                    "description": "Sum amounts",
+                }
+            ],
+            "final_sql": "SELECT SUM(amount) AS total FROM test_data",
+            "column_mappings": {"amount": "amount"},
+        }
+
+        mock_tool_response = MagicMock()
+        mock_tool_response.tool_calls = [mock_tool_call]
+        mock_tool_response.content = None
+        agent.provider.converse = MagicMock(return_value=Result.ok(mock_tool_response))
 
         context = ExecutionContext(
             duckdb_conn=duckdb_with_data,
@@ -416,7 +433,7 @@ class TestGraphAgentIntegration:
         mock_config.limits.cache_ttl_seconds = 3600
 
         mock_renderer = MagicMock()
-        mock_renderer.render.return_value = ("Test prompt", 0.0)
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
 
         agent = GraphAgent(
             config=mock_config,
@@ -425,7 +442,25 @@ class TestGraphAgentIntegration:
             cache=mock_cache,
         )
 
-        agent.provider.complete = MagicMock(return_value=Result.ok(mock_llm_response))
+        # Mock the LLM converse call with tool response
+        mock_tool_call = MagicMock()
+        mock_tool_call.name = "generate_sql"  # Set as attribute, not constructor kwarg
+        mock_tool_call.input = {
+            "steps": [
+                {
+                    "step_id": "sum",
+                    "sql": "SELECT SUM(amount) FROM test_data",
+                    "description": "Sum amounts",
+                }
+            ],
+            "final_sql": "SELECT SUM(amount) AS total FROM test_data",
+            "column_mappings": {"amount": "amount"},
+        }
+
+        mock_tool_response = MagicMock()
+        mock_tool_response.tool_calls = [mock_tool_call]
+        mock_tool_response.content = None
+        agent.provider.converse = MagicMock(return_value=Result.ok(mock_tool_response))
 
         context = ExecutionContext(
             duckdb_conn=duckdb_with_data,
@@ -436,12 +471,12 @@ class TestGraphAgentIntegration:
         # First execution - should call LLM
         result1 = agent.execute(session, sample_graph, context)
         assert result1.success
-        assert agent.provider.complete.call_count == 1
+        assert agent.provider.converse.call_count == 1
 
         # Second execution - should use in-memory cache
         result2 = agent.execute(session, sample_graph, context)
         assert result2.success
-        assert agent.provider.complete.call_count == 1  # No additional call
+        assert agent.provider.converse.call_count == 1  # No additional call
 
         # Both should produce same result
         assert result1.value.output_value == result2.value.output_value

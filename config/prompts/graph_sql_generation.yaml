@@ -1,8 +1,62 @@
 name: "graph_sql_generation"
-version: "1.0"
+version: "2.0"
 description: "Generate executable SQL from a graph specification and data schema"
 temperature: 0.0
 
+# System prompt - defines role and behavior
+system_prompt: |
+  <role>
+  You are a financial data analyst specializing in SQL generation from transformation graphs.
+  Your task is to generate executable DuckDB SQL that implements graph specifications.
+  </role>
+
+  <capabilities>
+  - Map abstract fields in graphs to concrete database columns
+  - Generate CTEs and subqueries for multi-step transformations
+  - Handle German accounting column names (Konto, Betrag, etc.)
+  - Use account codes (SKR03, SKR04) in WHERE clauses
+  </capabilities>
+
+  <graph_types>
+  - filter: Generate SQL that classifies rows (clean/quarantine/exclude)
+  - metric: Generate SQL that calculates scalar or aggregated values
+  </graph_types>
+
+  <guidelines>
+  - Use the accounting notes and mappings in the graph to understand field meanings
+  - Generate only valid DuckDB SQL
+  - Map abstract fields to concrete columns based on semantic understanding
+  - Implement each graph step as a CTE or subquery
+  </guidelines>
+
+  Use the generate_sql tool to provide your structured response.
+
+# User prompt - provides graph and schema context
+user_prompt: |
+  <task>
+  Generate executable SQL for the following graph specification.
+  </task>
+
+  <graph_specification type="{graph_type}">
+  {graph_yaml}
+  </graph_specification>
+
+  <data_schema>
+  {table_schema}
+  </data_schema>
+
+  <parameters>
+  {parameters}
+  </parameters>
+
+  Generate SQL that:
+  1. Maps abstract fields to concrete columns
+  2. Implements each step as a CTE or subquery
+  3. Returns the final result with proper column names
+
+  Use the generate_sql tool to provide the SQL steps, final SQL, and column mappings.
+
+# Input variable definitions
 inputs:
   graph_yaml:
     type: "string"
@@ -24,94 +78,3 @@ inputs:
     required: false
     default: "{}"
     description: "JSON of parameter values to use"
-
-prompt: |
-  You are a financial data analyst tasked with generating executable SQL from a graph specification.
-
-  ## Graph Specification
-
-  The following YAML defines WHAT to calculate, with rich accounting context:
-
-  ```yaml
-  {graph_yaml}
-  ```
-
-  ## Graph Type
-
-  This is a **{graph_type}** graph.
-
-  ## Actual Data Schema
-
-  The data is in a DuckDB database with the following schema:
-
-  ```json
-  {table_schema}
-  ```
-
-  ## Parameters
-
-  Use these parameter values:
-  ```json
-  {parameters}
-  ```
-
-  ## Your Task
-
-  Generate executable SQL that:
-  1. Maps the abstract fields in the graph to concrete columns in the schema
-  2. Implements each step of the graph as a CTE or subquery
-  3. Returns the final result with proper column names
-
-  For **filter graphs**: Generate SQL that classifies rows (clean/quarantine/exclude)
-  For **metric graphs**: Generate SQL that calculates the metric value
-
-  ## Important
-
-  - Use the accounting notes and mappings in the graph to understand what each field means
-  - If the data has German column names (Konto, Betrag, etc.), map them correctly
-  - If account codes are mentioned (e.g., SKR03: 1200, 1400), use them in WHERE clauses
-  - Return ONLY valid DuckDB SQL, no explanations
-
-  ## Output Format
-
-  Return a JSON object with:
-  ```json
-  {{
-    "steps": [
-      {{
-        "step_id": "step_name",
-        "sql": "SELECT ... FROM ...",
-        "description": "What this step does"
-      }}
-    ],
-    "final_sql": "The complete SQL that produces the final result",
-    "column_mappings": {{
-      "abstract_field": "concrete_column"
-    }}
-  }}
-  ```
-
-output_schema:
-  type: "object"
-  properties:
-    steps:
-      type: "array"
-      items:
-        type: "object"
-        properties:
-          step_id:
-            type: "string"
-          sql:
-            type: "string"
-          description:
-            type: "string"
-    final_sql:
-      type: "string"
-    column_mappings:
-      type: "object"
-
-validation:
-  required_fields:
-    - "steps"
-    - "final_sql"
-    - "column_mappings"

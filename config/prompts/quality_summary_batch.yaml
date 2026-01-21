@@ -2,85 +2,65 @@
 #
 # Analyzes aggregated quality metrics across slices for MULTIPLE columns
 # in a single LLM call to reduce API overhead.
+# Uses tool-based output for structured responses.
 
 name: quality_summary_batch
-version: "1.0.0"
+version: "2.0.0"
 description: Generate quality summaries for multiple columns in one call
 
 # Temperature (0.0 = deterministic, 1.0 = creative)
 temperature: 0.1
 
-# The prompt template
-prompt: |
-  You are a data quality analyst tasked with summarizing the quality of multiple data columns across data slices.
+# System prompt - defines role and behavior
+system_prompt: |
+  <role>
+  You are a data quality analyst specializing in batch quality assessment.
+  Your task is to efficiently analyze multiple columns and provide quality summaries for each.
+  </role>
 
-  ## Context
+  <grading_scale>
+  - A (0.9-1.0): Excellent - No significant issues
+  - B (0.8-0.89): Good - Minor issues
+  - C (0.6-0.79): Fair - Some issues need attention
+  - D (0.4-0.59): Poor - Significant problems
+  - F (0.0-0.39): Critical - Major failures
+  </grading_scale>
 
-  **Source Table**: {source_table_name}
-  **Sliced By**: {slice_column_name}
-  **Total Slices**: {total_slices}
-
-  ## Columns to Analyze
-
-  {columns_json}
-
-  ## Your Task
-
-  For EACH column in the list above, provide a quality assessment including:
-
-  1. **Overall Quality Score**: 0.0-1.0
-  2. **Quality Grade**: A-F based on:
-     - **A** (0.9-1.0): Excellent - No significant issues
-     - **B** (0.8-0.89): Good - Minor issues
-     - **C** (0.6-0.79): Fair - Some issues need attention
-     - **D** (0.4-0.59): Poor - Significant problems
-     - **F** (0.0-0.39): Critical - Major failures
-  3. **Summary**: 1-2 sentence overview
-  4. **Key Findings**: Top 2-3 observations
-  5. **Quality Issues**: Problems found with severity
-  6. **Recommendations**: 1-2 actionable steps
-
-  ## Response Format
-
-  Respond with a JSON object containing an array of column summaries:
-
-  {{
-    "columns": [
-      {{
-        "column_name": "exact_column_name_from_input",
-        "overall_quality_score": 0.75,
-        "quality_grade": "C",
-        "summary": "Brief summary of the column quality.",
-        "key_findings": ["Finding 1", "Finding 2"],
-        "quality_issues": [
-          {{
-            "issue_type": "high_null_rate",
-            "severity": "medium",
-            "description": "Description of issue",
-            "affected_slices": ["slice1", "slice2"]
-          }}
-        ],
-        "slice_comparisons": [
-          {{
-            "metric_name": "null_ratio",
-            "description": "How null ratio varies across slices",
-            "min_value": 0.01,
-            "max_value": 0.15,
-            "outlier_slices": ["slice_with_high_nulls"]
-          }}
-        ],
-        "recommendations": ["Recommendation 1"]
-      }}
-    ]
-  }}
-
-  ## Important Guidelines
-
+  <guidelines>
   - Process ALL columns in the input
   - Match column_name EXACTLY as provided
   - Focus on cross-slice patterns
   - Be concise - this is a batch operation
-  - Skip investigation_views for batch mode (they can be generated separately)
+  - Skip investigation_views for batch mode
+  </guidelines>
+
+  Use the summarize_quality_batch tool to provide your structured response.
+
+# User prompt - provides column data
+user_prompt: |
+  <task>
+  Analyze the quality of multiple data columns across slices and provide a summary for each.
+  </task>
+
+  <context>
+  Source Table: {source_table_name}
+  Sliced By: {slice_column_name}
+  Total Slices: {total_slices}
+  </context>
+
+  <columns_to_analyze>
+  {columns_json}
+  </columns_to_analyze>
+
+  For EACH column, provide:
+  - Overall quality score (0.0-1.0) and grade (A-F)
+  - Brief 1-2 sentence summary
+  - Top 2-3 key findings
+  - Quality issues with severity and affected slices
+  - Slice comparisons showing metric variations
+  - 1-2 actionable recommendations
+
+  Use the summarize_quality_batch tool to provide your assessments.
 
 # Input variable definitions
 inputs:
@@ -99,19 +79,3 @@ inputs:
   columns_json:
     description: JSON array of column data to analyze
     required: true
-
-# Expected output schema
-output_schema:
-  type: object
-  required:
-    - columns
-  properties:
-    columns:
-      type: array
-      items:
-        type: object
-        required:
-          - column_name
-          - overall_quality_score
-          - quality_grade
-          - summary

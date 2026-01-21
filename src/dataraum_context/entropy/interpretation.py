@@ -10,10 +10,10 @@ See BACKLOG.md Step 2.5.3 for context.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from dataraum_context.core.models.base import Result
@@ -180,11 +180,66 @@ class InterpretationInput:
         )
 
 
+# =============================================================================
+# Pydantic models for LLM tool output
+# =============================================================================
+
+
+class AssumptionOutput(BaseModel):
+    """Pydantic model for assumption in LLM tool output."""
+
+    dimension: str = Field(
+        description="Entropy dimension this assumption addresses, e.g., 'semantic.units', 'value.nulls'"
+    )
+    assumption_text: str = Field(description="Human-readable assumption statement")
+    confidence: Literal["high", "medium", "low"] = Field(
+        description="Confidence level in this assumption"
+    )
+    impact: str = Field(description="What could go wrong if this assumption is incorrect")
+
+
+class ResolutionActionOutput(BaseModel):
+    """Pydantic model for resolution action in LLM tool output."""
+
+    action: str = Field(
+        description="Action identifier, e.g., 'add_unit_declaration', 'document_null_meaning'"
+    )
+    description: str = Field(description="Human-readable description of the action")
+    priority: Literal["high", "medium", "low"] = Field(description="Priority of this action")
+    effort: Literal["low", "medium", "high"] = Field(description="Effort required to implement")
+    expected_impact: str = Field(description="What entropy dimensions this will improve")
+
+
+class ColumnInterpretationOutput(BaseModel):
+    """Pydantic model for a single column interpretation in LLM tool output."""
+
+    assumptions: list[AssumptionOutput] = Field(
+        default_factory=list, description="List of assumptions about this column's data"
+    )
+    resolution_actions: list[ResolutionActionOutput] = Field(
+        default_factory=list, description="List of suggested actions to reduce uncertainty"
+    )
+    explanation: str = Field(
+        description="Brief human-readable explanation of the data quality situation"
+    )
+
+
+class EntropyInterpretationOutput(BaseModel):
+    """Pydantic model for LLM tool output - batch entropy interpretation.
+
+    Used as a tool definition for structured LLM output via tool use API.
+    """
+
+    columns: dict[str, ColumnInterpretationOutput] = Field(
+        description="Interpretations keyed by 'table_name.column_name'"
+    )
+
+
 class EntropyInterpreter:
     """LLM-powered entropy interpreter.
 
     Analyzes entropy metrics and generates contextual assumptions,
-    resolution actions, and explanations.
+    resolution actions, and explanations using structured tool output.
 
     Note: This class follows the LLMFeature pattern but doesn't inherit
     from it directly to avoid circular imports with entropy module.
@@ -218,8 +273,8 @@ class EntropyInterpreter:
     ) -> Result[dict[str, EntropyInterpretation]]:
         """Interpret entropy for multiple columns in a single LLM call.
 
-        Makes a single batch LLM call for all columns. If a query is provided,
-        the model considers how columns interact in that query context.
+        Makes a single batch LLM call for all columns using tool-based output.
+        If a query is provided, the model considers how columns interact in that context.
 
         Args:
             session: Database session
@@ -229,8 +284,14 @@ class EntropyInterpreter:
         Returns:
             Result containing dict mapping column keys to interpretations
         """
+        from dataraum_context.llm.providers.base import (
+            ConversationRequest,
+            Message,
+            ToolDefinition,
+        )
+
         if not inputs:
-            return Result.ok({})
+            return Result.fail("No inputs provided for interpretation")
 
         # Choose feature and prompt based on whether query is provided
         if query is not None:
@@ -255,12 +316,12 @@ class EntropyInterpreter:
                     "column_name": inp.column_name,
                     "detected_type": inp.detected_type,
                     "business_description": inp.business_description or "Not documented",
-                    "composite_score": inp.composite_score,
+                    "composite_score": round(inp.composite_score, 3),
                     "readiness": inp.readiness,
-                    "structural_entropy": inp.structural_entropy,
-                    "semantic_entropy": inp.semantic_entropy,
-                    "value_entropy": inp.value_entropy,
-                    "computational_entropy": inp.computational_entropy,
+                    "structural_entropy": round(inp.structural_entropy, 3),
+                    "semantic_entropy": round(inp.semantic_entropy, 3),
+                    "value_entropy": round(inp.value_entropy, 3),
+                    "computational_entropy": round(inp.computational_entropy, 3),
                     "high_entropy_dimensions": inp.high_entropy_dimensions,
                     "raw_metrics": inp.raw_metrics,
                     "compound_risks": [
@@ -280,230 +341,126 @@ class EntropyInterpreter:
         if query is not None:
             context["query"] = query
 
-        # Render prompt
+        # Render prompt with system/user split
         try:
-            prompt, temperature = self.renderer.render(prompt_name, context)
+            system_prompt, user_prompt, temperature = self.renderer.render_split(
+                prompt_name, context
+            )
         except Exception as e:
             return Result.fail(f"Failed to render prompt: {e}")
 
-        # Call LLM
-        response_result = self._call_llm(
-            session=session,
-            feature_name=feature_name,
-            prompt=prompt,
-            temperature=temperature,
-            model_tier=feature_config.model_tier,
+        # Define tool for structured output
+        tool = ToolDefinition(
+            name="interpret_entropy",
+            description="Provide structured interpretation of entropy metrics for the columns",
+            input_schema=EntropyInterpretationOutput.model_json_schema(),
         )
 
-        if not response_result.success:
-            return Result.fail(response_result.error or "LLM call failed")
+        model = self.provider.get_model_for_tier(feature_config.model_tier)
 
-        response = response_result.unwrap()
+        # Call LLM with tool use
+        request = ConversationRequest(
+            messages=[Message(role="user", content=user_prompt)],
+            system=system_prompt,
+            tools=[tool],
+            max_tokens=self.config.limits.max_output_tokens_per_request,
+            temperature=temperature,
+        )
 
-        # Parse batch response
-        return self._parse_batch_response(inputs, response.content)
+        result = self.provider.converse(request)
+        if not result.success or not result.value:
+            return Result.fail(result.error or "LLM call failed")
 
-    def _parse_batch_response(
+        response = result.value
+
+        # Extract tool call result
+        if not response.tool_calls:
+            # LLM didn't use the tool - try to parse text as fallback
+            if response.content:
+                try:
+                    response_data = json.loads(response.content)
+                    output = EntropyInterpretationOutput.model_validate(response_data)
+                except Exception:
+                    return Result.fail(f"LLM did not use tool. Response: {response.content[:200]}")
+            else:
+                return Result.fail("LLM did not use the interpret_entropy tool")
+        else:
+            # Parse tool response using Pydantic model
+            tool_call = response.tool_calls[0]
+            if tool_call.name != "interpret_entropy":
+                return Result.fail(f"Unexpected tool call: {tool_call.name}")
+
+            try:
+                output = EntropyInterpretationOutput.model_validate(tool_call.input)
+            except Exception as e:
+                return Result.fail(f"Failed to validate tool response: {e}")
+
+        # Convert Pydantic output to EntropyInterpretation dataclasses
+        return self._convert_output_to_interpretations(inputs, output, model)
+
+    def _convert_output_to_interpretations(
         self,
         inputs: list[InterpretationInput],
-        response_content: str,
+        output: EntropyInterpretationOutput,
+        model: str,
     ) -> Result[dict[str, EntropyInterpretation]]:
-        """Parse batch LLM response into multiple interpretations.
+        """Convert Pydantic tool output to EntropyInterpretation dataclasses.
 
         Args:
             inputs: Original input data for each column
-            response_content: Raw LLM response
+            output: Validated Pydantic output from LLM
+            model: Model name used for generation
 
         Returns:
             Result containing dict mapping column keys to interpretations
         """
-        try:
-            # Extract JSON from response
-            json_match = re.search(r"\{[\s\S]*\}", response_content)
-            if not json_match:
-                return Result.fail("No JSON found in response")
+        # Build lookup for inputs
+        inputs_by_key = {f"{inp.table_name}.{inp.column_name}": inp for inp in inputs}
 
-            parsed = json.loads(json_match.group())
-            columns_data = parsed.get("columns", {})
+        interpretations: dict[str, EntropyInterpretation] = {}
 
-            # Build lookup for inputs
-            inputs_by_key = {f"{inp.table_name}.{inp.column_name}": inp for inp in inputs}
+        for key, col_output in output.columns.items():
+            inp = inputs_by_key.get(key)
+            if not inp:
+                continue
 
-            interpretations: dict[str, EntropyInterpretation] = {}
-
-            for key, col_data in columns_data.items():
-                inp = inputs_by_key.get(key)
-                if not inp:
-                    continue
-
-                # Parse assumptions
-                assumptions = []
-                for assumption in col_data.get("assumptions", []):
-                    assumptions.append(
-                        Assumption(
-                            dimension=assumption.get("dimension", "unknown"),
-                            assumption_text=assumption.get("assumption_text", ""),
-                            confidence=assumption.get("confidence", "medium"),
-                            impact=assumption.get("impact", ""),
-                            basis="inferred",
-                        )
-                    )
-
-                # Parse resolution actions
-                resolution_actions = []
-                for action in col_data.get("resolution_actions", []):
-                    resolution_actions.append(
-                        ResolutionAction(
-                            action=action.get("action", ""),
-                            description=action.get("description", ""),
-                            priority=action.get("priority", "medium"),
-                            effort=action.get("effort", "medium"),
-                            expected_impact=action.get("expected_impact", ""),
-                        )
-                    )
-
-                interpretations[key] = EntropyInterpretation(
-                    column_name=inp.column_name,
-                    table_name=inp.table_name,
-                    assumptions=assumptions,
-                    resolution_actions=resolution_actions,
-                    explanation=col_data.get("explanation", "No explanation provided"),
-                    composite_score=inp.composite_score,
-                    readiness=inp.readiness,
+            # Convert assumptions
+            assumptions = [
+                Assumption(
+                    dimension=a.dimension,
+                    assumption_text=a.assumption_text,
+                    confidence=a.confidence,
+                    impact=a.impact,
+                    basis="inferred",
                 )
+                for a in col_output.assumptions
+            ]
 
-            return Result.ok(interpretations)
+            # Convert resolution actions
+            resolution_actions = [
+                ResolutionAction(
+                    action=r.action,
+                    description=r.description,
+                    priority=r.priority,
+                    effort=r.effort,
+                    expected_impact=r.expected_impact,
+                )
+                for r in col_output.resolution_actions
+            ]
 
-        except json.JSONDecodeError as e:
-            return Result.fail(f"Failed to parse JSON: {e}")
-        except Exception as e:
-            return Result.fail(f"Failed to parse batch response: {e}")
-
-    def _call_llm(
-        self,
-        session: Session,
-        feature_name: str,
-        prompt: str,
-        temperature: float,
-        model_tier: str,
-    ) -> Result[Any]:
-        """Call LLM with caching.
-
-        Mirrors LLMFeature._call_llm but avoids circular import.
-        """
-        from dataraum_context.llm.providers.base import LLMRequest
-
-        # Get model for tier
-        model = self.provider.get_model_for_tier(model_tier)
-
-        # Check cache first
-        cached = self.cache.get(
-            session=session,
-            feature=feature_name,
-            prompt=prompt,
-            model=model,
-            table_ids=None,
-        )
-
-        if cached:
-            return Result.ok(cached)
-
-        # Call provider
-        request = LLMRequest(
-            prompt=prompt,
-            max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
-            response_format="json",
-        )
-
-        result = self.provider.complete(request)
-        if not result.success or not result.value:
-            return result
-
-        # Store in cache
-        self.cache.put(
-            session=session,
-            feature=feature_name,
-            prompt=prompt,
-            response=result.value,
-            source_id=None,
-            table_ids=None,
-            ontology=None,
-            ttl_seconds=self.config.limits.cache_ttl_seconds,
-        )
-
-        return result
-
-
-def create_fallback_interpretation(
-    input_data: InterpretationInput,
-) -> EntropyInterpretation:
-    """Create a fallback interpretation when LLM is unavailable.
-
-    Generates basic interpretation from entropy profile without LLM.
-
-    Args:
-        input_data: Interpretation input
-
-    Returns:
-        Basic EntropyInterpretation without LLM-generated content
-    """
-    # Generate basic assumptions from high entropy dimensions
-    assumptions = []
-    for dim in input_data.high_entropy_dimensions:
-        assumptions.append(
-            Assumption(
-                dimension=dim,
-                assumption_text=f"Uncertainty in {dim} may affect query results",
-                confidence="low",
-                impact="Results may be unreliable for this dimension",
-                basis="default",
+            interpretations[key] = EntropyInterpretation(
+                column_name=inp.column_name,
+                table_name=inp.table_name,
+                assumptions=assumptions,
+                resolution_actions=resolution_actions,
+                explanation=col_output.explanation,
+                composite_score=inp.composite_score,
+                readiness=inp.readiness,
+                model_used=model,
+                from_cache=False,
             )
-        )
 
-    # Generate basic resolution actions
-    resolution_actions = []
-    if input_data.semantic_entropy > 0.5:
-        resolution_actions.append(
-            ResolutionAction(
-                action="add_documentation",
-                description="Add business description and semantic annotations",
-                priority="high",
-                effort="low",
-                expected_impact="Reduces semantic entropy",
-            )
-        )
-
-    if input_data.value_entropy > 0.5:
-        resolution_actions.append(
-            ResolutionAction(
-                action="investigate_data_quality",
-                description="Review null values and outliers",
-                priority="medium",
-                effort="medium",
-                expected_impact="Reduces value entropy",
-            )
-        )
-
-    # Generate basic explanation
-    explanation = (
-        f"Column {input_data.column_name} has composite entropy {input_data.composite_score:.2f} "
-        f"(readiness: {input_data.readiness}). "
-    )
-    if input_data.high_entropy_dimensions:
-        explanation += f"High uncertainty in: {', '.join(input_data.high_entropy_dimensions)}. "
-    if input_data.compound_risks:
-        explanation += f"Found {len(input_data.compound_risks)} compound risk(s). "
-
-    return EntropyInterpretation(
-        column_name=input_data.column_name,
-        table_name=input_data.table_name,
-        assumptions=assumptions,
-        resolution_actions=resolution_actions,
-        explanation=explanation,
-        composite_score=input_data.composite_score,
-        readiness=input_data.readiness,
-    )
+        return Result.ok(interpretations)
 
 
 __all__ = [
@@ -512,5 +469,9 @@ __all__ = [
     "EntropyInterpretation",
     "InterpretationInput",
     "EntropyInterpreter",
-    "create_fallback_interpretation",
+    # Pydantic output models for tool use
+    "AssumptionOutput",
+    "ResolutionActionOutput",
+    "ColumnInterpretationOutput",
+    "EntropyInterpretationOutput",
 ]

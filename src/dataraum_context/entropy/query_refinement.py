@@ -30,7 +30,6 @@ from sqlalchemy.orm import Session
 from dataraum_context.entropy.interpretation import (
     EntropyInterpretation,
     InterpretationInput,
-    create_fallback_interpretation,
 )
 from dataraum_context.entropy.models import EntropyContext
 
@@ -143,13 +142,8 @@ def refine_interpretations_for_query(
         )
         if batch_result.success and batch_result.value:
             result.column_interpretations = batch_result.value
-            return result
 
-    # Fall back to individual fallback interpretations
-    if use_fallback:
-        for key, input_data in zip(matched_keys, inputs, strict=True):
-            result.column_interpretations[key] = create_fallback_interpretation(input_data)
-
+    # No fallback - return empty interpretations if LLM fails
     return result
 
 

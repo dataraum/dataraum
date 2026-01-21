@@ -29,7 +29,6 @@ from sqlalchemy.orm import Session
 from dataraum_context.entropy.detectors import register_builtin_detectors
 from dataraum_context.entropy.interpretation import (
     InterpretationInput,
-    create_fallback_interpretation,
 )
 from dataraum_context.entropy.models import (
     ColumnEntropyProfile,
@@ -531,15 +530,11 @@ def _build_interpretations(
         elif result.error:
             logger.warning("Batch LLM interpretation failed: %s", result.error)
 
-    # Apply interpretations to profiles, using fallback where needed
-    for key, input_data in zip(input_keys, inputs, strict=True):
+    # Apply interpretations to profiles (no fallback - LLM or nothing)
+    for key, _input_data in zip(input_keys, inputs, strict=True):
         interpretation = interpretations.get(key)
 
-        # Fall back to basic interpretation if needed
-        if interpretation is None and use_fallback:
-            interpretation = create_fallback_interpretation(input_data)
-
-        # Store interpretation
+        # Store interpretation if available
         if interpretation is not None:
             profile = entropy_context.column_profiles[key]
             profile.interpretation = interpretation

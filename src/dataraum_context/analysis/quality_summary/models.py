@@ -212,6 +212,99 @@ class SliceColumnMatrix(BaseModel):
         return result
 
 
+# =============================================================================
+# Pydantic models for LLM tool output
+# =============================================================================
+
+
+class QualityIssueOutput(BaseModel):
+    """Pydantic model for quality issue in LLM tool output."""
+
+    issue_type: str = Field(
+        description="Type of issue (e.g., 'high_null_rate', 'benford_violation')"
+    )
+    severity: str = Field(description="Severity level: low, medium, high, critical")
+    description: str = Field(description="Description of the issue")
+    affected_slices: list[str] = Field(
+        default_factory=list, description="List of slice names affected by this issue"
+    )
+    investigation_sql: str | None = Field(
+        default=None, description="DuckDB SQL query to investigate this issue"
+    )
+
+
+class SliceComparisonOutput(BaseModel):
+    """Pydantic model for slice comparison in LLM tool output."""
+
+    metric_name: str = Field(description="Name of the metric being compared")
+    description: str = Field(description="Description of how this metric varies across slices")
+    min_value: float | None = Field(default=None, description="Minimum value across slices")
+    max_value: float | None = Field(default=None, description="Maximum value across slices")
+    outlier_slices: list[str] = Field(
+        default_factory=list, description="Slices with unusually high or low values"
+    )
+
+
+class InvestigationViewOutput(BaseModel):
+    """Pydantic model for investigation view in LLM tool output."""
+
+    name: str = Field(description="Name for this investigation view")
+    description: str = Field(description="What this view helps investigate")
+    sql: str = Field(description="DuckDB SQL query for the investigation")
+
+
+class QualitySummaryOutput(BaseModel):
+    """Pydantic model for LLM tool output - single column quality summary.
+
+    Used as a tool definition for structured LLM output via tool use API.
+    """
+
+    overall_quality_score: float = Field(
+        ge=0.0, le=1.0, description="Overall quality score from 0.0 to 1.0"
+    )
+    quality_grade: str = Field(description="Quality grade: A, B, C, D, or F")
+    summary: str = Field(description="Brief 2-3 sentence summary of the column quality")
+    key_findings: list[str] = Field(
+        default_factory=list, description="Top 3-5 key observations about patterns across slices"
+    )
+    quality_issues: list[QualityIssueOutput] = Field(
+        default_factory=list, description="Specific quality problems found"
+    )
+    slice_comparisons: list[SliceComparisonOutput] = Field(
+        default_factory=list, description="How metrics vary across slices"
+    )
+    recommendations: list[str] = Field(
+        default_factory=list, description="Actionable steps to improve data quality"
+    )
+    investigation_views: list[InvestigationViewOutput] = Field(
+        default_factory=list, description="SQL queries for drilling into issues"
+    )
+
+
+class ColumnSummaryOutput(BaseModel):
+    """Pydantic model for a single column in batch output."""
+
+    column_name: str = Field(description="Exact column name from input")
+    overall_quality_score: float = Field(ge=0.0, le=1.0)
+    quality_grade: str = Field(description="Quality grade: A, B, C, D, or F")
+    summary: str = Field(description="Brief summary of the column quality")
+    key_findings: list[str] = Field(default_factory=list)
+    quality_issues: list[QualityIssueOutput] = Field(default_factory=list)
+    slice_comparisons: list[SliceComparisonOutput] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+
+
+class QualitySummaryBatchOutput(BaseModel):
+    """Pydantic model for LLM tool output - batch column quality summary.
+
+    Used as a tool definition for structured LLM output via tool use API.
+    """
+
+    columns: list[ColumnSummaryOutput] = Field(
+        description="List of quality summaries for each column"
+    )
+
+
 __all__ = [
     "SliceMetrics",
     "SliceComparison",
@@ -221,4 +314,11 @@ __all__ = [
     "AggregatedColumnData",
     "SliceQualityCell",
     "SliceColumnMatrix",
+    # Tool output models
+    "QualityIssueOutput",
+    "SliceComparisonOutput",
+    "InvestigationViewOutput",
+    "QualitySummaryOutput",
+    "ColumnSummaryOutput",
+    "QualitySummaryBatchOutput",
 ]

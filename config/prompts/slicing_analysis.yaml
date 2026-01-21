@@ -2,98 +2,79 @@
 #
 # Analyzes table statistics, semantic annotations, correlations, and quality metrics
 # to identify the best categorical dimensions for data slicing.
+# Uses tool-based output for structured responses.
 
 name: slicing_analysis
-version: "1.1.0"
+version: "2.0.0"
 description: Identify optimal categorical dimensions for slicing data into subsets
 
 # Temperature (0.0 = deterministic, 1.0 = creative)
 temperature: 0.0
 
-# The prompt template
-# Available variables: {tables_json}, {statistics_json}, {semantic_json}, {correlations_json}, {quality_json}
-prompt: |
-  You are a data analyst tasked with identifying the best categorical columns for slicing a dataset into meaningful subsets.
+# System prompt - defines role and behavior
+system_prompt: |
+  <role>
+  You are a data analyst specializing in data segmentation and slicing strategies.
+  Your task is to identify the best categorical columns for dividing datasets into
+  meaningful, analyzable subsets.
+  </role>
 
-  ## Goal
-
+  <goal>
   Identify columns that would create useful data subsets when filtered by each unique value.
   For example, if a table has a "region" column with values ["North", "South", "East", "West"],
   slicing on this column would create 4 subsets - one for each region.
+  </goal>
 
-  ## Tables and Columns
+  <selection_criteria>
+  A good slicing dimension should have:
 
-  {tables_json}
+  1. Appropriate Cardinality: Less than 15 distinct values
+  2. Business Meaning: Represent a meaningful business dimension
+  3. Balanced Distribution: Values should have reasonable row counts (avoid 99% in one value)
+  4. Independence: Not highly correlated with other slice dimensions (avoid redundancy)
+  5. Quality Insight Potential: May help explain quality issues in related columns
+  </selection_criteria>
 
-  ## Statistical Profiles
-
-  For each column, we have statistics including distinct value counts and top values:
-
-  {statistics_json}
-
-  ## Semantic Annotations
-
-  Business meaning and roles for columns (if available):
-
-  {semantic_json}
-
-  ## Correlation Analysis
-
-  Relationships between columns:
-
-  {correlations_json}
-
-  ## Statistical Quality Metrics
-
-  Quality analysis results including Benford's Law compliance and outlier detection:
-
-  {quality_json}
-
-  ## Selection Criteria for Good Slice Dimensions
-
-  A good slicing dimension should:
-
-  1. **Appropriate Cardinality**: Have <15 distinct values
-
-  2. **Business Meaning**: Represent a meaningful business dimension
-
-  3. **Balanced Distribution**: Values should have reasonable row counts
-     - Avoid dimensions where one value has 99% of data
-
-  4. **Independence**: Not highly correlated with other slice dimensions
-     - Avoid redundant slicing (e.g., both "region" and "region_code")
-
-  5. **Quality Insight Potential**: Consider dimensions that might help explain quality issues
-     - If numeric columns have Benford violations or outliers, slicing by related
-       categorical columns could help isolate the source of data quality issues
-     - Columns related to problematic numeric columns may be valuable slice dimensions
-
-  ## Response Format
-
-  Respond with valid JSON only, no markdown formatting:
-
-  {{
-    "recommendations": [
-      {{
-        "table_name": "the_table_name",
-        "column_name": "the_column_to_slice_on",
-        "priority": 1,
-        "distinct_values": ["value1", "value2", "value3"],
-        "reasoning": "Why this is a good slicing dimension",
-        "business_context": "What this dimension represents in business terms",
-        "confidence": 0.95
-      }}
-    ]
-  }}
-
-  ## Important Notes
-
-  - Order recommendations by priority (1 = highest priority, best slice dimension)
+  <guidelines>
   - Only recommend categorical columns (VARCHAR type), not numeric or date columns
-  - Include ALL distinct values in the distinct_values array
-  - If a column has many values, include up to 5 most frequent ones
-  - If no good slicing dimensions exist, return empty recommendations array
-  - Focus on dimensions that would create analytically interesting subsets
+  - Order recommendations by priority (1 = highest priority)
+  - Include all distinct values (up to 5 most frequent if many values)
+  - Return empty recommendations if no good dimensions exist
+  </guidelines>
+
+  Use the analyze_slicing tool to provide your structured response.
+
+# User prompt - provides data context
+user_prompt: |
+  <task>
+  Analyze the provided table metadata and statistics to identify optimal slicing dimensions.
+  </task>
+
+  <tables>
+  {tables_json}
+  </tables>
+
+  <statistics>
+  Statistical profiles including distinct value counts and top values:
+  {statistics_json}
+  </statistics>
+
+  <semantic_annotations>
+  Business meaning and roles for columns:
+  {semantic_json}
+  </semantic_annotations>
+
+  <correlations>
+  Relationships between columns:
+  {correlations_json}
+  </correlations>
+
+  <quality_metrics>
+  Quality analysis including Benford's Law compliance and outlier detection:
+  {quality_json}
+  </quality_metrics>
+
+  Use the analyze_slicing tool to provide your recommendations.
 
 # Input variable definitions
 inputs:
@@ -119,43 +100,3 @@ inputs:
     description: JSON array of statistical quality metrics (Benford's Law, outliers)
     required: false
     default: "[]"
-
-# Expected output schema
-output_schema:
-  type: object
-  required:
-    - recommendations
-  properties:
-    recommendations:
-      type: array
-      items:
-        type: object
-        required:
-          - table_name
-          - column_name
-          - priority
-          - distinct_values
-          - reasoning
-          - confidence
-        properties:
-          table_name:
-            type: string
-          column_name:
-            type: string
-          priority:
-            type: integer
-          distinct_values:
-            type: array
-            items:
-              type: string
-          reasoning:
-            type: string
-          business_context:
-            type: string
-          confidence:
-            type: number
-
-# Validation rules
-validation:
-  slice_types:
-    - categorical

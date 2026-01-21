@@ -18,6 +18,7 @@ Cross-table quality analysis (analyze_cross_table_quality):
 import math
 import time
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import duckdb
 from sqlalchemy import select
@@ -245,8 +246,12 @@ def _store_cross_table_results(
     """Store cross-table quality analysis results to database."""
     now = datetime.now(UTC)
 
+    # Generate UUID explicitly (SQLAlchemy defaults may not work reliably in all contexts)
+    run_id = str(uuid4())
+
     # Create analysis run record
     run_record = CorrelationAnalysisRun(
+        run_id=run_id,
         target_id=relationship.relationship_id,
         target_type="relationship",
         from_table=from_table_name,
@@ -262,7 +267,6 @@ def _store_cross_table_results(
         duration_seconds=duration,
     )
     session.add(run_record)
-    # No flush needed - run_id is client-generated UUID, available immediately
 
     # Store cross-table correlations (skip NaN values from constant columns)
     for corr in quality_result.cross_table_correlations:
@@ -271,7 +275,7 @@ def _store_cross_table_results(
             continue
 
         db_corr = CrossTableCorrelationDB(
-            run_id=run_record.run_id,
+            run_id=run_id,
             from_table=corr.from_table,
             from_column=corr.from_column,
             to_table=corr.to_table,
@@ -292,7 +296,7 @@ def _store_cross_table_results(
             for t, c in group.columns
         ]
         db_group = MulticollinearityGroup(
-            run_id=run_record.run_id,
+            run_id=run_id,
             columns_involved=columns_data,
             condition_index=group.condition_index,
             severity=group.severity,
@@ -305,7 +309,7 @@ def _store_cross_table_results(
     for issue in quality_result.issues:
         affected_cols = [{"table": t, "column": c} for t, c in issue.affected_columns]
         db_issue = QualityIssueDB(
-            run_id=run_record.run_id,
+            run_id=run_id,
             issue_type=issue.issue_type,
             severity=issue.severity,
             message=issue.message,

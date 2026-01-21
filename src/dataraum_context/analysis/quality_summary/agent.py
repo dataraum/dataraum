@@ -4,12 +4,12 @@ This agent analyzes aggregated quality metrics across slices
 and generates human-readable quality summaries per column.
 
 Supports both single-column and batch processing modes.
+Uses tool-based output for structured responses.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import Session
@@ -18,6 +18,8 @@ from dataraum_context.analysis.quality_summary.models import (
     AggregatedColumnData,
     ColumnQualitySummary,
     QualityIssue,
+    QualitySummaryBatchOutput,
+    QualitySummaryOutput,
     SliceComparison,
     SliceMetrics,
 )
@@ -39,6 +41,7 @@ class QualitySummaryAgent(LLMFeature):
 
     Analyzes aggregated column data across slices to generate
     quality summaries with findings, issues, and recommendations.
+    Uses tool-based output for structured responses.
     """
 
     def __init__(
@@ -72,12 +75,20 @@ class QualitySummaryAgent(LLMFeature):
         Returns:
             Result containing ColumnQualitySummary
         """
+        from dataraum_context.llm.providers.base import (
+            ConversationRequest,
+            Message,
+            ToolDefinition,
+        )
+
         # Check if feature is enabled
         feature_config = self.config.features.quality_summary
         if not feature_config or not feature_config.enabled:
             return Result.fail("Quality summary is disabled in config")
 
         # Build context for prompt
+        # Note: Optional fields like incomplete_periods, volume_anomalies, etc.
+        # have defaults defined in the prompt YAML and are handled by the renderer
         context = {
             "column_name": column_data.column_name,
             "source_table_name": column_data.source_table_name,
@@ -93,28 +104,60 @@ class QualitySummaryAgent(LLMFeature):
             "outlier_slices": column_data.outlier_slice_count,
         }
 
-        # Render prompt
+        # Render prompt with system/user split
         try:
-            prompt, temperature = self.renderer.render("quality_summary", context)
+            system_prompt, user_prompt, temperature = self.renderer.render_split(
+                "quality_summary", context
+            )
         except Exception as e:
             return Result.fail(f"Failed to render prompt: {e}")
 
-        # Call LLM
-        response_result = self._call_llm(
-            session=session,
-            feature_name="quality_summary",
-            prompt=prompt,
-            temperature=temperature,
-            model_tier=feature_config.model_tier,
+        # Define tool for structured output
+        tool = ToolDefinition(
+            name="summarize_quality",
+            description="Provide structured quality summary for the column",
+            input_schema=QualitySummaryOutput.model_json_schema(),
         )
 
-        if not response_result.success:
-            return Result.fail(response_result.error or "LLM call failed")
+        # Call LLM with tool use
+        request = ConversationRequest(
+            messages=[Message(role="user", content=user_prompt)],
+            system=system_prompt,
+            tools=[tool],
+            max_tokens=self.config.limits.max_output_tokens_per_request,
+            temperature=temperature,
+        )
 
-        response = response_result.unwrap()
+        result = self.provider.converse(request)
+        if not result.success or not result.value:
+            return Result.fail(result.error or "LLM call failed")
 
-        # Parse response
-        return self._parse_response(column_data, response.content)
+        response = result.value
+
+        # Extract tool call result
+        if not response.tool_calls:
+            # LLM didn't use the tool - try to parse text as fallback
+            if response.content:
+                try:
+                    response_data = json.loads(response.content)
+                    output = QualitySummaryOutput.model_validate(response_data)
+                except Exception:
+                    return Result.fail(f"LLM did not use tool. Response: {response.content[:200]}")
+            else:
+                return Result.fail("LLM did not use the summarize_quality tool")
+        else:
+            # Parse tool response using Pydantic model
+            tool_call = response.tool_calls[0]
+            if tool_call.name != "summarize_quality":
+                return Result.fail(f"Unexpected tool call: {tool_call.name}")
+
+            try:
+                output = QualitySummaryOutput.model_validate(tool_call.input)
+            except Exception as e:
+                return Result.fail(f"Failed to validate tool response: {e}")
+
+        # Convert Pydantic output to ColumnQualitySummary
+        return self._convert_output_to_summary(column_data, output)
 
     def summarize_columns_batch(
         self,
@@ -136,6 +179,12 @@ class QualitySummaryAgent(LLMFeature):
         Returns:
             Result containing list of ColumnQualitySummary
         """
+        from dataraum_context.llm.providers.base import (
+            ConversationRequest,
+            Message,
+            ToolDefinition,
+        )
+
         if not columns_data:
             return Result.ok([])
 
@@ -177,112 +226,131 @@ class QualitySummaryAgent(LLMFeature):
             "columns_json": json.dumps(columns_for_prompt, indent=2),
         }
 
-        # Render batch prompt
+        # Render batch prompt with system/user split
         try:
-            prompt, temperature = self.renderer.render("quality_summary_batch", context)
+            system_prompt, user_prompt, temperature = self.renderer.render_split(
+                "quality_summary_batch", context
+            )
         except Exception as e:
             return Result.fail(f"Failed to render batch prompt: {e}")
 
-        # Call LLM
-        response_result = self._call_llm(
-            session=session,
-            feature_name="quality_summary",
-            prompt=prompt,
-            temperature=temperature,
-            model_tier=feature_config.model_tier,
+        # Define tool for structured output
+        tool = ToolDefinition(
+            name="summarize_quality_batch",
+            description="Provide structured quality summaries for multiple columns",
+            input_schema=QualitySummaryBatchOutput.model_json_schema(),
         )
 
-        if not response_result.success:
-            return Result.fail(response_result.error or "LLM call failed")
+        # Call LLM with tool use
+        request = ConversationRequest(
+            messages=[Message(role="user", content=user_prompt)],
+            system=system_prompt,
+            tools=[tool],
+            max_tokens=self.config.limits.max_output_tokens_per_request,
+            temperature=temperature,
+        )
 
-        response = response_result.unwrap()
+        result = self.provider.converse(request)
+        if not result.success or not result.value:
+            return Result.fail(result.error or "LLM call failed")
 
-        # Parse batch response
-        return self._parse_batch_response(columns_data, response.content)
+        response = result.value
 
-    def _parse_batch_response(
+        # Extract tool call result
+        if not response.tool_calls:
+            # LLM didn't use the tool - try to parse text as fallback
+            if response.content:
+                try:
+                    response_data = json.loads(response.content)
+                    output = QualitySummaryBatchOutput.model_validate(response_data)
+                except Exception:
+                    return Result.fail(f"LLM did not use tool. Response: {response.content[:200]}")
+            else:
+                return Result.fail("LLM did not use the summarize_quality_batch tool")
+        else:
+            # Parse tool response using Pydantic model
+            tool_call = response.tool_calls[0]
+            if tool_call.name != "summarize_quality_batch":
+                return Result.fail(f"Unexpected tool call: {tool_call.name}")
+
+            try:
+                output = QualitySummaryBatchOutput.model_validate(tool_call.input)
+            except Exception as e:
+                return Result.fail(f"Failed to validate tool response: {e}")
+
+        # Convert Pydantic output to list of ColumnQualitySummary
+        return self._convert_batch_output_to_summaries(columns_data, output)
+
+    def _convert_batch_output_to_summaries(
         self,
         columns_data: list[AggregatedColumnData],
-        response_content: str,
+        output: QualitySummaryBatchOutput,
     ) -> Result[list[ColumnQualitySummary]]:
-        """Parse batch LLM response into list of ColumnQualitySummary.
+        """Convert batch Pydantic tool output to list of ColumnQualitySummary.
 
         Args:
             columns_data: Original column data list
-            response_content: Raw LLM response
+            output: Validated Pydantic output from LLM
 
         Returns:
-            Result containing list of parsed ColumnQualitySummary
+            Result containing list of ColumnQualitySummary
         """
-        try:
-            # Extract JSON from response
-            json_match = re.search(r"\{[\s\S]*\}", response_content)
-            if not json_match:
-                return Result.fail("No JSON found in batch response")
+        # Build lookup for original data
+        col_data_map = {cd.column_name: cd for cd in columns_data}
 
-            parsed = json.loads(json_match.group())
-            columns_response = parsed.get("columns", [])
+        summaries = []
+        for col_output in output.columns:
+            col_name = col_output.column_name
+            col_data = col_data_map.get(col_name)
 
-            # Build lookup for original data
-            col_data_map = {cd.column_name: cd for cd in columns_data}
+            if not col_data:
+                continue
 
-            summaries = []
-            for col_resp in columns_response:
-                col_name = col_resp.get("column_name", "")
-                col_data = col_data_map.get(col_name)
+            # Build slice metrics from original data
+            slice_metrics = self._build_slice_metrics(col_data)
 
-                if not col_data:
-                    continue
-
-                # Build slice metrics from original data
-                slice_metrics = self._build_slice_metrics(col_data)
-
-                # Parse quality issues
-                quality_issues = [
-                    QualityIssue(
-                        issue_type=issue.get("issue_type", "unknown"),
-                        severity=issue.get("severity", "medium"),
-                        description=issue.get("description", ""),
-                        affected_slices=issue.get("affected_slices", []),
-                    )
-                    for issue in col_resp.get("quality_issues", [])
-                ]
-
-                # Parse slice comparisons
-                slice_comparisons = [
-                    SliceComparison(
-                        metric_name=comp.get("metric_name", ""),
-                        description=comp.get("description", ""),
-                        min_value=comp.get("min_value"),
-                        max_value=comp.get("max_value"),
-                        outlier_slices=comp.get("outlier_slices", []),
-                    )
-                    for comp in col_resp.get("slice_comparisons", [])
-                ]
-
-                summary = ColumnQualitySummary(
-                    column_name=col_name,
-                    source_table_name=col_data.source_table_name,
-                    slice_column_name=col_data.slice_column_name,
-                    total_slices=len(col_data.slice_data),
-                    overall_quality_score=col_resp.get("overall_quality_score", 0.5),
-                    quality_grade=col_resp.get("quality_grade", "C"),
-                    summary=col_resp.get("summary", "No summary available"),
-                    key_findings=col_resp.get("key_findings", []),
-                    quality_issues=quality_issues,
-                    slice_comparisons=slice_comparisons,
-                    recommendations=col_resp.get("recommendations", []),
-                    investigation_views=[],  # Skip in batch mode
-                    slice_metrics=slice_metrics,
+            # Convert quality issues from Pydantic output
+            quality_issues = [
+                QualityIssue(
+                    issue_type=issue.issue_type,
+                    severity=issue.severity,
+                    description=issue.description,
+                    affected_slices=issue.affected_slices,
+                    investigation_sql=issue.investigation_sql,
                 )
-                summaries.append(summary)
+                for issue in col_output.quality_issues
+            ]
 
-            return Result.ok(summaries)
+            # Convert slice comparisons from Pydantic output
+            slice_comparisons = [
+                SliceComparison(
+                    metric_name=comp.metric_name,
+                    description=comp.description,
+                    min_value=comp.min_value,
+                    max_value=comp.max_value,
+                    outlier_slices=comp.outlier_slices,
+                )
+                for comp in col_output.slice_comparisons
+            ]
 
-        except json.JSONDecodeError as e:
-            return Result.fail(f"Failed to parse batch JSON: {e}")
-        except Exception as e:
-            return Result.fail(f"Failed to parse batch response: {e}")
+            summary = ColumnQualitySummary(
+                column_name=col_name,
+                source_table_name=col_data.source_table_name,
+                slice_column_name=col_data.slice_column_name,
+                total_slices=len(col_data.slice_data),
+                overall_quality_score=col_output.overall_quality_score,
+                quality_grade=col_output.quality_grade,
+                summary=col_output.summary,
+                key_findings=col_output.key_findings,
+                quality_issues=quality_issues,
+                slice_comparisons=slice_comparisons,
+                recommendations=col_output.recommendations,
+                investigation_views=[],  # Skip in batch mode
+                slice_metrics=slice_metrics,
+            )
+            summaries.append(summary)
+
+        return Result.ok(summaries)
 
     def _build_slice_metrics(self, column_data: AggregatedColumnData) -> list[SliceMetrics]:
         """Build slice metrics from column data."""
@@ -307,103 +375,74 @@ class QualitySummaryAgent(LLMFeature):
             for sd in column_data.slice_data
         ]
 
-    def _parse_response(
+    def _convert_output_to_summary(
         self,
         column_data: AggregatedColumnData,
-        response_content: str,
+        output: QualitySummaryOutput,
     ) -> Result[ColumnQualitySummary]:
-        """Parse LLM response into ColumnQualitySummary.
+        """Convert Pydantic tool output to ColumnQualitySummary.
 
         Args:
             column_data: Original column data
-            response_content: Raw LLM response
+            output: Validated Pydantic output from LLM
 
         Returns:
-            Result containing parsed ColumnQualitySummary
+            Result containing ColumnQualitySummary
         """
-        try:
-            # Extract JSON from response
-            json_match = re.search(r"\{[\s\S]*\}", response_content)
-            if not json_match:
-                return Result.fail("No JSON found in response")
+        # Build slice metrics from original data
+        slice_metrics = self._build_slice_metrics(column_data)
 
-            parsed = json.loads(json_match.group())
-
-            # Build slice metrics from original data
-            slice_metrics = []
-            for sd in column_data.slice_data:
-                slice_metrics.append(
-                    SliceMetrics(
-                        slice_name=sd.get("slice_name", ""),
-                        slice_value=sd.get("slice_value", ""),
-                        row_count=sd.get("row_count", 0),
-                        null_count=sd.get("null_count"),
-                        null_ratio=sd.get("null_ratio"),
-                        distinct_count=sd.get("distinct_count"),
-                        cardinality_ratio=sd.get("cardinality_ratio"),
-                        min_value=sd.get("min_value"),
-                        max_value=sd.get("max_value"),
-                        mean_value=sd.get("mean_value"),
-                        stddev=sd.get("stddev"),
-                        benford_compliant=sd.get("benford_compliant"),
-                        benford_p_value=sd.get("benford_p_value"),
-                        has_outliers=sd.get("has_outliers"),
-                        outlier_ratio=sd.get("outlier_ratio"),
-                    )
-                )
-
-            # Parse quality issues
-            quality_issues = []
-            for issue in parsed.get("quality_issues", []):
-                quality_issues.append(
-                    QualityIssue(
-                        issue_type=issue.get("issue_type", "unknown"),
-                        severity=issue.get("severity", "medium"),
-                        description=issue.get("description", ""),
-                        affected_slices=issue.get("affected_slices", []),
-                        sample_values=issue.get("sample_values"),
-                        investigation_sql=issue.get("investigation_sql"),
-                    )
-                )
-
-            # Parse slice comparisons
-            slice_comparisons = []
-            for comp in parsed.get("slice_comparisons", []):
-                slice_comparisons.append(
-                    SliceComparison(
-                        metric_name=comp.get("metric_name", ""),
-                        description=comp.get("description", ""),
-                        min_value=comp.get("min_value"),
-                        max_value=comp.get("max_value"),
-                        mean_value=comp.get("mean_value"),
-                        variance=comp.get("variance"),
-                        outlier_slices=comp.get("outlier_slices", []),
-                        notes=comp.get("notes"),
-                    )
-                )
-
-            summary = ColumnQualitySummary(
-                column_name=column_data.column_name,
-                source_table_name=column_data.source_table_name,
-                slice_column_name=column_data.slice_column_name,
-                total_slices=len(column_data.slice_data),
-                overall_quality_score=parsed.get("overall_quality_score", 0.5),
-                quality_grade=parsed.get("quality_grade", "C"),
-                summary=parsed.get("summary", "No summary available"),
-                key_findings=parsed.get("key_findings", []),
-                quality_issues=quality_issues,
-                slice_comparisons=slice_comparisons,
-                recommendations=parsed.get("recommendations", []),
-                investigation_views=parsed.get("investigation_views", []),
-                slice_metrics=slice_metrics,
+        # Convert quality issues from Pydantic output
+        quality_issues = [
+            QualityIssue(
+                issue_type=issue.issue_type,
+                severity=issue.severity,
+                description=issue.description,
+                affected_slices=issue.affected_slices,
+                investigation_sql=issue.investigation_sql,
             )
+            for issue in output.quality_issues
+        ]
 
-            return Result.ok(summary)
+        # Convert slice comparisons from Pydantic output
+        slice_comparisons = [
+            SliceComparison(
+                metric_name=comp.metric_name,
+                description=comp.description,
+                min_value=comp.min_value,
+                max_value=comp.max_value,
+                outlier_slices=comp.outlier_slices,
+            )
+            for comp in output.slice_comparisons
+        ]
 
-        except json.JSONDecodeError as e:
-            return Result.fail(f"Failed to parse JSON: {e}")
-        except Exception as e:
-            return Result.fail(f"Failed to parse response: {e}")
+        # Convert investigation views from Pydantic output
+        investigation_views = [
+            {
+                "name": view.name,
+                "description": view.description,
+                "sql": view.sql,
+            }
+            for view in output.investigation_views
+        ]
+
+        summary = ColumnQualitySummary(
+            column_name=column_data.column_name,
+            source_table_name=column_data.source_table_name,
+            slice_column_name=column_data.slice_column_name,
+            total_slices=len(column_data.slice_data),
+            overall_quality_score=output.overall_quality_score,
+            quality_grade=output.quality_grade,
+            summary=output.summary,
+            key_findings=output.key_findings,
+            quality_issues=quality_issues,
+            slice_comparisons=slice_comparisons,
+            recommendations=output.recommendations,
+            investigation_views=investigation_views,
+            slice_metrics=slice_metrics,
+        )
+
+        return Result.ok(summary)
 
 
 __all__ = ["QualitySummaryAgent"]

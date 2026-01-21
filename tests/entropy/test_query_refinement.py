@@ -179,7 +179,8 @@ class TestRefineInterpretationsForQuery:
         assert result.query == query
         assert "orders.amount" in result.matched_columns
         assert "orders.status" in result.matched_columns
-        assert len(result.column_interpretations) == 2
+        # Without interpreter, no interpretations (fallback was removed)
+        assert len(result.column_interpretations) == 0
 
     def test_refine_without_fallback(
         self,
@@ -201,12 +202,15 @@ class TestRefineInterpretationsForQuery:
         assert "orders.amount" in result.matched_columns
         assert len(result.column_interpretations) == 0
 
-    def test_fallback_interpretation_for_matched_columns(
+    def test_no_interpretation_without_interpreter(
         self,
         mock_session,
         sample_entropy_context: EntropyContext,
     ) -> None:
-        """Test that fallback interpretation is generated for matched columns."""
+        """Test that no interpretation is generated without an interpreter.
+
+        Fallback was removed - interpretations only come from LLM now.
+        """
         query = "SELECT SUM(amount) FROM orders GROUP BY status"
 
         result = refine_interpretations_for_query(
@@ -216,10 +220,10 @@ class TestRefineInterpretationsForQuery:
             use_fallback=True,
         )
 
-        # The interpretation should exist (via fallback)
-        assert "orders.amount" in result.column_interpretations
-        interpretation = result.column_interpretations["orders.amount"]
-        assert interpretation is not None
+        # Columns are matched but no interpretations without interpreter
+        assert "orders.amount" in result.matched_columns
+        assert "orders.status" in result.matched_columns
+        assert len(result.column_interpretations) == 0
 
     def test_no_matching_columns(
         self,

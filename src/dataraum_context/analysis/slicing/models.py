@@ -82,8 +82,43 @@ class SlicingAnalysisResult(BaseModel):
     columns_considered: int = 0
 
 
+# =============================================================================
+# Pydantic model for LLM tool output
+# =============================================================================
+
+
+class SliceRecommendationOutput(BaseModel):
+    """Pydantic model for a slice recommendation in LLM tool output."""
+
+    table_name: str = Field(description="Name of the table containing the column")
+    column_name: str = Field(description="Name of the column to slice on")
+    priority: int = Field(description="Priority rank (1 = highest priority slice dimension)")
+    distinct_values: list[str] = Field(description="List of unique values that will become slices")
+    reasoning: str = Field(description="Why this column is a good slicing dimension")
+    business_context: str | None = Field(
+        default=None, description="Business meaning of this dimension"
+    )
+    confidence: float = Field(
+        ge=0.0, le=1.0, description="Confidence in this recommendation (0.0 to 1.0)"
+    )
+
+
+class SlicingAnalysisOutput(BaseModel):
+    """Pydantic model for LLM tool output - slicing analysis.
+
+    Used as a tool definition for structured LLM output via tool use API.
+    """
+
+    recommendations: list[SliceRecommendationOutput] = Field(
+        default_factory=list,
+        description="List of recommended slicing dimensions, ordered by priority",
+    )
+
+
 __all__ = [
     "SliceRecommendation",
     "SliceSQL",
     "SlicingAnalysisResult",
+    "SliceRecommendationOutput",
+    "SlicingAnalysisOutput",
 ]

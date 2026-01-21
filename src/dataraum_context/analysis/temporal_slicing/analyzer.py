@@ -151,7 +151,7 @@ class TemporalSliceAnalyzer:
     def persist_results(
         self,
         result: TemporalAnalysisResult,
-    ) -> Result[int]:
+    ) -> Result[str]:
         """Persist temporal analysis results to database.
 
         Args:
@@ -175,8 +175,8 @@ class TemporalSliceAnalyzer:
                 config_json=result.config.model_dump(mode="json"),
             )
             self.session.add(run)
-            self.session.flush()
-            run_id = run.id
+            # UUID is generated client-side, no flush needed
+            run_id = run.run_id
 
             # Persist period analyses
             for period_metric, completeness in zip(

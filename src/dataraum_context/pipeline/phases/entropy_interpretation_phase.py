@@ -15,9 +15,8 @@ from dataraum_context.analysis.typing.db_models import TypeDecision
 from dataraum_context.entropy import (
     EntropyInterpreter,
     InterpretationInput,
-    create_fallback_interpretation,
 )
-from dataraum_context.entropy.db_models import EntropyObjectRecord
+from dataraum_context.entropy.db_models import EntropyInterpretationRecord, EntropyObjectRecord
 from dataraum_context.entropy.models import ColumnEntropyProfile
 from dataraum_context.llm import LLMCache, PromptRenderer, create_provider, load_llm_config
 from dataraum_context.pipeline.base import PhaseContext, PhaseResult
@@ -163,6 +162,8 @@ class EntropyInterpretationPhase(BasePhase):
 
         # Build interpretation inputs
         inputs: list[InterpretationInput] = []
+        # Track column metadata for persistence
+        column_metadata: dict[str, dict[str, str]] = {}
 
         for column_id, entropy_records in entropy_by_column.items():
             col = column_map.get(column_id)
@@ -237,6 +238,14 @@ class EntropyInterpretationPhase(BasePhase):
             )
             inputs.append(input_item)
 
+            # Track metadata for persistence
+            key = f"{table.table_name}.{col.column_name}"
+            column_metadata[key] = {
+                "column_id": column_id,
+                "table_id": col.table_id,
+                "source_id": ctx.source_id,
+            }
+
         # Get batch size from config
         batch_size = ctx.config.get("interpretation_batch_size", 10)
 
@@ -244,9 +253,11 @@ class EntropyInterpretationPhase(BasePhase):
         all_interpretations = {}
         total_assumptions = 0
         total_actions = 0
+        errors = []
 
         for i in range(0, len(inputs), batch_size):
             batch = inputs[i : i + batch_size]
+            batch_num = i // batch_size + 1
 
             interpret_result = interpreter.interpret_batch(
                 session=ctx.session,
@@ -261,11 +272,76 @@ class EntropyInterpretationPhase(BasePhase):
                     total_assumptions += len(interp.assumptions)
                     total_actions += len(interp.resolution_actions)
             else:
-                # Use fallback interpretations for failed batches
-                for inp in batch:
-                    fallback = create_fallback_interpretation(inp)
-                    key = f"{inp.table_name}.{inp.column_name}"
-                    all_interpretations[key] = fallback
+                # Fail explicitly on LLM errors - no silent fallbacks
+                errors.append(f"Batch {batch_num}: {interpret_result.error}")
+
+        if errors and not all_interpretations:
+            # All batches failed
+            return PhaseResult.failed(f"All interpretation batches failed: {'; '.join(errors)}")
+
+        if errors:
+            # Some batches failed - report partial success with warnings
+            return PhaseResult.success(
+                outputs={
+                    "interpretations": len(all_interpretations),
+                    "assumptions": total_assumptions,
+                    "resolution_actions": total_actions,
+                    "columns_interpreted": len(inputs),
+                    "batch_errors": errors,
+                },
+                records_processed=len(inputs),
+                records_created=len(all_interpretations),
+                warnings=errors,
+            )
+
+        # Persist interpretations to database
+        records_created = 0
+        for key, interp in all_interpretations.items():
+            meta = column_metadata.get(key)
+            if not meta:
+                continue
+
+            # Convert assumptions to JSON-serializable format
+            assumptions_json = [
+                {
+                    "dimension": a.dimension,
+                    "assumption_text": a.assumption_text,
+                    "confidence": a.confidence,
+                    "impact": a.impact,
+                    "basis": a.basis,
+                }
+                for a in interp.assumptions
+            ]
+
+            # Convert resolution actions to JSON-serializable format
+            resolution_actions_json = [
+                {
+                    "action": r.action,
+                    "description": r.description,
+                    "priority": r.priority,
+                    "effort": r.effort,
+                    "expected_impact": r.expected_impact,
+                    "parameters": r.parameters,
+                }
+                for r in interp.resolution_actions
+            ]
+
+            interp_record = EntropyInterpretationRecord(
+                source_id=meta["source_id"],
+                table_id=meta["table_id"],
+                column_id=meta["column_id"],
+                table_name=interp.table_name,
+                column_name=interp.column_name,
+                composite_score=interp.composite_score,
+                readiness=interp.readiness,
+                explanation=interp.explanation,
+                assumptions_json=assumptions_json,
+                resolution_actions_json=resolution_actions_json,
+                model_used=interp.model_used,
+                from_cache=interp.from_cache,
+            )
+            ctx.session.add(interp_record)
+            records_created += 1
 
         return PhaseResult.success(
             outputs={
@@ -275,5 +351,5 @@ class EntropyInterpretationPhase(BasePhase):
                 "columns_interpreted": len(inputs),
             },
             records_processed=len(inputs),
-            records_created=len(all_interpretations),
+            records_created=records_created,
         )

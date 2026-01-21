@@ -2,6 +2,7 @@
 
 This agent analyzes table statistics, semantic annotations, and correlations
 to recommend the best categorical dimensions for slicing data into subsets.
+Uses tool-based output for structured responses.
 """
 
 import json
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 from dataraum_context.analysis.slicing.models import (
     SliceRecommendation,
     SliceSQL,
+    SlicingAnalysisOutput,
     SlicingAnalysisResult,
 )
 from dataraum_context.core.models.base import DecisionSource, Result
@@ -31,6 +33,8 @@ class SlicingAgent(LLMFeature):
     Analyzes tables to identify the best categorical dimensions for
     creating data subsets (slices). Each unique value in a slice
     dimension creates a separate subset.
+
+    Uses tool-based output for structured responses.
 
     Uses inputs from:
     - Statistical profiles (distinct counts, value distributions)
@@ -75,6 +79,12 @@ class SlicingAgent(LLMFeature):
         Returns:
             Result containing SlicingAnalysisResult or error
         """
+        from dataraum_context.llm.providers.base import (
+            ConversationRequest,
+            Message,
+            ToolDefinition,
+        )
+
         # Check if feature is enabled
         feature_config = self.config.features.slicing_analysis
         if not feature_config or not feature_config.enabled:
@@ -89,47 +99,70 @@ class SlicingAgent(LLMFeature):
             "quality_json": json.dumps(context_data.get("quality", []), indent=2),
         }
 
-        # Render prompt
+        # Render prompt with system/user split
         try:
-            prompt, temperature = self.renderer.render("slicing_analysis", context)
+            system_prompt, user_prompt, temperature = self.renderer.render_split(
+                "slicing_analysis", context
+            )
         except Exception as e:
             return Result.fail(f"Failed to render prompt: {e}")
 
-        # Call LLM
-        response_result = self._call_llm(
-            session=session,
-            feature_name="slicing_analysis",
-            prompt=prompt,
-            temperature=temperature,
-            model_tier=feature_config.model_tier,
-            table_ids=table_ids,
+        # Define tool for structured output
+        tool = ToolDefinition(
+            name="analyze_slicing",
+            description="Provide structured slicing dimension recommendations",
+            input_schema=SlicingAnalysisOutput.model_json_schema(),
         )
 
-        if not response_result.success or not response_result.value:
-            return Result.fail(
-                response_result.error if response_result.error else "LLM call failed"
-            )
+        # Call LLM with tool use
+        request = ConversationRequest(
+            messages=[Message(role="user", content=user_prompt)],
+            system=system_prompt,
+            tools=[tool],
+            max_tokens=self.config.limits.max_output_tokens_per_request,
+            temperature=temperature,
+        )
 
-        response = response_result.value
+        result = self.provider.converse(request)
+        if not result.success or not result.value:
+            return Result.fail(result.error or "LLM call failed")
 
-        # Parse response
-        try:
-            parsed = json.loads(response.content)
-            return self._parse_slicing_response(parsed, context_data)
-        except json.JSONDecodeError as e:
-            return Result.fail(f"Failed to parse LLM response as JSON: {e}")
-        except Exception as e:
-            return Result.fail(f"Failed to parse slicing response: {e}")
+        response = result.value
 
-    def _parse_slicing_response(
+        # Extract tool call result
+        if not response.tool_calls:
+            # LLM didn't use the tool - try to parse text as fallback
+            if response.content:
+                try:
+                    response_data = json.loads(response.content)
+                    output = SlicingAnalysisOutput.model_validate(response_data)
+                except Exception:
+                    return Result.fail(f"LLM did not use tool. Response: {response.content[:200]}")
+            else:
+                return Result.fail("LLM did not use the analyze_slicing tool")
+        else:
+            # Parse tool response using Pydantic model
+            tool_call = response.tool_calls[0]
+            if tool_call.name != "analyze_slicing":
+                return Result.fail(f"Unexpected tool call: {tool_call.name}")
+
+            try:
+                output = SlicingAnalysisOutput.model_validate(tool_call.input)
+            except Exception as e:
+                return Result.fail(f"Failed to validate tool response: {e}")
+
+        # Convert Pydantic output to SlicingAnalysisResult
+        return self._convert_output_to_result(output, context_data)
+
+    def _convert_output_to_result(
         self,
-        parsed: dict[str, Any],
+        output: SlicingAnalysisOutput,
         context_data: dict[str, Any],
     ) -> Result[SlicingAnalysisResult]:
-        """Parse LLM response into SlicingAnalysisResult.
+        """Convert Pydantic tool output to SlicingAnalysisResult.
 
         Args:
-            parsed: Parsed JSON from LLM
+            output: Validated Pydantic output from LLM
             context_data: Original context data for lookups
 
         Returns:
@@ -146,16 +179,16 @@ class SlicingAgent(LLMFeature):
                 key = (table["table_name"], col["column_name"])
                 column_map[key] = col
 
-        # Parse recommendations
-        for rec in parsed.get("recommendations", []):
-            table_name = rec.get("table_name", "")
-            column_name = rec.get("column_name", "")
+        # Convert recommendations from Pydantic output
+        for rec in output.recommendations:
+            table_name = rec.table_name
+            column_name = rec.column_name
             table_info = table_map.get(table_name, {})
             col_key = (table_name, column_name)
             col_info = column_map.get(col_key, {})
 
-            # Get distinct values from statistics or rec
-            distinct_values = rec.get("distinct_values", [])
+            # Get distinct values from output or statistics
+            distinct_values = rec.distinct_values
             if not distinct_values:
                 # Try to get from statistics
                 for stat in context_data.get("statistics", []):
@@ -176,12 +209,12 @@ class SlicingAgent(LLMFeature):
                 table_name=table_name,
                 column_id=col_info.get("column_id", ""),
                 column_name=column_name,
-                slice_priority=rec.get("priority", 1),
+                slice_priority=rec.priority,
                 distinct_values=distinct_values,
                 value_count=len(distinct_values),
-                reasoning=rec.get("reasoning", ""),
-                business_context=rec.get("business_context"),
-                confidence=rec.get("confidence", 0.8),
+                reasoning=rec.reasoning,
+                business_context=rec.business_context,
+                confidence=rec.confidence,
                 sql_template=sql_template,
             )
             recommendations.append(recommendation)

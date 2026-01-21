@@ -343,7 +343,11 @@ class CycleDetectionTools:
         from dataraum_context.storage import Column, Table
 
         try:
-            table_stmt = select(Table).where(Table.table_name == table_name)
+            # Filter by layer='typed' to avoid multiple results (raw, typed, quarantine)
+            table_stmt = select(Table).where(
+                Table.table_name == table_name,
+                Table.layer == "typed",
+            )
             table = self._session.execute(table_stmt).scalar_one_or_none()
             if not table:
                 return {"error": f"Table {table_name} not found"}

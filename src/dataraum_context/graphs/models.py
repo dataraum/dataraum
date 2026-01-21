@@ -19,6 +19,8 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
+from pydantic import BaseModel, Field
+
 # =============================================================================
 # Enums
 # =============================================================================
@@ -490,3 +492,33 @@ class DatasetSchemaMapping:
     mappings: dict[str, SchemaMapping]  # abstract_field -> mapping
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     version: str = "1.0"
+
+
+# =============================================================================
+# Pydantic models for LLM tool output
+# =============================================================================
+
+
+class SQLStepOutput(BaseModel):
+    """Pydantic model for a SQL step in LLM tool output."""
+
+    step_id: str = Field(description="Identifier for this step")
+    sql: str = Field(description="DuckDB SQL query for this step")
+    description: str = Field(description="What this step does")
+
+
+class GraphSQLGenerationOutput(BaseModel):
+    """Pydantic model for LLM tool output - graph SQL generation.
+
+    Used as a tool definition for structured LLM output via tool use API.
+    """
+
+    steps: list[SQLStepOutput] = Field(
+        default_factory=list,
+        description="List of SQL steps, each with step_id, sql, and description",
+    )
+    final_sql: str = Field(description="Complete SQL that produces the final result")
+    column_mappings: dict[str, str] = Field(
+        default_factory=dict,
+        description="Mapping from abstract field names to concrete column names",
+    )

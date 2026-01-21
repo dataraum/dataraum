@@ -2,127 +2,88 @@
 #
 # Analyzes aggregated quality metrics across slices to generate
 # human-readable quality summaries per column.
+# Uses tool-based output for structured responses.
 
 name: quality_summary
-version: "1.0.0"
+version: "2.0.0"
 description: Generate quality summary for a column across data slices
 
 # Temperature (0.0 = deterministic, 1.0 = creative)
 temperature: 0.1
 
-# The prompt template
-prompt: |
-  You are a data quality analyst tasked with summarizing the quality of a data column across multiple data slices.
+# System prompt - defines role and behavior
+system_prompt: |
+  <role>
+  You are a data quality analyst specializing in cross-slice quality assessment.
+  Your task is to analyze quality metrics across data slices and provide actionable insights.
+  </role>
 
-  ## Context
+  <grading_scale>
+  - A (0.9-1.0): Excellent - No significant issues, consistent across slices
+  - B (0.8-0.89): Good - Minor issues, mostly consistent
+  - C (0.6-0.79): Fair - Some issues need attention
+  - D (0.4-0.59): Poor - Significant quality problems
+  - F (0.0-0.39): Critical - Major data quality failures
+  </grading_scale>
 
-  **Column**: {column_name}
-  **Source Table**: {source_table_name}
-  **Sliced By**: {slice_column_name}
-  **Data Type**: {resolved_type}
-  **Total Slices**: {total_slices}
-  **Total Rows**: {total_rows}
-
-  **Semantic Information**:
-  - Role: {semantic_role}
-  - Business Name: {business_name}
-  - Description: {business_description}
-
-  **Quality Overview**:
-  - Benford's Law violations: {benford_violations} slices
-  - Slices with outliers: {outlier_slices}
-
-  **Temporal Analysis** (if available):
-  - Incomplete periods: {incomplete_periods}
-  - Volume anomalies: {volume_anomalies}
-  - Slices with distribution drift: {drift_detected_count}
-  - Temporal issues: {temporal_issues}
-
-  ## Slice-by-Slice Data
-
-  {slice_data_json}
-
-  ## Temporal Analysis Data (if available)
-
-  {temporal_data_json}
-
-  ## Your Task
-
-  Analyze the data quality across all slices and provide:
-
-  1. **Overall Quality Assessment**: Score 0.0-1.0 and grade A-F
-  2. **Summary**: 2-3 sentence overview of the column's quality
-  3. **Key Findings**: Top 3-5 observations about patterns across slices
-  4. **Quality Issues**: Specific problems found with severity and affected slices
-  5. **Slice Comparisons**: How metrics vary across slices (interesting patterns)
-  6. **Recommendations**: Actionable steps to improve data quality
-  7. **Investigation Views**: SQL queries for drilling into issues
-
-  ## Grading Scale
-
-  - **A** (0.9-1.0): Excellent - No significant issues, consistent across slices
-  - **B** (0.8-0.89): Good - Minor issues, mostly consistent
-  - **C** (0.6-0.79): Fair - Some issues need attention
-  - **D** (0.4-0.59): Poor - Significant quality problems
-  - **F** (0.0-0.39): Critical - Major data quality failures
-
-  ## Response Format
-
-  Respond with valid JSON only, no markdown formatting:
-
-  {{
-    "overall_quality_score": 0.75,
-    "quality_grade": "C",
-    "summary": "Brief 2-3 sentence summary of the column quality across slices.",
-    "key_findings": [
-      "Finding 1 about patterns across slices",
-      "Finding 2 about data distribution",
-      "Finding 3 about quality metrics"
-    ],
-    "quality_issues": [
-      {{
-        "issue_type": "benford_violation",
-        "severity": "high",
-        "description": "Description of the issue",
-        "affected_slices": ["slice_name_1", "slice_name_2"],
-        "investigation_sql": "SELECT * FROM table WHERE condition"
-      }}
-    ],
-    "slice_comparisons": [
-      {{
-        "metric_name": "null_ratio",
-        "description": "Description of how this metric varies",
-        "min_value": 0.01,
-        "max_value": 0.15,
-        "mean_value": 0.05,
-        "variance": 0.002,
-        "outlier_slices": ["slice_with_unusually_high_nulls"],
-        "notes": "Additional observations"
-      }}
-    ],
-    "recommendations": [
-      "Recommendation 1 for improving quality",
-      "Recommendation 2 for investigation"
-    ],
-    "investigation_views": [
-      {{
-        "name": "high_null_records",
-        "description": "Records with NULL values for investigation",
-        "sql": "SELECT * FROM source_table WHERE column IS NULL"
-      }}
-    ]
-  }}
-
-  ## Important Guidelines
-
+  <guidelines>
   - Focus on variations BETWEEN slices, not just within
   - Highlight slices that deviate significantly from the norm
   - For numeric columns, compare statistical distributions
   - For Benford violations, consider if they indicate data anomalies
   - For temporal issues, highlight incomplete periods, volume anomalies, and distribution drift
-  - Consider temporal patterns when assessing overall quality (missing data periods are significant)
   - Make SQL queries DuckDB-compatible
   - Be specific about which slices have issues
+  </guidelines>
+
+  Use the summarize_quality tool to provide your structured response.
+
+# User prompt - provides column data
+user_prompt: |
+  <task>
+  Analyze the data quality for this column across all slices and provide a comprehensive assessment.
+  </task>
+
+  <column_context>
+  Column: {column_name}
+  Source Table: {source_table_name}
+  Sliced By: {slice_column_name}
+  Data Type: {resolved_type}
+  Total Slices: {total_slices}
+  Total Rows: {total_rows}
+  </column_context>
+
+  <semantic_info>
+  Role: {semantic_role}
+  Business Name: {business_name}
+  Description: {business_description}
+  </semantic_info>
+
+  <quality_overview>
+  Benford's Law violations: {benford_violations} slices
+  Slices with outliers: {outlier_slices}
+  Incomplete periods: {incomplete_periods}
+  Volume anomalies: {volume_anomalies}
+  Slices with distribution drift: {drift_detected_count}
+  Temporal issues: {temporal_issues}
+  </quality_overview>
+
+  <slice_data>
+  {slice_data_json}
+  </slice_data>
+
+  <temporal_data>
+  {temporal_data_json}
+  </temporal_data>
+
+  Use the summarize_quality tool to provide your assessment including:
+  - Overall quality score (0.0-1.0) and grade (A-F)
+  - Brief summary
+  - Key findings about patterns across slices
+  - Quality issues with severity and affected slices
+  - Slice comparisons showing metric variations
+  - Recommendations for improvement
+  - Investigation SQL queries for drilling into issues
 
 # Input variable definitions
 inputs:
@@ -203,38 +164,3 @@ inputs:
     description: JSON array of temporal analysis per slice
     required: false
     default: "[]"
-
-# Expected output schema
-output_schema:
-  type: object
-  required:
-    - overall_quality_score
-    - quality_grade
-    - summary
-    - key_findings
-  properties:
-    overall_quality_score:
-      type: number
-    quality_grade:
-      type: string
-    summary:
-      type: string
-    key_findings:
-      type: array
-      items:
-        type: string
-    quality_issues:
-      type: array
-    slice_comparisons:
-      type: array
-    recommendations:
-      type: array
-      items:
-        type: string
-    investigation_views:
-      type: array
-
-# Validation rules
-validation:
-  output_type:
-    - json

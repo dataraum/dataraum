@@ -156,7 +156,7 @@ class TestTemporalSliceAnalysisPhase:
 
         skip_reason = phase.should_skip(ctx)
         assert skip_reason is not None
-        assert "No temporal columns" in skip_reason
+        assert "temporal" in skip_reason.lower()  # Covers both old and new message formats
 
     def test_does_not_skip_with_slices_and_temporal(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

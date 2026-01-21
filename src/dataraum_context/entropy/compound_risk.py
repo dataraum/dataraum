@@ -46,14 +46,27 @@ class CompoundRiskDetector:
     def load_config(self, config_path: Path | None = None) -> None:
         """Load compound risk definitions from YAML config.
 
+        Loads from thresholds.yaml (primary) or compound_risks.yaml (override).
+        The compound_risks section in thresholds.yaml is the default location.
+
         Args:
-            config_path: Path to compound_risks.yaml. Defaults to config/entropy/compound_risks.yaml.
+            config_path: Optional path to override config file.
         """
+        # First, try loading from thresholds.yaml (the standard location)
+        if config_path is None:
+            self._load_from_thresholds()
+            if self.config_loaded:
+                return
+
+        # If explicit path provided, or thresholds.yaml didn't have compound_risks,
+        # try the dedicated compound_risks.yaml file
         config_path = config_path or (DEFAULT_CONFIG_DIR / "compound_risks.yaml")
 
         if not config_path.exists():
-            logger.warning(f"Compound risk config not found: {config_path}. Using defaults.")
-            self._load_default_definitions()
+            if not self.config_loaded:
+                # Neither source has config - use hardcoded defaults
+                logger.debug("No compound risk config found, using hardcoded defaults.")
+                self._load_hardcoded_defaults()
             return
 
         try:
@@ -73,19 +86,21 @@ class CompoundRiskDetector:
                     )
                 )
             self.config_loaded = True
-            logger.info(f"Loaded {len(self.risk_definitions)} compound risk definitions")
+            logger.info(
+                f"Loaded {len(self.risk_definitions)} compound risk definitions from {config_path}"
+            )
 
         except Exception as e:
             logger.error(f"Error loading compound risk config: {e}")
-            self._load_default_definitions()
+            if not self.config_loaded:
+                self._load_hardcoded_defaults()
 
-    def _load_default_definitions(self) -> None:
-        """Load default risk definitions from config/entropy/thresholds.yaml."""
+    def _load_from_thresholds(self) -> None:
+        """Load compound risk definitions from thresholds.yaml."""
         from dataraum_context.entropy.config import get_entropy_config
 
         config = get_entropy_config()
 
-        # Load from config if available
         if config.compound_risks:
             self.risk_definitions = [
                 CompoundRiskDefinition(
@@ -99,12 +114,12 @@ class CompoundRiskDetector:
                 for risk_config in config.compound_risks.values()
             ]
             self.config_loaded = True
-            logger.info(
-                f"Loaded {len(self.risk_definitions)} compound risk definitions from config"
+            logger.debug(
+                f"Loaded {len(self.risk_definitions)} compound risk definitions from thresholds.yaml"
             )
-            return
 
-        # Fallback to hardcoded defaults if config is empty
+    def _load_hardcoded_defaults(self) -> None:
+        """Load hardcoded default risk definitions (last resort fallback)."""
         self.risk_definitions = [
             # Critical: Units + Aggregations
             CompoundRiskDefinition(

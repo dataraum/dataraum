@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -143,50 +143,49 @@ class Pipeline:
 
         try:
             with ThreadPoolExecutor(max_workers=self.config.max_parallel) as pool:
+                # Track all active futures
+                active_futures: dict[Future[PhaseResult], str] = {}
+
                 while not self._is_complete(phases_to_run):
-                    # Find phases ready to run
-                    ready = self._get_ready_phases(phases_to_run)
+                    # Fill available slots with ready phases
+                    available_slots = self.config.max_parallel - len(active_futures)
+                    if available_slots > 0:
+                        ready = self._get_ready_phases(phases_to_run)
+                        batch = list(ready)[:available_slots]
 
-                    if not ready:
-                        if self._running:
-                            # Wait for running phases by checking futures
-                            time.sleep(0.1)
-                            continue
-                        else:
-                            # Deadlock or all remaining phases blocked by failures
+                        for name in batch:
+                            self._running.add(name)
+                            future = pool.submit(
+                                self._run_phase,
+                                name,
+                                manager,
+                                source_id,
+                                table_ids or [],
+                                run_id,
+                                run_config or {},
+                                self._outputs.copy(),
+                            )
+                            active_futures[future] = name
+                            logger.info(f"Started phase: {name} (running: {len(active_futures)})")
+
+                    if not active_futures:
+                        # No phases running and none ready - deadlock or done
+                        break
+
+                    # Wait for at least one future to complete (with timeout for responsiveness)
+                    done_futures: set[Future[PhaseResult]] = set()
+                    try:
+                        for future in as_completed(active_futures.keys(), timeout=0.5):
+                            done_futures.add(future)
+                            # Process one at a time so we can fill slots quickly
                             break
+                    except TimeoutError:
+                        # No futures completed yet, loop back to check for new ready phases
+                        continue
 
-                    # Limit parallel execution
-                    batch = list(ready)[: self.config.max_parallel - len(self._running)]
-
-                    if batch:
-                        logger.info(f"Starting phases in parallel: {batch}")
-                        if self._running:
-                            logger.info(f"Already running: {self._running}")
-
-                    # Mark phases as running
-                    for name in batch:
-                        self._running.add(name)
-
-                    # Run batch in parallel using ThreadPoolExecutor
-                    # Each phase runs in its own thread with its own session
-                    futures = {
-                        pool.submit(
-                            self._run_phase,
-                            name,
-                            manager,
-                            source_id,
-                            table_ids or [],
-                            run_id,
-                            run_config or {},
-                            self._outputs.copy(),
-                        ): name
-                        for name in batch
-                    }
-
-                    # Collect results as they complete
-                    for future in as_completed(futures):
-                        name = futures[future]
+                    # Process completed futures
+                    for future in done_futures:
+                        name = active_futures.pop(future)
                         self._running.discard(name)
 
                         try:
@@ -209,6 +208,10 @@ class Pipeline:
                             self._failed.add(name)
                             logger.error(f"Phase {name} failed: {phase_result.error}")
                             if self.config.fail_fast:
+                                # Cancel remaining futures
+                                for f in active_futures:
+                                    f.cancel()
+                                active_futures.clear()
                                 break
 
                     if self.config.fail_fast and self._failed:
@@ -400,11 +403,13 @@ class Pipeline:
 
             # Check if phase has an implementation
             if name not in self.phases:
+                logger.info(f"Phase {name} skipped: no implementation registered")
                 self._skipped.add(name)
                 continue
 
             # Check if LLM phase should be skipped
             if self.config.skip_llm_phases and phase_def.requires_llm:
+                logger.info(f"Phase {name} skipped: LLM phase (skip_llm_phases=True)")
                 self._skipped.add(name)
                 continue
 
@@ -412,10 +417,18 @@ class Pipeline:
             deps_met = all(d in done for d in phase_def.dependencies)
 
             # Check if any dependency failed (can't run this phase)
-            deps_failed = any(d in self._failed for d in phase_def.dependencies)
+            failed_deps = [d for d in phase_def.dependencies if d in self._failed]
+            if failed_deps:
+                logger.warning(f"Phase {name} blocked: dependencies failed: {failed_deps}")
+                self._skipped.add(name)
+                continue
 
-            if deps_met and not deps_failed:
+            if deps_met:
                 ready.add(name)
+            else:
+                # Some dependencies still running - phase will wait
+                pending_deps = [d for d in phase_def.dependencies if d not in done]
+                logger.debug(f"Phase {name} waiting for dependencies: {pending_deps}")
 
         return ready
 

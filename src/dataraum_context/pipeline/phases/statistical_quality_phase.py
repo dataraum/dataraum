@@ -41,26 +41,40 @@ class StatisticalQualityPhase(BasePhase):
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all numeric columns already have quality metrics."""
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         # Get typed tables
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
         result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
-            return "No typed tables found"
+            return f"No typed tables found for source {ctx.source_id}"
+
+        logger.info(f"StatQuality: Found {len(typed_tables)} typed tables")
 
         # Get all columns for typed tables
         typed_table_ids = [t.table_id for t in typed_tables]
         columns_stmt = select(Column).where(Column.table_id.in_(typed_table_ids))
         all_columns = (ctx.session.execute(columns_stmt)).scalars().all()
 
+        # Log all column types found
+        type_counts: dict[str, int] = {}
+        for col in all_columns:
+            t = col.resolved_type or "NULL"
+            type_counts[t] = type_counts.get(t, 0) + 1
+        logger.info(f"StatQuality: Column types in typed tables: {type_counts}")
+
         # Filter to numeric columns only
-        numeric_columns = [
-            c for c in all_columns if c.resolved_type in ["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]
-        ]
+        numeric_types = ["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]
+        numeric_columns = [c for c in all_columns if c.resolved_type in numeric_types]
 
         if not numeric_columns:
-            return "No numeric columns to assess"
+            return f"No numeric columns to assess (types: {numeric_types}, available: {list(type_counts.keys())})"
+
+        logger.info(f"StatQuality: Found {len(numeric_columns)} numeric columns")
 
         # Check which already have quality metrics
         assessed_stmt = select(StatisticalQualityMetrics.column_id).distinct()

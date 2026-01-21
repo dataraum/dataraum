@@ -61,14 +61,19 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no slice definitions or no temporal columns."""
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
         result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
-            return "No typed tables found"
+            return f"No typed tables found for source {ctx.source_id}"
 
+        logger.info(f"TempSlice: Found {len(typed_tables)} typed tables")
         table_ids = [t.table_id for t in typed_tables]
 
         # Check for slice definitions
@@ -76,9 +81,11 @@ class TemporalSliceAnalysisPhase(BasePhase):
         slice_defs = (ctx.session.execute(slice_stmt)).scalars().all()
 
         if not slice_defs:
-            return "No slice definitions found"
+            return "No slice definitions found (slicing phase may have been skipped)"
 
-        # Check for temporal columns
+        logger.info(f"TempSlice: Found {len(slice_defs)} slice definitions")
+
+        # Check for temporal profiles (created by temporal phase)
         column_ids = []
         cols_stmt = select(Column.column_id).where(Column.table_id.in_(table_ids))
         for col_id in (ctx.session.execute(cols_stmt)).scalars().all():
@@ -91,9 +98,11 @@ class TemporalSliceAnalysisPhase(BasePhase):
             temporal_cols = (ctx.session.execute(temp_stmt)).scalars().all()
 
             if not temporal_cols:
-                return "No temporal columns detected"
+                return "No temporal profiles found (temporal phase may have been skipped or found no temporal columns)"
+
+            logger.info(f"TempSlice: Found {len(temporal_cols)} temporal profiles")
         else:
-            return "No columns found"
+            return "No columns found in typed tables"
 
         return None
 

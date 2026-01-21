@@ -44,17 +44,33 @@ class TemporalPhase(BasePhase):
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no temporal columns or all already profiled."""
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         # Get typed tables
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
         result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
 
         if not typed_tables:
-            return "No typed tables found"
+            return f"No typed tables found for source {ctx.source_id}"
+
+        logger.info(f"Temporal: Found {len(typed_tables)} typed tables")
 
         # Check for temporal columns
         temporal_types = ["DATE", "TIMESTAMP", "TIMESTAMPTZ"]
         typed_table_ids = [t.table_id for t in typed_tables]
+
+        # First, get all columns to see what types exist
+        all_columns_stmt = select(Column).where(Column.table_id.in_(typed_table_ids))
+        all_columns = (ctx.session.execute(all_columns_stmt)).scalars().all()
+        type_counts: dict[str, int] = {}
+        for col in all_columns:
+            t = col.resolved_type or "NULL"
+            type_counts[t] = type_counts.get(t, 0) + 1
+        logger.info(f"Temporal: Column types in typed tables: {type_counts}")
+
         temporal_columns_stmt = select(Column).where(
             Column.table_id.in_(typed_table_ids),
             Column.resolved_type.in_(temporal_types),
@@ -62,7 +78,9 @@ class TemporalPhase(BasePhase):
         temporal_columns = (ctx.session.execute(temporal_columns_stmt)).scalars().all()
 
         if not temporal_columns:
-            return "No temporal columns found"
+            return f"No temporal columns found (types: {temporal_types}, available: {list(type_counts.keys())})"
+
+        logger.info(f"Temporal: Found {len(temporal_columns)} temporal columns")
 
         # Check existing profiles
         existing_count = (

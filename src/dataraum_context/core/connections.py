@@ -29,6 +29,7 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -42,6 +43,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum_context.storage import Base
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -144,6 +147,9 @@ class ConnectionManager:
     _session_factory: sessionmaker[Session] | None = field(default=None, init=False, repr=False)
     _duckdb_conn: duckdb.DuckDBPyConnection | None = field(default=None, init=False, repr=False)
     _write_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _sqlite_commit_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
+    )
     _init_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _initialized: bool = field(default=False, init=False, repr=False)
 
@@ -184,6 +190,8 @@ class ConnectionManager:
             max_overflow=self.config.max_overflow,
             pool_timeout=self.config.pool_timeout,
             pool_pre_ping=True,
+            # Explicitly allow cross-thread usage (SQLAlchemy default for file DBs)
+            connect_args={"check_same_thread": False},
         )
 
         # Configure SQLite pragmas on each connection
@@ -207,9 +215,11 @@ class ConnectionManager:
         Base.metadata.create_all(self._engine)
 
         # Create session factory
+        # autoflush=False prevents mid-query writes; we flush at commit time with a lock
         self._session_factory = sessionmaker(
             self._engine,
             expire_on_commit=False,
+            autoflush=False,
         )
 
     def _init_duckdb(self) -> None:
@@ -255,9 +265,13 @@ class ConnectionManager:
 
     @contextmanager
     def session_scope(self) -> Generator[Session]:
-        """Get a session with automatic cleanup.
+        """Get a session with automatic cleanup and serialized commits.
 
         Thread-safe: each call creates a new session.
+        Commits are serialized via mutex to prevent SQLite lock contention.
+
+        Session is created with autoflush=False. All writes are batched and
+        committed atomically at the end with the commit lock held.
 
         Yields:
             Session from the connection pool
@@ -273,10 +287,17 @@ class ConnectionManager:
         assert self._session_factory is not None
 
         session = self._session_factory()
+        thread_id = threading.current_thread().name
         try:
             yield session
-            session.commit()
+            # Serialize commits across all threads to prevent SQLite lock contention
+            logger.debug(f"[{thread_id}] Waiting for commit lock...")
+            with self._sqlite_commit_lock:
+                logger.debug(f"[{thread_id}] Acquired commit lock, committing...")
+                session.commit()
+                logger.debug(f"[{thread_id}] Commit complete, releasing lock")
         except Exception:
+            logger.debug(f"[{thread_id}] Exception, rolling back")
             session.rollback()
             raise
         finally:

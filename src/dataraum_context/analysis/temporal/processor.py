@@ -292,9 +292,8 @@ def profile_temporal(
         if table_summary:
             _persist_table_summary(table_summary, session)
 
-        # Flush to ensure data is persisted, but don't commit
+        # No flush needed - commit happens at session_scope() end
         # The caller (phase/orchestrator) manages the transaction
-        session.flush()
 
         duration = time.time() - start_time
 

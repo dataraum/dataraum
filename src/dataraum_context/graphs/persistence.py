@@ -154,7 +154,7 @@ class GraphExecutionRepository:
             record.step_results.append(step_record)
 
         self.session.add(record)
-        self.session.flush()
+        # No flush needed - execution_id is client-generated UUID, available immediately
         return record
 
     def get_execution(self, execution_id: str) -> GraphExecution | None:

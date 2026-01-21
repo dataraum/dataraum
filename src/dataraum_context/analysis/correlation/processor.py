@@ -262,7 +262,7 @@ def _store_cross_table_results(
         duration_seconds=duration,
     )
     session.add(run_record)
-    session.flush()  # Get run_id for child records
+    # No flush needed - run_id is client-generated UUID, available immediately
 
     # Store cross-table correlations (skip NaN values from constant columns)
     for corr in quality_result.cross_table_correlations:

@@ -287,6 +287,7 @@ def resolve_types(
 
     return Result.ok(
         TypeResolutionResult(
+            typed_table_id=typed_table_record.table_id,
             typed_table_name=typed_table,
             quarantine_table_name=quarantine_table,
             total_rows=total_rows,

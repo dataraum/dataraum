@@ -189,7 +189,7 @@ def register_slice_tables(
                     row_count=row_count,
                 )
                 session.add(slice_table)
-                session.flush()  # Get the table_id
+                # No flush needed - table_id is client-generated UUID, available immediately
 
                 # Create Column entries (copy from parent)
                 for src_col in source_columns:
@@ -248,9 +248,9 @@ def run_statistics_on_slice(
         return Result.fail(f"Slice table not found: {slice_info.slice_table_id}")
 
     # Temporarily set layer to 'typed' for profiling
+    # No flush needed - SQLAlchemy identity map returns modified object to same session
     original_layer = table.layer
     table.layer = "typed"
-    session.flush()
 
     try:
         result = profile_statistics(
@@ -260,9 +260,8 @@ def run_statistics_on_slice(
         )
         return result
     finally:
-        # Restore layer
+        # Restore layer - no flush needed, commit happens at session_scope() end
         table.layer = original_layer
-        session.flush()
 
 
 def run_quality_on_slice(

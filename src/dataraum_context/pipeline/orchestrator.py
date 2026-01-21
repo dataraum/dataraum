@@ -9,6 +9,7 @@ With free-threaded Python (python3.14t), this enables real parallelism.
 
 from __future__ import annotations
 
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -29,6 +30,8 @@ from dataraum_context.pipeline.base import (
     get_phase_definition,
 )
 from dataraum_context.pipeline.db_models import PhaseCheckpoint, PipelineRun
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -125,7 +128,7 @@ class Pipeline:
                 config=run_config or {},
             )
             session.add(run)
-            session.flush()
+            # No flush needed - run_id is client-generated UUID, available immediately
             run_id = run.run_id  # Capture before session closes
 
             # Load existing checkpoints if resuming
@@ -155,6 +158,11 @@ class Pipeline:
 
                     # Limit parallel execution
                     batch = list(ready)[: self.config.max_parallel - len(self._running)]
+
+                    if batch:
+                        logger.info(f"Starting phases in parallel: {batch}")
+                        if self._running:
+                            logger.info(f"Already running: {self._running}")
 
                     # Mark phases as running
                     for name in batch:
@@ -191,10 +199,15 @@ class Pipeline:
                         if phase_result.status == PhaseStatus.COMPLETED:
                             self._completed.add(name)
                             self._outputs[name] = phase_result.outputs
+                            logger.info(
+                                f"Phase {name} completed in {phase_result.duration_seconds:.1f}s"
+                            )
                         elif phase_result.status == PhaseStatus.SKIPPED:
                             self._skipped.add(name)
+                            logger.info(f"Phase {name} skipped: {phase_result.error}")
                         else:
                             self._failed.add(name)
+                            logger.error(f"Phase {name} failed: {phase_result.error}")
                             if self.config.fail_fast:
                                 break
 

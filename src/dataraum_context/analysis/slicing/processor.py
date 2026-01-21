@@ -50,7 +50,7 @@ def analyze_slices(
         status="running",
     )
     session.add(run)
-    session.flush()
+    # No flush needed - run_id is client-generated UUID, commit happens at session_scope() end
 
     try:
         # Load context from previous phases

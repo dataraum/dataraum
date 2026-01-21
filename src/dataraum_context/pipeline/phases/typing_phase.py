@@ -147,17 +147,8 @@ class TypingPhase(BasePhase):
 
             resolution = resolution_result.unwrap()
 
-            # Find the typed table ID
-            stmt = select(Table).where(
-                Table.source_id == table.source_id,
-                Table.table_name == table.table_name,
-                Table.layer == "typed",
-            )
-            typed_result = ctx.session.execute(stmt)
-            typed_table = typed_result.scalar_one_or_none()
-
-            if typed_table:
-                typed_tables.append(typed_table.table_id)
+            # Use the typed table ID directly from the result (no query needed)
+            typed_tables.append(resolution.typed_table_id)
 
             # Record type decisions
             for col_result in resolution.column_results:

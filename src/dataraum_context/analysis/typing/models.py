@@ -66,6 +66,7 @@ class TypeResolutionResult(BaseModel):
     Contains information about the typed and quarantine tables created.
     """
 
+    typed_table_id: str  # UUID of the typed table record
     typed_table_name: str
     quarantine_table_name: str
 

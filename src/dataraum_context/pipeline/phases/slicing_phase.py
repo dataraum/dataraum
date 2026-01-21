@@ -153,7 +153,7 @@ class SlicingPhase(BasePhase):
             status="running",
         )
         ctx.session.add(run_record)
-        ctx.session.flush()
+        # No flush needed - run_id is client-generated UUID, commit happens at session_scope() end
 
         # Run slicing analysis
         analysis_result = agent.analyze(

@@ -354,9 +354,8 @@ def profile_statistics(
         # Update table's last_profiled_at
         table.last_profiled_at = profiled_at
 
-        # Flush to ensure data is persisted, but don't commit
+        # No flush needed - commit happens at session_scope() end
         # The caller (phase/orchestrator) manages the transaction
-        session.flush()
 
         duration = time.time() - start_time
 

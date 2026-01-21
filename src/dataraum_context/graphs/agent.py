@@ -804,4 +804,4 @@ class GraphAgent(LLMFeature):
             validation_errors=generated_code.validation_errors,
         )
         session.add(record)
-        session.flush()
+        # No flush needed - code_id is client-generated UUID, commit happens at session_scope() end

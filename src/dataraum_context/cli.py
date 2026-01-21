@@ -15,16 +15,30 @@ Environment:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
 from dotenv import load_dotenv
 from rich.console import Console
+from rich.logging import RichHandler
 from rich.table import Table as RichTable
 
 # Load .env file from current directory (for API keys, etc.)
 load_dotenv()
+
+
+def setup_logging(verbose: bool = False) -> None:
+    """Configure logging with Rich handler."""
+    level = logging.INFO if verbose else logging.WARNING
+    logging.basicConfig(
+        level=level,
+        format="%(message)s",
+        datefmt="[%X]",
+        handlers=[RichHandler(rich_tracebacks=True, show_path=False)],
+    )
+
 
 app = typer.Typer(
     name="dataraum",
@@ -85,6 +99,14 @@ def run(
             help="Suppress progress output",
         ),
     ] = False,
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            "-v",
+            help="Show detailed logging (phase execution, commits, etc.)",
+        ),
+    ] = False,
 ) -> None:
     """Run the pipeline on CSV data.
 
@@ -95,7 +117,11 @@ def run(
         dataraum run /path/to/file.csv --output ./my_output
 
         dataraum run /path/to/data --phase import --skip-llm
+
+        dataraum run /path/to/data --verbose  # Show detailed logs
     """
+    setup_logging(verbose=verbose)
+
     from dataraum_context.pipeline.runner import RunConfig
     from dataraum_context.pipeline.runner import run as run_pipeline
 

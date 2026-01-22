@@ -96,11 +96,31 @@ Before declaring any task complete, verify:
 - [ ] Error handling is in place
 - [ ] Edge cases are handled
 
+## Current Work - READ THIS FOR CONTEXT
+
+**Before starting work, read these files to understand current state:**
+
+| File | Purpose |
+|------|---------|
+| `docs/BACKLOG.md` | Task stack - what's done, what's next |
+| `docs/PROGRESS.md` | Session log - recent work history |
+| `docs/plans/ui-api-consolidation.md` | Current plan: FastAPI + React UI |
+| `docs/ENTROPY_IMPLEMENTATION_PLAN.md` | Entropy system architecture |
+
+**Current Focus (from BACKLOG.md):**
+- Step 3.3: API Endpoints (FastAPI routes for sources, pipeline, entropy, context)
+- Step 3.4: MCP Server (4 tools: get_context, query, get_metrics, annotate)
+
+**Core Concept - Entropy:**
+The key innovation is quantifying **uncertainty (entropy)** in data so LLMs can make deterministic decisions. See `entropy-management-framework.md` for the full spec.
+
+---
+
 ## What Is This?
 
-A Python library for extracting rich metadata context from data sources to power 
-AI-driven data analytics. The core idea: instead of giving AI tools to discover 
-metadata at runtime, we pre-compute comprehensive metadata and serve it as 
+A Python library for extracting rich metadata context from data sources to power
+AI-driven data analytics. The core idea: instead of giving AI tools to discover
+metadata at runtime, we pre-compute comprehensive metadata and serve it as
 structured context documents interpreted through domain ontologies.
 
 ## Quick Start for Claude Code
@@ -146,18 +166,29 @@ ls prototypes/analytics-agents-ts       # Agents and prompts (inside prompts fol
 
 ```
 packages/dataraum-api/src/dataraum/
-├── core/           # Config, connections, shared models
-├── staging/        # Raw data loading (VARCHAR-first)
-├── profiling/      # Statistical metadata, type inference (+ db_models.py)
-├── enrichment/     # Semantic, topological, temporal metadata (+ db_models.py)
-├── quality/        # Rule generation, scoring, anomalies (+ db_models.py, domains/db_models.py)
-├── graphs/         # Transformation graphs (+ db_models.py)
-├── context/        # Context assembly, ontology application
-├── storage/        # Core SQLAlchemy models (Source, Table, Column, Ontology)
-├── llm/            # LLM providers, prompts, features (+ db_models.py)
-├── dataflows/      # Hamilton dataflow definitions
-├── api/            # FastAPI routes
-└── mcp/            # MCP server and tools
+├── analysis/       # Data analysis modules
+│   ├── typing/         # Type inference, pattern detection
+│   ├── statistics/     # Column profiling, distributions
+│   ├── correlation/    # Numeric/categorical correlations
+│   ├── relationships/  # Join detection, FK candidates
+│   ├── semantic/       # LLM-powered semantic analysis
+│   ├── temporal/       # Time series analysis
+│   ├── slicing/        # Data slicing recommendations
+│   ├── cycles/         # Business cycle detection
+│   ├── validation/     # Data validation rules
+│   └── quality_summary/# Quality report synthesis
+├── entropy/        # Uncertainty quantification (core innovation)
+│   ├── detectors/      # Entropy measurement per dimension
+│   ├── context.py      # Entropy context builder
+│   └── interpretation.py # LLM entropy interpretation
+├── graphs/         # Calculation graphs, context assembly
+├── pipeline/       # Pipeline orchestrator (18 phases)
+├── sources/        # Data source loaders
+├── storage/        # SQLAlchemy models
+├── llm/            # LLM providers and prompts
+├── core/           # Config, connections, utilities
+├── api/            # FastAPI routes (TODO)
+└── mcp/            # MCP server (TODO)
 ```
 
 **Note:** SQLAlchemy DB models are co-located with business logic in `db_models.py` files within each module.
@@ -313,9 +344,12 @@ async with get_duckdb_connection() as duckdb_conn:
 - Docstrings with Args/Returns
 - Max function length: ~50 lines
 
-## Implementation Order
+## Implementation Order (Historical Reference)
 
-### Phase 1: Foundation
+> **Note:** This section reflects the original plan. For current status, see `docs/BACKLOG.md`.
+> Phases 1-4 are complete. Current work is API/UI (Phase 5+).
+
+### Phase 1: Foundation ✅ COMPLETE
 These must come first - everything else depends on them.
 
 | Step | Module | Deliverables |
@@ -323,44 +357,22 @@ These must come first - everything else depends on them.
 | 1 | Storage | SQLAlchemy models, `llm_cache` table |
 | 2 | Core/Config | Settings, YAML loaders, connection managers |
 
-### Phase 2A: LLM Infrastructure (parallel track)
+### Phase 2A: LLM Infrastructure ✅ COMPLETE
 
-| Step | Module | Deliverables |
-|------|--------|--------------|
-| 3 | LLM Providers | `LLMProvider` ABC, Anthropic, OpenAI, Mock implementations |
-| 4 | LLM Prompts + Privacy | Template renderer, SDV sample generator, cache logic |
+### Phase 2B: Data Pipeline ✅ COMPLETE
 
-### Phase 2B: Data Pipeline (parallel track)
+### Phase 3: Intelligent Enrichment ✅ COMPLETE
 
-| Step | Module | Deliverables |
-|------|--------|--------------|
-| 5 | Staging | VARCHAR-first loaders for CSV/Parquet/DB |
-| 6 | Profiling | Pattern detection, type candidates, Pint units |
+### Phase 4: Quality & Context ✅ COMPLETE
+(Includes Entropy layer - see `docs/ENTROPY_IMPLEMENTATION_PLAN.md`)
 
-### Phase 3: Intelligent Enrichment
-Requires: Storage, LLM, Profiling results
+### Phase 5: Interfaces & Orchestration ⏳ IN PROGRESS
 
-| Step | Module | Deliverables |
-|------|--------|--------------|
-| 7 | Enrichment/Semantic | `llm_analyze_semantics()`, manual override loading |
-| 8 | Enrichment/Topology | TDA prototype wrapper, relationship detection |
-| 9 | Enrichment/Temporal | Granularity, completeness, gap analysis |
-
-### Phase 4: Quality & Context
-Requires: All enrichment metadata
-
-| Step | Module | Deliverables |
-|------|--------|--------------|
-| 10 | Quality | `llm_generate_rules()`, rule engine, scoring |
-| 11 | Context | Assembly, `llm_generate_queries()`, `llm_generate_summary()` |
-
-### Phase 5: Interfaces & Orchestration
-Requires: Full pipeline working
-
-| Step | Module | Deliverables |
-|------|--------|--------------|
-| 12 | API/MCP | FastAPI routes, MCP server, 4 tools |
-| 13 | Dataflows | Hamilton DAG, checkpoints, resume logic |
+| Step | Module | Status |
+|------|--------|--------|
+| Pipeline Orchestrator | `pipeline/` | ✅ 18 phases, CLI complete |
+| API | `api/` | ⏳ Next: FastAPI routes |
+| MCP Server | `mcp/` | Pending (after API) |
 
 ### Testing Strategy
 

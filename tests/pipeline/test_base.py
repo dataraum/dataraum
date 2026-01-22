@@ -70,10 +70,11 @@ class TestPipelineDAG:
         assert "statistics" in entropy_phase.dependencies
         assert "semantic" in entropy_phase.dependencies
 
-    def test_context_phase_is_last(self):
-        context_phase = get_phase_definition("context")
-        assert context_phase is not None
-        assert PIPELINE_DAG[-1].name == "context"
+    def test_graph_execution_phase_is_last(self):
+        """Graph execution is now the final phase after context was merged into it."""
+        graph_phase = get_phase_definition("graph_execution")
+        assert graph_phase is not None
+        assert PIPELINE_DAG[-1].name == "graph_execution"
 
 
 class TestDependencyResolution:

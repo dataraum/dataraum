@@ -321,15 +321,6 @@ PIPELINE_DAG: list[PhaseDefinition] = [
         outputs=["metrics_calculated", "metrics_skipped"],
         requires_llm=True,
     ),
-    # ============================================================
-    # FINAL CONTEXT ASSEMBLY
-    # ============================================================
-    PhaseDefinition(
-        name="context",
-        description="Build execution context for graph agent",
-        dependencies=["entropy_interpretation", "quality_summary"],
-        outputs=["execution_context"],
-    ),
 ]
 
 

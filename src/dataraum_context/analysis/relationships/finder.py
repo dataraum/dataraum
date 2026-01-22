@@ -58,6 +58,8 @@ def find_relationships(
                         "cardinality": jc["cardinality"],
                         "left_uniqueness": _uniqueness_ratio(df1[col1_name]),
                         "right_uniqueness": _uniqueness_ratio(df2[col2_name]),
+                        "statistical_confidence": jc.get("statistical_confidence", 1.0),
+                        "algorithm": jc.get("algorithm", "exact"),
                     }
                 )
 

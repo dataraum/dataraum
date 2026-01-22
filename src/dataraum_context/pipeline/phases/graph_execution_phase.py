@@ -57,7 +57,7 @@ class GraphExecutionPhase(BasePhase):
 
     @property
     def outputs(self) -> list[str]:
-        return ["metrics_calculated", "metrics_skipped"]
+        return ["metrics_calculated", "metrics_skipped", "execution_context"]
 
     @property
     def is_llm_phase(self) -> bool:
@@ -209,12 +209,29 @@ class GraphExecutionPhase(BasePhase):
                     }
                 )
 
+        # Extract context statistics (previously from context_phase)
+        rich_ctx = exec_context.rich_context
+        context_stats = {}
+        if rich_ctx:
+            total_columns = sum(len(t.columns) for t in rich_ctx.tables)
+            context_stats = {
+                "tables": len(rich_ctx.tables),
+                "columns": total_columns,
+                "relationships": len(rich_ctx.relationships),
+                "business_cycles": len(rich_ctx.business_cycles),
+                "available_slices": len(rich_ctx.available_slices),
+                "quality_issues": rich_ctx.quality_issues_by_severity,
+                "has_field_mappings": rich_ctx.field_mappings is not None,
+                "has_entropy_summary": rich_ctx.entropy_summary is not None,
+            }
+
         return PhaseResult.success(
             outputs={
                 "metrics_calculated": calculated_metrics,
                 "metrics_skipped": skipped_metrics,
                 "total_graphs": len(metric_graphs),
                 "primary_table": primary_table.table_name,
+                "execution_context": context_stats,
             },
             records_processed=len(metric_graphs),
             records_created=len(calculated_metrics),

@@ -35,7 +35,6 @@ from dataraum_context.pipeline.base import PhaseStatus
 from dataraum_context.pipeline.orchestrator import Pipeline, PipelineConfig
 from dataraum_context.pipeline.phases import (
     BusinessCyclesPhase,
-    ContextPhase,
     CorrelationsPhase,
     CrossTableQualityPhase,
     EntropyInterpretationPhase,
@@ -138,11 +137,8 @@ def create_pipeline(config: RunConfig) -> Pipeline:
     pipeline.register(CrossTableQualityPhase())
     pipeline.register(QualitySummaryPhase())
 
-    # Metric calculation
+    # Metric calculation (also builds execution context)
     pipeline.register(GraphExecutionPhase())
-
-    # Final context assembly
-    pipeline.register(ContextPhase())
 
     return pipeline
 

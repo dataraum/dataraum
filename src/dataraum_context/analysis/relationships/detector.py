@@ -80,6 +80,8 @@ def detect_relationships(
                         cardinality=j["cardinality"],
                         left_uniqueness=j["left_uniqueness"],
                         right_uniqueness=j["right_uniqueness"],
+                        statistical_confidence=j.get("statistical_confidence", 1.0),
+                        algorithm=j.get("algorithm", "exact"),
                     )
                     for j in r["join_columns"]
                 ],
@@ -150,6 +152,8 @@ def _store_candidates(
                 "cardinality": jc.cardinality,
                 "left_uniqueness": jc.left_uniqueness,
                 "right_uniqueness": jc.right_uniqueness,
+                "statistical_confidence": jc.statistical_confidence,
+                "algorithm": jc.algorithm,
                 "source": "value_overlap",
             }
 

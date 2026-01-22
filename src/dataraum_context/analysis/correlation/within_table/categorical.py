@@ -2,13 +2,16 @@
 
 Orchestrates categorical association computation:
 1. Loads categorical columns from database
-2. Fetches data from DuckDB
+2. Fetches data from DuckDB (with sampling for large tables)
 3. Calls pure algorithm from algorithms/categorical.py
 4. Stores results in database
 
 Uses parallel processing for large tables to speed up detection.
+Uses RESERVOIR sampling for tables with >100K rows to maintain performance
+while preserving statistical validity for chi-square tests.
 """
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -30,6 +33,15 @@ from dataraum_context.analysis.correlation.models import CategoricalAssociation
 from dataraum_context.core.models.base import Result
 from dataraum_context.storage import Column, Table
 
+logger = logging.getLogger(__name__)
+
+# Sampling thresholds for categorical correlation
+# Chi-square requires minimum expected cell counts of 5
+# With 100K samples, even 100x100 contingency tables have ~10 expected per cell
+LARGE_TABLE_THRESHOLD = 100_000  # Use sampling above this row count
+DEFAULT_SAMPLE_SIZE = 100_000  # Target sample size for large tables
+MIN_SAMPLE_SIZE = 10_000  # Minimum samples for statistical validity
+
 
 def _compute_association_pair(
     duckdb_conn: duckdb.DuckDBPyConnection,
@@ -42,20 +54,39 @@ def _compute_association_pair(
     col2_idx: int,
     table_id: str,
     min_cramers_v: float,
+    row_count: int,
+    sample_size: int = DEFAULT_SAMPLE_SIZE,
 ) -> CategoricalAssociation | None:
     """Compute Cramér's V for a single column pair.
 
     Runs in a worker thread using a cursor from the shared DuckDB connection.
     DuckDB cursors are thread-safe for read operations.
+
+    Uses RESERVOIR sampling for large tables (>100K rows) to maintain
+    performance while preserving statistical validity for chi-square tests.
     """
     cursor = duckdb_conn.cursor()
     try:
-        query = f"""
-            SELECT "{col1_name}", "{col2_name}"
-            FROM {table_path}
-            WHERE "{col1_name}" IS NOT NULL
-              AND "{col2_name}" IS NOT NULL
-        """
+        # Use sampling for large tables
+        use_sampling = row_count > LARGE_TABLE_THRESHOLD
+        actual_sample_size = min(sample_size, row_count)
+
+        if use_sampling:
+            # RESERVOIR sampling provides uniform random sample
+            query = f"""
+                SELECT "{col1_name}", "{col2_name}"
+                FROM {table_path}
+                WHERE "{col1_name}" IS NOT NULL
+                  AND "{col2_name}" IS NOT NULL
+                USING SAMPLE reservoir({actual_sample_size} ROWS)
+            """
+        else:
+            query = f"""
+                SELECT "{col1_name}", "{col2_name}"
+                FROM {table_path}
+                WHERE "{col1_name}" IS NOT NULL
+                  AND "{col2_name}" IS NOT NULL
+            """
         rows = cursor.execute(query).fetchall()
 
         if len(rows) < 10:
@@ -98,6 +129,7 @@ def compute_categorical_associations(
     max_distinct_values: int = 100,
     min_cramers_v: float = 0.1,
     max_workers: int = 4,
+    sample_size: int = DEFAULT_SAMPLE_SIZE,
 ) -> Result[list[CategoricalAssociation]]:
     """Compute Cramér's V for categorical column pairs.
 
@@ -105,6 +137,8 @@ def compute_categorical_associations(
     to 1 (perfect association).
 
     Uses parallel processing when there are many column pairs.
+    Uses RESERVOIR sampling for large tables (>100K rows) to maintain
+    performance while preserving statistical validity.
 
     Args:
         table: Table to analyze
@@ -113,6 +147,7 @@ def compute_categorical_associations(
         max_distinct_values: Skip columns with too many distinct values
         min_cramers_v: Minimum V to store
         max_workers: Maximum parallel workers
+        sample_size: Maximum rows to sample for large tables (default 100K)
 
     Returns:
         Result containing list of CategoricalAssociation objects
@@ -142,6 +177,18 @@ def compute_categorical_associations(
         if len(categorical_columns) < 2:
             return Result.ok([])
 
+        # Get row count for sampling decision
+        row_count = table.row_count or 0
+        if row_count == 0:
+            count_result = duckdb_conn.execute(f"SELECT COUNT(*) FROM {table_path}").fetchone()
+            row_count = count_result[0] if count_result else 0
+
+        if row_count > LARGE_TABLE_THRESHOLD:
+            logger.info(
+                f"Using RESERVOIR sampling ({sample_size:,} rows) for "
+                f"categorical correlations on {table.table_name} ({row_count:,} rows)"
+            )
+
         # Generate all pairs
         pairs = [
             (i, col1, j, col2)
@@ -167,6 +214,8 @@ def compute_categorical_associations(
                     j,
                     table.table_id,
                     min_cramers_v,
+                    row_count,
+                    sample_size,
                 )
                 for i, col1, j, col2 in pairs
             ]

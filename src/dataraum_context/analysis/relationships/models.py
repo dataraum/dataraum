@@ -20,6 +20,8 @@ class JoinCandidate(BaseModel):
     - join_confidence: value overlap score (Jaccard/containment), min 0.3
     - cardinality: detected relationship cardinality
     - left/right_uniqueness: distinct/total ratio for each column
+    - statistical_confidence: confidence in the Jaccard estimate (0-1)
+    - algorithm: which algorithm was used (exact, sampled, minhash)
 
     Evaluation metrics (populated by evaluator.py):
     - left_referential_integrity: % of FK values with matching PK
@@ -36,6 +38,14 @@ class JoinCandidate(BaseModel):
     # Column characteristics (from statistics, not name matching)
     left_uniqueness: float = 0.0  # distinct/total ratio
     right_uniqueness: float = 0.0
+
+    # Statistical confidence in the Jaccard estimate (0-1)
+    # Higher = more certain the score is accurate
+    # 1.0 = exact computation, <1.0 = sampling/minhash estimate
+    statistical_confidence: float = 1.0
+
+    # Algorithm used for computation
+    algorithm: str = "exact"  # exact, sampled, or minhash
 
     # Evaluation metrics (populated by evaluator.py)
     left_referential_integrity: float | None = None  # 0-100%

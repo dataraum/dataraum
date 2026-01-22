@@ -5,7 +5,7 @@
 
 set -e
 
-cd "$CLAUDE_PROJECT_DIR"
+cd "$CLAUDE_PROJECT_DIR/packages/dataraum-api"
 
 echo "Running quality checks..."
 
@@ -16,16 +16,14 @@ if ! uv run ruff check . --quiet 2>/dev/null; then
     exit 2
 fi
 
-if [ -f "pyproject.toml" ]; then
-    echo "Checking: mypy..."
-    if ! uv run mypy src/ --no-error-summary 2>/dev/null; then
-        echo "❌ Type checking failed. Fix type errors before continuing." >&2
-        exit 2
-    fi
+echo "Checking: mypy..."
+if ! uv run mypy src --no-error-summary 2>/dev/null; then
+    echo "❌ Type checking failed. Fix type errors before continuing." >&2
+    exit 2
 fi
 
 echo "Checking: pytest..."
-if ! uv run pytest --tb=short -q 2>&1; then
+if ! uv run pytest tests --tb=short -q 2>&1; then
     echo "❌ Tests failed. ALL tests must pass before declaring done." >&2
     exit 2
 fi

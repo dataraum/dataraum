@@ -145,7 +145,7 @@ ls prototypes/analytics-agents-ts       # Agents and prompts (inside prompts fol
 ## Module Structure
 
 ```
-src/dataraum_context/
+packages/dataraum-api/src/dataraum/
 ├── core/           # Config, connections, shared models
 ├── staging/        # Raw data loading (VARCHAR-first)
 ├── profiling/      # Statistical metadata, type inference (+ db_models.py)
@@ -281,7 +281,7 @@ Features:
 ### Error Handling
 ```python
 # Use Result type, not exceptions
-from dataraum_context.core.models import Result
+from dataraum.core.models import Result
 
 async def some_operation() -> Result[SomeOutput]:
     try:
@@ -379,14 +379,14 @@ Requires: Full pipeline working
 |------|-------|
 | Architecture docs | `docs/` |
 | Existing prototypes | `prototypes/` |
-| Source code | `src/dataraum_context/` |
-| Tests | `tests/` |
-| Ontology configs | `config/ontologies/` |
-| Pattern configs | `config/patterns/` |
-| Quality rule configs | `config/rules/` |
-| LLM prompts | `config/prompts/` |
-| LLM config | `config/llm.yaml` |
-| Null value lists | `config/null_values.yaml` |
+| Source code | `packages/dataraum-api/src/dataraum/` |
+| Tests | `packages/dataraum-api/tests/` |
+| Ontology configs | `packages/dataraum-api/config/ontologies/` |
+| Pattern configs | `packages/dataraum-api/config/patterns/` |
+| Quality rule configs | `packages/dataraum-api/config/rules/` |
+| LLM prompts | `packages/dataraum-api/config/prompts/` |
+| LLM config | `packages/dataraum-api/config/llm.yaml` |
+| Null value lists | `packages/dataraum-api/config/null_values.yaml` |
 | Semantic overrides | `config/semantic_overrides.yaml` |
 | Example data | `examples/data/` |
 
@@ -446,15 +446,15 @@ pytest tests/ -v
 
 ### Start API server
 ```bash
-uvicorn dataraum_context.api.fastapi_app:app --reload
+uvicorn dataraum.api.fastapi_app:app --reload
 ```
 
 ### Start MCP server
 ```bash
-python -m dataraum_context.mcp.server
+python -m dataraum.mcp.server
 ```
 
 ### Run migration
 ```bash
-python -m dataraum_context.storage.migrations up
+python -m dataraum.storage.migrations up
 ```

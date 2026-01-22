@@ -203,12 +203,20 @@ class Pipeline:
                             logger.info(
                                 f"Phase {name} completed in {phase_result.duration_seconds:.1f}s"
                             )
+                            # Log any warnings from completed phase
+                            if phase_result.warnings:
+                                for warning in phase_result.warnings:
+                                    logger.warning(f"Phase {name}: {warning}")
                         elif phase_result.status == PhaseStatus.SKIPPED:
                             self._skipped.add(name)
                             logger.info(f"Phase {name} skipped: {phase_result.error}")
                         else:
                             self._failed.add(name)
                             logger.error(f"Phase {name} failed: {phase_result.error}")
+                            # Log any warnings from failed phase
+                            if phase_result.warnings:
+                                for warning in phase_result.warnings:
+                                    logger.warning(f"Phase {name}: {warning}")
                             if self.config.fail_fast:
                                 # Cancel remaining futures
                                 for f in active_futures:

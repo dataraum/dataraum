@@ -277,10 +277,15 @@ def run(config: RunConfig) -> Result[RunResult]:
         completed = sum(1 for r in results.values() if r.status == PhaseStatus.COMPLETED)
         failed = sum(1 for r in results.values() if r.status == PhaseStatus.FAILED)
 
-        # Collect warnings from failed phases
+        # Collect warnings from ALL phases (not just failed)
         for phase_name, result in results.items():
+            # Collect phase-level warnings (e.g., "3 tables failed out of 5")
+            if result.warnings:
+                for warning in result.warnings:
+                    warnings.append(f"{phase_name}: {warning}")
+            # Also include error message from failed phases
             if result.status == PhaseStatus.FAILED and result.error:
-                warnings.append(f"{phase_name}: {result.error}")
+                warnings.append(f"{phase_name} failed: {result.error}")
 
         logger.info(
             "pipeline_run_completed",

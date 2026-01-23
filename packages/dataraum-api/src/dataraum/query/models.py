@@ -47,6 +47,12 @@ class QueryAnalysisOutput(BaseModel):
     documents any assumptions made due to data uncertainty.
     """
 
+    # Summary for semantic search
+    summary: str = Field(
+        description="One sentence describing what this query answers in plain English, "
+        "e.g., 'Calculates total revenue by region for Q3 2024.'"
+    )
+
     # Understanding of the question
     interpreted_question: str = Field(
         description="Restatement of the question showing how it was understood"

@@ -17,11 +17,13 @@ class TestQueryAnalysisOutput:
     def test_minimal_output(self):
         """Output with minimal required fields."""
         output = QueryAnalysisOutput(
+            summary="Calculates total revenue from all orders.",
             interpreted_question="What was total revenue?",
             metric_type="scalar",
             final_sql="SELECT SUM(amount) FROM orders",
         )
 
+        assert output.summary == "Calculates total revenue from all orders."
         assert output.interpreted_question == "What was total revenue?"
         assert output.metric_type == "scalar"
         assert output.final_sql == "SELECT SUM(amount) FROM orders"
@@ -31,6 +33,7 @@ class TestQueryAnalysisOutput:
     def test_full_output(self):
         """Output with all fields populated."""
         output = QueryAnalysisOutput(
+            summary="Calculates total revenue from completed orders only.",
             interpreted_question="Calculate total revenue from completed orders",
             metric_type="scalar",
             steps=[
@@ -55,6 +58,7 @@ class TestQueryAnalysisOutput:
             suggested_format="scalar",
         )
 
+        assert output.summary == "Calculates total revenue from completed orders only."
         assert len(output.steps) == 1
         assert output.steps[0].step_id == "filter_completed"
         assert len(output.assumptions) == 1
@@ -66,6 +70,7 @@ class TestQueryAnalysisOutput:
         schema = QueryAnalysisOutput.model_json_schema()
 
         assert "properties" in schema
+        assert "summary" in schema["properties"]
         assert "interpreted_question" in schema["properties"]
         assert "final_sql" in schema["properties"]
         assert "assumptions" in schema["properties"]

@@ -69,14 +69,17 @@ user_prompt: |
   </data_quality>
 
   <instructions>
-  1. First, restate the question to show your understanding
-  2. Identify the metric type (scalar, table, time_series, comparison)
-  3. Map question concepts to actual columns using semantic annotations
-  4. Generate SQL that answers the question
-  5. Document any assumptions made due to data uncertainty
-  6. Note any validation concerns
+  1. Write a brief summary (one sentence) describing what this query answers
+  2. Restate the question to show your understanding
+  3. Identify the metric type (scalar, table, time_series, comparison)
+  4. Map question concepts to actual columns using semantic annotations
+  5. Generate SQL that answers the question
+  6. Document any assumptions made due to data uncertainty
+  7. Note any validation concerns
 
   IMPORTANT:
+  - The summary should be a complete sentence describing what the query calculates,
+    e.g., "Calculates total revenue by region for Q3 2024."
   - Use column names exactly as they appear in the schema
   - If a concept isn't directly available, check business_concept annotations
   - If currency/units are uncertain, document the assumption

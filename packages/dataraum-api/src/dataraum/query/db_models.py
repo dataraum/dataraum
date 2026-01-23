@@ -48,7 +48,13 @@ class QueryLibraryEntry(Base):
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Generated SQL (aligned with GeneratedCodeRecord)
+    # Generated SQL and semantic content (aligned with GeneratedCodeRecord)
+    summary: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # Plain English description of what the query calculates
+    steps_json: Mapped[list[dict[str, str]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )  # [{step_id, sql, description}]
     final_sql: Mapped[str] = mapped_column(Text, nullable=False)
     column_mappings: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
 

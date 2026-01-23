@@ -7,14 +7,93 @@ import pytest
 
 from dataraum.query.embeddings import (
     QueryEmbeddings,
+    build_embedding_text_for_document,
     build_embedding_text_for_graph_output,
     build_embedding_text_for_question,
     generate_embedding,
 )
 
 
+class TestBuildEmbeddingTextForDocument:
+    """Tests for the unified build_embedding_text_for_document function."""
+
+    def test_summary_only(self):
+        """Document with just summary."""
+        text = build_embedding_text_for_document(
+            summary="Calculates total revenue by region for Q3 2024."
+        )
+        assert text == "Calculates total revenue by region for Q3 2024."
+
+    def test_with_step_descriptions(self):
+        """Document with summary and step descriptions."""
+        text = build_embedding_text_for_document(
+            summary="Calculates Days Sales Outstanding.",
+            step_descriptions=[
+                "Sums total accounts receivable",
+                "Calculates average daily sales over the period",
+            ],
+        )
+        assert "Days Sales Outstanding" in text
+        assert "accounts receivable" in text
+        assert "average daily sales" in text
+
+    def test_with_assumptions(self):
+        """Document with summary and assumptions."""
+        text = build_embedding_text_for_document(
+            summary="Calculates revenue by region.",
+            assumption_texts=["Currency is EUR", "Region is EMEA"],
+        )
+        assert "revenue by region" in text
+        assert "Currency is EUR" in text
+        assert "Region is EMEA" in text
+
+    def test_full_document(self):
+        """Document with all fields."""
+        text = build_embedding_text_for_document(
+            summary="Calculates total revenue.",
+            step_descriptions=["Filter completed orders", "Sum amounts"],
+            assumption_texts=["Currency is USD"],
+        )
+        assert "total revenue" in text
+        assert "Filter completed orders" in text
+        assert "Sum amounts" in text
+        assert "Currency is USD" in text
+
+    def test_truncation_at_max_chars(self):
+        """Text is truncated at max_chars."""
+        # Create long descriptions
+        text = build_embedding_text_for_document(
+            summary="Short summary",
+            step_descriptions=["A" * 500, "B" * 500],
+            max_chars=100,
+        )
+        # Should be less than or around max_chars
+        assert len(text) <= 150  # Allow some margin for short summary
+
+    def test_priority_order_summary_first(self):
+        """Summary is always included, steps and assumptions truncated if needed."""
+        long_summary = "Summary " * 100  # ~800 chars
+        text = build_embedding_text_for_document(
+            summary=long_summary,
+            step_descriptions=["Step description"],
+            assumption_texts=["Assumption text"],
+            max_chars=1000,
+        )
+        # Summary should be included
+        assert "Summary" in text
+
+    def test_empty_lists(self):
+        """Handles empty lists gracefully."""
+        text = build_embedding_text_for_document(
+            summary="Just a summary.",
+            step_descriptions=[],
+            assumption_texts=[],
+        )
+        assert text == "Just a summary."
+
+
 class TestEmbeddingTextBuilders:
-    """Tests for embedding text builder functions."""
+    """Tests for legacy embedding text builder functions."""
 
     def test_build_question_text(self):
         """Question text is used as-is."""

@@ -59,6 +59,7 @@ class GeneratedCode:
     schema_mapping_id: str
 
     # Generated SQL
+    summary: str  # Plain English description of what the query calculates
     steps: list[dict[str, str]]  # List of {step_id, sql, description}
     final_sql: str
     column_mappings: dict[str, str]  # abstract_field -> concrete_column
@@ -375,6 +376,7 @@ class GraphAgent(LLMFeature):
             graph_id=graph.graph_id,
             graph_version=graph.version,
             schema_mapping_id=context.schema_mapping_id or "default",
+            summary=output.summary,
             steps=[
                 {
                     "step_id": step.step_id,
@@ -818,6 +820,7 @@ class GraphAgent(LLMFeature):
             graph_id=record.graph_id,
             graph_version=record.graph_version,
             schema_mapping_id=record.schema_mapping_id,
+            summary=record.summary or "",
             steps=record.steps_json,
             final_sql=record.final_sql,
             column_mappings=record.column_mappings,
@@ -839,6 +842,7 @@ class GraphAgent(LLMFeature):
             graph_id=generated_code.graph_id,
             graph_version=generated_code.graph_version,
             schema_mapping_id=generated_code.schema_mapping_id,
+            summary=generated_code.summary,
             steps_json=generated_code.steps,
             final_sql=generated_code.final_sql,
             column_mappings=generated_code.column_mappings,

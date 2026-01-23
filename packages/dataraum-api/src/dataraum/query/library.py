@@ -35,7 +35,8 @@ from sqlalchemy import select, update
 
 from dataraum.core.logging import get_logger
 from dataraum.query.db_models import QueryExecutionRecord, QueryLibraryEntry
-from dataraum.query.embeddings import QueryEmbeddings
+from dataraum.query.document import QueryDocument
+from dataraum.query.embeddings import QueryEmbeddings, build_embedding_text_for_document
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -57,6 +58,25 @@ class LibraryMatch:
 
     entry: QueryLibraryEntry
     similarity: float
+
+    def to_context(self) -> dict[str, Any]:
+        """Return full document for LLM context injection.
+
+        This provides the complete semantic document that can be used
+        to inform the LLM about a similar query that was previously executed.
+
+        Returns:
+            Dictionary with all relevant query information
+        """
+        return {
+            "query_id": self.entry.query_id,
+            "summary": self.entry.summary,
+            "calculation_steps": self.entry.steps_json,
+            "sql": self.entry.final_sql,
+            "column_mappings": self.entry.column_mappings,
+            "assumptions": self.entry.assumptions,
+            "similarity_score": round(self.similarity, 3),
+        }
 
 
 class QueryLibrary:
@@ -157,6 +177,73 @@ class QueryLibrary:
 
         return results
 
+    def save_document(
+        self,
+        source_id: str,
+        document: QueryDocument,
+        *,
+        original_question: str | None = None,
+        name: str | None = None,
+        description: str | None = None,
+        contract_name: str | None = None,
+        confidence_level: str = "GREEN",
+        graph_id: str | None = None,
+    ) -> QueryLibraryEntry:
+        """Save a complete query document to the library.
+
+        This is the preferred method for saving queries as it preserves
+        all semantic information (summary, steps, assumptions) for
+        better similarity search and context retrieval.
+
+        Args:
+            source_id: Source ID this query belongs to
+            document: Complete QueryDocument with all semantic fields
+            original_question: Original natural language question (if from user)
+            name: Optional name for the query
+            description: Optional description
+            contract_name: Contract used
+            confidence_level: Confidence level string
+            graph_id: Graph ID if seeded from graph execution
+
+        Returns:
+            Created QueryLibraryEntry
+        """
+        # Build embedding text from document (includes summary + steps + assumptions)
+        embedding_text = build_embedding_text_for_document(
+            summary=document.summary,
+            step_descriptions=document.get_step_descriptions(),
+            assumption_texts=document.get_assumption_texts(),
+        )
+
+        query_id = str(uuid4())
+
+        entry = QueryLibraryEntry(
+            query_id=query_id,
+            source_id=source_id,
+            original_question=original_question,
+            graph_id=graph_id,
+            name=name,
+            description=description,
+            summary=document.summary,
+            steps_json=[s.to_dict() for s in document.steps],
+            final_sql=document.final_sql,
+            column_mappings=document.column_mappings,
+            assumptions=[a.to_dict() for a in document.assumptions],
+            contract_name=contract_name,
+            confidence_level=confidence_level,
+            embedding_text=embedding_text,
+            created_at=datetime.now(UTC),
+        )
+
+        self.session.add(entry)
+        self.session.flush()  # Get the ID without committing
+
+        # Store embedding
+        self._embeddings.add_query(query_id, embedding_text)
+
+        logger.info(f"Saved query document to library: {query_id}")
+        return entry
+
     def save(
         self,
         source_id: str,
@@ -166,6 +253,8 @@ class QueryLibrary:
         original_question: str | None = None,
         name: str | None = None,
         description: str | None = None,
+        summary: str | None = None,
+        steps: list[dict[str, str]] | None = None,
         assumptions: list[dict[str, Any]] | None = None,
         column_mappings: dict[str, str] | None = None,
         contract_name: str | None = None,
@@ -174,6 +263,9 @@ class QueryLibrary:
     ) -> QueryLibraryEntry:
         """Save a query to the library.
 
+        Note: Prefer save_document() for new code as it preserves all semantic
+        information. This method is kept for backwards compatibility.
+
         Args:
             source_id: Source ID this query belongs to
             embedding_text: Text to use for semantic search (question or summary)
@@ -181,6 +273,8 @@ class QueryLibrary:
             original_question: Original natural language question (if from user)
             name: Optional name for the query
             description: Optional description
+            summary: Plain English description of what the query calculates
+            steps: List of calculation steps [{step_id, sql, description}]
             assumptions: List of assumption dicts
             column_mappings: Column name mappings
             contract_name: Contract used
@@ -199,6 +293,8 @@ class QueryLibrary:
             graph_id=graph_id,
             name=name,
             description=description,
+            summary=summary,
+            steps_json=steps or [],
             final_sql=sql,
             column_mappings=column_mappings or {},
             assumptions=assumptions or [],

@@ -356,6 +356,7 @@ class TestQueryAgentIntegration:
         mock_tool_call = MagicMock()
         mock_tool_call.name = "analyze_query"
         mock_tool_call.input = {
+            "summary": "Calculates total revenue from completed orders only.",
             "interpreted_question": "Calculate total revenue from completed orders",
             "metric_type": "scalar",
             "steps": [],

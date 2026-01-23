@@ -43,6 +43,7 @@ from dataraum.graphs.context import build_execution_context, format_context_for_
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import ConversationRequest, Message, ToolDefinition
 
+from .document import QueryDocument
 from .models import (
     QueryAnalysisOutput,
     QueryResult,
@@ -212,6 +213,7 @@ class QueryAgent(LLMFeature):
                 )
                 # Create analysis output from library entry
                 analysis_output = QueryAnalysisOutput(
+                    summary=library_match.entry.summary or "Reused from query library",
                     interpreted_question=library_match.entry.original_question or question,
                     metric_type="table",  # Default, could be stored in library
                     final_sql=library_match.entry.final_sql,
@@ -573,6 +575,9 @@ class QueryAgent(LLMFeature):
     ) -> None:
         """Save a query to the library.
 
+        Uses QueryDocument to preserve all semantic information (summary, steps,
+        assumptions) for better similarity search and context retrieval.
+
         Args:
             session: SQLAlchemy session
             manager: ConnectionManager with vectors
@@ -585,13 +590,9 @@ class QueryAgent(LLMFeature):
         """
         from dataraum.query.library import QueryLibrary
 
-        library = QueryLibrary(session, manager)
-        library.save(
-            source_id=source_id,
-            embedding_text=question,  # Use question as embedding text for user queries
-            sql=analysis_output.final_sql,
-            original_question=question,
-            column_mappings=analysis_output.column_mappings,
+        # Build QueryDocument with all semantic content
+        document = QueryDocument.from_query_analysis(
+            output=analysis_output,
             assumptions=[
                 {
                     "dimension": a.dimension,
@@ -602,6 +603,13 @@ class QueryAgent(LLMFeature):
                 }
                 for a in assumptions
             ],
+        )
+
+        library = QueryLibrary(session, manager)
+        library.save_document(
+            source_id=source_id,
+            document=document,
+            original_question=question,
             contract_name=contract,
             confidence_level=confidence_level.value,
         )

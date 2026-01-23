@@ -120,6 +120,7 @@ class TestGeneratedCode:
             graph_id="dso",
             graph_version="1.0",
             schema_mapping_id="mapping-456",
+            summary="Calculates Days Sales Outstanding (DSO) metric.",
             steps=[{"step_id": "ar", "sql": "SELECT 1", "description": "test"}],
             final_sql="SELECT 1",
             column_mappings={"accounts_receivable": "ar_column"},
@@ -130,6 +131,7 @@ class TestGeneratedCode:
 
         assert code.code_id == "test-123"
         assert code.graph_id == "dso"
+        assert code.summary == "Calculates Days Sales Outstanding (DSO) metric."
         assert len(code.steps) == 1
         assert code.is_validated is False
         assert code.validation_errors == []
@@ -205,6 +207,7 @@ class TestGraphAgentCaching:
             graph_id=sample_graph.graph_id,
             graph_version=sample_graph.version,
             schema_mapping_id="test-mapping",
+            summary="Calculates sum of test values.",
             steps=[{"step_id": "value", "sql": "SELECT 1", "description": "test"}],
             final_sql="SELECT SUM(amount) FROM test",
             column_mappings={"test_field": "amount"},
@@ -301,6 +304,7 @@ class TestGraphAgentExecution:
             graph_id="test",
             graph_version="1.0",
             schema_mapping_id="test",
+            summary="Test query.",
             steps=[],
             final_sql="SELECT SUM(amount) FROM test_data",
             column_mappings={},
@@ -331,6 +335,7 @@ class TestGraphAgentExecution:
             graph_id="test",
             graph_version="1.0",
             schema_mapping_id="test",
+            summary="Test query.",
             steps=[],
             final_sql="SELECT * FROM nonexistent_table",
             column_mappings={},

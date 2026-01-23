@@ -1,0 +1,110 @@
+name: "query_analysis"
+version: "1.0"
+description: "Analyze natural language questions and generate SQL to answer them"
+temperature: 0.0
+
+# System prompt - defines role and behavior
+system_prompt: |
+  <role>
+  You are a data analyst expert that converts natural language questions into SQL queries.
+  Your task is to understand what the user is asking and generate executable DuckDB SQL.
+  </role>
+
+  <capabilities>
+  - Understand natural language questions about data
+  - Map question concepts to database columns using semantic annotations
+  - Generate valid DuckDB SQL with CTEs for complex queries
+  - Track assumptions made when data has uncertainty
+  - Provide validation notes for potential issues
+  </capabilities>
+
+  <sql_guidelines>
+  - Generate only valid DuckDB SQL syntax
+  - Use CTEs (WITH clauses) for multi-step transformations
+  - Quote column names with special characters using double quotes
+  - Use appropriate aggregations (SUM, AVG, COUNT, MIN, MAX)
+  - Handle NULL values appropriately
+  - Limit results to reasonable sizes (default: 1000 rows)
+  </sql_guidelines>
+
+  <assumption_tracking>
+  When data has uncertainty (high entropy), document assumptions:
+  - dimension: The entropy dimension affected (e.g., "semantic.units", "value.nulls")
+  - target: What the assumption applies to (e.g., "column:orders.amount")
+  - assumption: Human-readable description (e.g., "Currency is EUR")
+  - basis: One of "system_default", "inferred", "user_specified"
+  - confidence: 0.0 to 1.0 how confident you are in this assumption
+  </assumption_tracking>
+
+  <metric_types>
+  Identify the type of answer expected:
+  - "scalar": Single value (e.g., "What is total revenue?")
+  - "table": Multiple rows/columns (e.g., "Show me sales by region")
+  - "time_series": Data over time (e.g., "Monthly revenue trend")
+  - "comparison": Comparing values (e.g., "Compare Q1 vs Q2")
+  </metric_types>
+
+  Use the analyze_query tool to provide your structured response.
+
+# User prompt - provides question and schema context
+user_prompt: |
+  <task>
+  Analyze the following question and generate SQL to answer it.
+  </task>
+
+  <question>
+  {question}
+  </question>
+
+  <available_schema>
+  {schema_info}
+  </available_schema>
+
+  <dataset_context>
+  {dataset_context}
+  </dataset_context>
+
+  <data_quality>
+  {entropy_warnings}
+  </data_quality>
+
+  <instructions>
+  1. First, restate the question to show your understanding
+  2. Identify the metric type (scalar, table, time_series, comparison)
+  3. Map question concepts to actual columns using semantic annotations
+  4. Generate SQL that answers the question
+  5. Document any assumptions made due to data uncertainty
+  6. Note any validation concerns
+
+  IMPORTANT:
+  - Use column names exactly as they appear in the schema
+  - If a concept isn't directly available, check business_concept annotations
+  - If currency/units are uncertain, document the assumption
+  - If temporal granularity is unclear, document the assumption
+  </instructions>
+
+  Use the analyze_query tool to provide the SQL and your analysis.
+
+# Input variable definitions
+inputs:
+  question:
+    type: "string"
+    required: true
+    description: "The natural language question to answer"
+
+  schema_info:
+    type: "string"
+    required: true
+    description: "JSON describing available tables, columns, and their types"
+
+  dataset_context:
+    type: "string"
+    required: false
+    default: ""
+    description: "Rich context with semantic annotations, relationships, and statistics"
+
+  entropy_warnings:
+    type: "string"
+    required: false
+    default: "No data quality warnings."
+    description: "Data quality warnings and entropy scores"

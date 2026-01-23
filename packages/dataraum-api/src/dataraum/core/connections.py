@@ -369,23 +369,6 @@ class ConnectionManager:
             yield self._duckdb_conn
 
     @property
-    def duckdb_conn(self) -> duckdb.DuckDBPyConnection:
-        """Get the underlying DuckDB connection.
-
-        Warning: Direct access bypasses write serialization.
-        Use duckdb_cursor() for reads and duckdb_write() for writes.
-
-        Returns:
-            The DuckDB connection
-
-        Raises:
-            RuntimeError: If manager not initialized
-        """
-        self._ensure_initialized()
-        assert self._duckdb_conn is not None
-        return self._duckdb_conn
-
-    @property
     def engine(self) -> Engine:
         """Get the SQLAlchemy engine.
 

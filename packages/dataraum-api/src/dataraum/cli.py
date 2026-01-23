@@ -710,11 +710,12 @@ def _inspect_impl(output_dir: Path) -> None:
                 )
 
                 table_ids = [t.table_id for t in tables[:3]]
-                context = build_execution_context(
-                    session=session,
-                    table_ids=table_ids,
-                    duckdb_conn=manager.duckdb_conn,
-                )
+                with manager.duckdb_cursor() as cursor:
+                    context = build_execution_context(
+                        session=session,
+                        table_ids=table_ids,
+                        duckdb_conn=cursor,
+                    )
 
                 console.print(f"Tables in context: {context.total_tables}")
                 console.print(f"Columns in context: {context.total_columns}")
@@ -1033,6 +1034,218 @@ def _print_contract_detail(
             f"(score: {evaluation.worst_dimension_score:.2f})"
         )
         console.print(f"  Estimated effort: {evaluation.estimated_effort_to_comply}")
+
+
+@app.command()
+def query(
+    question: Annotated[
+        str,
+        typer.Argument(
+            help="Natural language question to answer",
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output directory containing pipeline databases",
+            exists=True,
+            dir_okay=True,
+            file_okay=False,
+            resolve_path=True,
+        ),
+    ] = Path("./pipeline_output"),
+    contract: Annotated[
+        str | None,
+        typer.Option(
+            "--contract",
+            "-c",
+            help="Contract to evaluate against (e.g., 'executive_dashboard')",
+        ),
+    ] = None,
+    auto_contract: Annotated[
+        bool,
+        typer.Option(
+            "--auto-contract",
+            help="Automatically select the strictest passing contract",
+        ),
+    ] = False,
+    show_sql: Annotated[
+        bool,
+        typer.Option(
+            "--show-sql",
+            help="Show the generated SQL",
+        ),
+    ] = False,
+    verbose: Annotated[
+        int,
+        typer.Option(
+            "--verbose",
+            "-v",
+            count=True,
+            help="Increase logging verbosity (-v=INFO, -vv=DEBUG)",
+        ),
+    ] = 0,
+) -> None:
+    """Ask a question about the data using natural language.
+
+    The Query Agent converts your question into SQL and returns results
+    with a confidence level based on data quality.
+
+    Examples:
+
+        dataraum query "What was total revenue?" -o ./pipeline_output
+
+        dataraum query "Show sales by region" -o ./output --contract executive_dashboard
+
+        dataraum query "Monthly trend" -o ./output --auto-contract --show-sql
+    """
+    setup_logging(verbosity=verbose)
+    _query_impl(question, output_dir, contract, auto_contract, show_sql)
+
+
+def _query_impl(
+    question: str,
+    output_dir: Path,
+    contract_name: str | None,
+    auto_contract: bool,
+    show_sql: bool,
+) -> None:
+    """Sync implementation of query command."""
+    from sqlalchemy import select
+
+    from dataraum.core import ConnectionConfig, ConnectionManager
+    from dataraum.entropy.contracts import ConfidenceLevel
+    from dataraum.query import answer_question
+    from dataraum.storage import Source, Table
+
+    config = ConnectionConfig.for_directory(output_dir)
+
+    if not config.sqlite_path.exists():
+        console.print(f"[red]No metadata database found at {config.sqlite_path}[/red]")
+        raise typer.Exit(1)
+
+    manager = ConnectionManager(config)
+    manager.initialize()
+
+    try:
+        with manager.session_scope() as session:
+            # Get sources
+            sources_result = session.execute(select(Source))
+            sources = sources_result.scalars().all()
+
+            if not sources:
+                console.print("[yellow]No sources found in database[/yellow]")
+                return
+
+            source = sources[0]
+
+            # Get tables
+            tables_result = session.execute(
+                select(Table).where(Table.source_id == source.source_id)
+            )
+            tables = tables_result.scalars().all()
+
+            if not tables:
+                console.print("[yellow]No tables found. Run pipeline first.[/yellow]")
+                return
+
+            # Get DuckDB cursor (properly managed context)
+            with manager.duckdb_cursor() as cursor:
+                # Call the query agent
+                result = answer_question(
+                    question=question,
+                    session=session,
+                    duckdb_conn=cursor,
+                    source_id=source.source_id,
+                    contract=contract_name,
+                    auto_contract=auto_contract,
+                )
+
+            if not result.success or not result.value:
+                console.print(f"[red]Error: {result.error}[/red]")
+                raise typer.Exit(1)
+
+            query_result = result.value
+
+            # Display confidence header
+            emoji = query_result.confidence_level.emoji
+            label = query_result.confidence_level.label
+            contract_display = query_result.contract or "default"
+
+            if query_result.confidence_level == ConfidenceLevel.GREEN:
+                status_color = "green"
+            elif query_result.confidence_level == ConfidenceLevel.YELLOW:
+                status_color = "yellow"
+            elif query_result.confidence_level == ConfidenceLevel.ORANGE:
+                status_color = "yellow"
+            else:
+                status_color = "red"
+
+            console.print(
+                f"\n[{status_color}]{emoji} Data Quality: {label}[/{status_color}] "
+                f"for [cyan]{contract_display}[/cyan]\n"
+            )
+
+            # Display answer
+            console.print(query_result.answer)
+
+            # Display data table if available
+            if query_result.data and query_result.columns and len(query_result.data) <= 50:
+                console.print()
+                data_table = RichTable(show_header=True, header_style="bold")
+                for col in query_result.columns:
+                    data_table.add_column(col)
+
+                for row in query_result.data[:50]:
+                    data_table.add_row(*[str(row.get(c, "")) for c in query_result.columns])
+
+                console.print(data_table)
+
+                if len(query_result.data) > 50:
+                    console.print(f"[dim]... showing 50 of {len(query_result.data)} rows[/dim]")
+
+            # Display SQL if requested
+            if show_sql and query_result.sql:
+                console.print("\n[bold]Generated SQL:[/bold]")
+                console.print(f"[dim]{query_result.sql}[/dim]")
+
+            # Display assumptions
+            if query_result.assumptions:
+                console.print("\n[bold]Assumptions:[/bold]")
+                for a in query_result.assumptions:
+                    console.print(f"  - {a.assumption} ([dim]{a.basis.value}[/dim])")
+
+            # Display warnings for non-green confidence
+            if query_result.confidence_level in (
+                ConfidenceLevel.ORANGE,
+                ConfidenceLevel.RED,
+            ):
+                if query_result.contract_evaluation:
+                    eval_ = query_result.contract_evaluation
+                    if eval_.violations:
+                        console.print("\n[bold yellow]Quality Issues:[/bold yellow]")
+                        for v in eval_.violations[:5]:
+                            if v.dimension:
+                                console.print(
+                                    f"  [yellow]⚠[/yellow] {v.dimension}: "
+                                    f"{v.actual:.2f} (threshold: {v.max_allowed:.2f})"
+                                )
+                            elif v.details:
+                                console.print(f"  [yellow]⚠[/yellow] {v.details}")
+
+            # Show path to compliance for blocked queries
+            if query_result.confidence_level == ConfidenceLevel.RED:
+                console.print("\n[bold]To improve data quality:[/bold]")
+                console.print(
+                    f"  Run: [cyan]dataraum contracts {output_dir} --contract "
+                    f"{query_result.contract}[/cyan]"
+                )
+
+            console.print()
+    finally:
+        manager.close()
 
 
 def main() -> None:

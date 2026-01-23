@@ -246,6 +246,61 @@ class QueryResponse(BaseModel):
     truncated: bool = Field(description="True if result was limited")
 
 
+class QueryAgentRequest(BaseModel):
+    """Request for Query Agent natural language question."""
+
+    question: str = Field(description="Natural language question to answer")
+    source_id: str = Field(description="Source ID to query against")
+    contract: str | None = Field(
+        default=None, description="Contract to evaluate against (e.g., 'executive_dashboard')"
+    )
+    auto_contract: bool = Field(
+        default=False, description="Automatically select the strictest passing contract"
+    )
+
+
+class QueryAssumptionResponse(BaseModel):
+    """An assumption made during query execution."""
+
+    dimension: str = Field(description="Entropy dimension (e.g., 'semantic.units')")
+    target: str = Field(description="What the assumption applies to")
+    assumption: str = Field(description="Human-readable assumption")
+    basis: str = Field(description="Basis: system_default, inferred, user_specified")
+    confidence: float = Field(description="Confidence in this assumption (0.0 to 1.0)")
+
+
+class QueryAgentResponse(BaseModel):
+    """Response from Query Agent."""
+
+    execution_id: str
+    question: str
+    answer: str = Field(description="Natural language answer")
+    sql: str | None = Field(default=None, description="Generated SQL")
+    data: list[dict[str, Any]] | None = Field(default=None, description="Query results")
+    columns: list[str] | None = Field(default=None, description="Column names")
+
+    # Confidence
+    confidence_level: str = Field(description="green, yellow, orange, red")
+    confidence_emoji: str = Field(description="Traffic light emoji")
+    confidence_label: str = Field(description="GOOD, MARGINAL, ISSUES, BLOCKED")
+    entropy_score: float = Field(description="Overall entropy score")
+
+    # Assumptions
+    assumptions: list[QueryAssumptionResponse] = Field(default_factory=list)
+
+    # Contract
+    contract: str | None = Field(default=None, description="Contract used")
+
+    # Analysis details
+    interpreted_question: str = Field(default="", description="How the question was understood")
+    metric_type: str = Field(default="table", description="scalar, table, time_series, comparison")
+    validation_notes: list[str] = Field(default_factory=list)
+
+    # Status
+    success: bool = True
+    error: str | None = None
+
+
 # --- SSE Progress schemas ---
 
 

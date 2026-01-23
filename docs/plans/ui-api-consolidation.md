@@ -47,7 +47,7 @@ See [Query Agent Architecture](./query-agent-architecture.md) for full design.
 
 ---
 
-## Current Status (2026-01-22)
+## Current Status (2026-01-23, Updated)
 
 ### Completed
 
@@ -299,37 +299,41 @@ See [Query Agent Architecture](./query-agent-architecture.md) for details on:
 - [x] Free-threading support
 - [x] API test suite (31 tests)
 
-### Phase 2: Contract Implementation (Next)
+### Phase 2: Contract Implementation ✅ COMPLETE
 *Implement contracts to enable confidence-level responses*
-- [ ] Create `entropy/contracts.py` from [ENTROPY_CONTRACTS.md](../ENTROPY_CONTRACTS.md)
-- [ ] Load contracts from `config/entropy/contracts.yaml`
-- [ ] Implement `evaluate_contract()` function
-- [ ] Implement `calculate_confidence_level()` (GREEN/YELLOW/ORANGE/RED)
-- [ ] Add `dataraum contracts` CLI command
-- [ ] API endpoint: `GET /api/v1/contracts/{name}/evaluate`
+- [x] Create `entropy/contracts.py` with full contract evaluation
+- [x] Load contracts from `config/entropy/contracts.yaml` (fail-fast if missing)
+- [x] Implement `evaluate_contract()` function
+- [x] Implement `_calculate_confidence_level()` (GREEN/YELLOW/ORANGE/RED)
+- [x] Add `dataraum contracts` CLI command
+- [x] API endpoints: `GET /api/v1/contracts`, `GET /api/v1/contracts/{name}`, `GET /api/v1/contracts/{name}/evaluate`, `GET /api/v1/sources/{source_id}/contracts`
+- [x] 26 tests covering all contract functionality
 
-### Phase 3: Query Agent Core (Library Function)
+### Phase 3: Query Agent Core ⏳ IN PROGRESS
 *The core library that CLI/API/MCP all call*
-- [ ] Create `query/` module structure
-- [ ] Implement `answer_question()` library function
+- [x] Create `query/` module structure
+- [x] Implement `answer_question()` library function
+- [x] Create `QueryAgent` class extending LLMFeature
+- [x] Create `query_analysis.yaml` prompt template
+- [x] Assumption tracking with QueryAssumption model
+- [x] Contract-based confidence levels in responses
 - [ ] Query library schema (extend existing graphs/)
 - [ ] Basic similarity search (embeddings)
 - [ ] Seed library with existing graph definitions
-- [ ] Entropy-aware query generation (fallback for no match)
-- [ ] Assumption tracking with QueryAssumption model
 
-### Phase 4: Query Agent CLI
+### Phase 4: Query Agent CLI ✅ COMPLETE
 *CLI wrapper for fast iteration and testing*
-- [ ] Add `dataraum query "..."` command
-- [ ] Contract selection: `--contract NAME`
-- [ ] Auto-contract: `--auto-contract`
+- [x] Add `dataraum query "..."` command
+- [x] Contract selection: `--contract NAME`
+- [x] Auto-contract: `--auto-contract`
+- [x] Show SQL: `--show-sql`
 - [ ] Behavior modes: `--mode strict|balanced|lenient`
 - [ ] Interactive REPL: `dataraum query --interactive`
 - [ ] Save to library: `--save NAME`
 
-### Phase 5: Query Agent API
+### Phase 5: Query Agent API ⏳ IN PROGRESS
 *HTTP wrapper for UI/external consumption*
-- [ ] `POST /api/v1/query/agent` endpoint
+- [x] `POST /api/v1/query/agent` endpoint
 - [ ] `GET /api/v1/query/library` (list saved queries)
 - [ ] `POST /api/v1/query/library` (save query)
 - [ ] Context endpoint integration (existing)

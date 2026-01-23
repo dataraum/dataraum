@@ -133,15 +133,16 @@ Prioritized backlog for the dataraum-context project. Items are organized by pri
 - [x] Integrate into `format_context_for_prompt()`
 - [x] Create tests for prompt formatting (9 new tests)
 
-### Step 2.3: Contract Evaluation ⏸️ DEFERRED
+### Step 2.3: Contract Evaluation ✅ COMPLETED 2025-01-23
 
-> **Deferred**: Contract evaluation is about policy enforcement (what entropy levels are acceptable for different use cases). Deferring until we have real usage patterns to inform contract thresholds. The spec in [ENTROPY_CONTRACTS.md](./ENTROPY_CONTRACTS.md) remains valid but implementation will benefit from learnings.
-
-- [ ] Create `entropy/contracts.py` per [ENTROPY_CONTRACTS.md](./ENTROPY_CONTRACTS.md)
-- [ ] Create `config/entropy/contracts.yaml` with 5 standard profiles
-- [ ] Implement `evaluate_contract()` function
-- [ ] Implement `get_path_to_compliance()` function
-- [ ] Add contract compliance to EntropyContext
+- [x] Create `entropy/contracts.py` with full contract evaluation system
+- [x] Create `config/entropy/contracts.yaml` with 5 standard profiles
+- [x] Implement `evaluate_contract()` function with dimension thresholds
+- [x] Implement `_calculate_confidence_level()` for traffic light model (GREEN/YELLOW/ORANGE/RED)
+- [x] Add `dataraum contracts` CLI command
+- [x] API endpoints for contracts (list, detail, evaluate, evaluate all)
+- [x] 26 tests covering all contract functionality
+- [x] Fail-fast pattern: no default contracts, fails if YAML missing
 
 ### Step 2.4: Graph Agent Enhancement ✅ COMPLETED 2025-01-13
 - [x] Update `graphs/agent.py` to read entropy context

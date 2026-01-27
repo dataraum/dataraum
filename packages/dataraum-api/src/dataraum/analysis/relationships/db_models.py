@@ -53,7 +53,6 @@ class Relationship(Base):
             "detection_method",
             name="uq_relationship_columns_method",
         ),
-        {"extend_existing": True},
     )
 
     relationship_id: Mapped[str] = mapped_column(

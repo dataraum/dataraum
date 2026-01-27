@@ -586,11 +586,12 @@ class ValidationAgent(LLMFeature):
         )
         session.add(run_record)
 
-        # Create individual result records
+        # Create individual result records with client-side IDs
         for result in run_result.results:
             # Serialize details to ensure JSON compatibility
             result_data = result.model_dump(mode="json")
             result_record = ValidationResultRecord(
+                result_id=str(uuid4()),
                 run_id=run_result.run_id,
                 validation_id=result.validation_id,
                 table_ids=result.table_ids,

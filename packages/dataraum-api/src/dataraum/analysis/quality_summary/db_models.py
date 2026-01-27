@@ -38,7 +38,6 @@ class ColumnQualityReport(Base):
     __table_args__ = (
         Index("idx_quality_reports_source_column", "source_column_id"),
         Index("idx_quality_reports_slice_column", "slice_column_id"),
-        {"extend_existing": True},
     )
 
     report_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -91,7 +90,6 @@ class QualitySummaryRun(Base):
     __table_args__ = (
         Index("idx_summary_runs_source_table", "source_table_id"),
         Index("idx_summary_runs_slice_column", "slice_column_id"),
-        {"extend_existing": True},
     )
 
     run_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))

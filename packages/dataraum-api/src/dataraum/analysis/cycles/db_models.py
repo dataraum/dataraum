@@ -36,7 +36,6 @@ class BusinessCycleAnalysisRun(Base):
     """
 
     __tablename__ = "business_cycle_analysis_runs"
-    __table_args__ = {"extend_existing": True}
 
     analysis_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
 
@@ -82,7 +81,6 @@ class DetectedBusinessCycle(Base):
     """
 
     __tablename__ = "detected_business_cycles"
-    __table_args__ = {"extend_existing": True}
 
     cycle_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     analysis_id: Mapped[str] = mapped_column(

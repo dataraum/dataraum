@@ -35,10 +35,7 @@ class SemanticAnnotation(Base):
     """
 
     __tablename__ = "semantic_annotations"
-    __table_args__ = (
-        UniqueConstraint("column_id", name="uq_column_semantic_annotation"),
-        {"extend_existing": True},
-    )
+    __table_args__ = (UniqueConstraint("column_id", name="uq_column_semantic_annotation"),)
 
     annotation_id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid4())
@@ -85,8 +82,6 @@ class TableEntity(Base):
     """
 
     __tablename__ = "table_entities"
-    __table_args__ = {"extend_existing": True}
-
     entity_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     table_id: Mapped[str] = mapped_column(
         ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False

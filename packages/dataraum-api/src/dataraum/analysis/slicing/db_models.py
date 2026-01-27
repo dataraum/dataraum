@@ -38,7 +38,6 @@ class SliceDefinition(Base):
     __table_args__ = (
         Index("idx_slice_definitions_table", "table_id"),
         Index("idx_slice_definitions_column", "column_id"),
-        {"extend_existing": True},
     )
 
     slice_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -81,8 +80,6 @@ class SlicingAnalysisRun(Base):
     """
 
     __tablename__ = "slicing_analysis_runs"
-    __table_args__ = {"extend_existing": True}
-
     run_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
 
     # Scope

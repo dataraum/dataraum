@@ -7,10 +7,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dataraum.storage import Base
 
@@ -22,9 +21,8 @@ class ValidationRunRecord(Base):
     """
 
     __tablename__ = "validation_runs"
-    __table_args__ = {"extend_existing": True}
 
-    run_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
     table_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     table_name: Mapped[str] = mapped_column(String, nullable=False)
 
@@ -47,6 +45,12 @@ class ValidationRunRecord(Base):
     # Detailed results (JSON)
     results: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
 
+    # Relationship to individual check results (ensures correct INSERT ordering)
+    check_results: Mapped[list[ValidationResultRecord]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+
 
 class ValidationResultRecord(Base):
     """Record of a single validation check result.
@@ -55,9 +59,8 @@ class ValidationResultRecord(Base):
     """
 
     __tablename__ = "validation_results"
-    __table_args__ = {"extend_existing": True}
 
-    result_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    result_id: Mapped[str] = mapped_column(String, primary_key=True)
     run_id: Mapped[str] = mapped_column(
         ForeignKey("validation_runs.run_id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -79,9 +82,8 @@ class ValidationResultRecord(Base):
     # Results
     details: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
-
-# Index for efficient run-based queries
-Index("idx_validation_results_run", ValidationResultRecord.run_id)
+    # Relationship back to run
+    run: Mapped[ValidationRunRecord] = relationship(back_populates="check_results")
 
 
 __all__ = [

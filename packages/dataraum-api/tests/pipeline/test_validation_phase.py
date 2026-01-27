@@ -130,6 +130,7 @@ class TestValidationPhase:
 
         # Add validation run
         validation_run = ValidationRunRecord(
+            run_id=str(uuid4()),
             table_ids=[table_id],
             table_name="test_table",
             total_checks=5,

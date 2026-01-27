@@ -17,8 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.graph_topology import (
+    GraphStructure,
     analyze_graph_topology,
-    format_graph_structure_for_context,
 )
 from dataraum.analysis.semantic.models import (
     EntityDetection,
@@ -167,7 +167,7 @@ class SemanticAgent(LLMFeature):
             )
 
         # Compute graph topology from relationship candidates
-        graph_topology_context = ""
+        graph_structure: GraphStructure | None = None
         if relationship_candidates:
             # Extract table names from candidates
             table_names_from_candidates = set()
@@ -183,17 +183,15 @@ class SemanticAgent(LLMFeature):
                     table_ids=list(table_names_from_candidates),
                     relationships=relationship_candidates,
                 )
-                graph_topology_context = format_graph_structure_for_context(graph_structure)
 
         context = {
-            "tables_json": json.dumps(tables_json, indent=2),
+            "tables_json": json.dumps(tables_json),
             "ontology_name": ontology,
             "ontology_concepts": self._ontology_loader.format_concepts_for_prompt(ontology_def),
             "relationship_candidates": self._format_relationship_candidates(
-                relationship_candidates
+                relationship_candidates, graph_structure=graph_structure
             ),
             "within_table_correlations": self._format_correlations(correlations),
-            "graph_topology": graph_topology_context,
         }
 
         # Render prompt with system/user split
@@ -365,19 +363,54 @@ class SemanticAgent(LLMFeature):
         except Exception as e:
             return Result.fail(f"Failed to load profiles: {e}")
 
-    def _format_relationship_candidates(self, candidates: list[dict[str, Any]] | None) -> str:
+    def _format_relationship_candidates(
+        self,
+        candidates: list[dict[str, Any]] | None,
+        *,
+        graph_structure: GraphStructure | None = None,
+    ) -> str:
         """Format relationship candidates for the prompt.
 
         Args:
             candidates: List of relationship candidates from analysis/relationships
+            graph_structure: Optional graph topology analysis result.
+                When provided, a compact topology summary is prepended.
 
         Returns:
             Formatted string for the prompt
         """
-        if not candidates:
-            return "No pre-computed relationship candidates available."
+        lines: list[str] = []
 
-        lines = []
+        # Prepend compact topology summary if available
+        if graph_structure is not None:
+            lines.append(
+                f"Topology: {graph_structure.pattern} — {graph_structure.pattern_description}"
+            )
+            role_parts: list[str] = []
+            if graph_structure.hub_tables:
+                role_parts.append(f"hubs: {', '.join(graph_structure.hub_tables)}")
+            if graph_structure.leaf_tables:
+                role_parts.append(f"leaves: {', '.join(graph_structure.leaf_tables)}")
+            if graph_structure.bridge_tables:
+                role_parts.append(f"bridges: {', '.join(graph_structure.bridge_tables)}")
+            if graph_structure.isolated_tables:
+                role_parts.append(f"isolated: {', '.join(graph_structure.isolated_tables)}")
+            if role_parts:
+                lines.append("Roles: " + "; ".join(role_parts))
+            if graph_structure.schema_cycles:
+                cycle_strs = [
+                    " → ".join(c.tables) + " → " + c.tables[0]
+                    for c in graph_structure.schema_cycles[:5]
+                ]
+                lines.append(f"Cycles: {'; '.join(cycle_strs)}")
+            lines.append("")
+
+        if not candidates:
+            lines.append("No pre-computed relationship candidates available.")
+            return "\n".join(lines)
+
+        _MAX_JOIN_COLS = 10
+
         for rel in candidates:
             table1 = rel.get("table1", "?")
             table2 = rel.get("table2", "?")
@@ -398,7 +431,19 @@ class SemanticAgent(LLMFeature):
             if not join_cols:
                 lines.append("  (none detected)")
             else:
-                for jc in join_cols:
+                # Sort by confidence descending, take top N
+                sorted_cols = sorted(
+                    join_cols,
+                    key=lambda jc: jc.get("join_confidence", 0.0),
+                    reverse=True,
+                )
+                total_cols = len(sorted_cols)
+                display_cols = sorted_cols[:_MAX_JOIN_COLS]
+
+                if total_cols > _MAX_JOIN_COLS:
+                    lines.append(f"  (showing top {_MAX_JOIN_COLS} of {total_cols} candidates)")
+
+                for jc in display_cols:
                     col1 = jc.get("column1", "?")
                     col2 = jc.get("column2", "?")
                     join_conf = jc.get("join_confidence", 0.0)
@@ -500,6 +545,21 @@ class SemanticAgent(LLMFeature):
 
         return "\n".join(lines) if lines else "No significant within-table correlations detected."
 
+    @staticmethod
+    def _truncate_sample(value: Any, max_length: int = 100) -> Any:
+        """Truncate a sample value if it exceeds max_length.
+
+        Args:
+            value: Sample value (any type)
+            max_length: Maximum string length before truncation
+
+        Returns:
+            Original value or truncated string
+        """
+        if isinstance(value, str) and len(value) > max_length:
+            return value[:max_length] + "..."
+        return value
+
     def _build_tables_json(
         self, profiles: list[ColumnProfile], samples: dict[str, list[Any]]
     ) -> list[dict[str, Any]]:
@@ -525,13 +585,20 @@ class SemanticAgent(LLMFeature):
                     "columns": [],
                 }
 
-            col_data = {
+            col_data: dict[str, Any] = {
                 "column_name": profile.column_ref.column_name,
-                "null_ratio": round(profile.null_ratio, 4),
                 "distinct_count": profile.distinct_count,
                 "cardinality_ratio": round(profile.cardinality_ratio, 4),  # Helps identify keys
-                "sample_values": samples.get(profile.column_ref.column_name, []),
+                "sample_values": [
+                    self._truncate_sample(v)
+                    for v in samples.get(profile.column_ref.column_name, [])
+                ],
             }
+
+            # Only include null_ratio when non-zero to save tokens
+            null_ratio = round(profile.null_ratio, 4)
+            if null_ratio > 0.0:
+                col_data["null_ratio"] = null_ratio
 
             # Add numeric stats if available
             if profile.numeric_stats:

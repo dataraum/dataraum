@@ -89,10 +89,6 @@ user_prompt: |
   {within_table_correlations}
   </within_table_patterns>
 
-  <graph_topology>
-  {graph_topology}
-  </graph_topology>
-
   Analyze this schema using the analyze_schema tool.
 
 # Input variable definitions
@@ -116,11 +112,6 @@ inputs:
   within_table_correlations:
     description: Within-table correlations (functional dependencies, derived columns)
     required: true
-
-  graph_topology:
-    description: Graph structure analysis from relationship candidates
-    required: false
-    default: ""
 
 # Output is defined by the Pydantic tool schema (SemanticAnalysisOutput)
 # No output_schema needed here since we use tool-based output

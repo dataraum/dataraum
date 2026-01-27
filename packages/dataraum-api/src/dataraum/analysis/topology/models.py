@@ -91,8 +91,7 @@ class TopologicalAnomaly(BaseModel):
 class TopologicalQualityResult(BaseModel):
     """Comprehensive topological quality assessment.
 
-    This is the Pydantic source of truth for topological quality metrics.
-    Gets serialized to TopologicalQualityMetrics.topology_data JSONB field.
+    Computed on-the-fly by the topology analyzer for each table or slice.
     """
 
     table_id: str
@@ -107,20 +106,13 @@ class TopologicalQualityResult(BaseModel):
     # Detected cycles
     persistent_cycles: list[CycleDetection] = Field(default_factory=list)
 
-    # Stability
+    # Stability (populated when comparing slices across time periods)
     stability: StabilityAnalysis | None = None
 
     # Complexity metrics
     structural_complexity: int
     persistent_entropy: float | None = None
     orphaned_components: int
-    complexity_trend: str | None = None
-    complexity_within_bounds: bool = True
-
-    # Historical complexity context
-    complexity_mean: float | None = None
-    complexity_std: float | None = None
-    complexity_z_score: float | None = None
 
     # Quality assessment
     has_anomalies: bool = False

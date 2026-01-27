@@ -57,7 +57,6 @@ def init_database(engine: Engine) -> None:
     from dataraum.analysis.temporal_slicing import (
         db_models as _temporal_slicing_models,  # noqa: F401
     )
-    from dataraum.analysis.topology import db_models as _topology_models  # noqa: F401
     from dataraum.analysis.typing import db_models as _typing_models  # noqa: F401
     from dataraum.analysis.validation import db_models as _validation_models  # noqa: F401
     from dataraum.graphs import db_models as _graphs_models  # noqa: F401
@@ -94,7 +93,6 @@ def reset_database(engine: Engine) -> None:
     from dataraum.analysis.temporal_slicing import (
         db_models as _temporal_slicing_models,  # noqa: F401
     )
-    from dataraum.analysis.topology import db_models as _topology_models  # noqa: F401
     from dataraum.analysis.typing import db_models as _typing_models  # noqa: F401
     from dataraum.analysis.validation import db_models as _validation_models  # noqa: F401
     from dataraum.graphs import db_models as _graphs_models  # noqa: F401

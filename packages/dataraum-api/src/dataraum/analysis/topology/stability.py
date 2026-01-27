@@ -2,17 +2,11 @@
 
 This module provides functions for assessing topological stability:
 - Homological stability (changes between time periods)
-- Historical complexity tracking
 - Bottleneck distance computation
 """
 
-from typing import Any
-
 import numpy as np
-from sqlalchemy import desc, select
-from sqlalchemy.orm import Session
 
-from dataraum.analysis.topology.db_models import TopologicalQualityMetrics
 from dataraum.analysis.topology.models import StabilityAnalysis
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
@@ -63,8 +57,6 @@ def compute_bottleneck_distance(
 
 def assess_homological_stability(
     current_diagrams: list[np.ndarray],
-    table_id: str | None = None,
-    session: Session | None = None,
     previous_diagrams: list[np.ndarray] | None = None,
     threshold: float = 0.1,
 ) -> Result[StabilityAnalysis | None]:
@@ -74,19 +66,13 @@ def assess_homological_stability(
 
     Args:
         current_diagrams: Current persistence diagrams
-        table_id: Table ID (used to fetch previous diagrams if session provided)
-        session: Database session (used to fetch previous diagrams)
-        previous_diagrams: Previous persistence diagrams (overrides database lookup)
+        previous_diagrams: Previous persistence diagrams
         threshold: Distance threshold for stability
 
     Returns:
         Result containing StabilityAnalysis or None if no previous data
     """
     try:
-        # Try to get previous diagrams from database if not provided
-        if previous_diagrams is None and session is not None and table_id is not None:
-            previous_diagrams = get_previous_topology(session, table_id)
-
         # No previous data - return None (first analysis)
         if previous_diagrams is None:
             return Result.ok(None)
@@ -158,137 +144,3 @@ def assess_homological_stability(
 
     except Exception as e:
         return Result.fail(f"Stability assessment failed: {e}")
-
-
-def compute_historical_complexity(
-    session: Session,
-    table_id: str,
-    current_complexity: int,
-    window_size: int = 10,
-) -> Result[dict[str, Any]]:
-    """Compute historical complexity statistics.
-
-    Retrieves past complexity values and computes statistics
-    to contextualize the current complexity.
-
-    Args:
-        session: Database session
-        table_id: Table to analyze
-        current_complexity: Current structural complexity
-        window_size: Number of historical records to consider
-
-    Returns:
-        Result containing dict with mean, std, z_score, trend
-    """
-    try:
-        # Fetch historical complexity values
-        stmt = (
-            select(TopologicalQualityMetrics.structural_complexity)
-            .where(TopologicalQualityMetrics.table_id == table_id)
-            .order_by(desc(TopologicalQualityMetrics.computed_at))
-            .limit(window_size)
-        )
-
-        result = session.execute(stmt)
-        historical_values = [row[0] for row in result.fetchall() if row[0] is not None]
-
-        if len(historical_values) < 3:
-            # Not enough history
-            return Result.ok(
-                {
-                    "mean": None,
-                    "std": None,
-                    "z_score": None,
-                    "trend": None,
-                    "within_bounds": True,
-                }
-            )
-
-        # Compute statistics
-        mean = float(np.mean(historical_values))
-        std = float(np.std(historical_values))
-
-        # Z-score for current value
-        z_score = None
-        if std > 0:
-            z_score = (current_complexity - mean) / std
-
-        # Simple trend detection (linear regression slope)
-        trend = None
-        if len(historical_values) >= 3:
-            x = np.arange(len(historical_values))
-            coeffs = np.polyfit(x, historical_values, 1)
-            slope = coeffs[0]
-            if slope > 0.1:
-                trend = "increasing"
-            elif slope < -0.1:
-                trend = "decreasing"
-            else:
-                trend = "stable"
-
-        # Check if within 2 standard deviations
-        within_bounds = z_score is None or abs(z_score) < 2
-
-        return Result.ok(
-            {
-                "mean": mean,
-                "std": std,
-                "z_score": z_score,
-                "trend": trend,
-                "within_bounds": within_bounds,
-            }
-        )
-
-    except Exception as e:
-        return Result.fail(f"Historical complexity computation failed: {e}")
-
-
-def get_previous_topology(
-    session: Session,
-    table_id: str,
-) -> list[np.ndarray] | None:
-    """Retrieve the most recent previous topology for a table.
-
-    Args:
-        session: Database session
-        table_id: Table to get previous topology for
-
-    Returns:
-        Previous persistence diagrams or None if no history
-    """
-    try:
-        stmt = (
-            select(TopologicalQualityMetrics.topology_data)
-            .where(TopologicalQualityMetrics.table_id == table_id)
-            .order_by(desc(TopologicalQualityMetrics.computed_at))
-            .limit(1)
-        )
-
-        result = session.execute(stmt)
-        row = result.fetchone()
-
-        if row is None or row[0] is None:
-            return None
-
-        topology_data = row[0]
-
-        # Extract persistence diagrams from stored data
-        diagrams_data = topology_data.get("persistence_diagrams", [])
-        if not diagrams_data:
-            return None
-
-        # Convert back to numpy arrays
-        diagrams = []
-        for dgm_dict in diagrams_data:
-            points = dgm_dict.get("points", [])
-            if points:
-                dgm = np.array([[p["birth"], p["death"]] for p in points])
-                diagrams.append(dgm)
-            else:
-                diagrams.append(np.array([]).reshape(0, 2))
-
-        return diagrams if diagrams else None
-
-    except Exception as e:
-        logger.warning(f"Failed to retrieve previous topology: {e}")
-        return None

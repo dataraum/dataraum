@@ -14,15 +14,11 @@ Usage:
         TableTopologyExtractor,
         BettiNumbers,
         TopologicalQualityResult,
-        TopologicalQualityMetrics,
     )
 """
 
 # Analysis functions
 from dataraum.analysis.topology.analyzer import analyze_topological_quality
-
-# DB models
-from dataraum.analysis.topology.db_models import TopologicalQualityMetrics
 
 # Pydantic models
 from dataraum.analysis.topology.models import (
@@ -44,8 +40,6 @@ from dataraum.analysis.topology.tda.extractor import TableTopologyExtractor
 __all__ = [
     # Analysis functions
     "analyze_topological_quality",
-    # DB models
-    "TopologicalQualityMetrics",
     # Pydantic models
     "BettiNumbers",
     "CycleDetection",

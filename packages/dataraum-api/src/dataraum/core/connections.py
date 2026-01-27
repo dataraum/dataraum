@@ -292,7 +292,6 @@ class ConnectionManager:
         from dataraum.analysis.temporal_slicing import (
             db_models as _temp_slice,  # noqa: F401
         )
-        from dataraum.analysis.topology import db_models as _topology  # noqa: F401
         from dataraum.analysis.typing import db_models as _typing  # noqa: F401
         from dataraum.analysis.validation import db_models as _validation  # noqa: F401
         from dataraum.entropy import db_models as _entropy  # noqa: F401

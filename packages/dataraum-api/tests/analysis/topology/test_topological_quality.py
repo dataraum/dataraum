@@ -344,7 +344,7 @@ def test_assess_homological_stability_no_previous(session):
     dgm_0 = np.array([[0.0, 0.5]])
     diagrams = [dgm_0]
 
-    result = assess_homological_stability(diagrams, table_id="test-table", session=session)
+    result = assess_homological_stability(diagrams)
     assert result.success
     assert result.value is None  # No previous data to compare
 
@@ -578,8 +578,6 @@ def test_pydantic_topological_quality_result():
         stability=None,
         structural_complexity=2,
         orphaned_components=0,
-        complexity_trend="stable",
-        complexity_within_bounds=True,
         has_anomalies=False,
         anomalous_cycles=[],
         quality_warnings=[],
@@ -587,5 +585,4 @@ def test_pydantic_topological_quality_result():
     )
     assert result.table_id == "table-1"
     assert result.structural_complexity == 2
-    assert result.complexity_within_bounds
     assert not result.has_anomalies

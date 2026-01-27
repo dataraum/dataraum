@@ -22,11 +22,6 @@ from dataraum.analysis.topology.models import (
     TopologicalAnomaly,
     TopologicalQualityResult,
 )
-from dataraum.analysis.topology.stability import (
-    assess_homological_stability,
-    compute_historical_complexity,
-    get_previous_topology,
-)
 from dataraum.analysis.topology.tda.extractor import TableTopologyExtractor
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
@@ -121,23 +116,7 @@ def analyze_topological_quality(
         cycles_result = detect_persistent_cycles(np_diagrams, min_persistence)
         persistent_cycles = cycles_result.value if cycles_result.success else []
 
-        # Get previous topology for stability assessment
-        previous_diagrams = get_previous_topology(session, table_id)
-
-        # Assess stability
-        stability_result = assess_homological_stability(
-            np_diagrams,
-            previous_diagrams=previous_diagrams,
-            threshold=stability_threshold,
-        )
-        stability = stability_result.value if stability_result.success else None
-
-        # Compute historical complexity statistics
         current_complexity = betti_numbers.total_complexity
-        history_result = compute_historical_complexity(session, table_id, current_complexity)
-        history: dict[str, Any] = (
-            history_result.value if (history_result.success and history_result.value) else {}
-        )
 
         # Detect anomalies
         anomalies = []
@@ -153,22 +132,6 @@ def analyze_topological_quality(
                 )
             )
 
-        # Check for complexity spike
-        z_score = history.get("z_score")
-        if z_score is not None and abs(z_score) > 2:
-            anomalies.append(
-                TopologicalAnomaly(
-                    anomaly_type="complexity_spike",
-                    severity="high" if abs(z_score) > 3 else "medium",
-                    description=f"Complexity is {abs(z_score):.1f} standard deviations from historical mean",
-                    evidence={
-                        "z_score": z_score,
-                        "mean": history.get("mean"),
-                        "std": history.get("std"),
-                    },
-                )
-            )
-
         # Generate topology description
         topology_description = _generate_topology_description(
             betti_numbers, persistent_cycles or [], anomalies
@@ -181,15 +144,9 @@ def analyze_topological_quality(
             betti_numbers=betti_numbers,
             persistence_diagrams=persistence_diagrams or [],
             persistent_cycles=persistent_cycles,
-            stability=stability,
             structural_complexity=current_complexity,
             persistent_entropy=persistent_entropy,
             orphaned_components=betti_numbers.betti_0 - 1 if betti_numbers.betti_0 > 1 else 0,
-            complexity_trend=history.get("trend"),
-            complexity_within_bounds=history.get("within_bounds", True),
-            complexity_mean=history.get("mean"),
-            complexity_std=history.get("std"),
-            complexity_z_score=z_score,
             has_anomalies=len(anomalies) > 0,
             anomalies=anomalies,
             topology_description=topology_description,

@@ -9,6 +9,7 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
+from uuid import uuid4
 
 import duckdb
 from sqlalchemy import select
@@ -161,8 +162,13 @@ class TemporalSliceAnalyzer:
             Result containing the run_id
         """
         try:
+            # Generate run_id upfront — SQLAlchemy column defaults only evaluate at
+            # flush/INSERT time, so reading run.run_id before flush would return None.
+            run_id = str(uuid4())
+
             # Create run record
             run = TemporalSliceRun(
+                run_id=run_id,
                 slice_table_name=result.slice_table_name,
                 time_column=result.time_column,
                 period_start=result.config.period_start,
@@ -175,8 +181,6 @@ class TemporalSliceAnalyzer:
                 config_json=result.config.model_dump(mode="json"),
             )
             self.session.add(run)
-            # UUID is generated client-side, no flush needed
-            run_id = run.run_id
 
             # Persist period analyses
             for period_metric, completeness in zip(

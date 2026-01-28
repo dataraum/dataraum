@@ -3,7 +3,9 @@
 Prioritized backlog for the dataraum-context project. Items are organized by priority and dependency.
 
 **Related Documentation:**
-- [ENTROPY_IMPLEMENTATION_PLAN.md](./ENTROPY_IMPLEMENTATION_PLAN.md) - Implementation roadmap
+- [plans/interface-strategy.md](./plans/interface-strategy.md) - Current plan: Agent testing, HTMX UI, MCP, Jupyter
+- [plans/query-agent-architecture.md](./plans/query-agent-architecture.md) - RAG-based query reuse design
+- [ENTROPY_IMPLEMENTATION_PLAN.md](./ENTROPY_IMPLEMENTATION_PLAN.md) - Entropy system architecture
 - [ENTROPY_MODELS.md](./ENTROPY_MODELS.md) - Data model specifications
 - [ENTROPY_CONTRACTS.md](./ENTROPY_CONTRACTS.md) - Data readiness thresholds
 - [ENTROPY_QUERY_BEHAVIOR.md](./ENTROPY_QUERY_BEHAVIOR.md) - Agent response policies
@@ -302,59 +304,99 @@ The topology module is now consumed by slice analysis phases, not as a standalon
 - [x] `dataraum phases` - List all phases with dependencies
 - [x] Created `docs/CLI.md` documentation
 
-**Step 3.5.5: Pipeline API** (Remaining)
-- [ ] Create `api/routes/pipeline.py` endpoints
-- [ ] Add WebSocket for live progress updates
+**Step 3.5.5: Pipeline API** ✅ COMPLETED 2026-01-22
+- [x] Created `api/routes/pipeline.py` endpoints
+- [x] SSE progress streaming
+- [x] 31 API tests
 
 ---
 
-## Parallel Work Streams
+## Priority 4: Agent Validation & Interfaces (Current Focus)
 
-The following can be worked on **in parallel**:
+> **Plan:** [plans/interface-strategy.md](./plans/interface-strategy.md)
+> **Previous plan archived:** [archive/ui-api-consolidation.md](./archive/ui-api-consolidation.md)
 
-| Stream | Items | Dependencies |
-|--------|-------|--------------|
-| **A: Pipeline** | 3.5.1 → 3.5.2 → 3.5.3 → 3.5.4 | None |
-| **B: API** | 3.3 → 3.4 | None |
-| **C: Config** | 2.5.1 → 2.5.2 | None |
-| **D: UI** | 4.4 | Needs 3.3 (API) |
+### Phase 0: Agent Validation with BookSQL
 
-Recommended parallel execution:
-```
-Stream A: Pipeline orchestrator foundation
-Stream B: API endpoints
-Stream C: Configuration extraction
-─────────────────────────────────────────
-         ↓ (API ready)
-Stream D: UI foundation
-```
+**Step 0.1: Graph Agent Integration Tests**
+- [ ] Verify `build_execution_context()` populates entropy from real BookSQL data
+- [ ] Generate SQL via graph agent, verify valid DuckDB syntax
+- [ ] Test entropy behavior modes (strict/balanced/lenient) against real entropy
+- [ ] Verify assumption tracking in execution metadata
+- [ ] Verify entropy SQL comments
 
----
+**Step 0.2: Query Agent Integration Tests**
+- [ ] End-to-end: `answer_question()` against BookSQL, verify plausible results
+- [ ] Entropy-aware query: verify assumptions for ambiguous columns
+- [ ] Contract evaluation with different contracts (GREEN vs RED)
+- [ ] Auto-contract selection
+- [ ] Query library save/search/reuse cycle
 
-## Priority 4: Phase 4 Graph Agent Completion + UI
+**Step 0.3: Embedding and Library Tests**
+- [ ] Embedding generation from QueryDocument
+- [ ] Vector search: save queries, search, verify ranking
+- [ ] Library persistence and retrieval
+- [ ] Usage tracking
 
-### Step 4.1: Field Mapping with Entropy
+**Step 0.4: Contract Evaluation Against Real Data**
+- [ ] Evaluate all 5 contract profiles against BookSQL entropy
+- [ ] Verify traffic light classifications are sensible
+- [ ] Verify resolution hints are actionable
+
+**Step 0.5: Codify Integration Test Suite**
+- [ ] `tests/integration/conftest.py` with BookSQL fixtures
+- [ ] Skip gracefully when data absent
+- [ ] Mock LLM provider for deterministic tests
+
+### Phase 1: HTMX UI Foundation
+- [ ] Add Jinja2 + static files to FastAPI app
+- [ ] Content negotiation on existing routes (JSON or HTML)
+- [ ] Base template with daisyUI layout
+- [ ] Conversation interface with SSE streaming
+- [ ] `<arrow-table>` web component (regular-table + Arrow JS)
+- [ ] Entropy dashboard (Vega-Lite radar + issues table)
+- [ ] Query agent UI (input, streaming response, results)
+
+### Phase 2a: MCP Server
+- [ ] Create `mcp/server.py` with tool registration
+- [ ] Implement `get_context` tool (wraps `build_execution_context`)
+- [ ] Implement `query` tool (wraps `answer_question`)
+- [ ] Implement `get_metrics` tool (graph listing + entropy)
+- [ ] Implement `annotate` tool (semantic annotation update)
+- [ ] Create `mcp/formatters.py` for LLM-optimized output
+- [ ] Claude Desktop configuration docs
+
+### Phase 2b: Jupyter / Python API
+- [ ] Create `notebook/` module with `Context` class
+- [ ] Entropy accessor: `ctx.entropy.summary()`, `.table()`, `.column()`
+- [ ] Contracts accessor: `ctx.contracts.evaluate()`, `.evaluate_all()`
+- [ ] Query accessor: `ctx.query("...")` returning pandas DataFrame
+- [ ] Library accessor: `ctx.library.search()`, `.list()`
+- [ ] IPython `_repr_html_` methods for rich display
+
+### Phase 3: UI Completion
+- [ ] Schema explorer (Cytoscape.js)
+- [ ] Pipeline monitor (SSE)
+- [ ] Context panel (sidebar)
+- [ ] SQL editor (CodeMirror 6)
+- [ ] Mutations + undo system
+
+### Graph Agent Enhancements (Parallel)
+
+**Step 4.1: Field Mapping with Entropy**
 - [ ] Modify field mapping to prefer lower-entropy columns
 - [ ] Generate warnings for high-entropy field resolutions
 - [ ] Add entropy score to ColumnCandidate
 
-### Step 4.2: Multi-Table Graph Execution
+**Step 4.2: Multi-Table Graph Execution**
 - [ ] Validate join entropy before execution
 - [ ] Flag non-deterministic joins in generated SQL
 - [ ] Track join assumptions in execution metadata
 
-### Step 4.3: Graph Validation
+**Step 4.3: Graph Validation**
 - [ ] Add entropy validation to generated SQL
 - [ ] Flag high-uncertainty calculations
 - [ ] Include entropy context in GraphExecution results
-
-### Step 4.4: UI Foundation
-- [ ] Create `ui/` directory at project root
-- [ ] Migrate web_visualizer from `prototypes/calculation-graphs/`
-- [ ] Convert from npm to bun
-- [ ] Create entropy dashboard component
-- [ ] Create resolution workflow component
-- [ ] Integrate with API endpoints
 
 ---
 

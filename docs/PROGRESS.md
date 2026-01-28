@@ -11,10 +11,17 @@ This file tracks completed work and session notes for the dataraum-context proje
 
 ---
 
-## Current Sprint: Pipeline & Infrastructure
+## Current Sprint: Agent Validation & Interfaces
+
+> **Plan:** [plans/interface-strategy.md](./plans/interface-strategy.md)
 
 ### In Progress
-- [ ] Step 3.5.6: MCP Server
+- [ ] Phase 0: Agent Validation with BookSQL (graph agent, query agent, contracts, library)
+
+### Up Next
+- [ ] Phase 1a: MCP Server (4 tools)
+- [ ] Phase 1b: Jupyter / Python API
+- [ ] Phase 2: HTMX UI Foundation
 
 ### Completed
 - [x] Step 3.5.5: Pipeline API endpoints (2026-01-22)

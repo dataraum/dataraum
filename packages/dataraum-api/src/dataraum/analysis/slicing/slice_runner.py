@@ -537,7 +537,9 @@ def run_temporal_analysis_on_slices(
                 slice_table=slice_info.slice_table_name,
                 total_periods=analysis.total_periods,
                 drift_results_count=len(analysis.drift_results),
-                matrix_entries=len(analysis.slice_time_matrix.data) if analysis.slice_time_matrix else 0,
+                matrix_entries=len(analysis.slice_time_matrix.data)
+                if analysis.slice_time_matrix
+                else 0,
             )
             total_periods = max(total_periods, analysis.total_periods)
             total_incomplete += len([c for c in analysis.completeness_results if not c.is_complete])

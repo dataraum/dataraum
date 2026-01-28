@@ -102,7 +102,9 @@ class TemporalDriftAnalysis(Base):
     )
 
     # Relationship to parent
-    run: Mapped["TemporalSliceRun"] = relationship("TemporalSliceRun", back_populates="drift_analyses")
+    run: Mapped["TemporalSliceRun"] = relationship(
+        "TemporalSliceRun", back_populates="drift_analyses"
+    )
 
     slice_table_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     column_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
@@ -133,7 +135,9 @@ class SliceTimeMatrixEntry(Base):
     )
 
     # Relationship to parent
-    run: Mapped["TemporalSliceRun"] = relationship("TemporalSliceRun", back_populates="matrix_entries")
+    run: Mapped["TemporalSliceRun"] = relationship(
+        "TemporalSliceRun", back_populates="matrix_entries"
+    )
 
     slice_table_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     slice_column: Mapped[str] = mapped_column(String(255), nullable=False, index=True)

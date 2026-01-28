@@ -77,14 +77,14 @@ PIPELINE_CONFIG_PATH = Path(__file__).parent.parent.parent.parent / "config" / "
 
 def load_pipeline_config() -> dict[str, Any]:
     """Load pipeline configuration from YAML file.
-    
+
     Returns:
         Dict with pipeline configuration, empty dict if file not found.
     """
     if not PIPELINE_CONFIG_PATH.exists():
         logger.debug("pipeline_config_not_found", path=str(PIPELINE_CONFIG_PATH))
         return {}
-    
+
     try:
         with open(PIPELINE_CONFIG_PATH) as f:
             config = yaml.safe_load(f) or {}
@@ -97,32 +97,32 @@ def load_pipeline_config() -> dict[str, Any]:
 
 def flatten_pipeline_config(config: dict[str, Any]) -> dict[str, Any]:
     """Flatten nested pipeline config for phase access.
-    
+
     Converts:
         temporal_slice_analysis:
           time_column: "Belegdatum"
           time_grain: monthly
-    
+
     To:
         time_column: "Belegdatum"
         time_grain: monthly
-    
+
     Phase-specific settings override general settings.
     """
     flat: dict[str, Any] = {}
-    
+
     # First, add any top-level non-dict values
     for key, value in config.items():
         if not isinstance(value, dict):
             flat[key] = value
-    
+
     # Then merge nested sections (phase-specific configs)
     for section_name, section_config in config.items():
         if isinstance(section_config, dict):
             for key, value in section_config.items():
                 # Phase-specific overrides general
                 flat[key] = value
-    
+
     return flat
 
 

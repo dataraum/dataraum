@@ -211,18 +211,62 @@ Phase 0 reveals which test scenarios need synthetic data.
 
 ---
 
-## Phase 0: Agent Validation with BookSQL
+## Test Data Strategy
 
-**Goal:** Validate graph agent and query agent end-to-end with real data. Fix
-integration bugs before building any new interface.
+### Small Finance Fixtures
+**Location:** `tests/integration/fixtures/small_finance/`
 
-**Test approach:** SDK-based. Call library functions directly (`answer_question()`,
+Committed to the repo, always available. 5 tables, ~730 rows total:
+
+| Table | Rows | Key Columns |
+|-------|------|-------------|
+| `customers.csv` | 100 | Business Id, Customer name, Balance |
+| `vendors.csv` | 50 | Business Id, Vendor name |
+| `products.csv` | 30 | Product_Service, Rate |
+| `payment_methods.csv` | 10 | Payment method |
+| `transactions.csv` | 500 | Transaction date, Amount, Customer name, Vendor name |
+
+**Temporal columns:** `Transaction date`, `Created date`, `Due date`
+
+**Quality issues (for entropy testing):**
+- `"--"` as null representation (Balance, Customer name, Vendor name)
+- Mixed payment methods
+- Nullable foreign key columns
+
+**Use for:**
+- Fast automated tests (CI pipeline)
+- Mocked LLM tests
+- Real end-to-end testing with LLM
+
+### Configuration
+
+The `config/pipeline.yaml` is pre-configured for small_finance:
+
+```yaml
+temporal:
+  time_column: "Transaction date"
+  time_grain: monthly
+```
+
+---
+
+## Phase 0: Agent Validation
+
+**Goal:** Validate graph agent and query agent end-to-end. Fix integration bugs
+before building any new interface.
+
+**Two-tier approach:**
+
+1. **Mocked tests (Steps 0.1-0.5):** Use small_finance fixtures with mocked LLM.
+   Run in CI, no API keys needed. Tests core logic and data flow.
+
+2. **Real E2E tests (Step 0.6):** Run actual pipeline via CLI with real LLM.
+   Generate databases in `data/` folder. Test agents with real dependencies.
+   Requires API keys, not for CI.
+
+**SDK-based:** Call library functions directly (`answer_question()`,
 `build_execution_context()`, `evaluate_contract()`, etc.) — not through CLI or
 API. The library-first design means SDK tests ARE the core integration tests.
-CLI and API are thin wrappers whose correctness follows trivially.
-
-**Prerequisite:** Pipeline has been run against BookSQL. We test agents against
-the already-analyzed data.
 
 ### Step 0.1: Graph Agent Integration Tests
 
@@ -295,22 +339,88 @@ Create `tests/integration/test_contracts.py`:
 3. **Resolution hints** - Verify resolution suggestions are actionable
    (e.g., "declare null meaning for '--' values")
 
-### Step 0.5: Codify as Test Suite
+### Step 0.5: Mocked Test Suite (CI-Ready)
 
-- All integration tests runnable with `pytest tests/integration/ -v`
-- Tests that require BookSQL data: skip with clear message if symlink broken
-- Tests that require LLM: mock the LLM provider (use fixture responses)
-- Tests should not modify the analyzed database (read-only)
+**Status:** ✅ COMPLETE
+
+Created integration tests using small_finance fixtures with mocked LLM:
+
+- `tests/integration/conftest.py` - Fixtures for harness, mock LLM, vectors DB
+- `tests/integration/test_graph_agent.py` - Context loading, SQL generation
+- `tests/integration/test_query_agent.py` - End-to-end with mocked LLM
+- `tests/integration/test_query_library.py` - Embeddings, save/search cycle
+- `tests/integration/test_contracts.py` - Contract evaluation against real entropy
+
+**Test characteristics:**
+- Run with `pytest tests/integration/ -v`
+- No LLM API keys needed (mocked)
+- Use small_finance data (committed, always available)
+- ~50 tests, run in ~5 minutes
+
+### Step 0.6: Real End-to-End Testing (Manual/Comprehensive)
+
+**Goal:** Validate the full stack with real dependencies: actual LLM, full
+pipeline execution, real entropy detection, real query generation.
+
+**Approach:**
+
+1. **Generate test databases:**
+   ```bash
+   # Create output directory (not committed, gitignored)
+   mkdir -p data/small_finance_output
+
+   # Run pipeline against small_finance
+   # Config is pre-set for "Transaction date" column
+   dataraum run packages/dataraum-api/tests/integration/fixtures/small_finance \
+     --output data/small_finance_output
+
+   # If phases fail, resume from checkpoint (just re-run)
+   dataraum run packages/dataraum-api/tests/integration/fixtures/small_finance \
+     --output data/small_finance_output
+   ```
+
+2. **Test agents against generated data:**
+   ```bash
+   # Query agent with real LLM
+   dataraum query data/small_finance_output \
+     "How many transactions are there?"
+
+   dataraum query data/small_finance_output \
+     "What is the total transaction amount?"
+
+   # Check entropy and contracts
+   dataraum contracts data/small_finance_output
+
+   # Inspect context
+   dataraum inspect data/small_finance_output
+   ```
+
+**Requirements:**
+- LLM API keys configured (e.g., `ANTHROPIC_API_KEY`)
+- Not for CI — manual testing before releases
+- Uses checkpoints for recovery if phases fail
+
+**Validation checklist:**
+- [ ] Pipeline completes all 18 phases (or recovers via checkpoint)
+- [ ] Entropy scores are populated for all columns
+- [ ] Query agent generates valid SQL for simple questions
+- [ ] Query agent reuses library entries on similar questions
+- [ ] Contract evaluation produces sensible traffic lights
+- [ ] Resolution hints are actionable
 
 ### Deliverables
 
-- `tests/integration/conftest.py` - Fixtures for BookSQL connection, session
+**Mocked tests (Step 0.5):** ✅
+- `tests/integration/conftest.py`
 - `tests/integration/test_graph_agent.py`
 - `tests/integration/test_query_agent.py`
 - `tests/integration/test_query_library.py`
 - `tests/integration/test_contracts.py`
-- Bug fixes discovered during integration testing
-- Updated PROGRESS.md
+
+**Real E2E (Step 0.6):**
+- `data/` directory for generated databases (gitignored)
+- Documentation for running real E2E tests
+- Validation checklist in this plan
 
 ---
 

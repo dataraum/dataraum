@@ -16,12 +16,13 @@ This file tracks completed work and session notes for the dataraum-context proje
 > **Plan:** [plans/interface-strategy.md](./plans/interface-strategy.md)
 
 ### In Progress
-- [ ] Phase 0: Agent Validation with BookSQL (graph agent, query agent, contracts, library)
+- [x] Phase 0 Step 0.5: Mocked integration tests (graph agent, query agent, contracts, library)
+- [ ] Phase 0 Step 0.6: Real E2E testing with LLM (manual validation)
 
 ### Up Next
-- [ ] Phase 1a: MCP Server (4 tools)
-- [ ] Phase 1b: Jupyter / Python API
-- [ ] Phase 2: HTMX UI Foundation
+- [ ] Phase 1: HTMX UI Foundation
+- [ ] Phase 2a: MCP Server (4 tools)
+- [ ] Phase 2b: Jupyter / Python API
 
 ### Completed
 - [x] Step 3.5.5: Pipeline API endpoints (2026-01-22)
@@ -54,6 +55,50 @@ This file tracks completed work and session notes for the dataraum-context proje
 ---
 
 ## Session Log
+
+### 2026-01-28 (Session 12)
+
+**Focus:** Phase 0 Agent Validation - Integration Tests
+
+**Completed:**
+1. Rewrote `docs/plans/interface-strategy.md` with UI-first sequencing:
+   - Phase 0: Agent validation (mocked + real E2E)
+   - Phase 1: HTMX UI (content negotiation drives API shape)
+   - Phase 2a/2b: MCP and Jupyter wrap proven endpoints
+   - Removed backward compatibility constraints
+   - Added test data strategy section
+
+2. Created agent integration tests using small_finance fixtures:
+   - `tests/integration/conftest.py` - Extended with agent fixtures, mock LLM, vectors DB
+   - `tests/integration/test_contracts.py` - 13 tests for contract evaluation
+   - `tests/integration/test_graph_agent.py` - 14 tests for context loading, SQL generation
+   - `tests/integration/test_query_agent.py` - 11 tests for end-to-end query flow
+   - `tests/integration/test_query_library.py` - 13 tests for embeddings and library
+
+3. Fixed BACKLOG.md phase numbering to match strategy (UI=Phase 1, MCP/Jupyter=Phase 2)
+
+4. Updated `config/pipeline.yaml`:
+   - Removed hardcoded German temporal column
+   - Added documentation for dataset-specific configuration
+
+**Files Created:**
+- `tests/integration/test_contracts.py` (13 tests)
+- `tests/integration/test_graph_agent.py` (14 tests)
+- `tests/integration/test_query_agent.py` (11 tests)
+- `tests/integration/test_query_library.py` (13 tests)
+
+**Files Modified:**
+- `docs/plans/interface-strategy.md` (major rewrite)
+- `docs/BACKLOG.md` (phase numbering fix)
+- `tests/integration/conftest.py` (extended fixtures)
+- `config/pipeline.yaml` (config cleanup)
+
+**Test Approach:**
+- Mocked tests use small_finance fixtures (committed, CI-ready)
+- Real E2E tests run pipeline via CLI with actual LLM (manual, requires API keys)
+- Tests skip gracefully if BookSQL data absent
+
+---
 
 ### 2026-01-22 (Session 11)
 

@@ -6,21 +6,23 @@ version: "1.0.0"
 
 # Temporal analysis settings
 temporal:
-  # Preferred time column name (auto-detected if not specified)
-  time_column: "Belegdatum der Buchung"
-  
+  # Preferred time column name for temporal analysis.
+  # Small_finance fixture columns: "Transaction date", "Created date", "Due date"
+  # If not specified, auto-detects from columns with date/timestamp types.
+  time_column: "Transaction date"
+
   # Time granularity: daily, weekly, monthly
   time_grain: monthly
-  
+
   # Analysis period (defaults to last year if not specified)
   # period_start: "2025-01-01"
   # period_end: "2025-12-31"
 
-# Temporal slice analysis settings  
+# Temporal slice analysis settings
 temporal_slice_analysis:
   # Override time column for slice analysis (inherits from temporal if not set)
-  # time_column: "Belegdatum der Buchung"
-  
+  # time_column: "Transaction date"
+
   # Bottleneck distance threshold for topology drift detection
   bottleneck_threshold: 0.5
 

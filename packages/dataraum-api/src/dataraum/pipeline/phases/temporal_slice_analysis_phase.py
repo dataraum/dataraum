@@ -152,33 +152,38 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 if temporal_cols:
                     # Find the best temporal column - prefer ones with most data coverage
                     from dataraum.analysis.statistics.db_models import StatisticalProfile
-                    
+
                     best_col = None
                     best_null_ratio = 1.0  # Lower is better
-                    
+
                     for tc in temporal_cols:
                         # Get the column's null ratio from statistical profile
-                        stat_stmt = select(StatisticalProfile).where(
-                            StatisticalProfile.column_id == tc.column_id
-                        ).order_by(StatisticalProfile.profiled_at.desc()).limit(1)
+                        stat_stmt = (
+                            select(StatisticalProfile)
+                            .where(StatisticalProfile.column_id == tc.column_id)
+                            .order_by(StatisticalProfile.profiled_at.desc())
+                            .limit(1)
+                        )
                         stat = (ctx.session.execute(stat_stmt)).scalar_one_or_none()
-                        
-                        null_ratio = stat.null_ratio if stat and stat.null_ratio is not None else 1.0
-                        
+
+                        null_ratio = (
+                            stat.null_ratio if stat and stat.null_ratio is not None else 1.0
+                        )
+
                         col_stmt = select(Column).where(Column.column_id == tc.column_id)
                         col = (ctx.session.execute(col_stmt)).scalar_one_or_none()
-                        
+
                         logger.debug(
                             "temporal_column_candidate",
                             column_name=col.column_name if col else "unknown",
                             null_ratio=null_ratio,
                         )
-                        
+
                         # Prefer column with lowest null ratio (most data)
                         if null_ratio < best_null_ratio:
                             best_null_ratio = null_ratio
                             best_col = col
-                    
+
                     if best_col:
                         time_column = best_col.column_name
                         logger.info(
@@ -228,7 +233,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 Table.source_id == ctx.source_id,
             )
             slice_tables = (ctx.session.execute(slice_tables_stmt)).scalars().all()
-            
+
             logger.info(
                 "slice_tables_found",
                 slice_def_id=slice_def.slice_id,

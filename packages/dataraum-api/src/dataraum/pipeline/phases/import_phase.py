@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+
 from sqlalchemy import select
 
 from dataraum.pipeline.base import PhaseContext, PhaseResult

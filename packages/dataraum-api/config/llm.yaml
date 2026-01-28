@@ -9,10 +9,10 @@ version: "1.0.0"
 providers:
   anthropic:
     api_key_env: ANTHROPIC_API_KEY
-    default_model: claude-sonnet-4-20250514
+    default_model: claude-sonnet-4-5
     models:
-      fast: claude-haiku-4-20250414
-      balanced: claude-sonnet-4-20250514
+      fast: claude-haiku-4-5
+      balanced: claude-sonnet-4-5
 
   openai:
     api_key_env: OPENAI_API_KEY

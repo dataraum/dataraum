@@ -279,6 +279,8 @@ class Pipeline:
                             if phase_result.warnings:
                                 for warning in phase_result.warnings:
                                     logger.warning(f"Phase {name}: {warning}")
+                            # Clear logged_waiting so pending phases log their deps again
+                            self._logged_waiting.clear()
                         elif phase_result.status == PhaseStatus.SKIPPED:
                             self._skipped.add(name)
                             logger.info(f"Phase {name} skipped: {phase_result.error}")

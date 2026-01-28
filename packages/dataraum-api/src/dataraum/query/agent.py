@@ -29,6 +29,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from sqlalchemy import select
+
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.entropy.context import build_entropy_context
@@ -42,6 +44,7 @@ from dataraum.entropy.contracts import (
 from dataraum.graphs.context import build_execution_context, format_context_for_prompt
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import ConversationRequest, Message, ToolDefinition
+from dataraum.storage import Table
 
 from .document import QueryDocument
 from .models import (
@@ -130,11 +133,27 @@ class QueryAgent(LLMFeature):
         execution_id = str(uuid4())
         library_match: LibraryMatch | None = None
 
-        # Build rich context
+        # Filter to only typed tables (these are the tables the LLM should query)
+        typed_table_ids = [
+            t.table_id
+            for t in session.execute(
+                select(Table).where(
+                    Table.table_id.in_(table_ids),
+                    Table.layer == "typed",
+                )
+            )
+            .scalars()
+            .all()
+        ]
+
+        if not typed_table_ids:
+            return Result.fail("No typed tables found. Run the typing phase first.")
+
+        # Build rich context (using only typed tables)
         try:
             execution_context = build_execution_context(
                 session=session,
-                table_ids=table_ids,
+                table_ids=typed_table_ids,
                 duckdb_conn=duckdb_conn,
             )
         except Exception as e:
@@ -487,7 +506,12 @@ class QueryAgent(LLMFeature):
         self,
         execution_context: GraphExecutionContext,
     ) -> dict[str, Any]:
-        """Build schema information for prompt."""
+        """Build schema information for prompt.
+
+        Note: Table names are prefixed with 'typed_' to match the actual
+        DuckDB table names. The context stores base names but DuckDB has
+        layer-prefixed tables (typed_*, raw_*, quarantine_*).
+        """
         tables = []
         for table_ctx in execution_context.tables:
             columns = []
@@ -502,9 +526,12 @@ class QueryAgent(LLMFeature):
                     col_info["business_concept"] = col_ctx.business_concept
                 columns.append(col_info)
 
+            # Use the actual DuckDB table name (typed_ prefix)
+            duckdb_table_name = f"typed_{table_ctx.table_name}"
+
             tables.append(
                 {
-                    "name": table_ctx.table_name,
+                    "name": duckdb_table_name,
                     "row_count": table_ctx.row_count,
                     "columns": columns,
                 }

@@ -148,7 +148,8 @@ class TestQueryAgentSchemaBuilding:
         assert len(schema_info["tables"]) == 1
 
         table = schema_info["tables"][0]
-        assert table["name"] == "orders"
+        # Table name is prefixed with 'typed_' to match DuckDB table names
+        assert table["name"] == "typed_orders"
         assert table["row_count"] == 4
         assert len(table["columns"]) == 4
 
@@ -195,8 +196,9 @@ class TestQueryAgentSchemaBuilding:
 
         assert len(schema_info["tables"]) == 2
         table_names = [t["name"] for t in schema_info["tables"]]
-        assert "customers" in table_names
-        assert "orders" in table_names
+        # Table names are prefixed with 'typed_' to match DuckDB table names
+        assert "typed_customers" in table_names
+        assert "typed_orders" in table_names
 
 
 class TestQueryAgentExecution:

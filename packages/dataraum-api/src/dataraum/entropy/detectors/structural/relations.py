@@ -1,9 +1,11 @@
 """Join path determinism entropy detector.
 
 Measures uncertainty in join paths between tables.
-Multiple paths or no paths indicate higher uncertainty for aggregations.
+Ambiguity (multiple paths to SAME table) indicates higher uncertainty,
+not connectivity (paths to different tables, which is normal star schema).
 """
 
+from collections import defaultdict
 from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
@@ -17,7 +19,10 @@ class JoinPathDeterminismDetector(EntropyDetector):
     Measures whether there's a clear, unambiguous join path between
     the current column's table and other related tables.
 
-    Source: relationships + graph_topology analysis
+    Key insight: Multiple paths to DIFFERENT tables (star schema) = LOW entropy.
+    Multiple paths to the SAME table = HIGH entropy (ambiguous which to use).
+
+    Source: relationships from semantic analysis (LLM-confirmed)
     Scores configurable in config/entropy/thresholds.yaml.
     """
 
@@ -26,10 +31,15 @@ class JoinPathDeterminismDetector(EntropyDetector):
     dimension = "relations"
     sub_dimension = "join_path_determinism"
     required_analyses = ["relationships"]
-    description = "Measures uncertainty in join paths between tables"
+    description = "Measures ambiguity in join paths (not just connectivity)"
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect join path determinism entropy.
+
+        Entropy is based on AMBIGUITY, not connectivity:
+        - Orphan (no relationships): high entropy (can't join)
+        - Star schema (one path per target table): low entropy (deterministic)
+        - Ambiguous (multiple paths to same table): high entropy
 
         Args:
             context: Detector context with relationship analysis results
@@ -37,63 +47,67 @@ class JoinPathDeterminismDetector(EntropyDetector):
         Returns:
             List with single EntropyObject for join path determinism
         """
-        # Load configuration
         config = get_entropy_config()
         detector_config = config.detector("join_path")
 
-        # Get configurable scores and thresholds
+        # Configurable scores
         score_orphan = detector_config.get("score_orphan", 0.9)
-        score_single = detector_config.get("score_single", 0.1)
-        score_few = detector_config.get("score_few", 0.4)
-        score_multiple = detector_config.get("score_multiple", 0.7)
-        few_path_max = detector_config.get("few_path_max", 3)
+        score_deterministic = detector_config.get("score_deterministic", 0.1)
+        score_ambiguous = detector_config.get("score_ambiguous", 0.7)
         reduction_declare_rel = detector_config.get("reduction_declare_relationship", 0.8)
         reduction_preferred = detector_config.get("reduction_declare_preferred_path", 0.5)
 
-        relationships = context.get_analysis("relationships", {})
+        relationships = context.get_analysis("relationships", [])
 
-        # Extract relationship information
-        # Can be a list of Relationship objects or dicts
+        # Handle different input formats
         if isinstance(relationships, dict):
             rels = relationships.get("relationships", [])
-            outgoing = relationships.get("outgoing_count", 0)
-            incoming = relationships.get("incoming_count", 0)
         elif isinstance(relationships, list):
             rels = relationships
-            outgoing = len([r for r in rels if self._is_outgoing(r, context.table_name)])
-            incoming = len([r for r in rels if self._is_incoming(r, context.table_name)])
         else:
             rels = []
-            outgoing = 0
-            incoming = 0
 
-        total_paths = outgoing + incoming
+        # Group relationships by target table to detect ambiguity
+        # For this column, check paths TO other tables (outgoing)
+        # and paths FROM other tables (incoming)
+        paths_to_table: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
-        # Calculate entropy based on path count using configurable scores
-        if total_paths == 0:
-            # No relationships - orphan table
+        for rel in rels:
+            from_table = self._get_table(rel, "from_table")
+            to_table = self._get_table(rel, "to_table")
+
+            if from_table == context.table_name and to_table:
+                # Outgoing relationship
+                paths_to_table[to_table].append(rel)
+            elif to_table == context.table_name and from_table:
+                # Incoming relationship
+                paths_to_table[from_table].append(rel)
+
+        # Analyze ambiguity
+        total_connections = len(paths_to_table)  # Number of distinct tables connected
+        ambiguous_tables = [t for t, paths in paths_to_table.items() if len(paths) > 1]
+
+        # Determine score based on ambiguity, not connectivity
+        if total_connections == 0:
+            # No relationships - orphan
             score = score_orphan
             path_status = "orphan"
-        elif total_paths == 1:
-            # Single clear path - deterministic
-            score = score_single
-            path_status = "single"
-        elif total_paths <= few_path_max:
-            # Few paths - some ambiguity
-            score = score_few
-            path_status = "few"
+        elif ambiguous_tables:
+            # Multiple paths to at least one table - ambiguous
+            score = score_ambiguous
+            path_status = "ambiguous"
         else:
-            # Multiple paths - high ambiguity
-            score = score_multiple
-            path_status = "multiple"
+            # Each connected table has exactly one path - deterministic (star schema OK)
+            score = score_deterministic
+            path_status = "deterministic"
 
         # Build evidence
         evidence = [
             {
                 "path_status": path_status,
-                "outgoing_relationships": outgoing,
-                "incoming_relationships": incoming,
-                "total_paths": total_paths,
+                "connected_tables": total_connections,
+                "ambiguous_tables": ambiguous_tables,
+                "relationships_per_table": {t: len(p) for t, p in paths_to_table.items()},
             }
         ]
 
@@ -104,25 +118,23 @@ class JoinPathDeterminismDetector(EntropyDetector):
             resolution_options.append(
                 ResolutionOption(
                     action="declare_relationship",
-                    parameters={
-                        "table": context.table_name,
-                        "type": "foreign_key",
-                    },
+                    parameters={"table": context.table_name, "type": "foreign_key"},
                     expected_entropy_reduction=reduction_declare_rel,
                     effort="medium",
                     description="Declare a relationship to connect this table to the schema",
                 )
             )
-        elif path_status == "multiple":
+        elif path_status == "ambiguous":
             resolution_options.append(
                 ResolutionOption(
                     action="declare_preferred_path",
                     parameters={
                         "table": context.table_name,
+                        "ambiguous_targets": ambiguous_tables,
                     },
                     expected_entropy_reduction=reduction_preferred,
                     effort="low",
-                    description="Specify the preferred join path for aggregations",
+                    description=f"Specify preferred join path for: {', '.join(ambiguous_tables)}",
                 )
             )
 
@@ -135,18 +147,12 @@ class JoinPathDeterminismDetector(EntropyDetector):
             )
         ]
 
-    def _is_outgoing(self, rel: Any, table_name: str) -> bool:
-        """Check if relationship is outgoing from table."""
-        if hasattr(rel, "from_table"):
-            return bool(rel.from_table == table_name)
+    def _get_table(self, rel: Any, field: str) -> str | None:
+        """Get table name from relationship."""
+        if hasattr(rel, field):
+            value = getattr(rel, field)
+            return str(value) if value is not None else None
         if isinstance(rel, dict):
-            return rel.get("from_table") == table_name
-        return False
-
-    def _is_incoming(self, rel: Any, table_name: str) -> bool:
-        """Check if relationship is incoming to table."""
-        if hasattr(rel, "to_table"):
-            return bool(rel.to_table == table_name)
-        if isinstance(rel, dict):
-            return rel.get("to_table") == table_name
-        return False
+            value = rel.get(field)
+            return str(value) if value is not None else None
+        return None

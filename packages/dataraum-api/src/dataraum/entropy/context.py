@@ -1,8 +1,7 @@
 """Entropy context builder for graph execution integration.
 
 This module provides the bridge between:
-- Database (loads analysis results)
-- EntropyProcessor (computes entropy)
+- Database (loads stored entropy from entropy_objects table)
 - GraphExecutionContext (consumes entropy data)
 
 Usage:
@@ -16,6 +15,9 @@ Usage:
         session, table_ids,
         interpreter=interpreter,  # EntropyInterpreter instance
     )
+
+Note: Entropy must be computed by the pipeline first (entropy phase).
+This module only loads pre-computed entropy from the database.
 """
 
 from __future__ import annotations
@@ -26,7 +28,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
-from dataraum.entropy.detectors import register_builtin_detectors
 from dataraum.entropy.interpretation import (
     InterpretationInput,
 )
@@ -36,7 +37,6 @@ from dataraum.entropy.models import (
     RelationshipEntropyProfile,
     TableEntropyProfile,
 )
-from dataraum.entropy.processor import EntropyProcessor
 
 if TYPE_CHECKING:
     from dataraum.entropy.interpretation import EntropyInterpreter
@@ -49,71 +49,167 @@ def build_entropy_context(
     table_ids: list[str],
     *,
     interpreter: EntropyInterpreter | None = None,
-    use_fallback_interpretation: bool = True,
 ) -> EntropyContext:
     """Build entropy context for the given tables.
 
-    Loads analysis results from the database and runs entropy detectors
-    to produce a complete EntropyContext.
+    Loads entropy data from the database (entropy_objects table).
+    Raises an error if no entropy data exists - run the entropy phase first.
 
     Args:
         session: SQLAlchemy session
         table_ids: List of table IDs to process
         interpreter: Optional EntropyInterpreter for LLM-powered interpretation.
             If provided, generates interpretations for each column.
-        use_fallback_interpretation: If True and interpreter fails or is None,
-            generate basic fallback interpretations. Default True.
 
     Returns:
         EntropyContext with column, table, and relationship entropy profiles
+
+    Raises:
+        ValueError: If no entropy data exists for the given tables.
     """
     if not table_ids:
         return EntropyContext()
 
-    # Ensure builtin detectors are registered
-    register_builtin_detectors()
+    # Load from database - this is the only source of truth
+    entropy_context = _load_entropy_from_db(session, table_ids)
+    if entropy_context is None:
+        raise ValueError(
+            "No entropy data found in database. Run the entropy pipeline phase first: "
+            "`dataraum run <source> --phase entropy`"
+        )
 
-    # Load all analysis data needed for entropy detection
+    logger.debug("Loaded entropy context from database")
+
+    # Load analysis data for relationship entropy and interpretations
     analysis_data = _load_analysis_data(session, table_ids)
 
-    # Create processor and process tables
-    processor = EntropyProcessor()
-    table_profiles: list[TableEntropyProfile] = []
-
-    for table_id in table_ids:
-        table_data = analysis_data.get(table_id)
-        if not table_data:
-            continue
-
-        table_name = table_data["table_name"]
-        columns = table_data["columns"]
-
-        # Process each column
-        table_profile = processor.process_table(
-            table_name=table_name,
-            columns=columns,
-            table_id=table_id,
-        )
-        table_profiles.append(table_profile)
-
-    # Build the entropy context
-    entropy_context = processor.build_entropy_context(table_profiles)
-
-    # Add relationship entropy
+    # Compute relationship entropy (fast operation using stored relationships)
     relationship_profiles = _compute_relationship_entropy(session, table_ids, analysis_data)
     entropy_context.relationship_profiles = relationship_profiles
 
-    # Generate interpretations if requested
-    if interpreter is not None or use_fallback_interpretation:
+    # Load interpretations if interpreter provided
+    if interpreter is not None:
         _build_interpretations(
             session=session,
             entropy_context=entropy_context,
             analysis_data=analysis_data,
             interpreter=interpreter,
-            use_fallback=use_fallback_interpretation,
         )
 
     return entropy_context
+
+
+def _load_entropy_from_db(
+    session: Session,
+    table_ids: list[str],
+) -> EntropyContext | None:
+    """Load entropy context from database if data exists.
+
+    Args:
+        session: SQLAlchemy session
+        table_ids: List of table IDs
+
+    Returns:
+        EntropyContext if data exists, None otherwise
+    """
+    from collections import defaultdict
+
+    from dataraum.entropy.db_models import EntropyObjectRecord
+    from dataraum.storage import Column, Table
+
+    # Check if any entropy objects exist for these tables
+    count_stmt = (
+        select(EntropyObjectRecord).where(EntropyObjectRecord.table_id.in_(table_ids)).limit(1)
+    )
+    if session.execute(count_stmt).scalar_one_or_none() is None:
+        return None
+
+    # Load all entropy objects for these tables
+    stmt = select(EntropyObjectRecord).where(EntropyObjectRecord.table_id.in_(table_ids))
+    entropy_records = session.execute(stmt).scalars().all()
+
+    # Load table and column info for building keys
+    tables = session.execute(select(Table).where(Table.table_id.in_(table_ids))).scalars().all()
+    table_map = {t.table_id: t for t in tables}
+
+    columns = session.execute(select(Column).where(Column.table_id.in_(table_ids))).scalars().all()
+    column_map = {c.column_id: c for c in columns}
+
+    # Group entropy records by column
+    records_by_column: dict[str, list[EntropyObjectRecord]] = defaultdict(list)
+    for record in entropy_records:
+        if record.column_id:
+            records_by_column[record.column_id].append(record)
+
+    # Build column profiles
+    column_profiles: dict[str, ColumnEntropyProfile] = {}
+
+    for column_id, records in records_by_column.items():
+        col = column_map.get(column_id)
+        if not col:
+            continue
+        table = table_map.get(col.table_id)
+        if not table:
+            continue
+
+        key = f"{table.table_name}.{col.column_name}"
+
+        # Build dimension scores from records
+        dimension_scores: dict[str, float] = {}
+        for record in records:
+            dim_path = f"{record.layer}.{record.dimension}.{record.sub_dimension}"
+            dimension_scores[dim_path] = record.score
+
+        # Calculate layer-level scores
+        structural_scores = [s for p, s in dimension_scores.items() if p.startswith("structural.")]
+        semantic_scores = [s for p, s in dimension_scores.items() if p.startswith("semantic.")]
+        value_scores = [s for p, s in dimension_scores.items() if p.startswith("value.")]
+        computational_scores = [
+            s for p, s in dimension_scores.items() if p.startswith("computational.")
+        ]
+
+        profile = ColumnEntropyProfile(
+            table_name=table.table_name,
+            column_name=col.column_name,
+            column_id=column_id,
+            dimension_scores=dimension_scores,
+            structural_entropy=sum(structural_scores) / len(structural_scores)
+            if structural_scores
+            else 0.0,
+            semantic_entropy=sum(semantic_scores) / len(semantic_scores)
+            if semantic_scores
+            else 0.0,
+            value_entropy=sum(value_scores) / len(value_scores) if value_scores else 0.0,
+            computational_entropy=sum(computational_scores) / len(computational_scores)
+            if computational_scores
+            else 0.0,
+        )
+        profile.calculate_composite()
+        column_profiles[key] = profile
+
+    # Build table profiles
+    table_profiles: dict[str, TableEntropyProfile] = {}
+    columns_by_table: dict[str, list[ColumnEntropyProfile]] = defaultdict(list)
+
+    for key, profile in column_profiles.items():
+        columns_by_table[profile.table_name].append(profile)
+
+    for table_name, col_profiles in columns_by_table.items():
+        table_profile = TableEntropyProfile(
+            table_name=table_name,
+            column_profiles=col_profiles,
+        )
+        table_profile.calculate_aggregates()
+        table_profiles[table_name] = table_profile
+
+    # Build context
+    context = EntropyContext(
+        column_profiles=column_profiles,
+        table_profiles=table_profiles,
+    )
+    context.update_summary_stats()
+
+    return context
 
 
 def _load_analysis_data(
@@ -196,15 +292,37 @@ def _load_analysis_data(
         for derived in session.execute(derived_stmt).scalars().all():
             derived_columns[derived.derived_column_id] = derived
 
-    # Load relationships for table-level counts
+    # Load LLM-confirmed relationships (not raw candidates) for join path entropy
     rel_stmt = select(Relationship).where(
-        (Relationship.from_table_id.in_(table_ids)) | (Relationship.to_table_id.in_(table_ids))
+        ((Relationship.from_table_id.in_(table_ids)) | (Relationship.to_table_id.in_(table_ids)))
+        & (Relationship.detection_method == "llm")
     )
     relationships = session.execute(rel_stmt).scalars().all()
-    rel_count_by_table: dict[str, int] = {}
+
+    # Build table_id -> table_name mapping
+    table_names_map: dict[str, str] = {t.table_id: t.table_name for t in tables}
+
+    # Build relationships by column with full context for join path determinism
+    relationships_by_column: dict[str, list[dict[str, Any]]] = {}
     for rel in relationships:
-        rel_count_by_table[rel.from_table_id] = rel_count_by_table.get(rel.from_table_id, 0) + 1
-        rel_count_by_table[rel.to_table_id] = rel_count_by_table.get(rel.to_table_id, 0) + 1
+        from_table = table_names_map.get(rel.from_table_id, "unknown")
+        to_table = table_names_map.get(rel.to_table_id, "unknown")
+
+        rel_dict: dict[str, Any] = {
+            "relationship_type": rel.relationship_type,
+            "confidence": rel.confidence,
+            "detection_method": rel.detection_method,
+            "from_table": from_table,
+            "to_table": to_table,
+            "cardinality": rel.cardinality,
+        }
+
+        if rel.from_column_id not in relationships_by_column:
+            relationships_by_column[rel.from_column_id] = []
+        relationships_by_column[rel.from_column_id].append(rel_dict)
+        if rel.to_column_id not in relationships_by_column:
+            relationships_by_column[rel.to_column_id] = []
+        relationships_by_column[rel.to_column_id].append(rel_dict)
 
     # Build result structure
     result: dict[str, Any] = {}
@@ -273,13 +391,9 @@ def _load_analysis_data(
                     ]
                 }
 
-            # Relationships (for this table)
-            rel_count = rel_count_by_table.get(table_id, 0)
-            analysis_results["relationships"] = {
-                "outgoing_count": rel_count // 2,  # Rough split
-                "incoming_count": rel_count - rel_count // 2,
-                "relationships": [],  # Detailed relationships not needed for count
-            }
+            # Relationships (already formatted with table names for join path entropy)
+            if col.column_id in relationships_by_column:
+                analysis_results["relationships"] = relationships_by_column[col.column_id]
 
             column_data.append(
                 {
@@ -464,8 +578,7 @@ def _build_interpretations(
     session: Session,
     entropy_context: EntropyContext,
     analysis_data: dict[str, Any],
-    interpreter: EntropyInterpreter | None,
-    use_fallback: bool,
+    interpreter: EntropyInterpreter,
 ) -> None:
     """Build LLM interpretations for all column profiles in a single batch.
 
@@ -473,8 +586,7 @@ def _build_interpretations(
         session: SQLAlchemy session
         entropy_context: The entropy context to populate with interpretations
         analysis_data: Pre-loaded analysis data (for type/description info)
-        interpreter: Optional EntropyInterpreter for LLM interpretation
-        use_fallback: Whether to use fallback when LLM fails/unavailable
+        interpreter: EntropyInterpreter for LLM interpretation
     """
     # Build lookup for analysis data by column key
     column_analysis: dict[str, dict[str, Any]] = {}
@@ -521,14 +633,13 @@ def _build_interpretations(
     if not inputs:
         return
 
-    # Try batch LLM interpretation
+    # Batch LLM interpretation
     interpretations: dict[str, Any] = {}
-    if interpreter is not None:
-        result = interpreter.interpret_batch(session, inputs)
-        if result.success and result.value:
-            interpretations = result.value
-        elif result.error:
-            logger.warning("Batch LLM interpretation failed: %s", result.error)
+    result = interpreter.interpret_batch(session, inputs)
+    if result.success and result.value:
+        interpretations = result.value
+    elif result.error:
+        logger.warning("Batch LLM interpretation failed: %s", result.error)
 
     # Apply interpretations to profiles (no fallback - LLM or nothing)
     for key, _input_data in zip(input_keys, inputs, strict=True):

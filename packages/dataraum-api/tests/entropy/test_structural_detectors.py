@@ -120,13 +120,9 @@ class TestJoinPathDeterminismDetector:
             table_name="orders",
             column_name="customer_id",
             analysis_results={
-                "relationships": {
-                    "relationships": [
-                        {"from_table": "orders", "to_table": "customers"},
-                    ],
-                    "outgoing_count": 1,
-                    "incoming_count": 0,
-                }
+                "relationships": [
+                    {"from_table": "orders", "to_table": "customers"},
+                ]
             },
         )
 
@@ -134,20 +130,14 @@ class TestJoinPathDeterminismDetector:
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.1, abs=0.01)
-        assert results[0].evidence[0]["path_status"] == "single"
+        assert results[0].evidence[0]["path_status"] == "deterministic"
 
     def test_no_paths_orphan(self, detector: JoinPathDeterminismDetector):
         """Test high entropy for orphan table with no paths."""
         context = DetectorContext(
             table_name="isolated",
             column_name="id",
-            analysis_results={
-                "relationships": {
-                    "relationships": [],
-                    "outgoing_count": 0,
-                    "incoming_count": 0,
-                }
-            },
+            analysis_results={"relationships": []},
         )
 
         results = detector.detect(context)
@@ -159,43 +149,18 @@ class TestJoinPathDeterminismDetector:
         actions = [opt.action for opt in results[0].resolution_options]
         assert "declare_relationship" in actions
 
-    def test_multiple_paths(self, detector: JoinPathDeterminismDetector):
-        """Test high entropy for multiple join paths."""
+    def test_star_schema_deterministic(self, detector: JoinPathDeterminismDetector):
+        """Test LOW entropy for star schema (multiple paths to DIFFERENT tables)."""
+        # Fact table connecting to multiple dimension tables = deterministic, not ambiguous
         context = DetectorContext(
             table_name="transactions",
             column_name="id",
             analysis_results={
-                "relationships": {
-                    "relationships": [
-                        {"from_table": "transactions", "to_table": "orders"},
-                        {"from_table": "transactions", "to_table": "customers"},
-                        {"from_table": "transactions", "to_table": "products"},
-                        {"from_table": "payments", "to_table": "transactions"},
-                    ],
-                    "outgoing_count": 3,
-                    "incoming_count": 1,
-                }
-            },
-        )
-
-        results = detector.detect(context)
-
-        assert len(results) == 1
-        assert results[0].score == pytest.approx(0.7, abs=0.01)
-        assert results[0].evidence[0]["path_status"] == "multiple"
-        # Should suggest preferred path
-        actions = [opt.action for opt in results[0].resolution_options]
-        assert "declare_preferred_path" in actions
-
-    def test_few_paths(self, detector: JoinPathDeterminismDetector):
-        """Test medium entropy for few paths."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="id",
-            analysis_results={
                 "relationships": [
-                    {"from_table": "orders", "to_table": "customers"},
-                    {"from_table": "line_items", "to_table": "orders"},
+                    {"from_table": "transactions", "to_table": "orders"},
+                    {"from_table": "transactions", "to_table": "customers"},
+                    {"from_table": "transactions", "to_table": "products"},
+                    {"from_table": "payments", "to_table": "transactions"},
                 ]
             },
         )
@@ -203,8 +168,55 @@ class TestJoinPathDeterminismDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
-        assert results[0].score == pytest.approx(0.4, abs=0.01)
-        assert results[0].evidence[0]["path_status"] == "few"
+        # Star schema = low entropy (each target table has one path)
+        assert results[0].score == pytest.approx(0.1, abs=0.01)
+        assert results[0].evidence[0]["path_status"] == "deterministic"
+        assert results[0].evidence[0]["connected_tables"] == 4
+
+    def test_ambiguous_multiple_paths_same_table(self, detector: JoinPathDeterminismDetector):
+        """Test HIGH entropy for multiple paths to SAME table (ambiguous)."""
+        # Two different ways to join orders -> customers = ambiguous
+        context = DetectorContext(
+            table_name="orders",
+            column_name="id",
+            analysis_results={
+                "relationships": [
+                    {"from_table": "orders", "to_table": "customers"},  # via customer_id
+                    {"from_table": "orders", "to_table": "customers"},  # via billing_customer_id
+                ]
+            },
+        )
+
+        results = detector.detect(context)
+
+        assert len(results) == 1
+        assert results[0].score == pytest.approx(0.7, abs=0.01)
+        assert results[0].evidence[0]["path_status"] == "ambiguous"
+        assert "customers" in results[0].evidence[0]["ambiguous_tables"]
+        # Should suggest preferred path
+        actions = [opt.action for opt in results[0].resolution_options]
+        assert "declare_preferred_path" in actions
+
+    def test_mixed_deterministic_and_ambiguous(self, detector: JoinPathDeterminismDetector):
+        """Test HIGH entropy when ANY table has multiple paths."""
+        context = DetectorContext(
+            table_name="orders",
+            column_name="id",
+            analysis_results={
+                "relationships": [
+                    {"from_table": "orders", "to_table": "customers"},
+                    {"from_table": "orders", "to_table": "customers"},  # Ambiguous!
+                    {"from_table": "orders", "to_table": "products"},  # Single path OK
+                ]
+            },
+        )
+
+        results = detector.detect(context)
+
+        assert len(results) == 1
+        # Any ambiguity = high entropy
+        assert results[0].score == pytest.approx(0.7, abs=0.01)
+        assert results[0].evidence[0]["path_status"] == "ambiguous"
 
     def test_detector_properties(self, detector: JoinPathDeterminismDetector):
         """Test detector has correct properties."""

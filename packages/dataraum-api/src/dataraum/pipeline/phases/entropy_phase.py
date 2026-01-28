@@ -136,22 +136,42 @@ class EntropyPhase(BasePhase):
         for ann in (ctx.session.execute(sem_stmt)).scalars().all():
             semantic_annotations[ann.column_id] = ann
 
-        # Load relationships (for structural entropy)
+        # Load LLM-confirmed relationships (for structural entropy)
+        # Only use relationships finalized by the semantic agent, not raw candidates
         relationships_stmt = select(Relationship).where(
-            (Relationship.from_column_id.in_(column_ids))
-            | (Relationship.to_column_id.in_(column_ids))
+            (
+                (Relationship.from_column_id.in_(column_ids))
+                | (Relationship.to_column_id.in_(column_ids))
+            )
+            & (Relationship.detection_method == "llm")
         )
         relationships = (ctx.session.execute(relationships_stmt)).scalars().all()
 
-        # Build relationships by column
-        relationships_by_column: dict[str, list[Relationship]] = {}
+        # Build table_id -> table_name mapping for relationship context
+        table_names: dict[str, str] = {t.table_id: t.table_name for t in typed_tables}
+
+        # Build relationships by column with table name context
+        relationships_by_column: dict[str, list[dict[str, Any]]] = {}
         for rel in relationships:
+            # Resolve table names
+            from_table = table_names.get(rel.from_table_id, "unknown")
+            to_table = table_names.get(rel.to_table_id, "unknown")
+
+            rel_dict: dict[str, Any] = {
+                "relationship_type": rel.relationship_type,
+                "confidence": rel.confidence,
+                "detection_method": rel.detection_method,
+                "from_table": from_table,
+                "to_table": to_table,
+                "cardinality": rel.cardinality,
+            }
+
             if rel.from_column_id not in relationships_by_column:
                 relationships_by_column[rel.from_column_id] = []
-            relationships_by_column[rel.from_column_id].append(rel)
+            relationships_by_column[rel.from_column_id].append(rel_dict)
             if rel.to_column_id not in relationships_by_column:
                 relationships_by_column[rel.to_column_id] = []
-            relationships_by_column[rel.to_column_id].append(rel)
+            relationships_by_column[rel.to_column_id].append(rel_dict)
 
         # Load derived columns (for computational entropy)
         derived_stmt = select(DerivedColumn).where(DerivedColumn.derived_column_id.in_(column_ids))
@@ -214,17 +234,9 @@ class EntropyPhase(BasePhase):
                         "business_description": sa.business_description,
                     }
 
-                # Add relationship info
+                # Add relationship info (already formatted as dicts with table names)
                 if col.column_id in relationships_by_column:
-                    rels = relationships_by_column[col.column_id]
-                    analysis_results["relationships"] = [
-                        {
-                            "relationship_type": r.relationship_type,
-                            "confidence": r.confidence,
-                            "detection_method": r.detection_method,
-                        }
-                        for r in rels
-                    ]
+                    analysis_results["relationships"] = relationships_by_column[col.column_id]
 
                 # Add derived column info
                 if col.column_id in derived_columns:
@@ -254,24 +266,34 @@ class EntropyPhase(BasePhase):
 
             # Persist entropy records
             for col_profile in table_profile.column_profiles:
-                # Persist each EntropyObject
-                for dim_path, score in col_profile.dimension_scores.items():
-                    # Split dimension path: layer.dimension.sub_dimension
-                    parts = dim_path.split(".")
-                    layer = parts[0] if len(parts) > 0 else "unknown"
-                    dimension = parts[1] if len(parts) > 1 else "unknown"
-                    sub_dimension = parts[2] if len(parts) > 2 else "unknown"
+                # Persist each EntropyObject with full evidence
+                for entropy_obj in col_profile.entropy_objects:
+                    # Serialize resolution options to dicts
+                    resolution_dicts = [
+                        {
+                            "action": opt.action,
+                            "parameters": opt.parameters,
+                            "expected_entropy_reduction": opt.expected_entropy_reduction,
+                            "effort": opt.effort,
+                            "description": opt.description,
+                            "cascade_dimensions": opt.cascade_dimensions,
+                        }
+                        for opt in entropy_obj.resolution_options
+                    ]
 
                     record = EntropyObjectRecord(
                         source_id=ctx.source_id,
                         table_id=table.table_id,
                         column_id=col_profile.column_id,
-                        target=f"column:{table.table_name}.{col_profile.column_name}",
-                        layer=layer,
-                        dimension=dimension,
-                        sub_dimension=sub_dimension,
-                        score=score,
-                        detector_id="entropy_phase",
+                        target=entropy_obj.target,
+                        layer=entropy_obj.layer,
+                        dimension=entropy_obj.dimension,
+                        sub_dimension=entropy_obj.sub_dimension,
+                        score=entropy_obj.score,
+                        confidence=entropy_obj.confidence,
+                        evidence=entropy_obj.evidence,
+                        resolution_options=resolution_dicts if resolution_dicts else None,
+                        detector_id=entropy_obj.detector_id,
                     )
                     ctx.session.add(record)
                     total_entropy_objects += 1

@@ -172,6 +172,9 @@ class ColumnEntropyProfile:
     dimension_scores: dict[str, float] = field(default_factory=dict)
     # e.g., {"structural.types.type_fidelity": 0.3, "semantic.units.unit_declared": 0.8}
 
+    # Raw entropy objects (for persistence with evidence)
+    entropy_objects: list[EntropyObject] = field(default_factory=list)
+
     # High-entropy dimensions (score > 0.5)
     high_entropy_dimensions: list[str] = field(default_factory=list)
 

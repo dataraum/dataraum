@@ -216,15 +216,14 @@ class TestEntropyContextInterpretations:
 class TestBuildEntropyContextWithInterpretation:
     """Tests for build_entropy_context with interpretation support."""
 
-    def test_fallback_interpretation_disabled(
+    def test_no_interpreter_means_no_interpretations(
         self,
         mock_session: MockSession,  # noqa: F821
     ) -> None:
-        """When use_fallback_interpretation=False, no interpretations generated."""
+        """When no interpreter is provided, no interpretations are generated."""
         context = build_entropy_context(
             mock_session,  # type: ignore
             [],
-            use_fallback_interpretation=False,
         )
 
         assert isinstance(context, EntropyContext)

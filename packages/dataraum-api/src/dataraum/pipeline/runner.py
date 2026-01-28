@@ -321,18 +321,10 @@ def run(config: RunConfig) -> Result[RunResult]:
         an exception during setup. Check RunResult.success for pipeline outcome.
         Warnings contain any phase failure messages.
     """
-    start_time = time.time()
-    source_id = str(uuid4())
-    warnings: list[str] = []
+    from dataraum.storage import Source
 
-    logger.info(
-        "pipeline_run_started",
-        source_path=str(config.source_path),
-        output_dir=str(config.output_dir),
-        source_id=source_id,
-        target_phase=config.target_phase,
-        skip_llm=config.skip_llm,
-    )
+    start_time = time.time()
+    warnings: list[str] = []
 
     try:
         # Setup connection manager
@@ -340,6 +332,37 @@ def run(config: RunConfig) -> Result[RunResult]:
         conn_config = ConnectionConfig.for_directory(config.output_dir)
         manager = ConnectionManager(conn_config)
         manager.initialize()
+
+        # Check for existing source with same name
+        source_name = config.source_name or config.source_path.stem
+        with manager.session_scope() as session:
+            existing_source = session.execute(
+                select(Source).where(Source.name == source_name)
+            ).scalar_one_or_none()
+
+            if existing_source:
+                source_id = existing_source.source_id
+                logger.info(
+                    "using_existing_source",
+                    source_name=source_name,
+                    source_id=source_id,
+                )
+            else:
+                source_id = str(uuid4())
+                logger.info(
+                    "creating_new_source",
+                    source_name=source_name,
+                    source_id=source_id,
+                )
+
+        logger.info(
+            "pipeline_run_started",
+            source_path=str(config.source_path),
+            output_dir=str(config.output_dir),
+            source_id=source_id,
+            target_phase=config.target_phase,
+            skip_llm=config.skip_llm,
+        )
 
         # Create pipeline
         pipeline = create_pipeline(config)

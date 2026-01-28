@@ -294,6 +294,7 @@ class EntropyProcessor:
             column_id=column_id,
             column_name=column_name,
             table_name=table_name,
+            entropy_objects=entropy_objects,  # Store raw objects for persistence
         )
 
         # Group by layer and calculate layer scores

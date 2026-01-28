@@ -30,16 +30,23 @@ sql_hints: >
   Look for date columns (transaction_date, posting_date, date, etc.).
   Check semantic annotations for entity_type: date, or semantic_role: temporal.
 
-  Analyze the date range and distribution:
-  1. Find min and max dates to determine the fiscal period
-  2. Count distinct days with transactions
-  3. Calculate expected vs actual coverage
-  4. Identify any gaps > max_gap_days
+  Generate a single SELECT query (no CTEs with VALUES clauses) that:
+  1. Find MIN and MAX dates from the actual data
+  2. Count distinct days with transactions as actual_days
+  3. Calculate expected_days as the difference between max and min dates + 1
+  4. Calculate missing_days as expected_days - actual_days
   5. Count transactions outside fiscal year boundaries
 
-  Return: period_start, period_end, expected_days, actual_days,
-  missing_days, late_transactions (after period end),
-  early_transactions (before period start), is_complete.
+  IMPORTANT: Do NOT use VALUES clauses or CTEs that define static data.
+  Calculate all metrics directly from the source table.
+
+  Return these exact columns:
+  - period_start (DATE): MIN date found
+  - period_end (DATE): MAX date found  
+  - expected_days (INTEGER): calculated as (period_end - period_start) + 1
+  - actual_days (INTEGER): COUNT(DISTINCT date_column)
+  - missing_days (INTEGER): expected_days - actual_days
+  - is_complete (BOOLEAN): missing_days <= max_gap_days parameter
 
 expected_outcome: >
   A complete fiscal period with:

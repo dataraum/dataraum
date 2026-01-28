@@ -27,8 +27,10 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
+import yaml
 from sqlalchemy import select
 
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
@@ -68,6 +70,60 @@ DEFAULT_JUNK_COLUMNS = [
     "column0",
     "column00",
 ]
+
+# Path to pipeline configuration file
+PIPELINE_CONFIG_PATH = Path(__file__).parent.parent.parent.parent / "config" / "pipeline.yaml"
+
+
+def load_pipeline_config() -> dict[str, Any]:
+    """Load pipeline configuration from YAML file.
+    
+    Returns:
+        Dict with pipeline configuration, empty dict if file not found.
+    """
+    if not PIPELINE_CONFIG_PATH.exists():
+        logger.debug("pipeline_config_not_found", path=str(PIPELINE_CONFIG_PATH))
+        return {}
+    
+    try:
+        with open(PIPELINE_CONFIG_PATH) as f:
+            config = yaml.safe_load(f) or {}
+        logger.info("pipeline_config_loaded", path=str(PIPELINE_CONFIG_PATH))
+        return config
+    except Exception as e:
+        logger.warning("pipeline_config_load_error", error=str(e))
+        return {}
+
+
+def flatten_pipeline_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Flatten nested pipeline config for phase access.
+    
+    Converts:
+        temporal_slice_analysis:
+          time_column: "Belegdatum"
+          time_grain: monthly
+    
+    To:
+        time_column: "Belegdatum"
+        time_grain: monthly
+    
+    Phase-specific settings override general settings.
+    """
+    flat: dict[str, Any] = {}
+    
+    # First, add any top-level non-dict values
+    for key, value in config.items():
+        if not isinstance(value, dict):
+            flat[key] = value
+    
+    # Then merge nested sections (phase-specific configs)
+    for section_name, section_config in config.items():
+        if isinstance(section_config, dict):
+            for key, value in section_config.items():
+                # Phase-specific overrides general
+                flat[key] = value
+    
+    return flat
 
 
 @dataclass
@@ -288,8 +344,13 @@ def run(config: RunConfig) -> Result[RunResult]:
         # Create pipeline
         pipeline = create_pipeline(config)
 
-        # Build run configuration
+        # Load pipeline configuration from YAML
+        pipeline_yaml_config = load_pipeline_config()
+        flat_config = flatten_pipeline_config(pipeline_yaml_config)
+
+        # Build run configuration - merge YAML config with runtime overrides
         run_config = {
+            **flat_config,  # YAML config as base
             "source_path": str(config.source_path),
             "source_name": config.source_name or config.source_path.stem,
             "junk_columns": config.junk_columns,

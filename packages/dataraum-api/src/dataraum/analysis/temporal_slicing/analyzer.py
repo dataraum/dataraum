@@ -180,9 +180,8 @@ class TemporalSliceAnalyzer:
                 drift_detected=result.drift_detected,
                 config_json=result.config.model_dump(mode="json"),
             )
-            self.session.add(run)
 
-            # Persist period analyses
+            # Persist period analyses - use relationship for proper FK ordering
             for period_metric, completeness in zip(
                 result.period_metrics, result.completeness_results, strict=False
             ):
@@ -197,7 +196,6 @@ class TemporalSliceAnalyzer:
                 )
 
                 analysis = TemporalSliceAnalysis(
-                    run_id=run_id,
                     slice_table_name=result.slice_table_name,
                     time_column=result.time_column,
                     period_label=period_metric.period_label,
@@ -222,12 +220,11 @@ class TemporalSliceAnalyzer:
                     issues_json=completeness.issues
                     + (volume_anomaly.issues if volume_anomaly else []),
                 )
-                self.session.add(analysis)
+                run.analyses.append(analysis)
 
-            # Persist drift analyses
+            # Persist drift analyses - use relationship for proper FK ordering
             for drift in result.drift_results:
                 drift_record = TemporalDriftAnalysis(
-                    run_id=run_id,
                     slice_table_name=result.slice_table_name,
                     column_name=drift.column_name,
                     period_label=drift.period_label,
@@ -239,14 +236,13 @@ class TemporalSliceAnalyzer:
                     has_significant_drift=drift.has_significant_drift,
                     has_category_changes=drift.has_category_changes,
                 )
-                self.session.add(drift_record)
+                run.drift_analyses.append(drift_record)
 
-            # Persist slice-time matrix
+            # Persist slice-time matrix - use relationship for proper FK ordering
             if result.slice_time_matrix:
                 for _slice_value, periods in result.slice_time_matrix.data.items():
                     for _period_label, cell in periods.items():
                         entry = SliceTimeMatrixEntry(
-                            run_id=run_id,
                             slice_table_name=result.slice_table_name,
                             slice_column=result.slice_time_matrix.slice_column,
                             slice_value=cell.slice_value,
@@ -254,7 +250,10 @@ class TemporalSliceAnalyzer:
                             row_count=cell.row_count,
                             period_over_period_change=cell.period_over_period_change,
                         )
-                        self.session.add(entry)
+                        run.matrix_entries.append(entry)
+
+            # Add the run with all children - SQLAlchemy handles FK ordering
+            self.session.add(run)
 
             # Note: commit handled by session_scope() in caller
             return Result.ok(run_id)

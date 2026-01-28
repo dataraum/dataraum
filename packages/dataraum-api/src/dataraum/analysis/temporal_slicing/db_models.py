@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Index, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dataraum.storage.base import Base
 
@@ -36,6 +36,17 @@ class TemporalSliceRun(Base):
     # Full config
     config_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
+    # Relationships - allows SQLAlchemy to handle FK ordering automatically
+    analyses: Mapped[list["TemporalSliceAnalysis"]] = relationship(
+        "TemporalSliceAnalysis", back_populates="run", cascade="all, delete-orphan"
+    )
+    drift_analyses: Mapped[list["TemporalDriftAnalysis"]] = relationship(
+        "TemporalDriftAnalysis", back_populates="run", cascade="all, delete-orphan"
+    )
+    matrix_entries: Mapped[list["SliceTimeMatrixEntry"]] = relationship(
+        "SliceTimeMatrixEntry", back_populates="run", cascade="all, delete-orphan"
+    )
+
 
 class TemporalSliceAnalysis(Base):
     """Stores temporal analysis results for a slice table."""
@@ -46,6 +57,10 @@ class TemporalSliceAnalysis(Base):
     run_id: Mapped[str] = mapped_column(
         ForeignKey("temporal_slice_runs.run_id", ondelete="CASCADE"), nullable=False, index=True
     )
+
+    # Relationship to parent
+    run: Mapped["TemporalSliceRun"] = relationship("TemporalSliceRun", back_populates="analyses")
+
     slice_table_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     time_column: Mapped[str] = mapped_column(String(255), nullable=False)
 
@@ -85,6 +100,10 @@ class TemporalDriftAnalysis(Base):
     run_id: Mapped[str] = mapped_column(
         ForeignKey("temporal_slice_runs.run_id", ondelete="CASCADE"), nullable=False, index=True
     )
+
+    # Relationship to parent
+    run: Mapped["TemporalSliceRun"] = relationship("TemporalSliceRun", back_populates="drift_analyses")
+
     slice_table_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     column_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     period_label: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
@@ -112,6 +131,10 @@ class SliceTimeMatrixEntry(Base):
     run_id: Mapped[str] = mapped_column(
         ForeignKey("temporal_slice_runs.run_id", ondelete="CASCADE"), nullable=False, index=True
     )
+
+    # Relationship to parent
+    run: Mapped["TemporalSliceRun"] = relationship("TemporalSliceRun", back_populates="matrix_entries")
+
     slice_table_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     slice_column: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
 

@@ -16,11 +16,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
     from dataraum.analysis.semantic.agent import SemanticAgent
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -508,6 +511,15 @@ def run_temporal_analysis_on_slices(
             time_grain=grain,
         )
 
+        logger.info(
+            "analyzing_slice",
+            slice_table=slice_info.slice_table_name,
+            slice_column=slice_info.slice_column_name,
+            time_column=time_column,
+            period_start=str(period_start),
+            period_end=str(period_end),
+        )
+
         result = analyze_temporal_slices(
             duckdb_conn=duckdb_conn,
             session=session,
@@ -520,11 +532,23 @@ def run_temporal_analysis_on_slices(
         if result.success and result.value is not None:
             slices_analyzed += 1
             analysis = result.value
+            logger.info(
+                "slice_analysis_complete",
+                slice_table=slice_info.slice_table_name,
+                total_periods=analysis.total_periods,
+                drift_results_count=len(analysis.drift_results),
+                matrix_entries=len(analysis.slice_time_matrix.data) if analysis.slice_time_matrix else 0,
+            )
             total_periods = max(total_periods, analysis.total_periods)
             total_incomplete += len([c for c in analysis.completeness_results if not c.is_complete])
             total_anomalies += len([v for v in analysis.volume_anomalies if v.is_anomaly])
             total_drift += len([d for d in analysis.drift_results if d.has_significant_drift])
         else:
+            logger.warning(
+                "slice_analysis_failed",
+                slice_table=slice_info.slice_table_name,
+                error=result.error,
+            )
             errors.append(f"{slice_info.slice_table_name}: {result.error}")
 
     return TemporalSlicesResult(

@@ -435,51 +435,72 @@ class GraphAgent(LLMFeature):
             warnings=execution.entropy_warnings,
         )
 
-        # Execute each step
+        # Execute each step, creating temp views for intermediate results
+        # Note: duckdb_conn is actually a cursor (from ConnectionManager.duckdb_cursor())
+        # Temp views on a cursor are isolated to that cursor, so no naming conflicts
+        # with concurrent executions. LLM-generated SQL can reference steps directly
+        # by their step_id (e.g., "SELECT * FROM step_1").
         step_values: dict[str, Any] = {}
+        created_views: list[str] = []
 
-        for step_info in generated_code.steps:
-            step_id = step_info.get("step_id", "unknown")
-            sql = step_info.get("sql", "")
-
-            # Prepend entropy comments to first step only
-            if step_info == generated_code.steps[0] and entropy_comments:
-                sql_with_comments = entropy_comments + sql
-            else:
-                sql_with_comments = sql
-
-            try:
-                result = context.duckdb_conn.execute(sql).fetchone()
-                value = result[0] if result else None
-                step_values[step_id] = value
-
-                # Create step result (store original SQL with comments for tracing)
-                step_result = StepResult(
-                    step_id=step_id,
-                    level=1,  # All generated steps are level 1 for now
-                    step_type=StepType.FORMULA,
-                    source_query=sql_with_comments,
-                    inputs_used={"sql": sql},
-                )
-
-                if isinstance(value, (int, float)):
-                    step_result.value_scalar = float(value)
-                elif isinstance(value, bool):
-                    step_result.value_boolean = value
-                elif isinstance(value, str):
-                    step_result.value_string = value
-
-                execution.step_results.append(step_result)
-
-            except Exception as e:
-                return Result.fail(f"Step {step_id} failed: {e}")
-
-        # Execute final SQL
         try:
-            final_result = context.duckdb_conn.execute(generated_code.final_sql).fetchone()
-            execution.output_value = final_result[0] if final_result else None
-        except Exception as e:
-            return Result.fail(f"Final SQL failed: {e}")
+            for step_info in generated_code.steps:
+                step_id = step_info.get("step_id", "unknown")
+                sql = step_info.get("sql", "")
+
+                # Prepend entropy comments to first step only
+                if step_info == generated_code.steps[0] and entropy_comments:
+                    sql_with_comments = entropy_comments + sql
+                else:
+                    sql_with_comments = sql
+
+                try:
+                    # Create a temp view using step_id as the view name
+                    # This allows subsequent steps to reference it directly (e.g., FROM step_1)
+                    view_sql = f"CREATE OR REPLACE TEMP VIEW {step_id} AS {sql}"
+                    context.duckdb_conn.execute(view_sql)
+                    created_views.append(step_id)
+
+                    # Execute the view to get the result
+                    result = context.duckdb_conn.execute(f"SELECT * FROM {step_id}").fetchone()
+                    value = result[0] if result else None
+                    step_values[step_id] = value
+
+                    # Create step result (store original SQL with comments for tracing)
+                    step_result = StepResult(
+                        step_id=step_id,
+                        level=1,  # All generated steps are level 1 for now
+                        step_type=StepType.FORMULA,
+                        source_query=sql_with_comments,
+                        inputs_used={"sql": sql, "view_name": step_id},
+                    )
+
+                    if isinstance(value, (int, float)):
+                        step_result.value_scalar = float(value)
+                    elif isinstance(value, bool):
+                        step_result.value_boolean = value
+                    elif isinstance(value, str):
+                        step_result.value_string = value
+
+                    execution.step_results.append(step_result)
+
+                except Exception as e:
+                    return Result.fail(f"Step {step_id} failed: {e}")
+
+            # Execute final SQL (references step views directly by step_id)
+            try:
+                final_result = context.duckdb_conn.execute(generated_code.final_sql).fetchone()
+                execution.output_value = final_result[0] if final_result else None
+            except Exception as e:
+                return Result.fail(f"Final SQL failed: {e}")
+
+        finally:
+            # Clean up temporary views
+            for view_name in created_views:
+                try:
+                    context.duckdb_conn.execute(f"DROP VIEW IF EXISTS {view_name}")
+                except Exception:
+                    pass  # Ignore cleanup errors
 
         # Add interpretation if available
         if graph.interpretation and execution.output_value is not None:

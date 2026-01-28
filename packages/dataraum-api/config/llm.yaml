@@ -70,9 +70,9 @@ features:
 
   entropy_interpretation:
     enabled: true
-    model_tier: balanced  # Sonnet for quality reasoning on assumptions
+    model_tier: balanced # Sonnet for quality reasoning on assumptions
     prompt_file: prompts/entropy_interpretation.yaml
-    batch_size: 5  # Smaller batches for reliability
+    batch_size: 8 # Smaller batches for reliability
     description: >
       Interpret entropy metrics to generate contextual assumptions,
       resolution actions, and explanations. Replaces hardcoded

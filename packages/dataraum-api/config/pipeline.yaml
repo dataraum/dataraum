@@ -1,0 +1,33 @@
+# Pipeline Configuration
+#
+# Phase-specific settings for the data profiling pipeline.
+
+version: "1.0.0"
+
+# Temporal analysis settings
+temporal:
+  # Preferred time column name (auto-detected if not specified)
+  time_column: "Belegdatum der Buchung"
+  
+  # Time granularity: daily, weekly, monthly
+  time_grain: monthly
+  
+  # Analysis period (defaults to last year if not specified)
+  # period_start: "2025-01-01"
+  # period_end: "2025-12-31"
+
+# Temporal slice analysis settings  
+temporal_slice_analysis:
+  # Override time column for slice analysis (inherits from temporal if not set)
+  # time_column: "Belegdatum der Buchung"
+  
+  # Bottleneck distance threshold for topology drift detection
+  bottleneck_threshold: 0.5
+
+# Slicing settings
+slicing:
+  # Maximum distinct values for a column to be considered for slicing
+  max_cardinality: 20
+  
+  # Minimum rows per slice
+  min_slice_rows: 10

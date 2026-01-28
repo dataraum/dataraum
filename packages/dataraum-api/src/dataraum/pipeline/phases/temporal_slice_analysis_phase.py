@@ -150,11 +150,42 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 temporal_cols = (ctx.session.execute(temp_stmt)).scalars().all()
 
                 if temporal_cols:
-                    # Find the best temporal column (prefer date/timestamp types)
-                    col_stmt = select(Column).where(Column.column_id == temporal_cols[0].column_id)
-                    best_col = (ctx.session.execute(col_stmt)).scalar_one_or_none()
+                    # Find the best temporal column - prefer ones with most data coverage
+                    from dataraum.analysis.statistics.db_models import StatisticalProfile
+                    
+                    best_col = None
+                    best_null_ratio = 1.0  # Lower is better
+                    
+                    for tc in temporal_cols:
+                        # Get the column's null ratio from statistical profile
+                        stat_stmt = select(StatisticalProfile).where(
+                            StatisticalProfile.column_id == tc.column_id
+                        ).order_by(StatisticalProfile.profiled_at.desc()).limit(1)
+                        stat = (ctx.session.execute(stat_stmt)).scalar_one_or_none()
+                        
+                        null_ratio = stat.null_ratio if stat and stat.null_ratio is not None else 1.0
+                        
+                        col_stmt = select(Column).where(Column.column_id == tc.column_id)
+                        col = (ctx.session.execute(col_stmt)).scalar_one_or_none()
+                        
+                        logger.debug(
+                            "temporal_column_candidate",
+                            column_name=col.column_name if col else "unknown",
+                            null_ratio=null_ratio,
+                        )
+                        
+                        # Prefer column with lowest null ratio (most data)
+                        if null_ratio < best_null_ratio:
+                            best_null_ratio = null_ratio
+                            best_col = col
+                    
                     if best_col:
                         time_column = best_col.column_name
+                        logger.info(
+                            "selected_temporal_column",
+                            column_name=time_column,
+                            null_ratio=best_null_ratio,
+                        )
 
         if not time_column:
             return PhaseResult.success(
@@ -197,6 +228,13 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 Table.source_id == ctx.source_id,
             )
             slice_tables = (ctx.session.execute(slice_tables_stmt)).scalars().all()
+            
+            logger.info(
+                "slice_tables_found",
+                slice_def_id=slice_def.slice_id,
+                slice_tables_count=len(slice_tables),
+                slice_table_names=[t.table_name for t in slice_tables],
+            )
 
             # Build slice info list
             slice_infos = []
@@ -205,6 +243,13 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 # by matching the naming convention
                 slice_column_stmt = select(Column).where(Column.column_id == slice_def.column_id)
                 slice_col = (ctx.session.execute(slice_column_stmt)).scalar_one_or_none()
+
+                logger.debug(
+                    "checking_slice_table_match",
+                    slice_table=st.table_name,
+                    slice_column=slice_col.column_name if slice_col else None,
+                    matches=slice_col and slice_col.column_name.lower() in st.table_name.lower(),
+                )
 
                 if slice_col and slice_col.column_name.lower() in st.table_name.lower():
                     # Find source table for this slice
@@ -225,7 +270,19 @@ class TemporalSliceAnalysisPhase(BasePhase):
                         )
                     )
 
+            logger.info(
+                "slice_infos_built",
+                slice_def_id=slice_def.slice_id,
+                slice_infos_count=len(slice_infos),
+                slice_info_tables=[si.slice_table_name for si in slice_infos],
+            )
+
             if not slice_infos:
+                logger.warning(
+                    "no_slice_infos_matched",
+                    slice_def_id=slice_def.slice_id,
+                    slice_column_id=slice_def.column_id,
+                )
                 continue
 
             # 1. Run temporal analysis on slices

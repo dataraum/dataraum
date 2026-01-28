@@ -13,19 +13,38 @@ system_prompt: |
   <capabilities>
   - Understand natural language questions about data
   - Map question concepts to database columns using semantic annotations
-  - Generate valid DuckDB SQL with CTEs for complex queries
+  - Generate standalone SQL for each step (executed as temp views)
   - Track assumptions made when data has uncertainty
   - Provide validation notes for potential issues
   </capabilities>
 
   <sql_guidelines>
   - Generate only valid DuckDB SQL syntax
-  - Use CTEs (WITH clauses) for multi-step transformations
+  - Break complex queries into logical steps (each becomes a temp view)
   - Quote column names with special characters using double quotes
   - Use appropriate aggregations (SUM, AVG, COUNT, MIN, MAX)
   - Handle NULL values appropriately
   - Limit results to reasonable sizes (default: 1000 rows)
   </sql_guidelines>
+
+  <reserved_words>
+  NEVER use SQL reserved words as column aliases:
+  - CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP, DATE, TIME, YEAR, MONTH, DAY
+  - Use descriptive alternatives: current_date_value, calculation_date, period_days
+  </reserved_words>
+
+  <step_execution_model>
+  CRITICAL - How steps are executed:
+  1. Each step's SQL becomes a temp view: CREATE TEMP VIEW <step_id> AS <sql>
+  2. Steps execute sequentially, each creating a named view
+  3. Final SQL references these views by step_id
+
+  Therefore:
+  - Step SQL must be STANDALONE (executable independently)
+  - Step SQL must NOT contain WITH clauses or reference other steps
+  - Step SQL should return a result set that final_sql will use
+  - Final SQL combines step results, not redefine them
+  </step_execution_model>
 
   <assumption_tracking>
   When data has uncertainty (high entropy), document assumptions:
@@ -68,14 +87,44 @@ user_prompt: |
   {entropy_warnings}
   </data_quality>
 
+  <similar_queries>
+  {similar_queries}
+  </similar_queries>
+
   <instructions>
   1. Write a brief summary (one sentence) describing what this query answers
   2. Restate the question to show your understanding
   3. Identify the metric type (scalar, table, time_series, comparison)
   4. Map question concepts to actual columns using semantic annotations
-  5. Generate SQL that answers the question
-  6. Document any assumptions made due to data uncertainty
-  7. Note any validation concerns
+  5. Break the query into logical steps (each becomes a temp view)
+  6. Generate final SQL that combines step results
+  7. Document any assumptions made due to data uncertainty
+  8. Note any validation concerns
+
+  STEP FORMAT REQUIREMENTS:
+  - Each step SQL must be standalone (no WITH clauses, no step references)
+  - Each step returns a result accessible via: SELECT * FROM <step_id>
+  - Step IDs must be valid SQL identifiers (no spaces, no reserved words)
+
+  FINAL SQL REQUIREMENTS:
+  - Reference step results via: SELECT ... FROM step_1 JOIN step_2 ...
+  - OR use subqueries: SELECT (SELECT value FROM step_1) / (SELECT value FROM step_2)
+  - Do NOT redefine step logic with CTEs
+
+  EXAMPLE:
+  steps:
+    - step_id: "monthly_revenue"
+      sql: "SELECT DATE_TRUNC('month', \"Date\") as month, SUM(\"Amount\") as revenue FROM typed_sales GROUP BY 1"
+    - step_id: "monthly_costs"
+      sql: "SELECT DATE_TRUNC('month', \"Date\") as month, SUM(\"Cost\") as cost FROM typed_expenses GROUP BY 1"
+
+  final_sql: "SELECT r.month, r.revenue, c.cost, r.revenue - c.cost as profit FROM monthly_revenue r JOIN monthly_costs c ON r.month = c.month ORDER BY r.month"
+
+  SIMILAR QUERIES:
+  If similar queries are provided above, use them as inspiration:
+  - Reuse step patterns that worked for similar questions
+  - Adapt column mappings from similar queries
+  - Note: Don't copy blindly - adapt to the current question
 
   IMPORTANT:
   - The summary should be a complete sentence describing what the query calculates,
@@ -83,7 +132,6 @@ user_prompt: |
   - Use column names exactly as they appear in the schema
   - If a concept isn't directly available, check business_concept annotations
   - If currency/units are uncertain, document the assumption
-  - If temporal granularity is unclear, document the assumption
   </instructions>
 
   Use the analyze_query tool to provide the SQL and your analysis.
@@ -111,3 +159,9 @@ inputs:
     required: false
     default: "No data quality warnings."
     description: "Data quality warnings and entropy scores"
+
+  similar_queries:
+    type: "string"
+    required: false
+    default: ""
+    description: "Similar queries from library as inspiration (JSON array of query documents)"

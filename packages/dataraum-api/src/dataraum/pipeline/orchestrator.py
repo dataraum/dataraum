@@ -431,6 +431,7 @@ class Pipeline:
                         previous_outputs=previous_outputs,
                         config=run_config,
                         session_factory=manager.session_scope,
+                        manager=manager,
                     )
 
                     # Check if should skip

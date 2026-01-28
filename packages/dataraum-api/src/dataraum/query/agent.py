@@ -224,11 +224,25 @@ class QueryAgent(LLMFeature):
 
         # Generate SQL using LLM if no library match
         if analysis_output is None:
+            # Search for similar queries as inspiration (lower threshold than reuse)
+            similar_queries: list[dict[str, Any]] = []
+            if manager and source_id:
+                inspiration_matches = self._search_library_for_inspiration(
+                    session=session,
+                    manager=manager,
+                    question=question,
+                    source_id=source_id,
+                    limit=3,
+                    min_similarity=0.5,
+                )
+                similar_queries = [m.to_context() for m in inspiration_matches]
+
             gen_result = self._generate_query(
                 question=question,
                 execution_id=execution_id,
                 execution_context=execution_context,
                 entropy_context=entropy_context,
+                similar_queries=similar_queries if similar_queries else None,
             )
 
             if not gen_result.success or not gen_result.value:
@@ -246,11 +260,19 @@ class QueryAgent(LLMFeature):
 
             analysis_output = gen_result.value
 
-        # Execute the generated SQL
-        exec_result = self._execute_query(
-            sql=analysis_output.final_sql,
-            duckdb_conn=duckdb_conn,
-        )
+        # Execute with step-by-step model (if steps exist) or simple execution
+        if analysis_output.steps:
+            exec_result = self._execute_with_steps(
+                analysis_output=analysis_output,
+                duckdb_conn=duckdb_conn,
+                execution_context=execution_context,
+            )
+        else:
+            # Fallback for queries without steps
+            exec_result = self._execute_query(
+                sql=analysis_output.final_sql,
+                duckdb_conn=duckdb_conn,
+            )
 
         data: list[dict[str, Any]] | None = None
         columns: list[str] | None = None
@@ -351,6 +373,7 @@ class QueryAgent(LLMFeature):
         execution_id: str,
         execution_context: GraphExecutionContext,
         entropy_context: EntropyContext | None,
+        similar_queries: list[dict[str, Any]] | None = None,
     ) -> Result[QueryAnalysisOutput]:
         """Use LLM to analyze question and generate SQL."""
         # Build schema information
@@ -366,12 +389,18 @@ class QueryAgent(LLMFeature):
 
             entropy_warnings = format_entropy_for_prompt(execution_context)
 
+        # Format similar queries for RAG inspiration
+        similar_queries_str = ""
+        if similar_queries:
+            similar_queries_str = json.dumps(similar_queries, indent=2)
+
         # Build prompt context
         prompt_context = {
             "question": question,
             "schema_info": json.dumps(schema_info, indent=2),
             "dataset_context": context_str,
             "entropy_warnings": entropy_warnings or "No data quality warnings.",
+            "similar_queries": similar_queries_str,
         }
 
         # Render prompt
@@ -660,3 +689,200 @@ class QueryAgent(LLMFeature):
             confidence_level=confidence_level.value,
             contract_name=contract,
         )
+
+    def _search_library_for_inspiration(
+        self,
+        session: Session,
+        manager: ConnectionManager,
+        question: str,
+        source_id: str,
+        limit: int = 3,
+        min_similarity: float = 0.5,
+    ) -> list[LibraryMatch]:
+        """Search the query library for similar queries as inspiration.
+
+        Unlike _search_library which finds exact reuse candidates,
+        this returns multiple lower-threshold matches for RAG inspiration.
+
+        Args:
+            session: SQLAlchemy session
+            manager: ConnectionManager with vectors
+            question: Question to search for
+            source_id: Source ID to filter by
+            limit: Maximum number of matches
+            min_similarity: Minimum similarity threshold (lower than reuse)
+
+        Returns:
+            List of LibraryMatch for inspiration
+        """
+        from dataraum.query.library import QueryLibrary
+
+        try:
+            library = QueryLibrary(session, manager)
+            return library.find_similar_all(
+                question=question,
+                source_id=source_id,
+                min_similarity=min_similarity,
+                limit=limit,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to search library for inspiration: {e}")
+            return []
+
+    def _execute_with_steps(
+        self,
+        analysis_output: QueryAnalysisOutput,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        execution_context: GraphExecutionContext,
+    ) -> Result[tuple[list[str], list[dict[str, Any]]]]:
+        """Execute query with step-by-step temp view creation.
+
+        Similar to GraphAgent execution model:
+        1. Create temp view for each step
+        2. Execute final_sql that references the views
+        3. Repair SQL on failure (up to 2 attempts)
+
+        Args:
+            analysis_output: Generated query analysis with steps
+            duckdb_conn: DuckDB connection
+            execution_context: Context for schema info (used in repair)
+
+        Returns:
+            Result with (columns, data) on success
+        """
+        created_views: list[str] = []
+        max_repair_attempts = 2
+
+        try:
+            # Execute each step as a temp view
+            for step in analysis_output.steps:
+                step_id = step.step_id
+                current_sql = step.sql
+                last_error: str | None = None
+
+                for attempt in range(max_repair_attempts + 1):
+                    try:
+                        view_sql = f"CREATE OR REPLACE TEMP VIEW {step_id} AS {current_sql}"
+                        duckdb_conn.execute(view_sql)
+                        created_views.append(step_id)
+                        break
+                    except Exception as e:
+                        last_error = str(e)
+                        if attempt < max_repair_attempts:
+                            logger.info(
+                                f"Step '{step_id}' failed (attempt {attempt + 1}), attempting repair: {e}"
+                            )
+                            repair_result = self._repair_sql(
+                                failed_sql=current_sql,
+                                error_message=str(e),
+                                step_description=step.description,
+                                execution_context=execution_context,
+                            )
+                            if repair_result.success and repair_result.value:
+                                current_sql = repair_result.value
+                                logger.info(f"Repaired SQL for step '{step_id}'")
+                            else:
+                                return Result.fail(
+                                    f"Step '{step_id}' failed and repair failed: {e}"
+                                )
+                        else:
+                            return Result.fail(
+                                f"Step '{step_id}' failed after {max_repair_attempts} repairs: {last_error}"
+                            )
+
+            # Execute final SQL
+            final_sql = analysis_output.final_sql
+
+            for attempt in range(max_repair_attempts + 1):
+                try:
+                    result = duckdb_conn.execute(final_sql)
+                    columns = [desc[0] for desc in result.description]
+                    rows = result.fetchall()
+                    data = [dict(zip(columns, row, strict=True)) for row in rows]
+                    return Result.ok((columns, data))
+                except Exception as e:
+                    if attempt < max_repair_attempts:
+                        logger.info(
+                            f"Final SQL failed (attempt {attempt + 1}), attempting repair: {e}"
+                        )
+                        repair_result = self._repair_sql(
+                            failed_sql=final_sql,
+                            error_message=str(e),
+                            step_description="Combine step results into final answer",
+                            execution_context=execution_context,
+                        )
+                        if repair_result.success and repair_result.value:
+                            final_sql = repair_result.value
+                            logger.info("Repaired final SQL")
+                        else:
+                            return Result.fail(f"Final SQL failed and repair failed: {e}")
+                    else:
+                        return Result.fail(
+                            f"Final SQL failed after {max_repair_attempts} repairs: {e}"
+                        )
+
+        finally:
+            # Clean up temp views
+            for view_name in created_views:
+                try:
+                    duckdb_conn.execute(f"DROP VIEW IF EXISTS {view_name}")
+                except Exception:
+                    pass
+
+        return Result.fail("Unexpected execution path")
+
+    def _repair_sql(
+        self,
+        failed_sql: str,
+        error_message: str,
+        step_description: str,
+        execution_context: GraphExecutionContext,
+    ) -> Result[str]:
+        """Attempt to repair failed SQL using LLM.
+
+        Args:
+            failed_sql: The SQL that failed
+            error_message: Error message from DuckDB
+            step_description: What the SQL should do
+            execution_context: Context for schema info
+
+        Returns:
+            Result with repaired SQL on success
+        """
+        schema_info = self._build_schema_info(execution_context)
+
+        try:
+            system_prompt, user_prompt, temperature = self.renderer.render_split(
+                "sql_repair",
+                {
+                    "error_message": error_message,
+                    "failed_sql": failed_sql,
+                    "table_schema": json.dumps(schema_info, indent=2),
+                    "step_description": step_description,
+                },
+            )
+        except Exception as e:
+            return Result.fail(f"Failed to render repair prompt: {e}")
+
+        request = ConversationRequest(
+            messages=[Message(role="user", content=user_prompt)],
+            system=system_prompt,
+            max_tokens=self.config.limits.max_output_tokens_per_request,
+            temperature=temperature,
+        )
+
+        result = self.provider.converse(request)
+        if not result.success or not result.value:
+            return Result.fail(result.error or "Repair LLM call failed")
+
+        repaired_sql = result.value.content.strip()
+
+        # Strip markdown code blocks if present
+        if repaired_sql.startswith("```"):
+            lines = repaired_sql.split("\n")
+            if lines[-1].strip() == "```":
+                repaired_sql = "\n".join(lines[1:-1])
+            else:
+                repaired_sql = "\n".join(lines[1:])
+
+        return Result.ok(repaired_sql)

@@ -14,6 +14,8 @@ if TYPE_CHECKING:
     import duckdb
     from sqlalchemy.orm import Session
 
+    from dataraum.core.connections import ConnectionManager
+
 
 class PhaseStatus(str, Enum):
     """Status of a pipeline phase."""
@@ -47,6 +49,9 @@ class PhaseContext:
     # Session factory for parallel execution within phases
     # Returns a context manager that yields a Session
     session_factory: Callable[[], Any] | None = None
+
+    # Connection manager for vector DB access (optional)
+    manager: ConnectionManager | None = None
 
     def get_output(self, phase_name: str, key: str, default: Any = None) -> Any:
         """Get an output from a previous phase."""

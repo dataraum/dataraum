@@ -175,6 +175,8 @@ class GraphExecutionPhase(BasePhase):
                     graph=graph,
                     context=exec_context,
                     force_regenerate=False,  # Use cache if available
+                    manager=ctx.manager,
+                    source_id=ctx.source_id,
                 )
 
                 if exec_result.success and exec_result.value is not None:

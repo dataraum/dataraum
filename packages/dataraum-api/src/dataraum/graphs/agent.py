@@ -16,7 +16,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import duckdb
@@ -24,6 +24,7 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.graphs.db_models import GeneratedCodeRecord
 from dataraum.llm.cache import LLMCache
@@ -43,10 +44,16 @@ from .models import (
     GraphExecution,
     GraphSQLGenerationOutput,
     QueryAssumption,
+    SQLStepOutput,
     StepResult,
     StepType,
     TransformationGraph,
 )
+
+if TYPE_CHECKING:
+    from dataraum.core.connections import ConnectionManager
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -183,6 +190,9 @@ class GraphAgent(LLMFeature):
         context: ExecutionContext,
         parameters: dict[str, Any] | None = None,
         force_regenerate: bool = False,
+        *,
+        manager: ConnectionManager | None = None,
+        source_id: str | None = None,
     ) -> Result[GraphExecution]:
         """Execute a graph by generating and running SQL.
 
@@ -192,6 +202,8 @@ class GraphAgent(LLMFeature):
             context: Execution context with data connection
             parameters: Parameter values for the graph
             force_regenerate: If True, regenerate SQL even if cached
+            manager: ConnectionManager for library access (enables cross-agent reuse)
+            source_id: Source ID for library storage
 
         Returns:
             Result containing GraphExecution with results
@@ -237,6 +249,19 @@ class GraphAgent(LLMFeature):
         exec_result = self._execute_sql(generated_code, context, graph, resolved_params)
         if not exec_result.success or not exec_result.value:
             return Result.fail(exec_result.error or "SQL execution failed")
+
+        execution = exec_result.value
+
+        # Save to QueryLibrary for cross-agent reuse
+        if manager and source_id:
+            self._save_to_library(
+                session=session,
+                manager=manager,
+                source_id=source_id,
+                graph=graph,
+                generated_code=generated_code,
+                execution=execution,
+            )
 
         return exec_result
 
@@ -1025,3 +1050,74 @@ class GraphAgent(LLMFeature):
         )
         session.add(record)
         # No flush needed - code_id is client-generated UUID, commit happens at session_scope() end
+
+    def _save_to_library(
+        self,
+        session: Session,
+        manager: ConnectionManager,
+        source_id: str,
+        graph: TransformationGraph,
+        generated_code: GeneratedCode,
+        execution: GraphExecution,
+    ) -> None:
+        """Save graph execution to QueryLibrary for cross-agent reuse.
+
+        This enables Query Agent to find and reuse graph-generated SQL
+        via semantic similarity search.
+
+        Args:
+            session: SQLAlchemy session
+            manager: ConnectionManager with vectors
+            source_id: Source ID for the library
+            graph: The graph specification
+            generated_code: Generated SQL code
+            execution: Execution result with assumptions
+        """
+        from dataraum.query.document import QueryDocument
+        from dataraum.query.library import QueryLibrary, QueryLibraryError
+
+        # Build assumptions from execution
+        assumptions = [
+            {
+                "dimension": a.dimension,
+                "target": a.target,
+                "assumption": a.assumption,
+                "basis": a.basis.value,
+                "confidence": a.confidence,
+            }
+            for a in execution.assumptions
+        ]
+
+        # Convert to GraphSQLGenerationOutput format for QueryDocument
+        output = GraphSQLGenerationOutput(
+            summary=generated_code.summary or f"Calculates {graph.metadata.name}",
+            steps=[
+                SQLStepOutput(
+                    step_id=s["step_id"],
+                    sql=s["sql"],
+                    description=s["description"],
+                )
+                for s in generated_code.steps
+            ],
+            final_sql=generated_code.final_sql,
+            column_mappings=generated_code.column_mappings,
+        )
+
+        document = QueryDocument.from_graph_output(output, assumptions)
+
+        try:
+            library = QueryLibrary(session, manager)
+            library.save(
+                source_id=source_id,
+                document=document,
+                graph_id=graph.graph_id,
+                name=graph.metadata.name,
+                description=graph.metadata.description,
+                confidence_level="GREEN",  # Graphs are pre-validated
+            )
+            logger.info(f"Saved graph '{graph.graph_id}' to query library")
+        except QueryLibraryError as e:
+            # Library not available (vectors disabled) - not an error
+            logger.debug(f"Skipping library save (vectors not enabled): {e}")
+        except Exception as e:
+            logger.warning(f"Failed to save graph to library: {e}")

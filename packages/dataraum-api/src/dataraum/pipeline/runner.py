@@ -349,12 +349,15 @@ def run(config: RunConfig) -> Result[RunResult]:
         flat_config = flatten_pipeline_config(pipeline_yaml_config)
 
         # Build run configuration - merge YAML config with runtime overrides
+        # YAML config takes precedence for junk_columns, fall back to RunConfig defaults
         run_config = {
             **flat_config,  # YAML config as base
             "source_path": str(config.source_path),
             "source_name": config.source_name or config.source_path.stem,
-            "junk_columns": config.junk_columns,
         }
+        # Use YAML junk_columns if present, otherwise use RunConfig defaults
+        if "junk_columns" not in run_config:
+            run_config["junk_columns"] = config.junk_columns
 
         # Execute pipeline
         results = pipeline.run(

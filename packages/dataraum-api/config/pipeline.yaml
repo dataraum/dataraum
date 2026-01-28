@@ -4,6 +4,17 @@
 
 version: "1.0.0"
 
+# Import phase settings
+import:
+  # Junk columns to remove after loading CSV files.
+  # These are typically CSV export artifacts like pandas index columns.
+  junk_columns:
+    - "Unnamed: 0"
+    - "Unnamed: 0.1"
+    - "Unnamed: 0.2"
+    - "column0"
+    - "column00"
+
 # Temporal analysis settings
 temporal:
   # Preferred time column name for temporal analysis.

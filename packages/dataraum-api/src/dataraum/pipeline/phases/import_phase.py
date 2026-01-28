@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any
-
 from sqlalchemy import select
 
 from dataraum.pipeline.base import PhaseContext, PhaseResult
@@ -165,6 +163,7 @@ class ImportPhase(BasePhase):
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
                 null_config=null_config,
+                junk_columns=junk_columns,
             )
 
             if not result.success:
@@ -174,10 +173,6 @@ class ImportPhase(BasePhase):
             staged_table = result.unwrap()
             table_ids.append(str(staged_table.table_id))
             total_rows += staged_table.row_count
-
-            # Drop junk columns from this table
-            if junk_columns:
-                self._drop_junk_columns(ctx, [staged_table], junk_columns)
 
         if not table_ids:
             return PhaseResult.failed("No CSV files were successfully loaded")
@@ -212,6 +207,7 @@ class ImportPhase(BasePhase):
             duckdb_conn=ctx.duckdb_conn,
             session=ctx.session,
             null_config=null_config,
+            junk_columns=junk_columns,
         )
 
         if not result.success:
@@ -219,10 +215,6 @@ class ImportPhase(BasePhase):
 
         staged_table = result.unwrap()
         duration = time.time() - start_time
-
-        # Drop junk columns
-        if junk_columns:
-            self._drop_junk_columns(ctx, [staged_table], junk_columns)
 
         # Note: commit handled by session_scope() in orchestrator
 
@@ -233,42 +225,3 @@ class ImportPhase(BasePhase):
             duration=duration,
             warnings=result.warnings,
         )
-
-    def _drop_junk_columns(
-        self,
-        ctx: PhaseContext,
-        staged_tables: list[Any],
-        junk_columns: list[str],
-    ) -> None:
-        """Remove junk columns from loaded tables.
-
-        These are typically CSV export artifacts like "Unnamed: 0" etc.
-        """
-        from dataraum.storage import Column
-
-        for staged in staged_tables:
-            # Get the table record
-            table = ctx.session.get(Table, staged.table_id)
-            if not table or not table.duckdb_path:
-                continue
-
-            for junk in junk_columns:
-                try:
-                    # Drop from DuckDB
-                    ctx.duckdb_conn.execute(f'ALTER TABLE {table.duckdb_path} DROP COLUMN "{junk}"')
-
-                    # Delete Column record
-                    stmt = select(Column).where(
-                        Column.table_id == table.table_id,
-                        Column.column_name == junk,
-                    )
-                    col_result = ctx.session.execute(stmt)
-                    col = col_result.scalar_one_or_none()
-                    if col:
-                        ctx.session.delete(col)
-
-                except Exception:
-                    # Column might not exist - that's fine
-                    pass
-
-        # Note: commit handled by session_scope() in orchestrator

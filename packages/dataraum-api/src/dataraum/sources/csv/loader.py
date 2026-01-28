@@ -241,6 +241,7 @@ class CSVLoader(LoaderBase):
         duckdb_conn: duckdb.DuckDBPyConnection,
         session: Session,
         null_config: NullValueConfig,
+        junk_columns: list[str] | None = None,
     ) -> Result[StagedTable]:
         """Load a single CSV file into an existing source.
 
@@ -252,6 +253,7 @@ class CSVLoader(LoaderBase):
             duckdb_conn: DuckDB connection
             session: SQLAlchemy session
             null_config: Null value configuration
+            junk_columns: Column names to drop after loading (e.g., pandas index columns)
 
         Returns:
             Result containing StagedTable
@@ -278,6 +280,9 @@ class CSVLoader(LoaderBase):
             # Build column type specification (all VARCHAR)
             column_spec = {col.name: "VARCHAR" for col in columns}
 
+            # Track which columns are junk for later filtering
+            junk_set = set(junk_columns) if junk_columns else set()
+
             # Format null strings for DuckDB
             null_strings = null_config.get_null_strings(include_placeholders=True)
             null_str_param = ", ".join(f"'{s}'" for s in null_strings)
@@ -295,6 +300,16 @@ class CSVLoader(LoaderBase):
                 )
             """
             duckdb_conn.execute(sql)
+
+            # Drop junk columns from DuckDB table
+            dropped_columns: list[str] = []
+            for junk in junk_set:
+                try:
+                    duckdb_conn.execute(f'ALTER TABLE {raw_table_name} DROP COLUMN "{junk}"')
+                    dropped_columns.append(junk)
+                except Exception:
+                    # Column doesn't exist - that's fine
+                    pass
 
             # Get row count
             row_count_result = duckdb_conn.execute(
@@ -314,18 +329,26 @@ class CSVLoader(LoaderBase):
             )
             session.add(table)
 
-            # Create Column records
+            # Create Column records (excluding junk columns)
+            # Adjust positions after filtering
+            position = 0
             for col_info in columns:
+                if col_info.name in junk_set:
+                    continue  # Skip junk columns
                 column_id = str(uuid4())
                 column = Column(
                     column_id=column_id,
                     table_id=table_id,
                     column_name=col_info.name,
-                    column_position=col_info.position,
+                    column_position=position,
                     raw_type="VARCHAR",
                     resolved_type=None,
                 )
                 session.add(column)
+                position += 1
+
+            # Calculate actual column count after filtering
+            actual_column_count = len(columns) - len(dropped_columns)
 
             return Result.ok(
                 StagedTable(
@@ -333,7 +356,7 @@ class CSVLoader(LoaderBase):
                     table_name=table_name,
                     raw_table_name=raw_table_name,
                     row_count=row_count,
-                    column_count=len(columns),
+                    column_count=actual_column_count,
                 )
             )
 

@@ -1,5 +1,45 @@
 # Plan: Entropy Framework Cleanup & Extension
 
+## Status
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase A | Fix Critical Agent Issues | ✅ COMPLETE |
+| Phase B | Add Missing Detectors | ✅ COMPLETE |
+| Phase C | Enhance Existing Detectors | ✅ COMPLETE |
+| Phase D | Fix Configuration | ✅ COMPLETE |
+| Phase E | Enrich Output | ✅ COMPLETE |
+| Phase F | Architecture Refactor | 🔲 PENDING |
+
+### Completed Work Summary
+
+**Phase A - Critical Agent Fixes:**
+- Fixed `query/agent.py` line 409: was using `execution_context` instead of checking `entropy_summary`
+- Changed confidence default from GREEN to YELLOW when entropy unavailable
+- Changed `entropy_score: float = 0.0` to `entropy_score: float | None = None`
+- Fixed prompt defaults in `query_analysis.yaml` and `graph_sql_generation.yaml`
+
+**Phase B - New Detectors (3 created):**
+- `UnitEntropyDetector` (`semantic.units.unit_declaration`) - uses `typing.detected_unit`, `typing.unit_confidence`
+- `TemporalEntropyDetector` (`semantic.temporal.time_role`) - uses `semantic.semantic_role`, `typing.data_type`
+- `RelationshipEntropyDetector` (`structural.relations.relationship_quality`) - uses actual `JoinCandidate` metrics from `Relationship.evidence`
+
+**Phase C - Detector Enhancement:**
+- Enhanced `BusinessMeaningDetector` with confidence weighting and ontology bonus
+
+**Phase D - Configuration Fixes:**
+- Fixed `join_path` config keys (`score_single` → `score_deterministic`)
+- Removed dead compound risks (`value.ranges`, `computational.filters`, `computational.aggregations`)
+- Added fail-fast behavior in `config.py` and `compound_risk.py`
+- Updated `thresholds.yaml` with new detector configs
+- Updated `contracts.yaml` to remove non-existent dimensions
+
+**Phase E - Output Enrichment:**
+- Updated prompt templates to reflect actual available dimensions
+- Removed references to non-existent `computational.aggregations`
+
+---
+
 ## Executive Summary
 
 The entropy framework has solid architecture (detectors, configuration, compound risks, LLM interpretation) but contains bugs:
@@ -533,32 +573,35 @@ For RED confidence, show resolution recommendations.
 
 ## Part 7: Implementation Order
 
-### Phase A: Fix Critical Agent Issues (High Priority)
-1. **Fix query/agent.py line 409** - use correct entropy_context variable
-2. **Fix query/agent.py confidence default** - YELLOW when entropy unavailable
-3. **Fix query/agent.py entropy_score** - use None instead of 0.0
-4. **Fix prompt defaults** - "Data quality assessment not available" instead of "No warnings"
+### Phase A: Fix Critical Agent Issues ✅ COMPLETE
+1. ✅ **Fix query/agent.py line 409** - use correct entropy_context variable
+2. ✅ **Fix query/agent.py confidence default** - YELLOW when entropy unavailable
+3. ✅ **Fix query/agent.py entropy_score** - use None instead of 0.0
+4. ✅ **Fix prompt defaults** - "Data quality assessment not available" instead of "No warnings"
 
-### Phase B: Add Missing Detectors
-5. **Add UnitEntropyDetector** - uses typing.detected_unit
-6. **Add TemporalEntropyDetector** - uses semantic.semantic_role
-7. **Add RelationshipEntropyDetector** - uses JoinCandidate evaluation metrics
-8. **Update context.py** - wire detector to RelationshipEntropyProfile
+### Phase B: Add Missing Detectors ✅ COMPLETE
+5. ✅ **Add UnitEntropyDetector** - uses typing.detected_unit
+6. ✅ **Add TemporalEntropyDetector** - uses semantic.semantic_role
+7. ✅ **Add RelationshipEntropyDetector** - uses JoinCandidate evaluation metrics
+8. ⏭️ **Update context.py** - wire detector to RelationshipEntropyProfile (deferred to Phase F)
 
-### Phase C: Enhance Existing Detectors
-9. **Enhance BusinessMeaningDetector** - use confidence and business_concept
+### Phase C: Enhance Existing Detectors ✅ COMPLETE
+9. ✅ **Enhance BusinessMeaningDetector** - use confidence and business_concept
 
-### Phase D: Fix Configuration
-10. **Fix thresholds.yaml** - align config with detectors
-11. **Fix contracts.yaml** - use valid dimension paths
-12. **Remove fallbacks** - fail-fast behavior
+### Phase D: Fix Configuration ✅ COMPLETE
+10. ✅ **Fix thresholds.yaml** - align config with detectors
+11. ✅ **Fix contracts.yaml** - use valid dimension paths
+12. ✅ **Remove fallbacks** - fail-fast behavior
 
-### Phase E: Enrich Output
-13. **Enrich CLI** - show resolution recommendations
-14. **Fix API** - return full resolution details
+### Phase E: Enrich Output ✅ COMPLETE
+13. ✅ **Update prompts** - remove references to non-existent dimensions
+14. ⏭️ **Fix API resolution details** - (deferred to Phase F architecture refactor)
 
-### Phase F: Cleanup
-15. **Remove dead code** - compound risks for non-existent dimensions, hallucinated entropy
+### Phase F: Architecture Refactor 🔲 PENDING
+15. **Simplify data model** - EntropyMeasurement as single detector output
+16. **EntropyContext as single source** - computed views, no duplicate profiles
+17. **Remove duplicate classes** - ColumnEntropyProfile, TableEntropyProfile, etc.
+18. **Update all consumers** - query agent, graph context, API endpoints
 
 ---
 
@@ -772,3 +815,579 @@ uv run dataraum query "test" -o ./fresh_output_no_entropy  # No entropy phase ru
 | `AggregationEntropyDetector` | Would need query analysis, not currently available |
 | `FilterEntropyDetector` | Would need query analysis, not currently available |
 | `RangeEntropyDetector` | Low value, could use statistics.min/max but unclear use case |
+
+---
+
+## Part 15: Architecture Refactor (Phase F) - Code Analysis
+
+### Current Architecture (From Source Code Review)
+
+#### 1. Detectors (`entropy/detectors/`)
+
+Each detector produces `list[EntropyObject]` with:
+
+```python
+@dataclass
+class EntropyObject:
+    # Identity
+    layer: str                          # "structural", "semantic", "value", "computational"
+    dimension: str                      # "types", "business_meaning", "nulls", etc.
+    sub_dimension: str                  # "type_fidelity", "naming_clarity", etc.
+    target: str                         # "column:orders.amount"
+    detector_id: str
+
+    # Measurement
+    score: float                        # 0.0-1.0
+    confidence: float                   # How confident in this score
+
+    # Evidence - RAW FACTS from analysis modules
+    evidence: list[dict]                # e.g., [{"raw_metrics": {...}, "score_components": {...}}]
+
+    # Resolution options - GENERIC ACTION TEMPLATES
+    resolution_options: list[ResolutionOption]
+
+    # Context (mostly empty in detector output)
+    llm_context: LLMContext             # Rarely populated by detectors
+    human_context: HumanContext         # Rarely populated by detectors
+```
+
+**Example from BusinessMeaningDetector:**
+```python
+evidence = [{
+    "raw_metrics": {
+        "description": "Total order amount",
+        "has_description": True,
+        "business_name": "Order Total",
+        "semantic_confidence": 0.85,
+    },
+    "score_components": {
+        "base_score": 0.2,
+        "confidence_factor": 1.05,
+        "ontology_bonus": 0.1,
+    }
+}]
+
+resolution_options = [
+    ResolutionOption(
+        action="add_description",
+        parameters={"column": "amount", "table": "orders"},
+        expected_entropy_reduction=0.8,
+        effort="low",
+        description="Add a business description for this column",
+    )
+]
+```
+
+**Key insight:** Detectors DO produce resolution options, but they're **generic templates** (action + parameters + effort), not contextual recommendations.
+
+#### 2. EntropyContext (`entropy/models.py` + `entropy/context.py`)
+
+```python
+@dataclass
+class EntropyContext:
+    # Per-column aggregates
+    column_profiles: dict[str, ColumnEntropyProfile]    # Key: "table.column"
+
+    # Per-table aggregates
+    table_profiles: dict[str, TableEntropyProfile]      # Key: "table_name"
+
+    # Per-relationship
+    relationship_profiles: dict[str, RelationshipEntropyProfile]
+
+    # Cross-dimension risks
+    compound_risks: list[CompoundRisk]
+
+    # LLM interpretations (optional)
+    column_interpretations: dict[str, EntropyInterpretation]
+```
+
+**ColumnEntropyProfile stores BOTH raw objects AND aggregates:**
+```python
+@dataclass
+class ColumnEntropyProfile:
+    # Aggregated scores (computed from objects)
+    structural_entropy: float           # Average of structural detectors
+    semantic_entropy: float
+    value_entropy: float
+    computational_entropy: float
+    composite_score: float              # Weighted average of above
+
+    # Dimension breakdown
+    dimension_scores: dict[str, float]  # Full dimension paths → scores
+
+    # Raw objects (for evidence access)
+    entropy_objects: list[EntropyObject]  # ← EVIDENCE LIVES HERE
+
+    # Derived data
+    high_entropy_dimensions: list[str]
+    top_resolution_hints: list[ResolutionOption]
+
+    # LLM interpretation (optional)
+    interpretation: EntropyInterpretation | None
+```
+
+**How context is built (`_load_entropy_from_db`):**
+1. Load `EntropyObjectRecord` from DB for table_ids
+2. Group by column_id
+3. Build `dimension_scores` dict from records
+4. Calculate layer averages (structural, semantic, etc.)
+5. Create `ColumnEntropyProfile` with all data
+6. Aggregate columns into `TableEntropyProfile`
+
+#### 3. Interpreter (`entropy/interpretation.py`)
+
+**Input:**
+```python
+@dataclass
+class InterpretationInput:
+    table_name: str
+    column_name: str
+    detected_type: str
+    business_description: str | None
+
+    # Aggregated scores
+    composite_score: float
+    structural_entropy: float
+    semantic_entropy: float
+    value_entropy: float
+    computational_entropy: float
+
+    # From detectors (PARTIAL - loses some evidence during aggregation)
+    raw_metrics: dict[str, Any]         # Subset of evidence
+    high_entropy_dimensions: list[str]
+    compound_risks: list[CompoundRisk]
+```
+
+**Output:**
+```python
+@dataclass
+class EntropyInterpretation:
+    # LLM-generated contextual content
+    assumptions: list[Assumption]        # What we're assuming about the data
+    resolution_actions: list[ResolutionAction]  # Contextual recommendations
+    explanation: str                     # Human-readable summary
+```
+
+**Key insight:** Interpreter receives `raw_metrics` but this is **built during context.py:_build_interpretations()**, not directly from detector evidence. Some evidence may be lost.
+
+#### 4. Contract Evaluation (`entropy/contracts.py`)
+
+```python
+def evaluate_contract(entropy_context: EntropyContext, contract_name: str):
+    for dimension, max_score in contract.dimension_thresholds.items():
+        # Gets score from column profiles
+        actual_score = _get_dimension_score(entropy_context, dimension)
+        # → Looks up profile.dimension_scores[dimension] or layer score
+```
+
+**Data flow for contracts:**
+- Uses `EntropyContext.column_profiles[col].dimension_scores`
+- Falls back to layer-level scores (structural_entropy, etc.)
+- Produces `ContractEvaluation` with `ConfidenceLevel` (GREEN/YELLOW/ORANGE/RED)
+
+#### 5. Query Agent (`query/agent.py`)
+
+**ISSUE: Entropy built TWICE:**
+```python
+# Line 154-161: Build execution context (calls build_entropy_context internally)
+execution_context = build_execution_context(session, table_ids, duckdb_conn)
+
+# Line 164-171: Build entropy context AGAIN
+entropy_context = build_entropy_context(session, table_ids)
+```
+
+**Usage:**
+- `entropy_context` → Contract evaluation, entropy_score calculation
+- `execution_context.entropy_summary` → Prompt formatting (via `format_entropy_for_prompt`)
+
+#### 6. GraphExecutionContext (`graphs/context.py`)
+
+**Calls `build_entropy_context()` internally (line 423) and COPIES to dicts:**
+```python
+entropy_context = build_entropy_ctx(session, table_ids)
+
+# Copy to dict lookups (line 426-433)
+column_entropy_lookup: dict[str, dict[str, Any]] = {}
+for col_key, col_entropy_profile in entropy_context.column_profiles.items():
+    column_entropy_lookup[col_key] = get_column_entropy_summary(col_entropy_profile)
+
+# Store as summary dict (line 451-457)
+entropy_summary_dict = {
+    "overall_readiness": entropy_context.overall_readiness,
+    "high_entropy_count": entropy_context.high_entropy_count,
+    # ...
+}
+```
+
+**GraphExecutionContext stores dicts, not EntropyContext:**
+```python
+@dataclass
+class GraphExecutionContext:
+    entropy_summary: dict[str, Any] | None = None  # ← Dict copy, not reference
+
+@dataclass
+class ColumnContext:
+    entropy_scores: dict[str, Any] | None = None   # ← Dict copy, not reference
+```
+
+---
+
+### Problems Identified
+
+| Problem | Location | Impact |
+|---------|----------|--------|
+| **Double entropy build** | `query/agent.py:154-171` | Wasted DB queries, potential inconsistency |
+| **Dict copying** | `graphs/context.py:426-457` | Loses type safety, fragments access |
+| **Evidence partially lost** | `context.py:_build_interpretations()` | Interpreter doesn't get full detector evidence |
+| **Duplicate aggregation** | `ColumnEntropyProfile` + `TableEntropyProfile` | Redundant computation, complex data model |
+| **LLMContext/HumanContext unused** | `EntropyObject` | Detectors don't populate these, adds complexity |
+
+---
+
+### Proposed Architecture
+
+#### Keep: EntropyObject (Rename to EntropyMeasurement)
+
+Detectors produce measurements with:
+- `score`, `evidence`, `resolution_options` - **KEEP** (these are valuable)
+- `LLMContext`, `HumanContext` - **REMOVE** (unused by detectors, Interpreter generates these)
+
+```python
+@dataclass
+class EntropyMeasurement:
+    # Identity
+    dimension_path: str         # "structural.types.type_fidelity"
+    target: str                 # "column:orders.amount"
+    detector_id: str
+
+    # Measurement
+    score: float                # 0.0-1.0
+    confidence: float           # 0.0-1.0
+
+    # Evidence - FULL RAW FACTS
+    evidence: list[dict]
+
+    # Generic resolution templates
+    resolution_options: list[ResolutionOption]
+```
+
+#### Keep: ResolutionOption (unchanged)
+
+```python
+@dataclass
+class ResolutionOption:
+    action: str                         # "add_description", "declare_unit"
+    parameters: dict[str, Any]          # {"column": "amount", "table": "orders"}
+    expected_entropy_reduction: float   # 0.8
+    effort: str                         # "low", "medium", "high"
+    description: str                    # Generic description
+```
+
+#### Simplify: EntropyContext (Data Only)
+
+`EntropyContext` provides **data access only** - no thresholds, no policy decisions.
+
+```python
+@dataclass
+class EntropyContext:
+    """Raw entropy data. No policy/thresholds - that's ContractEvaluation's job."""
+
+    measurements: list[EntropyMeasurement]
+    interpretations: dict[str, EntropyInterpretation] = field(default_factory=dict)
+
+    # ─────────────────────────────────────────────────────────────
+    # Score Access (used by contract evaluation)
+    # ─────────────────────────────────────────────────────────────
+
+    def get_dimension_score(self, dimension_path: str) -> float:
+        """Average score for a dimension across all targets."""
+
+    def get_compound_risks(self) -> list[CompoundRisk]:
+        """Compute compound risks from measurements.
+
+        Risk definitions come from config (not thresholds - those are in contract).
+        """
+
+    # ─────────────────────────────────────────────────────────────
+    # Evidence Access (used by interpreter)
+    # ─────────────────────────────────────────────────────────────
+
+    def get_measurements_for_target(self, target: str) -> list[EntropyMeasurement]:
+        """All measurements for a target, with full evidence.
+
+        Interpreter needs evidence to generate contextual assumptions:
+        e.g., "detected_unit=None, semantic_role=measure" → "Assuming USD"
+        """
+
+    # ─────────────────────────────────────────────────────────────
+    # Serialization (used by API)
+    # ─────────────────────────────────────────────────────────────
+
+    def to_dict(self) -> dict[str, Any]:
+        """Raw data for API. Shape evolves with UI needs."""
+```
+
+#### Enhance: ContractEvaluation (Policy + Thresholds)
+
+Threshold-aware methods belong on `ContractEvaluation` because "high entropy" is relative to the contract:
+- `executive_dashboard`: > 0.3 is high (strict)
+- `exploratory_analysis`: > 0.7 is high (lenient)
+
+```python
+@dataclass
+class ContractEvaluation:
+    """Result of applying a contract's policy to entropy data."""
+
+    # Existing fields
+    contract_name: str
+    contract_display_name: str
+    is_compliant: bool
+    confidence_level: ConfidenceLevel
+    overall_score: float
+    dimension_scores: dict[str, float]
+    violations: list[Violation]
+    warnings: list[Violation]
+
+    # ─────────────────────────────────────────────────────────────
+    # Threshold-aware methods (use THIS contract's thresholds)
+    # ─────────────────────────────────────────────────────────────
+
+    def get_high_entropy_dimensions(self) -> list[str]:
+        """Dimensions exceeding this contract's thresholds."""
+
+    def get_overall_readiness(self) -> str:
+        """'ready', 'investigate', or 'blocked' per this contract."""
+
+    def get_readiness_blockers(self) -> list[str]:
+        """Targets blocking readiness per this contract's thresholds."""
+
+    def has_critical_risks(self) -> bool:
+        """Whether compound risks violate this contract."""
+```
+
+**Separation of concerns:**
+| Class | Responsibility |
+|-------|----------------|
+| `EntropyContext` | Raw data + evidence access |
+| `ContractEvaluation` | Policy applied to data (threshold-aware) |
+
+#### New Folder: `entropy/context/`
+
+Organize context-related code into a dedicated folder:
+
+```
+entropy/
+├── context/                        # NEW - Context module
+│   ├── __init__.py                 # Exports EntropyContext, EntropyMeasurement, build_entropy_context
+│   ├── models.py                   # EntropyMeasurement, CompoundRisk, CompoundRiskDefinition
+│   ├── entropy_context.py          # EntropyContext class with all view methods
+│   ├── builder.py                  # build_entropy_context (loads from DB, runs detectors)
+│   └── formatting.py               # format_entropy_for_prompt, format_for_dashboard
+│
+├── interpretation.py               # EntropyInterpreter (LLM-powered, stays separate)
+├── contracts.py                    # Contract evaluation (uses EntropyContext)
+├── config.py                       # EntropyConfig (threshold config)
+├── db_models.py                    # EntropyObjectRecord (DB storage)
+│
+├── detectors/                      # Unchanged
+│   ├── base.py                     # EntropyDetector, DetectorRegistry
+│   ├── structural/
+│   ├── semantic/
+│   ├── value/
+│   └── computational/
+│
+└── compound_risk.py                # REMOVE - logic moves to EntropyContext.get_compound_risks()
+```
+
+**Migration:**
+- `models.py` → Split: measurement classes to `context/models.py`, keep `ResolutionOption` in root
+- `context.py` → Split: builder to `context/builder.py`, formatting to `context/formatting.py`
+- `compound_risk.py` → Delete: logic becomes `EntropyContext.get_compound_risks()` method
+
+#### Remove: Profile Classes
+
+- ~~ColumnEntropyProfile~~ → `EntropyContext.get_column_score()` + `get_measurements_for_target()`
+- ~~TableEntropyProfile~~ → `EntropyContext` computed views
+- ~~RelationshipEntropyProfile~~ → Measurements with `target="relationship:..."`
+
+#### Keep: Interpreter (Essential)
+
+```python
+class EntropyInterpreter:
+    def interpret_batch(
+        self,
+        session: Session,
+        entropy_context: EntropyContext,  # Now passes full context
+        targets: list[str],               # Which targets to interpret
+        query: str | None = None,         # Optional query context
+    ) -> Result[dict[str, EntropyInterpretation]]:
+        """
+        For each target:
+        1. Get all measurements via entropy_context.get_measurements_for_target()
+        2. Get all evidence via entropy_context.get_all_evidence_for_target()
+        3. Pass to LLM with query context
+        4. Generate contextual assumptions and resolutions
+        """
+```
+
+**Interpreter receives FULL evidence** because it accesses `EntropyMeasurement.evidence` directly.
+
+#### Update: GraphExecutionContext
+
+```python
+@dataclass
+class GraphExecutionContext:
+    # Reference to entropy, not copy
+    entropy_context: EntropyContext | None = None
+
+    # Remove: entropy_summary dict
+    # Remove: column_entropy_lookup dict
+    # Remove: table_entropy_lookup dict
+
+    # Access via methods
+    def get_column_entropy_score(self, table: str, column: str) -> float | None:
+        if self.entropy_context:
+            return self.entropy_context.get_column_score(table, column)
+        return None
+```
+
+#### Update: Query Agent
+
+```python
+def analyze(self, ...):
+    # Build execution context (includes entropy_context reference)
+    execution_context = build_execution_context(session, table_ids, duckdb_conn)
+
+    # Use the SAME entropy context for everything
+    entropy_context = execution_context.entropy_context
+
+    # Contract evaluation
+    if entropy_context:
+        contract_evaluation = evaluate_contract(entropy_context, contract)
+        confidence_level = contract_evaluation.confidence_level
+
+    # Prompt formatting uses same context
+    entropy_warnings = format_entropy_for_prompt(entropy_context)
+```
+
+---
+
+### Data Flow Summary
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                           Detectors                                   │
+│  TypeFidelityDetector, BusinessMeaningDetector, NullRatioDetector... │
+└──────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+                     list[EntropyMeasurement]
+                     (score + evidence + resolution_options)
+                                    │
+                                    ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                    EntropyContext (Data Only)                         │
+│                                                                       │
+│  Storage:                                                             │
+│    measurements: list[EntropyMeasurement]                             │
+│    interpretations: dict[str, EntropyInterpretation]                 │
+│                                                                       │
+│  Data Access (no thresholds):                                         │
+│    get_dimension_score(path) → float                                 │
+│    get_compound_risks() → list[CompoundRisk]                         │
+│    get_measurements_for_target(target) → list[EntropyMeasurement]    │
+│    to_dict() → dict                                                   │
+└──────────────────────────────────────────────────────────────────────┘
+            │                       │                       │
+            ▼                       ▼                       ▼
+┌─────────────────────┐    ┌─────────────────┐    ┌─────────────────────┐
+│ Contract Evaluation │    │ EntropyInter-   │    │ GraphExecution-     │
+│                     │    │ preter          │    │ Context             │
+│ evaluate_contract() │    │                 │    │                     │
+│ applies thresholds  │    │ get_measurements│    │ entropy_context ref │
+│ from contract       │    │ _for_target()   │    │                     │
+└─────────────────────┘    │ → full evidence │    └─────────────────────┘
+            │               └─────────────────┘              │
+            ▼                       │                        ▼
+┌─────────────────────┐             ▼               Prompt Formatting
+│ ContractEvaluation  │    EntropyInterpretation   (uses evaluation)
+│ (Policy Applied)    │    (assumptions,
+│                     │     resolutions)
+│ Threshold-aware:    │
+│ get_high_entropy_   │
+│   dimensions()      │
+│ get_overall_        │
+│   readiness()       │
+│ has_critical_risks()│
+│ confidence_level    │
+└─────────────────────┘
+```
+
+**Separation of concerns:**
+- `EntropyContext` = raw data + evidence (no policy)
+- `ContractEvaluation` = policy applied (threshold-aware methods)
+- Thresholds are defined by the contract, not hardcoded
+
+---
+
+### Files to Modify (Phase F)
+
+#### New Files (context folder)
+
+| File | Purpose |
+|------|---------|
+| `entropy/context/__init__.py` | Export public API: `EntropyContext`, `EntropyMeasurement`, `build_entropy_context` |
+| `entropy/context/models.py` | `EntropyMeasurement`, `CompoundRisk`, `CompoundRiskDefinition` |
+| `entropy/context/entropy_context.py` | `EntropyContext` class with all view methods |
+| `entropy/context/builder.py` | `build_entropy_context()` - loads from DB, runs detectors |
+| `entropy/context/formatting.py` | `format_entropy_for_prompt()`, `format_for_dashboard()` |
+
+#### Modified Files
+
+| File | Changes |
+|------|---------|
+| `entropy/models.py` | Keep only `ResolutionOption`, remove profile classes |
+| `entropy/detectors/base.py` | Update `create_entropy_object()` → `create_measurement()` |
+| `entropy/detectors/*.py` | Update all 9 detectors to return `EntropyMeasurement` |
+| `entropy/interpretation.py` | Accept `EntropyContext`, access measurements directly for full evidence |
+| `entropy/contracts.py` | Add threshold-aware methods to `ContractEvaluation`: `get_high_entropy_dimensions()`, `get_overall_readiness()`, `get_readiness_blockers()`, `has_critical_risks()` |
+| `graphs/context.py` | Store `entropy_context: EntropyContext` reference, remove dict copies |
+| `query/agent.py` | Use `execution_context.entropy_context`, remove duplicate build |
+| `api/routers/entropy.py` | Build responses from `EntropyContext.to_dict()` + `ContractEvaluation` |
+| `api/schemas.py` | Simplify entropy response schemas |
+
+#### Deleted Files
+
+| File | Reason |
+|------|--------|
+| `entropy/context.py` | Split into `context/builder.py` + `context/formatting.py` |
+| `entropy/compound_risk.py` | Logic moved to `EntropyContext.get_compound_risks()` |
+
+### Verification (Phase F)
+
+```bash
+# Detectors produce valid measurements
+pytest tests/entropy/detectors/ -v
+
+# Context views compute correctly
+pytest tests/entropy/test_context.py -v
+
+# Interpreter gets full evidence
+pytest tests/entropy/test_interpretation.py -v
+
+# Contracts evaluate correctly
+pytest tests/entropy/test_contracts.py -v
+
+# Query agent uses single context
+pytest tests/query/test_agent.py -v
+
+# Full pipeline
+uv run dataraum run examples/data/ -o ./test_out
+uv run dataraum query "total revenue" -o ./test_out
+```
+
+### Migration Notes
+
+1. **DB schema unchanged** - EntropyObjectRecord stays the same
+2. **API may need updates** - Some response shapes may change
+3. **Backward compat** - Can provide adapter methods during transition

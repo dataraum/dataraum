@@ -10,7 +10,11 @@ from dataraum.api.schemas import (
     EntropyDashboardResponse,
     TableEntropyResponse,
 )
-from dataraum.entropy.context import build_entropy_context
+from dataraum.entropy.views.dashboard_context import (
+    build_column_response,
+    build_for_dashboard,
+    build_table_response,
+)
 from dataraum.storage import Column, Source, Table
 
 router = APIRouter()
@@ -37,62 +41,41 @@ def get_entropy_dashboard(
     if source is None:
         raise HTTPException(status_code=404, detail=f"Source {source_id} not found")
 
-    # Get table IDs for this source
-    tables_stmt = select(Table).where(Table.source_id == source_id)
-    tables_result = session.execute(tables_stmt)
-    tables = list(tables_result.scalars().all())
-
-    if not tables:
-        return EntropyDashboardResponse(
-            source_id=source_id,
-            overall_readiness="ready",
-            tables=[],
-            high_priority_resolutions=[],
-        )
-
-    table_ids = [t.table_id for t in tables]
-
-    # Build entropy context
-    entropy_context = build_entropy_context(
-        session=session,
-        table_ids=table_ids,
-    )
-
-    # Convert to dashboard format using to_dashboard_dict()
-    dashboard = entropy_context.to_dashboard_dict()
+    # Build dashboard context using new views module (typed tables enforced internally)
+    dashboard_ctx = build_for_dashboard(session, source_id)
 
     # Build response
     table_responses = []
-    for table_data in dashboard.get("tables", []):
+    for table_summary in dashboard_ctx.tables:
         compound_risks = [
             CompoundRiskResponse(
-                risk_id=risk.get("risk_id", ""),
-                dimensions=risk.get("dimensions", []),
-                risk_level=risk.get("risk_level", "unknown"),
-                impact=risk.get("impact", ""),
-                combined_score=risk.get("combined_score", 0.0),
+                risk_id=risk.risk_id,
+                dimensions=risk.dimensions,
+                risk_level=risk.risk_level,
+                impact=risk.impact,
+                combined_score=risk.combined_score,
             )
-            for risk in table_data.get("compound_risks", [])
+            for risk in table_summary.compound_risks
         ]
 
         table_responses.append(
             TableEntropyResponse(
-                table_id=table_data.get("table_id", ""),
-                table_name=table_data.get("table_name", ""),
-                avg_composite_score=table_data.get("avg_composite_score", 0.0),
-                max_composite_score=table_data.get("max_composite_score", 0.0),
-                blocked_column_count=table_data.get("blocked_column_count", 0),
-                total_columns=table_data.get("total_columns", 0),
-                readiness=table_data.get("readiness", "ready"),
+                table_id=table_summary.table_id,
+                table_name=table_summary.table_name,
+                avg_composite_score=table_summary.avg_composite_score,
+                max_composite_score=table_summary.max_composite_score,
+                blocked_column_count=len(table_summary.blocked_columns),
+                total_columns=len(table_summary.columns),
+                readiness=table_summary.readiness,
                 compound_risks=compound_risks,
             )
         )
 
     return EntropyDashboardResponse(
         source_id=source_id,
-        overall_readiness=dashboard.get("overall_readiness", "ready"),
+        overall_readiness=dashboard_ctx.overall_readiness,
         tables=table_responses,
-        high_priority_resolutions=dashboard.get("high_priority_resolutions", []),
+        high_priority_resolutions=dashboard_ctx.top_resolutions,
     )
 
 
@@ -110,16 +93,10 @@ def get_table_entropy(
     if table is None:
         raise HTTPException(status_code=404, detail=f"Table {table_id} not found")
 
-    # Build entropy context for single table
-    entropy_context = build_entropy_context(
-        session=session,
-        table_ids=[table_id],
-    )
+    # Build table response using new views module
+    table_data = build_table_response(session, table_id)
 
-    # Get table profile from context (dict keyed by table_name)
-    table_profile = entropy_context.table_profiles.get(table.table_name)
-
-    if table_profile is None:
+    if "error" in table_data:
         return TableEntropyResponse(
             table_id=table_id,
             table_name=table.table_name,
@@ -131,26 +108,15 @@ def get_table_entropy(
             compound_risks=[],
         )
 
-    compound_risks = [
-        CompoundRiskResponse(
-            risk_id=risk.risk_id,
-            dimensions=risk.dimensions,
-            risk_level=risk.risk_level,
-            impact=risk.impact,
-            combined_score=risk.combined_score,
-        )
-        for risk in table_profile.compound_risks
-    ]
-
     return TableEntropyResponse(
-        table_id=table_profile.table_id,
-        table_name=table_profile.table_name,
-        avg_composite_score=table_profile.avg_composite_score,
-        max_composite_score=table_profile.max_composite_score,
-        blocked_column_count=len(table_profile.blocked_columns),
-        total_columns=len(table_profile.column_profiles),
-        readiness=table_profile.readiness,
-        compound_risks=compound_risks,
+        table_id=table_data.get("table_id", table_id),
+        table_name=table_data.get("table_name", table.table_name),
+        avg_composite_score=table_data.get("avg_composite_score", 0.0),
+        max_composite_score=table_data.get("max_composite_score", 0.0),
+        blocked_column_count=table_data.get("blocked_column_count", 0),
+        total_columns=table_data.get("total_columns", 0),
+        readiness=table_data.get("readiness", "ready"),
+        compound_risks=[],  # TODO: Add compound risks to build_table_response
     )
 
 
@@ -168,16 +134,10 @@ def get_column_entropy(
     if column is None:
         raise HTTPException(status_code=404, detail=f"Column {column_id} not found")
 
-    # Build entropy context for the column's table
-    entropy_context = build_entropy_context(
-        session=session,
-        table_ids=[column.table_id],
-    )
+    # Build column response using new views module
+    col_data = build_column_response(session, column_id)
 
-    # Get column profile from context
-    column_profile = entropy_context.get_column_entropy(column.table_id, column.column_name)
-
-    if column_profile is None:
+    if "error" in col_data:
         return ColumnEntropyResponse(
             column_id=column_id,
             column_name=column.column_name,
@@ -188,20 +148,12 @@ def get_column_entropy(
             layer_scores={},
         )
 
-    # Build layer scores dict from individual attributes
-    layer_scores = {
-        "structural": column_profile.structural_entropy,
-        "semantic": column_profile.semantic_entropy,
-        "value": column_profile.value_entropy,
-        "computational": column_profile.computational_entropy,
-    }
-
     return ColumnEntropyResponse(
         column_id=column_id,
-        column_name=column_profile.column_name,
-        composite_score=column_profile.composite_score,
-        readiness=column_profile.readiness,
-        high_entropy_dimensions=column_profile.high_entropy_dimensions,
-        resolution_hints=[r.action for r in column_profile.top_resolution_hints[:5]],
-        layer_scores=layer_scores,
+        column_name=col_data.get("column_name", column.column_name),
+        composite_score=col_data.get("composite_score", 0.0),
+        readiness=col_data.get("readiness", "ready"),
+        high_entropy_dimensions=col_data.get("high_entropy_dimensions", []),
+        resolution_hints=col_data.get("resolution_hints", []),
+        layer_scores=col_data.get("layer_scores", {}),
     )

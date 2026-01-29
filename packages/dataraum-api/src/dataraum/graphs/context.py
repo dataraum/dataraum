@@ -411,50 +411,42 @@ def build_execution_context(
         relationships=rel_list_for_topology,
     )
 
-    # 16. Build entropy context
-    from dataraum.entropy.context import (
-        build_entropy_context as build_entropy_ctx,
-    )
-    from dataraum.entropy.context import (
+    # 16. Build entropy context using new views module (typed tables enforced internally)
+    from dataraum.entropy.views import build_for_graph
+    from dataraum.entropy.views.graph_context import (
         get_column_entropy_summary,
         get_table_entropy_summary,
     )
 
-    entropy_context = build_entropy_ctx(session, table_ids)
+    entropy_context = build_for_graph(session, table_ids)
 
     # Build column-level entropy lookup
     column_entropy_lookup: dict[str, dict[str, Any]] = {}
-    for col_key, col_entropy_profile in entropy_context.column_profiles.items():
-        column_entropy_lookup[col_key] = get_column_entropy_summary(col_entropy_profile)
+    for col_key, col_summary in entropy_context.columns.items():
+        column_entropy_lookup[col_key] = get_column_entropy_summary(col_summary)
 
     # Build table-level entropy lookup
     table_entropy_lookup: dict[str, dict[str, Any]] = {}
-    for tbl_name, tbl_entropy_profile in entropy_context.table_profiles.items():
-        table_entropy_lookup[tbl_name] = get_table_entropy_summary(tbl_entropy_profile)
+    for tbl_name, tbl_summary in entropy_context.tables.items():
+        table_entropy_lookup[tbl_name] = get_table_entropy_summary(tbl_summary)
 
     # Update relationship contexts with entropy data
     for rel_ctx in relationships:
         rel_key = (
             f"{rel_ctx.from_table}.{rel_ctx.from_column}->{rel_ctx.to_table}.{rel_ctx.to_column}"
         )
-        rel_profile = entropy_context.relationship_profiles.get(rel_key)
-        if rel_profile:
+        rel_summary = entropy_context.relationships.get(rel_key)
+        if rel_summary:
             rel_ctx.relationship_entropy = {
-                "composite_score": rel_profile.composite_score,
-                "cardinality_entropy": rel_profile.cardinality_entropy,
-                "join_path_entropy": rel_profile.join_path_entropy,
-                "is_deterministic": rel_profile.is_deterministic,
-                "join_warning": rel_profile.join_warning,
+                "composite_score": rel_summary.composite_score,
+                "cardinality_entropy": rel_summary.cardinality_entropy,
+                "join_path_entropy": rel_summary.join_path_entropy,
+                "is_deterministic": rel_summary.is_deterministic,
+                "join_warning": rel_summary.join_warning,
             }
 
-    # Build entropy summary
-    entropy_summary_dict: dict[str, Any] = {
-        "overall_readiness": entropy_context.overall_readiness,
-        "high_entropy_count": entropy_context.high_entropy_count,
-        "critical_entropy_count": entropy_context.critical_entropy_count,
-        "compound_risk_count": entropy_context.compound_risk_count,
-        "readiness_blockers": entropy_context.readiness_blockers,
-    }
+    # Build entropy summary from the new context
+    entropy_summary_dict: dict[str, Any] = entropy_context.to_summary_dict()
 
     # 17. Build table contexts
     table_contexts: list[TableContext] = []

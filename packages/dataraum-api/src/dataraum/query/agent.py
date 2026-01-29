@@ -33,14 +33,11 @@ from sqlalchemy import select
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
-from dataraum.entropy.context import build_entropy_context
 from dataraum.entropy.contracts import (
     ConfidenceLevel,
     ContractEvaluation,
-    evaluate_contract,
-    find_best_contract,
-    get_contract,
 )
+from dataraum.entropy.views import build_for_query
 from dataraum.graphs.context import build_execution_context, format_context_for_prompt
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import ConversationRequest, Message, ToolDefinition
@@ -58,7 +55,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from dataraum.core.connections import ConnectionManager
-    from dataraum.entropy.models import EntropyContext
+    from dataraum.entropy.views import EntropyForQuery
     from dataraum.graphs.context import GraphExecutionContext
     from dataraum.graphs.models import QueryAssumption
     from dataraum.query.library import LibraryMatch
@@ -80,7 +77,7 @@ class QueryContext:
 
     # Rich metadata context
     execution_context: GraphExecutionContext | None = None
-    entropy_context: EntropyContext | None = None
+    entropy_context: EntropyForQuery | None = None
 
     # Contract settings
     contract_name: str | None = None
@@ -160,44 +157,34 @@ class QueryAgent(LLMFeature):
             logger.error(f"Failed to build execution context: {e}")
             return Result.fail(f"Failed to build context: {e}")
 
-        # Build entropy context
+        # Validate contract name if explicitly specified
+        if contract and not auto_contract:
+            from dataraum.entropy.contracts import get_contract
+
+            if get_contract(contract) is None:
+                return Result.fail(f"Contract not found: {contract}")
+
+        # Build entropy context using new views module (enforces typed tables)
         try:
-            entropy_context = build_entropy_context(
+            entropy_context = build_for_query(
                 session=session,
-                table_ids=table_ids,
+                table_ids=typed_table_ids,  # Use typed tables only
+                contract=contract,
+                auto_contract=auto_contract,
             )
         except Exception as e:
             logger.warning(f"Failed to build entropy context: {e}")
             entropy_context = None
 
-        # Determine contract and evaluate
+        # Get contract and confidence from entropy context
         contract_evaluation: ContractEvaluation | None = None
         # Default to YELLOW when entropy unavailable (data quality unknown)
         confidence_level = ConfidenceLevel.YELLOW
 
         if entropy_context:
-            if auto_contract:
-                # Find strictest passing contract
-                best_name, best_eval = find_best_contract(entropy_context)
-                if best_name and best_eval:
-                    contract = best_name
-                    contract_evaluation = best_eval
-                    confidence_level = best_eval.confidence_level
-                else:
-                    # No contracts pass - use default with RED
-                    contract = "exploratory_analysis"
-                    confidence_level = ConfidenceLevel.RED
-            elif contract:
-                # Evaluate explicit contract
-                if get_contract(contract) is None:
-                    return Result.fail(f"Contract not found: {contract}")
-                contract_evaluation = evaluate_contract(entropy_context, contract)
-                confidence_level = contract_evaluation.confidence_level
-            else:
-                # Default contract
-                contract = "exploratory_analysis"
-                contract_evaluation = evaluate_contract(entropy_context, contract)
-                confidence_level = contract_evaluation.confidence_level
+            confidence_level = entropy_context.confidence_level
+            contract_evaluation = entropy_context.contract_evaluation
+            contract = entropy_context.contract_name
 
         # Check if query is blocked
         if confidence_level == ConfidenceLevel.RED and contract_evaluation:
@@ -312,9 +299,8 @@ class QueryAgent(LLMFeature):
         # Calculate overall entropy score (None = unknown, not computed)
         entropy_score: float | None = None
         if entropy_context:
-            scores = [p.composite_score for p in entropy_context.column_profiles.values()]
-            if scores:
-                entropy_score = sum(scores) / len(scores)
+            # Use the pre-computed overall_entropy_score from EntropyForQuery
+            entropy_score = entropy_context.overall_entropy_score
 
         # Format answer
         answer = self._format_answer(
@@ -392,7 +378,7 @@ class QueryAgent(LLMFeature):
         question: str,
         execution_id: str,
         execution_context: GraphExecutionContext,
-        entropy_context: EntropyContext | None,
+        entropy_context: EntropyForQuery | None,
         similar_queries: list[dict[str, Any]] | None = None,
     ) -> Result[QueryAnalysisOutput]:
         """Use LLM to analyze question and generate SQL."""

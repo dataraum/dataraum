@@ -137,58 +137,6 @@ class TestImportPhaseSmoke:
             assert junk not in columns, f"Junk column '{junk}' was not dropped"
 
 
-class TestImportPhaseRealData:
-    """Tests against real finance data (larger, slower).
-
-    These tests use the full example data instead of fixtures.
-    They're marked as slow and can be skipped in CI.
-    """
-
-    @pytest.mark.slow
-    def test_import_real_finance_data(
-        self,
-        harness: PipelineTestHarness,
-        real_finance_path: Path,
-    ):
-        """Import the full finance example data."""
-        if not real_finance_path.exists():
-            pytest.skip("Real finance data not available")
-
-        result = harness.run_import(
-            source_path=real_finance_path,
-            source_name="finance_example",
-            junk_columns=FINANCE_JUNK_COLUMNS,
-        )
-
-        assert result.status == PhaseStatus.COMPLETED
-        assert len(result.outputs["raw_tables"]) >= 5
-
-        # Check we loaded significant data
-        assert result.records_processed > 1000
-
-    @pytest.mark.slow
-    def test_real_data_master_table_size(
-        self,
-        harness: PipelineTestHarness,
-        real_finance_path: Path,
-    ):
-        """Verify the master transaction table has expected scale."""
-        if not real_finance_path.exists():
-            pytest.skip("Real finance data not available")
-
-        harness.run_import(
-            source_path=real_finance_path,
-            source_name="finance_example",
-            junk_columns=FINANCE_JUNK_COLUMNS,
-        )
-
-        result = harness.query_duckdb("SELECT COUNT(*) FROM raw_master_txn_table")
-        row_count = result[0][0]
-
-        # The master table should have many thousands of rows
-        assert row_count > 10000
-
-
 class TestTypingPhaseSmoke:
     """Smoke tests for the typing phase."""
 

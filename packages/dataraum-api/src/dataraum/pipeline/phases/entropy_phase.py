@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from dataraum.analysis.correlation.db_models import DerivedColumn
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
-from dataraum.analysis.statistics.db_models import StatisticalProfile
+from dataraum.analysis.statistics.db_models import StatisticalProfile, StatisticalQualityMetrics
 from dataraum.analysis.typing.db_models import TypeDecision
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.db_models import (
@@ -125,6 +125,14 @@ class EntropyPhase(BasePhase):
         for profile in (ctx.session.execute(stat_stmt)).scalars().all():
             stat_profiles[profile.column_id] = profile
 
+        # Load statistical quality metrics (outlier detection, Benford's Law)
+        quality_metrics: dict[str, StatisticalQualityMetrics] = {}
+        quality_stmt = select(StatisticalQualityMetrics).where(
+            StatisticalQualityMetrics.column_id.in_(column_ids)
+        )
+        for qm in (ctx.session.execute(quality_stmt)).scalars().all():
+            quality_metrics[qm.column_id] = qm
+
         # Load type decisions
         type_decisions: dict[str, TypeDecision] = {}
         type_stmt = select(TypeDecision).where(TypeDecision.column_id.in_(column_ids))
@@ -165,6 +173,8 @@ class EntropyPhase(BasePhase):
                 "from_table": from_table,
                 "to_table": to_table,
                 "cardinality": rel.cardinality,
+                "is_confirmed": rel.is_confirmed,
+                "evidence": rel.evidence,  # Contains RI metrics, orphan count, etc.
             }
 
             if rel.from_column_id not in relationships_by_column:
@@ -216,7 +226,7 @@ class EntropyPhase(BasePhase):
                 # Add statistics
                 if col.column_id in stat_profiles:
                     sp = stat_profiles[col.column_id]
-                    analysis_results["statistics"] = {
+                    stats_dict: dict[str, Any] = {
                         "null_count": sp.null_count,
                         "null_ratio": sp.null_count / sp.total_count if sp.total_count else 0,
                         "distinct_count": sp.distinct_count,
@@ -224,6 +234,23 @@ class EntropyPhase(BasePhase):
                         "total_count": sp.total_count,
                         "profile_data": sp.profile_data,
                     }
+
+                    # Add quality metrics (outlier detection, Benford's Law)
+                    if col.column_id in quality_metrics:
+                        qm = quality_metrics[col.column_id]
+                        stats_dict["quality"] = {
+                            "outlier_detection": {
+                                "iqr_outlier_ratio": qm.iqr_outlier_ratio or 0.0,
+                                "isolation_forest_anomaly_ratio": qm.isolation_forest_anomaly_ratio,
+                                "has_outliers": bool(qm.has_outliers),
+                            },
+                            "benford_compliant": bool(qm.benford_compliant)
+                            if qm.benford_compliant is not None
+                            else None,
+                            "quality_data": qm.quality_data,
+                        }
+
+                    analysis_results["statistics"] = stats_dict
 
                 # Add semantic info
                 if col.column_id in semantic_annotations:

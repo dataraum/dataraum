@@ -20,6 +20,54 @@ from dataraum.analysis.semantic.utils import load_column_mappings, load_table_ma
 from dataraum.core.models.base import Result
 
 
+def _build_candidate_metrics_lookup(
+    relationship_candidates: list[dict[str, Any]] | None,
+) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    """Build lookup of evaluation metrics from relationship candidates.
+
+    Returns a dict keyed by (from_table, from_column, to_table, to_column)
+    containing the RI metrics for each candidate join.
+    """
+    if not relationship_candidates:
+        return {}
+
+    lookup: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+
+    for candidate in relationship_candidates:
+        table1 = candidate.get("table1", "")
+        table2 = candidate.get("table2", "")
+
+        for jc in candidate.get("join_columns", []):
+            col1 = jc.get("column1", "")
+            col2 = jc.get("column2", "")
+
+            # Extract evaluation metrics
+            metrics: dict[str, Any] = {}
+            if "left_referential_integrity" in jc:
+                metrics["left_referential_integrity"] = jc["left_referential_integrity"]
+            if "right_referential_integrity" in jc:
+                metrics["right_referential_integrity"] = jc["right_referential_integrity"]
+            if "orphan_count" in jc:
+                metrics["orphan_count"] = jc["orphan_count"]
+            if "cardinality_verified" in jc:
+                metrics["cardinality_verified"] = jc["cardinality_verified"]
+
+            # Add relationship-level metrics
+            if "join_success_rate" in candidate:
+                metrics["join_success_rate"] = candidate["join_success_rate"]
+            if "introduces_duplicates" in candidate:
+                metrics["introduces_duplicates"] = candidate["introduces_duplicates"]
+            if "topology_similarity" in candidate:
+                metrics["topology_similarity"] = candidate["topology_similarity"]
+
+            if metrics:
+                # Store for both directions (table1.col1 -> table2.col2 and reverse)
+                lookup[(table1, col1, table2, col2)] = metrics
+                lookup[(table2, col2, table1, col1)] = metrics
+
+    return lookup
+
+
 def enrich_semantic(
     session: Session,
     agent: SemanticAgent,
@@ -106,6 +154,9 @@ def enrich_semantic(
         )
         session.add(db_entity)
 
+    # Build lookup of candidate metrics for merging into LLM relationships
+    candidate_metrics = _build_candidate_metrics_lookup(relationship_candidates)
+
     # Store LLM-confirmed relationships (separate from Phase 6 candidates)
     for rel in enrichment.relationships:
         from_col_id = column_map.get((rel.from_table, rel.from_column))
@@ -115,6 +166,12 @@ def enrich_semantic(
 
         if not all([from_col_id, to_col_id, from_table_id, to_table_id]):
             continue
+
+        # Merge candidate evaluation metrics into LLM evidence
+        evidence = dict(rel.evidence) if rel.evidence else {}
+        candidate_key = (rel.from_table, rel.from_column, rel.to_table, rel.to_column)
+        if candidate_key in candidate_metrics:
+            evidence.update(candidate_metrics[candidate_key])
 
         db_rel = RelationshipModel(
             relationship_id=rel.relationship_id,
@@ -126,7 +183,7 @@ def enrich_semantic(
             cardinality=rel.cardinality,
             confidence=rel.confidence,
             detection_method="llm",  # Always 'llm' for semantic analysis
-            evidence=rel.evidence,
+            evidence=evidence,
         )
         session.add(db_rel)
 

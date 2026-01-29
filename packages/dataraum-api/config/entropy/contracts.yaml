@@ -26,7 +26,7 @@ contracts:
       value.nulls: 0.5
       value.outliers: 0.5
       computational.derived_values: 0.5
-      computational.aggregations: 0.5
+      # Note: computational.aggregations removed - no detector
 
     blocking_conditions:
       - type: any_dimension_exceeds
@@ -51,7 +51,7 @@ contracts:
       value.nulls: 0.3           # Nulls affect model quality
       value.outliers: 0.3        # Outliers affect training
       computational.derived_values: 0.4
-      computational.aggregations: 0.4
+      # Note: computational.aggregations removed - no detector
 
     blocking_conditions:
       - type: any_dimension_exceeds
@@ -76,7 +76,7 @@ contracts:
       value.nulls: 0.4
       value.outliers: 0.4
       computational.derived_values: 0.3
-      computational.aggregations: 0.3
+      # Note: computational.aggregations removed - no detector
 
     blocking_conditions:
       - type: any_dimension_exceeds
@@ -102,7 +102,7 @@ contracts:
       value.nulls: 0.3
       value.outliers: 0.3
       computational.derived_values: 0.2
-      computational.aggregations: 0.2
+      # Note: computational.aggregations removed - no detector
 
     blocking_conditions:
       - type: any_dimension_exceeds
@@ -129,7 +129,7 @@ contracts:
       value.nulls: 0.1
       value.outliers: 0.2      # Slightly more tolerance for outliers
       computational.derived_values: 0.1
-      computational.aggregations: 0.1
+      # Note: computational.aggregations removed - no detector
 
     blocking_conditions:
       - type: any_dimension_exceeds

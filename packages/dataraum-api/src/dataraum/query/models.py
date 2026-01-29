@@ -119,8 +119,8 @@ class QueryResult:
     columns: list[str] | None = None  # Column names in result order
 
     # Confidence and quality
-    confidence_level: ConfidenceLevel = ConfidenceLevel.GREEN
-    entropy_score: float = 0.0  # Overall entropy for columns touched
+    confidence_level: ConfidenceLevel = ConfidenceLevel.YELLOW
+    entropy_score: float | None = None  # Overall entropy for columns touched (None = not computed)
     assumptions: list[QueryAssumption] = field(default_factory=list)
 
     # Contract evaluation (if contract specified)
@@ -155,7 +155,9 @@ class QueryResult:
             "confidence_level": self.confidence_level.value,
             "confidence_emoji": self.confidence_level.emoji,
             "confidence_label": self.confidence_level.label,
-            "entropy_score": round(self.entropy_score, 3),
+            "entropy_score": round(self.entropy_score, 3)
+            if self.entropy_score is not None
+            else None,
             "assumptions": [
                 {
                     "dimension": a.dimension,

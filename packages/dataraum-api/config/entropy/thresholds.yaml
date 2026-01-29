@@ -94,17 +94,26 @@ detectors:
   # --------------------------------------------------------------------------
   # JOIN PATH DETERMINISM DETECTOR (structural.relations.join_path_determinism)
   # --------------------------------------------------------------------------
-  # Score assigned by relationship count
+  # Score assigned by path ambiguity (multiple paths to SAME table = high entropy)
   join_path:
     score_orphan: 0.9         # No relationships (isolated table)
-    score_single: 0.1         # Single clear join path
-    score_few: 0.4            # 2-3 relationships (some ambiguity)
-    score_multiple: 0.7       # 4+ relationships (high ambiguity)
-    # Path count boundaries
-    few_path_max: 3           # <= 3 paths considered "few"
+    score_deterministic: 0.1  # Each connected table has exactly one path (star schema OK)
+    score_ambiguous: 0.7      # Multiple paths to at least one table
     # Expected entropy reduction
     reduction_declare_relationship: 0.8
     reduction_declare_preferred_path: 0.5
+
+  # --------------------------------------------------------------------------
+  # RELATIONSHIP ENTROPY DETECTOR (structural.relations.relationship_quality)
+  # --------------------------------------------------------------------------
+  # Uses actual evaluation metrics from JoinCandidate
+  relationship_entropy:
+    score_unknown_ri: 0.5             # Unknown referential integrity
+    score_unverified_cardinality: 0.4 # Cardinality not verified
+    score_cardinality_mismatch: 0.7   # Cardinality verified but doesn't match
+    score_unconfirmed: 0.3            # Known type but not human-confirmed
+    score_unknown_type: 0.6           # Unknown relationship type
+    reduction_verify_relationship: 0.6
 
   # --------------------------------------------------------------------------
   # DERIVED VALUE DETECTOR (computational.derived_values.formula_match)
@@ -124,82 +133,117 @@ detectors:
   # --------------------------------------------------------------------------
   # BUSINESS MEANING DETECTOR (semantic.business_meaning.naming_clarity)
   # --------------------------------------------------------------------------
-  # Score assigned by documentation presence
+  # Score assigned by documentation presence, weighted by LLM confidence
   business_meaning:
     score_missing: 1.0        # No description = high entropy
     score_partial: 0.6        # Description only, no business_name/entity_type
     score_documented: 0.2     # Has description + business_name or entity_type
+    # Confidence weighting (low LLM confidence increases entropy)
+    confidence_weight: 0.3    # How much LLM confidence affects score
+    ontology_bonus: 0.1       # Reduction if business_concept is present
+    min_confidence: 0.5       # Below this, treat as speculative
     # Expected entropy reduction
     reduction_add_description: 0.8
     reduction_add_business_name: 0.2
     reduction_add_entity_type: 0.15
+
+  # --------------------------------------------------------------------------
+  # UNIT ENTROPY DETECTOR (semantic.units.unit_declaration)
+  # --------------------------------------------------------------------------
+  # Measures whether numeric columns (measures) have declared units
+  unit_entropy:
+    score_no_unit: 0.8        # Measure without unit declaration
+    score_low_confidence: 0.5 # Unit detected but low confidence
+    score_declared: 0.1       # Unit declared with high confidence
+    confidence_threshold: 0.5 # Below this = low confidence
+    reduction_declare_unit: 0.8
+
+  # --------------------------------------------------------------------------
+  # TEMPORAL ENTROPY DETECTOR (semantic.temporal.time_role)
+  # --------------------------------------------------------------------------
+  # Measures whether temporal columns are properly identified
+  temporal_entropy:
+    score_unmarked: 0.6       # Date type but not marked as timestamp
+    score_mismatch: 0.8       # Marked as timestamp but not date type
+    score_aligned: 0.1        # Properly identified temporal column
+    reduction_mark_timestamp: 0.6
 
 # ============================================================================
 # COMPOUND RISK DEFINITIONS
 # ============================================================================
 # Dangerous combinations of entropy dimensions that create multiplicative risk.
 # Each risk pattern specifies which dimensions must both be high.
+#
+# NOTE: Only dimensions with active detectors should be used here:
+# - structural.types (TypeFidelityDetector)
+# - structural.relations (JoinPathDeterminismDetector, RelationshipEntropyDetector)
+# - semantic.business_meaning (BusinessMeaningDetector)
+# - semantic.units (UnitEntropyDetector)
+# - semantic.temporal (TemporalEntropyDetector)
+# - value.nulls (NullRatioDetector)
+# - value.outliers (OutlierRateDetector)
+# - computational.derived_values (DerivedValueDetector)
 
 compound_risks:
-  # Critical: Unknown units being summed
-  units_aggregations:
+  # Critical: Unknown units in derived calculations
+  units_derived:
     dimensions:
       - semantic.units
-      - computational.aggregations
+      - computational.derived_values
     threshold: 0.5
     multiplier: 2.0
     risk_level: critical
     impact_template: >
-      Unknown currencies/units being summed without conversion.
-      Results could be off by 20-40%.
+      Numeric measures without declared units are used in formulas.
+      Results may be incorrect if units don't match.
 
-  # High: Non-deterministic joins with filtering
-  relations_filters:
+  # High: Temporal columns with null values
+  temporal_nulls:
     dimensions:
-      - structural.relations
-      - computational.filters
-    threshold: 0.5
-    multiplier: 1.8
-    risk_level: high
-    impact_template: >
-      Non-deterministic join paths combined with filtering.
-      Different query paths may give different results.
-
-  # High: High nulls in aggregated columns
-  nulls_aggregations:
-    dimensions:
+      - semantic.temporal
       - value.nulls
-      - computational.aggregations
     threshold: 0.5
     multiplier: 1.5
     risk_level: high
     impact_template: >
-      High null ratio in aggregated columns.
-      Results may exclude significant data or misrepresent averages.
+      Timestamp columns have null values.
+      Time-based analysis may have gaps.
 
-  # Medium: Unclear time periods with outlier values
-  temporal_ranges:
-    dimensions:
-      - semantic.temporal
-      - value.ranges
-    threshold: 0.5
-    multiplier: 1.3
-    risk_level: medium
-    impact_template: >
-      Unclear time periods combined with outlier values.
-      May include or exclude data incorrectly.
-
-  # High: Type issues in aggregated columns
-  types_aggregations:
+  # High: Type issues in derived calculations
+  types_derived:
     dimensions:
       - structural.types
-      - computational.aggregations
+      - computational.derived_values
     threshold: 0.6
     multiplier: 1.5
     risk_level: high
     impact_template: >
-      Type inference issues in columns being aggregated.
+      Type inference issues in columns used for calculations.
       Some values may fail to parse, skewing results.
+
+  # High: Relationship issues in derived calculations
+  relations_derived:
+    dimensions:
+      - structural.relations
+      - computational.derived_values
+    threshold: 0.5
+    multiplier: 1.5
+    risk_level: high
+    impact_template: >
+      Relationships with integrity issues are used in derived columns.
+      Join results may be incomplete or duplicated.
+
+  # Medium: Unclear business meaning with outliers
+  meaning_outliers:
+    dimensions:
+      - semantic.business_meaning
+      - value.outliers
+    threshold: 0.5
+    multiplier: 1.3
+    risk_level: medium
+    impact_template: >
+      Columns with unclear business meaning have outliers.
+      Cannot determine if outliers are valid edge cases or errors.
 
 # ============================================================================
 # RESOLUTION EFFORT FACTORS

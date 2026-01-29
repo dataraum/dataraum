@@ -40,11 +40,14 @@ from dataraum.entropy.detectors.computational import (
 # Semantic layer detectors
 from dataraum.entropy.detectors.semantic import (
     BusinessMeaningDetector,
+    TemporalEntropyDetector,
+    UnitEntropyDetector,
 )
 
 # Structural layer detectors
 from dataraum.entropy.detectors.structural import (
     JoinPathDeterminismDetector,
+    RelationshipEntropyDetector,
     TypeFidelityDetector,
 )
 
@@ -59,11 +62,14 @@ BUILTIN_DETECTORS: list[type[EntropyDetector]] = [
     # Structural
     TypeFidelityDetector,
     JoinPathDeterminismDetector,
+    RelationshipEntropyDetector,
     # Value
     NullRatioDetector,
     OutlierRateDetector,
     # Semantic
     BusinessMeaningDetector,
+    UnitEntropyDetector,
+    TemporalEntropyDetector,
     # Computational
     DerivedValueDetector,
 ]
@@ -96,11 +102,14 @@ __all__ = [
     # Structural detectors
     "TypeFidelityDetector",
     "JoinPathDeterminismDetector",
+    "RelationshipEntropyDetector",
     # Value detectors
     "NullRatioDetector",
     "OutlierRateDetector",
     # Semantic detectors
     "BusinessMeaningDetector",
+    "UnitEntropyDetector",
+    "TemporalEntropyDetector",
     # Computational detectors
     "DerivedValueDetector",
 ]

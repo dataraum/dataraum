@@ -182,7 +182,9 @@ def query_agent(
         confidence_level=query_result.confidence_level.value,
         confidence_emoji=query_result.confidence_level.emoji,
         confidence_label=query_result.confidence_level.label,
-        entropy_score=round(query_result.entropy_score, 3),
+        entropy_score=round(query_result.entropy_score, 3)
+        if query_result.entropy_score is not None
+        else None,
         assumptions=assumptions,
         contract=query_result.contract,
         interpreted_question=query_result.interpreted_question,

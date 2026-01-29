@@ -118,8 +118,16 @@ class EntropyConfig:
         return score >= self.critical_entropy_threshold
 
     def effort_factor(self, effort: str) -> float:
-        """Get effort factor for priority calculation."""
-        return self.effort_factors.get(effort, 2.0)
+        """Get effort factor for priority calculation.
+
+        Raises:
+            KeyError: If effort level is not recognized (fail-fast behavior).
+        """
+        if effort not in self.effort_factors:
+            raise KeyError(
+                f"Unknown effort level '{effort}'. Valid levels: {list(self.effort_factors.keys())}"
+            )
+        return self.effort_factors[effort]
 
 
 # Module-level cache for configuration
@@ -134,13 +142,19 @@ def load_entropy_config(config_path: Path | None = None) -> EntropyConfig:
         config_path: Path to thresholds.yaml. Defaults to config/entropy/thresholds.yaml.
 
     Returns:
-        EntropyConfig with loaded values or defaults if file not found.
+        EntropyConfig with loaded values.
+
+    Raises:
+        FileNotFoundError: If config file doesn't exist (fail-fast behavior).
+        RuntimeError: If config file cannot be parsed.
     """
     config_path = config_path or DEFAULT_CONFIG_PATH
 
     if not config_path.exists():
-        logger.warning(f"Entropy config not found: {config_path}. Using defaults.")
-        return EntropyConfig()
+        raise FileNotFoundError(
+            f"Required entropy config not found: {config_path}. "
+            "Create config/entropy/thresholds.yaml with entropy configuration."
+        )
 
     try:
         with open(config_path) as f:
@@ -148,9 +162,10 @@ def load_entropy_config(config_path: Path | None = None) -> EntropyConfig:
 
         return _parse_config(raw)
 
+    except FileNotFoundError:
+        raise  # Re-raise FileNotFoundError
     except Exception as e:
-        logger.error(f"Error loading entropy config: {e}. Using defaults.")
-        return EntropyConfig()
+        raise RuntimeError(f"Error loading entropy config from {config_path}: {e}") from e
 
 
 def _parse_config(raw: dict[str, Any]) -> EntropyConfig:

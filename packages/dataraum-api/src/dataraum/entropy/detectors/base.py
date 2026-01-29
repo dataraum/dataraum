@@ -300,10 +300,14 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
     """
     # Structural layer detectors
     from dataraum.entropy.detectors.structural.relations import JoinPathDeterminismDetector
+    from dataraum.entropy.detectors.structural.relationship_entropy import (
+        RelationshipEntropyDetector,
+    )
     from dataraum.entropy.detectors.structural.types import TypeFidelityDetector
 
     registry.register(TypeFidelityDetector())
     registry.register(JoinPathDeterminismDetector())
+    registry.register(RelationshipEntropyDetector())
 
     # Value layer detectors
     from dataraum.entropy.detectors.value.null_semantics import NullRatioDetector
@@ -314,8 +318,12 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
 
     # Semantic layer detectors
     from dataraum.entropy.detectors.semantic.business_meaning import BusinessMeaningDetector
+    from dataraum.entropy.detectors.semantic.temporal_entropy import TemporalEntropyDetector
+    from dataraum.entropy.detectors.semantic.unit_entropy import UnitEntropyDetector
 
     registry.register(BusinessMeaningDetector())
+    registry.register(UnitEntropyDetector())
+    registry.register(TemporalEntropyDetector())
 
     # Computational layer detectors
     from dataraum.entropy.detectors.computational.derived_values import (

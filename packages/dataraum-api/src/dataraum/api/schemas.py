@@ -280,7 +280,9 @@ class QueryAgentResponse(BaseModel):
     confidence_level: str = Field(description="green, yellow, orange, red")
     confidence_emoji: str = Field(description="Traffic light emoji")
     confidence_label: str = Field(description="GOOD, MARGINAL, ISSUES, BLOCKED")
-    entropy_score: float = Field(description="Overall entropy score")
+    entropy_score: float | None = Field(
+        default=None, description="Overall entropy score (None if not computed)"
+    )
 
     # Assumptions
     assumptions: list[QueryAssumptionResponse] = Field(default_factory=list)

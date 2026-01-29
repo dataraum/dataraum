@@ -3,9 +3,9 @@
 Measures uncertainty in business meaning/description.
 Columns without clear business descriptions are harder to interpret correctly.
 
-NOTE: This detector collects raw metrics for LLM interpretation.
-The score calculation is provisional - Phase 2.5 will use LLM to
-evaluate semantic quality rather than character counting.
+Enhanced to use:
+- LLM confidence as a scoring weight (low confidence = higher entropy)
+- business_concept presence as ontology alignment bonus (reduces entropy)
 """
 
 from dataraum.entropy.config import get_entropy_config
@@ -16,10 +16,12 @@ from dataraum.entropy.models import EntropyObject, ResolutionOption
 class BusinessMeaningDetector(EntropyDetector):
     """Detector for business meaning clarity.
 
-    Collects raw metrics about business description and semantic annotation.
-    Score is provisional - will be refined by LLM in Phase 2.5.
+    Measures semantic clarity using:
+    - Presence of description, business_name, entity_type
+    - LLM confidence as weight (low confidence = higher entropy)
+    - business_concept as ontology alignment bonus
 
-    Source: semantic/SemanticAnnotation.business_description
+    Source: semantic/SemanticAnnotation
     Scores configurable in config/entropy/thresholds.yaml.
     """
 
@@ -33,9 +35,10 @@ class BusinessMeaningDetector(EntropyDetector):
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect business meaning entropy.
 
-        Collects raw metrics about semantic annotations.
-        Score is binary (has description vs. doesn't) - semantic quality
-        evaluation will be done by LLM in Phase 2.5.
+        Score calculation:
+        1. Base score from presence of description/metadata
+        2. Confidence factor: low LLM confidence increases entropy
+        3. Ontology bonus: business_concept presence reduces entropy
 
         Args:
             context: Detector context with semantic analysis results
@@ -55,6 +58,11 @@ class BusinessMeaningDetector(EntropyDetector):
         reduction_business_name = detector_config.get("reduction_add_business_name", 0.2)
         reduction_entity_type = detector_config.get("reduction_add_entity_type", 0.15)
 
+        # New config: confidence weighting and ontology bonus
+        confidence_weight = detector_config.get("confidence_weight", 0.3)
+        ontology_bonus = detector_config.get("ontology_bonus", 0.1)
+        min_confidence = detector_config.get("min_confidence", 0.5)
+
         semantic = context.get_analysis("semantic", {})
 
         # Extract raw metrics from semantic annotation
@@ -63,13 +71,15 @@ class BusinessMeaningDetector(EntropyDetector):
             business_name = getattr(semantic, "business_name", None)
             entity_type = getattr(semantic, "entity_type", None)
             semantic_role = getattr(semantic, "semantic_role", None)
-            confidence = getattr(semantic, "confidence", 1.0)
+            confidence = getattr(semantic, "confidence", None) or 1.0
+            business_concept = getattr(semantic, "business_concept", None)
         else:
             description = semantic.get("business_description", "") or ""
             business_name = semantic.get("business_name")
             entity_type = semantic.get("entity_type")
             semantic_role = semantic.get("semantic_role")
-            confidence = semantic.get("confidence", 1.0)
+            confidence = semantic.get("confidence") or 1.0
+            business_concept = semantic.get("business_concept")
 
         # Collect raw metrics (factual, not interpreted)
         raw_metrics = {
@@ -82,27 +92,50 @@ class BusinessMeaningDetector(EntropyDetector):
             "has_entity_type": bool(entity_type),
             "semantic_role": str(semantic_role) if semantic_role else None,
             "semantic_confidence": confidence,
+            "business_concept": business_concept,
+            "has_business_concept": bool(business_concept),
         }
 
-        # Provisional score: binary based on presence of description
-        # TODO (Phase 2.5): LLM will evaluate semantic quality
+        # 1. Base score from documentation presence
         if not raw_metrics["has_description"]:
-            score = score_missing  # No description = high entropy
+            base_score = score_missing  # No description = high entropy
         elif not raw_metrics["has_business_name"] and not raw_metrics["has_entity_type"]:
-            score = score_partial  # Description but no other context
+            base_score = score_partial  # Description but no other context
         else:
-            score = score_documented  # Has description and additional context
+            base_score = score_documented  # Has description and additional context
 
-        # Build evidence with raw metrics for LLM interpretation
+        # 2. Confidence factor: low confidence increases entropy
+        # confidence_factor of 1.0 means no adjustment, >1.0 increases score
+        if confidence < min_confidence:
+            # Below min_confidence, treat as speculative
+            confidence_factor = 1.0 + confidence_weight
+        else:
+            # Scale confidence_factor: 1.0 at confidence=1.0, up to 1.0+weight at min_confidence
+            normalized = (confidence - min_confidence) / (1.0 - min_confidence)
+            confidence_factor = 1.0 + confidence_weight * (1.0 - normalized)
+
+        # 3. Ontology bonus: having business_concept = ontology alignment = lower entropy
+        concept_bonus = ontology_bonus if business_concept else 0.0
+
+        # Calculate final score
+        score = (base_score * confidence_factor) - concept_bonus
+        score = max(0.0, min(1.0, score))  # Clamp to [0, 1]
+
+        # Build evidence with raw metrics and score components
         evidence = [
             {
                 "raw_metrics": raw_metrics,
-                # Provisional classification (will be LLM-determined)
-                "provisional_assessment": (
+                "score_components": {
+                    "base_score": round(base_score, 3),
+                    "confidence_factor": round(confidence_factor, 3),
+                    "ontology_bonus": round(concept_bonus, 3),
+                    "final_score": round(score, 3),
+                },
+                "assessment": (
                     "missing"
                     if not raw_metrics["has_description"]
                     else "partial"
-                    if score > 0.3
+                    if base_score > 0.3
                     else "documented"
                 ),
             }

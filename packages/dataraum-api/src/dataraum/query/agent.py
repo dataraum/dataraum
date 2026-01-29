@@ -172,7 +172,8 @@ class QueryAgent(LLMFeature):
 
         # Determine contract and evaluate
         contract_evaluation: ContractEvaluation | None = None
-        confidence_level = ConfidenceLevel.GREEN
+        # Default to YELLOW when entropy unavailable (data quality unknown)
+        confidence_level = ConfidenceLevel.YELLOW
 
         if entropy_context:
             if auto_contract:
@@ -308,8 +309,8 @@ class QueryAgent(LLMFeature):
             for a in analysis_output.assumptions
         ]
 
-        # Calculate overall entropy score
-        entropy_score = 0.0
+        # Calculate overall entropy score (None = unknown, not computed)
+        entropy_score: float | None = None
         if entropy_context:
             scores = [p.composite_score for p in entropy_context.column_profiles.values()]
             if scores:
@@ -401,9 +402,9 @@ class QueryAgent(LLMFeature):
         # Format context for prompt
         context_str = format_context_for_prompt(execution_context)
 
-        # Format entropy warnings
+        # Format entropy warnings (use execution_context's entropy, not separate entropy_context)
         entropy_warnings = ""
-        if entropy_context:
+        if execution_context.entropy_summary:
             from dataraum.graphs.context import format_entropy_for_prompt
 
             entropy_warnings = format_entropy_for_prompt(execution_context)
@@ -418,7 +419,8 @@ class QueryAgent(LLMFeature):
             "question": question,
             "schema_info": json.dumps(schema_info, indent=2),
             "dataset_context": context_str,
-            "entropy_warnings": entropy_warnings or "No data quality warnings.",
+            "entropy_warnings": entropy_warnings
+            or "Data quality assessment not available - proceed with caution.",
             "similar_queries": similar_queries_str,
         }
 

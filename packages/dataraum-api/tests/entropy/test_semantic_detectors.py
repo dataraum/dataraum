@@ -1,8 +1,10 @@
 """Tests for semantic layer entropy detectors.
 
-NOTE: BusinessMeaningDetector tests updated to reflect simplified scoring.
-Character-counting heuristics removed - semantic quality evaluation
-will be done by LLM in Phase 2.5.
+NOTE: BusinessMeaningDetector uses confidence-weighted scoring.
+The detector now uses:
+- Base score from presence of description/metadata
+- Confidence factor: low LLM confidence increases entropy
+- Ontology bonus: business_concept presence reduces entropy
 """
 
 import pytest
@@ -16,12 +18,11 @@ from dataraum.entropy.detectors import (
 class TestBusinessMeaningDetector:
     """Tests for BusinessMeaningDetector.
 
-    The detector now collects raw metrics and uses simplified scoring:
-    - No description = 1.0 (high entropy)
-    - Description only = 0.6 (moderate entropy)
-    - Description + business_name or entity_type = 0.2 (low entropy)
-
-    Semantic quality evaluation will be done by LLM in Phase 2.5.
+    The detector uses confidence-weighted scoring:
+    - No description = ~1.0 (high entropy) * confidence_factor
+    - Description only = ~0.6 (moderate entropy) * confidence_factor
+    - Description + business_name or entity_type = ~0.2 (low entropy) * confidence_factor
+    - business_concept presence = ontology_bonus reduction
     """
 
     @pytest.fixture
@@ -44,8 +45,9 @@ class TestBusinessMeaningDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
-        assert results[0].score == pytest.approx(1.0, abs=0.01)
-        assert results[0].evidence[0]["provisional_assessment"] == "missing"
+        # Base score 1.0 * confidence_factor (default confidence=1.0 -> factor=1.0)
+        assert results[0].score == pytest.approx(1.0, abs=0.05)
+        assert results[0].evidence[0]["assessment"] == "missing"
 
     def test_empty_description(self, detector: BusinessMeaningDetector):
         """Test max entropy for empty description."""
@@ -81,9 +83,9 @@ class TestBusinessMeaningDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
-        # Has description but no business_name/entity_type = 0.6
-        assert results[0].score == pytest.approx(0.6, abs=0.01)
-        assert results[0].evidence[0]["provisional_assessment"] == "partial"
+        # Has description but no business_name/entity_type = base 0.6 * confidence_factor
+        assert results[0].score == pytest.approx(0.6, abs=0.05)
+        assert results[0].evidence[0]["assessment"] == "partial"
 
     def test_description_with_business_name(self, detector: BusinessMeaningDetector):
         """Test low entropy for description with business name."""
@@ -102,9 +104,9 @@ class TestBusinessMeaningDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
-        # Has description + business_name = 0.2
-        assert results[0].score == pytest.approx(0.2, abs=0.01)
-        assert results[0].evidence[0]["provisional_assessment"] == "documented"
+        # Has description + business_name = base 0.2 * confidence_factor
+        assert results[0].score == pytest.approx(0.2, abs=0.05)
+        assert results[0].evidence[0]["assessment"] == "documented"
 
     def test_description_with_entity_type(self, detector: BusinessMeaningDetector):
         """Test low entropy for description with entity type."""

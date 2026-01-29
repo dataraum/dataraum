@@ -4,11 +4,9 @@ Some dimension pairs create multiplicative risk that exceeds the sum
 of individual scores. This module detects these dangerous combinations
 and assigns appropriate risk levels.
 
-Key compound risks:
-- semantic.units + computational.aggregations -> Critical
-- structural.relations + computational.filters -> High
-- value.nulls + computational.aggregations -> High
-- semantic.temporal + value.ranges -> Medium
+Configuration is loaded from config/entropy/thresholds.yaml (compound_risks section).
+This module uses fail-fast: if no config is found, it raises an error rather than
+using hardcoded defaults (which can become stale).
 """
 
 from dataclasses import dataclass, field
@@ -64,9 +62,11 @@ class CompoundRiskDetector:
 
         if not config_path.exists():
             if not self.config_loaded:
-                # Neither source has config - use hardcoded defaults
-                logger.debug("No compound risk config found, using hardcoded defaults.")
-                self._load_hardcoded_defaults()
+                # Fail fast - require configuration instead of using stale hardcoded defaults
+                raise FileNotFoundError(
+                    f"Compound risk config not found: {config_path}. "
+                    "Add 'compound_risks' section to config/entropy/thresholds.yaml"
+                )
             return
 
         try:
@@ -91,9 +91,8 @@ class CompoundRiskDetector:
             )
 
         except Exception as e:
-            logger.error(f"Error loading compound risk config: {e}")
-            if not self.config_loaded:
-                self._load_hardcoded_defaults()
+            # Fail fast on config errors
+            raise RuntimeError(f"Error loading compound risk config: {e}") from e
 
     def _load_from_thresholds(self) -> None:
         """Load compound risk definitions from thresholds.yaml."""
@@ -119,71 +118,11 @@ class CompoundRiskDetector:
             )
 
     def _load_hardcoded_defaults(self) -> None:
-        """Load hardcoded default risk definitions (last resort fallback)."""
-        self.risk_definitions = [
-            # Critical: Units + Aggregations
-            CompoundRiskDefinition(
-                risk_type="units_aggregations",
-                dimensions=["semantic.units", "computational.aggregations"],
-                threshold=0.5,
-                risk_level="critical",
-                impact_template=(
-                    "Unknown currencies/units being summed without conversion. "
-                    "Results could be off by 20-40%."
-                ),
-                multiplier=2.0,
-            ),
-            # High: Relations + Filters
-            CompoundRiskDefinition(
-                risk_type="relations_filters",
-                dimensions=["structural.relations", "computational.filters"],
-                threshold=0.5,
-                risk_level="high",
-                impact_template=(
-                    "Non-deterministic join paths combined with filtering. "
-                    "Different query paths may give different results."
-                ),
-                multiplier=1.8,
-            ),
-            # High: Nulls + Aggregations
-            CompoundRiskDefinition(
-                risk_type="nulls_aggregations",
-                dimensions=["value.nulls", "computational.aggregations"],
-                threshold=0.5,
-                risk_level="high",
-                impact_template=(
-                    "High null ratio in aggregated columns. "
-                    "Results may exclude significant data or misrepresent averages."
-                ),
-                multiplier=1.5,
-            ),
-            # Medium: Temporal + Ranges
-            CompoundRiskDefinition(
-                risk_type="temporal_ranges",
-                dimensions=["semantic.temporal", "value.ranges"],
-                threshold=0.5,
-                risk_level="medium",
-                impact_template=(
-                    "Unclear time periods combined with outlier values. "
-                    "May include or exclude data incorrectly."
-                ),
-                multiplier=1.3,
-            ),
-            # High: Types + Aggregations
-            CompoundRiskDefinition(
-                risk_type="types_aggregations",
-                dimensions=["structural.types", "computational.aggregations"],
-                threshold=0.6,
-                risk_level="high",
-                impact_template=(
-                    "Type inference issues in columns being aggregated. "
-                    "Some values may fail to parse, skewing results."
-                ),
-                multiplier=1.5,
-            ),
-        ]
-        self.config_loaded = True
-        logger.info(f"Loaded {len(self.risk_definitions)} default compound risk definitions")
+        """Removed: fail-fast instead of using stale hardcoded defaults."""
+        raise NotImplementedError(
+            "Hardcoded compound risk defaults have been removed. "
+            "Add 'compound_risks' section to config/entropy/thresholds.yaml"
+        )
 
     def detect_risks(
         self,

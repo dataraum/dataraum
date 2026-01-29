@@ -10,7 +10,10 @@ from dataraum.entropy.detectors import (
     JoinPathDeterminismDetector,
     NullRatioDetector,
     OutlierRateDetector,
+    RelationshipEntropyDetector,
+    TemporalEntropyDetector,
     TypeFidelityDetector,
+    UnitEntropyDetector,
     register_builtin_detectors,
 )
 
@@ -21,11 +24,18 @@ class TestBuiltinDetectors:
     def test_builtin_detectors_list(self):
         """Test that all expected detectors are in BUILTIN_DETECTORS."""
         expected_detectors = [
+            # Structural
             TypeFidelityDetector,
             JoinPathDeterminismDetector,
+            RelationshipEntropyDetector,
+            # Value
             NullRatioDetector,
             OutlierRateDetector,
+            # Semantic
             BusinessMeaningDetector,
+            UnitEntropyDetector,
+            TemporalEntropyDetector,
+            # Computational
             DerivedValueDetector,
         ]
 
@@ -42,9 +52,12 @@ class TestBuiltinDetectors:
         detector_ids = registry.get_detector_ids()
         assert "type_fidelity" in detector_ids
         assert "join_path_determinism" in detector_ids
+        assert "relationship_entropy" in detector_ids
         assert "null_ratio" in detector_ids
         assert "outlier_rate" in detector_ids
         assert "business_meaning" in detector_ids
+        assert "unit_entropy" in detector_ids
+        assert "temporal_entropy" in detector_ids
         assert "derived_value" in detector_ids
 
     def test_register_builtin_detectors_idempotent(self):
@@ -76,10 +89,11 @@ class TestBuiltinDetectors:
         register_builtin_detectors(registry)
 
         structural_detectors = registry.get_detectors_for_layer("structural")
-        assert len(structural_detectors) == 2
+        assert len(structural_detectors) == 3
         detector_ids = [d.detector_id for d in structural_detectors]
         assert "type_fidelity" in detector_ids
         assert "join_path_determinism" in detector_ids
+        assert "relationship_entropy" in detector_ids
 
     def test_value_detectors(self):
         """Test value layer detectors."""
@@ -98,8 +112,11 @@ class TestBuiltinDetectors:
         register_builtin_detectors(registry)
 
         semantic_detectors = registry.get_detectors_for_layer("semantic")
-        assert len(semantic_detectors) == 1
-        assert semantic_detectors[0].detector_id == "business_meaning"
+        assert len(semantic_detectors) == 3
+        detector_ids = [d.detector_id for d in semantic_detectors]
+        assert "business_meaning" in detector_ids
+        assert "unit_entropy" in detector_ids
+        assert "temporal_entropy" in detector_ids
 
     def test_computational_detectors(self):
         """Test computational layer detectors."""

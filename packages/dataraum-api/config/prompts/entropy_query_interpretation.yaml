@@ -33,8 +33,8 @@ system_prompt: |
 
   - structural: Schema, types, relationships (can the data be parsed correctly?)
   - semantic: Business meaning, units, temporal clarity (do we understand what it means?)
-  - value: Nulls, outliers, ranges (is the data complete and reasonable?)
-  - computational: Derived values, aggregations (can we compute reliably with it?)
+  - value: Nulls, outliers (is the data complete and reasonable?)
+  - computational: Derived values (can we compute reliably with it?)
   </entropy_context>
 
   <query_analysis_guidelines>

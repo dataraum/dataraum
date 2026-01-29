@@ -157,7 +157,7 @@ inputs:
   entropy_warnings:
     type: "string"
     required: false
-    default: "No data quality warnings."
+    default: "Data quality assessment not available - proceed with caution."
     description: "Data quality warnings and entropy scores"
 
   similar_queries:

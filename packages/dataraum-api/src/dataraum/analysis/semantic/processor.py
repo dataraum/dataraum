@@ -5,9 +5,11 @@ Orchestrates semantic analysis using the SemanticAgent and stores results.
 
 from typing import Any
 
+import duckdb
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipModel
+from dataraum.analysis.relationships.evaluator import compute_ri_metrics
 from dataraum.analysis.semantic.agent import SemanticAgent
 from dataraum.analysis.semantic.db_models import (
     SemanticAnnotation as AnnotationModel,
@@ -74,6 +76,7 @@ def enrich_semantic(
     table_ids: list[str],
     ontology: str = "general",
     relationship_candidates: list[dict[str, Any]] | None = None,
+    duckdb_conn: duckdb.DuckDBPyConnection | None = None,
 ) -> Result[SemanticEnrichmentResult]:
     """Run semantic enrichment on tables.
 
@@ -82,7 +85,7 @@ def enrich_semantic(
     2. Map column_refs to actual column_ids from database
     3. Store annotations in semantic_annotations table
     4. Store entity detections in table_entities table
-    5. Store relationships in relationships table
+    5. Store relationships in relationships table (with RI metrics)
     6. Return enrichment result
 
     Args:
@@ -92,6 +95,8 @@ def enrich_semantic(
         ontology: Ontology context for analysis
         relationship_candidates: Pre-computed relationship candidates from
             analysis/relationships module (TDA + join detection)
+        duckdb_conn: Optional DuckDB connection for computing RI metrics
+            for relationships not in candidates
 
     Returns:
         Result containing semantic enrichment data
@@ -170,8 +175,31 @@ def enrich_semantic(
         # Merge candidate evaluation metrics into LLM evidence
         evidence = dict(rel.evidence) if rel.evidence else {}
         candidate_key = (rel.from_table, rel.from_column, rel.to_table, rel.to_column)
+
         if candidate_key in candidate_metrics:
+            # Use pre-computed metrics from candidates
             evidence.update(candidate_metrics[candidate_key])
+        elif duckdb_conn is not None:
+            # Compute RI metrics for LLM-discovered relationships not in candidates
+            # Use typed_* table naming convention
+            from_table_path = f"typed_{rel.from_table}"
+            to_table_path = f"typed_{rel.to_table}"
+            try:
+                ri_metrics = compute_ri_metrics(
+                    from_table=from_table_path,
+                    from_column=rel.from_column,
+                    to_table=to_table_path,
+                    to_column=rel.to_column,
+                    duckdb_conn=duckdb_conn,
+                    cardinality=rel.cardinality,
+                )
+                # Only add metrics that were successfully computed
+                for key, value in ri_metrics.items():
+                    if value is not None:
+                        evidence[key] = value
+            except Exception:
+                # If computation fails, continue without metrics
+                pass
 
         db_rel = RelationshipModel(
             relationship_id=rel.relationship_id,

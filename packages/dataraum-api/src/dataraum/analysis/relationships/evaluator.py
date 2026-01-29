@@ -112,11 +112,19 @@ def _verify_cardinality(
     col1: str,
     col2: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
-) -> bool:
-    """Verify if detected cardinality matches actual data.
+) -> bool | None:
+    """Verify if detected cardinality matches actual join behavior.
+
+    Cardinality is about ROW relationships in joins:
+    - one-to-one: Each t1 row matches at most one t2 row
+    - one-to-many: Each t1 row can match multiple t2 rows
+    - many-to-one: Multiple t1 rows can match one t2 row
+    - many-to-many: Multiple t1 rows can match multiple t2 rows
+
+    We check by counting how many t2 ROWS match each t1 value (and vice versa).
 
     Args:
-        detected_cardinality: The cardinality detected by join detection
+        detected_cardinality: The cardinality detected/declared
         table1_path: DuckDB path to first table
         table2_path: DuckDB path to second table
         col1: Column name in table1
@@ -124,37 +132,63 @@ def _verify_cardinality(
         duckdb_conn: DuckDB connection
 
     Returns:
-        True if cardinality matches, False otherwise
+        True if cardinality matches, False if mismatch, None if inconclusive
     """
-    # Check if col1 values are unique (one side of 1:1 or 1:N)
-    col1_unique_query = f"""
-        SELECT COUNT(*) = COUNT(DISTINCT "{col1}")
-        FROM {table1_path}
-        WHERE "{col1}" IS NOT NULL
-    """
-    col1_result = duckdb_conn.execute(col1_unique_query).fetchone()
-    col1_is_unique = bool(col1_result[0]) if col1_result else False
+    try:
+        # Check if each distinct col1 value matches at most one ROW in t2
+        # (Determines "one" vs "many" on the right side of relationship)
+        col1_max_matches_query = f"""
+            SELECT MAX(match_count) <= 1
+            FROM (
+                SELECT t1."{col1}", COUNT(*) as match_count
+                FROM (SELECT DISTINCT "{col1}" FROM {table1_path} WHERE "{col1}" IS NOT NULL) t1
+                INNER JOIN {table2_path} t2 ON t1."{col1}" = t2."{col2}"
+                GROUP BY t1."{col1}"
+            )
+        """
+        result1 = duckdb_conn.execute(col1_max_matches_query).fetchone()
+        right_side_is_one = bool(result1[0]) if result1 and result1[0] is not None else None
 
-    # Check if col2 values are unique (one side of 1:1 or N:1)
-    col2_unique_query = f"""
-        SELECT COUNT(*) = COUNT(DISTINCT "{col2}")
-        FROM {table2_path}
-        WHERE "{col2}" IS NOT NULL
-    """
-    col2_result = duckdb_conn.execute(col2_unique_query).fetchone()
-    col2_is_unique = bool(col2_result[0]) if col2_result else False
+        # Check if each distinct col2 value matches at most one ROW in t1
+        # (Determines "one" vs "many" on the left side of relationship)
+        col2_max_matches_query = f"""
+            SELECT MAX(match_count) <= 1
+            FROM (
+                SELECT t2."{col2}", COUNT(*) as match_count
+                FROM (SELECT DISTINCT "{col2}" FROM {table2_path} WHERE "{col2}" IS NOT NULL) t2
+                INNER JOIN {table1_path} t1 ON t2."{col2}" = t1."{col1}"
+                GROUP BY t2."{col2}"
+            )
+        """
+        result2 = duckdb_conn.execute(col2_max_matches_query).fetchone()
+        left_side_is_one = bool(result2[0]) if result2 and result2[0] is not None else None
 
-    # Determine actual cardinality
-    if col1_is_unique and col2_is_unique:
-        actual = "one-to-one"
-    elif col1_is_unique and not col2_is_unique:
-        actual = "one-to-many"
-    elif not col1_is_unique and col2_is_unique:
-        actual = "many-to-one"
-    else:
-        actual = "many-to-many"
+        # If we couldn't determine either side, return None (inconclusive)
+        if right_side_is_one is None or left_side_is_one is None:
+            return None
 
-    return detected_cardinality == actual
+        # Determine actual cardinality from join behavior
+        # From t1's perspective: t1 -> t2
+        # - left_side_is_one: each t1 value matches at most one t2 row (t1 side is "one")
+        # - right_side_is_one: each t2 value matches at most one t1 row (t2 side is "one")
+        if left_side_is_one and right_side_is_one:
+            actual = "one-to-one"
+        elif left_side_is_one and not right_side_is_one:
+            # Each t1 value has one match, but t2 values have multiple matches
+            # From t1->t2: many t1 rows -> one t2 row = many-to-one
+            actual = "many-to-one"
+        elif not left_side_is_one and right_side_is_one:
+            # Each t1 value has multiple matches, but t2 values have one match
+            # From t1->t2: one t1 row -> many t2 rows = one-to-many
+            actual = "one-to-many"
+        else:
+            actual = "many-to-many"
+
+        return detected_cardinality == actual
+
+    except Exception:
+        # If verification fails, return None (inconclusive) rather than False
+        return None
 
 
 def evaluate_relationship_candidate(
@@ -270,6 +304,89 @@ def _evaluate_relationship_candidate_parallel(
         return evaluate_relationship_candidate(candidate, table1_path, table2_path, cursor)
     finally:
         cursor.close()
+
+
+def compute_ri_metrics(
+    from_table: str,
+    from_column: str,
+    to_table: str,
+    to_column: str,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    cardinality: str | None = None,
+) -> dict[str, float | int | bool | None]:
+    """Compute referential integrity metrics for a relationship.
+
+    Standalone function for computing RI metrics without needing
+    JoinCandidate objects. Useful for evaluating LLM-discovered
+    relationships that weren't in the original candidate set.
+
+    Args:
+        from_table: DuckDB path to source table (e.g., "typed_orders")
+        from_column: Column name in source table
+        to_table: DuckDB path to target table (e.g., "typed_customers")
+        to_column: Column name in target table
+        duckdb_conn: DuckDB connection
+        cardinality: Optional cardinality to verify (e.g., "one-to-many")
+
+    Returns:
+        Dict with RI metrics:
+        - left_referential_integrity: % of from_table values with match
+        - right_referential_integrity: % of to_table values referenced
+        - orphan_count: from_table values with no match
+        - cardinality_verified: whether cardinality matches (if provided)
+    """
+    # Left referential integrity
+    left_query = f'''
+        SELECT
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE t2."{to_column}" IS NOT NULL) as matched
+        FROM {from_table} t1
+        LEFT JOIN {to_table} t2 ON t1."{from_column}" = t2."{to_column}"
+        WHERE t1."{from_column}" IS NOT NULL
+    '''
+    try:
+        left_result = duckdb_conn.execute(left_query).fetchone()
+        if left_result and left_result[0] > 0:
+            left_ri = (left_result[1] / left_result[0]) * 100
+            orphan_count = left_result[0] - left_result[1]
+        else:
+            left_ri = 0.0
+            orphan_count = 0
+    except Exception:
+        left_ri = None
+        orphan_count = None
+
+    # Right referential integrity
+    right_query = f'''
+        SELECT
+            COUNT(DISTINCT t2."{to_column}") as total_pk,
+            COUNT(DISTINCT t1."{from_column}") as referenced_pk
+        FROM {to_table} t2
+        LEFT JOIN {from_table} t1 ON t2."{to_column}" = t1."{from_column}"
+        WHERE t2."{to_column}" IS NOT NULL
+    '''
+    try:
+        right_result = duckdb_conn.execute(right_query).fetchone()
+        if right_result and right_result[0] > 0:
+            right_ri = (right_result[1] / right_result[0]) * 100
+        else:
+            right_ri = 0.0
+    except Exception:
+        right_ri = None
+
+    # Cardinality verification (if requested)
+    cardinality_verified = None
+    if cardinality:
+        cardinality_verified = _verify_cardinality(
+            cardinality, from_table, to_table, from_column, to_column, duckdb_conn
+        )
+
+    return {
+        "left_referential_integrity": round(left_ri, 2) if left_ri is not None else None,
+        "right_referential_integrity": round(right_ri, 2) if right_ri is not None else None,
+        "orphan_count": orphan_count,
+        "cardinality_verified": cardinality_verified,
+    }
 
 
 def evaluate_candidates(

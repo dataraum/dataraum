@@ -180,6 +180,7 @@ class SemanticPhase(BasePhase):
             table_ids=table_ids,
             ontology=ontology,
             relationship_candidates=relationship_candidates,
+            duckdb_conn=ctx.duckdb_conn,
         )
 
         if not enrich_result.success:

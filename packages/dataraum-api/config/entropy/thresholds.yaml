@@ -110,7 +110,9 @@ detectors:
   relationship_entropy:
     score_unknown_ri: 0.5             # Unknown referential integrity
     score_unverified_cardinality: 0.4 # Cardinality not verified
-    score_cardinality_mismatch: 0.7   # Cardinality verified but doesn't match
+    score_cardinality_mismatch: 0.4   # Cardinality verified but doesn't match (was 0.7)
+                                      # Reduced: mismatch with good RI means relationship works,
+                                      # just terminology is wrong (common with multi-tenant data)
     score_unconfirmed: 0.3            # Known type but not human-confirmed
     score_unknown_type: 0.6           # Unknown relationship type
     reduction_verify_relationship: 0.6

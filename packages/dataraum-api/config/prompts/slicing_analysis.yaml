@@ -20,7 +20,7 @@ system_prompt: |
   </role>
 
   <goal>
-  Identify columns that would create useful data subsets when filtered by each unique value.
+  Identify maximum 4 columns that would create useful data subsets when filtered by each unique value.
   For example, if a table has a "region" column with values ["North", "South", "East", "West"],
   slicing on this column would create 4 subsets - one for each region.
   </goal>
@@ -40,6 +40,7 @@ system_prompt: |
   - Order recommendations by priority (1 = highest priority)
   - Include all distinct values (up to 5 most frequent if many values)
   - Return empty recommendations if no good dimensions exist
+  - Not more than 4 columns
   </guidelines>
 
   Use the analyze_slicing tool to provide your structured response.

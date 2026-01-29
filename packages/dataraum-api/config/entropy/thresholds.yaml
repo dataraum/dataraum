@@ -128,7 +128,7 @@ detectors:
   business_meaning:
     score_missing: 1.0        # No description = high entropy
     score_partial: 0.6        # Description only, no business_name/entity_type
-    score_documented: 0.2     # Has description + business_name or entity_type
+    score_documented: 0.05     # Has description + business_name or entity_type
     # Expected entropy reduction
     reduction_add_description: 0.8
     reduction_add_business_name: 0.2

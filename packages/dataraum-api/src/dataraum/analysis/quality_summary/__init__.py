@@ -7,6 +7,7 @@ aggregating findings across all slices of that column.
 from dataraum.analysis.quality_summary.agent import QualitySummaryAgent
 from dataraum.analysis.quality_summary.db_models import (
     ColumnQualityReport,
+    ColumnSliceProfile,
     QualitySummaryRun,
 )
 from dataraum.analysis.quality_summary.models import (
@@ -36,5 +37,6 @@ __all__ = [
     "SliceQualityCell",
     # DB Models
     "ColumnQualityReport",
+    "ColumnSliceProfile",
     "QualitySummaryRun",
 ]

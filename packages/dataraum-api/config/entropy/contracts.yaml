@@ -98,7 +98,7 @@ contracts:
       structural.relations: 0.2
       semantic.business_meaning: 0.2
       semantic.units: 0.2
-      semantic.temporal: 0.3
+      semantic.temporal: 0.2
       value.nulls: 0.3
       value.outliers: 0.3
       computational.derived_values: 0.2

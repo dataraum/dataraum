@@ -205,8 +205,8 @@ class EntropyInterpretationPhase(BasePhase):
                     layer_scores[layer] = 0.0
 
             # Calculate composite score using config weights
-            config = get_entropy_config()
-            weights = config.composite_weights
+            entropy_config = get_entropy_config()
+            weights = entropy_config.composite_weights
             composite_score = (
                 layer_scores.get("structural", 0.0) * weights["structural"]
                 + layer_scores.get("semantic", 0.0) * weights["semantic"]
@@ -215,10 +215,10 @@ class EntropyInterpretationPhase(BasePhase):
             )
 
             # Determine readiness
-            readiness = config.get_readiness(composite_score)
+            readiness = entropy_config.get_readiness(composite_score)
 
             # Identify high-entropy dimensions
-            high_threshold = config.high_entropy_threshold
+            high_threshold = entropy_config.high_entropy_threshold
             high_entropy_dimensions = [
                 dim for dim, score in dimension_scores.items() if score >= high_threshold
             ]

@@ -322,16 +322,16 @@ class EntropyPhase(BasePhase):
 
         high_entropy_count = 0
         critical_entropy_count = 0
-        all_compound_risks: list = []
+        all_compound_risks: list[Any] = []
 
         for table_profile in table_profiles:
-            for col in table_profile.columns:
-                if col.composite_score >= critical_threshold:
+            for col_summary in table_profile.columns:
+                if col_summary.composite_score >= critical_threshold:
                     critical_entropy_count += 1
                     high_entropy_count += 1
-                elif col.composite_score >= high_threshold:
+                elif col_summary.composite_score >= high_threshold:
                     high_entropy_count += 1
-                all_compound_risks.extend(col.compound_risks)
+                all_compound_risks.extend(col_summary.compound_risks)
 
         # Determine overall readiness
         if critical_entropy_count > 0:

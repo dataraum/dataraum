@@ -807,7 +807,7 @@ def _contracts_impl(output_dir: Path, contract_name: str | None) -> None:
     from sqlalchemy import select
 
     from dataraum.core import ConnectionConfig, ConnectionManager
-    from dataraum.entropy.analysis.aggregator import EntropyAggregator
+    from dataraum.entropy.analysis.aggregator import ColumnSummary, EntropyAggregator
     from dataraum.entropy.contracts import (
         ConfidenceLevel,
         evaluate_all_contracts,
@@ -859,8 +859,8 @@ def _contracts_impl(output_dir: Path, contract_name: str | None) -> None:
             aggregator = EntropyAggregator()
 
             typed_table_ids = repo.get_typed_table_ids(table_ids)
-            column_summaries = {}
-            compound_risks = []
+            column_summaries: dict[str, ColumnSummary] = {}
+            compound_risks: list[Any] = []
 
             if typed_table_ids:
                 table_map, column_map = repo.get_table_column_mapping(typed_table_ids)

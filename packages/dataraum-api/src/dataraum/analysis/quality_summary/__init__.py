@@ -22,6 +22,31 @@ from dataraum.analysis.quality_summary.processor import (
     build_quality_matrix,
     summarize_quality,
 )
+from dataraum.analysis.quality_summary.variance import (
+    # Categorical slice filtering
+    ColumnClassification,
+    SliceFilterConfig,
+    SliceVarianceMetrics,
+    classify_column,
+    compute_slice_variance,
+    filter_interesting_columns,
+    get_filter_config,
+    # Temporal filtering configs
+    TemporalColumnFilterConfig,
+    TemporalDriftFilterConfig,
+    TemporalSliceFilterConfig,
+    # Temporal filtering results
+    TemporalColumnResult,
+    TemporalDriftResult,
+    TemporalSliceResult,
+    # Temporal filtering functions
+    filter_interesting_drift,
+    filter_interesting_temporal_columns,
+    filter_interesting_temporal_slices,
+    is_interesting_drift,
+    is_interesting_temporal_column,
+    is_interesting_temporal_slice,
+)
 
 __all__ = [
     # Main entry points
@@ -29,6 +54,29 @@ __all__ = [
     "aggregate_slice_results",
     "build_quality_matrix",
     "QualitySummaryAgent",
+    # Categorical variance filtering
+    "ColumnClassification",
+    "SliceVarianceMetrics",
+    "SliceFilterConfig",
+    "compute_slice_variance",
+    "classify_column",
+    "filter_interesting_columns",
+    "get_filter_config",
+    # Temporal filtering configs
+    "TemporalSliceFilterConfig",
+    "TemporalColumnFilterConfig",
+    "TemporalDriftFilterConfig",
+    # Temporal filtering results
+    "TemporalSliceResult",
+    "TemporalColumnResult",
+    "TemporalDriftResult",
+    # Temporal filtering functions
+    "is_interesting_temporal_slice",
+    "is_interesting_temporal_column",
+    "is_interesting_drift",
+    "filter_interesting_temporal_slices",
+    "filter_interesting_temporal_columns",
+    "filter_interesting_drift",
     # Models
     "ColumnQualitySummary",
     "SliceComparison",

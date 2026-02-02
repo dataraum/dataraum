@@ -282,8 +282,14 @@ def profile_statistics(
     settings = get_settings()
 
     try:
-        # Get table from metadata
+        # Get table from metadata (check both DB and pending session objects)
         table = session.get(Table, str(table_id))
+        if not table:
+            # Check pending objects in session (with autoflush=False, they won't be in DB yet)
+            for obj in session.new:
+                if isinstance(obj, Table) and obj.table_id == str(table_id):
+                    table = obj
+                    break
         if not table:
             return Result.fail(f"Table not found: {table_id}")
 
@@ -293,14 +299,28 @@ def profile_statistics(
         if table.layer != "typed":
             return Result.fail(f"Statistics profiling requires typed tables. Got: {table.layer}")
 
-        # Get all columns for this table
+        # Get all columns for this table (check both DB and pending session objects)
         from sqlalchemy import select
 
         column_stmt = (
             select(Column).where(Column.table_id == table.table_id).order_by(Column.column_position)
         )
         column_result = session.execute(column_stmt)
-        columns = column_result.scalars().all()
+        columns = list(column_result.scalars().all())
+
+        # Also check pending Column objects in session (with autoflush=False, they won't be in DB yet)
+        pending_columns = [
+            obj for obj in session.new
+            if isinstance(obj, Column) and obj.table_id == table.table_id
+        ]
+        if pending_columns:
+            # Merge pending columns, avoiding duplicates
+            existing_ids = {c.column_id for c in columns}
+            for pc in pending_columns:
+                if pc.column_id not in existing_ids:
+                    columns.append(pc)
+            # Sort by position
+            columns.sort(key=lambda c: c.column_position or 0)
 
         if not columns:
             return Result.fail(f"No columns found for table {table.table_id}")

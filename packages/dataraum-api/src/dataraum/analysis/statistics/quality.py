@@ -425,15 +425,32 @@ def assess_statistical_quality(
         Result containing list of StatisticalQualityResult objects
     """
     try:
-        # Get table from metadata
+        # Get table from metadata (check both DB and pending session objects)
         table = session.get(Table, str(table_id))
+        if not table:
+            # Check pending objects in session (with autoflush=False, they won't be in DB yet)
+            for obj in session.new:
+                if isinstance(obj, Table) and obj.table_id == str(table_id):
+                    table = obj
+                    break
         if not table:
             return Result.fail(f"Table not found: {table_id}")
 
-        # Get all columns
+        # Get all columns (check both DB and pending session objects)
         stmt = select(Column).where(Column.table_id == table_id)
         query_result = session.execute(stmt)
-        columns = query_result.scalars().all()
+        columns = list(query_result.scalars().all())
+
+        # Also check pending Column objects in session (with autoflush=False, they won't be in DB yet)
+        pending_columns = [
+            obj for obj in session.new
+            if isinstance(obj, Column) and obj.table_id == table_id
+        ]
+        if pending_columns:
+            existing_ids = {c.column_id for c in columns}
+            for pc in pending_columns:
+                if pc.column_id not in existing_ids:
+                    columns.append(pc)
 
         # Filter to numeric columns
         numeric_columns = [

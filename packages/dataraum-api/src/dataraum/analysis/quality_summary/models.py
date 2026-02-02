@@ -103,6 +103,11 @@ class QualitySummaryResult(BaseModel):
 
     column_summaries: list[ColumnQualitySummary]
 
+    # Column classifications from variance filtering
+    # Maps column_name -> classification (empty, constant, stable, interesting)
+    # Only columns classified as "interesting" are sent to LLM for analysis
+    column_classifications: dict[str, str] = Field(default_factory=dict)
+
     # Timing
     duration_seconds: float | None = None
 

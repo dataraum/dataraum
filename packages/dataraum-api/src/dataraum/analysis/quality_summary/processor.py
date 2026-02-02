@@ -350,7 +350,25 @@ def summarize_quality(
         aggregated_columns = agg_result.unwrap()
 
         # Filter out columns with no slice data
-        columns_to_process = [c for c in aggregated_columns if c.slice_data]
+        columns_with_data = [c for c in aggregated_columns if c.slice_data]
+
+        # Apply variance-based filtering to reduce LLM noise
+        # Only columns with INTERESTING variance patterns go to LLM
+        from dataraum.analysis.quality_summary.variance import filter_interesting_columns
+
+        columns_to_process, variance_metrics = filter_interesting_columns(columns_with_data)
+
+        # Log classification summary
+        classifications = {name: m.classification.value for name, m in variance_metrics.items()}
+        logger.info(
+            "variance_classifications",
+            total=len(columns_with_data),
+            filtered=len(columns_to_process),
+            classifications_summary={
+                c: sum(1 for v in classifications.values() if v == c)
+                for c in ["empty", "constant", "stable", "interesting"]
+            },
+        )
 
         # Skip columns with existing reports if requested
         if skip_existing:
@@ -367,7 +385,7 @@ def summarize_quality(
         run.columns_analyzed = len(columns_to_process)
 
         if not columns_to_process:
-            # All columns already have reports
+            # All columns already have reports or filtered out
             run.reports_generated = 0
             run.status = "completed"
             run.completed_at = datetime.now(UTC)
@@ -379,6 +397,7 @@ def summarize_quality(
                     slice_column_name=slice_column.column_name,
                     slice_count=len(slice_definition.distinct_values or []),
                     column_summaries=[],
+                    column_classifications=classifications,
                     duration_seconds=run.duration_seconds,
                 )
             )
@@ -479,6 +498,7 @@ def summarize_quality(
                 slice_column_name=slice_column.column_name,
                 slice_count=len(slice_definition.distinct_values or []),
                 column_summaries=column_summaries,
+                column_classifications=classifications,
                 duration_seconds=run.duration_seconds,
             )
         )

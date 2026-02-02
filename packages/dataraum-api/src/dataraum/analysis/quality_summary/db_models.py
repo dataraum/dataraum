@@ -117,6 +117,10 @@ class ColumnSliceProfile(Base):
     null_ratio: Mapped[float | None] = mapped_column(Float)
     distinct_count: Mapped[int | None] = mapped_column(Integer)
 
+    # Variance classification from slice filtering
+    # Values: empty, constant, stable, interesting
+    variance_classification: Mapped[str | None] = mapped_column(String)
+
     # Quality indicators
     quality_score: Mapped[float | None] = mapped_column(Float)
     has_issues: Mapped[bool] = mapped_column(Integer, nullable=False, default=False)  # SQLite bool

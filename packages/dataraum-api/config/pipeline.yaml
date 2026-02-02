@@ -20,7 +20,7 @@ temporal:
   # Preferred time column name for temporal analysis.
   # Small_finance fixture columns: "Transaction date", "Created date", "Due date"
   # If not specified, auto-detects from columns with date/timestamp types.
-  time_column: "Transaction date"
+  time_column: "Belegdatum der Buchung"
 
   # Time granularity: daily, weekly, monthly
   time_grain: monthly
@@ -32,7 +32,7 @@ temporal:
 # Temporal slice analysis settings
 temporal_slice_analysis:
   # Override time column for slice analysis (inherits from temporal if not set)
-  # time_column: "Transaction date"
+  time_column: "Belegdatum der Buchung"
 
   # Bottleneck distance threshold for topology drift detection
   bottleneck_threshold: 0.5
@@ -44,3 +44,43 @@ slicing:
   
   # Minimum rows per slice
   min_slice_rows: 10
+
+# Quality summary settings (LLM-based analysis)
+quality_summary:
+  # Variance filter for slice-based analysis
+  # Filters out columns with no interesting variance across slices
+  # to reduce LLM noise and token costs.
+  variance_filter:
+    # Enable/disable variance filtering (true = filter, false = send all to LLM)
+    enabled: true
+
+    # Null ratio spread threshold
+    # If max(null_ratio) - min(null_ratio) > threshold, column is INTERESTING
+    # 0.10 = 10% variation indicates conditionally populated field
+    null_spread_threshold: 0.10
+
+    # Distinct count ratio threshold
+    # If max(distinct_count) / min(distinct_count) > threshold, column is INTERESTING
+    # 2.0 = cardinality doubles between slices
+    distinct_ratio_threshold: 2.0
+
+    # Outlier ratio spread threshold
+    # If max(outlier_ratio) - min(outlier_ratio) > threshold, column is INTERESTING
+    # 0.05 = 5% variation indicates slice-specific quality issues
+    outlier_spread_threshold: 0.05
+
+    # Benford p-value spread threshold
+    # If max(benford_p_value) - min(benford_p_value) > threshold, column is INTERESTING
+    # 0.30 = Benford compliance varies significantly (some slices pass, others fail)
+    # Potential indicator of data manipulation or synthetic data in specific slices
+    benford_spread_threshold: 0.30
+
+    # Row count ratio threshold (informational)
+    # If max(row_count) / min(row_count) > threshold, noted as uneven coverage
+    # 10.0 = one slice has 10x more rows than another
+    row_ratio_threshold: 10.0
+
+    # Null ratio threshold for EMPTY classification
+    # If all slices have null_ratio > threshold, column is classified EMPTY
+    # 0.99 = effectively all nulls
+    empty_null_threshold: 0.99

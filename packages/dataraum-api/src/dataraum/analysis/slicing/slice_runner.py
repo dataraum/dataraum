@@ -210,8 +210,10 @@ def register_slice_tables(
                 session.add(slice_table)
 
                 # Create Column entries (copy from parent)
+                # Generate column_id explicitly since SQLAlchemy defaults only apply at INSERT time
                 for src_col in source_columns:
                     col = Column(
+                        column_id=str(uuid4()),
                         table_id=slice_table.table_id,
                         column_name=src_col.column_name,
                         column_position=src_col.column_position,
@@ -260,8 +262,14 @@ def run_statistics_on_slice(
     # temporarily work with slice layer. We'll directly call it with the table_id.
     # Since we registered with layer='slice', we need to handle this.
 
-    # Get the slice table
+    # Get the slice table (check both DB and pending session objects)
     table = session.get(Table, slice_info.slice_table_id)
+    if not table:
+        # Check pending objects in session (with autoflush=False, they won't be in DB yet)
+        for obj in session.new:
+            if isinstance(obj, Table) and obj.table_id == slice_info.slice_table_id:
+                table = obj
+                break
     if not table:
         return Result.fail(f"Slice table not found: {slice_info.slice_table_id}")
 

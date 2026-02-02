@@ -75,15 +75,16 @@ class EntropyPhase(BasePhase):
         if total_columns == 0:
             return "No columns found in typed tables"
 
-        # Count columns with entropy records
-        entropy_stmt = select(func.count(EntropyObjectRecord.object_id)).where(
+        # Count distinct columns with entropy records
+        # (each column has multiple EntropyObjectRecords - one per detector/dimension)
+        entropy_stmt = select(func.count(func.distinct(EntropyObjectRecord.column_id))).where(
             EntropyObjectRecord.column_id.in_(
                 select(Column.column_id).where(Column.table_id.in_(table_ids))
             )
         )
-        entropy_count = (ctx.session.execute(entropy_stmt)).scalar() or 0
+        columns_with_entropy = (ctx.session.execute(entropy_stmt)).scalar() or 0
 
-        if entropy_count >= total_columns:
+        if columns_with_entropy >= total_columns:
             return "All columns already have entropy profiles"
 
         return None

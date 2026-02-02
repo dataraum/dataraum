@@ -57,7 +57,9 @@ class EntropyInterpretationPhase(BasePhase):
         return True
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if no entropy records exist."""
+        """Skip if no entropy records exist or all columns already have interpretations."""
+        from sqlalchemy import func
+
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
         result = ctx.session.execute(stmt)
@@ -76,6 +78,24 @@ class EntropyInterpretationPhase(BasePhase):
 
         if not entropy_record:
             return "No entropy records found"
+
+        # Count columns with entropy records (distinct)
+        columns_with_entropy_stmt = select(
+            func.count(func.distinct(EntropyObjectRecord.column_id))
+        ).where(EntropyObjectRecord.table_id.in_(table_ids))
+        columns_with_entropy = (ctx.session.execute(columns_with_entropy_stmt)).scalar() or 0
+
+        if columns_with_entropy == 0:
+            return "No columns with entropy records"
+
+        # Count columns with interpretations already
+        interp_stmt = select(func.count(EntropyInterpretationRecord.interpretation_id)).where(
+            EntropyInterpretationRecord.table_id.in_(table_ids)
+        )
+        interp_count = (ctx.session.execute(interp_stmt)).scalar() or 0
+
+        if interp_count >= columns_with_entropy:
+            return "All columns already have entropy interpretations"
 
         return None
 

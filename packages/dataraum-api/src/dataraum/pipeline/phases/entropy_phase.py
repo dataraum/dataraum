@@ -75,15 +75,16 @@ class EntropyPhase(BasePhase):
         if total_columns == 0:
             return "No columns found in typed tables"
 
-        # Count columns with entropy records
-        entropy_stmt = select(func.count(EntropyObjectRecord.object_id)).where(
+        # Count distinct columns with entropy records
+        # (each column has multiple EntropyObjectRecords - one per detector/dimension)
+        entropy_stmt = select(func.count(func.distinct(EntropyObjectRecord.column_id))).where(
             EntropyObjectRecord.column_id.in_(
                 select(Column.column_id).where(Column.table_id.in_(table_ids))
             )
         )
-        entropy_count = (ctx.session.execute(entropy_stmt)).scalar() or 0
+        columns_with_entropy = (ctx.session.execute(entropy_stmt)).scalar() or 0
 
-        if entropy_count >= total_columns:
+        if columns_with_entropy >= total_columns:
             return "All columns already have entropy profiles"
 
         return None
@@ -133,25 +134,21 @@ class EntropyPhase(BasePhase):
         for qm in (ctx.session.execute(quality_stmt)).scalars().all():
             quality_metrics[qm.column_id] = qm
 
-        # Load type decisions
-        type_decisions: dict[str, TypeDecision] = {}
-        type_stmt = select(TypeDecision).where(TypeDecision.column_id.in_(column_ids))
-        for decision in (ctx.session.execute(type_stmt)).scalars().all():
-            type_decisions[decision.column_id] = decision
-
-        # Load type candidates from RAW table columns (TypeCandidates are created for raw columns)
-        # Then map to typed columns by (table_name, column_name)
-        # First get raw tables for this source
+        # Load typing info from RAW table columns
+        # TypeDecision and TypeCandidate are linked to raw columns, not typed columns
+        # We map them to typed columns by (table_name, column_name)
         raw_tables_stmt = select(Table).where(
             Table.layer == "raw", Table.source_id == ctx.source_id
         )
         raw_tables = (ctx.session.execute(raw_tables_stmt)).scalars().all()
         raw_table_ids = [t.table_id for t in raw_tables]
 
-        # Build mapping from (table_name, column_name) to TypeCandidate
+        # Build mappings from (table_name, column_name) to TypeDecision and TypeCandidate
+        type_decisions_by_name: dict[tuple[str, str], TypeDecision] = {}
         type_candidates_by_name: dict[tuple[str, str], TypeCandidate] = {}
+
         if raw_table_ids:
-            # Get raw column IDs
+            # Get raw columns
             raw_cols_stmt = select(Column).where(Column.table_id.in_(raw_table_ids))
             raw_columns = (ctx.session.execute(raw_cols_stmt)).scalars().all()
             raw_column_ids = [c.column_id for c in raw_columns]
@@ -163,8 +160,15 @@ class EntropyPhase(BasePhase):
                 table_name = raw_table_names.get(col.table_id, "")
                 raw_col_to_name[col.column_id] = (table_name, col.column_name)
 
-            # Load TypeCandidates for raw columns
             if raw_column_ids:
+                # Load TypeDecisions for raw columns (primary source - the final decision)
+                td_stmt = select(TypeDecision).where(TypeDecision.column_id.in_(raw_column_ids))
+                for td in (ctx.session.execute(td_stmt)).scalars().all():
+                    name_key = raw_col_to_name.get(td.column_id)
+                    if name_key:
+                        type_decisions_by_name[name_key] = td
+
+                # Load TypeCandidates for raw columns (for additional detail: pattern, unit info)
                 tc_stmt = (
                     select(TypeCandidate)
                     .where(TypeCandidate.column_id.in_(raw_column_ids))
@@ -175,12 +179,15 @@ class EntropyPhase(BasePhase):
                     if name_key and name_key not in type_candidates_by_name:
                         type_candidates_by_name[name_key] = tc
 
-        # Create lookup from typed column_id to TypeCandidate using name mapping
+        # Create lookups from typed column_id to TypeDecision and TypeCandidate
+        type_decisions: dict[str, TypeDecision] = {}
         type_candidates: dict[str, TypeCandidate] = {}
         typed_table_names = {t.table_id: t.table_name for t in typed_tables}
         for col in all_columns:
             table_name = typed_table_names.get(col.table_id, "")
             name_key = (table_name, col.column_name)
+            if name_key in type_decisions_by_name:
+                type_decisions[col.column_id] = type_decisions_by_name[name_key]
             if name_key in type_candidates_by_name:
                 type_candidates[col.column_id] = type_candidates_by_name[name_key]
 
@@ -260,12 +267,34 @@ class EntropyPhase(BasePhase):
             for col in table_columns:
                 analysis_results: dict[str, Any] = {}
 
-                # Add typing info from TypeCandidate (and TypeDecision if available)
-                if col.column_id in type_candidates:
-                    tc = type_candidates[col.column_id]
+                # Add typing info - TypeDecision is the authoritative source,
+                # TypeCandidate provides additional detail (pattern, unit info)
+                if col.column_id in type_decisions:
+                    td = type_decisions[col.column_id]
                     typing_dict: dict[str, Any] = {
+                        "resolved_type": td.decided_type,
+                        "data_type": td.decided_type,  # For backward compatibility
+                        "detected_type": td.decided_type,  # Alias for type_fidelity detector
+                        "decision_source": td.decision_source,
+                        "decision_reason": td.decision_reason,
+                    }
+                    # Add detail from TypeCandidate if available (pattern, unit, etc.)
+                    if col.column_id in type_candidates:
+                        tc = type_candidates[col.column_id]
+                        typing_dict["confidence"] = tc.confidence
+                        typing_dict["parse_success_rate"] = tc.parse_success_rate or 1.0
+                        typing_dict["failed_examples"] = tc.failed_examples or []
+                        typing_dict["detected_pattern"] = tc.detected_pattern
+                        typing_dict["pattern_match_rate"] = tc.pattern_match_rate
+                        typing_dict["detected_unit"] = tc.detected_unit
+                        typing_dict["unit_confidence"] = tc.unit_confidence
+                    analysis_results["typing"] = typing_dict
+                elif col.column_id in type_candidates:
+                    # Fallback to TypeCandidate if no TypeDecision exists (shouldn't happen normally)
+                    tc = type_candidates[col.column_id]
+                    analysis_results["typing"] = {
                         "data_type": tc.data_type,
-                        "detected_type": tc.data_type,  # Alias for type_fidelity detector
+                        "detected_type": tc.data_type,
                         "confidence": tc.confidence,
                         "parse_success_rate": tc.parse_success_rate or 1.0,
                         "failed_examples": tc.failed_examples or [],
@@ -273,19 +302,6 @@ class EntropyPhase(BasePhase):
                         "pattern_match_rate": tc.pattern_match_rate,
                         "detected_unit": tc.detected_unit,
                         "unit_confidence": tc.unit_confidence,
-                    }
-                    # Add decision info if available
-                    if col.column_id in type_decisions:
-                        td = type_decisions[col.column_id]
-                        typing_dict["resolved_type"] = td.decided_type
-                        typing_dict["decision_source"] = td.decision_source
-                    analysis_results["typing"] = typing_dict
-                elif col.column_id in type_decisions:
-                    # Fallback to just decision info
-                    td = type_decisions[col.column_id]
-                    analysis_results["typing"] = {
-                        "resolved_type": td.decided_type,
-                        "decision_source": td.decision_source,
                     }
 
                 # Add statistics

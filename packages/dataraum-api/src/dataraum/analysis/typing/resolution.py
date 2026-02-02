@@ -12,12 +12,14 @@ The quarantine pattern:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import duckdb
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from dataraum.analysis.typing.db_models import TypeDecision
 from dataraum.analysis.typing.models import ColumnCastResult, TypeResolutionResult
 from dataraum.analysis.typing.patterns import Pattern, load_pattern_config
 from dataraum.core.models.base import ColumnRef, DataType, Result
@@ -32,6 +34,9 @@ class ColumnTypeSpec:
     column_name: str
     data_type: DataType
     pattern: Pattern | None = None
+    decision_source: str = "automatic"  # 'automatic', 'manual', 'override', 'fallback'
+    decision_reason: str | None = None
+    candidate_confidence: float | None = None  # Confidence from best TypeCandidate
 
 
 def _select_best_candidates(
@@ -44,19 +49,23 @@ def _select_best_candidates(
     1. TypeDecision (human override) if exists
     2. Highest confidence TypeCandidate >= threshold
     3. Fallback to VARCHAR
+
+    Returns ColumnTypeSpec with decision metadata for persisting TypeDecision records.
     """
     pattern_config = load_pattern_config()
     patterns_by_name = {p.name: p for p in pattern_config.get_patterns()}
     specs = []
 
     for col in sorted(columns, key=lambda c: c.column_position):
-        # Check for human override
+        # Check for human override (pre-existing TypeDecision)
         if col.type_decision:
             specs.append(
                 ColumnTypeSpec(
                     column_id=col.column_id,
                     column_name=col.column_name,
                     data_type=DataType[col.type_decision.decided_type],
+                    decision_source="manual",  # Already decided by human
+                    decision_reason=col.type_decision.decision_reason,
                 )
             )
             continue
@@ -72,15 +81,22 @@ def _select_best_candidates(
                     column_name=col.column_name,
                     data_type=DataType[best.data_type],
                     pattern=pattern,
+                    decision_source="automatic",
+                    decision_reason=f"Best candidate with confidence {best.confidence:.2f} (pattern: {best.detected_pattern or 'none'})",
+                    candidate_confidence=best.confidence,
                 )
             )
         else:
             # Fallback to VARCHAR
+            best_conf = candidates[0].confidence if candidates else 0.0
             specs.append(
                 ColumnTypeSpec(
                     column_id=col.column_id,
                     column_name=col.column_name,
                     data_type=DataType.VARCHAR,
+                    decision_source="fallback",
+                    decision_reason=f"No candidate met confidence threshold {min_confidence} (best: {best_conf:.2f})",
+                    candidate_confidence=best_conf if candidates else None,
                 )
             )
 
@@ -180,6 +196,21 @@ def resolve_types(
 
     # Select best candidates
     specs = _select_best_candidates(table.columns, min_confidence)
+
+    # Persist TypeDecision records for columns that don't already have one
+    # (columns with pre-existing TypeDecision are human overrides, don't overwrite)
+    columns_with_decision = {col.column_id for col in table.columns if col.type_decision}
+    for spec in specs:
+        if spec.column_id not in columns_with_decision:
+            type_decision = TypeDecision(
+                decision_id=str(uuid4()),
+                column_id=spec.column_id,
+                decided_type=spec.data_type.value,
+                decision_source=spec.decision_source,
+                decided_at=datetime.now(UTC),
+                decision_reason=spec.decision_reason,
+            )
+            session.add(type_decision)
 
     # Generate and execute SQL
     try:

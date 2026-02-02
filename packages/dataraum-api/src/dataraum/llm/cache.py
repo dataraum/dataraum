@@ -2,6 +2,27 @@
 
 Uses the llm_cache table to store and retrieve LLM responses.
 Cache key is computed from feature, prompt, model, and table IDs.
+
+TODO: LLM Cache Integration Not Yet Implemented
+    The cache infrastructure is in place (get/put methods, db_models.LLMCache table),
+    but no LLM agents (SemanticAgent, EntropyInterpreter, etc.) actually call these
+    methods. They call provider.converse() directly without checking or storing cache.
+
+    This was intentional for the development phase since:
+    - Each pipeline phase already persists its outputs to the database
+    - Re-running a phase uses should_skip() to avoid redundant work
+    - Adding LLM-level caching would be an additional layer
+
+    If caching is desired in the future:
+    1. Wrap provider.converse() calls in LLMFeature base class
+    2. Check cache.get() before calling provider
+    3. Call cache.put() after successful responses
+    4. Consider cache invalidation strategy when source data changes
+
+    Discussion points:
+    - Is LLM caching worth the added complexity given phase-level persistence?
+    - Should caching be opt-in per feature via config?
+    - How to handle cache invalidation when prompts or models change?
 """
 
 import hashlib

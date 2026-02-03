@@ -41,6 +41,7 @@ from dataraum.pipeline.db_models import PhaseCheckpoint
 from dataraum.pipeline.orchestrator import Pipeline, PipelineConfig
 from dataraum.pipeline.phases import (
     BusinessCyclesPhase,
+    ColumnEligibilityPhase,
     CorrelationsPhase,
     CrossTableQualityPhase,
     EntropyInterpretationPhase,
@@ -262,6 +263,7 @@ def create_pipeline(config: RunConfig) -> Pipeline:
     pipeline.register(ImportPhase())
     pipeline.register(TypingPhase())
     pipeline.register(StatisticsPhase())
+    pipeline.register(ColumnEligibilityPhase())
 
     # Analysis phases
     pipeline.register(StatisticalQualityPhase())

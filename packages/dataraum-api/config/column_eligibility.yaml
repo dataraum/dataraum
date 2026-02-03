@@ -1,0 +1,54 @@
+# Column Eligibility Configuration
+# Evaluates columns against quality thresholds to determine eligibility
+# for downstream analysis. Ineligible columns are dropped from typed tables.
+
+version: "1.0"
+
+# Thresholds for eligibility evaluation
+thresholds:
+  # Column is INELIGIBLE if null_ratio >= this value
+  # Default 1.0 means only 100% null columns are dropped
+  max_null_ratio: 1.0
+
+  # Eliminate columns with single value (no variance)
+  # Set to false to keep constant columns
+  eliminate_single_value: true
+
+  # Column gets WARN status if null_ratio exceeds this
+  warn_null_ratio: 0.5
+
+# Rules evaluated in order, first match wins
+# Available metrics: null_ratio, distinct_count, cardinality_ratio
+# Available thresholds: max_null_ratio, eliminate_single_value, warn_null_ratio
+rules:
+  # Elimination rules - column dropped from typed table
+  - id: "all_null"
+    condition: "null_ratio >= max_null_ratio"
+    status: "INELIGIBLE"
+    reason: "Column has {null_ratio:.0%} null values - no usable data"
+
+  - id: "single_value"
+    condition: "distinct_count == 1 and eliminate_single_value"
+    status: "INELIGIBLE"
+    reason: "Column has single value - no variance for analysis"
+
+  # Warning rules - column kept but flagged
+  - id: "high_null"
+    condition: "null_ratio > warn_null_ratio"
+    status: "WARN"
+    reason: "High null ratio ({null_ratio:.0%}) may affect analysis"
+
+  - id: "near_constant"
+    condition: "cardinality_ratio < 0.01 and distinct_count <= 3"
+    status: "WARN"
+    reason: "Near-constant column with only {distinct_count} distinct values"
+
+# Default status if no rules match
+default_status: "ELIGIBLE"
+
+# Patterns to identify likely key columns (regex)
+# Pipeline fails if a column matching these patterns is INELIGIBLE
+key_patterns:
+  - "_id$"      # Columns ending in _id
+  - "^id$"      # Column named exactly 'id'
+  - "_key$"     # Columns ending in _key

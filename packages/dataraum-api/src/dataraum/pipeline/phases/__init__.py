@@ -5,6 +5,7 @@ Each phase is a class that implements the Phase protocol.
 
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.phases.business_cycles_phase import BusinessCyclesPhase
+from dataraum.pipeline.phases.column_eligibility_phase import ColumnEligibilityPhase
 from dataraum.pipeline.phases.correlations_phase import CorrelationsPhase
 from dataraum.pipeline.phases.cross_table_quality_phase import CrossTableQualityPhase
 from dataraum.pipeline.phases.entropy_interpretation_phase import (
@@ -30,6 +31,7 @@ from dataraum.pipeline.phases.validation_phase import ValidationPhase
 __all__ = [
     "BasePhase",
     "BusinessCyclesPhase",
+    "ColumnEligibilityPhase",
     "CorrelationsPhase",
     "CrossTableQualityPhase",
     "EntropyInterpretationPhase",

@@ -608,6 +608,7 @@ def get_pipeline() -> Pipeline:
 def _register_builtin_phases(pipeline: Pipeline) -> None:
     """Register all built-in phase implementations."""
     from dataraum.pipeline.phases import (
+        ColumnEligibilityPhase,
         CorrelationsPhase,
         ImportPhase,
         RelationshipsPhase,
@@ -620,6 +621,7 @@ def _register_builtin_phases(pipeline: Pipeline) -> None:
     pipeline.register(ImportPhase())
     pipeline.register(TypingPhase())
     pipeline.register(StatisticsPhase())
+    pipeline.register(ColumnEligibilityPhase())  # After statistics, before correlations
     pipeline.register(StatisticalQualityPhase())
     pipeline.register(RelationshipsPhase())
     pipeline.register(CorrelationsPhase())

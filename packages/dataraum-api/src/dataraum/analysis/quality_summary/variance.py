@@ -141,22 +141,20 @@ def compute_slice_variance(col_data: AggregatedColumnData) -> SliceVarianceMetri
         metrics.classification = ColumnClassification.EMPTY
         return metrics
 
-    # Extract values from slices
-    null_ratios = [
-        s.get("null_ratio") for s in slices if s.get("null_ratio") is not None
+    # Extract values from slices (with proper type narrowing)
+    null_ratios: list[float] = [
+        float(nr) for s in slices if (nr := s.get("null_ratio")) is not None
     ]
-    distinct_counts = [
-        s.get("distinct_count") for s in slices if s.get("distinct_count") is not None
+    distinct_counts: list[int] = [
+        int(dc) for s in slices if (dc := s.get("distinct_count")) is not None
     ]
-    outlier_ratios = [
-        s.get("outlier_ratio") for s in slices if s.get("outlier_ratio") is not None
+    outlier_ratios: list[float] = [
+        float(or_) for s in slices if (or_ := s.get("outlier_ratio")) is not None
     ]
-    benford_pvalues = [
-        s.get("benford_p_value") for s in slices if s.get("benford_p_value") is not None
+    benford_pvalues: list[float] = [
+        float(bp) for s in slices if (bp := s.get("benford_p_value")) is not None
     ]
-    row_counts = [
-        s.get("row_count") for s in slices if s.get("row_count") is not None
-    ]
+    row_counts: list[int] = [int(rc) for s in slices if (rc := s.get("row_count")) is not None]
 
     # Check for EMPTY classification (all nulls)
     if null_ratios and all(nr > config.empty_null_threshold for nr in null_ratios):
@@ -179,11 +177,13 @@ def compute_slice_variance(col_data: AggregatedColumnData) -> SliceVarianceMetri
         metrics.null_spread = metrics.null_max - metrics.null_min
         if metrics.null_spread > config.null_spread_threshold:
             metrics.exceeded_thresholds.append("null_spread")
-            metrics.insights.append({
-                "pattern": "null_ratio varies",
-                "detail": f"min={metrics.null_min:.1%}, max={metrics.null_max:.1%}",
-                "hypothesis": "Field is conditionally populated based on slice context",
-            })
+            metrics.insights.append(
+                {
+                    "pattern": "null_ratio varies",
+                    "detail": f"min={metrics.null_min:.1%}, max={metrics.null_max:.1%}",
+                    "hypothesis": "Field is conditionally populated based on slice context",
+                }
+            )
 
     # Compute distinct ratio
     if distinct_counts:
@@ -193,11 +193,13 @@ def compute_slice_variance(col_data: AggregatedColumnData) -> SliceVarianceMetri
             metrics.distinct_ratio = metrics.distinct_max / metrics.distinct_min
             if metrics.distinct_ratio > config.distinct_ratio_threshold:
                 metrics.exceeded_thresholds.append("distinct_ratio")
-                metrics.insights.append({
-                    "pattern": f"distinct_count varies {metrics.distinct_ratio:.1f}x",
-                    "detail": f"min={metrics.distinct_min}, max={metrics.distinct_max}",
-                    "hypothesis": "Field meaning or usage varies by slice context",
-                })
+                metrics.insights.append(
+                    {
+                        "pattern": f"distinct_count varies {metrics.distinct_ratio:.1f}x",
+                        "detail": f"min={metrics.distinct_min}, max={metrics.distinct_max}",
+                        "hypothesis": "Field meaning or usage varies by slice context",
+                    }
+                )
 
     # Compute outlier spread
     if outlier_ratios:
@@ -206,11 +208,13 @@ def compute_slice_variance(col_data: AggregatedColumnData) -> SliceVarianceMetri
         metrics.outlier_spread = metrics.outlier_max - metrics.outlier_min
         if metrics.outlier_spread > config.outlier_spread_threshold:
             metrics.exceeded_thresholds.append("outlier_spread")
-            metrics.insights.append({
-                "pattern": "outlier_ratio varies",
-                "detail": f"min={metrics.outlier_min:.1%}, max={metrics.outlier_max:.1%}",
-                "hypothesis": "Slice-specific data quality issue or different value distributions",
-            })
+            metrics.insights.append(
+                {
+                    "pattern": "outlier_ratio varies",
+                    "detail": f"min={metrics.outlier_min:.1%}, max={metrics.outlier_max:.1%}",
+                    "hypothesis": "Slice-specific data quality issue or different value distributions",
+                }
+            )
 
     # Compute benford p-value spread (fraud/manipulation detection)
     if benford_pvalues and len(benford_pvalues) >= 2:
@@ -222,14 +226,16 @@ def compute_slice_variance(col_data: AggregatedColumnData) -> SliceVarianceMetri
             # Determine which slices pass/fail Benford's law
             passing = [p for p in benford_pvalues if p > 0.05]
             failing = [p for p in benford_pvalues if p < 0.01]
-            metrics.insights.append({
-                "pattern": "benford_compliance varies",
-                "detail": f"p-value range: {metrics.benford_min:.3f} to {metrics.benford_max:.3f}",
-                "hypothesis": (
-                    f"Benford's law compliance varies by slice ({len(passing)} pass, {len(failing)} fail). "
-                    "This may indicate data manipulation or synthetic data in specific slices."
-                ),
-            })
+            metrics.insights.append(
+                {
+                    "pattern": "benford_compliance varies",
+                    "detail": f"p-value range: {metrics.benford_min:.3f} to {metrics.benford_max:.3f}",
+                    "hypothesis": (
+                        f"Benford's law compliance varies by slice ({len(passing)} pass, {len(failing)} fail). "
+                        "This may indicate data manipulation or synthetic data in specific slices."
+                    ),
+                }
+            )
 
     # Compute row ratio (informational, not a filter criterion by default)
     if row_counts and min(row_counts) > 0:
@@ -238,11 +244,13 @@ def compute_slice_variance(col_data: AggregatedColumnData) -> SliceVarianceMetri
         metrics.row_ratio = metrics.row_max / metrics.row_min
         if metrics.row_ratio > config.row_ratio_threshold:
             metrics.exceeded_thresholds.append("row_ratio")
-            metrics.insights.append({
-                "pattern": f"row_count varies {metrics.row_ratio:.1f}x",
-                "detail": f"min={metrics.row_min}, max={metrics.row_max}",
-                "hypothesis": "Very uneven slice coverage - some slices may be edge cases",
-            })
+            metrics.insights.append(
+                {
+                    "pattern": f"row_count varies {metrics.row_ratio:.1f}x",
+                    "detail": f"min={metrics.row_min}, max={metrics.row_max}",
+                    "hypothesis": "Very uneven slice coverage - some slices may be edge cases",
+                }
+            )
 
     # Final classification
     if metrics.exceeded_thresholds:
@@ -474,10 +482,14 @@ def is_interesting_temporal_slice(
         return result
 
     # Extract metrics across periods
-    row_counts = [d.get("row_count") for d in slice_data if d.get("row_count") is not None]
-    coverages = [d.get("coverage_ratio") for d in slice_data if d.get("coverage_ratio") is not None]
-    pop_changes = [d.get("period_over_period_change") for d in slice_data if d.get("period_over_period_change") is not None]
-    anomalies = [d.get("is_volume_anomaly") for d in slice_data]
+    row_counts: list[int] = [int(rc) for d in slice_data if (rc := d.get("row_count")) is not None]
+    coverages: list[float] = [
+        float(cv) for d in slice_data if (cv := d.get("coverage_ratio")) is not None
+    ]
+    pop_changes: list[float] = [
+        float(pc) for d in slice_data if (pc := d.get("period_over_period_change")) is not None
+    ]
+    anomalies: list[bool | None] = [d.get("is_volume_anomaly") for d in slice_data]
 
     # 1. Volume volatility (row_ratio > threshold)
     if row_counts and len(row_counts) >= 2:
@@ -488,21 +500,25 @@ def is_interesting_temporal_slice(
             if result.row_ratio > config.row_ratio_threshold:
                 result.is_interesting = True
                 result.reasons.append("row_ratio")
-                result.insights.append({
-                    "pattern": f"volume varies {result.row_ratio:.1f}x across periods",
-                    "detail": f"min={min_rows}, max={max_rows}",
-                    "hypothesis": "Business seasonality or data collection issue",
-                })
+                result.insights.append(
+                    {
+                        "pattern": f"volume varies {result.row_ratio:.1f}x across periods",
+                        "detail": f"min={min_rows}, max={max_rows}",
+                        "hypothesis": "Business seasonality or data collection issue",
+                    }
+                )
         elif max_rows > 0:
             # Goes from 0 to something = infinite ratio
-            result.row_ratio = float('inf')
+            result.row_ratio = float("inf")
             result.is_interesting = True
             result.reasons.append("row_ratio_infinite")
-            result.insights.append({
-                "pattern": "slice appears/disappears across periods",
-                "detail": f"Some periods have 0 rows, max={max_rows}",
-                "hypothesis": "New transaction type introduced or discontinued",
-            })
+            result.insights.append(
+                {
+                    "pattern": "slice appears/disappears across periods",
+                    "detail": f"Some periods have 0 rows, max={max_rows}",
+                    "hypothesis": "New transaction type introduced or discontinued",
+                }
+            )
 
     # 2. Coverage inconsistency
     if coverages and len(coverages) >= 2:
@@ -510,21 +526,25 @@ def is_interesting_temporal_slice(
         if result.coverage_spread > config.coverage_spread_threshold:
             result.is_interesting = True
             result.reasons.append("coverage_spread")
-            result.insights.append({
-                "pattern": f"coverage varies {result.coverage_spread:.1%} across periods",
-                "detail": f"min={min(coverages):.1%}, max={max(coverages):.1%}",
-                "hypothesis": "Data collection process maturing or inconsistent",
-            })
+            result.insights.append(
+                {
+                    "pattern": f"coverage varies {result.coverage_spread:.1%} across periods",
+                    "detail": f"min={min(coverages):.1%}, max={max(coverages):.1%}",
+                    "hypothesis": "Data collection process maturing or inconsistent",
+                }
+            )
 
         # Also flag sparse slices
         if min(coverages) < config.sparse_coverage_threshold:
             result.is_interesting = True
             if "sparse_coverage" not in result.reasons:
                 result.reasons.append("sparse_coverage")
-                result.insights.append({
-                    "pattern": f"sparse coverage in some periods ({min(coverages):.1%})",
-                    "hypothesis": "May be specialized use case or data quality issue",
-                })
+                result.insights.append(
+                    {
+                        "pattern": f"sparse coverage in some periods ({min(coverages):.1%})",
+                        "hypothesis": "May be specialized use case or data quality issue",
+                    }
+                )
 
     # 3. Significant period-over-period change
     if pop_changes:
@@ -532,22 +552,24 @@ def is_interesting_temporal_slice(
         if result.max_pop_change > config.pop_change_threshold:
             result.is_interesting = True
             result.reasons.append("pop_change")
-            # Find which period had the big swing
-            max_change_idx = [i for i, c in enumerate(pop_changes) if abs(c) == result.max_pop_change]
-            result.insights.append({
-                "pattern": f"period-over-period change of {result.max_pop_change:.1%}",
-                "hypothesis": "Significant business event or data migration",
-            })
+            result.insights.append(
+                {
+                    "pattern": f"period-over-period change of {result.max_pop_change:.1%}",
+                    "hypothesis": "Significant business event or data migration",
+                }
+            )
 
     # 4. Pre-flagged volume anomaly
     if any(a for a in anomalies if a):
         result.has_volume_anomaly = True
         result.is_interesting = True
         result.reasons.append("volume_anomaly")
-        result.insights.append({
-            "pattern": "pre-flagged volume anomaly",
-            "hypothesis": "Statistical outlier in transaction volume",
-        })
+        result.insights.append(
+            {
+                "pattern": "pre-flagged volume anomaly",
+                "hypothesis": "Statistical outlier in transaction volume",
+            }
+        )
 
     return result
 
@@ -588,54 +610,70 @@ def is_interesting_temporal_column(
     result.largest_gap_days = completeness.get("largest_gap_days", 0) or 0
 
     # 1. Major gaps (completeness < 50%)
-    if result.completeness_ratio is not None and result.completeness_ratio < config.major_gap_threshold:
+    if (
+        result.completeness_ratio is not None
+        and result.completeness_ratio < config.major_gap_threshold
+    ):
         result.is_interesting = True
         result.reasons.append("major_gaps")
-        result.insights.append({
-            "pattern": f"completeness only {result.completeness_ratio:.1%}",
-            "hypothesis": "Field is rarely used or optional in this workflow",
-        })
+        result.insights.append(
+            {
+                "pattern": f"completeness only {result.completeness_ratio:.1%}",
+                "hypothesis": "Field is rarely used or optional in this workflow",
+            }
+        )
 
     # 2. Fiscal calendar behavior (period-end spike)
-    if result.period_end_spike_ratio is not None and result.period_end_spike_ratio > config.period_end_spike_threshold:
+    if (
+        result.period_end_spike_ratio is not None
+        and result.period_end_spike_ratio > config.period_end_spike_threshold
+    ):
         result.is_interesting = True
         result.reasons.append("period_end_spike")
-        result.insights.append({
-            "pattern": f"month-end concentration {result.period_end_spike_ratio:.1f}x",
-            "detail": "Transactions cluster at period boundaries",
-            "hypothesis": "Fiscal calendar behavior - month-end posting concentration",
-        })
+        result.insights.append(
+            {
+                "pattern": f"month-end concentration {result.period_end_spike_ratio:.1f}x",
+                "detail": "Transactions cluster at period boundaries",
+                "hypothesis": "Fiscal calendar behavior - month-end posting concentration",
+            }
+        )
 
     # 3. Has temporal discontinuities (gaps)
     if result.gap_count > 0:
         result.is_interesting = True
         result.reasons.append("has_gaps")
-        result.insights.append({
-            "pattern": f"{result.gap_count} gap(s) in temporal coverage",
-            "detail": f"largest gap: {result.largest_gap_days} days",
-            "hypothesis": "Data collection interruptions or system downtime",
-        })
+        result.insights.append(
+            {
+                "pattern": f"{result.gap_count} gap(s) in temporal coverage",
+                "detail": f"largest gap: {result.largest_gap_days} days",
+                "hypothesis": "Data collection interruptions or system downtime",
+            }
+        )
 
     # 4. Significant gap size
     if result.largest_gap_days > config.significant_gap_days:
         if "has_gaps" not in result.reasons:
             result.is_interesting = True
             result.reasons.append("significant_gap")
-        result.insights.append({
-            "pattern": f"gap of {result.largest_gap_days} days",
-            "hypothesis": "Extended data collection gap - holiday, migration, or system issue",
-        })
+        result.insights.append(
+            {
+                "pattern": f"gap of {result.largest_gap_days} days",
+                "hypothesis": "Extended data collection gap - holiday, migration, or system issue",
+            }
+        )
 
     # 5. Effectively constant (single date)
     if min_ts is not None and max_ts is not None and min_ts == max_ts:
         result.is_constant = True
         result.is_interesting = True
         result.reasons.append("constant")
-        result.insights.append({
-            "pattern": "single timestamp value",
-            "detail": f"all records have timestamp: {min_ts}",
-            "hypothesis": "Default value or batch import artifact",
-        })
+        result.insights.append(
+            {
+                "pattern": "single timestamp value",
+                "detail": f"all records have timestamp: {min_ts}",
+                "hypothesis": "Default value or batch import artifact",
+            }
+        )
 
     return result
 
@@ -687,15 +725,20 @@ def is_interesting_drift(
     # SPECIAL CASE: Expected complete replacement (e.g., Stapelnummer)
     # JS divergence ≈ 0.693 (ln(2)) means complete distribution replacement
     if result.js_divergence is not None:
-        is_complete_replacement = abs(result.js_divergence - config.js_complete_replacement) < config.js_replacement_tolerance
+        is_complete_replacement = (
+            abs(result.js_divergence - config.js_complete_replacement)
+            < config.js_replacement_tolerance
+        )
 
         if is_complete_replacement and column_name in config.expected_replacement_columns:
             # This is EXPECTED, not interesting
-            result.insights.append({
-                "pattern": "complete monthly replacement (expected)",
-                "detail": f"JS divergence = {result.js_divergence:.3f} (ln(2))",
-                "hypothesis": f"Column '{column_name}' values are expected to change completely each period (e.g., batch numbers)",
-            })
+            result.insights.append(
+                {
+                    "pattern": "complete monthly replacement (expected)",
+                    "detail": f"JS divergence = {result.js_divergence:.3f} (ln(2))",
+                    "hypothesis": f"Column '{column_name}' values are expected to change completely each period (e.g., batch numbers)",
+                }
+            )
             return result  # Not interesting
 
     # 1. Significant JS divergence
@@ -704,35 +747,46 @@ def is_interesting_drift(
         result.reasons.append("js_divergence")
 
         # Determine severity
-        if abs(result.js_divergence - config.js_complete_replacement) < config.js_replacement_tolerance:
-            result.insights.append({
-                "pattern": "complete distribution replacement",
-                "detail": f"JS divergence = {result.js_divergence:.3f} (≈ln(2))",
-                "hypothesis": "Values completely changed between periods - data migration or business rule change",
-            })
+        if (
+            abs(result.js_divergence - config.js_complete_replacement)
+            < config.js_replacement_tolerance
+        ):
+            result.insights.append(
+                {
+                    "pattern": "complete distribution replacement",
+                    "detail": f"JS divergence = {result.js_divergence:.3f} (≈ln(2))",
+                    "hypothesis": "Values completely changed between periods - data migration or business rule change",
+                }
+            )
         else:
-            result.insights.append({
-                "pattern": f"distribution shift ({result.js_divergence:.1%} divergence)",
-                "hypothesis": "Value distribution changed between periods",
-            })
+            result.insights.append(
+                {
+                    "pattern": f"distribution shift ({result.js_divergence:.1%} divergence)",
+                    "hypothesis": "Value distribution changed between periods",
+                }
+            )
 
     # 2. Category changes (new values appeared)
     if result.new_categories:
         result.is_interesting = True
         result.reasons.append("new_categories")
-        result.insights.append({
-            "pattern": f"new values appeared: {result.new_categories[:5]}{'...' if len(result.new_categories) > 5 else ''}",
-            "hypothesis": "New options/codes introduced in this period",
-        })
+        result.insights.append(
+            {
+                "pattern": f"new values appeared: {result.new_categories[:5]}{'...' if len(result.new_categories) > 5 else ''}",
+                "hypothesis": "New options/codes introduced in this period",
+            }
+        )
 
     # 3. Category changes (values disappeared)
     if result.missing_categories:
         result.is_interesting = True
         result.reasons.append("missing_categories")
-        result.insights.append({
-            "pattern": f"values disappeared: {result.missing_categories[:5]}{'...' if len(result.missing_categories) > 5 else ''}",
-            "hypothesis": "Options/codes discontinued or data issue",
-        })
+        result.insights.append(
+            {
+                "pattern": f"values disappeared: {result.missing_categories[:5]}{'...' if len(result.missing_categories) > 5 else ''}",
+                "hypothesis": "Options/codes discontinued or data issue",
+            }
+        )
 
     return result
 
@@ -836,8 +890,7 @@ def filter_interesting_drift(
 
     # Count pre-filtered
     pre_filtered = sum(
-        1 for r in all_results
-        if not r.has_significant_drift and not r.has_category_changes
+        1 for r in all_results if not r.has_significant_drift and not r.has_category_changes
     )
 
     logger.info(

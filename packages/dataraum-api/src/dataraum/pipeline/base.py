@@ -270,7 +270,14 @@ PIPELINE_DAG: list[PhaseDefinition] = [
     PhaseDefinition(
         name="entropy",
         description="Entropy detection across all dimensions",
-        dependencies=["typing", "statistics", "semantic", "relationships", "correlations", "quality_summary"],
+        dependencies=[
+            "typing",
+            "statistics",
+            "semantic",
+            "relationships",
+            "correlations",
+            "quality_summary",
+        ],
         outputs=["entropy_profiles", "compound_risks"],
     ),
     PhaseDefinition(

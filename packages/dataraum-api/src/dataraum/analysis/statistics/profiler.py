@@ -310,8 +310,7 @@ def profile_statistics(
 
         # Also check pending Column objects in session (with autoflush=False, they won't be in DB yet)
         pending_columns = [
-            obj for obj in session.new
-            if isinstance(obj, Column) and obj.table_id == table.table_id
+            obj for obj in session.new if isinstance(obj, Column) and obj.table_id == table.table_id
         ]
         if pending_columns:
             # Merge pending columns, avoiding duplicates

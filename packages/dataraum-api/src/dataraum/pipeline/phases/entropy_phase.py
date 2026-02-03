@@ -6,6 +6,7 @@ Runs detectors to quantify uncertainty in each column and table.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import structlog
@@ -14,24 +15,27 @@ from sqlalchemy import func, select
 from dataraum.analysis.correlation.db_models import DerivedColumn
 from dataraum.analysis.quality_summary.db_models import ColumnSliceProfile
 from dataraum.analysis.relationships.db_models import Relationship
-
-logger = structlog.get_logger(__name__)
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.statistics.db_models import StatisticalProfile, StatisticalQualityMetrics
-from dataraum.analysis.temporal_slicing.db_models import TemporalDriftAnalysis, TemporalSliceAnalysis
+from dataraum.analysis.temporal_slicing.db_models import (
+    TemporalDriftAnalysis,
+    TemporalSliceAnalysis,
+)
 from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
-from dataraum.entropy.detectors.base import DetectorContext
-from dataraum.entropy.detectors.semantic import DimensionalEntropyDetector, generate_dataset_summary
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.db_models import (
     CompoundRiskRecord,
     EntropyObjectRecord,
     EntropySnapshotRecord,
 )
+from dataraum.entropy.detectors.base import DetectorContext
+from dataraum.entropy.detectors.semantic import DimensionalEntropyDetector, generate_dataset_summary
 from dataraum.entropy.processor import EntropyProcessor
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.storage import Column, Table
+
+logger = structlog.get_logger(__name__)
 
 
 class EntropyPhase(BasePhase):
@@ -53,7 +57,14 @@ class EntropyPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        return ["typing", "statistics", "semantic", "relationships", "correlations", "quality_summary"]
+        return [
+            "typing",
+            "statistics",
+            "semantic",
+            "relationships",
+            "correlations",
+            "quality_summary",
+        ]
 
     @property
     def outputs(self) -> list[str]:
@@ -460,7 +471,7 @@ class EntropyPhase(BasePhase):
                 }
                 for opt in entropy_obj.resolution_options
             ]
-            
+
             # Determine table_id for the record
             # For dimensional_entropy detector, extract table name and look up the ID
             record_table_id: str | None = None
@@ -477,7 +488,7 @@ class EntropyPhase(BasePhase):
                 # For other detectors, the target might contain the table_id directly
                 # Keep existing logic as fallback but be safe
                 record_table_id = None
-            
+
             record = EntropyObjectRecord(
                 source_id=ctx.source_id,
                 table_id=record_table_id,
@@ -566,17 +577,21 @@ class EntropyPhase(BasePhase):
             overall_readiness = "ready"
 
         # Create snapshot record with all averages
-        snapshot_data_value = {
-            "dimensional_summaries": dimensional_summaries,
-        } if dimensional_summaries else None
-        
+        snapshot_data_value = (
+            {
+                "dimensional_summaries": dimensional_summaries,
+            }
+            if dimensional_summaries
+            else None
+        )
+
         logger.info(
             "entropy_snapshot_creating",
             has_dimensional_summaries=bool(dimensional_summaries),
             summaries_count=len(dimensional_summaries) if dimensional_summaries else 0,
             snapshot_data_keys=list(snapshot_data_value.keys()) if snapshot_data_value else None,
         )
-        
+
         snapshot = EntropySnapshotRecord(
             source_id=ctx.source_id,
             total_entropy_objects=total_entropy_objects,
@@ -612,7 +627,7 @@ class EntropyPhase(BasePhase):
 
 def _run_dimensional_entropy(
     ctx: PhaseContext,
-    typed_tables: list[Table],
+    typed_tables: Sequence[Table],
 ) -> tuple[list[Any], list[dict[str, Any]]]:
     """Run dimensional entropy detection for cross-column patterns.
 
@@ -688,7 +703,7 @@ def _run_dimensional_entropy(
                 columns_data[col_name]["distinct_counts"].append(profile.distinct_count)
 
         # Calculate variance metrics per column
-        for col_name, col_metrics in columns_data.items():
+        for _col_name, col_metrics in columns_data.items():
             null_ratios = col_metrics.get("null_ratios", [])
             distinct_counts = col_metrics.get("distinct_counts", [])
 
@@ -733,9 +748,11 @@ def _run_dimensional_entropy(
                     "is_volume_anomaly": bool(ta.is_volume_anomaly),
                 }
             # Check if interesting based on available fields
-            if (ta.coverage_ratio and ta.coverage_ratio < 0.5) or \
-               (ta.last_day_ratio and ta.last_day_ratio > 1.5) or \
-               ta.is_volume_anomaly:
+            if (
+                (ta.coverage_ratio and ta.coverage_ratio < 0.5)
+                or (ta.last_day_ratio and ta.last_day_ratio > 1.5)
+                or ta.is_volume_anomaly
+            ):
                 temporal_columns[col_name]["is_interesting"] = True
                 if ta.coverage_ratio and ta.coverage_ratio < 0.5:
                     temporal_columns[col_name]["reasons"].append("low_coverage")
@@ -751,15 +768,21 @@ def _run_dimensional_entropy(
         drift_analyses = list(ctx.session.execute(drift_stmt).scalars().all())
 
         for da in drift_analyses:
-            temporal_drift.append({
-                "column_name": da.column_name,
-                "period_label": da.period_label,
-                "js_divergence": da.js_divergence,
-                "has_significant_drift": bool(da.has_significant_drift) if da.has_significant_drift is not None else (da.js_divergence and da.js_divergence > 0.3),
-                "has_category_changes": bool(da.has_category_changes) if da.has_category_changes is not None else bool(da.new_categories_json or da.missing_categories_json),
-                "new_categories_json": da.new_categories_json,
-                "missing_categories_json": da.missing_categories_json,
-            })
+            temporal_drift.append(
+                {
+                    "column_name": da.column_name,
+                    "period_label": da.period_label,
+                    "js_divergence": da.js_divergence,
+                    "has_significant_drift": bool(da.has_significant_drift)
+                    if da.has_significant_drift is not None
+                    else (da.js_divergence and da.js_divergence > 0.3),
+                    "has_category_changes": bool(da.has_category_changes)
+                    if da.has_category_changes is not None
+                    else bool(da.new_categories_json or da.missing_categories_json),
+                    "new_categories_json": da.new_categories_json,
+                    "missing_categories_json": da.missing_categories_json,
+                }
+            )
 
         # Build detector context
         context = DetectorContext(
@@ -785,7 +808,9 @@ def _run_dimensional_entropy(
         )
 
         # Run detector with details for summary generation
-        entropy_objects, patterns, entropy_score, analysis_data = detector.detect_with_details(context)
+        entropy_objects, patterns, entropy_score, analysis_data = detector.detect_with_details(
+            context
+        )
         all_entropy_objects.extend(entropy_objects)
 
         logger.info(

@@ -32,13 +32,13 @@ A hybrid aggregation architecture that balances **pre-computation** for common m
 
 | Phase | Focus | Output | Status |
 |-------|-------|--------|--------|
-| **1** | Column eligibility | `column_eligibility` table, phase | Planned |
-| **2** | Quality aggregation | `quality_aggregates` records + views, API | Planned |
-| **3** | Config restructure | Reorganized `config/graphs/` folder | Planned |
-| **4** | Business aggregation | `agg_metric_*` views, API | Future |
-| **5** | Slice framework | Formalized slice definitions | Future (external) |
-| **6** | Query layer optimization | Use pre-computed where possible | Future |
-| **7** | Execution persistence | `graph_executions`, `query_executions` | Future |
+| **1** | Column eligibility | `column_eligibility` table, phase | **Next** |
+| **2** | Quality aggregation | `quality_aggregates` records + views, API | Backlog |
+| **3** | Config restructure | Reorganized `config/graphs/` folder | Backlog |
+| **4** | Business aggregation | `agg_metric_*` views, API | Backlog |
+| **5** | Slice framework | Formalized slice definitions | Backlog (external) |
+| **6** | Query layer optimization | Use pre-computed where possible | Backlog |
+| **7** | Execution persistence | `graph_executions`, `query_executions` | Backlog |
 
 **Note**: Execution persistence (phase 7) is last because the architecture may evolve. No point persisting executions until the aggregation model stabilizes.
 
@@ -48,13 +48,18 @@ A hybrid aggregation architecture that balances **pre-computation** for common m
 
 **Goal**: Early elimination of unusable columns to save downstream compute and LLM tokens.
 
-**Detailed spec**: [column-eligibility-quality-aggregation.md](./column-eligibility-quality-aggregation.md)
+**Detailed spec**: [column-eligibility.md](./column-eligibility.md)
+
+**Key Design**: Physical removal (not soft filtering)
+- Ineligible columns dropped from `typed_*` tables
+- Data preserved in `quarantine_columns_*` for recovery
+- Downstream phases automatically work with clean data
 
 **Deliverables**:
 - `ColumnEligibilityRecord` model
 - `column_eligibility_phase.py`
 - Config: `config/column_eligibility.yaml`
-- Downstream phase updates (filter eliminated columns)
+- Quarantine table creation logic
 
 ---
 
@@ -280,6 +285,6 @@ Phase 1 ──────┐
 
 ## Related Documents
 
-- [Column Eligibility & Quality Aggregation](./column-eligibility-quality-aggregation.md) - Detailed spec for phases 1-2
+- [Column Eligibility](./column-eligibility.md) - Detailed spec for phase 1 (current focus)
 - [Entropy Implementation Plan](../ENTROPY_IMPLEMENTATION_PLAN.md) - Entropy system architecture
 - [Backlog](../BACKLOG.md) - Current task stack

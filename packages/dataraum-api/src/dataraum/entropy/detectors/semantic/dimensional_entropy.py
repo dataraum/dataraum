@@ -54,7 +54,9 @@ class TemporalColumnPattern:
 class CrossColumnPattern:
     """Detected cross-column relationship pattern."""
 
-    pattern_type: str  # mutual_exclusivity, conditional_dependency, correlated_variance, temporal_correlation
+    pattern_type: (
+        str  # mutual_exclusivity, conditional_dependency, correlated_variance, temporal_correlation
+    )
     columns: list[str]
     confidence: float
     description: str
@@ -212,9 +214,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         score_undocumented_rule = detector_config.get("score_undocumented_rule", 0.7)
         score_partial_pattern = detector_config.get("score_partial_pattern", 0.5)
         correlation_threshold = detector_config.get("correlation_threshold", 0.8)
-        mutual_exclusivity_threshold = detector_config.get(
-            "mutual_exclusivity_threshold", 0.95
-        )
+        mutual_exclusivity_threshold = detector_config.get("mutual_exclusivity_threshold", 0.95)
 
         slice_variance = context.get_analysis("slice_variance", {})
         columns_data = slice_variance.get("columns", {})
@@ -293,11 +293,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         entropy_objects: list[EntropyObject] = []
 
         for pattern in patterns:
-            score = (
-                score_undocumented_rule
-                if pattern.confidence > 0.9
-                else score_partial_pattern
-            )
+            score = score_undocumented_rule if pattern.confidence > 0.9 else score_partial_pattern
 
             evidence = [
                 {
@@ -392,7 +388,9 @@ class DimensionalEntropyDetector(EntropyDetector):
 
     def detect_with_details(
         self, context: DetectorContext
-    ) -> tuple[list[EntropyObject], list[CrossColumnPattern], DimensionalEntropyScore, dict[str, Any]]:
+    ) -> tuple[
+        list[EntropyObject], list[CrossColumnPattern], DimensionalEntropyScore, dict[str, Any]
+    ]:
         """Detect patterns and return detailed results for summary generation.
 
         Same as detect(), but also returns intermediate results needed for
@@ -415,9 +413,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         score_undocumented_rule = detector_config.get("score_undocumented_rule", 0.7)
         score_partial_pattern = detector_config.get("score_partial_pattern", 0.5)
         correlation_threshold = detector_config.get("correlation_threshold", 0.8)
-        mutual_exclusivity_threshold = detector_config.get(
-            "mutual_exclusivity_threshold", 0.95
-        )
+        mutual_exclusivity_threshold = detector_config.get("mutual_exclusivity_threshold", 0.95)
 
         slice_variance = context.get_analysis("slice_variance", {})
         columns_data = slice_variance.get("columns", {})
@@ -496,11 +492,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         entropy_objects: list[EntropyObject] = []
 
         for pattern in patterns:
-            score = (
-                score_undocumented_rule
-                if pattern.confidence > 0.9
-                else score_partial_pattern
-            )
+            score = score_undocumented_rule if pattern.confidence > 0.9 else score_partial_pattern
 
             evidence = [
                 {
@@ -600,9 +592,7 @@ class DimensionalEntropyDetector(EntropyDetector):
 
         return entropy_objects, patterns, entropy_score, analysis_data
 
-    def _get_interesting_columns(
-        self, columns_data: dict[str, Any]
-    ) -> list[ColumnVariancePattern]:
+    def _get_interesting_columns(self, columns_data: dict[str, Any]) -> list[ColumnVariancePattern]:
         """Extract columns classified as INTERESTING from categorical analysis."""
         interesting = []
         for col_name, metrics in columns_data.items():
@@ -704,9 +694,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         for i, col_a in enumerate(columns):
             for col_b in columns[i + 1 :]:
                 # Check if they exceed the same thresholds
-                common_thresholds = set(col_a.exceeded_thresholds) & set(
-                    col_b.exceeded_thresholds
-                )
+                common_thresholds = set(col_a.exceeded_thresholds) & set(col_b.exceeded_thresholds)
 
                 if len(common_thresholds) >= 2:
                     # Both columns vary on multiple dimensions together
@@ -727,8 +715,8 @@ class DimensionalEntropyDetector(EntropyDetector):
                                     f"vary together on: {', '.join(common_thresholds)}"
                                 ),
                                 business_rule_hypothesis=(
-                                    f"These columns have a business relationship - "
-                                    f"changes in one likely affect the other."
+                                    "These columns have a business relationship - "
+                                    "changes in one likely affect the other."
                                 ),
                                 evidence={
                                     "common_thresholds": list(common_thresholds),
@@ -788,10 +776,13 @@ class DimensionalEntropyDetector(EntropyDetector):
             low_null_slices = [s for s, nr in slice_null_ratios.items() if nr < 0.2]
 
             if high_null_slices and low_null_slices:
-                confidence = min(
-                    len(high_null_slices) / len(slice_null_ratios),
-                    len(low_null_slices) / len(slice_null_ratios),
-                ) * 2  # Scale to 0-1
+                confidence = (
+                    min(
+                        len(high_null_slices) / len(slice_null_ratios),
+                        len(low_null_slices) / len(slice_null_ratios),
+                    )
+                    * 2
+                )  # Scale to 0-1
 
                 if confidence > 0.3:
                     patterns.append(
@@ -827,12 +818,10 @@ class DimensionalEntropyDetector(EntropyDetector):
                 if min_distinct > 0 and max_distinct / min_distinct > 3.0:
                     # 3x+ difference in cardinality by slice
                     low_card_slices = [
-                        s for s, dc in slice_distinct_counts.items()
-                        if dc <= min_distinct * 1.5
+                        s for s, dc in slice_distinct_counts.items() if dc <= min_distinct * 1.5
                     ]
                     high_card_slices = [
-                        s for s, dc in slice_distinct_counts.items()
-                        if dc >= max_distinct * 0.7
+                        s for s, dc in slice_distinct_counts.items() if dc >= max_distinct * 0.7
                     ]
 
                     patterns.append(
@@ -873,23 +862,23 @@ class DimensionalEntropyDetector(EntropyDetector):
         Returns 0.0 if not correlated.
         """
         # Extract per-slice null ratios for both columns
-        col_a_nulls = []
-        col_b_nulls = []
+        col_a_nulls: list[float] = []
+        col_b_nulls: list[float] = []
 
-        for slice_name, slice_metrics in slice_data.items():
+        for _slice_name, slice_metrics in slice_data.items():
             a_null = slice_metrics.get(col_a, {}).get("null_ratio")
             b_null = slice_metrics.get(col_b, {}).get("null_ratio")
 
             if a_null is not None and b_null is not None:
-                col_a_nulls.append(a_null)
-                col_b_nulls.append(b_null)
+                col_a_nulls.append(float(a_null))
+                col_b_nulls.append(float(b_null))
 
         if len(col_a_nulls) < 2:
             return 0.0
 
         # Check for inverse correlation: when A is high, B should be low
         # Simple heuristic: sum of (a_null + b_null) should be ~1.0 if inverse
-        inverse_scores = [a + b for a, b in zip(col_a_nulls, col_b_nulls)]
+        inverse_scores = [a + b for a, b in zip(col_a_nulls, col_b_nulls, strict=True)]
 
         # If inverse, sum should be close to 1.0 for each slice
         avg_sum = sum(inverse_scores) / len(inverse_scores)
@@ -942,8 +931,8 @@ class DimensionalEntropyDetector(EntropyDetector):
 
         # Check for correlated temporal patterns between column pairs
         for i, col_a in enumerate(temporal_columns):
-            for col_b in temporal_columns[i + 1:]:
-                correlation_evidence = {}
+            for col_b in temporal_columns[i + 1 :]:
+                correlation_evidence: dict[str, Any] = {}
                 confidence = 0.0
 
                 # Pattern 1: Same temporal reasons
@@ -953,8 +942,12 @@ class DimensionalEntropyDetector(EntropyDetector):
                     correlation_evidence["common_temporal_reasons"] = list(common_reasons)
 
                 # Pattern 2: Both have period-end spikes
-                if (col_a.period_end_spike_ratio and col_a.period_end_spike_ratio > 1.5 and
-                    col_b.period_end_spike_ratio and col_b.period_end_spike_ratio > 1.5):
+                if (
+                    col_a.period_end_spike_ratio
+                    and col_a.period_end_spike_ratio > 1.5
+                    and col_b.period_end_spike_ratio
+                    and col_b.period_end_spike_ratio > 1.5
+                ):
                     confidence += 0.4
                     correlation_evidence["both_have_period_end_spikes"] = {
                         col_a.column_name: col_a.period_end_spike_ratio,
@@ -971,8 +964,7 @@ class DimensionalEntropyDetector(EntropyDetector):
                     correlation_evidence["common_drift_periods"] = list(common_drift_periods)
 
                 # Pattern 4: Similar completeness (both have gaps or both complete)
-                if (col_a.completeness_ratio is not None and 
-                    col_b.completeness_ratio is not None):
+                if col_a.completeness_ratio is not None and col_b.completeness_ratio is not None:
                     completeness_diff = abs(col_a.completeness_ratio - col_b.completeness_ratio)
                     if completeness_diff < 0.1:
                         confidence += 0.2
@@ -993,9 +985,9 @@ class DimensionalEntropyDetector(EntropyDetector):
                                 f"show correlated temporal behavior"
                             ),
                             business_rule_hypothesis=(
-                                f"These columns are affected by the same temporal factors "
-                                f"(e.g., same data source, same business process, same fiscal calendar). "
-                                f"Changes to one likely affect the other."
+                                "These columns are affected by the same temporal factors "
+                                "(e.g., same data source, same business process, same fiscal calendar). "
+                                "Changes to one likely affect the other."
                             ),
                             evidence=correlation_evidence,
                             uncertainty_bits=log2(1 + confidence),
@@ -1333,7 +1325,9 @@ def generate_dataset_summary(
                         reasons=temporal_metrics.get("reasons", []),
                         metrics={
                             "completeness_ratio": temporal_metrics.get("completeness_ratio"),
-                            "period_end_spike_ratio": temporal_metrics.get("period_end_spike_ratio"),
+                            "period_end_spike_ratio": temporal_metrics.get(
+                                "period_end_spike_ratio"
+                            ),
                             "gap_count": temporal_metrics.get("gap_count", 0),
                         },
                     )
@@ -1365,7 +1359,9 @@ def generate_dataset_summary(
     summary.temporal_drift_patterns = entropy_score.temporal_drift_count
 
     # Determine complexity level
-    total_interesting = summary.interesting_categorical_columns + summary.interesting_temporal_columns
+    total_interesting = (
+        summary.interesting_categorical_columns + summary.interesting_temporal_columns
+    )
     total_patterns = entropy_score.total_patterns
 
     if total_patterns == 0 and total_interesting <= 2:
@@ -1432,7 +1428,9 @@ def _generate_executive_summary(summary: DatasetDimensionalSummary) -> str:
     # Column overview
     parts.append(f"Of {summary.total_columns} columns analyzed:\n")
     if summary.interesting_categorical_columns > 0:
-        parts.append(f"- {summary.interesting_categorical_columns} show significant variance across slices\n")
+        parts.append(
+            f"- {summary.interesting_categorical_columns} show significant variance across slices\n"
+        )
     if summary.interesting_temporal_columns > 0:
         parts.append(f"- {summary.interesting_temporal_columns} show notable temporal patterns\n")
     if summary.stable_columns > 0:

@@ -15,11 +15,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+import structlog
 from sqlalchemy import distinct as sql_distinct
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
-import structlog
 
 from dataraum.analysis.quality_summary.db_models import (
     ColumnQualityReport,

@@ -443,8 +443,7 @@ def assess_statistical_quality(
 
         # Also check pending Column objects in session (with autoflush=False, they won't be in DB yet)
         pending_columns = [
-            obj for obj in session.new
-            if isinstance(obj, Column) and obj.table_id == table_id
+            obj for obj in session.new if isinstance(obj, Column) and obj.table_id == table_id
         ]
         if pending_columns:
             existing_ids = {c.column_id for c in columns}

@@ -63,7 +63,7 @@ class EntropyInterpretation:
     Contains LLM-generated assumptions, resolution actions, and explanation.
     """
 
-    column_name: str
+    column_name: str | None  # None for table-level interpretations
     table_name: str
 
     # LLM-generated content

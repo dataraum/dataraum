@@ -17,8 +17,6 @@ from dataraum.entropy.detectors.semantic.dimensional_entropy import (
     DetectedBusinessRule,
     DimensionalEntropyDetector,
     DimensionalEntropyScore,
-    DimensionalSummaryAgent,
-    DimensionalSummaryOutput,
     InterestingColumnSummary,
     TemporalColumnPattern,
     compute_dimensional_entropy,
@@ -30,6 +28,7 @@ from dataraum.entropy.detectors.semantic.temporal_entropy import (
 from dataraum.entropy.detectors.semantic.unit_entropy import (
     UnitEntropyDetector,
 )
+from dataraum.entropy.summary_agent import DimensionalSummaryAgent, DimensionalSummaryOutput
 
 __all__ = [
     "BusinessMeaningDetector",

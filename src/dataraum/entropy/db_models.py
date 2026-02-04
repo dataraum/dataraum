@@ -193,7 +193,7 @@ class EntropyInterpretationRecord(Base):
     table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id"))
     column_id: Mapped[str | None] = mapped_column(ForeignKey("columns.column_id"))
     table_name: Mapped[str] = mapped_column(String, nullable=False)
-    column_name: Mapped[str] = mapped_column(String, nullable=False)
+    column_name: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Original metrics
     composite_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)

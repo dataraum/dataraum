@@ -69,6 +69,9 @@ from dataraum.entropy.interpretation import (
     ResolutionAction,
 )
 
+# Dimensional summary (LLM-powered)
+from dataraum.entropy.summary_agent import DimensionalSummaryAgent, DimensionalSummaryOutput
+
 # Layer 3: Views - caller-specific builders
 from dataraum.entropy.views import (
     EntropyForDashboard,
@@ -111,4 +114,7 @@ __all__ = [
     "InterpretationInput",
     "Assumption",
     "ResolutionAction",
+    # Dimensional summary (LLM-powered)
+    "DimensionalSummaryAgent",
+    "DimensionalSummaryOutput",
 ]

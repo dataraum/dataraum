@@ -1538,7 +1538,7 @@ def _print_summary_view(
 
             row = [
                 interp.table_name,
-                interp.column_name,
+                interp.column_name or "(table-level)",
                 f"{interp.composite_score:.3f}",
                 f"[{status_color}]{status_icon}[/{status_color}]",
             ]
@@ -1563,7 +1563,12 @@ def _print_summary_view(
             console.print()
             console.print("[bold]Details:[/bold]")
             for interp in top_columns:
-                console.print(f"\n[cyan]{interp.table_name}.{interp.column_name}[/cyan]")
+                label = (
+                    f"{interp.table_name}.{interp.column_name}"
+                    if interp.column_name
+                    else f"{interp.table_name} (table-level)"
+                )
+                console.print(f"\n[cyan]{label}[/cyan]")
                 console.print(f"  {interp.explanation}")
 
                 if interp.assumptions_json:
@@ -1613,7 +1618,11 @@ def _print_issues_view(
             return
         console.print(f"[{color}][bold]{icon} {title} ({len(items)})[/bold][/{color}]")
         for item in items:
-            loc = f"{item.table_name}.{item.column_name}"
+            loc = (
+                f"{item.table_name}.{item.column_name}"
+                if item.column_name
+                else f"{item.table_name} (table-level)"
+            )
             score = f"{item.composite_score:.3f}"
 
             # Get top dimension issue

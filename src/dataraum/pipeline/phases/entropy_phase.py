@@ -25,6 +25,7 @@ from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.db_models import (
     CompoundRiskRecord,
+    EntropyInterpretationRecord,
     EntropyObjectRecord,
     EntropySnapshotRecord,
 )
@@ -450,14 +451,13 @@ class EntropyPhase(BasePhase):
 
         # Run table-level dimensional entropy detection
         # This detects cross-column patterns from quality_summary data
-        dimensional_objects, dimensional_summaries = _run_dimensional_entropy(
+        dimensional_objects = _run_dimensional_entropy(
             ctx=ctx,
             typed_tables=typed_tables,
         )
         logger.info(
             "dimensional_entropy_results",
             objects_count=len(dimensional_objects),
-            summaries_count=len(dimensional_summaries),
         )
         for entropy_obj in dimensional_objects:
             resolution_dicts = [
@@ -577,21 +577,6 @@ class EntropyPhase(BasePhase):
             overall_readiness = "ready"
 
         # Create snapshot record with all averages
-        snapshot_data_value = (
-            {
-                "dimensional_summaries": dimensional_summaries,
-            }
-            if dimensional_summaries
-            else None
-        )
-
-        logger.info(
-            "entropy_snapshot_creating",
-            has_dimensional_summaries=bool(dimensional_summaries),
-            summaries_count=len(dimensional_summaries) if dimensional_summaries else 0,
-            snapshot_data_keys=list(snapshot_data_value.keys()) if snapshot_data_value else None,
-        )
-
         snapshot = EntropySnapshotRecord(
             source_id=ctx.source_id,
             total_entropy_objects=total_entropy_objects,
@@ -604,7 +589,6 @@ class EntropyPhase(BasePhase):
             avg_semantic_entropy=avg_semantic,
             avg_value_entropy=avg_value,
             avg_computational_entropy=avg_computational,
-            snapshot_data=snapshot_data_value,
         )
         ctx.session.add(snapshot)
 
@@ -618,44 +602,49 @@ class EntropyPhase(BasePhase):
                 "overall_readiness": overall_readiness,
                 "high_entropy_columns": high_entropy_count,
                 "critical_entropy_columns": critical_entropy_count,
-                "dimensional_summaries": len(dimensional_summaries),
             },
             records_processed=len(all_columns),
             records_created=total_entropy_objects + total_compound_risks + 1,
         )
 
 
+def _complexity_to_readiness(complexity: str) -> str:
+    """Map complexity level to readiness status."""
+    return {
+        "low": "ready",
+        "moderate": "investigate",
+        "high": "investigate",
+        "very_high": "blocked",
+    }.get(complexity, "investigate")
+
+
 def _run_dimensional_entropy(
     ctx: PhaseContext,
     typed_tables: Sequence[Table],
-) -> tuple[list[Any], list[dict[str, Any]]]:
+) -> list[Any]:
     """Run dimensional entropy detection for cross-column patterns.
 
     Loads slice variance data from quality_summary tables and runs
     the DimensionalEntropyDetector to calculate entropy scores.
-    Also generates dataset-level summaries for each table.
+    If LLM is available, generates dataset-level summaries and writes
+    them as table-level EntropyInterpretationRecords.
 
     Args:
         ctx: Phase context with session
         typed_tables: List of typed tables to analyze
 
     Returns:
-        Tuple of (entropy_objects, dataset_summaries) where:
-            - entropy_objects: List of EntropyObject instances from detection
-            - dataset_summaries: List of dict summaries for each table
+        List of EntropyObject instances from detection
     """
     from dataraum.entropy.models import EntropyObject
 
     all_entropy_objects: list[EntropyObject] = []
-    all_summaries: list[dict[str, Any]] = []
     detector = DimensionalEntropyDetector()
 
     # Attempt optional LLM for executive summaries
     summary_agent = None
     try:
-        from dataraum.entropy.detectors.semantic.dimensional_entropy import (
-            DimensionalSummaryAgent,
-        )
+        from dataraum.entropy.summary_agent import DimensionalSummaryAgent
         from dataraum.llm import LLMCache, PromptRenderer, create_provider, load_llm_config
 
         llm_config = load_llm_config()
@@ -858,17 +847,41 @@ def _run_dimensional_entropy(
                 slice_column=slice_column_name,
                 summary_agent=summary_agent,
             )
-            all_summaries.append(summary.to_dict())
-            logger.info(
-                "dimensional_entropy_summary_generated",
-                table=table.table_name,
-                summary_keys=list(summary.to_dict().keys()),
-            )
+            if summary is not None:
+                # Write as table-level interpretation record
+                interp_record = EntropyInterpretationRecord(
+                    source_id=ctx.source_id,
+                    table_id=table.table_id,
+                    column_id=None,
+                    table_name=table.table_name,
+                    column_name=None,
+                    composite_score=summary.dimensional_entropy_score,
+                    readiness=_complexity_to_readiness(summary.complexity_level),
+                    explanation=summary.executive_summary,
+                    assumptions_json=summary.to_dict(),
+                    resolution_actions_json=[
+                        {
+                            "action": "review",
+                            "description": r,
+                            "priority": "medium",
+                            "effort": "low",
+                            "expected_impact": "medium",
+                            "parameters": {},
+                        }
+                        for r in summary.recommendations
+                    ],
+                    from_cache=False,
+                )
+                ctx.session.add(interp_record)
+                logger.info(
+                    "dimensional_entropy_summary_stored",
+                    table=table.table_name,
+                    readiness=interp_record.readiness,
+                )
 
     logger.info(
         "dimensional_entropy_complete",
         total_objects=len(all_entropy_objects),
-        total_summaries=len(all_summaries),
     )
 
-    return all_entropy_objects, all_summaries
+    return all_entropy_objects

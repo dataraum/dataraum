@@ -15,24 +15,18 @@ Source: quality_summary variance analysis (slice_data, temporal_data)
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from math import log2
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from pydantic import BaseModel, Field
 
-from dataraum.core.models.base import Result
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 if TYPE_CHECKING:
-    from dataraum.llm.cache import LLMCache
-    from dataraum.llm.config import LLMConfig
-    from dataraum.llm.prompts import PromptRenderer
-    from dataraum.llm.providers.base import LLMProvider
+    from dataraum.entropy.summary_agent import DimensionalSummaryAgent
 
 logger = structlog.get_logger(__name__)
 
@@ -1271,190 +1265,6 @@ class DatasetDimensionalSummary:
         }
 
 
-# =============================================================================
-# LLM-POWERED EXECUTIVE SUMMARY
-# =============================================================================
-
-
-class DimensionalSummaryOutput(BaseModel):
-    """Pydantic model for LLM tool output - dimensional entropy executive summary.
-
-    Used as a tool definition for structured LLM output via tool use API.
-    """
-
-    executive_summary: str = Field(
-        description="Concise 3-5 sentence executive summary of dimensional entropy findings"
-    )
-    data_quality_concerns: list[str] = Field(
-        default_factory=list,
-        description="Refined data quality concerns with business impact context",
-    )
-    recommendations: list[str] = Field(
-        default_factory=list,
-        description="Prioritized actionable recommendations to reduce dimensional entropy",
-    )
-
-
-class DimensionalSummaryAgent:
-    """LLM-powered dimensional entropy summary agent.
-
-    Generates executive summaries, refined quality concerns, and
-    recommendations from dimensional entropy analysis results.
-
-    Note: Follows the EntropyInterpreter pattern - does not inherit
-    from LLMFeature to avoid circular imports with entropy module.
-    """
-
-    def __init__(
-        self,
-        config: LLMConfig,
-        provider: LLMProvider,
-        prompt_renderer: PromptRenderer,
-        cache: LLMCache,
-    ) -> None:
-        """Initialize dimensional summary agent.
-
-        Args:
-            config: LLM configuration
-            provider: LLM provider instance
-            prompt_renderer: Prompt template renderer
-            cache: Response cache
-        """
-        self.config = config
-        self.provider = provider
-        self.renderer = prompt_renderer
-        self.cache = cache
-
-    def summarize(
-        self,
-        summary: DatasetDimensionalSummary,
-    ) -> Result[DimensionalSummaryOutput]:
-        """Generate LLM-powered executive summary.
-
-        Args:
-            summary: The computed DatasetDimensionalSummary with all
-                     structured fields already populated.
-
-        Returns:
-            Result containing DimensionalSummaryOutput with
-            executive_summary, quality_concerns, recommendations.
-        """
-        from dataraum.llm.providers.base import (
-            ConversationRequest,
-            Message,
-            ToolDefinition,
-        )
-
-        # Check if feature is enabled
-        feature_config = self.config.features.dimensional_summary
-        if not feature_config or not feature_config.enabled:
-            return Result.fail("Dimensional summary LLM feature is disabled")
-
-        # Build context from the summary dataclass
-        context = {
-            "table_name": summary.table_name,
-            "slice_column": summary.slice_column or "none",
-            "total_columns": str(summary.total_columns),
-            "interesting_categorical_columns": str(summary.interesting_categorical_columns),
-            "interesting_temporal_columns": str(summary.interesting_temporal_columns),
-            "stable_columns": str(summary.stable_columns),
-            "empty_columns": str(summary.empty_columns),
-            "constant_columns": str(summary.constant_columns),
-            "dimensional_entropy_score": f"{summary.dimensional_entropy_score:.2f}",
-            "categorical_entropy": f"{summary.categorical_entropy:.2f}",
-            "temporal_entropy": f"{summary.temporal_entropy:.2f}",
-            "uncertainty_bits": f"{summary.uncertainty_bits:.1f}",
-            "complexity_level": summary.complexity_level,
-            "mutual_exclusivity_patterns": str(summary.mutual_exclusivity_patterns),
-            "conditional_dependency_patterns": str(summary.conditional_dependency_patterns),
-            "correlated_variance_patterns": str(summary.correlated_variance_patterns),
-            "temporal_correlation_patterns": str(summary.temporal_correlation_patterns),
-            "temporal_drift_patterns": str(summary.temporal_drift_patterns),
-            "interesting_columns_json": json.dumps(
-                [
-                    {
-                        "column_name": col.column_name,
-                        "classification": col.classification,
-                        "source": col.source,
-                        "reasons": col.reasons,
-                        "metrics": col.metrics,
-                    }
-                    for col in summary.interesting_columns
-                ],
-                indent=2,
-            ),
-            "business_rules_json": json.dumps(
-                [
-                    {
-                        "rule_type": rule.rule_type,
-                        "columns": rule.columns,
-                        "confidence": rule.confidence,
-                        "description": rule.description,
-                        "hypothesis": rule.hypothesis,
-                    }
-                    for rule in summary.business_rules
-                ],
-                indent=2,
-            ),
-            "data_quality_concerns_json": json.dumps(summary.data_quality_concerns),
-            "current_recommendations_json": json.dumps(summary.recommendations),
-        }
-
-        # Render prompt with system/user split
-        try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
-                "dimensional_summary", context
-            )
-        except Exception as e:
-            return Result.fail(f"Failed to render prompt: {e}")
-
-        # Define tool for structured output
-        tool = ToolDefinition(
-            name="summarize_dimensional_entropy",
-            description="Provide structured dimensional entropy executive summary",
-            input_schema=DimensionalSummaryOutput.model_json_schema(),
-        )
-
-        # Call LLM with tool use
-        request = ConversationRequest(
-            messages=[Message(role="user", content=user_prompt)],
-            system=system_prompt,
-            tools=[tool],
-            max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
-        )
-
-        result = self.provider.converse(request)
-        if not result.success or not result.value:
-            return Result.fail(result.error or "LLM call failed")
-
-        response = result.value
-
-        # Extract tool call result
-        if not response.tool_calls:
-            # LLM didn't use the tool - try to parse text as fallback
-            if response.content:
-                try:
-                    response_data = json.loads(response.content)
-                    output = DimensionalSummaryOutput.model_validate(response_data)
-                    return Result.ok(output)
-                except Exception:
-                    return Result.fail(f"LLM did not use tool. Response: {response.content[:200]}")
-            return Result.fail("LLM did not use the summarize_dimensional_entropy tool")
-
-        # Parse tool response using Pydantic model
-        tool_call = response.tool_calls[0]
-        if tool_call.name != "summarize_dimensional_entropy":
-            return Result.fail(f"Unexpected tool call: {tool_call.name}")
-
-        try:
-            output = DimensionalSummaryOutput.model_validate(tool_call.input)
-        except Exception as e:
-            return Result.fail(f"Failed to validate tool response: {e}")
-
-        return Result.ok(output)
-
-
 def generate_dataset_summary(
     table_name: str,
     columns_data: dict[str, dict[str, Any]],
@@ -1463,15 +1273,14 @@ def generate_dataset_summary(
     entropy_score: DimensionalEntropyScore,
     slice_column: str | None = None,
     summary_agent: DimensionalSummaryAgent | None = None,
-) -> DatasetDimensionalSummary:
+) -> DatasetDimensionalSummary | None:
     """Generate a dataset-level summary from dimensional entropy analysis.
 
     Synthesizes column classifications, detected patterns, and entropy scores
-    into a unified summary for LLM context, API responses, or persistence.
+    into a unified summary. The executive summary, quality concerns, and
+    recommendations are generated by LLM via the summary_agent.
 
-    If a summary_agent is provided, the executive summary, quality concerns,
-    and recommendations are enhanced via LLM. Falls back to hardcoded values
-    if the LLM call fails or is unavailable.
+    If summary_agent is None or the LLM call fails, returns None (no summary).
 
     Args:
         table_name: Name of the analyzed table
@@ -1480,11 +1289,20 @@ def generate_dataset_summary(
         patterns: List of detected cross-column patterns
         entropy_score: Calculated dimensional entropy score
         slice_column: Name of the slice column (if applicable)
-        summary_agent: Optional LLM agent for enhanced summary generation
+        summary_agent: LLM agent for summary generation (required for output)
 
     Returns:
-        DatasetDimensionalSummary with all findings synthesized
+        DatasetDimensionalSummary with all findings synthesized, or None
+        if LLM is unavailable or fails.
     """
+    if summary_agent is None:
+        logger.info(
+            "dimensional_summary_skipped",
+            table=table_name,
+            reason="no_summary_agent",
+        )
+        return None
+
     summary = DatasetDimensionalSummary(
         table_name=table_name,
         slice_column=slice_column,
@@ -1538,7 +1356,7 @@ def generate_dataset_summary(
                     )
                 )
 
-    # Convert patterns to business rules
+    # Convert patterns to business rules (deterministic)
     for pattern in patterns:
         rule = DetectedBusinessRule(
             rule_type=pattern.pattern_type,
@@ -1578,112 +1396,31 @@ def generate_dataset_summary(
     else:
         summary.complexity_level = "very_high"
 
-    # Generate data quality concerns
-    if summary.empty_columns > summary.total_columns * 0.2:
-        summary.data_quality_concerns.append(
-            f"{summary.empty_columns} columns are completely empty across slices"
-        )
-    if summary.mutual_exclusivity_patterns > 0:
-        summary.data_quality_concerns.append(
-            f"{summary.mutual_exclusivity_patterns} mutual exclusivity patterns detected - may indicate undocumented business rules"
-        )
-    if summary.conditional_dependency_patterns > 0:
-        summary.data_quality_concerns.append(
-            f"{summary.conditional_dependency_patterns} conditional dependencies detected - fields vary by category"
-        )
-    if summary.temporal_drift_patterns > 0:
-        summary.data_quality_concerns.append(
-            f"{summary.temporal_drift_patterns} temporal drift events detected - data may have changed over time"
-        )
-
-    # Generate recommendations
-    if summary.business_rules:
-        summary.recommendations.append(
-            f"Document {len(summary.business_rules)} detected business rules to reduce semantic entropy"
-        )
-    if summary.interesting_categorical_columns > 5:
-        summary.recommendations.append(
-            "Consider adding data validation rules for high-variance columns"
-        )
-    if summary.temporal_drift_patterns > 0:
-        summary.recommendations.append(
-            "Investigate temporal drift events - may indicate data migration or business rule changes"
-        )
-    if summary.empty_columns > 0:
-        summary.recommendations.append(
-            f"Review {summary.empty_columns} empty columns - consider removing or documenting why empty"
-        )
-
-    # Generate executive summary (hardcoded first, then optionally enhance with LLM)
-    summary.executive_summary = _generate_executive_summary(summary)
-
-    # Optionally enhance with LLM
-    if summary_agent is not None:
-        try:
-            llm_result = summary_agent.summarize(summary)
-            if llm_result.success:
-                output = llm_result.unwrap()
-                summary.executive_summary = output.executive_summary
-                if output.data_quality_concerns:
-                    summary.data_quality_concerns = output.data_quality_concerns
-                if output.recommendations:
-                    summary.recommendations = output.recommendations
-                logger.info(
-                    "dimensional_summary_llm_enhanced",
-                    table=table_name,
-                )
-        except Exception as e:
+    # Generate executive summary, quality concerns, and recommendations via LLM
+    try:
+        llm_result = summary_agent.summarize(summary)
+        if not llm_result.success:
             logger.warning(
                 "dimensional_summary_llm_failed",
-                error=str(e),
+                error=llm_result.error,
                 table=table_name,
             )
-            # Falls through with hardcoded summary already set
+            return None
+
+        output = llm_result.unwrap()
+        summary.executive_summary = output.executive_summary
+        summary.data_quality_concerns = output.data_quality_concerns
+        summary.recommendations = output.recommendations
+        logger.info(
+            "dimensional_summary_generated",
+            table=table_name,
+        )
+    except Exception as e:
+        logger.warning(
+            "dimensional_summary_llm_failed",
+            error=str(e),
+            table=table_name,
+        )
+        return None
 
     return summary
-
-
-def _generate_executive_summary(summary: DatasetDimensionalSummary) -> str:
-    """Generate a human-readable executive summary."""
-    parts = []
-
-    # Opening
-    parts.append(f"Analysis of table '{summary.table_name}'")
-    if summary.slice_column:
-        parts.append(f" sliced by '{summary.slice_column}'")
-    parts.append(f" reveals {summary.complexity_level} dimensional complexity.\n\n")
-
-    # Column overview
-    parts.append(f"Of {summary.total_columns} columns analyzed:\n")
-    if summary.interesting_categorical_columns > 0:
-        parts.append(
-            f"- {summary.interesting_categorical_columns} show significant variance across slices\n"
-        )
-    if summary.interesting_temporal_columns > 0:
-        parts.append(f"- {summary.interesting_temporal_columns} show notable temporal patterns\n")
-    if summary.stable_columns > 0:
-        parts.append(f"- {summary.stable_columns} are stable (consistent across slices)\n")
-    if summary.empty_columns > 0:
-        parts.append(f"- {summary.empty_columns} are empty\n")
-    if summary.constant_columns > 0:
-        parts.append(f"- {summary.constant_columns} have constant values\n")
-
-    # Business rules
-    if summary.business_rules:
-        parts.append(f"\n{len(summary.business_rules)} potential business rules detected:\n")
-        for rule in summary.business_rules[:5]:  # Top 5
-            parts.append(f"- {rule.description} (confidence: {rule.confidence:.0%})\n")
-        if len(summary.business_rules) > 5:
-            parts.append(f"  ... and {len(summary.business_rules) - 5} more\n")
-
-    # Entropy score
-    parts.append(f"\nDimensional entropy score: {summary.dimensional_entropy_score:.2f}")
-    parts.append(f" ({summary.uncertainty_bits:.1f} bits of uncertainty)\n")
-
-    # Key concerns
-    if summary.data_quality_concerns:
-        parts.append("\nKey concerns:\n")
-        for concern in summary.data_quality_concerns[:3]:
-            parts.append(f"- {concern}\n")
-
-    return "".join(parts)

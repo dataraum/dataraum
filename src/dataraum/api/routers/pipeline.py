@@ -96,7 +96,7 @@ def mark_interrupted_runs() -> int:
         return 0  # Manager not initialized
 
 
-@router.get("/sources/{source_id}/status", response_model=PipelineStatusResponse)
+@router.get("/sources/{source_id}/status", response_model=PipelineStatusResponse)  # type: ignore[untyped-decorator]
 def get_status(
     source_id: str,
     session: SessionDep,
@@ -137,7 +137,7 @@ def get_status(
     )
 
 
-@router.post("/sources/{source_id}/run", response_model=PipelineRunResponse)
+@router.post("/sources/{source_id}/run", response_model=PipelineRunResponse)  # type: ignore[untyped-decorator]
 def trigger_pipeline(
     source_id: str,
     request: PipelineRunRequest,
@@ -204,7 +204,7 @@ def trigger_pipeline(
         _pipeline_lock.release()
 
 
-@router.get("/runs/{run_id}/stream")
+@router.get("/runs/{run_id}/stream")  # type: ignore[untyped-decorator]
 async def stream_pipeline_progress(run_id: str) -> StreamingResponse:
     """Stream pipeline progress via Server-Sent Events.
 

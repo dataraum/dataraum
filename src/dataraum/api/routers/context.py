@@ -11,7 +11,7 @@ from dataraum.storage import Source, Table
 router = APIRouter()
 
 
-@router.get("/context/{source_id}", response_model=ContextResponse)
+@router.get("/context/{source_id}", response_model=ContextResponse)  # type: ignore[untyped-decorator]
 def get_context(
     source_id: str,
     session: SessionDep,

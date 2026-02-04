@@ -20,7 +20,7 @@ from dataraum.storage import Column, Source, Table
 router = APIRouter()
 
 
-@router.get("/entropy/{source_id}", response_model=EntropyDashboardResponse)
+@router.get("/entropy/{source_id}", response_model=EntropyDashboardResponse)  # type: ignore[untyped-decorator]
 def get_entropy_dashboard(
     source_id: str,
     session: SessionDep,
@@ -79,7 +79,7 @@ def get_entropy_dashboard(
     )
 
 
-@router.get("/entropy/table/{table_id}", response_model=TableEntropyResponse)
+@router.get("/entropy/table/{table_id}", response_model=TableEntropyResponse)  # type: ignore[untyped-decorator]
 def get_table_entropy(
     table_id: str,
     session: SessionDep,
@@ -120,7 +120,7 @@ def get_table_entropy(
     )
 
 
-@router.get("/entropy/column/{column_id}", response_model=ColumnEntropyResponse)
+@router.get("/entropy/column/{column_id}", response_model=ColumnEntropyResponse)  # type: ignore[untyped-decorator]
 def get_column_entropy(
     column_id: str,
     session: SessionDep,

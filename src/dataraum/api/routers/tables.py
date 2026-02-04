@@ -19,7 +19,7 @@ def _get_column_semantic(column: Column) -> tuple[str | None, str | None, str | 
     return ann.business_description, ann.semantic_role, ann.entity_type
 
 
-@router.get("/tables", response_model=TableListResponse)
+@router.get("/tables", response_model=TableListResponse)  # type: ignore[untyped-decorator]
 def list_tables(
     session: SessionDep,
     pagination: PaginationDep,
@@ -75,7 +75,7 @@ def list_tables(
     )
 
 
-@router.get("/tables/{table_id}", response_model=TableResponse)
+@router.get("/tables/{table_id}", response_model=TableResponse)  # type: ignore[untyped-decorator]
 def get_table(
     table_id: str,
     session: SessionDep,
@@ -113,7 +113,7 @@ def get_table(
     )
 
 
-@router.get("/columns/{column_id}", response_model=ColumnResponse)
+@router.get("/columns/{column_id}", response_model=ColumnResponse)  # type: ignore[untyped-decorator]
 def get_column(
     column_id: str,
     session: SessionDep,

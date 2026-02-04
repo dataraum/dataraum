@@ -26,7 +26,7 @@ from dataraum.storage import Source, Table
 router = APIRouter()
 
 
-@router.post("/query", response_model=QueryResponse)
+@router.post("/query", response_model=QueryResponse)  # type: ignore[untyped-decorator]
 def execute_query(
     request: QueryRequest,
     duckdb: DuckDBDep,
@@ -109,7 +109,7 @@ def execute_query(
         ) from e
 
 
-@router.post("/query/agent", response_model=QueryAgentResponse)
+@router.post("/query/agent", response_model=QueryAgentResponse)  # type: ignore[untyped-decorator]
 def query_agent(
     request: QueryAgentRequest,
     session: SessionDep,
@@ -200,7 +200,7 @@ def query_agent(
 # =============================================================================
 
 
-@router.get("/query/library/{source_id}", response_model=QueryLibraryListResponse)
+@router.get("/query/library/{source_id}", response_model=QueryLibraryListResponse)  # type: ignore[untyped-decorator]
 def list_library_entries(
     source_id: str,
     session: SessionDep,
@@ -250,7 +250,7 @@ def list_library_entries(
     )
 
 
-@router.get("/query/library/{source_id}/{query_id}", response_model=QueryLibraryEntryResponse)
+@router.get("/query/library/{source_id}/{query_id}", response_model=QueryLibraryEntryResponse)  # type: ignore[untyped-decorator]
 def get_library_entry(
     source_id: str,
     query_id: str,
@@ -286,7 +286,7 @@ def get_library_entry(
     )
 
 
-@router.post("/query/library/{source_id}", response_model=QueryLibrarySaveResponse)
+@router.post("/query/library/{source_id}", response_model=QueryLibrarySaveResponse)  # type: ignore[untyped-decorator]
 def save_to_library(
     source_id: str,
     request: QueryLibrarySaveRequest,
@@ -353,7 +353,7 @@ def save_to_library(
     )
 
 
-@router.post("/query/library/{source_id}/search", response_model=QueryLibrarySearchResponse)
+@router.post("/query/library/{source_id}/search", response_model=QueryLibrarySearchResponse)  # type: ignore[untyped-decorator]
 def search_library(
     source_id: str,
     request: QueryLibrarySearchRequest,
@@ -410,7 +410,7 @@ def search_library(
     )
 
 
-@router.delete("/query/library/{source_id}/{query_id}")
+@router.delete("/query/library/{source_id}/{query_id}")  # type: ignore[untyped-decorator]
 def delete_library_entry(
     source_id: str,
     query_id: str,

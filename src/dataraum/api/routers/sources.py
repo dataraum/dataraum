@@ -10,7 +10,7 @@ from dataraum.storage import Source, Table
 router = APIRouter()
 
 
-@router.get("/sources", response_model=SourceListResponse)
+@router.get("/sources", response_model=SourceListResponse)  # type: ignore[untyped-decorator]
 def list_sources(
     session: SessionDep,
     pagination: PaginationDep,
@@ -51,7 +51,7 @@ def list_sources(
     return SourceListResponse(sources=sources, total=total)
 
 
-@router.get("/sources/{source_id}", response_model=SourceResponse)
+@router.get("/sources/{source_id}", response_model=SourceResponse)  # type: ignore[untyped-decorator]
 def get_source(
     source_id: str,
     session: SessionDep,
@@ -83,7 +83,7 @@ def get_source(
     )
 
 
-@router.post("/sources", response_model=SourceResponse, status_code=201)
+@router.post("/sources", response_model=SourceResponse, status_code=201)  # type: ignore[untyped-decorator]
 def create_source(
     source: SourceCreate,
     session: SessionDep,

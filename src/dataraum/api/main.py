@@ -109,7 +109,7 @@ def create_app(
     app.include_router(routers.graphs.router, prefix="/api/v1", tags=["graphs"])
     app.include_router(routers.query.router, prefix="/api/v1", tags=["query"])
 
-    @app.get("/health")
+    @app.get("/health")  # type: ignore[untyped-decorator]
     async def health_check() -> dict[str, str]:
         """Health check endpoint."""
         return {"status": "healthy"}

@@ -354,6 +354,16 @@ Once in TUI, user can navigate between screens:
 
 ---
 
+## Cleanup Tasks
+
+These should be done once the respective phases are complete:
+
+1. **Remove old CLI** (`src/dataraum/cli.py`) - After Phase 2 TUI is complete and tested
+2. **Clean up API routes** - After MCP and Web UI work; evaluate which routes are still needed
+3. **Update entry points** - Ensure `pyproject.toml` points to new `cli/` module
+
+---
+
 ## Open Questions (Deferred)
 
 1. **Session expiry policy** - How long do sessions live?

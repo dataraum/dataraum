@@ -15,7 +15,7 @@ from dataraum.graphs.db_models import GeneratedCodeRecord
 router = APIRouter()
 
 
-@router.get("/graphs", response_model=GraphListResponse)
+@router.get("/graphs", response_model=GraphListResponse)  # type: ignore[untyped-decorator]
 def list_graphs(
     session: SessionDep,
     pagination: PaginationDep,
@@ -51,7 +51,7 @@ def list_graphs(
     )
 
 
-@router.get("/graphs/{graph_id}", response_model=GraphResponse)
+@router.get("/graphs/{graph_id}", response_model=GraphResponse)  # type: ignore[untyped-decorator]
 def get_graph(
     graph_id: str,
     session: SessionDep,
@@ -74,7 +74,7 @@ def get_graph(
     )
 
 
-@router.post("/graphs/{graph_id}/execute", response_model=GraphExecuteResponse)
+@router.post("/graphs/{graph_id}/execute", response_model=GraphExecuteResponse)  # type: ignore[untyped-decorator]
 def execute_graph(
     graph_id: str,
     request: GraphExecuteRequest,

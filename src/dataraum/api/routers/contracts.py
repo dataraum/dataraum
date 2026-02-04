@@ -72,7 +72,7 @@ def _build_column_summaries_for_contracts(
     return column_summaries, all_compound_risks
 
 
-@router.get("/contracts", response_model=ContractListResponse)
+@router.get("/contracts", response_model=ContractListResponse)  # type: ignore[untyped-decorator]
 def get_contracts_list() -> ContractListResponse:
     """List all available contracts.
 
@@ -92,7 +92,7 @@ def get_contracts_list() -> ContractListResponse:
     )
 
 
-@router.get("/contracts/{name}", response_model=ContractSummary)
+@router.get("/contracts/{name}", response_model=ContractSummary)  # type: ignore[untyped-decorator]
 def get_contract_detail(name: str) -> ContractSummary:
     """Get details for a specific contract.
 
@@ -111,7 +111,7 @@ def get_contract_detail(name: str) -> ContractSummary:
     )
 
 
-@router.get("/contracts/{name}/evaluate", response_model=ContractEvaluationResponse)
+@router.get("/contracts/{name}/evaluate", response_model=ContractEvaluationResponse)  # type: ignore[untyped-decorator]
 def evaluate_contract_for_source(
     name: str,
     source_id: str,
@@ -158,7 +158,7 @@ def evaluate_contract_for_source(
     return _evaluation_to_response(evaluation)
 
 
-@router.get("/sources/{source_id}/contracts", response_model=AllContractsEvaluationResponse)
+@router.get("/sources/{source_id}/contracts", response_model=AllContractsEvaluationResponse)  # type: ignore[untyped-decorator]
 def evaluate_all_contracts_for_source(
     source_id: str,
     session: SessionDep,

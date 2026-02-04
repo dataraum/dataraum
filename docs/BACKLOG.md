@@ -3,7 +3,8 @@
 Prioritized backlog for the dataraum-context project. Items are organized by priority and dependency.
 
 **Related Documentation:**
-- [plans/cli-tui-plan.md](./plans/cli-tui-plan.md) - Current plan: Textual TUI + MCP
+- [plans/ux-strategy.md](./plans/ux-strategy.md) - **Current plan**: CLI, TUI, Web, MCP strategy
+- [plans/cli-tui-plan.md](./plans/cli-tui-plan.md) - CLI-first plan (Phase 1 complete)
 - [plans/query-agent-architecture.md](./plans/query-agent-architecture.md) - RAG-based query reuse design
 - [ENTROPY_IMPLEMENTATION_PLAN.md](./ENTROPY_IMPLEMENTATION_PLAN.md) - Entropy system architecture
 - [ENTROPY_MODELS.md](./ENTROPY_MODELS.md) - Data model specifications

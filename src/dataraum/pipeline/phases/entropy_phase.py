@@ -834,7 +834,7 @@ def _run_dimensional_entropy(
 
         # Create ColumnQualityFinding objects and EntropyObjects for each column
         column_quality_findings: list[ColumnQualityFinding] = []
-        from dataraum.entropy.models import EntropyObject, ResolutionOption
+        from dataraum.entropy.models import ResolutionOption
 
         for col_name, reports in reports_by_column.items():
             # Calculate average quality score and entropy

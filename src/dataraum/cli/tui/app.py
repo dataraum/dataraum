@@ -97,7 +97,7 @@ class DataraumApp(App[None]):
         screen = TableScreen(self.output_dir, table_name)
         self.push_screen(screen)
 
-    def action_switch_screen(self, screen_name: str) -> None:
+    async def action_switch_screen(self, screen_name: str) -> None:
         """Switch to a different screen.
 
         Uses pop_screen + push_screen pattern to avoid issues with

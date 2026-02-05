@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -212,7 +213,7 @@ class ColumnDetailScreen(Screen[None]):
 
         explanation_widget.update(interpretation.explanation)
 
-    def _update_dimensions(self, entropy_objects: list[Any]) -> None:
+    def _update_dimensions(self, entropy_objects: Sequence[Any]) -> None:
         """Update the entropy dimension bars."""
         container = self.query_one("#dimension-bars", Vertical)
         container.remove_children()
@@ -362,7 +363,7 @@ class ColumnDetailScreen(Screen[None]):
                 effort,
             )
 
-    def _update_entropy_objects(self, entropy_objects: list[Any]) -> None:
+    def _update_entropy_objects(self, entropy_objects: Sequence[Any]) -> None:
         """Update the raw entropy measurements table."""
         table = self.query_one("#entropy-objects-table", DataTable)
         table.clear(columns=True)

@@ -80,6 +80,44 @@ Screen {
     max-height: 10;
 }
 
+/* Contracts screen */
+#contract-tabs {
+    height: auto;
+}
+
+#contract-tabs ContentSwitcher {
+    height: 0;
+    min-height: 0;
+}
+
+#contract-detail {
+    height: 1fr;
+    padding-top: 1;
+}
+
+#dimensions-section {
+    height: auto;
+    max-height: 12;
+    padding: 1 0 0 0;
+}
+
+#dimensions-table {
+    height: auto;
+    max-height: 10;
+}
+
+#tab-violations,
+#tab-warnings {
+    overflow-y: auto;
+}
+
+/* Violation collapsible content */
+.violation-scroll {
+    height: auto;
+    max-height: 20;
+    padding: 1;
+}
+
 .detail-text {
     padding: 0 1;
 }

@@ -139,6 +139,9 @@ class InterpretationInput:
     # Raw metrics from detectors
     raw_metrics: dict[str, Any]
 
+    # Dimension-level scores (e.g., "semantic.dimensional.column_quality": 0.3)
+    dimension_scores: dict[str, float]
+
     # High entropy dimensions
     high_entropy_dimensions: list[str]
 
@@ -176,6 +179,7 @@ class InterpretationInput:
             value_entropy=summary.layer_scores.get("value", 0.0),
             computational_entropy=summary.layer_scores.get("computational", 0.0),
             raw_metrics=raw_metrics or {},
+            dimension_scores=summary.dimension_scores,
             high_entropy_dimensions=summary.high_entropy_dimensions,
             compound_risks=summary.compound_risks,
         )
@@ -323,6 +327,9 @@ class EntropyInterpreter:
                     "semantic_entropy": round(inp.semantic_entropy, 3),
                     "value_entropy": round(inp.value_entropy, 3),
                     "computational_entropy": round(inp.computational_entropy, 3),
+                    "dimension_scores": {
+                        k: round(v, 3) for k, v in inp.dimension_scores.items()
+                    },
                     "high_entropy_dimensions": inp.high_entropy_dimensions,
                     "raw_metrics": inp.raw_metrics,
                     "compound_risks": [

@@ -409,10 +409,12 @@ def _get_dimension_score(
     """Get the score for a specific dimension from column summaries.
 
     Aggregates scores across all columns for the dimension.
+    Supports prefix matching: "semantic.dimensional" matches
+    "semantic.dimensional.overall_score", etc.
 
     Args:
         column_summaries: Dict mapping column key to summary
-        dimension: Dimension path like "structural.types" or "semantic.units"
+        dimension: Dimension path like "structural.types" or "semantic.dimensional"
 
     Returns:
         Average score for this dimension across all columns (0.0 if no data).
@@ -426,9 +428,20 @@ def _get_dimension_score(
         # First check dimension_scores for exact match
         if dimension in summary.dimension_scores:
             scores.append(summary.dimension_scores[dimension])
-        # Fall back to layer-level score
-        elif layer:
-            scores.append(_get_layer_score(summary, layer))
+        else:
+            # Check for prefix match (e.g., "semantic.dimensional" matches
+            # "semantic.dimensional.overall_score")
+            matching_scores = [
+                score
+                for dim_path, score in summary.dimension_scores.items()
+                if dim_path.startswith(dimension + ".")
+            ]
+            if matching_scores:
+                # Use the average of all sub-dimensions
+                scores.append(sum(matching_scores) / len(matching_scores))
+            # Fall back to layer-level score
+            elif layer:
+                scores.append(_get_layer_score(summary, layer))
 
     return sum(scores) / len(scores) if scores else 0.0
 
@@ -440,9 +453,12 @@ def _find_affected_columns(
 ) -> list[str]:
     """Find columns that exceed threshold for a dimension.
 
+    Supports prefix matching: "semantic.dimensional" matches
+    "semantic.dimensional.overall_score", etc.
+
     Args:
         column_summaries: Dict mapping column key to summary
-        dimension: Dimension path (e.g., "structural.types")
+        dimension: Dimension path (e.g., "structural.types" or "semantic.dimensional")
         threshold: Threshold score
 
     Returns:
@@ -458,8 +474,17 @@ def _find_affected_columns(
 
         if dimension in summary.dimension_scores:
             score = summary.dimension_scores[dimension]
-        elif layer:
-            score = _get_layer_score(summary, layer)
+        else:
+            # Check for prefix match
+            matching_scores = [
+                s
+                for dim_path, s in summary.dimension_scores.items()
+                if dim_path.startswith(dimension + ".")
+            ]
+            if matching_scores:
+                score = sum(matching_scores) / len(matching_scores)
+            elif layer:
+                score = _get_layer_score(summary, layer)
 
         if score > threshold:
             affected.append(key)

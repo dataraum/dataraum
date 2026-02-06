@@ -23,6 +23,7 @@ contracts:
       semantic.business_meaning: 0.5
       semantic.units: 0.4
       semantic.temporal: 0.5
+      semantic.dimensional: 0.5  # Cross-column patterns and business rules
       value.nulls: 0.5
       value.outliers: 0.5
       computational.derived_values: 0.5
@@ -48,6 +49,7 @@ contracts:
       semantic.business_meaning: 0.5  # ML doesn't need business terms
       semantic.units: 0.3         # Units affect feature scaling
       semantic.temporal: 0.4      # Temporal patterns are features
+      semantic.dimensional: 0.4   # Cross-column patterns for feature engineering
       value.nulls: 0.3           # Nulls affect model quality
       value.outliers: 0.3        # Outliers affect training
       computational.derived_values: 0.4
@@ -73,6 +75,7 @@ contracts:
       semantic.business_meaning: 0.3
       semantic.units: 0.3
       semantic.temporal: 0.4
+      semantic.dimensional: 0.35  # Cross-column patterns affect operational reports
       value.nulls: 0.4
       value.outliers: 0.4
       computational.derived_values: 0.3
@@ -99,6 +102,7 @@ contracts:
       semantic.business_meaning: 0.2
       semantic.units: 0.2
       semantic.temporal: 0.2
+      semantic.dimensional: 0.25  # Cross-column patterns must be documented for executives
       value.nulls: 0.3
       value.outliers: 0.3
       computational.derived_values: 0.2
@@ -126,6 +130,7 @@ contracts:
       semantic.business_meaning: 0.1
       semantic.units: 0.1
       semantic.temporal: 0.1
+      semantic.dimensional: 0.1  # All cross-column business rules must be documented
       value.nulls: 0.1
       value.outliers: 0.2      # Slightly more tolerance for outliers
       computational.derived_values: 0.1

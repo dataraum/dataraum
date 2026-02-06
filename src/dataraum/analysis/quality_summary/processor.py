@@ -715,13 +715,17 @@ def _save_slice_profiles_from_aggregated(
         slice_definition: The slice definition being processed
         source_table_name: Name of the source table
     """
-    from sqlalchemy import delete
+    from sqlalchemy import select as sa_select
 
-    # Delete existing profiles for this slice definition
-    delete_stmt = delete(ColumnSliceProfile).where(
+    # Delete existing profiles for this slice definition via ORM
+    # (Using session.delete() instead of session.execute(delete(...)) so the
+    # DELETE is batched with the commit lock, avoiding an immediate write
+    # transaction that would block parallel phases.)
+    existing_stmt = sa_select(ColumnSliceProfile).where(
         ColumnSliceProfile.slice_column_id == slice_definition.column_id
     )
-    session.execute(delete_stmt)
+    for existing in session.execute(existing_stmt).scalars().all():
+        session.delete(existing)
 
     # Get slice column name
     slice_column = session.get(Column, slice_definition.column_id)
@@ -793,7 +797,9 @@ def _save_slice_profiles_from_aggregated(
             )
             session.add(profile)
 
-    session.flush()
+    # No explicit flush — all adds are batched and sent during session.commit()
+    # inside the commit lock. Flushing here would open a SQLite write transaction
+    # outside the lock, blocking parallel phases.
 
 
 def _save_slice_profiles(
@@ -813,16 +819,20 @@ def _save_slice_profiles(
         slice_definition: The slice definition being processed
         source_columns: List of source columns
     """
-    from sqlalchemy import delete
+    from sqlalchemy import select as sa_select
 
     # Build column_id lookup by name
     col_id_by_name = {c.column_name: c.column_id for c in source_columns}
 
-    # Delete existing profiles for this slice definition
-    delete_stmt = delete(ColumnSliceProfile).where(
+    # Delete existing profiles for this slice definition via ORM
+    # (Using session.delete() instead of session.execute(delete(...)) so the
+    # DELETE is batched with the commit lock, avoiding an immediate write
+    # transaction that would block parallel phases.)
+    existing_stmt = sa_select(ColumnSliceProfile).where(
         ColumnSliceProfile.slice_column_id == slice_definition.column_id
     )
-    session.execute(delete_stmt)
+    for existing in session.execute(existing_stmt).scalars().all():
+        session.delete(existing)
 
     # Insert new profiles from matrix cells
     for slice_value, columns_dict in matrix.cells.items():
@@ -857,7 +867,8 @@ def _save_slice_profiles(
             )
             session.add(profile)
 
-    session.flush()
+    # No explicit flush — all deletes and adds are batched and sent during
+    # session.commit() inside the commit lock.
 
 
 __all__ = [

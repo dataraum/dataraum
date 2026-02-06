@@ -179,9 +179,10 @@ class ColumnEligibilityPhase(BasePhase):
                 rule=rule_id,
             )
 
-        # Flush eligibility records before deleting columns
-        # (records no longer have FK to columns, so order matters for clarity)
-        ctx.session.flush()
+        # No explicit flush needed here — eligibility records have no FK to columns,
+        # so INSERTs and DELETEs can be sent together during session.commit().
+        # An explicit flush() would open a SQLite write transaction outside the
+        # commit lock, blocking parallel phases (e.g. temporal) from committing.
 
         # Drop ineligible columns from DuckDB tables
         for table_id, columns_data in columns_to_drop.items():

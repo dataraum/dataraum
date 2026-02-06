@@ -140,6 +140,7 @@ class TestInterpretationInput:
             value_entropy=0.5,
             computational_entropy=0.2,
             raw_metrics={"null_ratio": 0.15, "outlier_ratio": 0.02},
+            dimension_scores={"semantic.business_meaning.naming_clarity": 0.6},
             high_entropy_dimensions=["semantic.business_meaning.naming_clarity"],
             compound_risks=[],
         )
@@ -256,6 +257,7 @@ class TestInterpretationInputFields:
             value_entropy=0.5,
             computational_entropy=0.2,
             raw_metrics={"null_ratio": 0.15, "parse_success_rate": 0.98},
+            dimension_scores={"semantic.business_meaning.naming_clarity": 0.6},
             high_entropy_dimensions=["semantic.business_meaning.naming_clarity"],
             compound_risks=[],
         )

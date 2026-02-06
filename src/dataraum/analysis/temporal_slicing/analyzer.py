@@ -268,14 +268,10 @@ class TemporalSliceAnalyzer:
         return result.scalar_one_or_none()
 
     def _get_categorical_columns(self, table_id: str) -> list[Column]:
-        """Get categorical columns from table (VARCHAR, low cardinality).
-
-        Excludes columns that were dropped due to eligibility rules.
-        """
+        """Get categorical columns from table (VARCHAR, low cardinality)."""
         stmt = select(Column).where(
             Column.table_id == table_id,
             Column.resolved_type.in_(["VARCHAR", "TEXT", "STRING"]),
-            Column.is_dropped == False,  # noqa: E712 - SQLAlchemy requires ==
         )
         result = self.session.execute(stmt)
         return list(result.scalars().all())

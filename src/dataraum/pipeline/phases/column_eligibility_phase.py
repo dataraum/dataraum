@@ -146,12 +146,15 @@ class ColumnEligibilityPhase(BasePhase):
                     f"is ineligible: {reason}. Cannot proceed with unusable key column."
                 )
 
-            # Create eligibility record
+            # Create eligibility record (denormalized - survives column deletion)
             record = ColumnEligibilityRecord(
                 eligibility_id=str(uuid4()),
                 column_id=column.column_id,
                 table_id=table.table_id,
                 source_id=ctx.source_id,
+                column_name=column.column_name,
+                table_name=table.table_name,
+                resolved_type=column.resolved_type,
                 status=status,
                 triggered_rule=rule_id,
                 reason=reason,
@@ -176,6 +179,10 @@ class ColumnEligibilityPhase(BasePhase):
                 rule=rule_id,
             )
 
+        # Flush eligibility records before deleting columns
+        # (records no longer have FK to columns, so order matters for clarity)
+        ctx.session.flush()
+
         # Drop ineligible columns from DuckDB tables
         for table_id, columns_data in columns_to_drop.items():
             table = table_map[table_id]
@@ -190,9 +197,9 @@ class ColumnEligibilityPhase(BasePhase):
                     columns_data,
                 )
 
-                # Mark columns as dropped in metadata
+                # Delete Column rows (cascades to StatisticalProfile, TypeCandidate, etc.)
                 for column, _ in columns_data:
-                    column.is_dropped = True
+                    ctx.session.delete(column)
 
                 logger.info(
                     "columns_dropped",

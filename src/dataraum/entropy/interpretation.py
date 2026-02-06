@@ -327,9 +327,7 @@ class EntropyInterpreter:
                     "semantic_entropy": round(inp.semantic_entropy, 3),
                     "value_entropy": round(inp.value_entropy, 3),
                     "computational_entropy": round(inp.computational_entropy, 3),
-                    "dimension_scores": {
-                        k: round(v, 3) for k, v in inp.dimension_scores.items()
-                    },
+                    "dimension_scores": {k: round(v, 3) for k, v in inp.dimension_scores.items()},
                     "high_entropy_dimensions": inp.high_entropy_dimensions,
                     "raw_metrics": inp.raw_metrics,
                     "compound_risks": [

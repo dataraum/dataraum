@@ -16,7 +16,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from dataraum.storage import Base
 
 if TYPE_CHECKING:
-    from dataraum.storage import Column, Source, Table
+    from dataraum.storage import Source, Table
 
 
 class ColumnEligibilityRecord(Base):
@@ -33,15 +33,18 @@ class ColumnEligibilityRecord(Base):
     eligibility_id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid4())
     )
-    column_id: Mapped[str] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
-    )
+    column_id: Mapped[str] = mapped_column(String(36), nullable=False)  # Preserved for audit, no FK
     table_id: Mapped[str] = mapped_column(
         ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
     )
     source_id: Mapped[str] = mapped_column(
         ForeignKey("sources.source_id", ondelete="CASCADE"), nullable=False
     )
+
+    # Denormalized column metadata (survives column deletion)
+    column_name: Mapped[str] = mapped_column(String, nullable=False)
+    table_name: Mapped[str] = mapped_column(String, nullable=False)
+    resolved_type: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Decision
     status: Mapped[str] = mapped_column(String(20), nullable=False)  # ELIGIBLE, WARN, INELIGIBLE
@@ -59,7 +62,6 @@ class ColumnEligibilityRecord(Base):
     )
 
     # Relationships
-    column: Mapped[Column] = relationship()
     table: Mapped[Table] = relationship()
     source: Mapped[Source] = relationship()
 

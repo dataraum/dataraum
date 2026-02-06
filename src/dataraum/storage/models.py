@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dataraum.storage.base import Base
@@ -117,11 +117,6 @@ class Column(Base):
     resolved_type: Mapped[str | None] = mapped_column(
         String
     )  # Final decided type after type resolution
-
-    # Eligibility status
-    is_dropped: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False
-    )  # True if column was dropped due to ineligibility
 
     # Relationships
     table: Mapped[Table] = relationship(back_populates="columns")

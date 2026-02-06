@@ -137,12 +137,11 @@ def aggregate_slice_results(
         all_slice_def_cols_result = session.execute(all_slice_def_cols_stmt)
         slice_definition_column_ids = set(all_slice_def_cols_result.scalars().all())
 
-        # Get all columns from source table, excluding slice columns and dropped columns
+        # Get all columns from source table, excluding slice columns
         source_cols_stmt = (
             select(Column)
             .where(Column.table_id == source_table.table_id)
             .where(Column.column_id.notin_(slice_definition_column_ids))
-            .where(Column.is_dropped == False)  # noqa: E712 - SQLAlchemy requires ==
             .order_by(Column.column_position)
         )
         source_cols_result = session.execute(source_cols_stmt)
@@ -548,12 +547,11 @@ def build_quality_matrix(
         all_slice_def_cols_result = session.execute(all_slice_def_cols_stmt)
         slice_definition_column_ids = set(all_slice_def_cols_result.scalars().all())
 
-        # Get source columns (excluding slice columns and dropped columns)
+        # Get source columns (excluding slice columns)
         source_cols_stmt = (
             select(Column)
             .where(Column.table_id == source_table.table_id)
             .where(Column.column_id.notin_(slice_definition_column_ids))
-            .where(Column.is_dropped == False)  # noqa: E712 - SQLAlchemy requires ==
             .order_by(Column.column_position)
         )
         source_cols_result = session.execute(source_cols_stmt)

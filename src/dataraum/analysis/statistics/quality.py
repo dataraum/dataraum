@@ -425,23 +425,19 @@ def assess_statistical_quality(
         Result containing list of StatisticalQualityResult objects
     """
     try:
-        # Get table from metadata (check both DB and pending session objects)
+        # session.get() checks the identity map first, so pending objects
+        # added via session.add() in this session are found without flush.
         table = session.get(Table, str(table_id))
-        if not table:
-            # Check pending objects in session (with autoflush=False, they won't be in DB yet)
-            for obj in session.new:
-                if isinstance(obj, Table) and obj.table_id == str(table_id):
-                    table = obj
-                    break
         if not table:
             return Result.fail(f"Table not found: {table_id}")
 
-        # Get all columns (check both DB and pending session objects)
+        # Query columns from DB. With autoflush=False, session.execute() hits
+        # SQLite which can't see unflushed objects. We must also check session.new
+        # for pending Columns (non-PK query — identity map doesn't help here).
         stmt = select(Column).where(Column.table_id == table_id)
         query_result = session.execute(stmt)
         columns = list(query_result.scalars().all())
 
-        # Also check pending Column objects in session (with autoflush=False, they won't be in DB yet)
         pending_columns = [
             obj for obj in session.new if isinstance(obj, Column) and obj.table_id == table_id
         ]

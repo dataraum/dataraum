@@ -18,6 +18,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from dataraum.core.connections import ConnectionManager
@@ -386,10 +387,64 @@ class Pipeline:
         run_config: dict[str, Any],
         previous_outputs: dict[str, dict[str, Any]],
     ) -> PhaseResult:
-        """Run a single phase in its own thread with its own session.
+        """Run a single phase with retry on transient SQLite errors.
 
-        This method is called from ThreadPoolExecutor. Each phase runs in
-        its own thread with its own SQLAlchemy session and DuckDB cursor.
+        Wraps _execute_phase with retry logic. Each retry gets a completely
+        fresh session and DuckDB cursor, which is the correct recovery for
+        both SQLITE_BUSY (busy_timeout exceeded) and SQLITE_BUSY_SNAPSHOT.
+
+        Args:
+            phase_name: Name of the phase to run
+            manager: Connection manager for database access
+            source_id: Source identifier
+            table_ids: List of table IDs to process
+            run_id: Pipeline run ID
+            run_config: Runtime configuration
+            previous_outputs: Outputs from previous phases
+
+        Returns:
+            PhaseResult from the phase execution
+        """
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                return self._execute_phase(
+                    phase_name,
+                    manager,
+                    source_id,
+                    table_ids,
+                    run_id,
+                    run_config,
+                    previous_outputs,
+                )
+            except OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries:
+                    wait = 2.0 * (2**attempt)  # 2s, 4s
+                    logger.warning(
+                        f"Phase {phase_name} SQLite contention "
+                        f"(attempt {attempt + 1}/{max_retries + 1}), "
+                        f"retrying in {wait}s"
+                    )
+                    time.sleep(wait)
+                    continue
+                raise
+        # Unreachable, but satisfies type checker
+        return PhaseResult.failed("Retry logic error")  # pragma: no cover
+
+    def _execute_phase(
+        self,
+        phase_name: str,
+        manager: ConnectionManager,
+        source_id: str,
+        table_ids: list[str],
+        run_id: str,
+        run_config: dict[str, Any],
+        previous_outputs: dict[str, dict[str, Any]],
+    ) -> PhaseResult:
+        """Execute a single phase in its own thread with its own session.
+
+        This method is called from _run_phase (possibly with retries).
+        Each invocation gets its own SQLAlchemy session and DuckDB cursor.
 
         Args:
             phase_name: Name of the phase to run

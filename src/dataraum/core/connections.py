@@ -30,7 +30,6 @@ Usage:
 from __future__ import annotations
 
 import threading
-import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -40,7 +39,6 @@ from typing import Any
 import duckdb
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum.core.logging import get_logger
@@ -155,9 +153,6 @@ class ConnectionManager:
     _vectors_conn: duckdb.DuckDBPyConnection | None = field(default=None, init=False, repr=False)
     _write_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _vectors_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
-    _sqlite_commit_lock: threading.Lock = field(
-        default_factory=threading.Lock, init=False, repr=False
-    )
     _init_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _initialized: bool = field(default=False, init=False, repr=False)
 
@@ -311,15 +306,14 @@ class ConnectionManager:
 
     @contextmanager
     def session_scope(self) -> Generator[Session]:
-        """Get a session with automatic cleanup and serialized commits.
+        """Get a session with automatic cleanup.
 
-        Thread-safe: each call creates a new session.
-        Commits are serialized via mutex to prevent SQLite lock contention.
-        Retries on transient SQLite "database is locked" errors by preserving
-        pending objects across rollback/retry cycles.
+        Thread-safe: each call creates a new session from the QueuePool.
+        SQLite WAL mode + PRAGMA busy_timeout handle write contention at
+        the C level — no Python-level mutex or retry needed here.
 
         Session is created with autoflush=False. All writes are batched and
-        committed atomically at the end with the commit lock held.
+        committed atomically at the end.
 
         Yields:
             Session from the connection pool
@@ -335,51 +329,10 @@ class ConnectionManager:
         assert self._session_factory is not None
 
         session = self._session_factory()
-        thread_id = threading.current_thread().name
         try:
             yield session
-            # Serialize commits across all threads to prevent SQLite lock contention.
-            # Retry on transient "database is locked" errors (WAL checkpoint contention).
-            #
-            # IMPORTANT: Capture session.new BEFORE commit, not after failure.
-            # session.commit() calls flush() internally, which can move objects
-            # out of session.new into the identity map. If that flush fails
-            # with "database is locked", session.new may already be empty,
-            # making post-failure capture useless.
-            pending = list(session.new)
-            modified = [obj for obj in session.dirty if session.is_modified(obj)]
-
-            max_retries = 3
-            for attempt in range(max_retries + 1):
-                try:
-                    logger.debug(f"[{thread_id}] Waiting for commit lock...")
-                    with self._sqlite_commit_lock:
-                        logger.debug(f"[{thread_id}] Acquired commit lock, committing...")
-                        session.commit()
-                        logger.debug(f"[{thread_id}] Commit complete, releasing lock")
-                    break  # Success
-                except OperationalError as e:
-                    if "database is locked" in str(e) and attempt < max_retries:
-                        wait = 1.0 * (2**attempt)  # 1s, 2s, 4s
-                        logger.warning(
-                            f"[{thread_id}] SQLite locked on commit "
-                            f"(attempt {attempt + 1}/{max_retries + 1}), "
-                            f"retrying in {wait}s..."
-                        )
-                        session.rollback()
-                        # Re-attach objects so the next commit can flush them
-                        for obj in pending:
-                            session.add(obj)
-                        for obj in modified:
-                            session.add(obj)
-                        # Re-capture for next retry
-                        pending = list(session.new)
-                        modified = [obj for obj in session.dirty if session.is_modified(obj)]
-                        time.sleep(wait)
-                    else:
-                        raise
+            session.commit()
         except Exception:
-            logger.debug(f"[{thread_id}] Exception, rolling back")
             session.rollback()
             raise
         finally:

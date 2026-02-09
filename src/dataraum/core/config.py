@@ -169,12 +169,6 @@ class Settings(BaseSettings):
         description="Number of top values to track",
     )
 
-    # Type inference
-    type_inference_min_confidence: float = Field(
-        default=0.95,
-        description="Minimum confidence for automatic type decisions",
-    )
-
     # Quality
     quality_anomaly_threshold: float = Field(
         default=3.0,

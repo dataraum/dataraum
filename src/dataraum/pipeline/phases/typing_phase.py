@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from dataraum.analysis.typing import infer_type_candidates, resolve_types
+from dataraum.analysis.typing.patterns import load_typing_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.storage import Table
@@ -94,7 +95,8 @@ class TypingPhase(BasePhase):
         if not raw_table_ids:
             return PhaseResult.failed("No raw tables to process")
 
-        min_confidence = ctx.config.get("min_confidence", 0.85)
+        typing_config = load_typing_config()
+        min_confidence = typing_config["min_confidence"]
 
         typed_tables: list[str] = []
         type_decisions: dict[str, str] = {}

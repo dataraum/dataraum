@@ -127,7 +127,7 @@ uv run pytest tests/integration/ -v       # Slow (~5min), end of dev cycle
 config/
 ├── system/                          # Engine behavior (same across verticals)
 │   ├── null_values.yaml
-│   ├── patterns/default.yaml
+│   ├── typing.yaml
 │   ├── llm.yaml
 │   ├── pipeline.yaml
 │   ├── column_eligibility.yaml

@@ -82,7 +82,7 @@ config/
 │   ├── pipeline.yaml
 │   ├── null_values.yaml
 │   ├── column_eligibility.yaml
-│   ├── patterns/default.yaml
+│   ├── typing.yaml
 │   ├── entropy/thresholds.yaml
 │   ├── entropy/contracts.yaml
 │   └── prompts/*.yaml

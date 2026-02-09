@@ -1,7 +1,7 @@
 """Pattern detection for type inference.
 
 This module provides value-based pattern matching for type inference.
-Patterns are defined in config/patterns/default.yaml.
+Patterns are defined in config/system/typing.yaml.
 
 IMPORTANT: Type inference is based ONLY on value patterns, NOT column names.
 Column names are semantically meaningful but fragile for type inference
@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, cast
 
-import yaml
-
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import DataType
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -104,8 +104,8 @@ class PatternConfig:
                         standardization_expr=pattern_dict.get("standardization_expr"),
                     )
                     self._patterns.append(pattern)
-                except KeyError:
-                    # Skip invalid patterns
+                except KeyError as e:
+                    logger.warning("invalid_pattern_definition", category=category, error=str(e))
                     continue
 
     def get_patterns(self) -> list[Pattern]:
@@ -132,21 +132,22 @@ class PatternConfig:
         return matches
 
 
-def load_pattern_config(config_path: Path | None = None) -> PatternConfig:
-    """Load pattern configuration from YAML.
+def load_typing_config() -> dict[str, Any]:
+    """Load the full typing configuration from YAML.
 
-    Args:
-        config_path: Optional path to config file. If None, uses default from settings.
+    Returns:
+        Dict with typing config (patterns + settings like min_confidence)
+    """
+    from dataraum.core.config import load_yaml_config
+
+    return load_yaml_config("system/typing.yaml")
+
+
+def load_pattern_config() -> PatternConfig:
+    """Load pattern configuration from YAML.
 
     Returns:
         PatternConfig instance
     """
-    if config_path is None:
-        from dataraum.core.config import get_config_file
-
-        config_path = get_config_file("system/patterns/default.yaml")
-
-    with open(config_path) as f:
-        config_dict = yaml.safe_load(f)
-
+    config_dict = load_typing_config()
     return PatternConfig(config_dict)

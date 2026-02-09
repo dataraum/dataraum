@@ -4,8 +4,6 @@ Tests the value-based pattern matching used for type inference.
 Column name patterns are intentionally NOT supported.
 """
 
-import pytest
-
 from dataraum.analysis.typing.patterns import Pattern, PatternConfig, load_pattern_config
 from dataraum.core.models.base import DataType
 
@@ -158,16 +156,13 @@ class TestLoadPatternConfig:
 
     def test_load_default_config(self):
         """Test loading the default pattern configuration."""
-        try:
-            config = load_pattern_config()
-            patterns = config.get_patterns()
+        config = load_pattern_config()
+        patterns = config.get_patterns()
 
-            # Should have loaded some patterns
-            assert len(patterns) > 0
+        # Should have loaded some patterns
+        assert len(patterns) > 0
 
-            # Check that common patterns exist
-            pattern_names = {p.name for p in patterns}
-            # At minimum, we should have some date and numeric patterns
-            assert any("date" in name.lower() for name in pattern_names)
-        except FileNotFoundError:
-            pytest.skip("Default pattern config not found")
+        # Check that common patterns exist
+        pattern_names = {p.name for p in patterns}
+        # At minimum, we should have some date and numeric patterns
+        assert any("date" in name.lower() for name in pattern_names)

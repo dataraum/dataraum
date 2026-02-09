@@ -1,11 +1,12 @@
-# Default Pattern Detection Configuration
+# Type Inference Configuration
 #
-# Patterns are used during profiling to infer column types
-# and semantic meaning from value structure.
+# Patterns for value-based type inference and resolution settings.
 
-name: default
 version: "1.0.0"
-description: Standard patterns for type inference and semantic detection
+
+# Minimum confidence for automatic type selection.
+# Candidates below this threshold fall back to VARCHAR.
+min_confidence: 0.85
 
 # Date and Time Patterns
 date_patterns:
@@ -142,34 +143,3 @@ boolean_patterns:
     pattern: '^[01]$'
     inferred_type: BOOLEAN
     # Only if column has exactly these two values
-
-# Column Name Patterns (for semantic inference)
-column_name_patterns:
-  - pattern: '.*_id$'
-    likely_role: key
-    
-  - pattern: '.*_at$'
-    likely_role: timestamp
-    likely_type: TIMESTAMP
-    
-  - pattern: '.*_date$'
-    likely_role: timestamp
-    likely_type: DATE
-    
-  - pattern: '.*_amt$|.*_amount$'
-    likely_role: measure
-    likely_type: DOUBLE
-    
-  - pattern: '.*_qty$|.*_quantity$'
-    likely_role: measure
-    likely_type: INTEGER
-    
-  - pattern: '.*_pct$|.*_percent.*'
-    likely_role: measure
-    semantic_type: percentage
-    
-  - pattern: '.*_code$|.*_type$'
-    likely_role: dimension
-    
-  - pattern: '^is_.*|^has_.*'
-    likely_type: BOOLEAN

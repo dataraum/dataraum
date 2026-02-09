@@ -99,7 +99,9 @@ class TestStatisticsProfiler:
         assert infer_result.success
 
         # Resolve types (pass table_id string)
-        resolve_result = resolve_types(staged_table.table_id, test_duckdb, test_session)
+        resolve_result = resolve_types(
+            staged_table.table_id, test_duckdb, test_session, min_confidence=0.85
+        )
         assert resolve_result.success
         resolution = resolve_result.unwrap()
 
@@ -136,7 +138,9 @@ class TestStatisticsProfiler:
         infer_result = infer_type_candidates(raw_table, test_duckdb, test_session)
         assert infer_result.success
 
-        resolve_result = resolve_types(staged_table.table_id, test_duckdb, test_session)
+        resolve_result = resolve_types(
+            staged_table.table_id, test_duckdb, test_session, min_confidence=0.85
+        )
         assert resolve_result.success
         resolution = resolve_result.unwrap()
 
@@ -179,7 +183,9 @@ class TestStatisticsProfiler:
 
         # Infer types (pass Table object), resolve (pass table_id string)
         infer_type_candidates(raw_table, test_duckdb, test_session)
-        resolve_result = resolve_types(staged_table.table_id, test_duckdb, test_session)
+        resolve_result = resolve_types(
+            staged_table.table_id, test_duckdb, test_session, min_confidence=0.85
+        )
         assert resolve_result.success
         resolution = resolve_result.unwrap()
 
@@ -220,7 +226,9 @@ class TestStatisticsProfiler:
 
         # Infer types (pass Table object), resolve (pass table_id string)
         infer_type_candidates(raw_table, test_duckdb, test_session)
-        resolve_result = resolve_types(staged_table.table_id, test_duckdb, test_session)
+        resolve_result = resolve_types(
+            staged_table.table_id, test_duckdb, test_session, min_confidence=0.85
+        )
         assert resolve_result.success
         resolution = resolve_result.unwrap()
 

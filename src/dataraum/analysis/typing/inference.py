@@ -24,12 +24,15 @@ from dataraum.analysis.typing.models import TypeCandidate as TypeCandidateModel
 from dataraum.analysis.typing.patterns import Pattern, PatternConfig, load_pattern_config
 from dataraum.analysis.typing.units import detect_unit
 from dataraum.core.config import Settings, get_settings
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import (
     ColumnRef,
     DataType,
     Result,
 )
 from dataraum.storage import Column, Table
+
+logger = get_logger(__name__)
 
 
 class ParseResult:
@@ -77,6 +80,12 @@ def infer_type_candidates(
         if not columns:
             return Result.ok([])  # No VARCHAR columns to infer
 
+        logger.info(
+            "type_inference_started",
+            table=table.table_name,
+            varchar_columns=len(columns),
+        )
+
         all_candidates = []
 
         for column in columns:
@@ -90,6 +99,11 @@ def infer_type_candidates(
             )
 
             if not candidates_result.success:
+                logger.debug(
+                    "column_inference_failed",
+                    column=column.column_name,
+                    error=candidates_result.error,
+                )
                 continue
 
             candidates = candidates_result.value
@@ -115,9 +129,16 @@ def infer_type_candidates(
 
             all_candidates.extend(candidates)
 
+        logger.info(
+            "type_inference_completed",
+            table=table.table_name,
+            total_candidates=len(all_candidates),
+        )
+
         return Result.ok(all_candidates)
 
     except Exception as e:
+        logger.error("type_inference_error", table=table.table_name, error=str(e))
         return Result.fail(f"Type inference failed: {e}")
 
 
@@ -154,7 +175,7 @@ def _infer_column_types(
             return Result.fail("No table or column name found")
 
         # Sample values (exclude nulls)
-        sample_size = settings.profile_sample_size or 100_000
+        sample_size = settings.profile_sample_size
         sample_query = f"""
             SELECT DISTINCT "{col_name}"
             FROM {table_name}
@@ -356,5 +377,6 @@ def _test_type_cast(
             failed_examples=failed_examples,
         )
 
-    except Exception:
+    except Exception as e:
+        logger.debug("type_cast_test_error", table=table_name, column=col_name, error=str(e))
         return ParseResult(success_rate=0.0, failed_examples=[])

@@ -20,7 +20,6 @@ from dataraum.analysis.statistics.db_models import (
 from dataraum.analysis.statistics.models import (
     BenfordAnalysis,
     ColumnProfile,
-    DetectedPattern,
     HistogramBucket,
     NumericStats,
     OutlierDetection,
@@ -54,7 +53,6 @@ __all__ = [
     "StringStats",
     "HistogramBucket",
     "ValueCount",
-    "DetectedPattern",
     "StatisticsProfileResult",
     # Pydantic Models - Quality
     "BenfordAnalysis",

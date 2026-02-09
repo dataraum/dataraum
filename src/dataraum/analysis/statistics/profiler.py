@@ -21,7 +21,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import Any
 from uuid import uuid4
 
 import duckdb
@@ -38,13 +38,9 @@ from dataraum.analysis.statistics.models import (
     StringStats,
     ValueCount,
 )
-from dataraum.core.config import get_settings
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, Result
 from dataraum.storage import Column, Table
-
-if TYPE_CHECKING:
-    pass
 
 logger = get_logger(__name__)
 
@@ -279,7 +275,7 @@ def profile_statistics(
         Result containing StatisticsProfileResult
     """
     start_time = time.time()
-    settings = get_settings()
+    stats_config = load_statistics_config()
 
     try:
         # session.get() checks the identity map first, so pending objects
@@ -320,9 +316,16 @@ def profile_statistics(
         if not columns:
             return Result.fail(f"No columns found for table {table.table_id}")
 
+        # Typed tables must have resolved_type on all columns
+        unresolved = [c.column_name for c in columns if not c.resolved_type]
+        if unresolved:
+            return Result.fail(f"Columns missing resolved_type in typed table: {unresolved}")
+
+        logger.info("profiling_statistics", table=table.table_name, columns=len(columns))
+
         profiled_at = datetime.now(UTC)
         profiles: list[ColumnProfile] = []
-        top_k = settings.profile_top_k_values
+        top_k = stats_config["top_k_values"]
 
         # Use parallel processing with cursors from shared connection
         # DuckDB cursors are thread-safe for read operations
@@ -335,7 +338,7 @@ def profile_statistics(
                     table.duckdb_path,
                     column.column_id,
                     column.column_name,
-                    column.resolved_type or "VARCHAR",
+                    column.resolved_type,  # type: ignore[arg-type]  # validated above
                     profiled_at,
                     top_k,
                 )
@@ -377,6 +380,13 @@ def profile_statistics(
 
         duration = time.time() - start_time
 
+        logger.info(
+            "profiling_statistics_complete",
+            table=table.table_name,
+            profiles=len(profiles),
+            duration=round(duration, 2),
+        )
+
         return Result.ok(
             StatisticsProfileResult(
                 column_profiles=profiles,
@@ -385,4 +395,16 @@ def profile_statistics(
         )
 
     except Exception as e:
+        logger.error("profiling_statistics_failed", error=str(e))
         return Result.fail(f"Statistics profiling failed: {e}")
+
+
+def load_statistics_config() -> dict[str, Any]:
+    """Load the statistics configuration from YAML.
+
+    Returns:
+        Dict with statistics config (top_k_values, etc.)
+    """
+    from dataraum.core.config import load_yaml_config
+
+    return load_yaml_config("system/statistics.yaml")

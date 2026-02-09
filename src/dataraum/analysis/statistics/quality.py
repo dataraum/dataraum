@@ -13,13 +13,11 @@ These metrics may require additional dependencies:
 - scikit-learn (optional for Isolation Forest: pip install dataraum-context[statistical-quality])
 
 Uses parallel processing for large tables to speed up assessment.
-
-Moved from quality/statistical.py in Phase 9A restructuring.
 """
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import uuid4
 
 import duckdb
@@ -39,10 +37,6 @@ from dataraum.analysis.statistics.models import (
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, Result
 from dataraum.storage import Column, Table
-
-# Type checking imports to avoid hard dependency on scikit-learn
-if TYPE_CHECKING:
-    pass
 
 logger = get_logger(__name__)
 
@@ -455,6 +449,12 @@ def assess_statistical_quality(
         if not numeric_columns:
             return Result.ok([])
 
+        logger.info(
+            "assessing_statistical_quality",
+            table=table.table_name,
+            numeric_columns=len(numeric_columns),
+        )
+
         table_duckdb_path = table.duckdb_path
         if not table_duckdb_path:
             return Result.fail("Table has no DuckDB path")
@@ -473,7 +473,7 @@ def assess_statistical_quality(
                     table_duckdb_path,
                     column.column_id,
                     column.column_name,
-                    column.resolved_type or "VARCHAR",
+                    column.resolved_type,  # type: ignore[arg-type]  # filtered to numeric above
                 )
                 for column in numeric_columns
             ]
@@ -523,9 +523,16 @@ def assess_statistical_quality(
                     )
                     session.add(db_metric)
 
+        logger.info(
+            "statistical_quality_assessment_complete",
+            table=table.table_name,
+            results=len(results),
+        )
+
         return Result.ok(results)
 
     except Exception as e:
+        logger.error("statistical_quality_assessment_failed", error=str(e))
         return Result.fail(f"Statistical quality assessment failed: {e}")
 
 
@@ -567,11 +574,7 @@ def _generate_statistical_quality_issues(
         )
 
     # High anomaly ratio (Isolation Forest)
-    if (
-        outlier_detection
-        and outlier_detection.isolation_forest_anomaly_ratio > 0.0
-        and outlier_detection.isolation_forest_anomaly_ratio > 0.05
-    ):
+    if outlier_detection and outlier_detection.isolation_forest_anomaly_ratio > 0.05:
         severity = (
             "warning" if outlier_detection.isolation_forest_anomaly_ratio < 0.10 else "critical"
         )

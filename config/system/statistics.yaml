@@ -1,0 +1,5 @@
+# Statistics profiling configuration
+# Used by analysis/statistics/profiler.py
+
+# Number of top frequent values to collect per column
+top_k_values: 20

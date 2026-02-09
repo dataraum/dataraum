@@ -6,7 +6,6 @@ Pydantic models for statistical profiling data structures:
 - StringStats: Statistics for string columns
 - HistogramBucket: Histogram bin
 - ValueCount: Frequency count for top values
-- DetectedPattern: Pattern detection result (used by schema profiler)
 - StatisticsProfileResult: Result of statistics profiling
 
 Statistical Quality Models (moved from quality/models.py in Phase 9A):
@@ -60,19 +59,6 @@ class ValueCount(BaseModel):
     value: Any
     count: int
     percentage: float
-
-
-class DetectedPattern(BaseModel):
-    """A detected pattern in column values.
-
-    Used by the schema profiler for pattern detection on raw tables.
-    Patterns are stored in SchemaProfileResult.detected_patterns (dict by column name),
-    NOT in ColumnProfile which is for statistics stage only.
-    """
-
-    name: str
-    match_rate: float
-    semantic_type: str | None = None
 
 
 class ColumnProfile(BaseModel):

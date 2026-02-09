@@ -85,32 +85,6 @@ class TestOutlierDetection:
         assert 250 > upper_fence or 250 < lower_fence
 
 
-class TestKSTest:
-    """Test Kolmogorov-Smirnov test for distribution stability."""
-
-    def test_ks_same_distribution(self):
-        """Test KS test with samples from same distribution."""
-        np.random.seed(42)
-        sample1 = np.random.normal(0, 1, size=1000)
-        sample2 = np.random.normal(0, 1, size=1000)
-
-        ks_statistic, p_value = stats.ks_2samp(sample1, sample2)
-
-        # Should NOT reject null hypothesis (distributions are same)
-        assert p_value > 0.01, f"Same distributions should have p > 0.01, got {p_value}"
-
-    def test_ks_different_distributions(self):
-        """Test KS test with samples from different distributions."""
-        np.random.seed(42)
-        sample1 = np.random.normal(0, 1, size=1000)
-        sample2 = np.random.normal(5, 1, size=1000)  # Different mean
-
-        ks_statistic, p_value = stats.ks_2samp(sample1, sample2)
-
-        # Should reject null hypothesis (distributions are different)
-        assert p_value < 0.01, f"Different distributions should have p < 0.01, got {p_value}"
-
-
 @pytest.mark.skipif(
     not pytest.importorskip("sklearn", reason="scikit-learn not installed"),
     reason="Requires scikit-learn",

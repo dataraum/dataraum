@@ -164,11 +164,6 @@ class Settings(BaseSettings):
         default=20,
         description="Number of histogram buckets",
     )
-    profile_top_k_values: int = Field(
-        default=10,
-        description="Number of top values to track",
-    )
-
     # Quality
     quality_anomaly_threshold: float = Field(
         default=3.0,

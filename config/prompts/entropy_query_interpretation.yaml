@@ -32,7 +32,7 @@ system_prompt: |
   data, while 1.0 means maximum uncertainty. The entropy framework has four layers:
 
   - structural: Schema, types, relationships (can the data be parsed correctly?)
-  - semantic: Business meaning, units, temporal clarity (do we understand what it means?)
+  - semantic: Business meaning, units, temporal clarity, dimensional patterns (do we understand what it means?)
   - value: Nulls, outliers (is the data complete and reasonable?)
   - computational: Derived values (can we compute reliably with it?)
   </entropy_context>

@@ -20,6 +20,9 @@ from dataraum.analysis.relationships.models import (
     JoinCandidate,
     RelationshipCandidate,
 )
+from dataraum.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def evaluate_join_candidate(
@@ -183,8 +186,13 @@ def _verify_cardinality(
 
         return detected_cardinality == actual
 
-    except Exception:
-        # If verification fails, return None (inconclusive) rather than False
+    except Exception as e:
+        logger.warning(
+            "cardinality_verification_failed",
+            col1=col1,
+            col2=col2,
+            error=str(e),
+        )
         return None
 
 

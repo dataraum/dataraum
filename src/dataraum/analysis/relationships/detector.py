@@ -20,8 +20,11 @@ from dataraum.analysis.relationships.models import (
     RelationshipDetectionResult,
 )
 from dataraum.analysis.semantic.utils import load_column_mappings, load_table_mappings
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.storage import Table
+
+logger = get_logger(__name__)
 
 
 def detect_relationships(
@@ -49,6 +52,11 @@ def detect_relationships(
         Result containing RelationshipDetectionResult
     """
     start_time = time.time()
+    logger.info(
+        "relationship_detection_started",
+        table_count=len(table_ids),
+        min_confidence=min_confidence,
+    )
 
     try:
         # Load tables with paths and sampled data
@@ -236,7 +244,8 @@ def _load_tables(
             ).df()
             column_types = column_types_by_table.get(table_id, {})
             tables_data[table_name] = (duckdb_path, df, column_types)
-        except Exception:
+        except Exception as e:
+            logger.warning("table_load_failed", table=table_name, error=str(e))
             continue
 
     return tables_data

@@ -17,6 +17,10 @@ from typing import TYPE_CHECKING, Any
 import networkx as nx
 from pydantic import BaseModel, Field
 
+from dataraum.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 if TYPE_CHECKING:
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.analysis.relationships.models import RelationshipCandidate
@@ -205,8 +209,8 @@ def analyze_graph_topology(
                         length=len(cycle_ids),
                     )
                 )
-    except Exception:
-        pass  # No cycles or error in cycle detection
+    except Exception as e:
+        logger.warning("cycle_detection_failed", error=str(e))
 
     # Count connected components
     connected_components = nx.number_connected_components(G) if len(G) > 0 else 0

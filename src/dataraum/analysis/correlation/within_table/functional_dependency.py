@@ -20,8 +20,11 @@ from dataraum.analysis.correlation.db_models import (
 )
 from dataraum.analysis.correlation.models import FunctionalDependency
 from dataraum.analysis.statistics.db_models import StatisticalProfile
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.storage import Column, Table
+
+logger = get_logger(__name__)
 
 
 def _check_fd_pair(

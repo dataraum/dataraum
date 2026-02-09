@@ -43,8 +43,11 @@ from dataraum.analysis.correlation.within_table import (
     detect_functional_dependencies,
 )
 from dataraum.analysis.relationships.db_models import Relationship
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Cardinality, RelationshipType, Result
 from dataraum.storage import Column, Table
+
+logger = get_logger(__name__)
 
 
 def analyze_correlations(

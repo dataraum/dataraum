@@ -1,0 +1,3 @@
+# Cross-table correlation analysis configuration
+min_correlation: 0.3         # Minimum |r| to report cross-table correlations
+redundancy_threshold: 0.99   # Correlation threshold for redundant column detection

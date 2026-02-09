@@ -33,6 +33,9 @@ from dataraum.analysis.correlation.models import (
     QualityIssue,
     RedundantColumnPair,
 )
+from dataraum.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     import duckdb
@@ -289,7 +292,13 @@ def analyze_relationship_quality(
             analyzed_at=datetime.now(UTC),
         )
 
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "cross_table_quality_failed",
+            from_table=relationship.from_table,
+            to_table=relationship.to_table,
+            error=str(e),
+        )
         return None
 
 

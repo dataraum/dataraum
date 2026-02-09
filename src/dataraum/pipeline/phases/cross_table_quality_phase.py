@@ -17,9 +17,13 @@ from sqlalchemy import select
 
 from dataraum.analysis.correlation.processor import analyze_cross_table_quality
 from dataraum.analysis.relationships.db_models import Relationship
+from dataraum.core.config import load_yaml_config
+from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.storage import Table
+
+logger = get_logger(__name__)
 
 
 class CrossTableQualityPhase(BasePhase):
@@ -111,9 +115,10 @@ class CrossTableQualityPhase(BasePhase):
                 records_created=0,
             )
 
-        # Get config parameters
-        min_correlation = ctx.config.get("min_correlation", 0.3)
-        redundancy_threshold = ctx.config.get("redundancy_threshold", 0.99)
+        # Configuration from YAML
+        config = load_yaml_config("system/correlations.yaml")
+        min_correlation = config["min_correlation"]
+        redundancy_threshold = config["redundancy_threshold"]
 
         # Analyze each relationship
         total_correlations = 0

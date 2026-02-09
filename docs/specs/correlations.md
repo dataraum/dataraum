@@ -122,9 +122,20 @@ Within-table analysis uses `ThreadPoolExecutor` for:
 
 DuckDB cursors from a shared connection are thread-safe for read operations (Python 3.14 free-threaded build).
 
+## De-configured: Cross-Table Quality Phase
+
+The `cross_table_quality` phase has been **removed from the pipeline**. It produces 3 DB models (`CrossTableCorrelationDB`, `MulticollinearityGroup`, `QualityIssueDB`) that are currently write-only — no downstream module reads them. The code is preserved for potential future use.
+
+**Evaluation needed before re-introduction:**
+- How much of cross-table correlations overlaps with what relationships + semantic already provide?
+- Can multicollinearity (VDP) feed the entropy scoring system meaningfully?
+- Are cross-table quality issues distinct from what quality_summary already captures?
+
+The within-table correlation phase (`correlations`) remains active — its outputs are consumed by slicing, semantic, entropy, and graphs.
+
 ## Roadmap
 
-- **String transforms**: Detect UPPER/LOWER/TRIM derivations (stub exists, not implemented)
-- **Concatenation**: Detect col3 = col1 || col2 (stub exists, not implemented)
-- **Composite FDs**: (A, B) → C with max_determinant_columns > 1 (parameter exists, not yet used)
+- **String transforms**: Detect UPPER/LOWER/TRIM derivations between VARCHAR columns
+- **Concatenation**: Detect col3 = col1 || col2 for string columns
+- **Composite FDs**: (A, B) → C — multi-column determinants
 - **Cross-source correlations**: When multi-source support lands, correlate columns across different data sources joined by confirmed relationships

@@ -659,10 +659,10 @@ def _register_builtin_phases(pipeline: Pipeline) -> None:
         BusinessCyclesPhase,
         ColumnEligibilityPhase,
         CorrelationsPhase,
-        CrossTableQualityPhase,
+        # CrossTableQualityPhase,  # De-configured: write-only data
         EntropyInterpretationPhase,
         EntropyPhase,
-        GraphExecutionPhase,
+        # GraphExecutionPhase,  # De-configured: re-introduce after cleanup
         ImportPhase,
         QualitySummaryPhase,
         RelationshipsPhase,
@@ -691,10 +691,10 @@ def _register_builtin_phases(pipeline: Pipeline) -> None:
     pipeline.register(QualitySummaryPhase())
     pipeline.register(TemporalSliceAnalysisPhase())
     pipeline.register(BusinessCyclesPhase())
-    pipeline.register(CrossTableQualityPhase())
+    # CrossTableQualityPhase de-configured: write-only data, evaluate for entropy later
     pipeline.register(EntropyPhase())
     pipeline.register(EntropyInterpretationPhase())
-    pipeline.register(GraphExecutionPhase())
+    # GraphExecutionPhase de-configured: re-introduce after pipeline cleanup
     pipeline.register(ValidationPhase())
 
 

@@ -43,10 +43,10 @@ from dataraum.pipeline.phases import (
     BusinessCyclesPhase,
     ColumnEligibilityPhase,
     CorrelationsPhase,
-    CrossTableQualityPhase,
+    # CrossTableQualityPhase,  # De-configured: write-only data, evaluate for entropy later
     EntropyInterpretationPhase,
     EntropyPhase,
-    GraphExecutionPhase,
+    # GraphExecutionPhase,  # De-configured: re-introduce after pipeline cleanup
     ImportPhase,
     QualitySummaryPhase,
     RelationshipsPhase,
@@ -284,11 +284,10 @@ def create_pipeline(config: RunConfig) -> Pipeline:
     pipeline.register(EntropyPhase())
     pipeline.register(EntropyInterpretationPhase())
     pipeline.register(BusinessCyclesPhase())
-    pipeline.register(CrossTableQualityPhase())
+    # CrossTableQualityPhase de-configured: write-only data, evaluate for entropy later
     pipeline.register(QualitySummaryPhase())
 
-    # Metric calculation (also builds execution context)
-    pipeline.register(GraphExecutionPhase())
+    # GraphExecutionPhase de-configured: re-introduce after pipeline cleanup
 
     return pipeline
 

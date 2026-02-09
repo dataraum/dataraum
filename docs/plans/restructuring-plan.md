@@ -158,13 +158,20 @@ config/
 3. Verify with `dataraum run --phase <name>`
 4. It's OK if downstream modules break — we'll fix them when we get there
 
-### Per-Module Rules (Apply to Every Module)
+### Per-Module Checklist (Execute in Order)
 
-- **Use `core/config`** consistently for all configuration loading
-- **Use logger** (structlog or stdlib) everywhere — no print statements
-- **Remove config fallbacks** — replace with comments explaining expected config
-- **Remove defaults/fallbacks in general** — fail fast and loudly
-- **Remove dead code** — unused functions, unreachable branches, stale comments
+For each module, work through these steps sequentially:
+
+| # | Step | Details |
+|---|------|---------|
+| 1 | **Analyse data model** | Understand SQLAlchemy models, relationships, fields. Identify unused models/fields. |
+| 2 | **Remove dead code** | Unused functions, unreachable branches, stale comments, unused models/fields. Reduce surface area before anything else. |
+| 3 | **Streamline configuration** | Migrate to central config loader (`get_config_file()` / `load_yaml_config()`). Extract hardcoded configs to YAML. Merge overlapping configs. Remove unused config keys. |
+| 4 | **Remove fallbacks and defaults** | No silent fallbacks. Fail fast and loudly if config/data is missing. Remove defensive `or default` patterns — if something is required, require it. |
+| 5 | **Streamline dependencies** | Remove unused imports, simplify internal coupling between submodules. (External package audit is Part 4.) |
+| 6 | **Streamline logging** | Use `core/logging.py` consistently. No `print()`, no direct `logging.getLogger()`. Ensure log messages are useful, not noisy. |
+| 7 | **Streamline tests** | Remove tests that don't add value. Prefer realistic data (small_finance fixtures). Move misplaced tests between unit/integration. Each test should test ONE behavior. |
+| 8 | **Write spec documentation** | Create `docs/specs/<module>.md` following the template below. |
 
 ### Spec Template (for `docs/specs/<module>.md`)
 

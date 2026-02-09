@@ -270,9 +270,8 @@ class ConnectionManager:
                 CREATE INDEX IF NOT EXISTS embedding_idx ON query_embeddings
                 USING HNSW (embedding) WITH (metric = 'cosine')
             """)
-        except Exception:
-            # Index may already exist or table is empty
-            pass
+        except Exception as e:
+            logger.warning("failed_to_create_vector_index", error=str(e))
 
     def _import_all_models(self) -> None:
         """Import all DB model modules to register them with SQLAlchemy."""

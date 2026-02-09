@@ -169,7 +169,7 @@ For each module, work through these steps sequentially:
 | 3 | **Streamline configuration** | Migrate to central config loader (`get_config_file()` / `load_yaml_config()`). Extract hardcoded configs to YAML. Merge overlapping configs. Remove unused config keys. |
 | 4 | **Remove fallbacks and defaults** | No silent fallbacks. Fail fast and loudly if config/data is missing. Remove defensive `or default` patterns — if something is required, require it. |
 | 5 | **Streamline dependencies** | Remove unused imports, simplify internal coupling between submodules. (External package audit is Part 4.) |
-| 6 | **Streamline logging** | Use `core/logging.py` consistently. No `print()`, no direct `logging.getLogger()`. Ensure log messages are useful, not noisy. |
+| 6 | **Streamline logging** | Use `core/logging.py` consistently. No `print()`, no direct `logging.getLogger()`. Ensure log messages are useful, not noisy. Review log levels: debug for internals, info for operations, warning for recoverable issues, error for failures. |
 | 7 | **Streamline tests** | Remove tests that don't add value. Prefer realistic data (small_finance fixtures). Move misplaced tests between unit/integration. Each test should test ONE behavior. |
 | 8 | **Write spec documentation** | Create `docs/specs/<module>.md` following the template below. |
 

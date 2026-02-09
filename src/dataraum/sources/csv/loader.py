@@ -7,11 +7,14 @@ from uuid import uuid4
 import duckdb
 from sqlalchemy.orm import Session
 
+from dataraum.core.logging import get_logger
 from dataraum.core.models import Result, SourceConfig
 from dataraum.sources.base import ColumnInfo, LoaderBase, TypeSystemStrength
 from dataraum.sources.csv.models import StagedTable, StagingResult
 from dataraum.sources.csv.null_values import NullValueConfig, load_null_value_config
 from dataraum.storage import Column, Source, Table
+
+logger = get_logger(__name__)
 
 
 class CSVLoader(LoaderBase):
@@ -123,21 +126,33 @@ class CSVLoader(LoaderBase):
             )
 
             if not file_result.success:
+                logger.warning("csv_load_failed", file=str(path), error=file_result.error)
                 return Result.fail(file_result.error or "Failed to load CSV")
 
             staged_table = file_result.unwrap()
             session.commit()
+
+            duration = time.time() - start_time
+            logger.info(
+                "csv_loaded",
+                file=str(path),
+                table=staged_table.table_name,
+                rows=staged_table.row_count,
+                columns=staged_table.column_count,
+                duration_s=round(duration, 2),
+            )
 
             return Result.ok(
                 StagingResult(
                     source_id=source_id,
                     tables=[staged_table],
                     total_rows=staged_table.row_count,
-                    duration_seconds=time.time() - start_time,
+                    duration_seconds=duration,
                 )
             )
 
         except Exception as e:
+            logger.error("csv_load_error", file=str(path), error=str(e))
             return Result.fail(f"Failed to load CSV: {e}")
 
     def load_directory(
@@ -172,6 +187,13 @@ class CSVLoader(LoaderBase):
         csv_files = sorted(directory.glob(file_pattern))
         if not csv_files:
             return Result.fail(f"No CSV files found matching '{file_pattern}' in {directory}")
+
+        logger.info(
+            "csv_directory_loading",
+            directory=str(directory),
+            file_count=len(csv_files),
+            pattern=file_pattern,
+        )
 
         start_time = time.time()
         warnings: list[str] = []
@@ -208,6 +230,7 @@ class CSVLoader(LoaderBase):
                 )
 
                 if not file_result.success:
+                    logger.warning("csv_file_skipped", file=csv_file.name, error=file_result.error)
                     warnings.append(f"Failed to load {csv_file.name}: {file_result.error}")
                     continue
 
@@ -221,6 +244,14 @@ class CSVLoader(LoaderBase):
             session.commit()
 
             duration = time.time() - start_time
+            logger.info(
+                "csv_directory_loaded",
+                directory=str(directory),
+                tables=len(staged_tables),
+                total_rows=total_rows,
+                skipped=len(warnings),
+                duration_s=round(duration, 2),
+            )
 
             result = StagingResult(
                 source_id=source_id,
@@ -232,6 +263,7 @@ class CSVLoader(LoaderBase):
             return Result.ok(result, warnings=warnings)
 
         except Exception as e:
+            logger.error("csv_directory_load_error", directory=str(directory), error=str(e))
             return Result.fail(f"Failed to load CSV directory: {e}")
 
     def _load_single_file(
@@ -307,9 +339,10 @@ class CSVLoader(LoaderBase):
                 try:
                     duckdb_conn.execute(f'ALTER TABLE {raw_table_name} DROP COLUMN "{junk}"')
                     dropped_columns.append(junk)
-                except Exception:
-                    # Column doesn't exist - that's fine
-                    pass
+                except Exception as e:
+                    logger.debug(
+                        "junk_column_not_found", column=junk, table=raw_table_name, error=str(e)
+                    )
 
             # Get row count
             row_count_result = duckdb_conn.execute(

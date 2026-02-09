@@ -1,9 +1,8 @@
 """Null value configuration loader."""
 
-from pathlib import Path
 from typing import Any
 
-import yaml
+from dataraum.core.config import load_yaml_config
 
 
 class NullValueConfig:
@@ -43,37 +42,14 @@ class NullValueConfig:
         for item in self._config.get("missing_indicators", []):
             null_strings.append(item["value"])
 
-        # Remove empty string (handled separately in DuckDB)
-        # null_strings = [s for s in null_strings if s != ""]
-
         return null_strings
 
-    def should_trim_whitespace(self) -> bool:
-        """Check if whitespace should be trimmed before null checking."""
-        result = self._config.get("whitespace_rules", {}).get("trim_before_check", True)
-        return bool(result)
 
-    def treat_whitespace_as_null(self) -> bool:
-        """Check if whitespace-only strings should be treated as NULL."""
-        result = self._config.get("whitespace_rules", {}).get("treat_whitespace_only_as_null", True)
-        return bool(result)
-
-
-def load_null_value_config(config_path: Path | None = None) -> NullValueConfig:
+def load_null_value_config() -> NullValueConfig:
     """Load null value configuration from YAML.
-
-    Args:
-        config_path: Optional path to config file. If None, uses default from settings.
 
     Returns:
         NullValueConfig instance
     """
-    if config_path is None:
-        from dataraum.core.config import get_config_file
-
-        config_path = get_config_file("system/null_values.yaml")
-
-    with open(config_path) as f:
-        config_dict = yaml.safe_load(f)
-
+    config_dict = load_yaml_config("system/null_values.yaml")
     return NullValueConfig(config_dict)

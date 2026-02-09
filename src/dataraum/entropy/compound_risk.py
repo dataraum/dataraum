@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
+from dataraum.core.config import get_config_file
 from dataraum.core.logging import get_logger
 from dataraum.entropy.models import (
     CompoundRisk,
@@ -27,9 +28,6 @@ if TYPE_CHECKING:
     from dataraum.entropy.analysis.aggregator import ColumnSummary
 
 logger = get_logger(__name__)
-
-# Default config directory
-DEFAULT_CONFIG_DIR = Path(__file__).parent.parent.parent.parent / "config" / "entropy"
 
 
 @dataclass
@@ -60,7 +58,8 @@ class CompoundRiskDetector:
 
         # If explicit path provided, or thresholds.yaml didn't have compound_risks,
         # try the dedicated compound_risks.yaml file
-        config_path = config_path or (DEFAULT_CONFIG_DIR / "compound_risks.yaml")
+        if config_path is None:
+            config_path = get_config_file("system/entropy/compound_risks.yaml")
 
         if not config_path.exists():
             if not self.config_loaded:

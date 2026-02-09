@@ -87,9 +87,9 @@ def load_llm_config(config_path: Path | None = None) -> LLMConfig:
         pydantic.ValidationError: If config doesn't match schema
     """
     if config_path is None:
-        from dataraum.core.config import get_settings
+        from dataraum.core.config import get_config_file
 
-        config_path = get_settings().config_path / "llm.yaml"
+        config_path = get_config_file("system/llm.yaml")
 
     if not config_path.exists():
         raise FileNotFoundError(

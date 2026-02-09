@@ -5,7 +5,6 @@ Loads domain vocabulary from config/cycles/ to enhance cycle detection.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import yaml
@@ -29,23 +28,12 @@ def get_cycles_config() -> dict[str, Any]:
     if _CYCLE_CONFIG_CACHE is not None:
         return _CYCLE_CONFIG_CACHE
 
-    config_filename = "cycle_vocabulary.yaml"
+    from dataraum.core.config import get_config_file
 
-    # Search paths (config/ is in packages/api/, 5 levels up from this file)
-    search_paths = [
-        Path.cwd() / "config" / "cycles" / config_filename,
-        Path(__file__).parent.parent.parent.parent.parent / "config" / "cycles" / config_filename,
-    ]
-
-    for config_path in search_paths:
-        if config_path.exists():
-            with open(config_path) as f:
-                _CYCLE_CONFIG_CACHE = yaml.safe_load(f) or {}
-                return _CYCLE_CONFIG_CACHE
-
-    # Not found - return empty config
-    _CYCLE_CONFIG_CACHE = {}
-    return _CYCLE_CONFIG_CACHE
+    config_path = get_config_file("verticals/finance/cycles.yaml")
+    with open(config_path) as f:
+        _CYCLE_CONFIG_CACHE = yaml.safe_load(f) or {}
+        return _CYCLE_CONFIG_CACHE
 
 
 def clear_config_cache() -> None:

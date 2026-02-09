@@ -72,8 +72,8 @@ DEFAULT_JUNK_COLUMNS = [
     "column00",
 ]
 
-# Path to pipeline configuration file
-PIPELINE_CONFIG_PATH = Path(__file__).parent.parent.parent.parent / "config" / "pipeline.yaml"
+# Pipeline config relative path (resolved via core.config)
+PIPELINE_CONFIG_REL = "system/pipeline.yaml"
 
 
 def load_pipeline_config() -> dict[str, Any]:
@@ -82,14 +82,18 @@ def load_pipeline_config() -> dict[str, Any]:
     Returns:
         Dict with pipeline configuration, empty dict if file not found.
     """
-    if not PIPELINE_CONFIG_PATH.exists():
-        logger.debug("pipeline_config_not_found", path=str(PIPELINE_CONFIG_PATH))
+    from dataraum.core.config import get_config_file
+
+    try:
+        config_path = get_config_file(PIPELINE_CONFIG_REL)
+    except FileNotFoundError:
+        logger.debug("pipeline_config_not_found", relative=PIPELINE_CONFIG_REL)
         return {}
 
     try:
-        with open(PIPELINE_CONFIG_PATH) as f:
+        with open(config_path) as f:
             config = yaml.safe_load(f) or {}
-        logger.info("pipeline_config_loaded", path=str(PIPELINE_CONFIG_PATH))
+        logger.info("pipeline_config_loaded", path=str(config_path))
         return config
     except Exception as e:
         logger.warning("pipeline_config_load_error", error=str(e))

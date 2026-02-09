@@ -77,8 +77,9 @@ class GraphLoader:
                         Defaults to config/graphs/
         """
         if graphs_dir is None:
-            # Default: 4 levels up from src/dataraum/graphs/
-            graphs_dir = Path(__file__).parent.parent.parent.parent / "config" / "graphs"
+            from dataraum.core.config import get_config_dir
+
+            graphs_dir = get_config_dir("verticals/finance")
         self.graphs_dir = graphs_dir
         self.graphs: dict[str, TransformationGraph] = {}
         self._load_errors: list[GraphLoadError] = []

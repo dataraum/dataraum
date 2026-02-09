@@ -17,7 +17,6 @@ from typing import Any, cast
 
 import yaml
 
-from dataraum.core.config import get_settings
 from dataraum.core.models.base import DataType
 
 
@@ -143,8 +142,9 @@ def load_pattern_config(config_path: Path | None = None) -> PatternConfig:
         PatternConfig instance
     """
     if config_path is None:
-        settings = get_settings()
-        config_path = settings.config_path / "patterns" / "default.yaml"
+        from dataraum.core.config import get_config_file
+
+        config_path = get_config_file("system/patterns/default.yaml")
 
     with open(config_path) as f:
         config_dict = yaml.safe_load(f)

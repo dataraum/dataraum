@@ -18,18 +18,16 @@ from dataraum.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Default path to validation configs (config/ is in packages/api/)
-# Path: src/dataraum/analysis/validation/config.py -> 5 parents -> packages/api/config/validations
-CONFIG_DIR = Path(__file__).parent.parent.parent.parent.parent / "config" / "validations"
-
 
 def get_validations_config_path() -> Path:
     """Get the path to validations config directory.
 
     Returns:
-        Path to config/validations/
+        Path to verticals/finance/validations/ under config root.
     """
-    return CONFIG_DIR
+    from dataraum.core.config import get_config_dir
+
+    return get_config_dir("verticals/finance/validations")
 
 
 @lru_cache(maxsize=1)

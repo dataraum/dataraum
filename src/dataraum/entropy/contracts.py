@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from dataraum.core.config import get_config_file
 from dataraum.core.logging import get_logger
 from dataraum.entropy.models import CompoundRisk, ResolutionOption
 
@@ -39,10 +40,7 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Default config path relative to project root
-DEFAULT_CONTRACTS_PATH = (
-    Path(__file__).parent.parent.parent.parent / "config" / "entropy" / "contracts.yaml"
-)
+ENTROPY_CONTRACTS_CONFIG = "system/entropy/contracts.yaml"
 
 
 class ConfidenceLevel(str, Enum):
@@ -265,13 +263,11 @@ def load_contracts(config_path: Path | None = None) -> dict[str, ContractProfile
         FileNotFoundError: If config file doesn't exist.
         ValueError: If config file is invalid.
     """
-    config_path = config_path or DEFAULT_CONTRACTS_PATH
+    if config_path is None:
+        config_path = get_config_file(ENTROPY_CONTRACTS_CONFIG)
 
     if not config_path.exists():
-        raise FileNotFoundError(
-            f"Contracts config not found: {config_path}. "
-            f"Create the file or specify a different path."
-        )
+        raise FileNotFoundError(f"Contracts config not found: {config_path}.")
 
     try:
         with open(config_path) as f:
@@ -330,7 +326,12 @@ def get_contracts(config_path: Path | None = None) -> dict[str, ContractProfile]
     """
     global _contracts_cache, _contracts_path_cache
 
-    path = config_path or DEFAULT_CONTRACTS_PATH
+    if config_path is not None:
+        path = config_path
+    elif _contracts_path_cache is not None:
+        path = _contracts_path_cache
+    else:
+        path = get_config_file(ENTROPY_CONTRACTS_CONFIG)
 
     if _contracts_cache is not None and _contracts_path_cache == path:
         return _contracts_cache

@@ -82,9 +82,9 @@ class OntologyLoader:
                           If None, uses config/ontologies/
         """
         if ontologies_dir is None:
-            from dataraum.core.config import get_settings
+            from dataraum.core.config import get_config_dir
 
-            ontologies_dir = get_settings().config_path / "ontologies"
+            ontologies_dir = get_config_dir("ontologies")
 
         self.ontologies_dir = ontologies_dir
         self._cache: dict[str, OntologyDefinition] = {}

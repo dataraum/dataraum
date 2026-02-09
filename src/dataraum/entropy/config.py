@@ -17,14 +17,12 @@ from typing import Any
 
 import yaml
 
+from dataraum.core.config import get_config_file
 from dataraum.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Default config path relative to project root
-DEFAULT_CONFIG_PATH = (
-    Path(__file__).parent.parent.parent.parent / "config" / "entropy" / "thresholds.yaml"
-)
+ENTROPY_THRESHOLDS_CONFIG = "system/entropy/thresholds.yaml"
 
 
 @dataclass
@@ -139,7 +137,8 @@ def load_entropy_config(config_path: Path | None = None) -> EntropyConfig:
     """Load entropy configuration from YAML file.
 
     Args:
-        config_path: Path to thresholds.yaml. Defaults to config/entropy/thresholds.yaml.
+        config_path: Absolute path to thresholds.yaml, for testing.
+                     If None, resolves via central config loader.
 
     Returns:
         EntropyConfig with loaded values.
@@ -148,13 +147,11 @@ def load_entropy_config(config_path: Path | None = None) -> EntropyConfig:
         FileNotFoundError: If config file doesn't exist (fail-fast behavior).
         RuntimeError: If config file cannot be parsed.
     """
-    config_path = config_path or DEFAULT_CONFIG_PATH
+    if config_path is None:
+        config_path = get_config_file(ENTROPY_THRESHOLDS_CONFIG)
 
     if not config_path.exists():
-        raise FileNotFoundError(
-            f"Required entropy config not found: {config_path}. "
-            "Create config/entropy/thresholds.yaml with entropy configuration."
-        )
+        raise FileNotFoundError(f"Required entropy config not found: {config_path}.")
 
     try:
         with open(config_path) as f:
@@ -163,7 +160,7 @@ def load_entropy_config(config_path: Path | None = None) -> EntropyConfig:
         return _parse_config(raw)
 
     except FileNotFoundError:
-        raise  # Re-raise FileNotFoundError
+        raise
     except Exception as e:
         raise RuntimeError(f"Error loading entropy config from {config_path}: {e}") from e
 
@@ -217,7 +214,7 @@ def get_entropy_config(config_path: Path | None = None) -> EntropyConfig:
     """Get entropy configuration, using cache if available.
 
     Args:
-        config_path: Optional path to override default config location.
+        config_path: Optional absolute path to override default config location.
                     If different from cached path, reloads config.
 
     Returns:
@@ -225,7 +222,13 @@ def get_entropy_config(config_path: Path | None = None) -> EntropyConfig:
     """
     global _config_cache, _config_path_cache
 
-    path = config_path or DEFAULT_CONFIG_PATH
+    # Resolve path: explicit arg or central config
+    if config_path is not None:
+        path = config_path
+    elif _config_path_cache is not None:
+        path = _config_path_cache
+    else:
+        path = get_config_file(ENTROPY_THRESHOLDS_CONFIG)
 
     # Return cached config if path matches
     if _config_cache is not None and _config_path_cache == path:

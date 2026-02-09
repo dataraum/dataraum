@@ -5,8 +5,6 @@ from typing import Any
 
 import yaml
 
-from dataraum.core.config import get_settings
-
 
 class NullValueConfig:
     """Null value configuration for staging."""
@@ -71,8 +69,9 @@ def load_null_value_config(config_path: Path | None = None) -> NullValueConfig:
         NullValueConfig instance
     """
     if config_path is None:
-        settings = get_settings()
-        config_path = settings.config_path / "null_values.yaml"
+        from dataraum.core.config import get_config_file
+
+        config_path = get_config_file("system/null_values.yaml")
 
     with open(config_path) as f:
         config_dict = yaml.safe_load(f)

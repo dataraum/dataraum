@@ -1,9 +1,7 @@
 """Derived column detection.
 
-Detects columns that are derived from other columns:
-- Arithmetic: col3 = col1 + col2, col1 - col2, col1 * col2, col1 / col2
-- String transforms: col2 = UPPER(col1), LOWER(col1)
-- Concatenation: col3 = col1 || col2
+Detects columns that are arithmetic derivations of other columns:
+- col3 = col1 + col2, col1 - col2, col1 * col2, col1 / col2
 
 Uses parallel processing for large tables to speed up detection.
 """
@@ -112,19 +110,16 @@ def detect_derived_columns(
     min_match_rate: float = 0.95,
     max_workers: int = 4,
 ) -> Result[list[DerivedColumn]]:
-    """Detect columns that are derived from other columns.
+    """Detect columns that are arithmetic derivations of other columns.
 
-    Checks for:
-    - Arithmetic: col3 = col1 + col2, col1 - col2, col1 * col2, col1 / col2
-    - String transforms: col2 = UPPER(col1), LOWER(col1)
-    - Concatenation: col3 = col1 || col2
+    Checks: col3 = col1 + col2, col1 - col2, col1 * col2, col1 / col2.
 
     Uses parallel processing when there are many combinations to check.
 
     Args:
         table: Table to analyze
         duckdb_conn: DuckDB connection
-        session: AsyncSession
+        session: SQLAlchemy session
         min_match_rate: Minimum match rate to consider derived
         max_workers: Maximum parallel workers
 

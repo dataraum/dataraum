@@ -1,8 +1,8 @@
 """Functional dependency detection.
 
-Detects functional dependencies: A → B or (A, B) → C.
-A functional dependency means that for each value (or combination of values)
-in the determinant, there is exactly one value in the dependent column.
+Detects single-column functional dependencies: A → B.
+A functional dependency means that for each value in the determinant,
+there is exactly one value in the dependent column.
 
 Uses parallel processing for large tables to speed up detection.
 """
@@ -111,22 +111,20 @@ def detect_functional_dependencies(
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
     min_confidence: float = 0.95,
-    max_determinant_columns: int = 3,
     max_workers: int = 4,
 ) -> Result[list[FunctionalDependency]]:
-    """Detect functional dependencies: A → B or (A, B) → C.
+    """Detect single-column functional dependencies: A → B.
 
-    A functional dependency means that for each value (or combination of values)
-    in the determinant, there is exactly one value in the dependent column.
+    A functional dependency means that for each value in the determinant,
+    there is exactly one value in the dependent column.
 
     Uses parallel processing when there are many column pairs to check.
 
     Args:
         table: Table to analyze
-        duckdb_conn: DuckDB connection (used for db path only)
-        session: Session
+        duckdb_conn: DuckDB connection
+        session: SQLAlchemy session
         min_confidence: Minimum confidence (1.0 = exact FD)
-        max_determinant_columns: Maximum columns in determinant
         max_workers: Maximum parallel workers for FD checking
 
     Returns:

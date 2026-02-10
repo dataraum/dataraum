@@ -32,6 +32,13 @@ logger = get_logger(__name__)
 # Module-level TDA extractor instance
 _extractor = TableTopologyExtractor()
 
+# --- Anomaly detection thresholds ---
+FRAGMENTATION_THRESHOLD = 3  # betti_0 > 3 = fragmented
+FRAGMENTATION_HIGH_THRESHOLD = 5  # betti_0 > 5 = high severity
+COMPLEXITY_LOW = 2  # total_complexity <= 2 = low
+COMPLEXITY_MODERATE = 5  # total_complexity <= 5 = moderate
+TABLE_SAMPLE_LIMIT = 10000  # max rows loaded for TDA analysis
+
 
 def analyze_topological_quality(
     table_id: str,
@@ -78,7 +85,9 @@ def analyze_topological_quality(
 
         # Load data
         try:
-            df = duckdb_conn.execute(f"SELECT * FROM {actual_table} LIMIT 10000").df()
+            df = duckdb_conn.execute(
+                f"SELECT * FROM {actual_table} LIMIT {TABLE_SAMPLE_LIMIT}"
+            ).df()
         except Exception as e:
             return Result.fail(f"Failed to load table data: {e}")
 
@@ -122,11 +131,13 @@ def analyze_topological_quality(
         anomalies = []
 
         # Check for fragmentation (too many disconnected components)
-        if betti_numbers.betti_0 > 3:
+        if betti_numbers.betti_0 > FRAGMENTATION_THRESHOLD:
             anomalies.append(
                 TopologicalAnomaly(
                     anomaly_type="fragmentation",
-                    severity="high" if betti_numbers.betti_0 > 5 else "medium",
+                    severity="high"
+                    if betti_numbers.betti_0 > FRAGMENTATION_HIGH_THRESHOLD
+                    else "medium",
                     description=f"Data is fragmented into {betti_numbers.betti_0} disconnected components",
                     evidence={"betti_0": betti_numbers.betti_0},
                 )
@@ -190,9 +201,9 @@ def _generate_topology_description(
 
     # Complexity assessment
     complexity = betti_numbers.total_complexity
-    if complexity <= 2:
+    if complexity <= COMPLEXITY_LOW:
         parts.append("Low structural complexity.")
-    elif complexity <= 5:
+    elif complexity <= COMPLEXITY_MODERATE:
         parts.append("Moderate structural complexity.")
     else:
         parts.append("High structural complexity.")

@@ -1,4 +1,5 @@
-# core/topology_extractor.py
+"""TDA topology extraction using ripser."""
+
 from typing import Any
 
 import numpy as np
@@ -6,6 +7,19 @@ import pandas as pd
 from ripser import ripser
 from scipy.spatial.distance import pdist, squareform
 from scipy.stats import entropy
+
+from dataraum.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+# --- Extraction constants ---
+HISTOGRAM_BINS = 20  # bins for distribution entropy
+RELATIONSHIP_STRENGTH_THRESHOLD = 0.1  # min strength to include col relationship
+MIN_VALID_SAMPLES = 10  # min non-null pairs for correlation
+CATEGORICAL_OVERLAP_THRESHOLD = 0.1  # min overlap for partial relationship
+ROW_SAMPLE_SIZE = 1000  # max rows for row-level topology
+MIN_ROWS_FOR_TOPOLOGY = 3  # min rows needed for TDA
+MIN_FEATURES_FOR_OUTLIERS = 10  # min features for outlier scoring
 
 
 class TableTopologyExtractor:
@@ -21,6 +35,8 @@ class TableTopologyExtractor:
         """
         Main method: Extract full topological signature
         """
+        logger.debug("extract_topology_start", rows=len(df), columns=len(df.columns))
+
         # Convert dataframe to feature space
         features = self.build_feature_matrix(df)
 
@@ -107,7 +123,7 @@ class TableTopologyExtractor:
 
             # Distribution entropy
             if len(non_null) > 0:
-                hist, _ = np.histogram(non_null.to_numpy(), bins=20)
+                hist, _ = np.histogram(non_null.to_numpy(), bins=HISTOGRAM_BINS)
                 entropy_val = float(entropy(hist + 1e-10))
             else:
                 entropy_val = 0.0
@@ -248,7 +264,7 @@ class TableTopologyExtractor:
             for j, col2 in enumerate(df.columns):
                 if i < j:  # Only compute once per pair
                     relationship = self.analyze_column_relationship(df[col1], df[col2])
-                    if relationship["strength"] > 0.1:  # Threshold for relevance
+                    if relationship["strength"] > RELATIONSHIP_STRENGTH_THRESHOLD:
                         column_relationships[f"{col1}-{col2}"] = relationship
 
         return column_relationships
@@ -262,7 +278,7 @@ class TableTopologyExtractor:
         # Both numeric - correlation and mutual information
         if pd.api.types.is_numeric_dtype(col1) and pd.api.types.is_numeric_dtype(col2):
             valid_mask = ~(col1.isna() | col2.isna())
-            if valid_mask.sum() > 10:
+            if valid_mask.sum() > MIN_VALID_SAMPLES:
                 c1_valid = col1[valid_mask].astype(float)
                 c2_valid = col2[valid_mask].astype(float)
                 # Check for constant columns (would cause NaN correlation)
@@ -293,7 +309,7 @@ class TableTopologyExtractor:
                         relationship["confidence"] = cardinality_ratio
                     else:
                         overlap = len(set1.intersection(set2)) / len(set1.union(set2))
-                        if overlap > 0.1:
+                        if overlap > CATEGORICAL_OVERLAP_THRESHOLD:
                             relationship["strength"] = overlap
                             relationship["type"] = "partial_overlap"
                             relationship["confidence"] = overlap
@@ -305,7 +321,7 @@ class TableTopologyExtractor:
         Understand entity relationships (row-level topology)
         """
         # Sample rows for efficiency
-        sample_size = min(1000, len(df))
+        sample_size = min(ROW_SAMPLE_SIZE, len(df))
         if len(df) > sample_size:
             sample_df = df.sample(n=sample_size, random_state=42)
         else:
@@ -331,7 +347,7 @@ class TableTopologyExtractor:
             row_features_array[nan_mask, col_idx] = col_means[col_idx]
 
         # Check for valid data
-        if len(row_features_array) < 3:
+        if len(row_features_array) < MIN_ROWS_FOR_TOPOLOGY:
             return {"message": "Not enough rows for topology analysis"}
 
         if np.all(np.isnan(row_features_array)) or np.all(row_features_array == 0):
@@ -348,6 +364,7 @@ class TableTopologyExtractor:
                 "row_persistence": row_persistence["dgms"],
             }
         except Exception as e:
+            logger.debug("row_topology_failed", error=str(e))
             return {"message": f"Row topology computation failed: {e}"}
 
     def identify_clusters(self, persistence_result: dict[str, Any]) -> dict[str, Any]:
@@ -384,7 +401,7 @@ class TableTopologyExtractor:
         """
         Use topological methods to find outliers
         """
-        if len(features) < 10:
+        if len(features) < MIN_FEATURES_FOR_OUTLIERS:
             return []
 
         # Compute distance to k-nearest neighbors

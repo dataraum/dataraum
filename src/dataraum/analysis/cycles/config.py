@@ -9,6 +9,8 @@ from typing import Any
 
 import yaml
 
+from dataraum.core.config import get_config_file
+
 # Module-level cache
 _CYCLE_CONFIG_CACHE: dict[str, Any] | None = None
 
@@ -28,18 +30,10 @@ def get_cycles_config() -> dict[str, Any]:
     if _CYCLE_CONFIG_CACHE is not None:
         return _CYCLE_CONFIG_CACHE
 
-    from dataraum.core.config import get_config_file
-
     config_path = get_config_file("verticals/finance/cycles.yaml")
     with open(config_path) as f:
         _CYCLE_CONFIG_CACHE = yaml.safe_load(f) or {}
         return _CYCLE_CONFIG_CACHE
-
-
-def clear_config_cache() -> None:
-    """Clear the configuration cache (useful for testing)."""
-    global _CYCLE_CONFIG_CACHE
-    _CYCLE_CONFIG_CACHE = None
 
 
 def get_cycle_types() -> dict[str, Any]:
@@ -50,28 +44,6 @@ def get_cycle_types() -> dict[str, Any]:
     """
     config = get_cycles_config()
     result: dict[str, Any] = config.get("cycle_types", {})
-    return result
-
-
-def get_completion_indicators() -> dict[str, list[str]]:
-    """Get completion indicator patterns.
-
-    Returns:
-        Dictionary of indicator_category -> list of indicator values
-    """
-    config = get_cycles_config()
-    result: dict[str, list[str]] = config.get("completion_indicators", {})
-    return result
-
-
-def get_entity_roles() -> dict[str, list[str]]:
-    """Get entity role mappings.
-
-    Returns:
-        Dictionary of role_type -> list of entity types
-    """
-    config = get_cycles_config()
-    result: dict[str, list[str]] = config.get("entity_roles", {})
     return result
 
 
@@ -87,17 +59,6 @@ def get_domain_config(domain: str = "financial") -> dict[str, Any]:
     config = get_cycles_config()
     domains: dict[str, Any] = config.get("domains", {})
     result: dict[str, Any] = domains.get(domain, {})
-    return result
-
-
-def get_analysis_hints() -> dict[str, list[str]]:
-    """Get analysis hints for the agent.
-
-    Returns:
-        Dictionary of hint_category -> list of hints
-    """
-    config = get_cycles_config()
-    result: dict[str, list[str]] = config.get("analysis_hints", {})
     return result
 
 

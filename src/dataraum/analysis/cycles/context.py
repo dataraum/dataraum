@@ -12,10 +12,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.cycles.config import format_cycle_vocabulary_for_context
+from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.relationships.graph_topology import (
     analyze_graph_topology,
     format_graph_structure_for_context,
 )
+from dataraum.analysis.semantic.db_models import (
+    SemanticAnnotation,
+    TableEntity,
+)
+from dataraum.core.logging import get_logger
+from dataraum.storage import Column, Table
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     import duckdb
@@ -49,13 +58,6 @@ def build_cycle_detection_context(
         - relationship_graph: Column-to-column relationships
         - domain_vocabulary: Cycle type definitions and hints (if available)
     """
-    from dataraum.analysis.relationships.db_models import Relationship
-    from dataraum.analysis.semantic.db_models import (
-        SemanticAnnotation,
-        TableEntity,
-    )
-    from dataraum.storage import Column, Table
-
     context: dict[str, Any] = {}
 
     # 1. Dataset Overview
@@ -69,7 +71,8 @@ def build_cycle_detection_context(
             duckdb_table_name = f"typed_{t.table_name}"
             result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{duckdb_table_name}"').fetchone()
             row_count = result[0] if result else None
-        except Exception:
+        except Exception as e:
+            logger.debug("row_count_query_failed", table=t.table_name, error=str(e))
             row_count = None
 
         # Get columns
@@ -132,7 +135,10 @@ def build_cycle_detection_context(
                     f"ORDER BY cnt DESC LIMIT 10"
                 ).fetchall()
                 distinct_values = [{"value": v[0], "count": v[1]} for v in values]
-            except Exception:
+            except Exception as e:
+                logger.debug(
+                    "status_values_query_failed", table=table_name, column=col_name, error=str(e)
+                )
                 distinct_values = []
 
             status_columns.append(

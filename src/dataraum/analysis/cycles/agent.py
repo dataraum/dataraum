@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -26,6 +27,7 @@ from dataraum.analysis.cycles.db_models import (
 )
 from dataraum.analysis.cycles.models import (
     BusinessCycleAnalysis,
+    BusinessCycleAnalysisOutput,
     CycleStage,
     DetectedCycle,
     EntityFlow,
@@ -393,8 +395,6 @@ class BusinessCycleAgent:
         Returns:
             Structured BusinessCycleAnalysis
         """
-        from dataraum.analysis.cycles.models import BusinessCycleAnalysisOutput
-
         # Validate the input against our Pydantic model
         try:
             output = BusinessCycleAnalysisOutput.model_validate(tool_input)
@@ -623,8 +623,6 @@ class BusinessCycleAgent:
             analysis: The analysis results to persist
             table_ids: Table IDs that were analyzed
         """
-        from datetime import UTC, datetime
-
         # Create analysis run record
         run = BusinessCycleAnalysisRun(
             analysis_id=analysis.analysis_id,

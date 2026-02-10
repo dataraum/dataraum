@@ -422,6 +422,15 @@ def assess_statistical_quality(
         # session.get() checks the identity map first, so pending objects
         # added via session.add() in this session are found without flush.
         table = session.get(Table, str(table_id))
+
+        # Fallback: check session.new for pending objects not yet in identity map
+        # (can happen with autoflush=False when objects were added but PK not indexed)
+        if not table:
+            for obj in session.new:
+                if isinstance(obj, Table) and obj.table_id == str(table_id):
+                    table = obj
+                    break
+
         if not table:
             return Result.fail(f"Table not found: {table_id}")
 

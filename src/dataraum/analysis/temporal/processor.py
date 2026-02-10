@@ -14,9 +14,11 @@ This analyzes temporal characteristics like:
 Uses parallel processing for large tables to speed up profiling.
 """
 
+import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 import duckdb
@@ -48,8 +50,11 @@ from dataraum.analysis.temporal.patterns import (
     detect_change_points,
     detect_fiscal_calendar,
 )
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, Result
 from dataraum.storage import Column, Table
+
+logger = get_logger(__name__)
 
 
 def _profile_temporal_column_parallel(
@@ -60,6 +65,7 @@ def _profile_temporal_column_parallel(
     column_id: str,
     column_name: str,
     profiled_at: datetime,
+    config: dict[str, Any],
 ) -> TemporalAnalysisResult | None:
     """Profile a single temporal column in a worker thread.
 
@@ -70,7 +76,14 @@ def _profile_temporal_column_parallel(
     cursor = duckdb_conn.cursor()
     try:
         # Load time series
-        ts_result = _load_time_series(cursor, table_duckdb_path, column_name)
+        proc_cfg = config["processing"]
+        ts_result = _load_time_series(
+            cursor,
+            table_duckdb_path,
+            column_name,
+            sample_percent=proc_cfg["sample_percent"],
+            min_rows=proc_cfg["min_sample_rows"],
+        )
         if not ts_result.success:
             return None
 
@@ -90,31 +103,31 @@ def _profile_temporal_column_parallel(
         else:
             interval_seconds = median_interval.total_seconds()
 
-        granularity, confidence = infer_granularity(interval_seconds)
+        granularity, confidence = infer_granularity(interval_seconds, config=config)
 
         metric_id = str(uuid4())
 
         # Run pattern analyses
-        seasonality_result = analyze_seasonality(time_series)
+        seasonality_result = analyze_seasonality(time_series, config=config)
         seasonality = seasonality_result.value if seasonality_result.success else None
 
-        trend_result = analyze_trend(time_series)
+        trend_result = analyze_trend(time_series, config=config)
         trend = trend_result.value if trend_result.success else None
 
-        changes_result = detect_change_points(time_series)
+        changes_result = detect_change_points(time_series, config=config)
         change_points = changes_result.unwrap() if changes_result.success else []
 
-        frequency_result = analyze_update_frequency(time_series)
+        frequency_result = analyze_update_frequency(time_series, config=config)
         update_frequency = frequency_result.value if frequency_result.success else None
 
-        fiscal_result = detect_fiscal_calendar(time_series)
+        fiscal_result = detect_fiscal_calendar(time_series, config=config)
         fiscal_calendar = fiscal_result.value if fiscal_result.success else None
 
-        stability_result = analyze_distribution_stability(time_series)
+        stability_result = analyze_distribution_stability(time_series, config=config)
         distribution_stability = stability_result.value if stability_result.success else None
 
         # Run basic temporal analysis for completeness
-        basic_result = analyze_basic_temporal(cursor, table_duckdb_path, column_name)
+        basic_result = analyze_basic_temporal(cursor, table_duckdb_path, column_name, config=config)
         completeness = (
             basic_result.value.get("completeness")
             if basic_result.success and basic_result.value
@@ -128,6 +141,7 @@ def _profile_temporal_column_parallel(
             change_points=change_points,
             distribution_stability=distribution_stability,
             profiled_at=profiled_at,
+            config=config,
         )
 
         # Build result
@@ -159,7 +173,13 @@ def _profile_temporal_column_parallel(
             quality_issues=issues,
             has_issues=len(issues) > 0,
         )
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "temporal_column_profiling_failed",
+            column_name=column_name,
+            table_name=table_name,
+            error=str(e),
+        )
         return None
     finally:
         cursor.close()
@@ -169,7 +189,8 @@ def profile_temporal(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
-    max_workers: int = 4,
+    *,
+    config: dict[str, Any] | None = None,
 ) -> Result[TemporalProfileResult]:
     """Profile temporal columns in a table.
 
@@ -188,12 +209,20 @@ def profile_temporal(
         table_id: Table ID to profile
         duckdb_conn: DuckDB connection
         session: SQLAlchemy session
-        max_workers: Maximum parallel workers
+        config: Temporal config dict (from config/system/temporal.yaml).
+            If None, loads from config/system/temporal.yaml.
 
     Returns:
         Result containing TemporalProfileResult with all column profiles
     """
     try:
+        # Load config if not provided
+        if config is None:
+            from dataraum.core.config import load_yaml_config
+
+            config = load_yaml_config("system/temporal.yaml")
+
+        max_workers = config["processing"]["max_workers"]
         # Get table from metadata
         table = session.get(Table, str(table_id))
         if not table:
@@ -230,8 +259,6 @@ def profile_temporal(
         profiled_at = datetime.now(UTC)
         profiles: list[TemporalAnalysisResult] = []
         db_profiles: list[TemporalColumnProfile] = []
-        import time
-
         start_time = time.time()
 
         # Use parallel processing with cursors from shared connection
@@ -247,6 +274,7 @@ def profile_temporal(
                     column.column_id,
                     column.column_name,
                     profiled_at,
+                    config,
                 )
                 for column in columns
             ]
@@ -398,16 +426,27 @@ def _detect_quality_issues(
     change_points: Sequence[object],
     distribution_stability: object | None,
     profiled_at: datetime,
+    config: dict[str, Any],
 ) -> list[TemporalQualityIssue]:
     """Detect quality issues from analysis results."""
+    qi = config["quality_issues"]
+    low_completeness = qi["low_completeness"]
+    very_low_completeness = qi["very_low_completeness"]
+    large_gap_days = qi["large_gap_days"]
+    severe_gap_days = qi["severe_gap_days"]
+    many_cp = qi["many_change_points"]
+    unstable_dist = qi["unstable_distribution"]
+
     issues = []
 
     if completeness and hasattr(completeness, "completeness_ratio"):
-        if completeness.completeness_ratio < 0.8:
+        if completeness.completeness_ratio < low_completeness:
             issues.append(
                 TemporalQualityIssue(
                     issue_type="low_completeness",
-                    severity="high" if completeness.completeness_ratio < 0.5 else "medium",
+                    severity="high"
+                    if completeness.completeness_ratio < very_low_completeness
+                    else "medium",
                     description=(
                         f"Only {completeness.completeness_ratio:.1%} of expected "
                         "data points present"
@@ -418,11 +457,13 @@ def _detect_quality_issues(
             )
 
         if hasattr(completeness, "largest_gap_days") and completeness.largest_gap_days:
-            if completeness.largest_gap_days > 30:
+            if completeness.largest_gap_days > large_gap_days:
                 issues.append(
                     TemporalQualityIssue(
                         issue_type="large_gap",
-                        severity="high" if completeness.largest_gap_days > 90 else "medium",
+                        severity="high"
+                        if completeness.largest_gap_days > severe_gap_days
+                        else "medium",
                         description=f"Large gap of {completeness.largest_gap_days:.0f} days detected",
                         evidence={"gap_days": completeness.largest_gap_days},
                         detected_at=profiled_at,
@@ -442,7 +483,7 @@ def _detect_quality_issues(
                 )
             )
 
-    if len(change_points) > 5:
+    if len(change_points) > many_cp:
         issues.append(
             TemporalQualityIssue(
                 issue_type="many_change_points",
@@ -456,7 +497,7 @@ def _detect_quality_issues(
     if (
         distribution_stability
         and hasattr(distribution_stability, "stability_score")
-        and distribution_stability.stability_score < 0.7
+        and distribution_stability.stability_score < unstable_dist
     ):
         issues.append(
             TemporalQualityIssue(

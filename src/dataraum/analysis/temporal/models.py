@@ -287,15 +287,6 @@ class TemporalProfileResult(BaseModel):
     duration_seconds: float = 0.0
 
 
-class TemporalEnrichmentResult(BaseModel):
-    """Result of temporal enrichment operation (batch processing).
-
-    DEPRECATED: Use TemporalProfileResult instead.
-    """
-
-    profiles: list[TemporalAnalysisResult] = Field(default_factory=list)
-
-
 # =============================================================================
 # Exports
 # =============================================================================
@@ -323,5 +314,4 @@ __all__ = [
     "TemporalAnalysisResult",
     "TemporalTableSummary",
     "TemporalProfileResult",
-    "TemporalEnrichmentResult",  # Deprecated
 ]

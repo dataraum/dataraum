@@ -18,13 +18,18 @@ from dataraum.analysis.temporal.models import (
     TemporalCompletenessAnalysis,
     TemporalGapInfo,
 )
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
+
+logger = get_logger(__name__)
 
 
 def infer_granularity(
     median_gap_seconds: float | None,
     min_gap_seconds: float | None = None,
     max_gap_seconds: float | None = None,
+    *,
+    config: dict[str, Any],
 ) -> tuple[str, float]:
     """Infer time granularity from gap statistics.
 
@@ -32,6 +37,7 @@ def infer_granularity(
         median_gap_seconds: Median gap between consecutive timestamps in seconds
         min_gap_seconds: Minimum gap (optional, used for confidence)
         max_gap_seconds: Maximum gap (optional, used for confidence)
+        config: Temporal config dict (from config/system/temporal.yaml)
 
     Returns:
         Tuple of (granularity_name, confidence)
@@ -39,18 +45,12 @@ def infer_granularity(
     if median_gap_seconds is None:
         return ("unknown", 0.0)
 
-    # Define expected gaps for each granularity (in seconds)
-    # Format: (name, expected_seconds, tolerance)
-    granularities = [
-        ("second", 1, 0.5),
-        ("minute", 60, 5),
-        ("hour", 3600, 300),
-        ("day", 86400, 3600),
-        ("week", 604800, 86400),
-        ("month", 2592000, 259200),  # ~30 days
-        ("quarter", 7776000, 777600),  # ~90 days
-        ("year", 31536000, 3153600),  # ~365 days
-    ]
+    cfg = config["granularity"]
+    default_confidence = cfg["default_confidence"]
+    irregular_confidence = cfg["irregular_confidence"]
+    variation_divisor = cfg["variation_divisor"]
+
+    granularities = [(d[0], d[1], d[2]) for d in cfg["definitions"]]
 
     # Find closest match
     best_match = None
@@ -67,12 +67,12 @@ def infer_granularity(
         # Higher confidence if min/max are close to median
         if min_gap_seconds and max_gap_seconds and median_gap_seconds > 0:
             variation = (max_gap_seconds - min_gap_seconds) / median_gap_seconds
-            confidence = max(0.5, 1.0 - min(variation / 10, 0.5))
+            confidence = max(0.5, 1.0 - min(variation / variation_divisor, 0.5))
         else:
-            confidence = 0.7
+            confidence = default_confidence
         return (best_match, confidence)
 
-    return ("irregular", 0.3)
+    return ("irregular", irregular_confidence)
 
 
 def calculate_expected_periods(
@@ -118,6 +118,8 @@ def analyze_basic_temporal(
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_name: str,
     column_name: str,
+    *,
+    config: dict[str, Any],
 ) -> Result[dict[str, Any]]:
     """Analyze basic temporal characteristics of a time column.
 
@@ -132,11 +134,13 @@ def analyze_basic_temporal(
         duckdb_conn: DuckDB connection
         table_name: DuckDB table name (e.g., 'typed_sales')
         column_name: Column name
+        config: Temporal config dict (from config/system/temporal.yaml)
 
     Returns:
         Result containing basic temporal analysis dict
     """
     try:
+        gap_cfg = config["gaps"]
         # Get min/max timestamps and count
         result = duckdb_conn.execute(
             f"""
@@ -186,7 +190,7 @@ def analyze_basic_temporal(
         median_gap, min_gap, max_gap = gap_result if gap_result else (None, None, None)
 
         # Infer granularity from median gap
-        granularity, confidence = infer_granularity(median_gap, min_gap, max_gap)
+        granularity, confidence = infer_granularity(median_gap, min_gap, max_gap, config=config)
 
         # Calculate expected periods based on granularity
         expected_periods = calculate_expected_periods(min_ts, max_ts, granularity)
@@ -194,10 +198,15 @@ def analyze_basic_temporal(
         # Calculate completeness
         completeness_ratio = distinct_count / expected_periods if expected_periods > 0 else 1.0
 
-        # Detect significant gaps (gaps > 2x median)
+        # Detect significant gaps
+        sig_gap_mult = gap_cfg["significant_gap_multiplier"]
+        sev_severe_mult = gap_cfg["severity_severe_multiplier"]
+        sev_moderate_mult = gap_cfg["severity_moderate_multiplier"]
+        max_gaps_limit = gap_cfg["max_gaps"]
+
         gaps = []
         if median_gap:
-            gap_threshold = median_gap * 2
+            gap_threshold = median_gap * sig_gap_mult
             significant_gaps = duckdb_conn.execute(
                 f"""
                 WITH ordered_ts AS (
@@ -217,7 +226,7 @@ def analyze_basic_temporal(
                 FROM gaps
                 WHERE gap_seconds > {gap_threshold}
                 ORDER BY gap_seconds DESC
-                LIMIT 10
+                LIMIT {max_gaps_limit}
             """
             ).fetchall()
 
@@ -227,9 +236,9 @@ def analyze_basic_temporal(
                         missing_periods = int(gap_seconds / median_gap) - 1 if median_gap > 0 else 0
                         gap_length_days = gap_seconds / (24 * 3600)
                         # Determine severity based on gap size relative to median
-                        if gap_seconds > median_gap * 10:
+                        if gap_seconds > median_gap * sev_severe_mult:
                             severity = "severe"
-                        elif gap_seconds > median_gap * 5:
+                        elif gap_seconds > median_gap * sev_moderate_mult:
                             severity = "moderate"
                         else:
                             severity = "minor"

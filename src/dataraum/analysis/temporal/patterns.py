@@ -12,6 +12,7 @@ Uses statsmodels for seasonal decomposition and ruptures for change point detect
 """
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 import numpy as np
@@ -30,7 +31,10 @@ from dataraum.analysis.temporal.models import (
     TrendAnalysis,
     UpdateFrequencyAnalysis,
 )
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
+
+logger = get_logger(__name__)
 
 # =============================================================================
 # Seasonality Analysis
@@ -40,18 +44,28 @@ from dataraum.core.models.base import Result
 def analyze_seasonality(
     time_series: pd.Series,
     period: int | None = None,
+    *,
+    config: dict[str, Any],
 ) -> Result[SeasonalityAnalysis]:
     """Analyze seasonality strength using seasonal decomposition.
 
     Args:
         time_series: Time series data (pandas Series with datetime index)
         period: Seasonal period (auto-detected if None)
+        config: Temporal config dict (from config/system/temporal.yaml)
 
     Returns:
         Result containing SeasonalityAnalysis
     """
     try:
-        if len(time_series) < 20:
+        cfg = config["seasonality"]
+        min_points = cfg["min_data_points"]
+        strength_threshold = cfg["strength_threshold"]
+        period_map = cfg["periods"]
+        fallback_divisor = cfg["fallback_period_divisor"]
+        fallback_max = cfg["fallback_period_max"]
+
+        if len(time_series) < min_points:
             return Result.ok(
                 SeasonalityAnalysis(
                     has_seasonality=False,
@@ -64,17 +78,17 @@ def analyze_seasonality(
             freq = pd.infer_freq(time_series)
             if freq:
                 if "D" in freq:
-                    period = 7  # Weekly seasonality for daily data
+                    period = period_map["daily"]
                 elif "W" in freq:
-                    period = 52  # Yearly seasonality for weekly data
+                    period = period_map["weekly"]
                 elif "M" in freq or "MS" in freq:
-                    period = 12  # Yearly seasonality for monthly data
+                    period = period_map["monthly"]
                 elif "Q" in freq or "QS" in freq:
-                    period = 4  # Yearly seasonality for quarterly data
+                    period = period_map["quarterly"]
                 else:
-                    period = min(len(time_series) // 4, 12)
+                    period = min(len(time_series) // fallback_divisor, fallback_max)
             else:
-                period = min(len(time_series) // 4, 12)
+                period = min(len(time_series) // fallback_divisor, fallback_max)
 
         # Need at least 2 full periods
         if len(time_series) < 2 * period:
@@ -122,7 +136,7 @@ def analyze_seasonality(
             detrended_var = detrended.var()
             seasonality_strength = max(0.0, 1.0 - (residual_var / detrended_var))
 
-        has_seasonality = seasonality_strength > 0.3
+        has_seasonality = seasonality_strength > strength_threshold
 
         # Detect peaks in seasonal pattern
         seasonal_component = decomposition.seasonal.dropna()
@@ -210,17 +224,25 @@ def _period_to_name(period: int) -> str:
 
 def analyze_trend(
     time_series: pd.Series,
+    *,
+    config: dict[str, Any],
 ) -> Result[TrendAnalysis]:
     """Analyze trend strength and direction using linear regression.
 
     Args:
         time_series: Time series data
+        config: Temporal config dict (from config/system/temporal.yaml)
 
     Returns:
         Result containing TrendAnalysis
     """
     try:
-        if len(time_series) < 10:
+        cfg = config["trend"]
+        min_points = cfg["min_data_points"]
+        sig_multiplier = cfg["significance_multiplier"]
+        strength_threshold = cfg["strength_threshold"]
+
+        if len(time_series) < min_points:
             return Result.ok(
                 TrendAnalysis(
                     has_trend=False,
@@ -237,7 +259,7 @@ def analyze_trend(
         x_clean = x[mask]
         y_clean = y[mask]
 
-        if len(x_clean) < 10:
+        if len(x_clean) < min_points:
             return Result.ok(
                 TrendAnalysis(
                     has_trend=False,
@@ -256,15 +278,15 @@ def analyze_trend(
         trend_strength = rvalue**2
 
         # Determine direction
-        if abs(slope) < stderr * 2:  # Not significant
+        if abs(slope) < stderr * sig_multiplier:  # Not significant
             direction = "stable"
             has_trend = False
         elif slope > 0:
             direction = "increasing"
-            has_trend = bool(trend_strength > 0.3)
+            has_trend = bool(trend_strength > strength_threshold)
         else:
             direction = "decreasing"
-            has_trend = bool(trend_strength > 0.3)
+            has_trend = bool(trend_strength > strength_threshold)
 
         # Calculate autocorrelation at lag 1
         if len(time_series) > 2:
@@ -295,17 +317,14 @@ def analyze_trend(
 
 def detect_change_points(
     time_series: pd.Series,
-    min_size: int = 10,
-    jump: int = 5,
-    max_points: int = 1000,
+    *,
+    config: dict[str, Any],
 ) -> Result[list[ChangePointResult]]:
     """Detect change points using PELT algorithm.
 
     Args:
         time_series: Time series data
-        min_size: Minimum segment size
-        jump: Jump parameter for efficiency
-        max_points: Maximum points to analyze (sample if larger)
+        config: Temporal config dict (from config/system/temporal.yaml)
 
     Returns:
         Result containing list of ChangePointResult
@@ -318,14 +337,23 @@ def detect_change_points(
         - PELT with L2 model is O(n) but RBF would be O(n²)
     """
     try:
-        if len(time_series) < 30:
+        cfg = config["change_points"]
+        min_points = cfg["min_data_points"]
+        min_size = cfg["min_segment_size"]
+        jump = cfg["jump"]
+        penalty = cfg["penalty"]
+        max_points = cfg["max_points"]
+        max_confidence = cfg["max_confidence"]
+        confidence_divisor = cfg["confidence_divisor"]
+
+        if len(time_series) < min_points:
             return Result.ok([])
 
         signal = np.asarray(time_series.values, dtype=float)
         mask = ~np.isnan(signal)
         signal_clean = signal[mask]
 
-        if len(signal_clean) < 30:
+        if len(signal_clean) < min_points:
             return Result.ok([])
 
         # Sample if too large (PELT with rbf is O(n²))
@@ -337,7 +365,7 @@ def detect_change_points(
         # Detect change points using PELT with l2 model (faster than rbf)
         try:
             algo = rpt.Pelt(model="l2", min_size=min_size, jump=jump).fit(signal_clean)
-            change_points_idx = algo.predict(pen=5)
+            change_points_idx = algo.predict(pen=penalty)
         except Exception:
             return Result.ok([])
 
@@ -376,7 +404,9 @@ def detect_change_points(
                 change_type = "variance_change"
                 magnitude = var_change
 
-            confidence = min(0.9, (len(before_segment) + len(after_segment)) / 100)
+            confidence = min(
+                max_confidence, (len(before_segment) + len(after_segment)) / confidence_divisor
+            )
 
             change = ChangePointResult(
                 change_point_id=str(uuid4()),
@@ -408,16 +438,20 @@ def detect_change_points(
 
 def analyze_update_frequency(
     time_series: pd.Series,
+    *,
+    config: dict[str, Any],
 ) -> Result[UpdateFrequencyAnalysis]:
     """Analyze update frequency and regularity.
 
     Args:
         time_series: Time series data
+        config: Temporal config dict (from config/system/temporal.yaml)
 
     Returns:
         Result containing UpdateFrequencyAnalysis
     """
     try:
+        stale_mult = config["staleness"]["stale_multiplier"]
         if len(time_series) < 2:
             return Result.fail("Insufficient data for update frequency analysis")
 
@@ -446,9 +480,9 @@ def analyze_update_frequency(
         now = datetime.now(UTC)
         freshness_days = (now - last_update).total_seconds() / 86400
 
-        # Determine if data is stale (more than 2x median interval)
+        # Determine if data is stale (more than N x median interval)
         expected_interval_days = median_interval / 86400
-        is_stale = freshness_days > (expected_interval_days * 2)
+        is_stale = freshness_days > (expected_interval_days * stale_mult)
 
         analysis = UpdateFrequencyAnalysis(
             update_frequency_score=regularity_score,
@@ -473,17 +507,26 @@ def analyze_update_frequency(
 
 def detect_fiscal_calendar(
     time_series: pd.Series,
+    *,
+    config: dict[str, Any],
 ) -> Result[FiscalCalendarAnalysis]:
     """Detect fiscal calendar alignment and period-end effects.
 
     Args:
         time_series: Time series data
+        config: Temporal config dict (from config/system/temporal.yaml)
 
     Returns:
         Result containing FiscalCalendarAnalysis
     """
     try:
-        if len(time_series) < 90:  # Need at least ~3 months
+        cfg = config["fiscal_calendar"]
+        min_points = cfg["min_data_points"]
+        activity_spike_mult = cfg["activity_spike_multiplier"]
+        period_end_spike_mult = cfg["period_end_spike_multiplier"]
+        expected_eom_ratio = cfg["expected_end_of_month_ratio"]
+
+        if len(time_series) < min_points:
             return Result.ok(
                 FiscalCalendarAnalysis(
                     fiscal_alignment_detected=False,
@@ -500,7 +543,7 @@ def detect_fiscal_calendar(
             mean_count = month_counts.mean()
 
             # Fiscal year end typically has more activity
-            if max_count > mean_count * 1.5:
+            if max_count > mean_count * activity_spike_mult:
                 fiscal_year_end = int(max_month)
                 fiscal_detected = True
                 confidence = min(0.9, (max_count / mean_count - 1.0) / 2.0)
@@ -520,12 +563,12 @@ def detect_fiscal_calendar(
         end_of_month_count = sum(day_of_month_counts.get(d, 0) for d in range(28, 32))
         total_count = len(timestamps)
 
-        # Expected: ~13% of days are end-of-month (4 days / 30 days)
-        expected_ratio = 0.13
         actual_ratio = end_of_month_count / total_count if total_count > 0 else 0
 
-        has_period_end_effects = actual_ratio > expected_ratio * 1.5
-        period_end_spike_ratio = actual_ratio / expected_ratio if expected_ratio > 0 else 1.0
+        has_period_end_effects = actual_ratio > expected_eom_ratio * period_end_spike_mult
+        period_end_spike_ratio = (
+            actual_ratio / expected_eom_ratio if expected_eom_ratio > 0 else 1.0
+        )
 
         detected_periods = []
         if has_period_end_effects:
@@ -553,18 +596,25 @@ def detect_fiscal_calendar(
 
 def analyze_distribution_stability(
     time_series: pd.Series,
-    num_periods: int = 4,
+    *,
+    config: dict[str, Any],
 ) -> Result[DistributionStabilityAnalysis]:
     """Analyze distribution stability across time periods using KS tests.
 
     Args:
         time_series: Time series data
-        num_periods: Number of periods to compare
+        config: Temporal config dict (from config/system/temporal.yaml)
 
     Returns:
         Result containing DistributionStabilityAnalysis
     """
     try:
+        cfg = config["distribution_stability"]
+        num_periods = cfg["num_periods"]
+        significance_level = cfg["significance_level"]
+        increase_threshold = cfg["increase_threshold"]
+        decrease_threshold = cfg["decrease_threshold"]
+
         if len(time_series) < num_periods * 10:
             return Result.ok(
                 DistributionStabilityAnalysis(
@@ -595,15 +645,15 @@ def analyze_distribution_stability(
             values2 = np.asarray(period2.values, dtype=np.float64)
             ks_stat, p_value = stats.ks_2samp(values1, values2)
 
-            is_significant = bool(p_value < 0.05)
+            is_significant = bool(p_value < significance_level)
 
             if is_significant:
                 mean1 = period1.mean()
                 mean2 = period2.mean()
 
-                if mean2 > mean1 * 1.1:
+                if mean2 > mean1 * increase_threshold:
                     direction = "increase"
-                elif mean2 < mean1 * 0.9:
+                elif mean2 < mean1 * decrease_threshold:
                     direction = "decrease"
                 else:
                     direction = "mixed"

@@ -154,7 +154,6 @@ def enrich_semantic(
             detected_entity_type=entity.entity_type,
             description=entity.description,
             confidence=entity.confidence,
-            evidence=entity.evidence,
             grain_columns={"columns": entity.grain_columns},
             is_fact_table=entity.is_fact_table,
             is_dimension_table=entity.is_dimension_table,

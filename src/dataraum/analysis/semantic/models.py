@@ -198,13 +198,6 @@ class SemanticAnalysisOutput(BaseModel):
         ),
     )
 
-    summary: str = Field(
-        default="",
-        description=(
-            "2-3 sentence overview of the schema structure, main entities, and business domain."
-        ),
-    )
-
 
 # =============================================================================
 # Internal Models - Used for storage and processing after LLM output
@@ -240,7 +233,6 @@ class EntityDetection(BaseModel):
     entity_type: str
     description: str | None = None  # LLM-generated table description
     confidence: float
-    evidence: dict[str, Any] = Field(default_factory=dict)
 
     grain_columns: list[str] = Field(default_factory=list)
     is_fact_table: bool = False
@@ -264,8 +256,6 @@ class Relationship(BaseModel):
     confidence: float
     detection_method: str
     evidence: dict[str, Any] = Field(default_factory=dict)
-
-    is_confirmed: bool = False
 
 
 class SemanticEnrichmentResult(BaseModel):

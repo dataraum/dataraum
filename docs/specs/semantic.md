@@ -70,6 +70,7 @@ processor.enrich_semantic()
 | `table_id` | FK → tables | Table being classified |
 | `detected_entity_type` | String | `customers`, `orders`, `transactions`, etc. |
 | `description` | Text | LLM-generated table description |
+| `confidence` | Float | 0.0–1.0 |
 | `grain_columns` | JSON | Columns forming the unique grain (primary key) |
 | `is_fact_table` | Boolean | Fact vs dimension classification |
 | `is_dimension_table` | Boolean | Inverse of is_fact_table |
@@ -142,13 +143,15 @@ concepts:
 ## Cleanup History
 
 **Fixed in this refactor:**
-- **Cardinality bug** (`agent.py:771`): `many_to_one` was mapped to `Cardinality.ONE_TO_MANY` instead of `Cardinality.MANY_TO_ONE` — impacts downstream entropy calculations
-- **Bare except** (`processor.py:200`): Silent `except: pass` replaced with `logger.warning()` for RI metrics computation failures
+- **Cardinality bug** (`agent.py`): `many_to_one` was mapped to `Cardinality.ONE_TO_MANY` instead of `Cardinality.MANY_TO_ONE` — impacts downstream entropy calculations
+- **Bare except** (`processor.py`): Silent `except: pass` replaced with `logger.warning()` for RI metrics computation failures
 - **Logging added** to `processor.py` (was missing `get_logger`)
-- **Config fallback removed** (`semantic_phase.py`): `ctx.config.get("ontology", "financial_reporting")` → fail-fast if not configured, ontology setting moved to `config/system/pipeline.yaml`
+- **Config fallback removed** (`semantic_phase.py`): `ctx.config.get("ontology", "financial_reporting")` → fail-fast if not configured
+- **Dead code removed**: `SemanticAnalysisOutput.summary` (parsed from LLM but never accessed), `EntityDetection.evidence` (always `{}`), `Relationship.is_confirmed` (never modified from default)
+- **Hardcoded max_tokens** (`agent.py`): Changed from `8192` to `self.config.limits.max_output_tokens_per_request` — consistent with all other agents
+- **Inline imports moved to module level** (`agent.py`, `ontology.py`): `func`, `StatisticalProfile`, `NumericStats`, `StringStats`, `ValueCount`, `get_config_dir`
 
 ## Roadmap
 
-- **Entropy impact review**: The cardinality bug fix may affect entropy calculations for relationship-based entropy — verify with test data
 - **Incremental re-analysis**: Support re-analyzing specific tables without re-running the full phase
 - **Confidence calibration**: Validate LLM confidence scores against ground truth in test datasets

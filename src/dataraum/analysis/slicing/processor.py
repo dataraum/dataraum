@@ -150,65 +150,6 @@ def _execute_slice_queries(
     return results
 
 
-def execute_slices_from_definitions(
-    duckdb_conn: duckdb.DuckDBPyConnection,
-    slice_definitions: list[SliceDefinition],
-    source_table: str,
-) -> dict[str, Any]:
-    """Execute slices from stored definitions.
-
-    This function can be called separately to create slice tables
-    from previously stored slice definitions.
-
-    Args:
-        duckdb_conn: DuckDB connection
-        slice_definitions: List of SliceDefinition records
-        source_table: Source table name to slice from
-
-    Returns:
-        Dict with execution results
-    """
-    results: dict[str, list[Any]] = {
-        "success": [],
-        "failed": [],
-    }
-
-    for slice_def in slice_definitions:
-        if not slice_def.distinct_values:
-            continue
-
-        column_name = slice_def.column.column_name if slice_def.column else "unknown"
-
-        for value in slice_def.distinct_values:
-            # Sanitize for table name
-            import re
-
-            safe_value = re.sub(r"[^a-zA-Z0-9]", "_", str(value))
-            safe_value = re.sub(r"_+", "_", safe_value).strip("_").lower()
-            safe_column = re.sub(r"[^a-zA-Z0-9]", "_", column_name)
-            safe_column = re.sub(r"_+", "_", safe_column).strip("_").lower()
-
-            table_name = f"slice_{safe_column}_{safe_value}"
-            quoted_column = f'"{column_name}"'
-            escaped_value = str(value).replace("'", "''")
-
-            try:
-                # Drop if exists
-                duckdb_conn.execute(f"DROP TABLE IF EXISTS {table_name}")
-
-                # Create slice
-                sql = f"""CREATE TABLE {table_name} AS
-SELECT * FROM {source_table}
-WHERE {quoted_column} = '{escaped_value}'"""
-                duckdb_conn.execute(sql)
-                results["success"].append(table_name)
-            except Exception as e:
-                results["failed"].append({"table_name": table_name, "error": str(e)})
-
-    return results
-
-
 __all__ = [
     "analyze_slices",
-    "execute_slices_from_definitions",
 ]

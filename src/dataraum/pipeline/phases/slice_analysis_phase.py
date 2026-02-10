@@ -161,15 +161,12 @@ class SliceAnalysisPhase(BasePhase):
             )
 
         # Run analysis on slice tables
-        # Note: semantic_agent is None since we copy annotations, not re-analyze
         analysis_result = run_analysis_on_slices(
             session=ctx.session,
             duckdb_conn=ctx.duckdb_conn,
             slice_infos=slice_infos,
-            semantic_agent=None,
             run_statistics=True,
             run_quality=True,
-            run_semantic=False,  # Skip semantic - it needs an agent
         )
 
         errors.extend(analysis_result.errors)

@@ -217,38 +217,107 @@ Each module is stable before its consumers are cleaned.
 
 ## Part 4: Overarching Cleanup (After All Modules)
 
-### 4.1 CLI/TUI
+### 4.1 Pipeline Architecture: Config-Driven Phases
+
+> **Goal:** Phases become thin wrappers (or disappear entirely). Analysis modules own their execution logic. Pipeline is assembled from configuration.
+
+**Current state:** Each phase is a Python class in `pipeline/phases/` that hardcodes dependencies, outputs, skip conditions, and config defaults in `base.py`. Adding a new phase means writing a class + updating the DAG in `base.py`.
+
+**Target state:**
+- Each phase has a config file: `config/phases/<phase_name>.yaml`
+- Phase config declares: dependencies, outputs, skip conditions, concurrency group, analysis module entry point
+- Pipeline DAG is assembled from `config/system/pipeline.yaml` (which phases to run, in what order)
+- `pipeline/base.py` has no per-phase defaults or hardcoded dependencies
+- Analysis modules expose an `execute(ctx) -> PhaseResult` entry point
+- New phases can be added by: (1) writing an analysis module, (2) adding a config file
+
+**Config structure (proposed):**
+```
+config/phases/
+├── typing.yaml              # Dependencies, outputs, skip conditions
+├── statistics.yaml
+├── semantic.yaml
+├── ...
+config/system/
+└── pipeline.yaml            # Which phases to run, order, concurrency settings
+```
+
+**Concurrency review:**
+- Current: `max_parallel` in pipeline.yaml, phases declare dependencies but concurrency is implicit
+- Review: How phases declare thread-safety, which phases can actually run in parallel
+- Streamline: Make concurrency explicit per phase in config (e.g., `concurrency: parallel` vs `concurrency: serial`)
+
+**Phase config location:** Configurable per phase — default convention `config/phases/<name>.yaml`, overridable in pipeline.yaml.
+
+**Spec location:** `docs/specs/phases/<name>.md` — one spec per phase (currently mixed into module specs).
+
+**Steps:**
+1. Audit current phase classes — catalog what each hardcodes vs what comes from config
+2. Design phase config schema (YAML structure)
+3. Migrate phase-by-phase: extract hardcoded values to config files
+4. Remove defaults from `base.py` and phase classes
+5. Implement config-driven DAG assembly
+6. Verify concurrency still works correctly
+
+### 4.2 Config Audit
+
+- Review all files in `config/system/` and `config/verticals/` for obsolete or illogical entries
+- Check for config files that are loaded but never used
+- Check for config keys that no code reads
+- Verify config file naming conventions are consistent
+- Remove stale config entries left over from deleted features
+
+### 4.3 Test Cleanup
+
+- Review all integration and unit tests for:
+  - Spikes / experiments that shouldn't be permanent tests
+  - `@pytest.mark.skip` tests — either fix or delete
+  - Tests that duplicate other tests
+  - Tests that test framework behavior rather than our code
+  - Tests with no meaningful assertions
+- Goal: every test justifies its existence and tests ONE behavior
+
+### 4.4 Feature Extraction from Docs
+
+- Scan existing documentation (`docs/`, `BACKLOG.md`, `PROGRESS.md`, old plans) for planned-but-not-implemented features
+- Review each with user: keep / discard / defer
+- Add kept items to the Roadmap section of the relevant `docs/specs/<module>.md`
+- Remove feature references from stale docs to avoid confusion
+
+### 4.5 CLI/TUI
+
 - Verify all TUI screens work with cleaned models
 - Remove references to deleted models/fields
 - Test with `dataraum tui ./output`
 
-### 4.2 API (Deferred Decision)
+### 4.6 API (Deferred Decision)
+
 - Leave as-is during module cleanup
 - After cleanup: evaluate state, clean up routers to match streamlined models
 - This becomes the foundation for Web UI (HTMX/HATEOAS per `docs/ui/`)
 - If it gets in the way during cleanup, move to a branch and re-introduce later
 
-### 4.3 MCP
+### 4.7 MCP
+
 - Verify 4 tools work with cleaned context assembly
 - Update formatters if model fields changed
 
-### 4.4 LLM Dependencies
-- **Keep** anthropic + sentence-transformers as core dependencies (multi-agent system requires LLM)
-- Future: make provider configurable (anthropic, openai, ollama/local) — not in this refactor
+### 4.8 Dependency Audit
 
-### 4.5 Dependency Audit
 | Dependency | Action |
 |------------|--------|
 | `pandas` vs `pyarrow` | Evaluate overlap, prefer PyArrow where possible |
-| `ripser` + `persim` | Keep if topology is used, else remove |
+| `pydantic-settings` | **Removed** (Settings class deleted, env var override kept via `os.environ`) |
+| `ripser` + `persim` | Keep — topology is actively used |
 | `ruptures` | Check if actually used in temporal analysis |
 | `networkx` | Check usage scope — may be replaceable |
-| `structlog` | Standardize usage across all modules or pick stdlib logging |
+| `structlog` | **Done** — replaced with `core/logging.get_logger()` everywhere |
 
-### 4.6 Documentation Retirement
-- At the end: retire stale docs (old backlog entries, completed plans)
-- Move completed specs to `docs/archive/`
+### 4.9 Documentation Retirement
+
+- Retire stale docs (old backlog entries, completed plans)
 - `docs/specs/` becomes the authoritative developer documentation
+- Each spec has a Roadmap section for planned features (fed by 4.4)
 
 ---
 
@@ -282,6 +351,8 @@ uv run dataraum-mcp                       # MCP tools register
 - [ ] No print statements in source code
 - [ ] No config fallbacks — fail fast everywhere
 - [ ] Logger used consistently across all modules
+- [ ] Pipeline phases driven by config, not hardcoded in base.py
+- [ ] No skipped or spike tests remaining
 
 ---
 
@@ -293,11 +364,19 @@ uv run dataraum-mcp                       # MCP tools register
 3. Create refactor/streamline branch
 4. Infrastructure: test separation (directories, conftest, markers)
 5. Infrastructure: config separation (system/ vs verticals/, config path argument)
-6. Modules 1-18 (bottom-up, mini-plan per module agreed with user)
+6. Modules 1-18 (bottom-up, mini-plan per module agreed with user) ✅ DONE
    - De-configure graph_execution from pipeline DAG
    - Skip graphs/ and query/ modules
-7. Overarching: CLI/TUI, MCP, dependencies, docs retirement
-8. End-to-end verification (without graph/query phases)
+7. Overarching cleanup:
+   a. Config audit (4.2) — understand current state
+   b. Pipeline architecture (4.1) — config-driven phases, concurrency review
+   c. Test cleanup (4.3) — remove spikes, skipped tests
+   d. Feature extraction (4.4) — planned features → module roadmaps
+   e. CLI/TUI (4.5) — verify with cleaned models
+   f. MCP (4.7) — verify tools work
+   g. Dependency audit (4.8)
+   h. Documentation retirement (4.9)
+8. End-to-end verification
 9. LATER: Re-introduce graphs/ + query/ with dedicated plan
 10. LATER: API cleanup + Web UI evolution
 ```

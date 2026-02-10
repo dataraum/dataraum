@@ -155,3 +155,44 @@ concepts:
 
 - **Incremental re-analysis**: Support re-analyzing specific tables without re-running the full phase
 - **Confidence calibration**: Validate LLM confidence scores against ground truth in test datasets
+- **Two-tier LLM annotation**: Split column annotation (fast model) from relationship evaluation (capable model) — see below
+
+### Two-Tier LLM Annotation (Proposed)
+
+The current semantic agent does two distinct tasks in a single LLM call using the `balanced` model tier:
+1. **Column annotation** — role, entity type, business name, concept mapping
+2. **Table classification + relationship evaluation** — entity type, fact/dim, grain, FK confirmation
+
+These tasks have very different complexity. Column annotation is mostly pattern recognition with domain vocabulary — a fast model (Haiku-class) handles this well. Relationship evaluation requires reasoning about join semantics, referential integrity metrics, and schema topology — needs the capable model.
+
+**Proposed architecture:**
+
+```
+SemanticPhase._run()
+  ├── ColumnAnnotationAgent (fast model tier, e.g. Haiku)
+  │   ├── Same context: profiles, ontology, type decisions
+  │   ├── Simpler tool schema: just column annotations
+  │   ├── Can batch more columns per call (smaller output per column)
+  │   └── Writes SemanticAnnotation with annotation_source = "llm_fast"
+  │
+  └── RelationshipAgent (balanced model tier, e.g. Sonnet)
+      ├── Receives: relationship candidates, RI metrics, topology, FDs
+      ├── + Table entity classification (fact/dim, grain, time column)
+      ├── + Reviews/upgrades low-confidence column annotations
+      └── Writes TableEntity + Relationship + annotation upgrades
+```
+
+**Benefits:**
+- ~3-5x faster column annotation (Haiku is significantly faster than Sonnet)
+- ~3-5x cheaper per column annotation token
+- Better coverage: can afford to annotate ALL columns, not just typed-layer
+- Relationship evaluation still uses the capable model where reasoning matters
+- The capable model gets smaller prompts (no column annotation burden)
+
+**Implementation notes:**
+- `LLMFeature` already supports per-feature model tier config via `llm.yaml`
+- Add a new feature entry `column_annotation` with `model_tier: fast`
+- Keep `semantic_analysis` feature for table/relationship analysis with `model_tier: balanced`
+- The `annotation_source` field distinguishes: `"llm_fast"` vs `"llm"` vs `"manual"`
+- Column annotations from the fast model can be included as context for the capable model's relationship analysis
+- Prompt for column annotation is simpler: schema + ontology concepts + type decisions (no relationship candidates, no topology)

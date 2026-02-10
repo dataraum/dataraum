@@ -15,9 +15,20 @@ from enum import Enum
 from typing import Any
 
 from dataraum.analysis.quality_summary.models import AggregatedColumnData
+from dataraum.core.config import load_yaml_config
 from dataraum.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+_CONFIG_CACHE: dict[str, object] | None = None
+
+
+def _load_config() -> dict[str, object]:
+    """Load quality_summary config from YAML (cached)."""
+    global _CONFIG_CACHE
+    if _CONFIG_CACHE is None:
+        _CONFIG_CACHE = load_yaml_config("system/quality_summary.yaml")
+    return _CONFIG_CACHE
 
 
 class ColumnClassification(str, Enum):
@@ -72,7 +83,7 @@ class SliceVarianceMetrics:
 class SliceFilterConfig:
     """Configuration for slice variance thresholds.
 
-    Loaded from config/pipeline.yaml under quality_summary.variance_filter
+    Loaded from config/system/quality_summary.yaml under variance_filter.
     """
 
     # Null ratio spread threshold (10% = field is conditionally populated)
@@ -99,25 +110,18 @@ class SliceFilterConfig:
 
 
 def get_filter_config() -> SliceFilterConfig:
-    """Load filter config from pipeline.yaml or use defaults."""
-    try:
-        from dataraum.core.config import get_settings
-
-        settings = get_settings()
-        if hasattr(settings, "pipeline") and settings.pipeline:
-            cfg = settings.pipeline.get("quality_summary", {}).get("variance_filter", {})
-            return SliceFilterConfig(
-                null_spread_threshold=cfg.get("null_spread_threshold", 0.10),
-                distinct_ratio_threshold=cfg.get("distinct_ratio_threshold", 2.0),
-                outlier_spread_threshold=cfg.get("outlier_spread_threshold", 0.05),
-                benford_spread_threshold=cfg.get("benford_spread_threshold", 0.30),
-                row_ratio_threshold=cfg.get("row_ratio_threshold", 10.0),
-                empty_null_threshold=cfg.get("empty_null_threshold", 0.99),
-                enabled=cfg.get("enabled", True),
-            )
-    except Exception:
-        pass
-    return SliceFilterConfig()
+    """Load filter config from system/quality_summary.yaml."""
+    cfg = _load_config()
+    vf = cfg.get("variance_filter", {})
+    return SliceFilterConfig(
+        null_spread_threshold=vf.get("null_spread_threshold", 0.10),
+        distinct_ratio_threshold=vf.get("distinct_ratio_threshold", 2.0),
+        outlier_spread_threshold=vf.get("outlier_spread_threshold", 0.05),
+        benford_spread_threshold=vf.get("benford_spread_threshold", 0.30),
+        row_ratio_threshold=vf.get("row_ratio_threshold", 10.0),
+        empty_null_threshold=vf.get("empty_null_threshold", 0.99),
+        enabled=vf.get("enabled", True),
+    )
 
 
 def compute_slice_variance(col_data: AggregatedColumnData) -> SliceVarianceMetrics:

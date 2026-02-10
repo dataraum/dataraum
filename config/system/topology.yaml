@@ -1,0 +1,20 @@
+# Topological Data Analysis (TDA) configuration
+# Used by analysis/topology/
+
+# --- Anomaly detection (analyzer.py) ---
+anomaly_detection:
+  fragmentation_threshold: 3           # betti_0 > this = fragmented
+  fragmentation_high_threshold: 5      # betti_0 > this = high severity
+  complexity_low: 2                    # total_complexity <= this = low
+  complexity_moderate: 5               # total_complexity <= this = moderate
+  table_sample_limit: 10000            # max rows loaded for TDA analysis
+
+# --- TDA extraction (tda/extractor.py) ---
+extraction:
+  histogram_bins: 20                   # bins for distribution entropy
+  relationship_strength_threshold: 0.1 # min strength to include column relationship
+  min_valid_samples: 10                # min non-null pairs for correlation
+  categorical_overlap_threshold: 0.1   # min overlap for partial relationship
+  row_sample_size: 1000                # max rows for row-level topology
+  min_rows_for_topology: 3             # min rows needed for TDA
+  min_features_for_outliers: 10        # min features for outlier scoring

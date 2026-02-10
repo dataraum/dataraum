@@ -1,0 +1,29 @@
+# Temporal slice analysis configuration
+# Used by analysis/temporal_slicing/
+
+# --- Default thresholds for TemporalSliceConfig ---
+# These are defaults; callers can override per-analysis via TemporalSliceConfig fields.
+defaults:
+  completeness_threshold: 0.9       # coverage_ratio threshold
+  drift_threshold: 0.1              # JS divergence threshold
+  volume_zscore_threshold: 2.5      # z-score for volume anomaly
+  last_day_ratio_threshold: 0.3     # for cutoff detection
+
+# --- Hidden trend detection (Level 3: slice x time matrix) ---
+hidden_trends:
+  global_change_threshold: 0.1      # <10% global change = "stable"
+  slice_trend_threshold: 0.2        # >20% slice change = significant
+
+# --- Topology drift detection (Level 5: TDA with bottleneck distance) ---
+topology:
+  max_rows_per_period: 5000         # max rows fed to TDA per period
+  bottleneck_threshold: 0.5         # bottleneck distance for significant drift
+  min_samples: 10                   # min rows per period for valid analysis
+  entropy_change_threshold: 0.3     # >30% entropy change between periods
+  entropy_significance: 0.5         # >50% = significant
+  complexity_change_threshold: 0.2  # >20% complexity change between periods
+  complexity_significance: 0.5      # >50% = significant
+  trend_increase_factor: 1.2        # second-half avg > 1.2x first-half = increasing
+  trend_decrease_factor: 0.8        # second-half avg < 0.8x first-half = decreasing
+  volatility_threshold: 0.5         # variance > 50% of mean = volatile
+  anomaly_stddev_factor: 2.0        # >2 sigma from mean = anomalous period

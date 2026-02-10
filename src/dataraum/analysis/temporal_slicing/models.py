@@ -241,8 +241,10 @@ class TemporalTopologyResult:
 
 
 __all__ = [
+    # Config (used by slice_runner)
     "TimeGrain",
     "TemporalSliceConfig",
+    # Internal result models (used by analyzer, not exported from package)
     "PeriodMetrics",
     "CompletenessResult",
     "DistributionDriftResult",
@@ -250,6 +252,7 @@ __all__ = [
     "SliceTimeMatrix",
     "VolumeAnomalyResult",
     "TemporalAnalysisResult",
+    # Topology models (used by temporal_slice_analysis_phase)
     "PeriodTopology",
     "TopologyDrift",
     "TemporalTopologyResult",

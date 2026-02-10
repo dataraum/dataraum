@@ -11,6 +11,7 @@ from datetime import date, timedelta
 from uuid import uuid4
 
 import duckdb
+import numpy as np
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -34,8 +35,29 @@ from dataraum.analysis.temporal_slicing.models import (
     TopologyDrift,
     VolumeAnomalyResult,
 )
+from dataraum.analysis.topology import compute_bottleneck_distance
+from dataraum.analysis.topology.extraction import compute_persistent_entropy
+from dataraum.analysis.topology.tda.extractor import TableTopologyExtractor
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.storage import Column, Table
+
+logger = get_logger(__name__)
+
+# --- Thresholds for hidden trend detection (Level 3: slice × time matrix) ---
+GLOBAL_CHANGE_THRESHOLD = 0.1  # <10% global change = "stable"
+SLICE_TREND_THRESHOLD = 0.2  # >20% slice change = significant
+
+# --- Thresholds for topology drift detection (Level 5) ---
+ENTROPY_CHANGE_THRESHOLD = 0.3  # >30% entropy change between periods
+ENTROPY_SIGNIFICANCE_THRESHOLD = 0.5  # >50% = significant
+COMPLEXITY_CHANGE_THRESHOLD = 0.2  # >20% complexity change between periods
+COMPLEXITY_SIGNIFICANCE_THRESHOLD = 0.5  # >50% = significant
+TREND_INCREASE_FACTOR = 1.2  # second-half avg > 1.2× first-half = increasing
+TREND_DECREASE_FACTOR = 0.8  # second-half avg < 0.8× first-half = decreasing
+VOLATILITY_THRESHOLD = 0.5  # variance > 50% of mean = volatile
+ANOMALY_STDDEV_FACTOR = 2.0  # >2σ from mean = anomalous period
+TOPOLOGY_MAX_ROWS_PER_PERIOD = 5000  # max rows fed to TDA per period
 
 
 class TemporalSliceAnalyzer:
@@ -73,6 +95,12 @@ class TemporalSliceAnalyzer:
             Result containing TemporalAnalysisResult
         """
         try:
+            logger.info(
+                "temporal_analysis_start",
+                table=slice_table_name,
+                time_column=config.time_column,
+                grain=config.time_grain.value,
+            )
             # Get table info
             table = self._get_table(slice_table_name)
             if not table:
@@ -113,6 +141,10 @@ class TemporalSliceAnalyzer:
                 volume_anomalies,
             )
 
+            incomplete = sum(1 for c in completeness_results if not c.is_complete)
+            anomalies = sum(1 for v in volume_anomalies if v.is_anomaly)
+            has_drift = any(d.has_significant_drift for d in drift_results)
+
             result = TemporalAnalysisResult(
                 config=config,
                 slice_table_name=slice_table_name,
@@ -123,15 +155,25 @@ class TemporalSliceAnalyzer:
                 slice_time_matrix=slice_time_matrix,
                 volume_anomalies=volume_anomalies,
                 total_periods=len(periods),
-                incomplete_periods=sum(1 for c in completeness_results if not c.is_complete),
-                anomaly_count=sum(1 for v in volume_anomalies if v.is_anomaly),
-                drift_detected=any(d.has_significant_drift for d in drift_results),
+                incomplete_periods=incomplete,
+                anomaly_count=anomalies,
+                drift_detected=has_drift,
                 investigation_queries=investigation_queries,
+            )
+
+            logger.info(
+                "temporal_analysis_complete",
+                table=slice_table_name,
+                periods=len(periods),
+                incomplete_periods=incomplete,
+                anomalies=anomalies,
+                drift_detected=has_drift,
             )
 
             return Result.ok(result)
 
         except Exception as e:
+            logger.error("temporal_analysis_failed", table=slice_table_name, error=str(e))
             return Result.fail(f"Temporal analysis failed: {e}")
 
     def persist_results(
@@ -244,6 +286,7 @@ class TemporalSliceAnalyzer:
             return Result.ok(run_id)
 
         except Exception as e:
+            logger.error("persist_results_failed", error=str(e))
             return Result.fail(f"Failed to persist results: {e}")
 
     def _get_table(self, table_name: str) -> Table | None:
@@ -638,10 +681,12 @@ class TemporalSliceAnalyzer:
             last_total = total_volumes[-1]
             global_change = (last_total - first_total) / first_total if first_total > 0 else 0
 
-            # If global is stable (<10% change) but slices have big changes
-            if abs(global_change) < 0.1:
-                growing = [(sv, t) for sv, t in slice_trends.items() if t > 0.2]
-                declining = [(sv, t) for sv, t in slice_trends.items() if t < -0.2]
+            # If global is stable but slices have big changes
+            if abs(global_change) < GLOBAL_CHANGE_THRESHOLD:
+                growing = [(sv, t) for sv, t in slice_trends.items() if t > SLICE_TREND_THRESHOLD]
+                declining = [
+                    (sv, t) for sv, t in slice_trends.items() if t < -SLICE_TREND_THRESHOLD
+                ]
 
                 if growing and declining:
                     hidden_trends.append(
@@ -830,11 +875,12 @@ def analyze_temporal_topology(
     Returns:
         TemporalTopologyResult with per-period topology and drift detection
     """
-    import numpy as np
-
-    from dataraum.analysis.topology import compute_bottleneck_distance
-    from dataraum.analysis.topology.extraction import compute_persistent_entropy
-    from dataraum.analysis.topology.tda.extractor import TableTopologyExtractor
+    logger.info(
+        "temporal_topology_start",
+        table=table_name,
+        time_column=time_column,
+        period=period,
+    )
 
     result = TemporalTopologyResult(
         table_name=table_name,
@@ -862,7 +908,8 @@ def analyze_temporal_topology(
             HAVING COUNT(*) >= {min_samples}
             ORDER BY 1
         """).fetchdf()
-    except Exception:
+    except Exception as e:
+        logger.debug("temporal_topology_period_query_failed", table=table_name, error=str(e))
         return result
 
     if periods_df.empty:
@@ -885,7 +932,7 @@ def analyze_temporal_topology(
                 FROM "{table_name}"
                 WHERE "{time_column}" >= '{period_start}'
                   AND "{time_column}" < '{period_end}'
-                LIMIT 5000
+                LIMIT {TOPOLOGY_MAX_ROWS_PER_PERIOD}
             """).df()
 
             if period_df.empty:
@@ -940,8 +987,8 @@ def analyze_temporal_topology(
             period_topologies.append(period_topo)
             period_diagrams.append(np_diagrams)
 
-        except Exception:
-            # Skip periods that fail TDA extraction
+        except Exception as e:
+            logger.debug("tda_extraction_failed", period=period_start, error=str(e))
             continue
 
     result.period_topologies = period_topologies
@@ -989,7 +1036,7 @@ def analyze_temporal_topology(
             entropy_change = (
                 curr.persistent_entropy - prev.persistent_entropy
             ) / prev.persistent_entropy
-            if abs(entropy_change) > 0.3:  # >30% entropy change
+            if abs(entropy_change) > ENTROPY_CHANGE_THRESHOLD:
                 drifts.append(
                     TopologyDrift(
                         period_from=prev.period_start,
@@ -999,7 +1046,7 @@ def analyze_temporal_topology(
                         value_to=curr.persistent_entropy,
                         change_pct=entropy_change * 100,
                         bottleneck_distance=bottleneck_dist,
-                        is_significant=abs(entropy_change) > 0.5,
+                        is_significant=abs(entropy_change) > ENTROPY_SIGNIFICANCE_THRESHOLD,
                     )
                 )
 
@@ -1008,7 +1055,7 @@ def analyze_temporal_topology(
             cx_change = (
                 curr.structural_complexity - prev.structural_complexity
             ) / prev.structural_complexity
-            if abs(cx_change) > 0.2:
+            if abs(cx_change) > COMPLEXITY_CHANGE_THRESHOLD:
                 drifts.append(
                     TopologyDrift(
                         period_from=prev.period_start,
@@ -1018,7 +1065,7 @@ def analyze_temporal_topology(
                         value_to=curr.structural_complexity,
                         change_pct=cx_change * 100,
                         bottleneck_distance=bottleneck_dist,
-                        is_significant=abs(cx_change) > 0.5,
+                        is_significant=abs(cx_change) > COMPLEXITY_SIGNIFICANCE_THRESHOLD,
                     )
                 )
 
@@ -1046,11 +1093,11 @@ def analyze_temporal_topology(
             first_avg = sum(first_half) / len(first_half)
             second_avg = sum(second_half) / len(second_half)
 
-            if second_avg > first_avg * 1.2:
+            if second_avg > first_avg * TREND_INCREASE_FACTOR:
                 result.trend_direction = "increasing"
-            elif second_avg < first_avg * 0.8:
+            elif second_avg < first_avg * TREND_DECREASE_FACTOR:
                 result.trend_direction = "decreasing"
-            elif result.complexity_variance > mean_c * 0.5:
+            elif result.complexity_variance > mean_c * VOLATILITY_THRESHOLD:
                 result.trend_direction = "volatile"
             else:
                 result.trend_direction = "stable"
@@ -1059,15 +1106,26 @@ def analyze_temporal_topology(
     if result.complexity_variance > 0:
         std_dev = result.complexity_variance**0.5
         for topo in period_topologies:
-            if abs(topo.structural_complexity - result.avg_complexity) > 2 * std_dev:
+            if (
+                abs(topo.structural_complexity - result.avg_complexity)
+                > ANOMALY_STDDEV_FACTOR * std_dev
+            ):
                 topo.has_anomalies = True
                 result.structural_anomaly_periods.append(topo.period_start)
+
+    logger.info(
+        "temporal_topology_complete",
+        table=table_name,
+        periods_analyzed=result.periods_analyzed,
+        drifts=len(result.topology_drifts),
+        trend=result.trend_direction,
+        anomaly_periods=len(result.structural_anomaly_periods),
+    )
 
     return result
 
 
 __all__ = [
-    "TemporalSliceAnalyzer",
     "analyze_temporal_slices",
     "analyze_temporal_topology",
 ]

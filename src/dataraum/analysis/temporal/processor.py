@@ -50,6 +50,7 @@ from dataraum.analysis.temporal.patterns import (
     detect_change_points,
     detect_fiscal_calendar,
 )
+from dataraum.core.config import load_yaml_config
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, Result
 from dataraum.storage import Column, Table
@@ -218,8 +219,6 @@ def profile_temporal(
     try:
         # Load config if not provided
         if config is None:
-            from dataraum.core.config import load_yaml_config
-
             config = load_yaml_config("system/temporal.yaml")
 
         max_workers = config["processing"]["max_workers"]

@@ -7,7 +7,7 @@ and their analysis metadata.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -23,9 +23,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dataraum.storage import Base
-
-if TYPE_CHECKING:
-    pass
 
 
 class BusinessCycleAnalysisRun(Base):

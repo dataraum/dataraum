@@ -11,6 +11,10 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from dataraum.analysis.correlation.db_models import FunctionalDependency
+from dataraum.analysis.cycles.models import BusinessCycleAnalysisOutput
+from dataraum.storage import Column, Table
+
 if TYPE_CHECKING:
     import duckdb
 
@@ -234,96 +238,6 @@ class CycleDetectionTools:
         except Exception as e:
             return {"error": str(e)}
 
-    def get_correlation_between_columns(
-        self,
-        table_name: str,
-        column1: str,
-        column2: str,
-    ) -> dict[str, Any]:
-        """Check if two columns are correlated/related.
-
-        Useful for validating if columns participate in the same cycle.
-
-        Args:
-            table_name: Table containing the columns
-            column1: First column
-            column2: Second column
-
-        Returns:
-            Correlation/association metrics
-        """
-        from dataraum.analysis.correlation.db_models import (
-            CategoricalAssociation,
-            ColumnCorrelation,
-        )
-        from dataraum.storage import Column, Table
-
-        try:
-            # Get column IDs
-            table_stmt = select(Table).where(Table.table_name == table_name)
-            table = self._session.execute(table_stmt).scalar_one_or_none()
-            if not table:
-                return {"error": f"Table {table_name} not found"}
-
-            col1_stmt = select(Column).where(
-                Column.table_id == table.table_id,
-                Column.column_name == column1,
-            )
-            col2_stmt = select(Column).where(
-                Column.table_id == table.table_id,
-                Column.column_name == column2,
-            )
-            col1 = self._session.execute(col1_stmt).scalar_one_or_none()
-            col2 = self._session.execute(col2_stmt).scalar_one_or_none()
-
-            if not col1 or not col2:
-                return {"error": "Column(s) not found"}
-
-            # Check numeric correlation
-            corr_stmt = select(ColumnCorrelation).where(
-                ColumnCorrelation.table_id == table.table_id,
-                ColumnCorrelation.column1_id == col1.column_id,
-                ColumnCorrelation.column2_id == col2.column_id,
-            )
-            corr = self._session.execute(corr_stmt).scalar_one_or_none()
-
-            # Check categorical association
-            assoc_stmt = select(CategoricalAssociation).where(
-                CategoricalAssociation.table_id == table.table_id,
-                CategoricalAssociation.column1_id == col1.column_id,
-                CategoricalAssociation.column2_id == col2.column_id,
-            )
-            assoc = self._session.execute(assoc_stmt).scalar_one_or_none()
-
-            result: dict[str, Any] = {
-                "table": table_name,
-                "column1": column1,
-                "column2": column2,
-            }
-
-            if corr:
-                result["numeric_correlation"] = {
-                    "pearson_r": corr.pearson_r,
-                    "spearman_rho": corr.spearman_rho,
-                    "strength": corr.correlation_strength,
-                    "is_significant": corr.is_significant,
-                }
-
-            if assoc:
-                result["categorical_association"] = {
-                    "cramers_v": assoc.cramers_v,
-                    "chi_square": assoc.chi_square,
-                    "strength": assoc.association_strength,
-                    "is_significant": assoc.is_significant,
-                }
-
-            if not corr and not assoc:
-                result["message"] = "No pre-computed correlation/association found"
-
-            return result
-        except Exception as e:
-            return {"error": str(e)}
-
     def get_functional_dependencies(
         self,
         table_name: str,
@@ -339,9 +253,6 @@ class CycleDetectionTools:
         Returns:
             List of functional dependencies
         """
-        from dataraum.analysis.correlation.db_models import FunctionalDependency
-        from dataraum.storage import Column, Table
-
         try:
             # Filter by layer='typed' to avoid multiple results (raw, typed, quarantine)
             table_stmt = select(Table).where(
@@ -387,8 +298,6 @@ def get_tool_definitions() -> list[dict[str, Any]]:
     Returns tool definitions in the format expected by Claude's tool use.
     Includes both exploration tools and the submit_analysis tool for final output.
     """
-    from dataraum.analysis.cycles.models import BusinessCycleAnalysisOutput
-
     return [
         # Submit analysis tool - for structured final output
         {

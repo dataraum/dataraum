@@ -241,13 +241,14 @@ def aggregate_slice_results(
                     slice_data["distinct_count"] = profile.distinct_count
                     slice_data["cardinality_ratio"] = profile.cardinality_ratio
 
-                    # Numeric stats from profile_data
+                    # Numeric stats from profile_data (nested under numeric_stats)
                     if profile.profile_data:
                         pd = profile.profile_data
-                        slice_data["min_value"] = pd.get("min_value")
-                        slice_data["max_value"] = pd.get("max_value")
-                        slice_data["mean_value"] = pd.get("mean_value")
-                        slice_data["stddev"] = pd.get("stddev")
+                        numeric_stats = pd.get("numeric_stats") or {}
+                        slice_data["min_value"] = numeric_stats.get("min_value")
+                        slice_data["max_value"] = numeric_stats.get("max_value")
+                        slice_data["mean_value"] = numeric_stats.get("mean")
+                        slice_data["stddev"] = numeric_stats.get("stddev")
 
                 # Get quality metrics (use limit(1) in case of duplicates)
                 quality_stmt = (

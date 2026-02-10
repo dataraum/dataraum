@@ -46,9 +46,9 @@ temporal:
   # Time granularity: daily, weekly, monthly
   time_grain: monthly
 
-  # Analysis period (defaults to last year if not specified)
-  # period_start: "2025-01-01"
-  # period_end: "2025-12-31"
+  # Analysis period (auto-detected from data if not specified)
+  # period_start: "2020-01-01"
+  # period_end: "2023-05-01"
 
 # Temporal slice analysis settings
 temporal_slice_analysis:

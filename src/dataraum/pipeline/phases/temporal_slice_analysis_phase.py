@@ -217,7 +217,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 records_created=0,
             )
 
-        # Get time period boundaries from config or use defaults
+        # Get time period boundaries from config or auto-detect from data
         period_start = ctx.config.get("period_start")
         period_end = ctx.config.get("period_end")
         time_grain = ctx.config.get("time_grain", "monthly")
@@ -228,7 +228,35 @@ class TemporalSliceAnalysisPhase(BasePhase):
         if isinstance(period_end, str):
             period_end = date.fromisoformat(period_end)
 
-        # Default to 1 year period if not specified
+        # Auto-detect from data if not configured
+        if not period_start or not period_end:
+            source_table = typed_tables[0]
+            try:
+                range_row = ctx.duckdb_conn.execute(f"""
+                    SELECT MIN(CAST("{time_column}" AS DATE)),
+                           MAX(CAST("{time_column}" AS DATE))
+                    FROM "{source_table.duckdb_path}"
+                    WHERE "{time_column}" IS NOT NULL
+                """).fetchone()
+                if range_row and range_row[0] and range_row[1]:
+                    if not period_start:
+                        period_start = range_row[0]
+                        if isinstance(period_start, str):
+                            period_start = date.fromisoformat(period_start)
+                        # Align to first of month
+                        period_start = date(period_start.year, period_start.month, 1)
+                    if not period_end:
+                        period_end = range_row[1]
+                        if isinstance(period_end, str):
+                            period_end = date.fromisoformat(period_end)
+                    logger.info(
+                        "auto_detected_time_range",
+                        period_start=str(period_start),
+                        period_end=str(period_end),
+                    )
+            except Exception as e:
+                logger.warning("time_range_detection_failed", error=str(e))
+
         if not period_start:
             period_start = date(date.today().year - 1, 1, 1)
         if not period_end:
@@ -305,7 +333,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
                 if st.table_name.lower().startswith(prefix):
                     # Find source table for this slice
-                    source_table = next(
+                    matched_table = next(
                         (t for t in typed_tables if t.table_id == slice_def.table_id), None
                     )
                     slice_infos.append(
@@ -313,7 +341,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
                             slice_table_id=st.table_id,
                             slice_table_name=st.table_name,
                             source_table_id=slice_def.table_id,
-                            source_table_name=source_table.table_name if source_table else "",
+                            source_table_name=matched_table.table_name if matched_table else "",
                             slice_column_name=slice_col.column_name,
                             slice_value=st.table_name[len(prefix) :],
                             row_count=st.row_count or 0,
@@ -363,12 +391,12 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
             # 3. Run temporal topology (bottleneck distance over time)
             # Get the source table for temporal topology
-            source_table = next((t for t in typed_tables if t.table_id == slice_def.table_id), None)
-            if source_table:
+            topo_source = next((t for t in typed_tables if t.table_id == slice_def.table_id), None)
+            if topo_source:
                 try:
                     topo_result = analyze_temporal_topology(
                         duck_conn=ctx.duckdb_conn,
-                        table_name=source_table.table_name,
+                        table_name=topo_source.table_name,
                         time_column=time_column,
                         period=time_grain.rstrip("ly"),  # "monthly" -> "month"
                     )
@@ -405,7 +433,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
                         topo_record = TemporalTopologyAnalysis(
                             run_id=None,
-                            slice_table_name=source_table.table_name,
+                            slice_table_name=topo_source.table_name,
                             time_column=time_column,
                             period_granularity=period_granularity,
                             periods_analyzed=topo_result.periods_analyzed,

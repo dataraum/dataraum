@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.graph_topology import (
@@ -29,7 +29,15 @@ from dataraum.analysis.semantic.models import (
 )
 from dataraum.analysis.semantic.ontology import OntologyLoader
 from dataraum.analysis.semantic.utils import load_correlations_for_semantic
-from dataraum.analysis.statistics.models import ColumnProfile
+from dataraum.analysis.statistics.db_models import (
+    StatisticalProfile as ColumnProfileModel,
+)
+from dataraum.analysis.statistics.models import (
+    ColumnProfile,
+    NumericStats,
+    StringStats,
+    ValueCount,
+)
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import (
     Cardinality,
@@ -235,17 +243,6 @@ class SemanticAgent(LLMFeature):
         try:
             # Get latest profile for each column in these tables
             # We use a subquery to get the most recent profile per column
-            from sqlalchemy import func
-
-            from dataraum.analysis.statistics.db_models import (
-                StatisticalProfile as ColumnProfileModel,
-            )
-            from dataraum.analysis.statistics.models import (
-                NumericStats,
-                StringStats,
-                ValueCount,
-            )
-
             subq = (
                 select(
                     ColumnProfileModel.column_id,
@@ -661,7 +658,7 @@ class SemanticAgent(LLMFeature):
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
             tools=[tool],
-            max_tokens=8192,  # Semantic analysis can produce large output
+            max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,
         )
@@ -723,7 +720,6 @@ class SemanticAgent(LLMFeature):
                     entity_type=table.entity_type,
                     description=table.description,
                     confidence=0.9,  # Tool-based output has higher confidence
-                    evidence={},
                     grain_columns=table.grain,
                     is_fact_table=table.is_fact_table,
                     is_dimension_table=not table.is_fact_table,

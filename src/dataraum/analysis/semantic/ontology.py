@@ -10,6 +10,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
+from dataraum.core.config import get_config_dir
+
 
 class OntologyConcept(BaseModel):
     """A concept within an ontology."""
@@ -82,8 +84,6 @@ class OntologyLoader:
                           If None, uses config/ontologies/
         """
         if ontologies_dir is None:
-            from dataraum.core.config import get_config_dir
-
             ontologies_dir = get_config_dir("ontologies")
 
         self.ontologies_dir = ontologies_dir

@@ -90,7 +90,6 @@ def test_enrich_semantic_stores_annotations(session):
                 entity_type="customer",
                 description="Customer master data",
                 confidence=0.9,
-                evidence={},
                 grain_columns=["customer_id"],
                 is_fact_table=False,
                 is_dimension_table=True,

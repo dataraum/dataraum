@@ -144,6 +144,7 @@ Each YAML spec provides:
 | Moved inline import in `resolver.py` to module level | No circular import issue; cleaner code |
 | Replaced bespoke config loader with `core.config` + `model_validate()` | Consistent config pattern, fail-fast on malformed specs |
 | Removed LRU cache + `clear_cache()` | Single call per pipeline run, cache added complexity for no benefit |
+| Verified no dead code | All functions, methods, constants have callers (39 tests, all passing) |
 
 ## Roadmap
 

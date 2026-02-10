@@ -181,6 +181,8 @@ Config is auto-loaded in `profile_temporal()` if not explicitly provided.
 | Removed deprecated `TemporalEnrichmentResult` | Dead model, no consumers |
 | Extracted 15+ magic numbers to `config/system/temporal.yaml` | Calibration readiness |
 | Added `config` kwarg to all public functions | Config-driven, no hardcoded defaults |
+| Moved inline `load_yaml_config` import to module level in processor.py | Consistency with other modules |
+| Verified all functions are used (no dead code) | `calculate_expected_periods` is used internally by `analyze_basic_temporal` |
 
 ## Roadmap
 

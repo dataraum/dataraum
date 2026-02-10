@@ -19,6 +19,11 @@ from dataraum.analysis.slicing.models import (
 )
 from dataraum.core.models.base import DecisionSource, Result
 from dataraum.llm.features._base import LLMFeature
+from dataraum.llm.providers.base import (
+    ConversationRequest,
+    Message,
+    ToolDefinition,
+)
 
 if TYPE_CHECKING:
     from dataraum.llm.config import LLMConfig
@@ -76,12 +81,6 @@ class SlicingAgent(LLMFeature):
         Returns:
             Result containing SlicingAnalysisResult or error
         """
-        from dataraum.llm.providers.base import (
-            ConversationRequest,
-            Message,
-            ToolDefinition,
-        )
-
         # Check if feature is enabled
         feature_config = self.config.features.slicing_analysis
         if not feature_config or not feature_config.enabled:

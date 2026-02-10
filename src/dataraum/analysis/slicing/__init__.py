@@ -15,10 +15,7 @@ from dataraum.analysis.slicing.models import (
     SliceSQL,
     SlicingAnalysisResult,
 )
-from dataraum.analysis.slicing.processor import (
-    analyze_slices,
-    execute_slices_from_definitions,
-)
+from dataraum.analysis.slicing.processor import analyze_slices
 from dataraum.analysis.slicing.slice_runner import (
     SliceAnalysisResult,
     SliceTableInfo,
@@ -34,7 +31,6 @@ from dataraum.analysis.slicing.utils import load_slicing_context
 __all__ = [
     # Main entry points
     "analyze_slices",
-    "execute_slices_from_definitions",
     "SlicingAgent",
     # Slice runner
     "register_slice_tables",

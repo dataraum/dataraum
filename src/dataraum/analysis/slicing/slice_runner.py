@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import uuid4
 
 import duckdb
@@ -16,12 +16,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.analysis.statistics import assess_statistical_quality, profile_statistics
+from dataraum.analysis.temporal_slicing import (
+    TemporalSliceConfig,
+    TimeGrain,
+    analyze_temporal_slices,
+)
+from dataraum.analysis.topology import analyze_topological_quality
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.storage import Column, Table
-
-if TYPE_CHECKING:
-    from dataraum.analysis.semantic.agent import SemanticAgent
 
 logger = get_logger(__name__)
 
@@ -59,7 +63,6 @@ class SliceAnalysisResult:
     slices_analyzed: int
     statistics_computed: int
     quality_assessed: int
-    semantic_enriched: int
     errors: list[str]
 
 
@@ -70,14 +73,8 @@ def _sanitize_name(value: str) -> str:
     return safe
 
 
-def _get_slice_table_name(source_table_name: str, column_name: str, value: str) -> str:
-    """Generate slice table name from components.
-
-    Note: The source_table_name parameter is kept for API compatibility but not used
-    in the table name. The naming convention matches the SlicingAgent output.
-    """
-    # Note: source_table_name kept for signature compatibility but not used
-    _ = source_table_name  # Suppress unused warning
+def _get_slice_table_name(column_name: str, value: str) -> str:
+    """Generate slice table name from components."""
     safe_column = _sanitize_name(column_name)
     safe_value = _sanitize_name(value)
     return f"slice_{safe_column}_{safe_value}"
@@ -142,7 +139,6 @@ def register_slice_tables(
             # Process each slice value
             for value in slice_def.distinct_values or []:
                 slice_table_name = _get_slice_table_name(
-                    source_table.table_name,
                     source_column.column_name,
                     value,
                 )
@@ -257,8 +253,6 @@ def run_statistics_on_slice(
     Returns:
         Result containing profile result
     """
-    from dataraum.analysis.statistics import profile_statistics
-
     # The profile_statistics function expects layer='typed', but we need to
     # temporarily work with slice layer. We'll directly call it with the table_id.
     # Since we registered with layer='slice', we need to handle this.
@@ -310,8 +304,6 @@ def run_quality_on_slice(
     Returns:
         Result containing quality result
     """
-    from dataraum.analysis.statistics import assess_statistical_quality
-
     result = assess_statistical_quality(
         table_id=slice_info.slice_table_id,
         duckdb_conn=duckdb_conn,
@@ -320,113 +312,23 @@ def run_quality_on_slice(
     return result
 
 
-def run_semantic_on_slices(
-    slice_infos: list[SliceTableInfo],
-    session: Session,
-    agent: SemanticAgent,
-) -> Result[Any]:
-    """Copy semantic annotations from parent table to slice tables.
-
-    Since slice tables contain the same columns as the parent table,
-    we copy semantic annotations rather than re-running LLM analysis.
-    This is more efficient and ensures consistency.
-
-    Args:
-        slice_infos: List of slice table infos
-        session: Database session
-        agent: Semantic agent (unused, kept for API compatibility)
-
-    Returns:
-        Result containing count of copied annotations
-    """
-    from dataraum.analysis.semantic.db_models import SemanticAnnotation
-    from dataraum.storage import Column
-
-    _ = agent  # Not used - we copy instead of running LLM
-
-    if not slice_infos:
-        return Result.ok(0)
-
-    # Get parent table ID from first slice
-    parent_table_id = slice_infos[0].source_table_id
-
-    # Load semantic annotations from parent table
-    parent_columns = session.execute(
-        select(Column.column_id, Column.column_name).where(Column.table_id == parent_table_id)
-    )
-    parent_col_map = {row.column_name: row.column_id for row in parent_columns}
-
-    # Load existing annotations for parent columns
-    parent_annotations = session.execute(
-        select(SemanticAnnotation).where(
-            SemanticAnnotation.column_id.in_(list(parent_col_map.values()))
-        )
-    )
-    annotation_by_name: dict[str, SemanticAnnotation] = {}
-    for ann in parent_annotations.scalars():
-        # Find column name for this annotation
-        for col_name, col_id in parent_col_map.items():
-            if col_id == ann.column_id:
-                annotation_by_name[col_name] = ann
-                break
-
-    if not annotation_by_name:
-        return Result.ok(0)  # No annotations to copy
-
-    copied_count = 0
-
-    # Copy annotations to each slice table
-    for slice_info in slice_infos:
-        # Load slice columns
-        slice_columns = session.execute(
-            select(Column.column_id, Column.column_name).where(
-                Column.table_id == slice_info.slice_table_id
-            )
-        )
-
-        for row in slice_columns:
-            if row.column_name in annotation_by_name:
-                parent_ann = annotation_by_name[row.column_name]
-                # Create new annotation for slice column
-                slice_ann = SemanticAnnotation(
-                    column_id=row.column_id,
-                    semantic_role=parent_ann.semantic_role,
-                    entity_type=parent_ann.entity_type,
-                    business_name=parent_ann.business_name,
-                    business_description=parent_ann.business_description,
-                    business_concept=parent_ann.business_concept,
-                    annotation_source=parent_ann.annotation_source,
-                    annotated_by="copied_from_parent",
-                    confidence=parent_ann.confidence,
-                )
-                session.add(slice_ann)
-                copied_count += 1
-
-    return Result.ok(copied_count)
-
-
 def run_analysis_on_slices(
     session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
     slice_infos: list[SliceTableInfo],
-    semantic_agent: SemanticAgent | None = None,
     run_statistics: bool = True,
     run_quality: bool = True,
-    run_semantic: bool = True,
 ) -> SliceAnalysisResult:
     """Run analysis phases on slice tables.
 
-    Runs Phase 3 (statistics), Phase 3b (quality), and Phase 5 (semantic)
-    on each slice table.
+    Runs statistics and quality analysis on each slice table.
 
     Args:
         session: Database session
         duckdb_conn: DuckDB connection
         slice_infos: List of slice table infos to analyze
-        semantic_agent: Semantic agent (required if run_semantic=True)
         run_statistics: Whether to run statistical profiling
         run_quality: Whether to run quality assessment
-        run_semantic: Whether to run semantic analysis
 
     Returns:
         SliceAnalysisResult with counts and errors
@@ -434,7 +336,6 @@ def run_analysis_on_slices(
     errors: list[str] = []
     stats_count = 0
     quality_count = 0
-    semantic_count = 0
 
     # Run statistics on each slice
     if run_statistics:
@@ -454,20 +355,11 @@ def run_analysis_on_slices(
             else:
                 errors.append(f"Quality {slice_info.slice_table_name}: {result.error}")
 
-    # Run semantic on all slices at once (batched for efficiency)
-    if run_semantic and semantic_agent:
-        result = run_semantic_on_slices(slice_infos, session, semantic_agent)
-        if result.success:
-            semantic_count = len(slice_infos)
-        else:
-            errors.append(f"Semantic analysis: {result.error}")
-
     return SliceAnalysisResult(
         slices_registered=len(slice_infos),
         slices_analyzed=len(slice_infos),
         statistics_computed=stats_count,
         quality_assessed=quality_count,
-        semantic_enriched=semantic_count,
         errors=errors,
     )
 
@@ -495,12 +387,6 @@ def run_temporal_analysis_on_slices(
     Returns:
         TemporalSlicesResult with aggregated metrics
     """
-    from dataraum.analysis.temporal_slicing import (
-        TemporalSliceConfig,
-        TimeGrain,
-        analyze_temporal_slices,
-    )
-
     # Convert time_grain string to enum
     grain_map = {
         "daily": TimeGrain.DAILY,
@@ -592,7 +478,6 @@ def run_topology_on_slices(
     session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
     slice_infos: list[SliceTableInfo],
-    correlation_threshold: float = 0.5,  # kept for API compatibility
 ) -> TopologySlicesResult:
     """Run topological analysis on slice tables to detect structural differences.
 
@@ -606,13 +491,10 @@ def run_topology_on_slices(
         session: SQLAlchemy session
         duckdb_conn: DuckDB connection
         slice_infos: List of slice table info from registration
-        correlation_threshold: Unused, kept for API compatibility
 
     Returns:
         TopologySlicesResult with topology results and cross-slice comparison
     """
-    from dataraum.analysis.topology import analyze_topological_quality
-
     topology_by_slice: dict[str, dict[str, Any]] = {}
     structural_drift: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -744,7 +626,6 @@ __all__ = [
     "run_analysis_on_slices",
     "run_statistics_on_slice",
     "run_quality_on_slice",
-    "run_semantic_on_slices",
     "run_temporal_analysis_on_slices",
     "run_topology_on_slices",
 ]

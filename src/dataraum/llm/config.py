@@ -55,6 +55,7 @@ class LLMPrivacy(BaseModel):
     """Privacy settings for data sent to LLM."""
 
     max_sample_values: int = 10
+    redacted_sample_count: int = 3
     use_synthetic_samples: bool = False  # SDV integration (future)
     synthetic_sample_count: int = 20
     sensitive_patterns: list[str] = Field(default_factory=list)

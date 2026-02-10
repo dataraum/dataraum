@@ -33,10 +33,11 @@ from uuid import uuid4
 import yaml
 from sqlalchemy import select
 
+from dataraum.core.config import get_config_file
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
-from dataraum.pipeline.base import PhaseStatus
+from dataraum.pipeline.base import PIPELINE_DAG, PhaseStatus
 from dataraum.pipeline.db_models import PhaseCheckpoint
 from dataraum.pipeline.orchestrator import Pipeline, PipelineConfig
 from dataraum.pipeline.phases import (
@@ -60,44 +61,26 @@ from dataraum.pipeline.phases import (
     TypingPhase,
     ValidationPhase,
 )
+from dataraum.storage import Source
 
 logger = get_logger(__name__)
-
-# Default junk columns to remove from CSV imports
-DEFAULT_JUNK_COLUMNS = [
-    "Unnamed: 0",
-    "Unnamed: 0.1",
-    "Unnamed: 0.2",
-    "column0",
-    "column00",
-]
-
-# Pipeline config relative path (resolved via core.config)
-PIPELINE_CONFIG_REL = "system/pipeline.yaml"
 
 
 def load_pipeline_config() -> dict[str, Any]:
     """Load pipeline configuration from YAML file.
 
     Returns:
-        Dict with pipeline configuration, empty dict if file not found.
+        Dict with pipeline configuration.
+
+    Raises:
+        FileNotFoundError: If config/system/pipeline.yaml is missing.
     """
-    from dataraum.core.config import get_config_file
+    config_path = get_config_file("system/pipeline.yaml")
 
-    try:
-        config_path = get_config_file(PIPELINE_CONFIG_REL)
-    except FileNotFoundError:
-        logger.debug("pipeline_config_not_found", relative=PIPELINE_CONFIG_REL)
-        return {}
-
-    try:
-        with open(config_path) as f:
-            config = yaml.safe_load(f) or {}
-        logger.info("pipeline_config_loaded", path=str(config_path))
-        return config
-    except Exception as e:
-        logger.warning("pipeline_config_load_error", error=str(e))
-        return {}
+    with open(config_path) as f:
+        config = yaml.safe_load(f) or {}
+    logger.info("pipeline_config_loaded", path=str(config_path))
+    return config
 
 
 def flatten_pipeline_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -139,7 +122,6 @@ class RunConfig:
     output_dir: Path = field(default_factory=lambda: Path("./pipeline_output"))
     source_name: str | None = None
     target_phase: str | None = None
-    junk_columns: list[str] = field(default_factory=lambda: DEFAULT_JUNK_COLUMNS.copy())
 
 
 @dataclass
@@ -241,21 +223,24 @@ class RunResult:
         return sorted_ops[:n]
 
 
-def create_pipeline(config: RunConfig) -> Pipeline:
+def create_pipeline(config: RunConfig, pipeline_yaml: dict[str, Any] | None = None) -> Pipeline:
     """Create and configure the pipeline.
 
     Args:
         config: Run configuration
+        pipeline_yaml: Pre-loaded YAML config (loaded if not provided)
 
     Returns:
         Configured Pipeline instance
     """
+    if pipeline_yaml is None:
+        pipeline_yaml = load_pipeline_config()
+
+    pcfg = pipeline_yaml.get("pipeline", {})
     pipeline_config = PipelineConfig(
-        skip_completed=True,
-        fail_fast=True,
-        # Parallel execution using ThreadPoolExecutor
-        # NullPool is used in ConnectionManager to allow AsyncEngine across event loops
-        max_parallel=4,
+        skip_completed=pcfg.get("skip_completed", True),
+        fail_fast=pcfg.get("fail_fast", True),
+        max_parallel=pcfg.get("max_parallel", 4),
     )
 
     pipeline = Pipeline(config=pipeline_config)
@@ -304,8 +289,6 @@ def get_latest_implemented_phase(pipeline: Pipeline) -> str:
     Returns:
         Name of the latest implemented phase
     """
-    from dataraum.pipeline.base import PIPELINE_DAG
-
     latest = None
     for phase_def in PIPELINE_DAG:
         if phase_def.name in pipeline.phases:
@@ -324,8 +307,6 @@ def run(config: RunConfig) -> Result[RunResult]:
         an exception during setup. Check RunResult.success for pipeline outcome.
         Warnings contain any phase failure messages.
     """
-    from dataraum.storage import Source
-
     start_time = time.time()
     warnings: list[str] = []
 
@@ -366,23 +347,20 @@ def run(config: RunConfig) -> Result[RunResult]:
             target_phase=config.target_phase,
         )
 
-        # Create pipeline
-        pipeline = create_pipeline(config)
-
         # Load pipeline configuration from YAML
         pipeline_yaml_config = load_pipeline_config()
+
+        # Create pipeline with YAML-loaded settings
+        pipeline = create_pipeline(config, pipeline_yaml=pipeline_yaml_config)
+
         flat_config = flatten_pipeline_config(pipeline_yaml_config)
 
         # Build run configuration - merge YAML config with runtime overrides
-        # YAML config takes precedence for junk_columns, fall back to RunConfig defaults
         run_config = {
             **flat_config,  # YAML config as base
             "source_path": str(config.source_path),
             "source_name": config.source_name or config.source_path.stem,
         }
-        # Use YAML junk_columns if present, otherwise use RunConfig defaults
-        if "junk_columns" not in run_config:
-            run_config["junk_columns"] = config.junk_columns
 
         # Execute pipeline
         results = pipeline.run(

@@ -1,6 +1,5 @@
 """Core module - configuration, connections, and shared models."""
 
-from dataraum.core.config import Settings, get_settings
 from dataraum.core.connections import (
     ConnectionConfig,
     ConnectionManager,
@@ -41,9 +40,6 @@ from dataraum.core.models.base import (
 )
 
 __all__ = [
-    # Config
-    "Settings",
-    "get_settings",
     # Connections
     "ConnectionConfig",
     "ConnectionManager",

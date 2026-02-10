@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 import duckdb
@@ -21,9 +22,13 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.typing.db_models import TypeCandidate as DBTypeCandidate
 from dataraum.analysis.typing.models import TypeCandidate as TypeCandidateModel
-from dataraum.analysis.typing.patterns import Pattern, PatternConfig, load_pattern_config
+from dataraum.analysis.typing.patterns import (
+    Pattern,
+    PatternConfig,
+    load_pattern_config,
+    load_typing_config,
+)
 from dataraum.analysis.typing.units import detect_unit
-from dataraum.core.config import Settings, get_settings
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import (
     ColumnRef,
@@ -65,7 +70,7 @@ def infer_type_candidates(
     Returns:
         Result containing list of TypeCandidate objects
     """
-    settings = get_settings()
+    typing_config = load_typing_config()
     pattern_config = load_pattern_config()
 
     try:
@@ -95,7 +100,7 @@ def infer_type_candidates(
                 column=column,
                 duckdb_conn=duckdb_conn,
                 pattern_config=pattern_config,
-                settings=settings,
+                typing_config=typing_config,
             )
 
             if not candidates_result.success:
@@ -147,7 +152,7 @@ def _infer_column_types(
     column: Column,
     duckdb_conn: duckdb.DuckDBPyConnection,
     pattern_config: PatternConfig,
-    settings: Settings,
+    typing_config: dict[str, Any],
 ) -> Result[list[TypeCandidateModel]]:
     """Infer type candidates for a single column.
 
@@ -162,7 +167,7 @@ def _infer_column_types(
         column: Column to analyze
         duckdb_conn: DuckDB connection
         pattern_config: Pattern configuration
-        settings: Application settings
+        typing_config: Typing YAML configuration
 
     Returns:
         Result containing list of TypeCandidate objects
@@ -175,7 +180,7 @@ def _infer_column_types(
             return Result.fail("No table or column name found")
 
         # Sample values (exclude nulls)
-        sample_size = settings.profile_sample_size
+        sample_size = typing_config.get("profile_sample_size", 100_000)
         sample_query = f"""
             SELECT DISTINCT "{col_name}"
             FROM {table_name}

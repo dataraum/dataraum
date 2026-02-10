@@ -266,6 +266,7 @@ class ConnectionManager:
 
         # Create HNSW index if not exists (for fast similarity search)
         try:
+            self._vectors_conn.execute("SET hnsw_enable_experimental_persistence = true")
             self._vectors_conn.execute("""
                 CREATE INDEX IF NOT EXISTS embedding_idx ON query_embeddings
                 USING HNSW (embedding) WITH (metric = 'cosine')

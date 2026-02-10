@@ -17,7 +17,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -306,8 +306,6 @@ class Pipeline:
 
             # Update run record with final status and aggregate metrics
             with manager.session_scope() as session:
-                from sqlalchemy import update
-
                 status = "completed" if not self._failed else "failed"
                 phases_completed = sum(
                     1 for r in results.values() if r.status == PhaseStatus.COMPLETED
@@ -360,8 +358,6 @@ class Pipeline:
             end_pipeline_metrics()
             # Update run record with error
             with manager.session_scope() as session:
-                from sqlalchemy import update
-
                 stmt = (
                     update(PipelineRun)
                     .where(PipelineRun.run_id == run_id)
@@ -405,7 +401,8 @@ class Pipeline:
         Returns:
             PhaseResult from the phase execution
         """
-        max_retries = 2
+        max_retries = run_config.get("max_retries", 2)
+        backoff_base = run_config.get("backoff_base", 2.0)
         for attempt in range(max_retries + 1):
             try:
                 return self._execute_phase(
@@ -419,7 +416,7 @@ class Pipeline:
                 )
             except OperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries:
-                    wait = 2.0 * (2**attempt)  # 2s, 4s
+                    wait = backoff_base * (2**attempt)
                     logger.warning(
                         f"Phase {phase_name} SQLite contention "
                         f"(attempt {attempt + 1}/{max_retries + 1}), "

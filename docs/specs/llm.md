@@ -88,13 +88,18 @@ Key sections:
 
 ## Cleanup History
 
-**Removed in this refactor:**
+**Removed in earlier refactor:**
 - `cache.py` + `db_models.py` (297 LOC): LLM response cache — redundant with pipeline phase checkpointing via `should_skip()`
 - `providers/openai.py` (48 LOC): Stub raising `NotImplementedError`
 - `providers/local.py` (51 LOC): Stub raising `NotImplementedError`
 - `complete()` method on `LLMProvider` (~75 LOC): Unused simple completion — all agents use `converse()` with tool use
 - `cache` parameter on `LLMFeature.__init__()` and all 7 agent constructors
 - `LLMCache()` instantiation from 9 pipeline phase files
+
+**Removed in streamline refactor:**
+- `LLMRequest`/`LLMResponse` from `providers/__init__.py` exports (never imported outside module)
+- Commented-out SDV example code in `privacy.py` (~40 lines)
+- Extracted hardcoded redacted sample count to `LLMPrivacy.redacted_sample_count`
 
 ## Roadmap
 

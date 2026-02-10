@@ -7,7 +7,6 @@ Tests cover:
 - Error handling
 """
 
-import json
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -33,7 +32,6 @@ from dataraum.graphs.models import (
     StepType,
     TransformationGraph,
 )
-from dataraum.llm.providers.base import LLMResponse
 
 
 @pytest.fixture
@@ -73,30 +71,6 @@ def sample_graph() -> TransformationGraph:
             ),
         },
         interpretation=None,
-    )
-
-
-@pytest.fixture
-def mock_llm_response() -> LLMResponse:
-    """Create a mock LLM response with generated SQL."""
-    return LLMResponse(
-        content=json.dumps(
-            {
-                "summary": "Calculates the sum of all amounts in the test data.",
-                "steps": [
-                    {
-                        "step_id": "value",
-                        "sql": "SELECT SUM(amount) as value FROM test_data",
-                        "description": "Sum the amount column",
-                    }
-                ],
-                "final_sql": "SELECT SUM(amount) as value FROM test_data",
-                "column_mappings": {"test_field": "amount"},
-            }
-        ),
-        model="test-model",
-        input_tokens=100,
-        output_tokens=50,
     )
 
 
@@ -350,7 +324,6 @@ class TestGraphAgentIntegration:
         session: Session,
         duckdb_with_data,
         sample_graph,
-        mock_llm_response,
     ):
         """Test full execution flow with mocked LLM."""
         # Create mocked provider
@@ -412,7 +385,6 @@ class TestGraphAgentIntegration:
         session: Session,
         duckdb_with_data,
         sample_graph,
-        mock_llm_response,
     ):
         """Test that second execution uses cached code."""
         # Setup mocks

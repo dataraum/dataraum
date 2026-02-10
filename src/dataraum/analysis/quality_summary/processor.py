@@ -9,13 +9,13 @@ and skipping existing reports.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-import structlog
 from sqlalchemy import distinct as sql_distinct
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -29,15 +29,19 @@ from dataraum.analysis.quality_summary.models import (
     AggregatedColumnData,
     ColumnQualitySummary,
     QualitySummaryResult,
-    SliceColumnMatrix,
-    SliceQualityCell,
 )
+from dataraum.analysis.quality_summary.variance import filter_interesting_columns
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import (
     StatisticalProfile,
     StatisticalQualityMetrics,
 )
+from dataraum.analysis.temporal_slicing.db_models import (
+    TemporalDriftAnalysis,
+    TemporalSliceAnalysis,
+)
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.storage import Column, Table
 
@@ -51,7 +55,7 @@ BATCH_SIZE = 10
 # Maximum parallel batch workers
 MAX_BATCH_WORKERS = 4
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -155,8 +159,6 @@ def aggregate_slice_results(
         for value in slice_values:
             # Generate expected slice table name
             # Note: naming convention matches SlicingAgent (without source table name)
-            import re
-
             safe_column = re.sub(r"[^a-zA-Z0-9]", "_", slice_column.column_name)
             safe_column = re.sub(r"_+", "_", safe_column).strip("_").lower()
             safe_value = re.sub(r"[^a-zA-Z0-9]", "_", str(value))
@@ -290,6 +292,66 @@ def aggregate_slice_results(
 
             aggregated.append(agg_data)
 
+        # Load temporal data from DB and attach to aggregated columns
+        slice_table_names = [st.table_name for st, _ in slice_tables]
+        if slice_table_names:
+            # Query temporal slice analyses for these slice tables
+            temporal_stmt = select(TemporalSliceAnalysis).where(
+                TemporalSliceAnalysis.slice_table_name.in_(slice_table_names)
+            )
+            temporal_records = list(session.execute(temporal_stmt).scalars().all())
+
+            # Query temporal drift analyses for these slice tables
+            drift_stmt = select(TemporalDriftAnalysis).where(
+                TemporalDriftAnalysis.slice_table_name.in_(slice_table_names)
+            )
+            drift_records = list(session.execute(drift_stmt).scalars().all())
+
+            if temporal_records:
+                # Compute summary counts
+                incomplete_periods = sum(1 for r in temporal_records if not r.is_complete)
+                volume_anomalies = sum(1 for r in temporal_records if r.is_volume_anomaly)
+
+                # Collect issues from all records
+                temporal_issues: list[str] = []
+                for r in temporal_records:
+                    if r.issues_json:
+                        temporal_issues.extend(r.issues_json)
+
+                # Build per-period temporal data (compact)
+                temporal_data: list[dict[str, Any]] = []
+                for r in temporal_records:
+                    period_info: dict[str, Any] = {
+                        "period_label": r.period_label,
+                        "slice_table": r.slice_table_name,
+                        "row_count": r.row_count,
+                        "coverage_ratio": r.coverage_ratio,
+                        "is_complete": bool(r.is_complete),
+                        "is_volume_anomaly": bool(r.is_volume_anomaly),
+                    }
+                    if r.period_over_period_change is not None:
+                        period_info["pop_change"] = r.period_over_period_change
+                    temporal_data.append(period_info)
+
+                # Build per-column drift count map
+                drift_counts: dict[str, int] = {}
+                for d in drift_records:
+                    if d.has_significant_drift:
+                        drift_counts[d.column_name] = drift_counts.get(d.column_name, 0) + 1
+
+                # Attach temporal_context to each aggregated column
+                shared_context: dict[str, Any] = {
+                    "incomplete_periods": incomplete_periods,
+                    "volume_anomalies": volume_anomalies,
+                    "temporal_issues": temporal_issues,
+                    "temporal_data": temporal_data,
+                }
+                for agg in aggregated:
+                    agg.temporal_context = {
+                        **shared_context,
+                        "drift_detected_count": drift_counts.get(agg.column_name, 0),
+                    }
+
         return Result.ok(aggregated)
 
     except Exception as e:
@@ -359,8 +421,6 @@ def summarize_quality(
 
         # Apply variance-based filtering to reduce LLM noise
         # Only columns with INTERESTING variance patterns go to LLM
-        from dataraum.analysis.quality_summary.variance import filter_interesting_columns
-
         columns_to_process, variance_metrics = filter_interesting_columns(columns_with_data)
 
         # Log classification summary
@@ -517,187 +577,6 @@ def summarize_quality(
         return Result.fail(f"Quality summary failed: {e}")
 
 
-def build_quality_matrix(
-    session: Session,
-    slice_definition: SliceDefinition,
-) -> Result[SliceColumnMatrix]:
-    """Build a slice values x columns quality matrix.
-
-    Creates a matrix showing quality metrics across all slice values and columns.
-    Rows = slice values, Columns = source table columns (excluding slice columns)
-
-    Args:
-        session: Database session
-        slice_definition: The slice definition to build matrix for
-
-    Returns:
-        Result containing SliceColumnMatrix
-    """
-    try:
-        # Get source table and slice column info
-        source_table = session.get(Table, slice_definition.table_id)
-        slice_column = session.get(Column, slice_definition.column_id)
-
-        if not source_table or not slice_column:
-            return Result.fail("Source table or slice column not found")
-
-        # Get all slice definition column IDs to exclude
-        all_slice_def_cols_stmt = select(sql_distinct(SliceDefinition.column_id)).where(
-            SliceDefinition.table_id == source_table.table_id
-        )
-        all_slice_def_cols_result = session.execute(all_slice_def_cols_stmt)
-        slice_definition_column_ids = set(all_slice_def_cols_result.scalars().all())
-
-        # Get source columns (excluding slice columns)
-        source_cols_stmt = (
-            select(Column)
-            .where(Column.table_id == source_table.table_id)
-            .where(Column.column_id.notin_(slice_definition_column_ids))
-            .order_by(Column.column_position)
-        )
-        source_cols_result = session.execute(source_cols_stmt)
-        source_columns = list(source_cols_result.scalars().all())
-
-        slice_values = slice_definition.distinct_values or []
-        column_names = [c.column_name for c in source_columns]
-
-        # Initialize matrix
-        matrix = SliceColumnMatrix(
-            source_table_name=source_table.table_name,
-            slice_column_name=slice_column.column_name,
-            slice_values=slice_values,
-            column_names=column_names,
-            cells={},
-            total_rows_per_slice={},
-            avg_quality_per_column={},
-        )
-
-        # Build slice table name lookup
-        import re
-
-        slice_table_lookup: dict[str, tuple[Table, str]] = {}
-        for value in slice_values:
-            safe_column = re.sub(r"[^a-zA-Z0-9]", "_", slice_column.column_name)
-            safe_column = re.sub(r"_+", "_", safe_column).strip("_").lower()
-            safe_value = re.sub(r"[^a-zA-Z0-9]", "_", str(value))
-            safe_value = re.sub(r"_+", "_", safe_value).strip("_").lower()
-
-            slice_table_name = f"slice_{safe_column}_{safe_value}"
-
-            slice_table_stmt = select(Table).where(
-                Table.table_name == slice_table_name,
-                Table.layer == "slice",
-            )
-            slice_table_result = session.execute(slice_table_stmt)
-            slice_table = slice_table_result.scalar_one_or_none()
-
-            if slice_table:
-                slice_table_lookup[value] = (slice_table, value)
-                matrix.total_rows_per_slice[value] = slice_table.row_count or 0
-
-        # Build cells for each slice value x column combination
-        quality_scores_by_column: dict[str, list[float]] = {c: [] for c in column_names}
-
-        for slice_value, (slice_table, _) in slice_table_lookup.items():
-            matrix.cells[slice_value] = {}
-
-            for source_col in source_columns:
-                # Find corresponding column in slice table
-                slice_col_stmt = select(Column).where(
-                    Column.table_id == slice_table.table_id,
-                    Column.column_name == source_col.column_name,
-                )
-                slice_col_result = session.execute(slice_col_stmt)
-                slice_col = slice_col_result.scalar_one_or_none()
-
-                if not slice_col:
-                    continue
-
-                # Get statistical profile
-                profile_stmt = (
-                    select(StatisticalProfile)
-                    .where(StatisticalProfile.column_id == slice_col.column_id)
-                    .limit(1)
-                )
-                profile_result = session.execute(profile_stmt)
-                profile = profile_result.scalar_one_or_none()
-
-                # Get quality metrics
-                quality_stmt = (
-                    select(StatisticalQualityMetrics)
-                    .where(StatisticalQualityMetrics.column_id == slice_col.column_id)
-                    .limit(1)
-                )
-                quality_result = session.execute(quality_stmt)
-                quality = quality_result.scalar_one_or_none()
-
-                # Calculate cell values
-                row_count = slice_table.row_count or 0
-                null_ratio = None
-                distinct_count = None
-                quality_score = 1.0  # Start with perfect score
-                has_issues = False
-                issue_count = 0
-
-                if profile:
-                    if profile.total_count and profile.total_count > 0:
-                        null_ratio = profile.null_count / profile.total_count
-                        # Penalize for high null ratio
-                        if null_ratio > 0.5:
-                            quality_score -= 0.3
-                            issue_count += 1
-                            has_issues = True
-                        elif null_ratio > 0.2:
-                            quality_score -= 0.1
-                            issue_count += 1
-                    distinct_count = profile.distinct_count
-
-                if quality:
-                    if quality.has_outliers:
-                        quality_score -= 0.2
-                        issue_count += 1
-                        has_issues = True
-                    if quality.benford_compliant is False:
-                        quality_score -= 0.1
-                        issue_count += 1
-                        has_issues = True
-
-                quality_score = max(0.0, min(1.0, quality_score))
-
-                cell = SliceQualityCell(
-                    slice_value=slice_value,
-                    column_name=source_col.column_name,
-                    row_count=row_count,
-                    null_ratio=null_ratio,
-                    distinct_count=distinct_count,
-                    quality_score=quality_score,
-                    has_issues=has_issues,
-                    issue_count=issue_count,
-                )
-                matrix.cells[slice_value][source_col.column_name] = cell
-
-                if quality_score is not None:
-                    quality_scores_by_column[source_col.column_name].append(quality_score)
-
-        # Calculate average quality per column
-        for col_name, scores in quality_scores_by_column.items():
-            if scores:
-                matrix.avg_quality_per_column[col_name] = sum(scores) / len(scores)
-
-        # Persist slice profiles to database (delete + insert strategy)
-        _save_slice_profiles(
-            session=session,
-            matrix=matrix,
-            slice_definition=slice_definition,
-            source_columns=source_columns,
-        )
-
-        return Result.ok(matrix)
-
-    except Exception as e:
-        return Result.fail(f"Failed to build quality matrix: {e}")
-
-
 def _save_slice_profiles_from_aggregated(
     session: Session,
     aggregated_columns: list[AggregatedColumnData],
@@ -716,13 +595,11 @@ def _save_slice_profiles_from_aggregated(
         slice_definition: The slice definition being processed
         source_table_name: Name of the source table
     """
-    from sqlalchemy import select as sa_select
-
     # Delete existing profiles for this slice definition via ORM
     # (Using session.delete() instead of session.execute(delete(...)) so the
     # DELETE is batched with the commit lock, avoiding an immediate write
     # transaction that would block parallel phases.)
-    existing_stmt = sa_select(ColumnSliceProfile).where(
+    existing_stmt = select(ColumnSliceProfile).where(
         ColumnSliceProfile.slice_column_id == slice_definition.column_id
     )
     for existing in session.execute(existing_stmt).scalars().all():
@@ -803,77 +680,7 @@ def _save_slice_profiles_from_aggregated(
     # outside the lock, blocking parallel phases.
 
 
-def _save_slice_profiles(
-    session: Session,
-    matrix: SliceColumnMatrix,
-    slice_definition: SliceDefinition,
-    source_columns: list[Column],
-) -> None:
-    """Persist slice profiles to database using delete + insert strategy.
-
-    Deletes existing profiles for the same slice definition and inserts
-    fresh data from the matrix.
-
-    Args:
-        session: Database session
-        matrix: The built quality matrix with cell data
-        slice_definition: The slice definition being processed
-        source_columns: List of source columns
-    """
-    from sqlalchemy import select as sa_select
-
-    # Build column_id lookup by name
-    col_id_by_name = {c.column_name: c.column_id for c in source_columns}
-
-    # Delete existing profiles for this slice definition via ORM
-    # (Using session.delete() instead of session.execute(delete(...)) so the
-    # DELETE is batched with the commit lock, avoiding an immediate write
-    # transaction that would block parallel phases.)
-    existing_stmt = sa_select(ColumnSliceProfile).where(
-        ColumnSliceProfile.slice_column_id == slice_definition.column_id
-    )
-    for existing in session.execute(existing_stmt).scalars().all():
-        session.delete(existing)
-
-    # Insert new profiles from matrix cells
-    for slice_value, columns_dict in matrix.cells.items():
-        for col_name, cell in columns_dict.items():
-            source_column_id = col_id_by_name.get(col_name)
-            if not source_column_id:
-                continue
-
-            # Build extended profile_data JSON
-            profile_data: dict[str, Any] = {}
-
-            # Add any additional metrics we want to preserve
-            if cell.null_ratio is not None:
-                profile_data["null_ratio_raw"] = cell.null_ratio
-            if cell.distinct_count is not None:
-                profile_data["distinct_count"] = cell.distinct_count
-
-            profile = ColumnSliceProfile(
-                source_column_id=source_column_id,
-                slice_column_id=slice_definition.column_id,
-                source_table_name=matrix.source_table_name,
-                column_name=col_name,
-                slice_column_name=matrix.slice_column_name,
-                slice_value=slice_value,
-                row_count=cell.row_count,
-                null_ratio=cell.null_ratio,
-                distinct_count=cell.distinct_count,
-                quality_score=cell.quality_score,
-                has_issues=cell.has_issues,
-                issue_count=cell.issue_count,
-                profile_data=profile_data if profile_data else None,
-            )
-            session.add(profile)
-
-    # No explicit flush — all deletes and adds are batched and sent during
-    # session.commit() inside the commit lock.
-
-
 __all__ = [
     "aggregate_slice_results",
     "summarize_quality",
-    "build_quality_matrix",
 ]

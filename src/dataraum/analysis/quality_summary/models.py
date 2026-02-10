@@ -143,6 +143,9 @@ class AggregatedColumnData:
     business_name: str | None = None
     business_description: str | None = None
 
+    # Temporal context (loaded from temporal_slice_analysis phase)
+    temporal_context: dict[str, Any] = field(default_factory=dict)
+
 
 class SliceQualityCell(BaseModel):
     """Quality metrics for a single cell in the slice x column matrix."""
@@ -177,44 +180,6 @@ class SliceColumnMatrix(BaseModel):
     # Summary statistics
     total_rows_per_slice: dict[str, int] = Field(default_factory=dict)
     avg_quality_per_column: dict[str, float] = Field(default_factory=dict)
-
-    def get_cell(self, slice_value: str, column_name: str) -> SliceQualityCell | None:
-        """Get cell for specific slice value and column."""
-        return self.cells.get(slice_value, {}).get(column_name)
-
-    def to_dataframe_dict(self) -> dict[str, Any]:
-        """Convert to dict format suitable for pandas DataFrame.
-
-        Returns dict with structure:
-        {
-            'slice_value': [...],
-            'column1_score': [...],
-            'column1_nulls': [...],
-            'column2_score': [...],
-            ...
-        }
-        """
-        result: dict[str, list[Any]] = {"slice_value": []}
-
-        for col_name in self.column_names:
-            result[f"{col_name}_score"] = []
-            result[f"{col_name}_null_ratio"] = []
-            result[f"{col_name}_issues"] = []
-
-        for slice_val in self.slice_values:
-            result["slice_value"].append(slice_val)
-            for col_name in self.column_names:
-                cell = self.get_cell(slice_val, col_name)
-                if cell:
-                    result[f"{col_name}_score"].append(cell.quality_score)
-                    result[f"{col_name}_null_ratio"].append(cell.null_ratio)
-                    result[f"{col_name}_issues"].append(cell.issue_count)
-                else:
-                    result[f"{col_name}_score"].append(None)
-                    result[f"{col_name}_null_ratio"].append(None)
-                    result[f"{col_name}_issues"].append(None)
-
-        return result
 
 
 # =============================================================================

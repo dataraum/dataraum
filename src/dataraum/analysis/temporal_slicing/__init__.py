@@ -10,8 +10,6 @@ Provides temporal analysis capabilities for slice data including:
 
 from dataraum.analysis.temporal_slicing.analyzer import (
     TemporalSliceAnalyzer,
-    TemporalSliceContext,
-    aggregate_temporal_data,
     analyze_temporal_slices,
     analyze_temporal_topology,
 )
@@ -23,7 +21,6 @@ from dataraum.analysis.temporal_slicing.db_models import (
     TemporalTopologyAnalysis,
 )
 from dataraum.analysis.temporal_slicing.models import (
-    AggregatedTemporalData,
     CompletenessResult,
     DistributionDriftResult,
     PeriodMetrics,
@@ -42,9 +39,7 @@ __all__ = [
     # Main entry points
     "analyze_temporal_slices",
     "analyze_temporal_topology",
-    "aggregate_temporal_data",
     "TemporalSliceAnalyzer",
-    "TemporalSliceContext",
     # Config
     "TemporalSliceConfig",
     "TimeGrain",
@@ -56,7 +51,6 @@ __all__ = [
     "SliceTimeMatrix",
     "VolumeAnomalyResult",
     "TemporalAnalysisResult",
-    "AggregatedTemporalData",
     # Temporal Topology Models
     "PeriodTopology",
     "TopologyDrift",

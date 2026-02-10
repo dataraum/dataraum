@@ -10,7 +10,7 @@ Uses tool-based output for structured responses.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.orm import Session
 
@@ -25,6 +25,7 @@ from dataraum.analysis.quality_summary.models import (
 )
 from dataraum.core.models.base import Result
 from dataraum.llm.features._base import LLMFeature
+from dataraum.llm.providers.base import ConversationRequest, Message, ToolDefinition
 
 if TYPE_CHECKING:
     from dataraum.llm.config import LLMConfig
@@ -72,21 +73,13 @@ class QualitySummaryAgent(LLMFeature):
         Returns:
             Result containing ColumnQualitySummary
         """
-        from dataraum.llm.providers.base import (
-            ConversationRequest,
-            Message,
-            ToolDefinition,
-        )
-
         # Check if feature is enabled
         feature_config = self.config.features.quality_summary
         if not feature_config or not feature_config.enabled:
             return Result.fail("Quality summary is disabled in config")
 
         # Build context for prompt
-        # Note: Optional fields like incomplete_periods, volume_anomalies, etc.
-        # have defaults defined in the prompt YAML and are handled by the renderer
-        context = {
+        context: dict[str, Any] = {
             "column_name": column_data.column_name,
             "source_table_name": column_data.source_table_name,
             "slice_column_name": column_data.slice_column_name,
@@ -100,6 +93,16 @@ class QualitySummaryAgent(LLMFeature):
             "benford_violations": column_data.benford_violation_count,
             "outlier_slices": column_data.outlier_slice_count,
         }
+
+        # Populate temporal context if available
+        tc = column_data.temporal_context
+        if tc:
+            context["incomplete_periods"] = str(tc.get("incomplete_periods", 0))
+            context["volume_anomalies"] = str(tc.get("volume_anomalies", 0))
+            context["drift_detected_count"] = str(tc.get("drift_detected_count", 0))
+            issues = tc.get("temporal_issues", [])
+            context["temporal_issues"] = "; ".join(issues[:10]) if issues else "None detected"
+            context["temporal_data_json"] = json.dumps(tc.get("temporal_data", []), indent=2)
 
         # Render prompt with system/user split
         try:
@@ -176,12 +179,6 @@ class QualitySummaryAgent(LLMFeature):
         Returns:
             Result containing list of ColumnQualitySummary
         """
-        from dataraum.llm.providers.base import (
-            ConversationRequest,
-            Message,
-            ToolDefinition,
-        )
-
         if not columns_data:
             return Result.ok([])
 
@@ -193,7 +190,7 @@ class QualitySummaryAgent(LLMFeature):
         # Build compact column data for prompt
         columns_for_prompt = []
         for col_data in columns_data:
-            col_info = {
+            col_info: dict[str, Any] = {
                 "column_name": col_data.column_name,
                 "data_type": col_data.resolved_type or "unknown",
                 "total_rows": col_data.total_rows,
@@ -201,6 +198,7 @@ class QualitySummaryAgent(LLMFeature):
                 "business_name": col_data.business_name or col_data.column_name,
                 "benford_violations": col_data.benford_violation_count,
                 "outlier_slices": col_data.outlier_slice_count,
+                "drift_detected_count": col_data.temporal_context.get("drift_detected_count", 0),
                 "slice_stats": [
                     {
                         "slice": sd.get("slice_value", ""),
@@ -215,12 +213,16 @@ class QualitySummaryAgent(LLMFeature):
             }
             columns_for_prompt.append(col_info)
 
-        # Build context for prompt
-        context = {
+        # Build context for prompt (with shared temporal context)
+        first_tc = columns_data[0].temporal_context if columns_data else {}
+        context: dict[str, Any] = {
             "source_table_name": source_table_name,
             "slice_column_name": slice_column_name,
             "total_slices": total_slices,
             "columns_json": json.dumps(columns_for_prompt, indent=2),
+            "incomplete_periods": str(first_tc.get("incomplete_periods", 0)),
+            "volume_anomalies": str(first_tc.get("volume_anomalies", 0)),
+            "temporal_data_json": json.dumps(first_tc.get("temporal_data", []), indent=2),
         }
 
         # Render batch prompt with system/user split

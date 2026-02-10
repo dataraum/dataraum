@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-import structlog
 from sqlalchemy import func, select
 
 from dataraum.analysis.correlation.db_models import DerivedColumn
@@ -22,6 +21,7 @@ from dataraum.analysis.temporal_slicing.db_models import (
     TemporalSliceAnalysis,
 )
 from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
+from dataraum.core.logging import get_logger
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.db_models import (
     CompoundRiskRecord,
@@ -40,7 +40,7 @@ from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.storage import Column, Table
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 
 class EntropyPhase(BasePhase):

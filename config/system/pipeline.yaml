@@ -4,6 +4,21 @@
 
 version: "1.0.0"
 
+# Pipeline orchestrator settings
+pipeline:
+  # Maximum phases to run in parallel (ThreadPoolExecutor workers)
+  max_parallel: 4
+  # Stop pipeline on first phase failure
+  fail_fast: true
+  # Skip phases that already have completed checkpoints
+  skip_completed: true
+
+  # Retry configuration for transient SQLite contention errors
+  retry:
+    max_retries: 2
+    # Exponential backoff: backoff_base * (2^attempt) seconds
+    backoff_base: 2.0
+
 # Import phase settings
 import:
   # Junk columns to remove after loading CSV files.

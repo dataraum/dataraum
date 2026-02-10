@@ -1,0 +1,206 @@
+# Entropy Layer
+
+## Reasoning & Summary
+
+The entropy layer answers: **"How much uncertainty exists in this data, and how can it be reduced?"**
+
+Entropy quantifies uncertainty across four independent dimensions (structural, semantic, value, computational) so LLMs can make deterministic, confidence-aware decisions about data readiness without runtime discovery. Each dimension is measured by specialized detectors that produce `EntropyObject` instances with scores (0.0-1.0), evidence, and resolution options.
+
+The layer operates in three tiers:
+1. **Core**: Foundation types, detection framework, persistence
+2. **Analysis**: Dynamic aggregation into column/table summaries
+3. **Views**: Caller-specific APIs for graphs, queries, and dashboards
+
+The module runs as pipeline phases `entropy_detection` and `entropy_interpretation`.
+
+## Architecture
+
+```
+entropy/
+├── __init__.py              # Public API (16 exports)
+├── models.py                # Core dataclasses (EntropyObject, ResolutionOption, CompoundRisk)
+├── db_models.py             # SQLAlchemy persistence (EntropyObjectRecord, EntropyInterpretationRecord)
+├── config.py                # Config loader (EntropyConfig, DetectorConfig, CompoundRiskConfig)
+├── processor.py             # Orchestrator: runs detectors, aggregates results
+├── core/
+│   ├── __init__.py          # Re-exports (EntropyObject, EntropyRepository, etc.)
+│   └── storage.py           # EntropyRepository (typed table enforcement)
+├── analysis/
+│   ├── __init__.py
+│   └── aggregator.py        # ColumnSummary, TableSummary, EntropyAggregator
+├── detectors/
+│   ├── base.py              # EntropyDetector ABC, DetectorRegistry, DetectorContext
+│   ├── structural/          # types.py, relations.py, relationship_entropy.py
+│   ├── semantic/            # business_meaning.py, unit_entropy.py, temporal_entropy.py, dimensional_entropy.py
+│   ├── value/               # null_semantics.py, outliers.py
+│   └── computational/       # derived_values.py
+├── views/
+│   ├── __init__.py
+│   ├── graph_context.py     # build_for_graph() → EntropyForGraph
+│   ├── query_context.py     # build_for_query() → EntropyForQuery
+│   └── dashboard_context.py # build_for_dashboard() → EntropyForDashboard
+├── interpretation.py        # LLM-powered interpretation (EntropyInterpreter)
+├── summary_agent.py         # LLM-powered dimensional summaries (DimensionalSummaryAgent)
+├── contracts.py             # Data readiness contracts (ConfidenceLevel enum)
+├── compound_risk.py         # Dangerous dimension combination detection
+└── resolution.py            # Resolution tracking & cascade management
+```
+
+**~5,000+ LOC** across 18+ files.
+
+### Data Flow
+
+```
+EntropyProcessor.process_column(table_name, column_name, analysis_results)
+  │
+  ├── Build DetectorContext
+  │     └── analysis_results keyed by module: "typing", "statistics", "semantic", ...
+  │
+  ├── Get DetectorRegistry (auto-discovered, dependency-managed)
+  │
+  ├── Run applicable detectors
+  │     ├── TypeFidelityDetector         (structural/types)
+  │     ├── JoinPathDeterminismDetector  (structural/relations)
+  │     ├── RelationshipEntropyDetector  (structural/relations)
+  │     ├── BusinessMeaningDetector      (semantic/business_meaning)
+  │     ├── UnitEntropyDetector          (semantic/units)
+  │     ├── TemporalEntropyDetector      (semantic/temporal)
+  │     ├── DimensionalEntropyDetector   (semantic/dimensional)
+  │     ├── NullRatioDetector            (value/nulls)
+  │     ├── OutlierRateDetector          (value/outliers)
+  │     └── DerivedValueDetector         (computational/derived_values)
+  │     └── Each returns: list[EntropyObject]
+  │
+  ├── Aggregate into ColumnSummary
+  │     ├── Weighted composite_score (structural 25%, semantic 30%, value 30%, computational 15%)
+  │     ├── Readiness classification ("ready" < 0.3, "investigate" < 0.6, "blocked" >= 0.6)
+  │     ├── Compound risk detection (dangerous dimension pairs)
+  │     └── Top resolution hints (sorted by priority_score)
+  │
+  └── Return: ColumnSummary
+```
+
+### LLM Integration
+
+| Aspect | Detail |
+|--------|--------|
+| EntropyInterpreter | Generates assumptions, resolution actions, explanations from entropy objects |
+| DimensionalSummaryAgent | Executive summaries from dimensional entropy (tool-use structured output) |
+| Prompt templates | `config/system/prompts/entropy_interpretation.yaml`, `dimensional_summary.yaml` |
+
+## Data Model
+
+### Core Types (models.py)
+
+| Model | Purpose |
+|-------|---------|
+| `EntropyObject` | Single measurement: layer, dimension, sub_dimension, target, score (0.0-1.0), evidence, resolution_options |
+| `ResolutionOption` | Actionable fix: action, parameters, expected_entropy_reduction, effort, cascade_dimensions |
+| `CompoundRisk` | Dangerous dimension pair: dimensions, combined_score, multiplier, risk_level, impact_description |
+
+### SQLAlchemy Models (db_models.py)
+
+**EntropyObjectRecord** (`entropy_objects`):
+- PK: `object_id` (UUID)
+- Identity: `layer`, `dimension`, `sub_dimension`, `target`
+- FKs: `source_id`, `table_id`, `column_id`
+- Measurement: `score` (0.0-1.0), `confidence` (0.0-1.0)
+- `evidence` (JSON), `resolution_options` (JSON)
+- `detector_id`, `source_analysis_ids` (JSON)
+- `computed_at`, `expires_at`, `version`, `superseded_by`
+
+**EntropyInterpretationRecord** (`entropy_interpretations`):
+- PK: `interpretation_id`
+- FK: `table_id`, `column_id`
+- `assumptions` (JSON), `resolution_actions` (JSON), `summary`
+- `llm_model`, `computed_at`
+
+### Aggregation Views (analysis/aggregator.py)
+
+Computed on-demand, not persisted:
+
+| Model | Purpose |
+|-------|---------|
+| `ColumnSummary` | Per-column: composite_score, readiness, layer_scores, dimension_scores, high_entropy_dimensions, top_resolution_hints, compound_risks |
+| `TableSummary` | Per-table: column summaries + relationship summaries |
+| `RelationshipSummary` | FK/join relationship entropy |
+
+## Metrics
+
+### Composite Score
+
+```
+composite_score = structural_avg * 0.25 + semantic_avg * 0.30 + value_avg * 0.30 + computational_avg * 0.15
+```
+
+### Score Scale (0.0-1.0)
+
+- 0.0 = Deterministic (no uncertainty)
+- < 0.3 = Ready (usable with confidence)
+- < 0.6 = Investigate (needs attention)
+- >= 0.6 = Blocked (not reliable)
+- > 0.8 = Critical entropy
+
+### Compound Risks
+
+| Risk Pattern | Dimensions | Threshold | Multiplier | Level |
+|--------------|-----------|-----------|-----------|-------|
+| units_derived | semantic.units + computational.derived_values | 0.5 | 2.0 | critical |
+| temporal_nulls | semantic.temporal + value.nulls | 0.5 | 1.5 | high |
+| types_derived | structural.types + computational.derived_values | 0.6 | 1.5 | high |
+| relations_derived | structural.relations + computational.derived_values | 0.5 | 1.5 | high |
+| meaning_outliers | semantic.business_meaning + value.outliers | 0.5 | 1.3 | medium |
+
+### Resolution Priority
+
+```
+priority_score = expected_entropy_reduction / effort_factor
+```
+
+Effort factors: low=1.0, medium=2.0, high=4.0.
+
+## Configuration
+
+### Thresholds (`config/system/entropy/thresholds.yaml`)
+
+Central config for all detector thresholds, composite weights, readiness levels, compound risk definitions, and effort factors. Loaded via `get_entropy_config()` which returns a typed `EntropyConfig` object.
+
+Key sections:
+- `composite_weights`: Layer weights (sum=1.0)
+- `readiness`: Ready/blocked thresholds
+- `entropy_levels`: High/critical thresholds
+- `detectors`: Per-detector thresholds (10 detector configs)
+- `compound_risks`: Dangerous dimension pair definitions
+- `effort_factors`: Prioritization weights
+
+### Contracts (`config/system/entropy/contracts.yaml`)
+
+Data readiness contracts by use case (executive_dashboard, operational_report, exploratory_analysis). Each defines per-dimension thresholds and blocking conditions.
+
+**ConfidenceLevel** enum: GREEN / YELLOW / ORANGE / RED.
+
+## Consumers
+
+| Consumer | What It Uses |
+|----------|--------------|
+| `entropy_detection_phase` | `EntropyProcessor.process_column()` |
+| `entropy_interpretation_phase` | `EntropyInterpreter`, `InterpretationInput` |
+| `graphs/context.py` | `build_for_graph()` |
+| `query/agent.py` | `build_for_query()` |
+| `api/routers/entropy.py` | `build_for_dashboard()` |
+| `cli/tui/screens/entropy.py` | `ColumnSummary`, `EntropyAggregator` |
+| `contracts` evaluation | `evaluate_contract()`, `get_confidence_level()` |
+
+## Cleanup History (This Refactor)
+
+| Change | Rationale |
+|--------|-----------|
+| Removed 15 dead exports from `__init__.py` | Not imported outside module: `CompoundRiskDefinition`, `ResolutionCascade`, `TableSummary`, `RelationshipSummary`, `EntropyForGraph`, `EntropyForDashboard`, `build_for_dashboard`, `format_entropy_for_prompt`, `EntropyConfig`, `EntropyInterpreterOutput`, `Assumption`, `ResolutionAction`, `DimensionalSummaryOutput` |
+| Replaced `structlog.get_logger()` in `dimensional_entropy.py` | Use `dataraum.core.logging.get_logger()` for consistency |
+
+## Roadmap
+
+- **Temporal wiring**: Quality summary temporal context integration (see plan)
+- **Topology persistence**: Persist topology results to `TemporalTopologyAnalysis`
+- **Detector extensibility**: Plugin system for custom detectors
+- **Cross-run trending**: Track entropy changes across pipeline runs

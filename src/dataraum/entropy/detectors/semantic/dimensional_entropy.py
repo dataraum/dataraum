@@ -19,8 +19,7 @@ from dataclasses import dataclass, field
 from math import log2
 from typing import TYPE_CHECKING, Any
 
-import structlog
-
+from dataraum.core.logging import get_logger
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
@@ -28,7 +27,7 @@ from dataraum.entropy.models import EntropyObject, ResolutionOption
 if TYPE_CHECKING:
     from dataraum.entropy.summary_agent import DimensionalSummaryAgent
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass

@@ -11,25 +11,21 @@ Usage:
 
     # Load and parse a YAML config file
     data = load_yaml_config("system/entropy/thresholds.yaml")
-
-    # Application settings (env vars, .env)
-    settings = get_settings()
 """
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _find_config_dir() -> Path:
     """Find the config directory by walking up from the package location.
 
     This is the ONE place that does path-relative-to-file resolution.
-    Everything else goes through get_config_file() or get_settings().config_path.
+    Everything else goes through get_config_file().
     """
     # src/dataraum/core/config.py -> 4 levels up -> project root
     package_dir = Path(__file__).resolve().parent.parent.parent.parent
@@ -39,6 +35,18 @@ def _find_config_dir() -> Path:
 
     # Fallback: relative path (works when CWD is project root)
     return Path("config")
+
+
+@lru_cache
+def _get_config_root() -> Path:
+    """Get the config root directory.
+
+    Checks DATARAUM_CONFIG_PATH env var first, falls back to auto-detection.
+    """
+    env_path = os.environ.get("DATARAUM_CONFIG_PATH")
+    if env_path:
+        return Path(env_path)
+    return _find_config_dir()
 
 
 def get_config_file(relative_path: str) -> Path:
@@ -57,7 +65,7 @@ def get_config_file(relative_path: str) -> Path:
     Raises:
         FileNotFoundError: If the resolved path does not exist.
     """
-    config_root = get_settings().config_path
+    config_root = _get_config_root()
     resolved = config_root / relative_path
     if not resolved.exists():
         raise FileNotFoundError(
@@ -80,7 +88,7 @@ def get_config_dir(relative_path: str) -> Path:
     Raises:
         FileNotFoundError: If the resolved path does not exist or is not a directory.
     """
-    config_root = get_settings().config_path
+    config_root = _get_config_root()
     resolved = config_root / relative_path
     if not resolved.is_dir():
         raise FileNotFoundError(
@@ -112,81 +120,3 @@ def load_yaml_config(relative_path: str) -> dict[str, Any]:
         return {}
     result: dict[str, Any] = data
     return result
-
-
-class Settings(BaseSettings):
-    """Application settings.
-
-    All settings can be overridden via environment variables.
-    Prefix: DATARAUM_
-    """
-
-    model_config = SettingsConfigDict(
-        env_prefix="DATARAUM_",
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",  # Ignore extra env vars (like ANTHROPIC_API_KEY)
-    )
-
-    # Database (SQLAlchemy)
-    # SQLite for local dev, PostgreSQL for production
-    database_url: str = Field(
-        default="sqlite+aiosqlite:///./dataraum.db",
-        description="SQLAlchemy database URL. Use postgresql+asyncpg://... for production",
-    )
-
-    # DuckDB
-    duckdb_path: str = Field(
-        default=":memory:",
-        description="Path to DuckDB database file, or :memory: for in-memory",
-    )
-    duckdb_memory_limit: str = Field(
-        default="4GB",
-        description="Memory limit for DuckDB",
-    )
-    duckdb_threads: int = Field(
-        default=4,
-        description="Number of threads for DuckDB",
-    )
-
-    # Configuration paths
-    config_path: Path = Field(
-        default_factory=_find_config_dir,
-        description="Path to configuration files (ontologies, patterns, rules)",
-    )
-
-    # Profiling
-    profile_sample_size: int = Field(
-        default=100_000,
-        description="Number of rows to sample for profiling (0 = all)",
-    )
-    profile_histogram_buckets: int = Field(
-        default=20,
-        description="Number of histogram buckets",
-    )
-    # Quality
-    quality_anomaly_threshold: float = Field(
-        default=3.0,
-        description="Standard deviations for anomaly detection",
-    )
-
-    # Default ontology
-    default_ontology: str = Field(
-        default="general",
-        description="Default ontology to use",
-    )
-
-    # API
-    api_host: str = Field(default="0.0.0.0")
-    api_port: int = Field(default=8000)
-    api_workers: int = Field(default=1)
-
-    # Logging
-    log_level: str = Field(default="INFO")
-    log_format: str = Field(default="json")  # 'json' or 'console'
-
-
-@lru_cache
-def get_settings() -> Settings:
-    """Get cached settings instance."""
-    return Settings()

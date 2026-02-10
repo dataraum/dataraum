@@ -1,0 +1,28 @@
+# Quality summary analysis configuration
+# Used by analysis/quality_summary/
+
+# --- Variance filter thresholds ---
+# Controls which columns are sent to LLM for analysis.
+# Only columns with variance exceeding these thresholds are classified as INTERESTING.
+variance_filter:
+  enabled: true
+  null_spread_threshold: 0.10        # max - min null ratio across slices
+  distinct_ratio_threshold: 2.0      # max / min distinct count across slices
+  outlier_spread_threshold: 0.05     # max - min outlier ratio across slices
+  benford_spread_threshold: 0.30     # max - min benford p-value across slices
+  row_ratio_threshold: 10.0          # max / min row count across slices
+  empty_null_threshold: 0.99         # null ratio threshold for EMPTY classification
+
+# --- Quality score thresholds ---
+# Used to compute per-slice quality scores for ColumnSliceProfile.
+quality_scoring:
+  high_null_ratio: 0.5               # null_ratio above this: -0.3 score
+  high_null_penalty: 0.3
+  moderate_null_ratio: 0.2           # null_ratio above this: -0.1 score
+  moderate_null_penalty: 0.1
+  outlier_penalty: 0.2               # has_outliers: penalty
+  benford_violation_penalty: 0.1     # benford non-compliant: penalty
+
+# --- Batch processing ---
+batch_size: 10                        # columns per LLM call
+max_batch_workers: 4                  # parallel batch workers

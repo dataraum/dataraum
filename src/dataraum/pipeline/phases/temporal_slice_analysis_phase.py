@@ -221,7 +221,6 @@ class TemporalSliceAnalysisPhase(BasePhase):
         period_start = ctx.config.get("period_start")
         period_end = ctx.config.get("period_end")
         time_grain = ctx.config.get("time_grain", "monthly")
-        bottleneck_threshold = ctx.config.get("bottleneck_threshold", 0.5)
 
         # Convert string dates if provided
         if isinstance(period_start, str):
@@ -372,7 +371,6 @@ class TemporalSliceAnalysisPhase(BasePhase):
                         table_name=source_table.table_name,
                         time_column=time_column,
                         period=time_grain.rstrip("ly"),  # "monthly" -> "month"
-                        bottleneck_threshold=bottleneck_threshold,
                     )
                     total_topology_drift += len(topo_result.topology_drifts)
 

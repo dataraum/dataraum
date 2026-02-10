@@ -23,6 +23,7 @@ from dataraum.analysis.topology.models import (
     TopologicalQualityResult,
 )
 from dataraum.analysis.topology.tda.extractor import TableTopologyExtractor
+from dataraum.core.config import load_yaml_config
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.storage import Table
@@ -32,12 +33,15 @@ logger = get_logger(__name__)
 # Module-level TDA extractor instance
 _extractor = TableTopologyExtractor()
 
-# --- Anomaly detection thresholds ---
-FRAGMENTATION_THRESHOLD = 3  # betti_0 > 3 = fragmented
-FRAGMENTATION_HIGH_THRESHOLD = 5  # betti_0 > 5 = high severity
-COMPLEXITY_LOW = 2  # total_complexity <= 2 = low
-COMPLEXITY_MODERATE = 5  # total_complexity <= 5 = moderate
-TABLE_SAMPLE_LIMIT = 10000  # max rows loaded for TDA analysis
+_CONFIG_CACHE: dict[str, object] | None = None
+
+
+def _load_config() -> dict[str, object]:
+    """Load topology config from YAML (cached)."""
+    global _CONFIG_CACHE
+    if _CONFIG_CACHE is None:
+        _CONFIG_CACHE = load_yaml_config("system/topology.yaml")
+    return _CONFIG_CACHE
 
 
 def analyze_topological_quality(
@@ -67,6 +71,13 @@ def analyze_topological_quality(
         Result containing TopologicalQualityResult
     """
     try:
+        # Load thresholds from config
+        cfg = _load_config()
+        ad = cfg.get("anomaly_detection", {})
+        fragmentation_threshold = ad.get("fragmentation_threshold", 3)
+        fragmentation_high_threshold = ad.get("fragmentation_high_threshold", 5)
+        table_sample_limit = ad.get("table_sample_limit", 10000)
+
         # Get table info
         stmt = select(Table.table_name, Table.layer, Table.duckdb_path).where(
             Table.table_id == table_id
@@ -86,7 +97,7 @@ def analyze_topological_quality(
         # Load data
         try:
             df = duckdb_conn.execute(
-                f"SELECT * FROM {actual_table} LIMIT {TABLE_SAMPLE_LIMIT}"
+                f"SELECT * FROM {actual_table} LIMIT {table_sample_limit}"
             ).df()
         except Exception as e:
             return Result.fail(f"Failed to load table data: {e}")
@@ -131,12 +142,12 @@ def analyze_topological_quality(
         anomalies = []
 
         # Check for fragmentation (too many disconnected components)
-        if betti_numbers.betti_0 > FRAGMENTATION_THRESHOLD:
+        if betti_numbers.betti_0 > fragmentation_threshold:
             anomalies.append(
                 TopologicalAnomaly(
                     anomaly_type="fragmentation",
                     severity="high"
-                    if betti_numbers.betti_0 > FRAGMENTATION_HIGH_THRESHOLD
+                    if betti_numbers.betti_0 > fragmentation_high_threshold
                     else "medium",
                     description=f"Data is fragmented into {betti_numbers.betti_0} disconnected components",
                     evidence={"betti_0": betti_numbers.betti_0},
@@ -144,8 +155,14 @@ def analyze_topological_quality(
             )
 
         # Generate topology description
+        complexity_low = ad.get("complexity_low", 2)
+        complexity_moderate = ad.get("complexity_moderate", 5)
         topology_description = _generate_topology_description(
-            betti_numbers, persistent_cycles or [], anomalies
+            betti_numbers,
+            persistent_cycles or [],
+            anomalies,
+            complexity_low,
+            complexity_moderate,
         )
 
         # Build result
@@ -174,6 +191,8 @@ def _generate_topology_description(
     betti_numbers: BettiNumbers,
     cycles: list[Any],
     anomalies: list[TopologicalAnomaly],
+    complexity_low: int = 2,
+    complexity_moderate: int = 5,
 ) -> str:
     """Generate a human-readable topology description.
 
@@ -181,6 +200,8 @@ def _generate_topology_description(
         betti_numbers: Computed Betti numbers
         cycles: Detected persistent cycles
         anomalies: Detected anomalies
+        complexity_low: Threshold for low complexity
+        complexity_moderate: Threshold for moderate complexity
 
     Returns:
         Natural language description of the topology
@@ -201,9 +222,9 @@ def _generate_topology_description(
 
     # Complexity assessment
     complexity = betti_numbers.total_complexity
-    if complexity <= COMPLEXITY_LOW:
+    if complexity <= complexity_low:
         parts.append("Low structural complexity.")
-    elif complexity <= COMPLEXITY_MODERATE:
+    elif complexity <= complexity_moderate:
         parts.append("Moderate structural complexity.")
     else:
         parts.append("High structural complexity.")

@@ -8,28 +8,38 @@ from ripser import ripser
 from scipy.spatial.distance import pdist, squareform
 from scipy.stats import entropy
 
+from dataraum.core.config import load_yaml_config
 from dataraum.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# --- Extraction constants ---
-HISTOGRAM_BINS = 20  # bins for distribution entropy
-RELATIONSHIP_STRENGTH_THRESHOLD = 0.1  # min strength to include col relationship
-MIN_VALID_SAMPLES = 10  # min non-null pairs for correlation
-CATEGORICAL_OVERLAP_THRESHOLD = 0.1  # min overlap for partial relationship
-ROW_SAMPLE_SIZE = 1000  # max rows for row-level topology
-MIN_ROWS_FOR_TOPOLOGY = 3  # min rows needed for TDA
-MIN_FEATURES_FOR_OUTLIERS = 10  # min features for outlier scoring
+_CONFIG_CACHE: dict[str, object] | None = None
+
+
+def _load_config() -> dict[str, object]:
+    """Load topology config from YAML (cached)."""
+    global _CONFIG_CACHE
+    if _CONFIG_CACHE is None:
+        _CONFIG_CACHE = load_yaml_config("system/topology.yaml")
+    return _CONFIG_CACHE
 
 
 class TableTopologyExtractor:
-    """
-    Extract topological features from tabular data
-    """
+    """Extract topological features from tabular data."""
 
     def __init__(self, max_dimension: int = 2) -> None:
         self.max_dimension = max_dimension
         self.feature_cache: dict[str, Any] = {}
+        # Load extraction config
+        cfg = _load_config()
+        ext = cfg.get("extraction", {})
+        self._histogram_bins = ext.get("histogram_bins", 20)
+        self._relationship_strength_threshold = ext.get("relationship_strength_threshold", 0.1)
+        self._min_valid_samples = ext.get("min_valid_samples", 10)
+        self._categorical_overlap_threshold = ext.get("categorical_overlap_threshold", 0.1)
+        self._row_sample_size = ext.get("row_sample_size", 1000)
+        self._min_rows_for_topology = ext.get("min_rows_for_topology", 3)
+        self._min_features_for_outliers = ext.get("min_features_for_outliers", 10)
 
     def extract_topology(self, df: pd.DataFrame) -> dict[str, Any]:
         """
@@ -123,7 +133,7 @@ class TableTopologyExtractor:
 
             # Distribution entropy
             if len(non_null) > 0:
-                hist, _ = np.histogram(non_null.to_numpy(), bins=HISTOGRAM_BINS)
+                hist, _ = np.histogram(non_null.to_numpy(), bins=self._histogram_bins)
                 entropy_val = float(entropy(hist + 1e-10))
             else:
                 entropy_val = 0.0
@@ -264,7 +274,7 @@ class TableTopologyExtractor:
             for j, col2 in enumerate(df.columns):
                 if i < j:  # Only compute once per pair
                     relationship = self.analyze_column_relationship(df[col1], df[col2])
-                    if relationship["strength"] > RELATIONSHIP_STRENGTH_THRESHOLD:
+                    if relationship["strength"] > self._relationship_strength_threshold:
                         column_relationships[f"{col1}-{col2}"] = relationship
 
         return column_relationships
@@ -278,7 +288,7 @@ class TableTopologyExtractor:
         # Both numeric - correlation and mutual information
         if pd.api.types.is_numeric_dtype(col1) and pd.api.types.is_numeric_dtype(col2):
             valid_mask = ~(col1.isna() | col2.isna())
-            if valid_mask.sum() > MIN_VALID_SAMPLES:
+            if valid_mask.sum() > self._min_valid_samples:
                 c1_valid = col1[valid_mask].astype(float)
                 c2_valid = col2[valid_mask].astype(float)
                 # Check for constant columns (would cause NaN correlation)
@@ -309,7 +319,7 @@ class TableTopologyExtractor:
                         relationship["confidence"] = cardinality_ratio
                     else:
                         overlap = len(set1.intersection(set2)) / len(set1.union(set2))
-                        if overlap > CATEGORICAL_OVERLAP_THRESHOLD:
+                        if overlap > self._categorical_overlap_threshold:
                             relationship["strength"] = overlap
                             relationship["type"] = "partial_overlap"
                             relationship["confidence"] = overlap
@@ -321,7 +331,7 @@ class TableTopologyExtractor:
         Understand entity relationships (row-level topology)
         """
         # Sample rows for efficiency
-        sample_size = min(ROW_SAMPLE_SIZE, len(df))
+        sample_size = min(self._row_sample_size, len(df))
         if len(df) > sample_size:
             sample_df = df.sample(n=sample_size, random_state=42)
         else:
@@ -347,7 +357,7 @@ class TableTopologyExtractor:
             row_features_array[nan_mask, col_idx] = col_means[col_idx]
 
         # Check for valid data
-        if len(row_features_array) < MIN_ROWS_FOR_TOPOLOGY:
+        if len(row_features_array) < self._min_rows_for_topology:
             return {"message": "Not enough rows for topology analysis"}
 
         if np.all(np.isnan(row_features_array)) or np.all(row_features_array == 0):
@@ -401,7 +411,7 @@ class TableTopologyExtractor:
         """
         Use topological methods to find outliers
         """
-        if len(features) < MIN_FEATURES_FOR_OUTLIERS:
+        if len(features) < self._min_features_for_outliers:
             return []
 
         # Compute distance to k-nearest neighbors

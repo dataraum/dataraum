@@ -41,6 +41,7 @@ from dataraum.analysis.temporal_slicing.db_models import (
     TemporalDriftAnalysis,
     TemporalSliceAnalysis,
 )
+from dataraum.core.config import load_yaml_config
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.storage import Column, Table
@@ -49,13 +50,17 @@ if TYPE_CHECKING:
     from dataraum.analysis.quality_summary.agent import QualitySummaryAgent
     from dataraum.analysis.quality_summary.variance import SliceVarianceMetrics
 
-# Maximum columns per LLM batch call
-BATCH_SIZE = 10
-
-# Maximum parallel batch workers
-MAX_BATCH_WORKERS = 4
-
 logger = get_logger(__name__)
+
+_CONFIG_CACHE: dict[str, object] | None = None
+
+
+def _load_config() -> dict[str, object]:
+    """Load quality_summary config from YAML (cached)."""
+    global _CONFIG_CACHE
+    if _CONFIG_CACHE is None:
+        _CONFIG_CACHE = load_yaml_config("system/quality_summary.yaml")
+    return _CONFIG_CACHE
 
 
 @dataclass
@@ -364,7 +369,6 @@ def summarize_quality(
     slice_definition: SliceDefinition,
     skip_existing: bool = True,
     session_factory: Callable[[], Any] | None = None,
-    max_batch_workers: int = MAX_BATCH_WORKERS,
 ) -> Result[QualitySummaryResult]:
     """Generate quality summaries for all columns across slices.
 
@@ -380,7 +384,6 @@ def summarize_quality(
         slice_definition: The slice definition to summarize
         skip_existing: Whether to skip columns with existing reports
         session_factory: Optional factory for creating sessions (enables parallel batches)
-        max_batch_workers: Maximum parallel workers for batch processing
 
     Returns:
         Result containing QualitySummaryResult
@@ -467,10 +470,15 @@ def summarize_quality(
                 )
             )
 
+        # Load batch config from YAML
+        cfg = _load_config()
+        batch_size = cfg.get("batch_size", 10)
+        max_batch_workers = cfg.get("max_batch_workers", 4)
+
         # Create batches
         batches = [
-            columns_to_process[i : i + BATCH_SIZE]
-            for i in range(0, len(columns_to_process), BATCH_SIZE)
+            columns_to_process[i : i + batch_size]
+            for i in range(0, len(columns_to_process), batch_size)
         ]
 
         # Process batches
@@ -609,31 +617,40 @@ def _save_slice_profiles_from_aggregated(
     slice_column = session.get(Column, slice_definition.column_id)
     slice_column_name = slice_column.column_name if slice_column else "unknown"
 
+    # Load quality scoring config
+    cfg = _load_config()
+    qs = cfg.get("quality_scoring", {})
+    high_null_ratio = qs.get("high_null_ratio", 0.5)
+    high_null_penalty = qs.get("high_null_penalty", 0.3)
+    moderate_null_ratio = qs.get("moderate_null_ratio", 0.2)
+    moderate_null_penalty = qs.get("moderate_null_penalty", 0.1)
+    outlier_penalty = qs.get("outlier_penalty", 0.2)
+    benford_penalty = qs.get("benford_violation_penalty", 0.1)
+
     # Insert new profiles from aggregated data
     for col_data in aggregated_columns:
         for slice_info in col_data.slice_data:
-            # Calculate quality score (same logic as build_quality_matrix)
             quality_score = 1.0
             has_issues = False
             issue_count = 0
 
             null_ratio = slice_info.get("null_ratio")
             if null_ratio is not None:
-                if null_ratio > 0.5:
-                    quality_score -= 0.3
+                if null_ratio > high_null_ratio:
+                    quality_score -= high_null_penalty
                     issue_count += 1
                     has_issues = True
-                elif null_ratio > 0.2:
-                    quality_score -= 0.1
+                elif null_ratio > moderate_null_ratio:
+                    quality_score -= moderate_null_penalty
                     issue_count += 1
 
             if slice_info.get("has_outliers"):
-                quality_score -= 0.2
+                quality_score -= outlier_penalty
                 issue_count += 1
                 has_issues = True
 
             if slice_info.get("benford_compliant") is False:
-                quality_score -= 0.1
+                quality_score -= benford_penalty
                 issue_count += 1
                 has_issues = True
 

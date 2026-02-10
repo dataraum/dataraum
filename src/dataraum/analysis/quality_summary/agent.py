@@ -32,9 +32,6 @@ if TYPE_CHECKING:
     from dataraum.llm.prompts import PromptRenderer
     from dataraum.llm.providers.base import LLMProvider
 
-# Maximum columns per batch (to avoid token limits)
-MAX_BATCH_SIZE = 10
-
 
 class QualitySummaryAgent(LLMFeature):
     """LLM-powered quality summary agent.

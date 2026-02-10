@@ -1,106 +1,51 @@
 """Configuration loader for validation specs.
 
-Loads validation specifications from YAML files in config/validations/.
+Loads validation specifications from YAML files in config/verticals/finance/validations/.
+Uses core config loader for path resolution and YAML parsing.
 """
 
 from __future__ import annotations
 
-from functools import lru_cache
-from pathlib import Path
-
-import yaml
-
 from dataraum.analysis.validation.models import (
-    ValidationSeverity,
     ValidationSpec,
 )
+from dataraum.core.config import get_config_dir
 from dataraum.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-
-def get_validations_config_path() -> Path:
-    """Get the path to validations config directory.
-
-    Returns:
-        Path to verticals/finance/validations/ under config root.
-    """
-    from dataraum.core.config import get_config_dir
-
-    return get_config_dir("verticals/finance/validations")
+# Relative path from config root to validation specs directory
+VALIDATIONS_DIR = "verticals/finance/validations"
 
 
-@lru_cache(maxsize=1)
 def load_all_validation_specs() -> dict[str, ValidationSpec]:
     """Load all validation specs from config directory.
 
     Returns:
         Dict mapping validation_id to ValidationSpec
+
+    Raises:
+        FileNotFoundError: If the validations config directory does not exist.
     """
+    import yaml
+
     specs: dict[str, ValidationSpec] = {}
-    config_path = get_validations_config_path()
+    config_path = get_config_dir(VALIDATIONS_DIR)
 
-    if not config_path.exists():
-        logger.warning(f"Validations config directory not found: {config_path}")
-        return specs
-
-    # Load all YAML files recursively
     for yaml_file in config_path.rglob("*.yaml"):
-        try:
-            spec = load_validation_spec(yaml_file)
-            if spec:
-                specs[spec.validation_id] = spec
-                logger.debug(f"Loaded validation spec: {spec.validation_id}")
-        except Exception as e:
-            logger.error(f"Failed to load validation spec {yaml_file}: {e}")
-
-    logger.info(f"Loaded {len(specs)} validation specs")
-    return specs
-
-
-def load_validation_spec(file_path: Path) -> ValidationSpec | None:
-    """Load a single validation spec from a YAML file.
-
-    Args:
-        file_path: Path to YAML file
-
-    Returns:
-        ValidationSpec or None if invalid
-    """
-    try:
-        with open(file_path) as f:
+        with open(yaml_file) as f:
             data = yaml.safe_load(f)
 
         if not data or not isinstance(data, dict):
-            return None
+            logger.warning("validation_spec_empty", file=str(yaml_file))
+            continue
 
-        # Parse severity
-        severity_str = data.get("severity", "error").lower()
-        try:
-            severity = ValidationSeverity(severity_str)
-        except ValueError:
-            severity = ValidationSeverity.ERROR
+        spec = ValidationSpec.model_validate(data)
+        specs[spec.validation_id] = spec
+        logger.debug("validation_spec_loaded", validation_id=spec.validation_id)
 
-        spec = ValidationSpec(
-            validation_id=data.get("validation_id", file_path.stem),
-            name=data.get("name", file_path.stem),
-            description=data.get("description", ""),
-            category=data.get("category", "general"),
-            severity=severity,
-            check_type=data.get("check_type", "custom"),
-            parameters=data.get("parameters", {}),
-            sql_hints=data.get("sql_hints"),
-            expected_outcome=data.get("expected_outcome"),
-            tags=data.get("tags", []),
-            version=data.get("version", "1.0"),
-            source="config",
-        )
-
-        return spec
-
-    except Exception as e:
-        logger.error(f"Error parsing validation spec {file_path}: {e}")
-        return None
+    logger.info("validation_specs_loaded", count=len(specs))
+    return specs
 
 
 def get_validation_specs_by_category(category: str) -> list[ValidationSpec]:
@@ -179,18 +124,10 @@ def format_validation_specs_for_context(category: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def clear_cache() -> None:
-    """Clear the cached validation specs."""
-    load_all_validation_specs.cache_clear()
-
-
 __all__ = [
-    "get_validations_config_path",
     "load_all_validation_specs",
-    "load_validation_spec",
     "get_validation_specs_by_category",
     "get_validation_specs_by_tags",
     "get_validation_spec",
     "format_validation_specs_for_context",
-    "clear_cache",
 ]

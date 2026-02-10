@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.core.logging import get_logger
 from dataraum.storage import Column, Table
 
@@ -35,8 +36,6 @@ def get_multi_table_schema_for_llm(
         - tables: List of table schemas
         - relationships: List of detected relationships between tables
     """
-    from dataraum.analysis.relationships.db_models import Relationship
-
     if not table_ids:
         return {"error": "No tables found"}
 

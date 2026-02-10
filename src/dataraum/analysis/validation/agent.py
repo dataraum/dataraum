@@ -62,6 +62,10 @@ class ValidationAgent(LLMFeature):
     when validations require data from multiple tables.
     """
 
+    MAX_TOKENS = 2000
+    MAX_STORED_ROWS = 10
+    DEFAULT_TOLERANCE = 0.01
+
     def __init__(
         self,
         config: LLMConfig,
@@ -314,7 +318,7 @@ class ValidationAgent(LLMFeature):
                 details=details,
                 sql_used=generated.sql_query,
                 columns_used=generated.columns_used,
-                result_rows=result_rows[:10],  # Limit stored rows
+                result_rows=result_rows[: self.MAX_STORED_ROWS],
                 row_count=row_count,
             )
 
@@ -400,7 +404,7 @@ class ValidationAgent(LLMFeature):
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
             tools=[tool],
-            max_tokens=2000,
+            max_tokens=self.MAX_TOKENS,
             temperature=temperature,
             model=model,
         )
@@ -414,11 +418,21 @@ class ValidationAgent(LLMFeature):
         # Extract tool call result
         if not response.tool_calls:
             # LLM didn't use the tool - try to parse text as fallback
+            logger.warning(
+                "validation_llm_no_tool_call",
+                validation_id=spec.validation_id,
+                has_content=bool(response.content),
+            )
             if response.content:
                 try:
                     response_data = json.loads(response.content)
                     output = ValidationSQLOutput.model_validate(response_data)
-                except Exception:
+                except Exception as e:
+                    logger.warning(
+                        "validation_json_fallback_failed",
+                        validation_id=spec.validation_id,
+                        error=str(e),
+                    )
                     return Result.fail(f"LLM did not use tool. Response: {response.content[:200]}")
             else:
                 return Result.fail("LLM did not use the generate_validation_sql tool")
@@ -472,7 +486,7 @@ class ValidationAgent(LLMFeature):
                 return (False, "No results returned", {})
 
             row = result_rows[0]
-            tolerance = params.get("tolerance", 0.01)
+            tolerance = params.get("tolerance", self.DEFAULT_TOLERANCE)
 
             # Find the columns to compare
             value_cols = [k for k in row.keys() if "total" in k.lower() or "sum" in k.lower()]
@@ -515,7 +529,7 @@ class ValidationAgent(LLMFeature):
                 return (False, "No results returned", {})
 
             row = result_rows[0]
-            tolerance = params.get("tolerance", 0.01)
+            tolerance = params.get("tolerance", self.DEFAULT_TOLERANCE)
 
             # Check for an equation_holds or is_valid column
             if "equation_holds" in row:

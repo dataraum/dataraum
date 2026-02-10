@@ -185,40 +185,6 @@ class TemporalAnalysisResult(BaseModel):
 
 
 @dataclass
-class AggregatedTemporalData:
-    """Aggregated temporal data for quality summary.
-
-    Used to pass temporal findings to Phase 9 quality summary.
-    """
-
-    slice_column_name: str
-    time_column: str
-    total_periods: int
-
-    # Completeness summary
-    incomplete_period_count: int
-    avg_coverage_ratio: float
-    early_cutoff_count: int
-
-    # Drift summary
-    drift_detected_count: int
-
-    # Volume summary
-    volume_anomaly_count: int
-
-    # Optional fields with defaults
-    max_js_divergence: float | None = None
-    max_zscore: float | None = None
-    category_change_periods: list[str] = field(default_factory=list)
-    gap_periods: list[str] = field(default_factory=list)
-
-    # Slice comparison summary
-    declining_slices: list[str] = field(default_factory=list)
-    growing_slices: list[str] = field(default_factory=list)
-    hidden_trend_insights: list[str] = field(default_factory=list)
-
-
-@dataclass
 class PeriodTopology:
     """Topology metrics for a single time period.
 
@@ -284,7 +250,6 @@ __all__ = [
     "SliceTimeMatrix",
     "VolumeAnomalyResult",
     "TemporalAnalysisResult",
-    "AggregatedTemporalData",
     "PeriodTopology",
     "TopologyDrift",
     "TemporalTopologyResult",

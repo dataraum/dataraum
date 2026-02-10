@@ -20,7 +20,7 @@ class TestQualitySummaryPhase:
         phase = QualitySummaryPhase()
         assert phase.name == "quality_summary"
         assert phase.description == "LLM quality report generation"
-        assert phase.dependencies == ["slice_analysis"]
+        assert phase.dependencies == ["slice_analysis", "temporal_slice_analysis"]
         assert phase.outputs == ["quality_reports", "quality_grades"]
         assert phase.is_llm_phase is True
 

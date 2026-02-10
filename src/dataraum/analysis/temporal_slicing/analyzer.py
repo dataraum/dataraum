@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from dataclasses import dataclass
 from datetime import date, timedelta
 from uuid import uuid4
 
@@ -22,7 +21,6 @@ from dataraum.analysis.temporal_slicing.db_models import (
     TemporalSliceRun,
 )
 from dataraum.analysis.temporal_slicing.models import (
-    AggregatedTemporalData,
     CompletenessResult,
     DistributionDriftResult,
     PeriodMetrics,
@@ -38,19 +36,6 @@ from dataraum.analysis.temporal_slicing.models import (
 )
 from dataraum.core.models.base import Result
 from dataraum.storage import Column, Table
-
-
-@dataclass
-class TemporalSliceContext:
-    """Context for temporal slice analysis."""
-
-    slice_table_name: str
-    slice_table_id: str
-    slice_column_name: str
-    time_column: str
-    config: TemporalSliceConfig
-    duckdb_conn: duckdb.DuckDBPyConnection
-    session: Session
 
 
 class TemporalSliceAnalyzer:
@@ -813,68 +798,6 @@ def analyze_temporal_slices(
     return result
 
 
-def aggregate_temporal_data(
-    result: TemporalAnalysisResult,
-    slice_column_name: str,
-) -> AggregatedTemporalData:
-    """Aggregate temporal analysis results for quality summary.
-
-    Args:
-        result: Temporal analysis result
-        slice_column_name: Name of slice column
-
-    Returns:
-        AggregatedTemporalData for use in quality summary
-    """
-    # Completeness summary
-    incomplete_periods = [c for c in result.completeness_results if not c.is_complete]
-    early_cutoffs = [c for c in result.completeness_results if c.has_early_cutoff]
-    coverages = [c.coverage_ratio for c in result.completeness_results]
-
-    # Drift summary
-    drifts = [d for d in result.drift_results if d.has_significant_drift]
-    js_values = [
-        d.jensen_shannon_divergence
-        for d in result.drift_results
-        if d.jensen_shannon_divergence is not None
-    ]
-    category_change_periods = list(
-        {d.period_label for d in result.drift_results if d.has_category_changes}
-    )
-
-    # Volume summary
-    anomalies = [v for v in result.volume_anomalies if v.is_anomaly]
-    gaps = [v for v in result.volume_anomalies if v.anomaly_type == "gap"]
-    z_scores = [v.z_score for v in result.volume_anomalies if v.z_score != 0]
-
-    # Slice comparison
-    declining = []
-    growing = []
-    if result.slice_time_matrix:
-        declining = [s for s, t in result.slice_time_matrix.slice_trends.items() if t < -0.2]
-        growing = [s for s, t in result.slice_time_matrix.slice_trends.items() if t > 0.2]
-
-    return AggregatedTemporalData(
-        slice_column_name=slice_column_name,
-        time_column=result.time_column,
-        total_periods=result.total_periods,
-        incomplete_period_count=len(incomplete_periods),
-        avg_coverage_ratio=sum(coverages) / len(coverages) if coverages else 0,
-        early_cutoff_count=len(early_cutoffs),
-        drift_detected_count=len(drifts),
-        max_js_divergence=max(js_values) if js_values else None,
-        category_change_periods=category_change_periods,
-        volume_anomaly_count=len(anomalies),
-        max_zscore=max(abs(z) for z in z_scores) if z_scores else None,
-        gap_periods=[v.period_label for v in gaps],
-        declining_slices=declining[:5],
-        growing_slices=growing[:5],
-        hidden_trend_insights=result.slice_time_matrix.hidden_trends
-        if result.slice_time_matrix
-        else [],
-    )
-
-
 # =============================================================================
 # LEVEL 5: TEMPORAL TOPOLOGY ANALYSIS (TDA with Bottleneck Distance)
 # =============================================================================
@@ -1145,8 +1068,6 @@ def analyze_temporal_topology(
 
 __all__ = [
     "TemporalSliceAnalyzer",
-    "TemporalSliceContext",
     "analyze_temporal_slices",
-    "aggregate_temporal_data",
     "analyze_temporal_topology",
 ]

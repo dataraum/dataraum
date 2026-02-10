@@ -5,7 +5,7 @@
 # Uses tool-based output for structured responses.
 
 name: quality_summary_batch
-version: "2.0.0"
+version: "2.1.0"
 description: Generate quality summaries for multiple columns in one call
 
 # Temperature (0.0 = deterministic, 1.0 = creative)
@@ -30,6 +30,7 @@ system_prompt: |
   - Process ALL columns in the input
   - Match column_name EXACTLY as provided
   - Focus on cross-slice patterns
+  - For temporal issues, consider incomplete periods, volume anomalies, and distribution drift
   - Be concise - this is a batch operation
   - Skip investigation_views for batch mode
   </guidelines>
@@ -51,6 +52,12 @@ user_prompt: |
   <columns_to_analyze>
   {columns_json}
   </columns_to_analyze>
+
+  <temporal_context>
+  Incomplete periods: {incomplete_periods}
+  Volume anomalies: {volume_anomalies}
+  Temporal data: {temporal_data_json}
+  </temporal_context>
 
   For EACH column, provide:
   - Overall quality score (0.0-1.0) and grade (A-F)
@@ -79,3 +86,18 @@ inputs:
   columns_json:
     description: JSON array of column data to analyze
     required: true
+
+  incomplete_periods:
+    description: Number of incomplete time periods
+    required: false
+    default: "0"
+
+  volume_anomalies:
+    description: Number of periods with volume anomalies
+    required: false
+    default: "0"
+
+  temporal_data_json:
+    description: JSON array of temporal analysis per period
+    required: false
+    default: "[]"

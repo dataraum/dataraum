@@ -266,6 +266,15 @@ def run_statistics_on_slice(
     # session.get() checks the identity map first, so pending objects
     # added via session.add() in this session are found without flush.
     table = session.get(Table, slice_info.slice_table_id)
+
+    # Fallback: check session.new for pending objects not yet in identity map
+    # (can happen with autoflush=False when objects were added but PK not indexed)
+    if not table:
+        for obj in session.new:
+            if isinstance(obj, Table) and obj.table_id == slice_info.slice_table_id:
+                table = obj
+                break
+
     if not table:
         return Result.fail(f"Slice table not found: {slice_info.slice_table_id}")
 

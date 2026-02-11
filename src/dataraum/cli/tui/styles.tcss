@@ -65,6 +65,7 @@ Screen {
 }
 
 #tab-overview,
+#tab-context,
 #tab-evidence,
 #tab-assumptions,
 #tab-actions {
@@ -123,7 +124,6 @@ Screen {
 /* Sections */
 .dimension-section,
 .issue-section,
-.columns-section,
 .tables-section,
 .pipeline-section,
 .contracts-section,
@@ -231,60 +231,6 @@ DataTable > .datatable--cursor {
 #subtitle {
     color: $text-muted;
     padding-bottom: 1;
-}
-
-/* Table detail screen */
-#table-detail-tabs {
-    height: 1fr;
-    min-height: 10;
-}
-
-#tab-statistics,
-#tab-semantics,
-#tab-relationships,
-#tab-quality,
-#tab-entity,
-#tab-entropy {
-    overflow-y: auto;
-}
-
-#stats-table,
-#semantics-table,
-#relationships-table,
-#quality-table {
-    max-height: 18;
-}
-
-.sample-section {
-    padding: 1 0;
-    max-height: 14;
-}
-
-#sample-table {
-    max-height: 12;
-}
-
-/* Column detail screen */
-.explanation-section {
-    padding: 0 0 1 0;
-}
-
-#explanation-text {
-    padding: 1;
-    background: $surface-darken-1;
-    max-height: 6;
-}
-
-.assumptions-section,
-.actions-section,
-.entropy-objects-section {
-    padding: 1 0;
-}
-
-#assumptions-table,
-#actions-table,
-#entropy-objects-table {
-    max-height: 10;
 }
 
 /* Actions screen */

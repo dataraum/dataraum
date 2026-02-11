@@ -142,15 +142,12 @@ class HomeScreen(Screen[None]):
             self._table_names.append(tbl.table_name)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Handle row selection in tables table."""
+        """Handle row selection in tables table — open entropy screen for that table."""
         if event.data_table.id == "tables-table" and event.cursor_row < len(self._table_names):
             table_name = self._table_names[event.cursor_row]
-            # Access app and push table screen
-            from dataraum.cli.tui.app import DataraumApp
+            from dataraum.cli.tui.screens.entropy import EntropyScreen
 
-            app = self.app
-            if isinstance(app, DataraumApp):
-                app.push_table_screen(table_name)
+            self.app.push_screen(EntropyScreen(self.output_dir, table_filter=table_name))
 
     def _update_pipeline_status(self, session: Any, source: Any) -> None:
         """Update the pipeline status table."""

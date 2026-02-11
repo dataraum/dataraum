@@ -81,6 +81,14 @@ class EntropyScreen(Screen[None]):
         self._selected_key: str | None = None
         # Store compound risks keyed by column key ("table.column")
         self._compound_risks_map: dict[str, list[Any]] = {}
+        # Table metadata for context enrichment
+        self._type_decisions: dict[str, Any] = {}  # column_id -> TypeDecision
+        self._semantic_annotations: dict[str, Any] = {}  # column_id -> SemanticAnnotation
+        self._stat_profiles: dict[str, Any] = {}  # column_id -> StatisticalProfile
+        self._table_entities: dict[str, Any] = {}  # table_id -> TableEntity
+        self._relationships: dict[str, list[Any]] = {}  # table_id -> [Relationship]
+        self._table_id_to_name: dict[str, str] = {}
+        self._column_id_to_name: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         """Create the screen layout with tree and detail panel."""
@@ -101,6 +109,8 @@ class EntropyScreen(Screen[None]):
                     with TabbedContent(id="detail-tabs"):
                         with TabPane("Overview", id="tab-overview"):
                             yield Static("", id="overview-content")
+                        with TabPane("Context", id="tab-context"):
+                            yield Static("", id="context-content")
                         with TabPane("Evidence", id="tab-evidence"):
                             yield Static("", id="evidence-content")
                         with TabPane("Assumptions", id="tab-assumptions"):
@@ -119,6 +129,13 @@ class EntropyScreen(Screen[None]):
         self._entropy_objects_map.clear()
         self._table_entropy_objects.clear()
         self._compound_risks_map.clear()
+        self._type_decisions.clear()
+        self._semantic_annotations.clear()
+        self._stat_profiles.clear()
+        self._table_entities.clear()
+        self._relationships.clear()
+        self._table_id_to_name.clear()
+        self._column_id_to_name.clear()
         self._selected_key = None
         self._load_data()
 
@@ -135,7 +152,7 @@ class EntropyScreen(Screen[None]):
             EntropyObjectRecord,
             EntropySnapshotRecord,
         )
-        from dataraum.storage import Source, Table
+        from dataraum.storage import Column, Source, Table
 
         manager = get_manager(self.output_dir)
 
@@ -213,8 +230,8 @@ class EntropyScreen(Screen[None]):
                     select(Table).where(Table.source_id == source.source_id)
                 )
                 tables = tables_result.scalars().all()
-                table_id_to_name: dict[str, str] = {t.table_id: t.table_name for t in tables}
-                table_ids = list(table_id_to_name.keys())
+                self._table_id_to_name = {t.table_id: t.table_name for t in tables}
+                table_ids = list(self._table_id_to_name.keys())
 
                 if table_ids:
                     table_obj_result = session.execute(
@@ -226,7 +243,7 @@ class EntropyScreen(Screen[None]):
                         .order_by(EntropyObjectRecord.score.desc())
                     )
                     for obj in table_obj_result.scalars().all():
-                        t_name = table_id_to_name.get(obj.table_id or "", "unknown")
+                        t_name = self._table_id_to_name.get(obj.table_id or "", "unknown")
                         table_key = f"{t_name}.(table)"
                         self._table_entropy_objects.setdefault(table_key, []).append(obj)
 
@@ -240,6 +257,68 @@ class EntropyScreen(Screen[None]):
                         if target.startswith("column:"):
                             col_key = target[7:]  # Remove "column:" prefix
                             self._compound_risks_map.setdefault(col_key, []).append(cr)
+
+                # Batch load table metadata for context enrichment
+                if table_ids:
+                    col_result = session.execute(
+                        select(Column).where(Column.table_id.in_(table_ids))
+                    )
+                    for col in col_result.scalars().all():
+                        self._column_id_to_name[col.column_id] = col.column_name
+
+                if column_ids:
+                    from dataraum.analysis.statistics.db_models import StatisticalProfile
+                    from dataraum.analysis.typing.db_models import TypeDecision
+
+                    td_result = session.execute(
+                        select(TypeDecision).where(TypeDecision.column_id.in_(column_ids))
+                    )
+                    for td in td_result.scalars().all():
+                        self._type_decisions[td.column_id] = td
+
+                    from dataraum.analysis.semantic.db_models import SemanticAnnotation
+
+                    sa_result = session.execute(
+                        select(SemanticAnnotation).where(
+                            SemanticAnnotation.column_id.in_(column_ids)
+                        )
+                    )
+                    for sa in sa_result.scalars().all():
+                        self._semantic_annotations[sa.column_id] = sa
+
+                    sp_result = session.execute(
+                        select(StatisticalProfile)
+                        .where(StatisticalProfile.column_id.in_(column_ids))
+                        .order_by(StatisticalProfile.profiled_at.desc())
+                    )
+                    for sp in sp_result.scalars().all():
+                        if sp.column_id not in self._stat_profiles:
+                            self._stat_profiles[sp.column_id] = sp
+
+                if table_ids:
+                    from dataraum.analysis.relationships.db_models import Relationship
+                    from dataraum.analysis.semantic.db_models import TableEntity
+
+                    te_result = session.execute(
+                        select(TableEntity).where(TableEntity.table_id.in_(table_ids))
+                    )
+                    for te in te_result.scalars().all():
+                        self._table_entities[te.table_id] = te
+
+                    from sqlalchemy import or_
+
+                    rel_result = session.execute(
+                        select(Relationship).where(
+                            or_(
+                                Relationship.from_table_id.in_(table_ids),
+                                Relationship.to_table_id.in_(table_ids),
+                            )
+                        )
+                    )
+                    for rel in rel_result.scalars().all():
+                        self._relationships.setdefault(rel.from_table_id, []).append(rel)
+                        if rel.to_table_id != rel.from_table_id:
+                            self._relationships.setdefault(rel.to_table_id, []).append(rel)
 
                 # Update UI
                 self._update_summary(source.name, snapshot, interpretations)
@@ -351,6 +430,10 @@ class EntropyScreen(Screen[None]):
                     col.readiness, "white"
                 )
                 col_label = f"[{col_color}]{col.column_name}[/{col_color}]"
+                if col.column_id:
+                    td = self._type_decisions.get(col.column_id)
+                    if td:
+                        col_label += f" [dim]{td.decided_type}[/dim]"
                 table_node.add_leaf(col_label, data=f"{table_name}.{col.column_name}")
 
             table_node.expand()
@@ -387,9 +470,9 @@ class EntropyScreen(Screen[None]):
     def _update_table_level_panel(self, key: str) -> None:
         """Update detail panel for table-level entropy objects without interpretation."""
         header = self.query_one("#detail-header", Static)
-        header.update(
-            f"[bold]{key.replace('.(table)', '')}[/bold] | [dim]Table-level metrics[/dim]"
-        )
+        table_name = key.replace(".(table)", "")
+        context_hint = self._build_table_hint(table_name)
+        header.update(f"[bold]{table_name}[/bold]{context_hint} | [dim]Table-level metrics[/dim]")
 
         # Get table-level entropy objects
         objects = self._table_entropy_objects.get(key, [])
@@ -407,7 +490,8 @@ class EntropyScreen(Screen[None]):
         else:
             overview.update("[dim]No table-level measurements[/dim]")
 
-        # Update evidence tab
+        # Update context and evidence tabs
+        self._update_context_section(table_key=key)
         self._update_evidence_section(objects)
 
         # Clear assumptions/actions
@@ -421,14 +505,15 @@ class EntropyScreen(Screen[None]):
 
     def _update_detail_panel(self, interp: Any) -> None:
         """Update the detail panel with the selected interpretation."""
-        # Update header
+        # Update header with context hint
         header = self.query_one("#detail-header", Static)
         col_name = interp.column_name or "(table-level)"
         readiness_color = {"ready": "green", "investigate": "yellow", "blocked": "red"}.get(
             interp.readiness, "white"
         )
+        context_hint = self._build_header_hint(interp)
         header.update(
-            f"[bold]{interp.table_name}.{col_name}[/bold] | "
+            f"[bold]{interp.table_name}.{col_name}[/bold]{context_hint} | "
             f"[{readiness_color}]{interp.readiness.upper()}[/{readiness_color}] | "
             f"Score: {interp.composite_score:.3f}"
         )
@@ -443,6 +528,10 @@ class EntropyScreen(Screen[None]):
         # Update all sections
         self._update_layer_bars(entropy_objects)
         self._update_overview_section(interp)
+        if interp.column_name:
+            self._update_context_section(interp=interp)
+        else:
+            self._update_context_section(table_key=f"{interp.table_name}.(table)")
         self._update_evidence_section(entropy_objects)
         self._update_assumptions_section(interp)
         self._update_actions_section(interp, entropy_objects)
@@ -482,6 +571,172 @@ class EntropyScreen(Screen[None]):
                     parts.append(f"    Impact: {risk.impact}")
 
         overview.update("\n".join(parts))
+
+    def _build_header_hint(self, interp: Any) -> str:
+        """Build a [dim] context hint for the detail header."""
+        parts: list[str] = []
+        if interp.column_id:
+            td = self._type_decisions.get(interp.column_id)
+            if td:
+                parts.append(td.decided_type)
+            sa = self._semantic_annotations.get(interp.column_id)
+            if sa and sa.semantic_role:
+                parts.append(sa.semantic_role)
+        else:
+            parts = self._table_hint_parts(interp.table_name)
+        return f" [dim]({', '.join(parts)})[/dim]" if parts else ""
+
+    def _build_table_hint(self, table_name: str) -> str:
+        """Build a [dim] context hint for a table-level header."""
+        parts = self._table_hint_parts(table_name)
+        return f" [dim]({', '.join(parts)})[/dim]" if parts else ""
+
+    def _table_hint_parts(self, table_name: str) -> list[str]:
+        """Get hint parts for a table (entity type + fact/dimension)."""
+        parts: list[str] = []
+        table_id = self._resolve_table_id(table_name)
+        if table_id:
+            te = self._table_entities.get(table_id)
+            if te:
+                parts.append(te.detected_entity_type)
+                if te.is_fact_table:
+                    parts.append("Fact")
+                elif te.is_dimension_table:
+                    parts.append("Dimension")
+        return parts
+
+    def _update_context_section(
+        self, interp: Any | None = None, table_key: str | None = None
+    ) -> None:
+        """Update the Context tab with type/semantics/stats or entity/relationships."""
+        content = self.query_one("#context-content", Static)
+        parts: list[str] = []
+
+        if interp and interp.column_id:
+            col_id = interp.column_id
+
+            # Type section
+            td = self._type_decisions.get(col_id)
+            if td:
+                parts.append("[bold]Type[/bold]")
+                parts.append(f"  Decided type: {td.decided_type}")
+                parts.append(f"  Source: {td.decision_source}")
+                if td.decision_reason:
+                    parts.append(f"  Reason: {td.decision_reason}")
+                if td.previous_type:
+                    parts.append(f"  Previous: {td.previous_type}")
+            else:
+                parts.append("[dim]No type decision available[/dim]")
+
+            parts.append("")
+
+            # Semantics section
+            sa = self._semantic_annotations.get(col_id)
+            if sa:
+                parts.append("[bold]Semantics[/bold]")
+                if sa.business_name:
+                    parts.append(f"  Business name: {sa.business_name}")
+                if sa.semantic_role:
+                    parts.append(f"  Role: {sa.semantic_role}")
+                if sa.entity_type:
+                    parts.append(f"  Entity type: {sa.entity_type}")
+                if sa.business_concept:
+                    parts.append(f"  Concept: {sa.business_concept}")
+                if sa.confidence is not None:
+                    parts.append(f"  Confidence: {sa.confidence:.2f}")
+                if sa.annotation_source:
+                    parts.append(f"  Source: {sa.annotation_source}")
+            else:
+                parts.append("[dim]No semantic annotation available[/dim]")
+
+            parts.append("")
+
+            # Statistics section
+            sp = self._stat_profiles.get(col_id)
+            if sp:
+                parts.append("[bold]Statistics[/bold]")
+                parts.append(f"  Total: {sp.total_count:,}")
+                null_str = f"{sp.null_count:,}"
+                if sp.null_ratio is not None:
+                    null_str += f" ({sp.null_ratio:.1%})"
+                parts.append(f"  Nulls: {null_str}")
+                if sp.distinct_count is not None:
+                    parts.append(f"  Distinct: {sp.distinct_count:,}")
+                if sp.cardinality_ratio is not None:
+                    parts.append(f"  Cardinality: {sp.cardinality_ratio:.3f}")
+                if sp.is_unique is not None:
+                    parts.append(f"  Unique: {'Yes' if sp.is_unique else 'No'}")
+                if sp.is_numeric is not None:
+                    parts.append(f"  Numeric: {'Yes' if sp.is_numeric else 'No'}")
+            else:
+                parts.append("[dim]No statistical profile available[/dim]")
+
+        elif table_key:
+            table_name = table_key.replace(".(table)", "")
+            table_id = self._resolve_table_id(table_name)
+
+            if table_id:
+                # Entity section
+                te = self._table_entities.get(table_id)
+                if te:
+                    parts.append("[bold]Entity[/bold]")
+                    parts.append(f"  Type: {te.detected_entity_type}")
+                    if te.is_fact_table:
+                        parts.append("  Classification: Fact table")
+                    elif te.is_dimension_table:
+                        parts.append("  Classification: Dimension table")
+                    if te.description:
+                        parts.append(f"  Description: {te.description}")
+                    if te.confidence is not None:
+                        parts.append(f"  Confidence: {te.confidence:.2f}")
+                    if te.grain_columns:
+                        grain = te.grain_columns
+                        if isinstance(grain, list):
+                            names = [self._column_id_to_name.get(c, c[:8]) for c in grain]
+                            parts.append(f"  Grain: {', '.join(names)}")
+                        elif isinstance(grain, dict):
+                            parts.append(f"  Grain: {grain}")
+                    if te.detection_source:
+                        parts.append(f"  Source: {te.detection_source}")
+                else:
+                    parts.append("[dim]No entity information available[/dim]")
+
+                parts.append("")
+
+                # Relationships section
+                rels = self._relationships.get(table_id, [])
+                if rels:
+                    parts.append("[bold]Relationships[/bold]")
+                    for rel in rels[:10]:
+                        ft = self._table_id_to_name.get(rel.from_table_id, "?")
+                        tt = self._table_id_to_name.get(rel.to_table_id, "?")
+                        fc = self._column_id_to_name.get(rel.from_column_id, "?")
+                        tc = self._column_id_to_name.get(rel.to_column_id, "?")
+                        conf = f"{rel.confidence:.2f}" if rel.confidence else "?"
+                        parts.append(f"  {ft}.{fc} -> {tt}.{tc}")
+                        card = f", {rel.cardinality}" if rel.cardinality else ""
+                        method = f", {rel.detection_method}" if rel.detection_method else ""
+                        parts.append(
+                            f"    {rel.relationship_type}{card}, confidence: {conf}{method}"
+                        )
+                    if len(rels) > 10:
+                        parts.append(f"  [dim]... and {len(rels) - 10} more[/dim]")
+                else:
+                    parts.append("[dim]No relationships detected[/dim]")
+            else:
+                parts.append("[dim]No table metadata available[/dim]")
+
+        else:
+            parts.append("[dim]Select a column or table to view context[/dim]")
+
+        content.update("\n".join(parts))
+
+    def _resolve_table_id(self, table_name: str) -> str | None:
+        """Look up table_id from table_name."""
+        for tid, tname in self._table_id_to_name.items():
+            if tname == table_name:
+                return tid
+        return None
 
     def _update_evidence_section(self, entropy_objects: Sequence[Any]) -> None:
         """Update the Evidence tab with full detector-specific evidence."""

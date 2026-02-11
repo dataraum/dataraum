@@ -243,7 +243,8 @@ DataTable > .datatable--cursor {
 #tab-semantics,
 #tab-relationships,
 #tab-quality,
-#tab-entity {
+#tab-entity,
+#tab-entropy {
     overflow-y: auto;
 }
 
@@ -284,6 +285,17 @@ DataTable > .datatable--cursor {
 #actions-table,
 #entropy-objects-table {
     max-height: 10;
+}
+
+/* Actions screen */
+#actions-tree {
+    height: 1fr;
+    border: solid $primary-background;
+}
+
+#tab-action,
+#tab-impact {
+    overflow-y: auto;
 }
 
 /* Contract detail screen */

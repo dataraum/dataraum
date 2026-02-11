@@ -21,6 +21,7 @@ from textual.widgets import (
 from textual.widgets.tree import TreeNode
 
 from dataraum.cli.common import get_manager
+from dataraum.cli.tui.formatting import format_evidence_field
 
 
 class EntropyBar(Static):
@@ -508,7 +509,7 @@ class EntropyScreen(Screen[None]):
 
             if evidence:
                 for key, value in evidence.items():
-                    parts.append(f"  {_format_evidence_field(key, value)}")
+                    parts.append(f"  {format_evidence_field(key, value)}")
             else:
                 parts.append("  [dim]No evidence data[/dim]")
 
@@ -696,35 +697,3 @@ class EntropyScreen(Screen[None]):
             parts.append(f"[{color}]{short_label}: {avg_score:.2f}[/{color}]")
 
         container.update(" | ".join(parts) if parts else "[dim]No layer data[/dim]")
-
-
-def _format_evidence_field(key: str, value: Any) -> str:
-    """Format a single evidence field with human-readable label and value."""
-    # Human-readable key names
-    label = key.replace("_", " ").title()
-
-    if isinstance(value, float):
-        # Show as percentage if it looks like a ratio
-        if key.endswith(("_rate", "_ratio", "_confidence", "confidence")):
-            return f"[dim]{label}:[/dim] {value:.1%}"
-        return f"[dim]{label}:[/dim] {value:.3f}"
-    elif isinstance(value, bool):
-        return f"[dim]{label}:[/dim] {'yes' if value else 'no'}"
-    elif isinstance(value, int):
-        return f"[dim]{label}:[/dim] {value:,}"
-    elif isinstance(value, list):
-        if not value:
-            return f"[dim]{label}:[/dim] (none)"
-        # Show list items inline, truncated
-        items = [str(v) for v in value[:5]]
-        suffix = f" ... +{len(value) - 5}" if len(value) > 5 else ""
-        return f"[dim]{label}:[/dim] {', '.join(items)}{suffix}"
-    elif isinstance(value, dict):
-        # Show dict as key=value pairs
-        items = [f"{k}={v}" for k, v in list(value.items())[:3]]
-        return f"[dim]{label}:[/dim] {', '.join(items)}"
-    else:
-        val_str = str(value)
-        if len(val_str) > 80:
-            val_str = val_str[:77] + "..."
-        return f"[dim]{label}:[/dim] {val_str}"

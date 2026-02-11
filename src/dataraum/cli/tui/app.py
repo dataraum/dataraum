@@ -30,6 +30,7 @@ class DataraumApp(App[None]):
         Binding("h", "switch_screen('home')", "Home", show=True),
         Binding("e", "switch_screen('entropy')", "Entropy", show=True),
         Binding("c", "switch_screen('contracts')", "Contracts", show=True),
+        Binding("a", "switch_screen('actions')", "Actions", show=True),
         Binding("t", "show_table_picker", "Tables", show=True),
         Binding("/", "switch_screen('query')", "Query", show=True),
         Binding("?", "show_help", "Help", show=True),
@@ -71,6 +72,7 @@ class DataraumApp(App[None]):
 
     def on_mount(self) -> None:
         """Handle app mount - install screens and switch to initial."""
+        from dataraum.cli.tui.screens.actions import ActionsScreen
         from dataraum.cli.tui.screens.contracts import ContractsScreen
         from dataraum.cli.tui.screens.entropy import EntropyScreen
         from dataraum.cli.tui.screens.home import HomeScreen
@@ -83,6 +85,7 @@ class DataraumApp(App[None]):
             name="entropy",
         )
         self.install_screen(ContractsScreen(self.output_dir), name="contracts")
+        self.install_screen(ActionsScreen(self.output_dir), name="actions")
         self.install_screen(
             QueryScreen(self.output_dir, initial_query=self.initial_query),
             name="query",
@@ -119,7 +122,7 @@ class DataraumApp(App[None]):
     def action_show_help(self) -> None:
         """Show help dialog."""
         self.notify(
-            "Keys: [h]ome, [e]ntropy, [c]ontracts, [t]ables, [/]query, [q]uit\n"
+            "Keys: [h]ome, [e]ntropy, [c]ontracts, [a]ctions, [t]ables, [/]query, [q]uit\n"
             "Use arrow keys to navigate, Enter to select",
             title="Help",
             timeout=5,

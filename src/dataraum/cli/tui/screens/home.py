@@ -83,9 +83,12 @@ class HomeScreen(Screen[None]):
 
                 source = sources[0]
 
-                # Get tables
+                # Get typed tables only — raw/quarantine layers aren't useful in the UI
                 tables_result = session.execute(
-                    select(Table).where(Table.source_id == source.source_id)
+                    select(Table).where(
+                        Table.source_id == source.source_id,
+                        Table.layer == "typed",
+                    )
                 )
                 tables = tables_result.scalars().all()
 

@@ -12,6 +12,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Static, TabbedContent, TabPane
 
 from dataraum.cli.common import get_manager
+from dataraum.cli.tui.formatting import format_score_color
 
 
 class TableScreen(Screen[None]):
@@ -28,6 +29,10 @@ class TableScreen(Screen[None]):
         self.table_name = table_name
         self._data_loaded = False
         self._column_names: list[str] = []
+        # Entropy objects keyed by column_id for the Entropy tab
+        self._entropy_objects_by_col: dict[str, list[Any]] = {}
+        # column_name -> column_id mapping for row highlight lookup
+        self._col_name_to_id: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         """Create the screen layout."""
@@ -50,6 +55,8 @@ class TableScreen(Screen[None]):
                     yield DataTable(id="quality-table")
                 with TabPane("Entity", id="tab-entity"):
                     yield Static("", id="entity-content")
+                with TabPane("Entropy", id="tab-entropy"):
+                    yield Static("", id="entropy-content")
             # Sample data section
             with Container(classes="sample-section"):
                 yield Static("Sample Data", classes="section-title")
@@ -75,7 +82,7 @@ class TableScreen(Screen[None]):
         from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
         from dataraum.analysis.statistics.db_models import StatisticalProfile
         from dataraum.analysis.typing.db_models import TypeDecision
-        from dataraum.entropy.db_models import EntropyInterpretationRecord
+        from dataraum.entropy.db_models import EntropyInterpretationRecord, EntropyObjectRecord
         from dataraum.storage import Column, Source, Table
 
         manager = get_manager(self.output_dir)
@@ -92,11 +99,12 @@ class TableScreen(Screen[None]):
 
                 source = sources[0]
 
-                # Get table
+                # Get typed table — all detail tabs (entropy, semantics, etc.) require typed layer
                 table_result = session.execute(
                     select(Table).where(
                         Table.source_id == source.source_id,
                         Table.table_name == self.table_name,
+                        Table.layer == "typed",
                     )
                 )
                 table = table_result.scalar_one_or_none()
@@ -113,6 +121,7 @@ class TableScreen(Screen[None]):
 
                 # Build column_id -> column_name map
                 col_name_map = {c.column_id: c.column_name for c in columns}
+                self._col_name_to_id = {c.column_name: c.column_id for c in columns}
 
                 # Get type decisions
                 type_decisions: dict[str, Any] = {}
@@ -183,6 +192,21 @@ class TableScreen(Screen[None]):
                     select(TableEntity).where(TableEntity.table_id == table.table_id)
                 )
                 table_entity = entity_result.scalar_one_or_none()
+
+                # Load entropy objects for all columns in this table
+                column_ids = [c.column_id for c in columns]
+                if column_ids:
+                    eo_result = session.execute(
+                        select(EntropyObjectRecord)
+                        .where(EntropyObjectRecord.column_id.in_(column_ids))
+                        .order_by(
+                            EntropyObjectRecord.column_id,
+                            EntropyObjectRecord.score.desc(),
+                        )
+                    )
+                    for obj in eo_result.scalars().all():
+                        if obj.column_id:
+                            self._entropy_objects_by_col.setdefault(obj.column_id, []).append(obj)
 
                 # Update UI
                 self._update_table_info(table)
@@ -265,6 +289,75 @@ class TableScreen(Screen[None]):
 
         screen = EntropyScreen(self.output_dir, table_filter=self.table_name)
         self.app.push_screen(screen)
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Update Entropy tab when cursor moves over a column row."""
+        if event.data_table.id != "columns-table":
+            return
+
+        if event.cursor_row >= len(self._column_names):
+            return
+
+        col_name = self._column_names[event.cursor_row]
+        col_id = self._col_name_to_id.get(col_name)
+        if col_id:
+            self._update_entropy_tab(col_name, col_id)
+
+    def _update_entropy_tab(self, col_name: str, col_id: str) -> None:
+        """Update the Entropy tab with dimension breakdown for a column."""
+        content = self.query_one("#entropy-content", Static)
+        objects = self._entropy_objects_by_col.get(col_id, [])
+
+        if not objects:
+            content.update(f"[dim]No entropy data for {col_name}[/dim]")
+            return
+
+        parts: list[str] = []
+        parts.append(f"[bold]{col_name}[/bold]")
+        parts.append("")
+
+        # Layer bars summary
+        layer_scores: dict[str, list[float]] = {}
+        for obj in objects:
+            layer_scores.setdefault(obj.layer, []).append(obj.score)
+
+        layer_order = ["structural", "semantic", "value", "computational"]
+        bar_parts: list[str] = []
+        for layer in layer_order:
+            scores = layer_scores.get(layer, [])
+            if not scores:
+                continue
+            avg = sum(scores) / len(scores)
+            color = format_score_color(avg)
+            short = layer[:3].upper()
+            bar_parts.append(f"[{color}]{short}: {avg:.2f}[/{color}]")
+
+        if bar_parts:
+            parts.append(" | ".join(bar_parts))
+            parts.append("")
+
+        # Dimension scores with top resolution hint per dimension
+        for obj in objects:
+            color = format_score_color(obj.score)
+            parts.append(
+                f"  [{color}]{obj.score:.3f}[/{color}] "
+                f"[bold]{obj.dimension}.{obj.sub_dimension}[/bold]  "
+                f"[dim]conf: {obj.confidence:.2f}[/dim]"
+            )
+
+            # Show top resolution hint for this dimension
+            if obj.resolution_options:
+                for opt in obj.resolution_options[:1]:
+                    if not isinstance(opt, dict):
+                        continue
+                    action = opt.get("action", "?")
+                    reduction = opt.get("expected_entropy_reduction", 0)
+                    effort = opt.get("effort", "?")
+                    parts.append(
+                        f"    [dim]-> {action} (reduction: {reduction:.0%}, effort: {effort})[/dim]"
+                    )
+
+        content.update("\n".join(parts))
 
     def _update_statistics_tab(self, columns: Sequence[Any], stat_profiles: dict[str, Any]) -> None:
         """Update the Statistics tab with per-column type counts and basic stats."""

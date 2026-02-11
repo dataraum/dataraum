@@ -54,7 +54,10 @@ class TablePickerScreen(Screen[None]):
                 source = sources[0]
 
                 tables_result = session.execute(
-                    select(Table).where(Table.source_id == source.source_id)
+                    select(Table).where(
+                        Table.source_id == source.source_id,
+                        Table.layer == "typed",
+                    )
                 )
                 tables = tables_result.scalars().all()
 
@@ -64,7 +67,6 @@ class TablePickerScreen(Screen[None]):
                 table_widget.add_column("Table", key="table")
                 table_widget.add_column("Columns", key="columns")
                 table_widget.add_column("Rows", key="rows")
-                table_widget.add_column("Layer", key="layer")
 
                 self._table_names = []
                 for tbl in tables:
@@ -72,13 +74,10 @@ class TablePickerScreen(Screen[None]):
                         select(func.count(Column.column_id)).where(Column.table_id == tbl.table_id)
                     ).scalar()
 
-                    layer = tbl.table_name.split("_")[0] if "_" in tbl.table_name else "-"
-
                     table_widget.add_row(
                         tbl.table_name,
                         str(col_count or 0),
                         str(tbl.row_count or "-"),
-                        layer,
                     )
                     self._table_names.append(tbl.table_name)
         finally:

@@ -66,6 +66,66 @@ class TestFormatEvidenceField:
         result = format_evidence_field("my_field_name", "val")
         assert "My Field Name:" in result
 
+    def test_value_with_brackets_escaped(self):
+        """Values containing [ ] chars must produce valid Textual markup."""
+        from textual.content import Content
+
+        result = format_evidence_field("info", "has [dim] brackets [/dim]")
+        Content.from_markup(result)  # Should not raise
+
+    def test_uppercase_bracket_escaped(self):
+        """Uppercase-starting brackets like [Account] must be escaped for Textual."""
+        from textual.content import Content
+
+        result = format_evidence_field(
+            "description",
+            "1 distinct values in [Account type=Expenses] vs 282 in [Income]",
+        )
+        Content.from_markup(result)  # Should not raise
+
+    def test_truncated_bracket_escaped(self):
+        """A bracket split by truncation must still be escaped."""
+        from textual.content import Content
+
+        # This is >80 chars with a [ near position 70 that gets truncated mid-tag
+        val = "Account name has different value sets by slice: 1 distinct values in [Account type=Expenses] vs 282"
+        result = format_evidence_field("description", val)
+        Content.from_markup(result)  # Should not raise
+
+    def test_dict_with_list_values_escaped(self):
+        """Dict values containing lists (with brackets) must be escaped."""
+        from textual.content import Content
+
+        result = format_evidence_field("data", {"key": ["a", "b"]})
+        Content.from_markup(result)  # Should not raise
+
+    def test_list_with_nested_list_escaped(self):
+        """Nested list values must be escaped."""
+        from textual.content import Content
+
+        result = format_evidence_field("data", [[1, 2], [3, 4]])
+        Content.from_markup(result)  # Should not raise
+
+    def test_all_types_produce_valid_markup(self):
+        """Every value type must produce valid Textual markup."""
+        from textual.content import Content
+
+        cases = [
+            ("f", 0.5),
+            ("rate", 0.1),
+            ("b", True),
+            ("i", 42),
+            ("l", [1, "two", {"three": 3}]),
+            ("d", {"k": [1, 2], "m": {"n": "o"}}),
+            ("s", "hello [world]"),
+            ("s_upper", "test [Account] bracket"),
+            ("n", None),
+            ("e", []),
+        ]
+        for key, value in cases:
+            result = format_evidence_field(key, value)
+            Content.from_markup(result)  # Should not raise
+
 
 class TestFormatScoreColor:
     """Tests for format_score_color."""

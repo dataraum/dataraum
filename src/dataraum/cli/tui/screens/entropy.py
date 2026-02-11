@@ -21,7 +21,7 @@ from textual.widgets import (
 from textual.widgets.tree import TreeNode
 
 from dataraum.cli.common import get_manager
-from dataraum.cli.tui.formatting import format_evidence_field
+from dataraum.cli.tui.formatting import escape_markup, format_evidence_field
 
 
 class EntropyBar(Static):
@@ -88,6 +88,7 @@ class EntropyScreen(Screen[None]):
         self._table_entities: dict[str, Any] = {}  # table_id -> TableEntity
         self._relationships: dict[str, list[Any]] = {}  # table_id -> [Relationship]
         self._table_id_to_name: dict[str, str] = {}
+        self._typed_table_name_to_id: dict[str, str] = {}  # typed layer only
         self._column_id_to_name: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
@@ -135,6 +136,7 @@ class EntropyScreen(Screen[None]):
         self._table_entities.clear()
         self._relationships.clear()
         self._table_id_to_name.clear()
+        self._typed_table_name_to_id.clear()
         self._column_id_to_name.clear()
         self._selected_key = None
         self._load_data()
@@ -231,6 +233,9 @@ class EntropyScreen(Screen[None]):
                 )
                 tables = tables_result.scalars().all()
                 self._table_id_to_name = {t.table_id: t.table_name for t in tables}
+                self._typed_table_name_to_id = {
+                    t.table_name: t.table_id for t in tables if t.layer == "typed"
+                }
                 table_ids = list(self._table_id_to_name.keys())
 
                 if table_ids:
@@ -258,10 +263,12 @@ class EntropyScreen(Screen[None]):
                             col_key = target[7:]  # Remove "column:" prefix
                             self._compound_risks_map.setdefault(col_key, []).append(cr)
 
-                # Batch load table metadata for context enrichment
-                if table_ids:
+                # Batch load table metadata — strictly from typed layer
+                typed_table_ids = list(self._typed_table_name_to_id.values())
+
+                if typed_table_ids:
                     col_result = session.execute(
-                        select(Column).where(Column.table_id.in_(table_ids))
+                        select(Column).where(Column.table_id.in_(typed_table_ids))
                     )
                     for col in col_result.scalars().all():
                         self._column_id_to_name[col.column_id] = col.column_name
@@ -295,12 +302,12 @@ class EntropyScreen(Screen[None]):
                         if sp.column_id not in self._stat_profiles:
                             self._stat_profiles[sp.column_id] = sp
 
-                if table_ids:
+                if typed_table_ids:
                     from dataraum.analysis.relationships.db_models import Relationship
                     from dataraum.analysis.semantic.db_models import TableEntity
 
                     te_result = session.execute(
-                        select(TableEntity).where(TableEntity.table_id.in_(table_ids))
+                        select(TableEntity).where(TableEntity.table_id.in_(typed_table_ids))
                     )
                     for te in te_result.scalars().all():
                         self._table_entities[te.table_id] = te
@@ -310,8 +317,8 @@ class EntropyScreen(Screen[None]):
                     rel_result = session.execute(
                         select(Relationship).where(
                             or_(
-                                Relationship.from_table_id.in_(table_ids),
-                                Relationship.to_table_id.in_(table_ids),
+                                Relationship.from_table_id.in_(typed_table_ids),
+                                Relationship.to_table_id.in_(typed_table_ids),
                             )
                         )
                     )
@@ -463,8 +470,8 @@ class EntropyScreen(Screen[None]):
         # Check interpretation map first
         if node.data in self._interp_map:
             self._update_detail_panel(self._interp_map[node.data])
-        elif node.data in self._table_entropy_objects:
-            # Table-level node with entropy objects but no interpretation
+        elif node.data.endswith(".(table)"):
+            # Table node — show whatever table-level data we have
             self._update_table_level_panel(node.data)
 
     def _update_table_level_panel(self, key: str) -> None:
@@ -538,11 +545,12 @@ class EntropyScreen(Screen[None]):
 
     def _update_overview_section(self, interp: Any) -> None:
         """Update the Overview section with explanation and compound risks."""
+
         overview = self.query_one("#overview-content", Static)
         parts: list[str] = []
 
-        # LLM explanation
-        explanation = interp.explanation or "No explanation available"
+        # LLM explanation (escape to prevent markup injection)
+        explanation = escape_markup(interp.explanation or "No explanation available")
         parts.append(explanation)
 
         # Compound risks for this column
@@ -565,10 +573,10 @@ class EntropyScreen(Screen[None]):
                     dim_parts = []
                     for dim in risk.dimensions:
                         s = dim_scores.get(dim, 0.0)
-                        dim_parts.append(f"{dim}: {s:.2f}")
+                        dim_parts.append(f"{escape_markup(str(dim))}: {s:.2f}")
                     parts.append(f"    Dimensions: {', '.join(dim_parts)}")
                 if risk.impact:
-                    parts.append(f"    Impact: {risk.impact}")
+                    parts.append(f"    Impact: {escape_markup(str(risk.impact))}")
 
         overview.update("\n".join(parts))
 
@@ -593,17 +601,17 @@ class EntropyScreen(Screen[None]):
 
     def _table_hint_parts(self, table_name: str) -> list[str]:
         """Get hint parts for a table (entity type + fact/dimension)."""
-        parts: list[str] = []
-        table_id = self._resolve_table_id(table_name)
+        table_id = self._resolve_typed_table_id(table_name)
         if table_id:
             te = self._table_entities.get(table_id)
             if te:
-                parts.append(te.detected_entity_type)
+                parts = [te.detected_entity_type]
                 if te.is_fact_table:
                     parts.append("Fact")
                 elif te.is_dimension_table:
                     parts.append("Dimension")
-        return parts
+                return parts
+        return []
 
     def _update_context_section(
         self, interp: Any | None = None, table_key: str | None = None
@@ -673,7 +681,7 @@ class EntropyScreen(Screen[None]):
 
         elif table_key:
             table_name = table_key.replace(".(table)", "")
-            table_id = self._resolve_table_id(table_name)
+            table_id = self._resolve_typed_table_id(table_name)
 
             if table_id:
                 # Entity section
@@ -731,15 +739,24 @@ class EntropyScreen(Screen[None]):
 
         content.update("\n".join(parts))
 
-    def _resolve_table_id(self, table_name: str) -> str | None:
-        """Look up table_id from table_name."""
-        for tid, tname in self._table_id_to_name.items():
-            if tname == table_name:
-                return tid
-        return None
+    def _resolve_typed_table_id(self, table_name: str) -> str | None:
+        """Look up the typed-layer table_id for a table_name."""
+        return self._typed_table_name_to_id.get(table_name)
+
+    @staticmethod
+    def _safe_markup(line: str) -> str:
+        """Return line as-is if valid Textual markup, escaped otherwise."""
+        from textual.content import Content
+
+        try:
+            Content.from_markup(line)
+            return line
+        except Exception:
+            return escape_markup(line)
 
     def _update_evidence_section(self, entropy_objects: Sequence[Any]) -> None:
         """Update the Evidence tab with full detector-specific evidence."""
+
         content = self.query_one("#evidence-content", Static)
 
         if not entropy_objects:
@@ -751,8 +768,11 @@ class EntropyScreen(Screen[None]):
         for obj in entropy_objects:
             # Section header per entropy object
             score_color = "red" if obj.score > 0.3 else "yellow" if obj.score > 0.15 else "green"
+            layer = escape_markup(str(obj.layer))
+            dim = escape_markup(str(obj.dimension))
+            sub = escape_markup(str(obj.sub_dimension))
             parts.append(
-                f"[bold]{obj.layer} > {obj.dimension} > {obj.sub_dimension}[/bold]  "
+                f"[bold]{layer} > {dim} > {sub}[/bold]  "
                 f"[{score_color}]{obj.score:.3f}[/{score_color}]  "
                 f"[dim]confidence: {obj.confidence:.2f}[/dim]"
             )
@@ -773,22 +793,29 @@ class EntropyScreen(Screen[None]):
                 for opt in obj.resolution_options:
                     if not isinstance(opt, dict):
                         continue
-                    action = opt.get("action", "?")
-                    reduction = opt.get("expected_entropy_reduction", 0)
-                    effort = opt.get("effort", "?")
+                    action = escape_markup(str(opt.get("action", "?")))
+                    reduction = opt.get("expected_entropy_reduction", 0) or 0
+                    effort = escape_markup(str(opt.get("effort", "?")))
                     cascade = opt.get("cascade_dimensions", [])
                     parts.append(
                         f"  [dim]-> {action}[/dim]  reduction: {reduction:.0%}, effort: {effort}"
                     )
                     if cascade:
-                        parts.append(f"     cascades: {', '.join(cascade)}")
+                        safe = escape_markup(", ".join(str(c) for c in cascade))
+                        parts.append(f"     cascades: {safe}")
 
             parts.append("")  # Blank line between objects
 
-        content.update("\n".join(parts))
+        combined = "\n".join(parts)
+        try:
+            content.update(combined)
+        except Exception:
+            # Validate per-line — escape only the problematic lines
+            content.update("\n".join(self._safe_markup(p) for p in parts))
 
     def _update_assumptions_section(self, interp: Any) -> None:
         """Update the Assumptions section with expandable items."""
+
         container = self.query_one("#assumptions-list", Vertical)
         container.remove_children()
 
@@ -808,21 +835,21 @@ class EntropyScreen(Screen[None]):
             if not isinstance(a, dict):
                 continue
 
-            dim = a.get("dimension", "-")
-            text = a.get("assumption_text", "")
-            conf = a.get("confidence", "-")
-            impact = a.get("impact", "")
-            basis = a.get("basis", "")
+            dim = escape_markup(str(a.get("dimension", "-")))
+            text = escape_markup(str(a.get("assumption_text", "")))
+            conf = str(a.get("confidence", "-"))
+            impact = escape_markup(str(a.get("impact", "")))
+            basis = escape_markup(str(a.get("basis", "")))
 
-            conf_color = conf_colors.get(str(conf).lower(), "white")
+            conf_color = conf_colors.get(conf.lower(), "white")
 
-            title = f"[{conf_color}]{conf.upper()}[/{conf_color}] {dim}"
+            title = f"[{conf_color}]{escape_markup(conf.upper())}[/{conf_color}] {dim}"
 
             # Full content for expanded state
             content = (
                 f"[bold]Assumption:[/bold]\n{text}\n\n"
                 f"[bold]Impact:[/bold]\n{impact}\n\n"
-                f"[dim]Confidence: {conf} | Basis: {basis}[/dim]"
+                f"[dim]Confidence: {escape_markup(conf)} | Basis: {basis}[/dim]"
             )
 
             collapsible = Collapsible(
@@ -836,6 +863,7 @@ class EntropyScreen(Screen[None]):
         self, interp: Any, entropy_objects: Sequence[Any] | None = None
     ) -> None:
         """Update the Actions section with expandable items."""
+
         container = self.query_one("#actions-list", Vertical)
         container.remove_children()
 
@@ -874,39 +902,43 @@ class EntropyScreen(Screen[None]):
         priority_colors = {"high": "red", "medium": "yellow", "low": "green"}
 
         for action in actions:
-            priority = action.get("priority", "medium")
-            action_name = action.get("action", "-")
-            description = action.get("description", "")
-            effort = action.get("effort", "-")
-            expected_impact = action.get("expected_impact", "")
+            priority = str(action.get("priority", "medium"))
+            action_name = str(action.get("action", "-"))
+            description = str(action.get("description", ""))
+            effort = str(action.get("effort", "-"))
+            expected_impact = str(action.get("expected_impact", ""))
             parameters = action.get("parameters", {})
 
-            p_color = priority_colors.get(str(priority).lower(), "white")
+            p_color = priority_colors.get(priority.lower(), "white")
 
             # Title with reduction if available
             reduction = reduction_by_action.get(action_name, 0.0)
             reduction_str = f" {reduction:.0%}" if reduction else ""
             title = (
-                f"[{p_color}]{priority.upper()}[/{p_color}] {action_name} "
-                f"[dim](effort: {effort}{reduction_str})[/dim]"
+                f"[{p_color}]{escape_markup(priority.upper())}[/{p_color}] {escape_markup(action_name)} "
+                f"[dim](effort: {escape_markup(effort)}{reduction_str})[/dim]"
             )
 
             # Full content for expanded state
-            content = f"[bold]Description:[/bold]\n{description}"
+            content = f"[bold]Description:[/bold]\n{escape_markup(description)}"
             if expected_impact:
-                content += f"\n\n[bold]Expected Impact:[/bold]\n{expected_impact}"
+                content += f"\n\n[bold]Expected Impact:[/bold]\n{escape_markup(expected_impact)}"
 
             # Parameters
             if parameters and isinstance(parameters, dict):
-                param_lines = [f"  {k}: {v}" for k, v in parameters.items()]
+                param_lines = [
+                    f"  {escape_markup(str(k))}: {escape_markup(str(v))}"
+                    for k, v in parameters.items()
+                ]
                 content += "\n\n[bold]Parameters:[/bold]\n" + "\n".join(param_lines)
 
             # Cascade dimensions from raw resolution options
             cascade = cascade_by_action.get(action_name, [])
             if cascade:
-                content += "\n\n[bold]Cascades to:[/bold]\n  " + ", ".join(cascade)
+                safe_cascade = ", ".join(escape_markup(str(c)) for c in cascade)
+                content += f"\n\n[bold]Cascades to:[/bold]\n  {safe_cascade}"
 
-            content += f"\n\n[dim]Priority: {priority} | Effort: {effort}[/dim]"
+            content += f"\n\n[dim]Priority: {escape_markup(priority)} | Effort: {escape_markup(effort)}[/dim]"
 
             collapsible = Collapsible(
                 Static(content, classes="action-content"),

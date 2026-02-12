@@ -198,6 +198,22 @@ SemanticPhase._run()
 - Column annotations from the fast model can be included as context for the capable model's relationship analysis
 - Prompt for column annotation is simpler: schema + ontology concepts + type decisions (no relationship candidates, no topology)
 
+## Evaluation Required: Numeric Correlations as Semantic Context
+
+> **Status**: Pending. Correlations currently compute before semantic, producing noise. Evaluate reordering.
+
+Within-table numeric correlations (Pearson/Spearman) are currently computed for ALL numeric column pairs — including IDs, timestamps, and zip codes. The `semantic/utils.py` consumer filters to `strong`/`very_strong` only, but this doesn't eliminate semantically meaningless pairs (e.g., `customer_id` correlating with `row_number`).
+
+**Value assessment**: Correlations between **measure** columns are genuinely useful LLM context — they signal related metrics, redundant columns, and candidate aggregation groups. But the current approach is backwards: we compute everything, then hope the strength filter catches the noise.
+
+**Proposed improvement**: Compute correlations AFTER semantic annotation, filtered to measure-measure pairs only. This could work as:
+
+1. **Two-pass approach**: First-pass semantic annotation gives column roles → correlations run on measure columns only → results fed to semantic for relationship confirmation (or a second LLM pass)
+2. **On-demand approach**: Semantic agent requests correlations for specific column pairs it wants to validate, rather than pre-computing all pairs
+3. **LLM-filtered approach**: Compute all correlations, feed them to the semantic agent along with column roles, and let the LLM discard noise (simplest, leverages existing ordering)
+
+**Key consideration**: The derived column detector (pure SQL, feeds entropy) must stay in the pipeline regardless. Only the Pearson/Spearman correlation is in question.
+
 ## Evaluation Required: Cross-Table Correlations
 
 > **Status**: Pending evaluation alongside correlations/relationships analysis.

@@ -858,28 +858,18 @@ def _run_dimensional_entropy(
                         "recommendations_count": len(all_recommendations),
                     }
                 ],
-                # TODO: there should only be one resolution option here that links to the specific findings and recommendations
                 resolution_options=[
                     ResolutionOption(
-                        action="review_quality_findings",
+                        action="investigate_quality_issues",
                         parameters={
                             "column_name": col_name,
                             "key_findings": all_key_findings,
+                            "quality_issues": all_quality_issues,
                             "recommendations": all_recommendations,
                         },
-                        expected_entropy_reduction=entropy_score_val * 0.5,
-                        effort="low",
-                        description=f"Review {len(all_key_findings)} quality findings for {col_name}",
-                    ),
-                    ResolutionOption(
-                        action="address_quality_issues",
-                        parameters={
-                            "column_name": col_name,
-                            "issues": all_quality_issues,
-                        },
-                        expected_entropy_reduction=entropy_score_val * 0.7,
+                        expected_entropy_reduction=entropy_score_val * 0.6,
                         effort="medium",
-                        description=f"Address {len(all_quality_issues)} quality issues in {col_name}",
+                        description=f"Review {len(all_quality_issues)} quality issues and {len(all_recommendations)} recommendations for {col_name}",
                     ),
                 ],
                 detector_id="dimensional_entropy_column_quality",

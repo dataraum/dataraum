@@ -116,7 +116,7 @@ class TemporalEntropyDetector(EntropyDetector):
         if temporal_status == "unmarked":
             resolution_options.append(
                 ResolutionOption(
-                    action="mark_timestamp",
+                    action="document_timestamp_role",
                     parameters={
                         "column": context.column_name,
                         "table": context.table_name,
@@ -130,7 +130,7 @@ class TemporalEntropyDetector(EntropyDetector):
         elif temporal_status == "mismatch":
             resolution_options.append(
                 ResolutionOption(
-                    action="resolve_temporal_mismatch",
+                    action="transform_resolve_temporal_mismatch",
                     parameters={
                         "column": context.column_name,
                         "table": context.table_name,

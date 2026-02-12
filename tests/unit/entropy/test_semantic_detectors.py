@@ -195,9 +195,9 @@ class TestBusinessMeaningDetector:
         results = detector.detect(context)
 
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "add_description" in actions
-        assert "add_business_name" in actions
-        assert "add_entity_type" in actions
+        assert "document_description" in actions
+        assert "document_business_name" in actions
+        assert "document_entity_type" in actions
 
     def test_resolution_options_with_description(self, detector: BusinessMeaningDetector):
         """Test resolution options when description exists but not others."""
@@ -216,11 +216,11 @@ class TestBusinessMeaningDetector:
         results = detector.detect(context)
 
         actions = [opt.action for opt in results[0].resolution_options]
-        # Has description, so add_description not suggested
-        assert "add_description" not in actions
+        # Has description, so document_description not suggested
+        assert "document_description" not in actions
         # Missing business_name and entity_type
-        assert "add_business_name" in actions
-        assert "add_entity_type" in actions
+        assert "document_business_name" in actions
+        assert "document_entity_type" in actions
 
     def test_cascade_dimensions(self, detector: BusinessMeaningDetector):
         """Test resolution options include cascade dimensions."""
@@ -237,7 +237,7 @@ class TestBusinessMeaningDetector:
         results = detector.detect(context)
 
         add_desc_opt = next(
-            (opt for opt in results[0].resolution_options if opt.action == "add_description"),
+            (opt for opt in results[0].resolution_options if opt.action == "document_description"),
             None,
         )
         assert add_desc_opt is not None

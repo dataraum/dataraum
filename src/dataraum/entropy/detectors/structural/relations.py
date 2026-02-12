@@ -117,7 +117,7 @@ class JoinPathDeterminismDetector(EntropyDetector):
         if path_status == "orphan":
             resolution_options.append(
                 ResolutionOption(
-                    action="declare_relationship",
+                    action="document_relationship",
                     parameters={"table": context.table_name, "type": "foreign_key"},
                     expected_entropy_reduction=reduction_declare_rel,
                     effort="medium",
@@ -127,7 +127,7 @@ class JoinPathDeterminismDetector(EntropyDetector):
         elif path_status == "ambiguous":
             resolution_options.append(
                 ResolutionOption(
-                    action="declare_preferred_path",
+                    action="document_join_path",
                     parameters={
                         "table": context.table_name,
                         "ambiguous_targets": ambiguous_tables,

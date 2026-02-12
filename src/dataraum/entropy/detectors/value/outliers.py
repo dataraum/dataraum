@@ -134,7 +134,7 @@ class OutlierRateDetector(EntropyDetector):
             # Some outliers - suggest capping or exclusion
             resolution_options.append(
                 ResolutionOption(
-                    action="winsorize",
+                    action="transform_winsorize",
                     parameters={
                         "column": context.column_name,
                         "lower_percentile": 1,
@@ -150,7 +150,7 @@ class OutlierRateDetector(EntropyDetector):
             # High outliers - suggest review or removal
             resolution_options.append(
                 ResolutionOption(
-                    action="exclude_outliers",
+                    action="transform_exclude_outliers",
                     parameters={
                         "column": context.column_name,
                         "method": "iqr",

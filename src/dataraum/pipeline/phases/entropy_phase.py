@@ -42,7 +42,7 @@ from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
 
-
+# TODO: focus prioritization on actions that impact downstream context generation and LLM performance - e.g. structural issues that cause RI failures, semantic issues that cause misinterpretation, value issues that cause parsing failures, etc.
 class EntropyPhase(BasePhase):
     """Entropy detection phase.
 
@@ -858,6 +858,7 @@ def _run_dimensional_entropy(
                         "recommendations_count": len(all_recommendations),
                     }
                 ],
+                # TODO: there should only be one resolution option here that links to the specific findings and recommendations
                 resolution_options=[
                     ResolutionOption(
                         action="review_quality_findings",

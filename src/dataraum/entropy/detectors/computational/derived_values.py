@@ -49,7 +49,6 @@ class DerivedValueDetector(EntropyDetector):
         match_approximate = detector_config.get("match_approximate", 0.80)
         reduction_declare = detector_config.get("reduction_declare_formula", 0.8)
         reduction_verify = detector_config.get("reduction_verify_formula", 0.7)
-        reduction_investigate = detector_config.get("reduction_investigate", 0.5)
 
         correlation = context.get_analysis("correlation", {})
 
@@ -126,7 +125,7 @@ class DerivedValueDetector(EntropyDetector):
         if status == "no_formula":
             resolution_options.append(
                 ResolutionOption(
-                    action="declare_formula",
+                    action="document_formula",
                     parameters={
                         "column": context.column_name,
                         "table": context.table_name,
@@ -140,26 +139,14 @@ class DerivedValueDetector(EntropyDetector):
         elif status in ["approximate", "poor"]:
             resolution_options.append(
                 ResolutionOption(
-                    action="verify_formula",
+                    action="investigate_formula_mismatches",
                     parameters={
                         "column": context.column_name,
                         "detected_formula": formula,
                     },
                     expected_entropy_reduction=score * reduction_verify,
                     effort="medium",
-                    description="Verify or correct the detected formula",
-                )
-            )
-            resolution_options.append(
-                ResolutionOption(
-                    action="investigate_mismatches",
-                    parameters={
-                        "column": context.column_name,
-                        "formula": formula,
-                    },
-                    expected_entropy_reduction=score * reduction_investigate,
-                    effort="high",
-                    description="Investigate rows where the formula doesn't match",
+                    description="Verify formula and investigate rows where it doesn't match",
                 )
             )
 

@@ -13,7 +13,7 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from dataraum.core.models.base import Result
@@ -202,16 +202,28 @@ class AssumptionOutput(BaseModel):
     impact: str = Field(description="What could go wrong if this assumption is incorrect")
 
 
+# Valid action prefixes for resolution actions
+VALID_ACTION_PREFIXES = ("document_", "investigate_", "transform_", "create_")
+
+
 class ResolutionActionOutput(BaseModel):
     """Pydantic model for resolution action in LLM tool output."""
 
     action: str = Field(
-        description="Action identifier, e.g., 'add_unit_declaration', 'document_null_meaning'"
+        description="Action identifier. Must start with: document_, investigate_, transform_, or create_"
     )
     description: str = Field(description="Human-readable description of the action")
     priority: Literal["high", "medium", "low"] = Field(description="Priority of this action")
     effort: Literal["low", "medium", "high"] = Field(description="Effort required to implement")
     expected_impact: str = Field(description="What entropy dimensions this will improve")
+
+    @field_validator("action")
+    @classmethod
+    def validate_action_prefix(cls, v: str) -> str:
+        """Validate that action starts with a valid prefix."""
+        if not v.startswith(VALID_ACTION_PREFIXES):
+            raise ValueError(f"Action '{v}' must start with one of: {VALID_ACTION_PREFIXES}")
+        return v
 
 
 class ColumnInterpretationOutput(BaseModel):

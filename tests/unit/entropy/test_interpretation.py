@@ -97,7 +97,7 @@ class TestEntropyInterpretation:
         ]
         resolution_actions = [
             ResolutionAction(
-                action="document_null_meaning",
+                action="document_null_semantics",
                 description="Document what null values represent",
                 priority="medium",
                 effort="low",

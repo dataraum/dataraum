@@ -328,7 +328,7 @@ class DimensionalEntropyDetector(EntropyDetector):
                     description=f"Document business rule: {pattern.description}",
                 ),
                 ResolutionOption(
-                    action="add_constraint",
+                    action="create_constraint",
                     parameters={
                         "pattern_type": pattern.pattern_type,
                         "columns": pattern.columns,
@@ -380,7 +380,7 @@ class DimensionalEntropyDetector(EntropyDetector):
                     evidence=summary_evidence,
                     resolution_options=[
                         ResolutionOption(
-                            action="document_all_patterns",
+                            action="document_business_rule",
                             parameters={"pattern_count": entropy_score.total_patterns},
                             expected_entropy_reduction=entropy_score.total_score * 0.8,
                             effort="high",
@@ -527,7 +527,7 @@ class DimensionalEntropyDetector(EntropyDetector):
                     description=f"Document business rule: {pattern.description}",
                 ),
                 ResolutionOption(
-                    action="add_constraint",
+                    action="create_constraint",
                     parameters={
                         "pattern_type": pattern.pattern_type,
                         "columns": pattern.columns,
@@ -579,7 +579,7 @@ class DimensionalEntropyDetector(EntropyDetector):
                     evidence=summary_evidence,
                     resolution_options=[
                         ResolutionOption(
-                            action="document_all_patterns",
+                            action="document_business_rule",
                             parameters={"pattern_count": entropy_score.total_patterns},
                             expected_entropy_reduction=entropy_score.total_score * 0.8,
                             effort="high",

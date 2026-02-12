@@ -152,7 +152,7 @@ class RelationshipEntropyDetector(EntropyDetector):
                 if not is_confirmed:
                     resolution_options.append(
                         ResolutionOption(
-                            action="confirm_relationship",
+                            action="document_relationship",
                             parameters={
                                 "from_table": from_table,
                                 "to_table": to_table,
@@ -167,7 +167,7 @@ class RelationshipEntropyDetector(EntropyDetector):
                 if ri_entropy > 0.3:
                     resolution_options.append(
                         ResolutionOption(
-                            action="fix_referential_integrity",
+                            action="transform_fix_referential_integrity",
                             parameters={
                                 "from_table": from_table,
                                 "to_table": to_table,

@@ -212,10 +212,6 @@ class SlicingPhase(BasePhase):
 
         Loads statistics, semantic annotations, correlations, and quality metrics.
         """
-        from dataraum.analysis.correlation.db_models import (
-            ColumnCorrelation,
-            DerivedColumn,
-        )
         from dataraum.analysis.semantic.db_models import SemanticAnnotation
         from dataraum.analysis.statistics.db_models import StatisticalProfile
 
@@ -223,7 +219,6 @@ class SlicingPhase(BasePhase):
         tables_data = []
         statistics_data = []
         semantic_data = []
-        correlations_data = []
         column_count = 0
 
         for table in tables:
@@ -306,38 +301,6 @@ class SlicingPhase(BasePhase):
                     }
                 )
 
-        # Get correlations for all tables
-        # Column correlations (numeric)
-        cc_stmt = select(ColumnCorrelation).where(ColumnCorrelation.table_id.in_(table_ids))
-        ccs = (ctx.session.execute(cc_stmt)).scalars().all()
-
-        for cc in ccs:
-            correlations_data.append(
-                {
-                    "type": "numeric_correlation",
-                    "table_id": cc.table_id,
-                    "column1": cc.column1_id,
-                    "column2": cc.column2_id,
-                    "pearson_r": cc.pearson_r,
-                    "spearman_rho": cc.spearman_rho,
-                }
-            )
-
-        # Derived columns
-        dc_stmt = select(DerivedColumn).where(DerivedColumn.table_id.in_(table_ids))
-        dcs = (ctx.session.execute(dc_stmt)).scalars().all()
-
-        for dc in dcs:
-            correlations_data.append(
-                {
-                    "type": "derived_column",
-                    "table_id": dc.table_id,
-                    "derived_column": dc.derived_column_id,
-                    "formula": dc.formula,
-                    "match_rate": dc.match_rate,
-                }
-            )
-
         # Load enriched view dimension columns (if available from enriched_views phase)
         enriched_columns: list[dict[str, Any]] = []
         try:
@@ -364,7 +327,6 @@ class SlicingPhase(BasePhase):
             "tables": tables_data,
             "statistics": statistics_data,
             "semantic": semantic_data,
-            "correlations": correlations_data,
             "quality": [],  # Quality metrics would come from statistical_quality phase
             "column_count": column_count,
             "enriched_columns": enriched_columns,

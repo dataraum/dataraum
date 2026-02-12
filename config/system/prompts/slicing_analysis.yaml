@@ -65,11 +65,6 @@ user_prompt: |
   {semantic_json}
   </semantic_annotations>
 
-  <correlations>
-  Relationships between columns:
-  {correlations_json}
-  </correlations>
-
   <quality_metrics>
   Quality analysis including Benford's Law compliance and outlier detection:
   {quality_json}
@@ -89,11 +84,6 @@ inputs:
 
   semantic_json:
     description: JSON array of semantic annotations (may be empty)
-    required: false
-    default: "[]"
-
-  correlations_json:
-    description: JSON array of correlation analysis results
     required: false
     default: "[]"
 

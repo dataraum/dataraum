@@ -101,14 +101,13 @@ class TestCorrelationsPhase:
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test returns empty results when all tables already analyzed."""
-        from datetime import UTC, datetime
-
-        from dataraum.analysis.correlation.db_models import CorrelationAnalysisRun
+        from dataraum.analysis.correlation.db_models import ColumnCorrelation
+        from dataraum.storage import Column
 
         phase = CorrelationsPhase()
         source_id = str(uuid4())
 
-        # Create a source with a typed table
+        # Create a source with a typed table and column
         source = Source(
             source_id=source_id,
             name="test_source",
@@ -127,17 +126,25 @@ class TestCorrelationsPhase:
         )
         session.add(table)
 
-        # Mark table as already analyzed
-        run_record = CorrelationAnalysisRun(
-            target_id=table_id,
-            target_type="table",
-            rows_analyzed=10,
-            columns_analyzed=5,
-            started_at=datetime.now(UTC),
-            completed_at=datetime.now(UTC),
-            duration_seconds=1.0,
+        col1_id = str(uuid4())
+        col2_id = str(uuid4())
+        session.add(
+            Column(column_id=col1_id, table_id=table_id, column_name="a", column_position=0)
         )
-        session.add(run_record)
+        session.add(
+            Column(column_id=col2_id, table_id=table_id, column_name="b", column_position=1)
+        )
+        session.flush()
+
+        # Seed a ColumnCorrelation so the table is considered analyzed
+        session.add(
+            ColumnCorrelation(
+                table_id=table_id,
+                column1_id=col1_id,
+                column2_id=col2_id,
+                sample_size=10,
+            )
+        )
         session.commit()
 
         ctx = PhaseContext(
@@ -158,14 +165,13 @@ class TestCorrelationsPhase:
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test skip check when all tables have been analyzed."""
-        from datetime import UTC, datetime
-
-        from dataraum.analysis.correlation.db_models import CorrelationAnalysisRun
+        from dataraum.analysis.correlation.db_models import ColumnCorrelation
+        from dataraum.storage import Column
 
         phase = CorrelationsPhase()
         source_id = str(uuid4())
 
-        # Create a source with a typed table
+        # Create a source with a typed table and column
         source = Source(
             source_id=source_id,
             name="test_source",
@@ -184,17 +190,25 @@ class TestCorrelationsPhase:
         )
         session.add(table)
 
-        # Mark table as already analyzed
-        run_record = CorrelationAnalysisRun(
-            target_id=table_id,
-            target_type="table",
-            rows_analyzed=10,
-            columns_analyzed=5,
-            started_at=datetime.now(UTC),
-            completed_at=datetime.now(UTC),
-            duration_seconds=1.0,
+        col1_id = str(uuid4())
+        col2_id = str(uuid4())
+        session.add(
+            Column(column_id=col1_id, table_id=table_id, column_name="a", column_position=0)
         )
-        session.add(run_record)
+        session.add(
+            Column(column_id=col2_id, table_id=table_id, column_name="b", column_position=1)
+        )
+        session.flush()
+
+        # Seed a ColumnCorrelation so the table is considered analyzed
+        session.add(
+            ColumnCorrelation(
+                table_id=table_id,
+                column1_id=col1_id,
+                column2_id=col2_id,
+                sample_size=10,
+            )
+        )
         session.commit()
 
         ctx = PhaseContext(

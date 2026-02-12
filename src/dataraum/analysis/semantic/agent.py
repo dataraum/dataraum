@@ -29,7 +29,7 @@ from dataraum.analysis.semantic.models import (
     SemanticEnrichmentResult,
 )
 from dataraum.analysis.semantic.ontology import OntologyLoader
-from dataraum.analysis.semantic.utils import load_correlations_for_semantic
+from dataraum.analysis.semantic.utils import load_derived_columns_for_semantic
 from dataraum.analysis.statistics.db_models import (
     StatisticalProfile as ColumnProfileModel,
 )
@@ -142,27 +142,15 @@ class SemanticAgent(LLMFeature):
         sampler = DataSampler(self.config.privacy)
         samples = sampler.prepare_samples(profiles)
 
-        # Load within-table correlation data (if available from Phase 4b)
-        correlations = load_correlations_for_semantic(session, table_ids)
+        # Load derived column data (if available from Phase 4b)
+        derived_columns = load_derived_columns_for_semantic(session, table_ids)
 
-        # Log correlation context usage
-        if correlations:
-            total_fds = sum(
-                len(d.get("functional_dependencies", [])) for d in correlations.values()
-            )
-            total_corrs = sum(len(d.get("numeric_correlations", [])) for d in correlations.values())
-            total_derived = sum(len(d.get("derived_columns", [])) for d in correlations.values())
-            if total_fds or total_corrs or total_derived:
-                logger.info(
-                    "within_table_correlations",
-                    functional_dependencies=total_fds,
-                    numeric_correlations=total_corrs,
-                    derived_columns=total_derived,
-                )
-            else:
-                logger.debug("no_significant_correlations")
+        # Log derived column context usage
+        total_derived = sum(len(cols) for cols in derived_columns.values())
+        if total_derived:
+            logger.info("derived_columns_context", derived_columns=total_derived)
         else:
-            logger.debug("no_correlation_data")
+            logger.debug("no_derived_columns")
 
         # Build context for prompt
         tables_json = self._build_tables_json(profiles, samples)
@@ -202,7 +190,7 @@ class SemanticAgent(LLMFeature):
             "relationship_candidates": self._format_relationship_candidates(
                 relationship_candidates, graph_structure=graph_structure
             ),
-            "within_table_correlations": self._format_correlations(correlations),
+            "within_table_correlations": self._format_derived_columns(derived_columns),
             "column_annotations": self._format_column_annotations(column_annotations),
         }
 
@@ -480,74 +468,35 @@ class SemanticAgent(LLMFeature):
 
         return "\n".join(lines)
 
-    def _format_correlations(self, correlations: dict[str, dict[str, Any]]) -> str:
-        """Format within-table correlation data for the prompt.
+    def _format_derived_columns(self, derived_columns: dict[str, list[dict[str, Any]]]) -> str:
+        """Format derived column data for the prompt.
 
         Args:
-            correlations: Dict mapping table_name to correlation data
+            derived_columns: Dict mapping table_name to list of derived column dicts
 
         Returns:
             Formatted string for the prompt
         """
-        if not correlations:
-            return "No within-table correlation data available."
-
-        # Check if we have any actual data
-        has_data = False
-        for table_data in correlations.values():
-            if (
-                table_data.get("functional_dependencies")
-                or table_data.get("numeric_correlations")
-                or table_data.get("derived_columns")
-            ):
-                has_data = True
-                break
-
-        if not has_data:
-            return "No significant within-table correlations detected."
+        if not derived_columns or not any(derived_columns.values()):
+            return "No derived column candidates detected."
 
         lines = []
 
-        for table_name, data in correlations.items():
-            fds = data.get("functional_dependencies", [])
-            corrs = data.get("numeric_correlations", [])
-            derived = data.get("derived_columns", [])
-
-            if not fds and not corrs and not derived:
+        for table_name, derived in derived_columns.items():
+            if not derived:
                 continue
 
             lines.append(f"\n### {table_name}")
-
-            # Functional dependencies (key indicators)
-            if fds:
-                lines.append("Functional dependencies (determinant → dependent):")
-                for fd in fds:
-                    det = ", ".join(fd["determinant"])
-                    dep = fd["dependent"]
-                    conf = fd["confidence"]
-                    lines.append(f"  - {det} → {dep} (conf: {conf:.2f})")
-
-            # Strong numeric correlations
-            if corrs:
-                lines.append("Strong numeric correlations:")
-                for c in corrs:
-                    r = c.get("pearson_r") or c.get("spearman_rho") or 0
-                    lines.append(
-                        f"  - {c['column1']} <-> {c['column2']}: r={r:.2f} ({c['strength']})"
-                    )
-
-            # Derived columns (already deduplicated at detection time)
-            if derived:
+            lines.append(
+                "Derived column candidates (statistical matches — "
+                "verify domain plausibility, not all are true derivations):"
+            )
+            for d in derived:
                 lines.append(
-                    "Derived column candidates (statistical matches — "
-                    "verify domain plausibility, not all are true derivations):"
+                    f"  - {d['derived_column']} = {d['formula']} (match: {d['match_rate']:.0%})"
                 )
-                for d in derived:
-                    lines.append(
-                        f"  - {d['derived_column']} = {d['formula']} (match: {d['match_rate']:.0%})"
-                    )
 
-        return "\n".join(lines) if lines else "No significant within-table correlations detected."
+        return "\n".join(lines) if lines else "No derived column candidates detected."
 
     @staticmethod
     def _format_column_annotations(annotations: ColumnAnnotationOutput | None) -> str:

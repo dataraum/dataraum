@@ -111,8 +111,7 @@ user_prompt: |
   </column_annotations>
 
   <within_table_patterns>
-  Detected patterns within tables that may help identify keys and derived columns.
-  NOTE: Derived column candidates are based on statistical arithmetic matching.
+  Derived column candidates detected via statistical arithmetic matching.
   Near-zero or low-variance columns can produce spurious matches (e.g. x * 1 ≈ x, x + 0 ≈ x).
   Evaluate each candidate for domain plausibility before treating it as a true derivation.
 
@@ -144,7 +143,7 @@ inputs:
     required: true
 
   within_table_correlations:
-    description: Within-table correlations (functional dependencies, derived columns)
+    description: Within-table derived column candidates
     required: true
 
 # Output is defined by the Pydantic tool schema (SemanticAnalysisOutput)

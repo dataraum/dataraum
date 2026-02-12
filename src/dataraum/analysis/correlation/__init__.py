@@ -24,7 +24,6 @@ from dataraum.analysis.correlation.cross_table import (
 # DB Models
 from dataraum.analysis.correlation.db_models import (
     ColumnCorrelation,
-    CorrelationAnalysisRun,
     CrossTableCorrelationDB,
 )
 from dataraum.analysis.correlation.db_models import (
@@ -67,7 +66,6 @@ __all__ = [
     # DB Models
     "ColumnCorrelation",
     "DBDerivedColumn",
-    "CorrelationAnalysisRun",
     "CrossTableCorrelationDB",
     # Pydantic Models - Within-table
     "NumericCorrelation",

@@ -18,7 +18,6 @@ Cross-table quality analysis (analyze_cross_table_quality):
 import math
 import time
 from datetime import UTC, datetime
-from uuid import uuid4
 
 import duckdb
 from sqlalchemy import select
@@ -26,7 +25,6 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.correlation.cross_table import analyze_relationship_quality
 from dataraum.analysis.correlation.db_models import (
-    CorrelationAnalysisRun,
     CrossTableCorrelationDB,
 )
 from dataraum.analysis.correlation.models import (
@@ -235,28 +233,6 @@ def _store_cross_table_results(
     """Store cross-table quality analysis results to database."""
     now = datetime.now(UTC)
 
-    # Generate UUID explicitly (SQLAlchemy defaults may not work reliably in all contexts)
-    run_id = str(uuid4())
-
-    # Create analysis run record
-    run_record = CorrelationAnalysisRun(
-        run_id=run_id,
-        target_id=relationship.relationship_id,
-        target_type="relationship",
-        from_table=from_table_name,
-        to_table=to_table_name,
-        join_column_from=from_column_name,
-        join_column_to=to_column_name,
-        rows_analyzed=quality_result.joined_row_count,
-        columns_analyzed=quality_result.numeric_columns_analyzed,
-        overall_condition_index=quality_result.overall_condition_index,
-        overall_severity=quality_result.overall_severity,
-        started_at=quality_result.analyzed_at,
-        completed_at=now,
-        duration_seconds=duration,
-    )
-    session.add(run_record)
-
     # Store cross-table correlations (skip NaN values from constant columns)
     for corr in quality_result.cross_table_correlations:
         # Skip correlations with NaN (happens when column is constant)
@@ -264,7 +240,7 @@ def _store_cross_table_results(
             continue
 
         db_corr = CrossTableCorrelationDB(
-            run_id=run_id,
+            relationship_id=relationship.relationship_id,
             from_table=corr.from_table,
             from_column=corr.from_column,
             to_table=corr.to_table,

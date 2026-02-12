@@ -53,16 +53,11 @@ analysis/correlation/
 
 | Model | Table | Key Fields |
 |-------|-------|------------|
-| `CorrelationAnalysisRun` | `correlation_analysis_runs` | table_id, status, started_at, completed_at |
-| `NumericCorrelationDB` | `numeric_correlations` | table_id, col1_idx, col2_idx, pearson_r, spearman_rho, p_value |
-| `CategoricalAssociationDB` | `categorical_associations` | table_id, col1_idx, col2_idx, cramers_v, chi2_stat, p_value |
-| `FunctionalDependency` | `functional_dependencies` | table_id, determinant_column_ids, dependent_column_id, confidence |
+| `ColumnCorrelation` | `column_correlations` | table_id, column1_id, column2_id, pearson_r, spearman_rho |
 | `DerivedColumn` | `derived_columns` | table_id, derived_column_id, source_column_ids, formula, match_rate |
 | `CrossTableCorrelationDB` | `cross_table_correlations` | relationship_id, from_col, to_col, pearson_r |
-| `MulticollinearityGroup` | `multicollinearity_groups` | relationship_id, involved_columns, condition_index, severity |
-| `QualityIssueDB` | `quality_issues` | relationship_id, issue_type, severity, description |
 
-All tables have appropriate indexes on table_id, relationship_id, and composite keys.
+All tables have appropriate indexes on table_id, relationship_id, and column IDs.
 
 ## Algorithms
 
@@ -131,7 +126,7 @@ The `cross_table_quality` phase has been **removed from the pipeline**. It produ
 - Can multicollinearity (VDP) feed the entropy scoring system meaningfully?
 - Are cross-table quality issues distinct from what quality_summary already captures?
 
-The within-table correlation phase (`correlations`) remains active — its outputs are consumed by slicing, semantic, entropy, and graphs.
+The within-table correlation phase (`correlations`) remains active. Numeric correlations are computed and stored in `ColumnCorrelation` for potential future use, but are **not** passed to LLM prompts. Only derived columns are passed to the semantic agent as `<within_table_patterns>`. The slicing agent receives no correlation data.
 
 ## Roadmap
 

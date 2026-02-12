@@ -7,15 +7,13 @@ Analyzes within-table correlations:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from sqlalchemy import select
 
 from dataraum.analysis.correlation import analyze_correlations
-from dataraum.analysis.correlation.db_models import CorrelationAnalysisRun
+from dataraum.analysis.correlation.db_models import ColumnCorrelation, DerivedColumn
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
-from dataraum.storage import Column, Table
+from dataraum.storage import Table
 
 
 class CorrelationsPhase(BasePhase):
@@ -51,11 +49,18 @@ class CorrelationsPhase(BasePhase):
         if not typed_tables:
             return "No typed tables found"
 
-        # Check which tables already have correlation analysis
-        analyzed_stmt = select(CorrelationAnalysisRun.target_id).where(
-            CorrelationAnalysisRun.target_type == "table"
+        table_ids = [t.table_id for t in typed_tables]
+
+        # Check which tables already have correlation results
+        corr_stmt = select(ColumnCorrelation.table_id.distinct()).where(
+            ColumnCorrelation.table_id.in_(table_ids)
         )
-        analyzed_ids = set((ctx.session.execute(analyzed_stmt)).scalars().all())
+        derived_stmt = select(DerivedColumn.table_id.distinct()).where(
+            DerivedColumn.table_id.in_(table_ids)
+        )
+        analyzed_ids = set(ctx.session.execute(corr_stmt).scalars().all()) | set(
+            ctx.session.execute(derived_stmt).scalars().all()
+        )
 
         unanalyzed = [t for t in typed_tables if t.table_id not in analyzed_ids]
         if not unanalyzed:
@@ -73,11 +78,18 @@ class CorrelationsPhase(BasePhase):
         if not typed_tables:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")
 
-        # Check which tables already have correlation analysis
-        analyzed_stmt = select(CorrelationAnalysisRun.target_id).where(
-            CorrelationAnalysisRun.target_type == "table"
+        table_ids = [t.table_id for t in typed_tables]
+
+        # Check which tables already have correlation results
+        corr_stmt = select(ColumnCorrelation.table_id.distinct()).where(
+            ColumnCorrelation.table_id.in_(table_ids)
         )
-        analyzed_ids = set((ctx.session.execute(analyzed_stmt)).scalars().all())
+        derived_stmt = select(DerivedColumn.table_id.distinct()).where(
+            DerivedColumn.table_id.in_(table_ids)
+        )
+        analyzed_ids = set(ctx.session.execute(corr_stmt).scalars().all()) | set(
+            ctx.session.execute(derived_stmt).scalars().all()
+        )
 
         unanalyzed_tables = [t for t in typed_tables if t.table_id not in analyzed_ids]
 
@@ -110,21 +122,6 @@ class CorrelationsPhase(BasePhase):
 
             total_numeric_corr += len(result_data.numeric_correlations)
             total_derived += len(result_data.derived_columns)
-
-            # Create analysis run record to track completion
-            columns_stmt = select(Column).where(Column.table_id == typed_table.table_id)
-            columns = (ctx.session.execute(columns_stmt)).scalars().all()
-
-            run_record = CorrelationAnalysisRun(
-                target_id=typed_table.table_id,
-                target_type="table",
-                rows_analyzed=0,
-                columns_analyzed=len(columns),
-                started_at=result_data.computed_at,
-                completed_at=datetime.now(UTC),
-                duration_seconds=result_data.duration_seconds,
-            )
-            ctx.session.add(run_record)
 
         # Note: commit handled by session_scope() in orchestrator
 

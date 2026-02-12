@@ -8,7 +8,6 @@ Within-Table Analysis:
 
 Cross-Table Quality (post-confirmation):
 - CrossTableCorrelationDB: Correlations between columns in different tables
-- CorrelationAnalysisRun: Tracks when analysis was run
 """
 
 from __future__ import annotations
@@ -130,42 +129,6 @@ class DerivedColumn(Base):
 # =============================================================================
 
 
-class CorrelationAnalysisRun(Base):
-    """Tracks when correlation analysis was run.
-
-    Links a relationship to its quality analysis results.
-    """
-
-    __tablename__ = "correlation_analysis_runs"
-
-    run_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-
-    # Can be table_id (for within-table) or relationship_id (for cross-table)
-    target_id: Mapped[str] = mapped_column(String, nullable=False)
-    target_type: Mapped[str] = mapped_column(String, nullable=False)  # 'table' or 'relationship'
-
-    # For cross-table analysis
-    from_table: Mapped[str | None] = mapped_column(String)
-    to_table: Mapped[str | None] = mapped_column(String)
-    join_column_from: Mapped[str | None] = mapped_column(String)
-    join_column_to: Mapped[str | None] = mapped_column(String)
-
-    # Metrics
-    rows_analyzed: Mapped[int] = mapped_column(Integer, nullable=False)
-    columns_analyzed: Mapped[int] = mapped_column(Integer, nullable=False)
-
-    # Multicollinearity summary
-    overall_condition_index: Mapped[float | None] = mapped_column(Float)
-    overall_severity: Mapped[str | None] = mapped_column(String)  # 'none', 'moderate', 'severe'
-
-    # Timing
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(UTC)
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
-    duration_seconds: Mapped[float | None] = mapped_column(Float)
-
-
 class CrossTableCorrelationDB(Base):
     """Correlation between columns in different tables.
 
@@ -177,9 +140,9 @@ class CrossTableCorrelationDB(Base):
     correlation_id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid4())
     )
-    run_id: Mapped[str] = mapped_column(
-        ForeignKey("correlation_analysis_runs.run_id", ondelete="CASCADE"), nullable=False
-    )
+
+    # Relationship context
+    relationship_id: Mapped[str] = mapped_column(String, nullable=False)
 
     # Tables involved
     from_table: Mapped[str] = mapped_column(String, nullable=False)
@@ -213,7 +176,4 @@ Index("idx_derived_table", DerivedColumn.table_id)
 Index("idx_derived_column", DerivedColumn.derived_column_id)
 
 # Cross-table analysis
-Index(
-    "idx_analysis_runs_target", CorrelationAnalysisRun.target_id, CorrelationAnalysisRun.target_type
-)
-Index("idx_cross_corr_run", CrossTableCorrelationDB.run_id)
+Index("idx_cross_corr_relationship", CrossTableCorrelationDB.relationship_id)

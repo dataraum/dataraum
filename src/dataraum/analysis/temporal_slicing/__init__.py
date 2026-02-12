@@ -3,6 +3,7 @@
 Provides temporal analysis capabilities for slice data including:
 - Period completeness analysis (data cutoffs)
 - Distribution drift detection (JS divergence)
+- Cross-slice temporal comparison
 - Volume anomaly detection
 - Temporal topology analysis (correlation structure drift)
 """
@@ -12,9 +13,11 @@ from dataraum.analysis.temporal_slicing.analyzer import (
     analyze_temporal_topology,
 )
 from dataraum.analysis.temporal_slicing.db_models import (
+    SliceTimeMatrixEntry,
     TemporalDriftAnalysis,
     TemporalSliceAnalysis,
     TemporalSliceRun,
+    TemporalTopologyAnalysis,
 )
 from dataraum.analysis.temporal_slicing.models import (
     PeriodTopology,
@@ -39,4 +42,6 @@ __all__ = [
     "TemporalSliceRun",
     "TemporalSliceAnalysis",
     "TemporalDriftAnalysis",
+    "SliceTimeMatrixEntry",
+    "TemporalTopologyAnalysis",
 ]

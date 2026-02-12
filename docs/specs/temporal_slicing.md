@@ -153,7 +153,26 @@ topology:
 | Removed `bottleneck_threshold`/`min_samples` function parameters | Now loaded from YAML config |
 | Updated `temporal_slice_analysis_phase.py` | Removed `bottleneck_threshold` passthrough |
 
+## Evaluation Required: Entropy Integration
+
+> **Status**: Pending dedicated analysis. Do not remove or rewire temporal slicing / slice models without a thorough evaluation first.
+
+The following DB models persist computed temporal/topology data that is **not yet consumed by downstream systems** (entropy, graphs, query agent):
+
+| Model | Table | What it stores | Potential entropy value |
+|-------|-------|---------------|----------------------|
+| `SliceTimeMatrixEntry` | `slice_time_matrix_entries` | Slice x period row counts, period-over-period changes | Hidden trends (compensating slices masking aggregate stability) could be an entropy signal |
+| `TemporalTopologyAnalysis` | `temporal_topology_analyses` | Per-period Betti numbers, bottleneck drift, complexity trends | Structural drift between periods = semantic uncertainty; could feed a `TemporalTopologyEntropyDetector` |
+
+**Key questions to resolve:**
+
+1. **Topology drift as entropy**: Bottleneck distance measures how much the data's topological structure changed between periods. High drift = structural uncertainty. Does this map to an existing entropy dimension (`semantic.temporal`?) or warrant a new one (`semantic.temporal_stability.structural_drift`)?
+2. **Hidden trends as entropy**: When global volume is stable but individual slices have offsetting trends, the aggregate masks real risk. The `DimensionalEntropyDetector` already consumes some temporal drift data — could `SliceTimeMatrix` enhance it?
+3. **Compute cost vs value**: TDA (ripser) per period is expensive. If the topology data feeds entropy, the cost is justified. If not, consider whether the phase output counts alone (`topology_drifts_detected: N`) are sufficient.
+4. **Cross-table correlations** (`cross_table_quality` phase): Currently runs post-semantic to analyze confirmed relationships. Evaluate its value alongside correlations/relationships — the semantic agent may subsume some of this analysis.
+
 ## Roadmap
 
 - **TemporalSliceConfig defaults from YAML**: Config model defaults could load from YAML instead of hardcoded
 - **Level 5 persistence**: `TemporalTopologyAnalysis` DB model exists and is populated; could add UI/API exposure
+- **Entropy wiring**: Evaluate feeding `TemporalTopologyResult` into `DimensionalEntropyDetector` or a new dedicated detector

@@ -197,3 +197,18 @@ SemanticPhase._run()
 - The `annotation_source` field distinguishes: `"llm_fast"` vs `"llm"` vs `"manual"`
 - Column annotations from the fast model can be included as context for the capable model's relationship analysis
 - Prompt for column annotation is simpler: schema + ontology concepts + type decisions (no relationship candidates, no topology)
+
+## Evaluation Required: Cross-Table Correlations
+
+> **Status**: Pending evaluation alongside correlations/relationships analysis.
+
+The `cross_table_quality` phase runs after semantic to analyze confirmed relationships for:
+- Cross-table correlations (unexpected relationships between columns in different tables)
+- Redundant columns (r ~ 1.0 within same table)
+- Derived columns (one column computed from another)
+
+**Key question**: The semantic agent already evaluates relationships with rich context (RI metrics, topology, statistical profiles). Does `cross_table_quality` provide additional value beyond what the semantic agent + correlation phase already cover? Evaluate whether:
+
+1. Cross-table correlation findings could be folded into the semantic agent's relationship evaluation (giving it correlation metrics as additional context)
+2. The phase remains valuable as a separate statistical post-check on LLM-confirmed relationships
+3. The `DerivedValueDetector` (entropy) already consumes within-table derived columns — does cross-table derivation detection add meaningful entropy signal?

@@ -24,8 +24,6 @@ from dataraum.analysis.slicing.slice_runner import (
 )
 from dataraum.analysis.temporal import TemporalColumnProfile
 from dataraum.analysis.temporal_slicing.analyzer import analyze_temporal_topology
-from dataraum.analysis.temporal_slicing.db_models import TemporalTopologyAnalysis
-from dataraum.analysis.temporal_slicing.models import PeriodTopology, TopologyDrift
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
@@ -402,55 +400,6 @@ class TemporalSliceAnalysisPhase(BasePhase):
                     )
                     total_topology_drift += len(topo_result.topology_drifts)
 
-                    # Persist topology results to DB
-                    if topo_result.periods_analyzed > 0:
-                        period_granularity = time_grain.rstrip("ly")  # "monthly" -> "month"
-
-                        def _serialize_topology(t: PeriodTopology) -> dict[str, object]:
-                            return {
-                                "period_start": t.period_start,
-                                "period_end": t.period_end,
-                                "betti_0": t.betti_0,
-                                "betti_1": t.betti_1,
-                                "betti_2": t.betti_2,
-                                "structural_complexity": t.structural_complexity,
-                                "persistent_entropy": t.persistent_entropy,
-                                "row_count": t.row_count,
-                                "has_anomalies": t.has_anomalies,
-                            }
-
-                        def _serialize_drift(d: TopologyDrift) -> dict[str, object]:
-                            return {
-                                "period_from": d.period_from,
-                                "period_to": d.period_to,
-                                "metric": d.metric,
-                                "value_from": d.value_from,
-                                "value_to": d.value_to,
-                                "change_pct": d.change_pct,
-                                "bottleneck_distance": d.bottleneck_distance,
-                                "is_significant": d.is_significant,
-                            }
-
-                        topo_record = TemporalTopologyAnalysis(
-                            run_id=None,
-                            slice_table_name=topo_source.table_name,
-                            time_column=time_column,
-                            period_granularity=period_granularity,
-                            periods_analyzed=topo_result.periods_analyzed,
-                            avg_complexity=topo_result.avg_complexity,
-                            complexity_variance=topo_result.complexity_variance,
-                            trend_direction=topo_result.trend_direction,
-                            num_drifts_detected=len(topo_result.topology_drifts),
-                            num_anomaly_periods=len(topo_result.structural_anomaly_periods),
-                            period_topologies_json=[
-                                _serialize_topology(t) for t in topo_result.period_topologies
-                            ],
-                            topology_drifts_json=[
-                                _serialize_drift(d) for d in topo_result.topology_drifts
-                            ],
-                            anomaly_periods_json=topo_result.structural_anomaly_periods,
-                        )
-                        ctx.session.add(topo_record)
                 except Exception as e:
                     errors.append(f"Temporal topology error: {e}")
 

@@ -21,7 +21,7 @@ class TestCrossTableQualityPhase:
         assert phase.name == "cross_table_quality"
         assert phase.description == "Cross-table correlation analysis"
         assert phase.dependencies == ["semantic"]
-        assert phase.outputs == ["cross_table_correlations", "multicollinearity_groups"]
+        assert phase.outputs == ["cross_table_correlations"]
         # Note: Despite the name, this is actually a non-LLM phase (statistical analysis)
         assert phase.is_llm_phase is False
 

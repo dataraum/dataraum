@@ -9,7 +9,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.correlation.db_models import (
-    CategoricalAssociation,
     ColumnCorrelation,
 )
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
@@ -261,31 +260,6 @@ def _load_correlations(
 
     # Build lookups
     column_lookup = {col.column_id: col for col in columns}
-
-    # Load categorical associations (most relevant for slicing)
-    assoc_stmt = select(CategoricalAssociation).where(
-        CategoricalAssociation.column1_id.in_(column_ids)
-    )
-    assoc_result = session.execute(assoc_stmt)
-    associations = assoc_result.scalars().all()
-
-    for assoc in associations:
-        col1 = column_lookup.get(assoc.column1_id)
-        col2 = column_lookup.get(assoc.column2_id)
-        if not col1 or not col2:
-            continue
-
-        result.append(
-            {
-                "type": "categorical_association",
-                "column1_id": assoc.column1_id,
-                "column1_name": col1.column_name,
-                "column2_id": assoc.column2_id,
-                "column2_name": col2.column_name,
-                "cramers_v": assoc.cramers_v,
-                "is_significant": assoc.is_significant,
-            }
-        )
 
     # Load numeric correlations
     corr_stmt = select(ColumnCorrelation).where(ColumnCorrelation.column1_id.in_(column_ids))

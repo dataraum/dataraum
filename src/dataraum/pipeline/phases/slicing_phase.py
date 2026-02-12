@@ -215,7 +215,6 @@ class SlicingPhase(BasePhase):
         from dataraum.analysis.correlation.db_models import (
             ColumnCorrelation,
             DerivedColumn,
-            FunctionalDependency,
         )
         from dataraum.analysis.semantic.db_models import SemanticAnnotation
         from dataraum.analysis.statistics.db_models import StatisticalProfile
@@ -308,21 +307,6 @@ class SlicingPhase(BasePhase):
                 )
 
         # Get correlations for all tables
-        # Functional dependencies
-        fd_stmt = select(FunctionalDependency).where(FunctionalDependency.table_id.in_(table_ids))
-        fds = (ctx.session.execute(fd_stmt)).scalars().all()
-
-        for fd in fds:
-            correlations_data.append(
-                {
-                    "type": "functional_dependency",
-                    "table_id": fd.table_id,
-                    "determinant": fd.determinant_column_ids,
-                    "dependent": fd.dependent_column_id,
-                    "confidence": fd.confidence,
-                }
-            )
-
         # Column correlations (numeric)
         cc_stmt = select(ColumnCorrelation).where(ColumnCorrelation.table_id.in_(table_ids))
         ccs = (ctx.session.execute(cc_stmt)).scalars().all()

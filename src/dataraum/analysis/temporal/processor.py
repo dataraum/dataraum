@@ -29,9 +29,6 @@ from sqlalchemy.orm import Session
 from dataraum.analysis.temporal.db_models import (
     TemporalColumnProfile,
 )
-from dataraum.analysis.temporal.db_models import (
-    TemporalTableSummary as DBTemporalTableSummary,
-)
 from dataraum.analysis.temporal.detection import (
     analyze_basic_temporal,
     infer_granularity,
@@ -316,9 +313,6 @@ def profile_temporal(
         for db_profile in db_profiles:
             session.add(db_profile)
 
-        if table_summary:
-            _persist_table_summary(table_summary, session)
-
         # No flush needed - commit happens at session_scope() end
         # The caller (phase/orchestrator) manages the transaction
 
@@ -552,46 +546,6 @@ def _compute_table_summary(
         has_stale_columns=has_stale_columns,
         profiled_at=profiled_at,
     )
-
-
-def _persist_table_summary(
-    summary: TemporalTableSummary,
-    session: Session,
-) -> None:
-    """Persist table-level temporal summary to database."""
-    # Check if record exists (upsert pattern)
-    stmt = select(DBTemporalTableSummary).where(DBTemporalTableSummary.table_id == summary.table_id)
-    result = session.execute(stmt)
-    existing = result.scalar_one_or_none()
-
-    if existing:
-        # Update existing record
-        existing.profiled_at = summary.profiled_at or datetime.now(UTC)
-        existing.temporal_column_count = summary.temporal_column_count
-        existing.total_issues = summary.total_issues
-        existing.columns_with_seasonality = summary.columns_with_seasonality
-        existing.columns_with_trends = summary.columns_with_trends
-        existing.columns_with_change_points = summary.columns_with_change_points
-        existing.columns_with_fiscal_alignment = summary.columns_with_fiscal_alignment
-        existing.stalest_column_days = summary.stalest_column_days
-        existing.has_stale_columns = summary.has_stale_columns
-        existing.summary_data = summary.model_dump(mode="json")
-    else:
-        # Create new record
-        db_summary = DBTemporalTableSummary(
-            table_id=summary.table_id,
-            profiled_at=summary.profiled_at or datetime.now(UTC),
-            temporal_column_count=summary.temporal_column_count,
-            total_issues=summary.total_issues,
-            columns_with_seasonality=summary.columns_with_seasonality,
-            columns_with_trends=summary.columns_with_trends,
-            columns_with_change_points=summary.columns_with_change_points,
-            columns_with_fiscal_alignment=summary.columns_with_fiscal_alignment,
-            stalest_column_days=summary.stalest_column_days,
-            has_stale_columns=summary.has_stale_columns,
-            summary_data=summary.model_dump(mode="json"),
-        )
-        session.add(db_summary)
 
 
 __all__ = [

@@ -49,7 +49,7 @@ class CrossTableQualityPhase(BasePhase):
 
     @property
     def outputs(self) -> list[str]:
-        return ["cross_table_correlations", "multicollinearity_groups"]
+        return ["cross_table_correlations"]
 
     @property
     def is_llm_phase(self) -> bool:

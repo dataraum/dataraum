@@ -116,7 +116,6 @@ USER_PROMPT_TEMPLATE = """Analyze this dataset for business cycles.
    - `get_cycle_completion_metrics`: Get completion rates for each potential cycle
    - `get_column_value_distribution`: Check status values, transaction types
    - `get_entity_transaction_flow`: Understand how entities progress through cycles
-   - `get_functional_dependencies`: Understand column relationships
 
 4. **REQUIRED**: Call `submit_analysis` with your structured findings when done.
 
@@ -366,10 +365,6 @@ class BusinessCycleAgent:
                 type_column=tool_input["type_column"],
                 date_column=tool_input.get("date_column"),
                 sample_size=tool_input.get("sample_size", 5),
-            )
-        elif tool_name == "get_functional_dependencies":
-            return tools.get_functional_dependencies(
-                table_name=tool_input["table_name"],
             )
         else:
             return {"error": f"Unknown tool: {tool_name}"}

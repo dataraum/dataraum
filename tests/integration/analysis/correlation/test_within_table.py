@@ -8,10 +8,8 @@ import pytest
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.correlation.within_table import (
-    compute_categorical_associations,
     compute_numeric_correlations,
     detect_derived_columns,
-    detect_functional_dependencies,
 )
 from dataraum.storage import Column, Source, Table
 
@@ -43,37 +41,6 @@ def test_duckdb(tmp_path):
     conn.execute("UPDATE test_numeric SET col_c = col_a * 2")
     # Make col_d = col_a + col_b (derived)
     conn.execute("UPDATE test_numeric SET col_d = col_a + col_b")
-
-    # Create test table with categorical columns
-    # cat1 and cat2 are strongly associated but not perfectly 1:1
-    # We need at least a 2x2 contingency table (4+ cells with data)
-    conn.execute("""
-        CREATE TABLE test_categorical AS
-        SELECT
-            i AS id,
-            CASE WHEN i % 3 = 0 THEN 'A' WHEN i % 3 = 1 THEN 'B' ELSE 'C' END AS cat1,
-            CASE
-                WHEN i % 3 = 0 AND i % 2 = 0 THEN 'X'
-                WHEN i % 3 = 0 AND i % 2 = 1 THEN 'Y'
-                WHEN i % 3 = 1 AND i % 2 = 0 THEN 'X'
-                WHEN i % 3 = 1 AND i % 2 = 1 THEN 'Y'
-                ELSE 'Z'
-            END AS cat2,
-            CASE WHEN i % 2 = 0 THEN 'even' ELSE 'odd' END AS cat3
-        FROM generate_series(1, 100) AS t(i)
-    """)
-
-    # Create test table with functional dependencies
-    conn.execute("""
-        CREATE TABLE test_fd AS
-        SELECT
-            i AS id,
-            'code_' || (i % 10) AS code,
-            'name_' || (i % 10) AS name,
-            (RANDOM() * 100)::DOUBLE AS value
-        FROM generate_series(1, 100) AS t(i)
-    """)
-    # code -> name is a functional dependency (same code always has same name)
 
     # Close setup connection so parallel workers can open read-only connections
     conn.close()
@@ -135,78 +102,6 @@ def table_numeric(session: Session, test_source: Source):
     return table
 
 
-@pytest.fixture
-def table_categorical(session: Session, test_source: Source):
-    """Create Table and Column records for categorical test."""
-    table = Table(
-        table_id=str(uuid4()),
-        source_id=test_source.source_id,
-        table_name="test_categorical",
-        duckdb_path="test_categorical",
-        layer="typed",
-        row_count=100,
-        created_at=datetime.now(UTC),
-    )
-    session.add(table)
-
-    columns = []
-    for name, dtype in [
-        ("id", "INTEGER"),
-        ("cat1", "VARCHAR"),
-        ("cat2", "VARCHAR"),
-        ("cat3", "VARCHAR"),
-    ]:
-        col = Column(
-            column_id=str(uuid4()),
-            table_id=table.table_id,
-            column_name=name,
-            column_position=len(columns),
-            raw_type="VARCHAR",
-            resolved_type=dtype,
-        )
-        columns.append(col)
-        session.add(col)
-
-    session.commit()
-    return table
-
-
-@pytest.fixture
-def table_fd(session: Session, test_source: Source):
-    """Create Table and Column records for functional dependency test."""
-    table = Table(
-        table_id=str(uuid4()),
-        source_id=test_source.source_id,
-        table_name="test_fd",
-        duckdb_path="test_fd",
-        layer="typed",
-        row_count=100,
-        created_at=datetime.now(UTC),
-    )
-    session.add(table)
-
-    columns = []
-    for name, dtype in [
-        ("id", "INTEGER"),
-        ("code", "VARCHAR"),
-        ("name", "VARCHAR"),
-        ("value", "DOUBLE"),
-    ]:
-        col = Column(
-            column_id=str(uuid4()),
-            table_id=table.table_id,
-            column_name=name,
-            column_position=len(columns),
-            raw_type="VARCHAR",
-            resolved_type=dtype,
-        )
-        columns.append(col)
-        session.add(col)
-
-    session.commit()
-    return table
-
-
 def test_compute_numeric_correlations(session, test_duckdb, table_numeric):
     """Test numeric correlation detection."""
     result = compute_numeric_correlations(table_numeric, test_duckdb, session, min_correlation=0.3)
@@ -221,44 +116,6 @@ def test_compute_numeric_correlations(session, test_duckdb, table_numeric):
     )
     assert col_a_c is not None
     assert abs(col_a_c.pearson_r - 1.0) < 0.01  # Perfect correlation
-
-
-def test_compute_categorical_associations(session, test_duckdb, table_categorical):
-    """Test categorical association detection."""
-    result = compute_categorical_associations(
-        table_categorical, test_duckdb, session, min_cramers_v=0.1
-    )
-
-    assert result.success
-    associations = result.unwrap()
-
-    # cat1 and cat2 have strong association (A,B→X/Y, C→Z pattern)
-    cat1_cat2 = next(
-        (a for a in associations if {a.column1_name, a.column2_name} == {"cat1", "cat2"}),
-        None,
-    )
-    assert cat1_cat2 is not None
-    assert cat1_cat2.cramers_v > 0.3  # Moderate to strong association
-
-
-def test_detect_functional_dependencies(session, test_duckdb, table_fd):
-    """Test functional dependency detection."""
-    result = detect_functional_dependencies(table_fd, test_duckdb, session, min_confidence=0.95)
-
-    assert result.success
-    dependencies = result.unwrap()
-
-    # code -> name should be detected (each code has one name)
-    code_name = next(
-        (
-            fd
-            for fd in dependencies
-            if fd.determinant_column_names == ["code"] and fd.dependent_column_name == "name"
-        ),
-        None,
-    )
-    assert code_name is not None
-    assert code_name.confidence == 1.0  # Exact FD
 
 
 def test_detect_derived_columns(session, test_duckdb, table_numeric):

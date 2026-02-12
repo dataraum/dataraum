@@ -8,12 +8,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dataraum.analysis.correlation.db_models import FunctionalDependency
 from dataraum.analysis.cycles.models import BusinessCycleAnalysisOutput
-from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
     import duckdb
@@ -238,59 +235,6 @@ class CycleDetectionTools:
         except Exception as e:
             return {"error": str(e)}
 
-    def get_functional_dependencies(
-        self,
-        table_name: str,
-    ) -> dict[str, Any]:
-        """Get functional dependencies for a table.
-
-        Shows which columns determine other columns,
-        useful for understanding data structure.
-
-        Args:
-            table_name: Table to analyze
-
-        Returns:
-            List of functional dependencies
-        """
-        try:
-            # Filter by layer='typed' to avoid multiple results (raw, typed, quarantine)
-            table_stmt = select(Table).where(
-                Table.table_name == table_name,
-                Table.layer == "typed",
-            )
-            table = self._session.execute(table_stmt).scalar_one_or_none()
-            if not table:
-                return {"error": f"Table {table_name} not found"}
-
-            deps_stmt = select(FunctionalDependency).where(
-                FunctionalDependency.table_id == table.table_id,
-                FunctionalDependency.confidence > 0.9,
-            )
-            deps = self._session.execute(deps_stmt).scalars().all()
-
-            # Get column names
-            cols_stmt = select(Column).where(Column.table_id == table.table_id)
-            cols = self._session.execute(cols_stmt).scalars().all()
-            col_map = {c.column_id: c.column_name for c in cols}
-
-            return {
-                "table": table_name,
-                "dependencies": [
-                    {
-                        "determinant": [
-                            col_map.get(cid, cid) for cid in dep.determinant_column_ids
-                        ],
-                        "dependent": col_map.get(dep.dependent_column_id, dep.dependent_column_id),
-                        "confidence": dep.confidence,
-                        "violations": dep.violation_count,
-                    }
-                    for dep in deps
-                ],
-            }
-        except Exception as e:
-            return {"error": str(e)}
-
 
 def get_tool_definitions() -> list[dict[str, Any]]:
     """Get JSON schema definitions for the tools.
@@ -388,20 +332,6 @@ def get_tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["table_name", "entity_column", "type_column"],
-            },
-        },
-        {
-            "name": "get_functional_dependencies",
-            "description": "Get functional dependencies for a table. Shows which columns determine other columns.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "table_name": {
-                        "type": "string",
-                        "description": "Table to analyze",
-                    },
-                },
-                "required": ["table_name"],
             },
         },
     ]

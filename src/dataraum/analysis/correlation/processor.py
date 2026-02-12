@@ -28,8 +28,6 @@ from dataraum.analysis.correlation.cross_table import analyze_relationship_quali
 from dataraum.analysis.correlation.db_models import (
     CorrelationAnalysisRun,
     CrossTableCorrelationDB,
-    MulticollinearityGroup,
-    QualityIssueDB,
 )
 from dataraum.analysis.correlation.models import (
     CorrelationAnalysisResult,
@@ -37,10 +35,8 @@ from dataraum.analysis.correlation.models import (
     EnrichedRelationship,
 )
 from dataraum.analysis.correlation.within_table import (
-    compute_categorical_associations,
     compute_numeric_correlations,
     detect_derived_columns,
-    detect_functional_dependencies,
 )
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.core.logging import get_logger
@@ -83,14 +79,6 @@ def analyze_correlations(
         numeric_corr_result = compute_numeric_correlations(table, duckdb_conn, session)
         numeric_correlations = numeric_corr_result.unwrap() if numeric_corr_result.success else []
 
-        categorical_assoc_result = compute_categorical_associations(table, duckdb_conn, session)
-        categorical_associations = (
-            categorical_assoc_result.unwrap() if categorical_assoc_result.success else []
-        )
-
-        fd_result = detect_functional_dependencies(table, duckdb_conn, session)
-        functional_dependencies = fd_result.unwrap() if fd_result.success else []
-
         derived_result = detect_derived_columns(table, duckdb_conn, session)
         derived_columns = derived_result.unwrap() if derived_result.success else []
 
@@ -114,8 +102,6 @@ def analyze_correlations(
             table_id=table_id,
             table_name=table.table_name,
             numeric_correlations=numeric_correlations,
-            categorical_associations=categorical_associations,
-            functional_dependencies=functional_dependencies,
             derived_columns=derived_columns,
             total_column_pairs=total_pairs,
             significant_correlations=significant_correlations,
@@ -290,33 +276,3 @@ def _store_cross_table_results(
             computed_at=now,
         )
         session.add(db_corr)
-
-    # Store multicollinearity groups (both within-table and cross-table)
-    all_groups = quality_result.dependency_groups + quality_result.cross_table_dependency_groups
-    for group in all_groups:
-        columns_data = [
-            {"table": t, "column": c, "vdp": group.variance_proportions.get((t, c), 0.0)}
-            for t, c in group.columns
-        ]
-        db_group = MulticollinearityGroup(
-            run_id=run_id,
-            columns_involved=columns_data,
-            condition_index=group.condition_index,
-            severity=group.severity,
-            is_cross_table=group.is_cross_table,
-            computed_at=now,
-        )
-        session.add(db_group)
-
-    # Store quality issues
-    for issue in quality_result.issues:
-        affected_cols = [{"table": t, "column": c} for t, c in issue.affected_columns]
-        db_issue = QualityIssueDB(
-            run_id=run_id,
-            issue_type=issue.issue_type,
-            severity=issue.severity,
-            message=issue.message,
-            affected_columns=affected_cols,
-            detected_at=now,
-        )
-        session.add(db_issue)

@@ -22,9 +22,6 @@ Example:
 from dataraum.analysis.temporal.db_models import (
     TemporalColumnProfile,
 )
-from dataraum.analysis.temporal.db_models import (
-    TemporalTableSummary as DBTemporalTableSummary,
-)
 from dataraum.analysis.temporal.models import (
     TemporalAnalysisResult,
     TemporalProfileResult,
@@ -41,5 +38,4 @@ __all__ = [
     "TemporalTableSummary",
     # DB models
     "TemporalColumnProfile",
-    "DBTemporalTableSummary",
 ]

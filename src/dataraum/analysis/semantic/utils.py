@@ -76,7 +76,6 @@ def load_correlations_for_semantic(
     from dataraum.analysis.correlation.db_models import (
         ColumnCorrelation,
         DerivedColumn,
-        FunctionalDependency,
     )
 
     # Load table name mapping
@@ -97,36 +96,9 @@ def load_correlations_for_semantic(
     # Initialize result structure
     for table_name in table_map.keys():
         result[table_name] = {
-            "functional_dependencies": [],
             "numeric_correlations": [],
             "derived_columns": [],
         }
-
-    # Load functional dependencies
-    fd_stmt = select(FunctionalDependency).where(FunctionalDependency.table_id.in_(table_ids))
-    fd_result = session.execute(fd_stmt)
-
-    for fd in fd_result.scalars().all():
-        table_name_opt = table_id_to_name.get(fd.table_id)
-        if not table_name_opt:
-            continue
-        table_name = table_name_opt
-
-        # Resolve column names
-        det_names = []
-        for col_id in fd.determinant_column_ids:
-            col_name = col_id_to_name.get(col_id, col_id)
-            det_names.append(col_name)
-
-        dep_name = col_id_to_name.get(fd.dependent_column_id, fd.dependent_column_id)
-
-        result[table_name]["functional_dependencies"].append(
-            {
-                "determinant": det_names,
-                "dependent": dep_name,
-                "confidence": fd.confidence,
-            }
-        )
 
     # Load strong numeric correlations (only strong and very_strong)
     corr_stmt = select(ColumnCorrelation).where(

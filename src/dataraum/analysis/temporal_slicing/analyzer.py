@@ -17,7 +17,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.temporal_slicing.db_models import (
-    SliceTimeMatrixEntry,
     TemporalDriftAnalysis,
     TemporalSliceAnalysis,
     TemporalSliceRun,
@@ -261,20 +260,6 @@ class TemporalSliceAnalyzer:
                     has_category_changes=drift.has_category_changes,
                 )
                 run.drift_analyses.append(drift_record)
-
-            # Persist slice-time matrix - use relationship for proper FK ordering
-            if result.slice_time_matrix:
-                for _slice_value, periods in result.slice_time_matrix.data.items():
-                    for _period_label, cell in periods.items():
-                        entry = SliceTimeMatrixEntry(
-                            slice_table_name=result.slice_table_name,
-                            slice_column=result.slice_time_matrix.slice_column,
-                            slice_value=cell.slice_value,
-                            period_label=cell.period_label,
-                            row_count=cell.row_count,
-                            period_over_period_change=cell.period_over_period_change,
-                        )
-                        run.matrix_entries.append(entry)
 
             # Add the run with all children - SQLAlchemy handles FK ordering
             self.session.add(run)

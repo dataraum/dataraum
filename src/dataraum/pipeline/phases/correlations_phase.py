@@ -2,8 +2,6 @@
 
 Analyzes within-table correlations:
 - Numeric correlations (Pearson, Spearman)
-- Categorical associations (Cramér's V)
-- Functional dependencies (A → B)
 - Derived columns detection
 """
 
@@ -24,7 +22,7 @@ class CorrelationsPhase(BasePhase):
     """Within-table correlation analysis phase.
 
     Analyzes correlations within each typed table to identify
-    related columns, functional dependencies, and derived columns.
+    related columns and derived columns.
     """
 
     @property
@@ -93,8 +91,6 @@ class CorrelationsPhase(BasePhase):
         # Analyze each table
         analyzed_tables = []
         total_numeric_corr = 0
-        total_categorical_assoc = 0
-        total_func_deps = 0
         total_derived = 0
         warnings = []
 
@@ -113,8 +109,6 @@ class CorrelationsPhase(BasePhase):
             analyzed_tables.append(typed_table.table_name)
 
             total_numeric_corr += len(result_data.numeric_correlations)
-            total_categorical_assoc += len(result_data.categorical_associations)
-            total_func_deps += len(result_data.functional_dependencies)
             total_derived += len(result_data.derived_columns)
 
             # Create analysis run record to track completion
@@ -141,14 +135,9 @@ class CorrelationsPhase(BasePhase):
             outputs={
                 "correlations": analyzed_tables,
                 "numeric_correlations": total_numeric_corr,
-                "categorical_associations": total_categorical_assoc,
-                "functional_dependencies": total_func_deps,
                 "derived_columns": total_derived,
             },
             records_processed=len(analyzed_tables),
-            records_created=total_numeric_corr
-            + total_categorical_assoc
-            + total_func_deps
-            + total_derived,
+            records_created=total_numeric_corr + total_derived,
             warnings=warnings if warnings else None,
         )

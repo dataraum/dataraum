@@ -243,13 +243,14 @@ PIPELINE_DAG: list[PhaseDefinition] = [
         outputs=["semantic_annotations", "confirmed_relationships"],
         requires_llm=True,
     ),
-    PhaseDefinition(
-        name="validation",
-        description="LLM-powered validation checks",
-        dependencies=["semantic"],  # Needs semantic annotations for better SQL generation
-        outputs=["validation_results"],
-        requires_llm=True,
-    ),
+    # validation: De-configured (domain-specific, keep code, remove from pipeline)
+    # PhaseDefinition(
+    #     name="validation",
+    #     description="LLM-powered validation checks",
+    #     dependencies=["semantic"],
+    #     outputs=["validation_results"],
+    #     requires_llm=True,
+    # ),
     # ============================================================
     # SLICING PHASES
     # ============================================================
@@ -299,18 +300,19 @@ PIPELINE_DAG: list[PhaseDefinition] = [
     # ============================================================
     # BUSINESS ANALYSIS PHASES (LLM)
     # ============================================================
-    PhaseDefinition(
-        name="business_cycles",
-        description="Expert LLM cycle detection",
-        dependencies=["semantic", "relationships"],
-        outputs=["cycle_analysis"],
-        requires_llm=True,
-    ),
+    # business_cycles: De-configured (domain-specific, keep code, remove from pipeline)
+    # PhaseDefinition(
+    #     name="business_cycles",
+    #     description="Expert LLM cycle detection",
+    #     dependencies=["semantic", "relationships"],
+    #     outputs=["cycle_analysis"],
+    #     requires_llm=True,
+    # ),
     PhaseDefinition(
         name="cross_table_quality",
         description="Cross-table correlation analysis",
         dependencies=["semantic"],
-        outputs=["cross_table_correlations", "multicollinearity_groups"],
+        outputs=["cross_table_correlations"],
         # Note: Despite being in the "quality" family, this is statistical analysis
         requires_llm=False,
     ),
@@ -336,7 +338,7 @@ PIPELINE_DAG: list[PhaseDefinition] = [
             "correlations",
             "slicing",
             "quality_summary",
-            "business_cycles",
+            # "business_cycles",  # De-configured
             "entropy_interpretation",
         ],
         outputs=["metrics_calculated", "metrics_skipped"],

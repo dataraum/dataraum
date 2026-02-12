@@ -653,7 +653,7 @@ def get_pipeline() -> Pipeline:
 def _register_builtin_phases(pipeline: Pipeline) -> None:
     """Register all built-in phase implementations."""
     from dataraum.pipeline.phases import (
-        BusinessCyclesPhase,
+        # BusinessCyclesPhase,  # De-configured: domain-specific
         ColumnEligibilityPhase,
         CorrelationsPhase,
         # CrossTableQualityPhase,  # De-configured: write-only data
@@ -671,7 +671,7 @@ def _register_builtin_phases(pipeline: Pipeline) -> None:
         TemporalPhase,
         TemporalSliceAnalysisPhase,
         TypingPhase,
-        ValidationPhase,
+        # ValidationPhase,  # De-configured: domain-specific
     )
 
     pipeline.register(ImportPhase())
@@ -687,12 +687,12 @@ def _register_builtin_phases(pipeline: Pipeline) -> None:
     pipeline.register(SliceAnalysisPhase())
     pipeline.register(QualitySummaryPhase())
     pipeline.register(TemporalSliceAnalysisPhase())
-    pipeline.register(BusinessCyclesPhase())
+    # BusinessCyclesPhase de-configured: domain-specific, keep code
     # CrossTableQualityPhase de-configured: write-only data, evaluate for entropy later
     pipeline.register(EntropyPhase())
     pipeline.register(EntropyInterpretationPhase())
     # GraphExecutionPhase de-configured: re-introduce after pipeline cleanup
-    pipeline.register(ValidationPhase())
+    # ValidationPhase de-configured: domain-specific, keep code
 
 
 def run_pipeline(

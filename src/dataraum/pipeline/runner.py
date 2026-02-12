@@ -41,7 +41,7 @@ from dataraum.pipeline.base import PIPELINE_DAG, PhaseStatus
 from dataraum.pipeline.db_models import PhaseCheckpoint
 from dataraum.pipeline.orchestrator import Pipeline, PipelineConfig
 from dataraum.pipeline.phases import (
-    BusinessCyclesPhase,
+    # BusinessCyclesPhase,  # De-configured: domain-specific
     ColumnEligibilityPhase,
     CorrelationsPhase,
     # CrossTableQualityPhase,  # De-configured: write-only data, evaluate for entropy later
@@ -59,7 +59,7 @@ from dataraum.pipeline.phases import (
     TemporalPhase,
     TemporalSliceAnalysisPhase,
     TypingPhase,
-    ValidationPhase,
+    # ValidationPhase,  # De-configured: domain-specific
 )
 from dataraum.storage import Source
 
@@ -258,7 +258,7 @@ def create_pipeline(config: RunConfig, pipeline_yaml: dict[str, Any] | None = No
     pipeline.register(CorrelationsPhase())
     pipeline.register(TemporalPhase())
     pipeline.register(SemanticPhase())
-    pipeline.register(ValidationPhase())
+    # ValidationPhase de-configured: domain-specific, keep code
 
     # Slicing phases
     pipeline.register(SlicingPhase())
@@ -268,7 +268,7 @@ def create_pipeline(config: RunConfig, pipeline_yaml: dict[str, Any] | None = No
     # Entropy and quality phases
     pipeline.register(EntropyPhase())
     pipeline.register(EntropyInterpretationPhase())
-    pipeline.register(BusinessCyclesPhase())
+    # BusinessCyclesPhase de-configured: domain-specific, keep code
     # CrossTableQualityPhase de-configured: write-only data, evaluate for entropy later
     pipeline.register(QualitySummaryPhase())
 

@@ -54,6 +54,10 @@ system_prompt: |
 
   Not all candidates are real relationships. Use column names, data types,
   and semantic context to decide which to confirm.
+
+  Note: Do NOT determine cardinality (one-to-one, many-to-one, etc.) — this is
+  computed automatically from actual data after your analysis. Focus on whether
+  the relationship is semantically real.
   </relationship_evaluation>
 
   <column_annotations_review>

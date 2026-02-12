@@ -41,7 +41,6 @@ from dataraum.analysis.statistics.models import (
 )
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import (
-    Cardinality,
     ColumnRef,
     DecisionSource,
     RelationshipType,
@@ -735,22 +734,12 @@ class SemanticAgent(LLMFeature):
                     )
                     annotations.append(annotation)
 
-            # Parse relationships
+            # Parse relationships (cardinality is computed post-hoc from actual data)
             for rel in analysis.relationships:
                 try:
                     rel_type = RelationshipType(rel.relationship_type)
                 except ValueError:
                     rel_type = RelationshipType.FOREIGN_KEY
-
-                cardinality = None
-                if rel.cardinality == "one_to_one":
-                    cardinality = Cardinality.ONE_TO_ONE
-                elif rel.cardinality == "one_to_many":
-                    cardinality = Cardinality.ONE_TO_MANY
-                elif rel.cardinality == "many_to_one":
-                    cardinality = Cardinality.MANY_TO_ONE
-                elif rel.cardinality == "many_to_many":
-                    cardinality = Cardinality.MANY_TO_MANY
 
                 relationship = Relationship(
                     relationship_id=str(uuid4()),
@@ -759,7 +748,7 @@ class SemanticAgent(LLMFeature):
                     to_table=rel.to_table,
                     to_column=rel.to_column,
                     relationship_type=rel_type,
-                    cardinality=cardinality,
+                    cardinality=None,  # Set by processor from actual data
                     confidence=rel.confidence,
                     detection_method="llm_tool",
                     evidence={"source": "semantic_analysis", "reasoning": rel.reasoning},

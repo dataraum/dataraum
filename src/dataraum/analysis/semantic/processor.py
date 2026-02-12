@@ -11,7 +11,10 @@ import duckdb
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipModel
-from dataraum.analysis.relationships.evaluator import compute_ri_metrics
+from dataraum.analysis.relationships.evaluator import (
+    compute_actual_cardinality,
+    compute_ri_metrics,
+)
 from dataraum.analysis.semantic.agent import SemanticAgent
 from dataraum.analysis.semantic.db_models import (
     SemanticAnnotation as AnnotationModel,
@@ -19,12 +22,53 @@ from dataraum.analysis.semantic.db_models import (
 from dataraum.analysis.semantic.db_models import (
     TableEntity as EntityModel,
 )
-from dataraum.analysis.semantic.models import ColumnAnnotationOutput, SemanticEnrichmentResult
+from dataraum.analysis.semantic.models import (
+    ColumnAnnotationOutput,
+    SemanticEnrichmentResult,
+)
+from dataraum.analysis.semantic.models import (
+    Relationship as SemanticRelationship,
+)
 from dataraum.analysis.semantic.utils import load_column_mappings, load_table_mappings
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 
 logger = get_logger(__name__)
+
+
+def _resolve_cardinality(
+    rel: SemanticRelationship,
+    evidence: dict[str, Any],
+    duckdb_conn: duckdb.DuckDBPyConnection | None,
+) -> str | None:
+    """Determine actual cardinality from data, not from LLM guesses.
+
+    Priority:
+    1. Use pre-computed cardinality from relationship candidates (already verified)
+    2. Compute from actual data if DuckDB available
+    3. Fall back to None (unknown)
+    """
+    # 1. Use candidate's verified cardinality if available
+    candidate_cardinality = evidence.get("cardinality")
+    if candidate_cardinality:
+        return str(candidate_cardinality)
+
+    # 2. Compute from actual data
+    if duckdb_conn is not None:
+        from_table_path = f"typed_{rel.from_table}"
+        to_table_path = f"typed_{rel.to_table}"
+        actual = compute_actual_cardinality(
+            from_table_path,
+            to_table_path,
+            rel.from_column,
+            rel.to_column,
+            duckdb_conn,
+        )
+        if actual:
+            evidence["cardinality_verified"] = True
+            return actual
+
+    return None
 
 
 def _build_candidate_metrics_lookup(
@@ -58,6 +102,8 @@ def _build_candidate_metrics_lookup(
                 metrics["orphan_count"] = jc["orphan_count"]
             if "cardinality_verified" in jc:
                 metrics["cardinality_verified"] = jc["cardinality_verified"]
+            if "cardinality" in jc:
+                metrics["cardinality"] = jc["cardinality"]
 
             # Add relationship-level metrics
             if "join_success_rate" in candidate:
@@ -171,6 +217,7 @@ def enrich_semantic(
     candidate_metrics = _build_candidate_metrics_lookup(relationship_candidates)
 
     # Store LLM-confirmed relationships (separate from Phase 6 candidates)
+    # Cardinality is computed from actual data, not from LLM output.
     for rel in enrichment.relationships:
         from_col_id = column_map.get((rel.from_table, rel.from_column))
         to_col_id = column_map.get((rel.to_table, rel.to_column))
@@ -189,7 +236,6 @@ def enrich_semantic(
             evidence.update(candidate_metrics[candidate_key])
         elif duckdb_conn is not None:
             # Compute RI metrics for LLM-discovered relationships not in candidates
-            # Use typed_* table naming convention
             from_table_path = f"typed_{rel.from_table}"
             to_table_path = f"typed_{rel.to_table}"
             try:
@@ -199,9 +245,7 @@ def enrich_semantic(
                     to_table=to_table_path,
                     to_column=rel.to_column,
                     duckdb_conn=duckdb_conn,
-                    cardinality=rel.cardinality,
                 )
-                # Only add metrics that were successfully computed
                 for key, value in ri_metrics.items():
                     if value is not None:
                         evidence[key] = value
@@ -215,6 +259,13 @@ def enrich_semantic(
                     error=str(e),
                 )
 
+        # Determine cardinality from actual data
+        cardinality = _resolve_cardinality(
+            rel=rel,
+            evidence=evidence,
+            duckdb_conn=duckdb_conn,
+        )
+
         db_rel = RelationshipModel(
             relationship_id=rel.relationship_id,
             from_table_id=from_table_id,
@@ -222,7 +273,7 @@ def enrich_semantic(
             to_table_id=to_table_id,
             to_column_id=to_col_id,
             relationship_type=rel.relationship_type.value,
-            cardinality=rel.cardinality,
+            cardinality=cardinality,
             confidence=rel.confidence,
             detection_method="llm",  # Always 'llm' for semantic analysis
             evidence=evidence,

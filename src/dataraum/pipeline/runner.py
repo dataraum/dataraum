@@ -45,6 +45,7 @@ from dataraum.pipeline.phases import (
     ColumnEligibilityPhase,
     CorrelationsPhase,
     # CrossTableQualityPhase,  # De-configured: write-only data, evaluate for entropy later
+    EnrichedViewsPhase,
     EntropyInterpretationPhase,
     EntropyPhase,
     # GraphExecutionPhase,  # De-configured: re-introduce after pipeline cleanup
@@ -260,7 +261,8 @@ def create_pipeline(config: RunConfig, pipeline_yaml: dict[str, Any] | None = No
     pipeline.register(SemanticPhase())
     # ValidationPhase de-configured: domain-specific, keep code
 
-    # Slicing phases
+    # Enriched views + slicing phases
+    pipeline.register(EnrichedViewsPhase())
     pipeline.register(SlicingPhase())
     pipeline.register(SliceAnalysisPhase())
     pipeline.register(TemporalSliceAnalysisPhase())

@@ -29,7 +29,7 @@ from dataraum.storage import Column, Table
 logger = get_logger(__name__)
 
 # Only these cardinalities preserve fact table grain
-_GRAIN_SAFE_CARDINALITIES = {"many_to_one", "one_to_one"}
+_GRAIN_SAFE_CARDINALITIES = {"many-to-one", "one-to-one"}
 _MIN_CONFIDENCE = 0.7
 
 

@@ -101,7 +101,7 @@ class TestCorrelationsPhase:
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test returns empty results when all tables already analyzed."""
-        from dataraum.analysis.correlation.db_models import ColumnCorrelation
+        from dataraum.analysis.correlation.db_models import DerivedColumn as DerivedColumnDB
         from dataraum.storage import Column
 
         phase = CorrelationsPhase()
@@ -136,13 +136,17 @@ class TestCorrelationsPhase:
         )
         session.flush()
 
-        # Seed a ColumnCorrelation so the table is considered analyzed
+        # Seed a DerivedColumn so the table is considered analyzed
         session.add(
-            ColumnCorrelation(
+            DerivedColumnDB(
                 table_id=table_id,
-                column1_id=col1_id,
-                column2_id=col2_id,
-                sample_size=10,
+                derived_column_id=col2_id,
+                source_column_ids=[col1_id],
+                derivation_type="sum",
+                formula="a + a",
+                match_rate=1.0,
+                total_rows=10,
+                matching_rows=10,
             )
         )
         session.commit()
@@ -165,7 +169,7 @@ class TestCorrelationsPhase:
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test skip check when all tables have been analyzed."""
-        from dataraum.analysis.correlation.db_models import ColumnCorrelation
+        from dataraum.analysis.correlation.db_models import DerivedColumn as DerivedColumnDB
         from dataraum.storage import Column
 
         phase = CorrelationsPhase()
@@ -200,13 +204,17 @@ class TestCorrelationsPhase:
         )
         session.flush()
 
-        # Seed a ColumnCorrelation so the table is considered analyzed
+        # Seed a DerivedColumn so the table is considered analyzed
         session.add(
-            ColumnCorrelation(
+            DerivedColumnDB(
                 table_id=table_id,
-                column1_id=col1_id,
-                column2_id=col2_id,
-                sample_size=10,
+                derived_column_id=col2_id,
+                source_column_ids=[col1_id],
+                derivation_type="sum",
+                formula="a + a",
+                match_rate=1.0,
+                total_rows=10,
+                matching_rows=10,
             )
         )
         session.commit()

@@ -3,10 +3,8 @@
 Main orchestrator that runs all correlation analyses:
 
 Within-table analysis (analyze_correlations):
-- Numeric correlations (Pearson, Spearman)
-- Categorical associations (Cramér's V)
-- Functional dependencies (A → B)
-- Derived columns
+- Derived column detection (sum, product, ratio, etc.)
+- Numeric correlations are computed on-demand only (not in pipeline)
 
 Cross-table quality analysis (analyze_cross_table_quality):
 - Cross-table correlations between joined data
@@ -33,7 +31,6 @@ from dataraum.analysis.correlation.models import (
     EnrichedRelationship,
 )
 from dataraum.analysis.correlation.within_table import (
-    compute_numeric_correlations,
     detect_derived_columns,
 )
 from dataraum.analysis.relationships.db_models import Relationship
@@ -49,13 +46,12 @@ def analyze_correlations(
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
 ) -> Result[CorrelationAnalysisResult]:
-    """Run complete correlation analysis on a table.
+    """Run correlation analysis on a table.
 
-    This orchestrates all correlation analyses:
-    - Numeric correlations
-    - Categorical associations
-    - Functional dependencies
-    - Derived columns
+    Currently runs derived column detection only. Numeric correlations
+    (Pearson, Spearman) are available via compute_numeric_correlations()
+    for on-demand use but are not part of the pipeline — no downstream
+    consumer acts on them.
 
     Args:
         table_id: Table ID to analyze
@@ -73,10 +69,6 @@ def analyze_correlations(
         if not table:
             return Result.fail(f"Table not found: {table_id}")
 
-        # Run all analyses
-        numeric_corr_result = compute_numeric_correlations(table, duckdb_conn, session)
-        numeric_correlations = numeric_corr_result.unwrap() if numeric_corr_result.success else []
-
         derived_result = detect_derived_columns(table, duckdb_conn, session)
         derived_columns = derived_result.unwrap() if derived_result.success else []
 
@@ -86,24 +78,16 @@ def analyze_correlations(
         total_columns = len(result.scalars().all())
         total_pairs = (total_columns * (total_columns - 1)) // 2
 
-        significant_correlations = sum(1 for c in numeric_correlations if c.is_significant)
-        strong_correlations = sum(
-            1
-            for c in numeric_correlations
-            if max(abs(c.pearson_r or 0), abs(c.spearman_rho or 0)) > 0.7
-        )
-
         duration = time.time() - start_time
         computed_at = datetime.now(UTC)
 
         analysis_result = CorrelationAnalysisResult(
             table_id=table_id,
             table_name=table.table_name,
-            numeric_correlations=numeric_correlations,
             derived_columns=derived_columns,
             total_column_pairs=total_pairs,
-            significant_correlations=significant_correlations,
-            strong_correlations=strong_correlations,
+            significant_correlations=0,
+            strong_correlations=0,
             duration_seconds=duration,
             computed_at=computed_at,
         )

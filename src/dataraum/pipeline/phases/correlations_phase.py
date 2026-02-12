@@ -1,8 +1,11 @@
 """Correlations phase implementation.
 
-Analyzes within-table correlations:
-- Numeric correlations (Pearson, Spearman)
-- Derived columns detection
+Analyzes within-table patterns:
+- Derived columns detection (sum, product, ratio, etc.)
+
+Numeric correlations (Pearson, Spearman) are available on-demand via
+the correlation processor but are not computed in the pipeline — no
+downstream consumer acts on them.
 """
 
 from __future__ import annotations
@@ -10,7 +13,7 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from dataraum.analysis.correlation import analyze_correlations
-from dataraum.analysis.correlation.db_models import ColumnCorrelation, DerivedColumn
+from dataraum.analysis.correlation.db_models import DerivedColumn
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.storage import Table
@@ -40,7 +43,7 @@ class CorrelationsPhase(BasePhase):
         return ["correlations", "derived_columns"]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if all tables already have correlation analysis."""
+        """Skip if all tables already have derived column analysis."""
         # Get typed tables
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
         result = ctx.session.execute(stmt)
@@ -51,16 +54,11 @@ class CorrelationsPhase(BasePhase):
 
         table_ids = [t.table_id for t in typed_tables]
 
-        # Check which tables already have correlation results
-        corr_stmt = select(ColumnCorrelation.table_id.distinct()).where(
-            ColumnCorrelation.table_id.in_(table_ids)
-        )
+        # Check which tables already have derived column results
         derived_stmt = select(DerivedColumn.table_id.distinct()).where(
             DerivedColumn.table_id.in_(table_ids)
         )
-        analyzed_ids = set(ctx.session.execute(corr_stmt).scalars().all()) | set(
-            ctx.session.execute(derived_stmt).scalars().all()
-        )
+        analyzed_ids = set(ctx.session.execute(derived_stmt).scalars().all())
 
         unanalyzed = [t for t in typed_tables if t.table_id not in analyzed_ids]
         if not unanalyzed:
@@ -69,7 +67,7 @@ class CorrelationsPhase(BasePhase):
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Run within-table correlation analysis."""
+        """Run derived column detection on typed tables."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
         result = ctx.session.execute(stmt)
@@ -80,16 +78,11 @@ class CorrelationsPhase(BasePhase):
 
         table_ids = [t.table_id for t in typed_tables]
 
-        # Check which tables already have correlation results
-        corr_stmt = select(ColumnCorrelation.table_id.distinct()).where(
-            ColumnCorrelation.table_id.in_(table_ids)
-        )
+        # Check which tables already have derived column results
         derived_stmt = select(DerivedColumn.table_id.distinct()).where(
             DerivedColumn.table_id.in_(table_ids)
         )
-        analyzed_ids = set(ctx.session.execute(corr_stmt).scalars().all()) | set(
-            ctx.session.execute(derived_stmt).scalars().all()
-        )
+        analyzed_ids = set(ctx.session.execute(derived_stmt).scalars().all())
 
         unanalyzed_tables = [t for t in typed_tables if t.table_id not in analyzed_ids]
 
@@ -102,7 +95,6 @@ class CorrelationsPhase(BasePhase):
 
         # Analyze each table
         analyzed_tables = []
-        total_numeric_corr = 0
         total_derived = 0
         warnings = []
 
@@ -119,8 +111,6 @@ class CorrelationsPhase(BasePhase):
 
             result_data = corr_result.unwrap()
             analyzed_tables.append(typed_table.table_name)
-
-            total_numeric_corr += len(result_data.numeric_correlations)
             total_derived += len(result_data.derived_columns)
 
         # Note: commit handled by session_scope() in orchestrator
@@ -131,10 +121,9 @@ class CorrelationsPhase(BasePhase):
         return PhaseResult.success(
             outputs={
                 "correlations": analyzed_tables,
-                "numeric_correlations": total_numeric_corr,
                 "derived_columns": total_derived,
             },
             records_processed=len(analyzed_tables),
-            records_created=total_numeric_corr + total_derived,
+            records_created=total_derived,
             warnings=warnings if warnings else None,
         )

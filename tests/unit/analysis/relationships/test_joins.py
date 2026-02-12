@@ -202,3 +202,10 @@ class TestShouldCompareColumns:
             self._stats(resolved_type=None),
             self._stats(resolved_type="BIGINT"),
         )
+
+    def test_boolean_columns_skipped(self):
+        """Boolean columns always trivially contain each other ({True, False})."""
+        assert not _should_compare_columns(
+            self._stats(distinct=2, resolved_type="BOOLEAN"),
+            self._stats(distinct=2, resolved_type="BOOLEAN"),
+        )

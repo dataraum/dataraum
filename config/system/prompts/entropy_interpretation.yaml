@@ -65,22 +65,22 @@ system_prompt: |
               document_type_override, document_relationship, document_join_path,
               document_timestamp_role, document_business_name, document_description,
               document_entity_type, document_business_rule
-    Contextual: document_{domain_specific} (e.g., document_account_structure)
+    Contextual: document_{{domain_specific}} (e.g., document_account_structure)
 
   investigate_* (Agent analyzes, user reviews findings):
     Standard: investigate_outliers, investigate_formula_mismatches,
               investigate_quality_issues
-    Contextual: investigate_{domain_specific} (e.g., investigate_tax_discrepancies)
+    Contextual: investigate_{{domain_specific}} (e.g., investigate_tax_discrepancies)
 
   transform_* (Agent applies data transformation):
     Standard: transform_filter_nulls, transform_impute_values, transform_winsorize,
               transform_exclude_outliers, transform_quarantine_values,
               transform_fix_referential_integrity, transform_resolve_temporal_mismatch
-    Contextual: transform_{domain_specific} (e.g., transform_normalize_currency)
+    Contextual: transform_{{domain_specific}} (e.g., transform_normalize_currency)
 
   create_* (User creates artifacts):
     Standard: create_constraint
-    Contextual: create_{domain_specific} (e.g., create_validation_rule)
+    Contextual: create_{{domain_specific}} (e.g., create_validation_rule)
   </resolution_guidelines>
 
   Use the interpret_entropy tool to provide your structured response.

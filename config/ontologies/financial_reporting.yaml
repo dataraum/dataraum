@@ -25,6 +25,7 @@ concepts:
       - expense
     temporal_behavior: additive  # Can be summed over periods
     typical_role: measure
+    unit_from_concept: currency
     
   - name: cost_of_goods_sold
     description: Direct costs attributable to goods sold
@@ -119,6 +120,7 @@ concepts:
       - ccy
       - curr
     typical_role: dimension
+    is_unit_dimension: true
     typical_values:
       - USD
       - EUR
@@ -140,6 +142,7 @@ concepts:
       - a/r_paid
     temporal_behavior: point_in_time
     typical_role: measure
+    unit_from_concept: currency
 
   - name: accounts_payable
     description: Money owed by the company to suppliers
@@ -154,6 +157,7 @@ concepts:
       - a/p_paid
     temporal_behavior: point_in_time
     typical_role: measure
+    unit_from_concept: currency
 
   - name: inventory
     description: Goods held for sale or production
@@ -194,6 +198,7 @@ concepts:
       - cash_equivalents
     temporal_behavior: point_in_time
     typical_role: measure
+    unit_from_concept: currency
 
   - name: open_balance
     description: Outstanding balance on an account or transaction
@@ -205,6 +210,7 @@ concepts:
       - unpaid
     temporal_behavior: point_in_time
     typical_role: measure
+    unit_from_concept: currency
 
   - name: transaction_amount
     description: Monetary value of a transaction
@@ -216,6 +222,7 @@ concepts:
       - price
     temporal_behavior: additive
     typical_role: measure
+    unit_from_concept: currency
 
   - name: debit
     description: Debit entry in double-entry accounting
@@ -224,6 +231,7 @@ concepts:
       - dr
     temporal_behavior: additive
     typical_role: measure
+    unit_from_concept: currency
 
   - name: credit
     description: Credit entry in double-entry accounting
@@ -232,6 +240,7 @@ concepts:
       - cr
     temporal_behavior: additive
     typical_role: measure
+    unit_from_concept: currency
 
 # Metrics define calculations that can be performed
 metrics:

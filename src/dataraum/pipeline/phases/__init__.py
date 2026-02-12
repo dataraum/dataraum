@@ -8,6 +8,7 @@ from dataraum.pipeline.phases.business_cycles_phase import BusinessCyclesPhase
 from dataraum.pipeline.phases.column_eligibility_phase import ColumnEligibilityPhase
 from dataraum.pipeline.phases.correlations_phase import CorrelationsPhase
 from dataraum.pipeline.phases.cross_table_quality_phase import CrossTableQualityPhase
+from dataraum.pipeline.phases.enriched_views_phase import EnrichedViewsPhase
 from dataraum.pipeline.phases.entropy_interpretation_phase import (
     EntropyInterpretationPhase,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "CorrelationsPhase",
     "CrossTableQualityPhase",
     "EntropyInterpretationPhase",
+    "EnrichedViewsPhase",
     "EntropyPhase",
     "GraphExecutionPhase",
     "ImportPhase",

@@ -21,6 +21,7 @@ from dataraum.analysis.relationships.graph_topology import (
     analyze_graph_topology,
 )
 from dataraum.analysis.semantic.models import (
+    ColumnAnnotationOutput,
     EntityDetection,
     Relationship,
     SemanticAnalysisOutput,
@@ -104,6 +105,7 @@ class SemanticAgent(LLMFeature):
         table_ids: list[str],
         ontology: str = "general",
         relationship_candidates: list[dict[str, Any]] | None = None,
+        column_annotations: ColumnAnnotationOutput | None = None,
     ) -> Result[SemanticEnrichmentResult]:
         """Analyze semantic meaning of tables and columns.
 
@@ -116,6 +118,10 @@ class SemanticAgent(LLMFeature):
                 - table1, table2: Table names
                 - join_columns: List of column pairs with confidence scores
                 - topology_similarity: TDA-based structural similarity
+            column_annotations: Tier 1 column annotations from ColumnAnnotationAgent.
+                When provided, included as context so the capable model can focus
+                on relationships, table classification, and reviewing/upgrading
+                low-confidence annotations.
 
         Returns:
             Result containing SemanticEnrichmentResult or error
@@ -197,6 +203,7 @@ class SemanticAgent(LLMFeature):
                 relationship_candidates, graph_structure=graph_structure
             ),
             "within_table_correlations": self._format_correlations(correlations),
+            "column_annotations": self._format_column_annotations(column_annotations),
         }
 
         # Render prompt with system/user split
@@ -543,6 +550,33 @@ class SemanticAgent(LLMFeature):
         return "\n".join(lines) if lines else "No significant within-table correlations detected."
 
     @staticmethod
+    def _format_column_annotations(annotations: ColumnAnnotationOutput | None) -> str:
+        """Format tier 1 column annotations for the prompt.
+
+        Args:
+            annotations: Tier 1 column annotations, or None
+
+        Returns:
+            Formatted string for the prompt
+        """
+        if annotations is None:
+            return "No prior column annotations available."
+
+        lines = []
+        for table in annotations.tables:
+            lines.append(f"\n### {table.table_name}")
+            for col in table.columns:
+                concept = col.business_concept or "(none)"
+                lines.append(
+                    f"  - {col.column_name}: role={col.semantic_role}, "
+                    f"concept={concept}, confidence={col.confidence:.2f}"
+                )
+                if col.confidence < 0.7:
+                    lines.append("    [LOW CONFIDENCE — review recommended]")
+
+        return "\n".join(lines) if lines else "No prior column annotations available."
+
+    @staticmethod
     def _truncate_sample(value: Any, max_length: int = 100) -> Any:
         """Truncate a sample value if it exceeds max_length.
 
@@ -745,6 +779,7 @@ class SemanticAgent(LLMFeature):
                         business_name=col.business_term,
                         business_description=col.description,
                         business_concept=col.business_concept,
+                        unit_source_column=col.unit_source_column,
                         annotation_source=DecisionSource.LLM,
                         annotated_by=model_name,
                         confidence=col.confidence,

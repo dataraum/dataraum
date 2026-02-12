@@ -673,6 +673,7 @@ def _register_builtin_phases(pipeline: Pipeline) -> None:
         TypingPhase,
         # ValidationPhase,  # De-configured: domain-specific
     )
+    from dataraum.pipeline.phases.enriched_views_phase import EnrichedViewsPhase
 
     pipeline.register(ImportPhase())
     pipeline.register(TypingPhase())
@@ -683,6 +684,7 @@ def _register_builtin_phases(pipeline: Pipeline) -> None:
     pipeline.register(CorrelationsPhase())
     pipeline.register(TemporalPhase())
     pipeline.register(SemanticPhase())
+    pipeline.register(EnrichedViewsPhase())
     pipeline.register(SlicingPhase())
     pipeline.register(SliceAnalysisPhase())
     pipeline.register(QualitySummaryPhase())

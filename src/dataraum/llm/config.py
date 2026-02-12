@@ -33,6 +33,7 @@ class LLMFeatures(BaseModel):
 
     # Active features with implementations
     semantic_analysis: FeatureConfig
+    column_annotation: FeatureConfig | None = None
     slicing_analysis: FeatureConfig | None = None
     quality_summary: FeatureConfig | None = None
     validation: FeatureConfig | None = None

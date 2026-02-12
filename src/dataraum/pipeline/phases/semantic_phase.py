@@ -1,10 +1,13 @@
 """Semantic phase implementation.
 
-LLM-powered semantic analysis of tables and columns:
-- Semantic roles (measure, dimension, identifier, etc.)
-- Entity types (customer, product, transaction, etc.)
-- Business names and descriptions
-- Relationship confirmation from candidates
+Two-tier LLM-powered semantic analysis:
+  Tier 1 (fast): Column annotation — roles, entity types, business terms, concepts
+  Tier 2 (capable): Table classification, relationship evaluation, unit detection
+
+The fast model handles column-level pattern recognition cheaply.
+The capable model receives tier 1 annotations as context and focuses on
+reasoning-heavy tasks: relationships, fact/dim classification, cross-column
+unit detection, and reviewing low-confidence annotations.
 """
 
 from __future__ import annotations
@@ -13,22 +16,25 @@ from sqlalchemy import func, select
 
 from dataraum.analysis.relationships.utils import load_relationship_candidates_for_semantic
 from dataraum.analysis.semantic.agent import SemanticAgent
+from dataraum.analysis.semantic.column_agent import ColumnAnnotationAgent
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.semantic.processor import enrich_semantic
+from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.storage import Column, Table
 
+logger = get_logger(__name__)
+
 
 class SemanticPhase(BasePhase):
-    """LLM-powered semantic analysis phase.
+    """Two-tier LLM-powered semantic analysis phase.
 
-    Analyzes tables and columns using LLM to determine:
-    - Semantic roles (measure, dimension, identifier, attribute)
-    - Entity types (customer, product, transaction, etc.)
-    - Business names and descriptions
-    - Confirmed relationships between tables
+    Tier 1 (fast model): Annotate columns with semantic roles, entity types,
+        business terms, and ontology concept mappings.
+    Tier 2 (capable model): Table classification, relationship evaluation,
+        cross-column unit detection, and annotation review/upgrade.
 
     Requires: statistics, relationships, correlations phases.
     """
@@ -89,7 +95,7 @@ class SemanticPhase(BasePhase):
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Run semantic analysis using LLM."""
+        """Run two-tier semantic analysis using LLM."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
         result = ctx.session.execute(stmt)
@@ -151,10 +157,55 @@ class SemanticPhase(BasePhase):
         except Exception as e:
             return PhaseResult.failed(f"Failed to create LLM provider: {e}")
 
-        # Create other components
         renderer = PromptRenderer()
 
-        # Create semantic agent
+        # Get ontology from pipeline config
+        ontology = ctx.config.get("ontology")
+        if not ontology:
+            return PhaseResult.failed(
+                "No ontology configured. Set 'ontology' in config/system/pipeline.yaml "
+                "under the 'semantic' section."
+            )
+
+        # ========================================================
+        # Step 1: Fast column annotation (tier 1)
+        # ========================================================
+        column_annotations = None
+        col_annotation_config = config.features.column_annotation
+
+        if col_annotation_config and col_annotation_config.enabled:
+            col_agent = ColumnAnnotationAgent(
+                config=config,
+                provider=provider,
+                prompt_renderer=renderer,
+            )
+
+            annotation_result = col_agent.annotate(
+                session=ctx.session,
+                table_ids=table_ids,
+                ontology=ontology,
+            )
+
+            if annotation_result.success and annotation_result.value:
+                column_annotations = annotation_result.value
+                total_cols = sum(len(t.columns) for t in column_annotations.tables)
+                logger.info(
+                    "tier1_column_annotation_complete",
+                    tables=len(column_annotations.tables),
+                    columns=total_cols,
+                )
+            else:
+                # Tier 1 failure is non-fatal — tier 2 can still work without it
+                logger.warning(
+                    "tier1_column_annotation_failed",
+                    error=annotation_result.error,
+                )
+        else:
+            logger.info("tier1_column_annotation_skipped", reason="disabled in config")
+
+        # ========================================================
+        # Step 2: Capable semantic analysis (tier 2)
+        # ========================================================
         agent = SemanticAgent(
             config=config,
             provider=provider,
@@ -168,15 +219,7 @@ class SemanticPhase(BasePhase):
             detection_method="candidate",
         )
 
-        # Get ontology from pipeline config (set in config/system/pipeline.yaml → semantic.ontology)
-        ontology = ctx.config.get("ontology")
-        if not ontology:
-            return PhaseResult.failed(
-                "No ontology configured. Set 'ontology' in config/system/pipeline.yaml "
-                "under the 'semantic' section."
-            )
-
-        # Run semantic enrichment
+        # Run semantic enrichment with tier 1 annotations as context
         enrich_result = enrich_semantic(
             session=ctx.session,
             agent=agent,
@@ -184,6 +227,7 @@ class SemanticPhase(BasePhase):
             ontology=ontology,
             relationship_candidates=relationship_candidates,
             duckdb_conn=ctx.duckdb_conn,
+            column_annotations=column_annotations,
         )
 
         if not enrich_result.success:
@@ -197,6 +241,7 @@ class SemanticPhase(BasePhase):
                 "entities": len(enrichment.entity_detections),
                 "confirmed_relationships": len(enrichment.relationships),
                 "tables_analyzed": [t.table_name for t in typed_tables],
+                "tier1_annotations": column_annotations is not None,
             },
             records_processed=len(unannotated_columns),
             records_created=len(enrichment.annotations)

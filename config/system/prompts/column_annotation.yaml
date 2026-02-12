@@ -1,0 +1,70 @@
+# Column Annotation Prompt (Tier 1 - Fast Model)
+#
+# Annotates columns with semantic roles, entity types, business terms,
+# and ontology concept mappings. Runs on a fast/cheap model before the
+# capable semantic analysis model handles relationships and table classification.
+
+name: column_annotation
+version: "1.0.0"
+description: Fast column-level semantic annotation
+
+# Temperature (0.0 = deterministic)
+temperature: 0.0
+
+# System prompt - defines role and behavior
+system_prompt: |
+  You are a data analyst annotating database columns with semantic metadata.
+  For each column, determine its structural role, entity type, business name,
+  and whether it maps to a standard domain concept.
+
+  <semantic_roles>
+  - key: Primary identifier for the table (unique, non-null)
+  - foreign_key: References another table's key column
+  - measure: Numeric value for aggregation (sum, avg, count)
+  - dimension: Categorical attribute for grouping/filtering
+  - timestamp: Date or datetime for time-based analysis
+  - attribute: Descriptive field not typically used for aggregation
+  </semantic_roles>
+
+  <business_concept_mapping>
+  Match columns to ontology concepts by SEMANTIC MEANING, not just name patterns.
+  Set business_concept to null if no concept applies.
+  </business_concept_mapping>
+
+  Use the annotate_columns tool to provide your analysis.
+
+# User prompt - provides data and context
+user_prompt: |
+  <task>
+  Annotate each column in the following tables with its semantic role,
+  entity type, business term, and ontology concept mapping.
+  </task>
+
+  <schema>
+  {tables_json}
+  </schema>
+
+  <ontology name="{ontology_name}">
+  Map columns to these domain concepts where applicable.
+  Use the EXACT concept name when a column matches semantically.
+
+  {ontology_concepts}
+  </ontology>
+
+  Annotate all columns using the annotate_columns tool.
+
+# Input variable definitions
+inputs:
+  tables_json:
+    description: JSON array of tables with columns and statistics
+    required: true
+
+  ontology_name:
+    description: Name of the target ontology
+    required: true
+
+  ontology_concepts:
+    description: List of concepts from the ontology with descriptions
+    required: true
+
+# Output is defined by the ColumnAnnotationOutput Pydantic tool schema

@@ -3,6 +3,8 @@
 Orchestrates semantic analysis using the SemanticAgent and stores results.
 """
 
+from __future__ import annotations
+
 from typing import Any
 
 import duckdb
@@ -17,7 +19,7 @@ from dataraum.analysis.semantic.db_models import (
 from dataraum.analysis.semantic.db_models import (
     TableEntity as EntityModel,
 )
-from dataraum.analysis.semantic.models import SemanticEnrichmentResult
+from dataraum.analysis.semantic.models import ColumnAnnotationOutput, SemanticEnrichmentResult
 from dataraum.analysis.semantic.utils import load_column_mappings, load_table_mappings
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
@@ -80,6 +82,7 @@ def enrich_semantic(
     ontology: str = "general",
     relationship_candidates: list[dict[str, Any]] | None = None,
     duckdb_conn: duckdb.DuckDBPyConnection | None = None,
+    column_annotations: ColumnAnnotationOutput | None = None,
 ) -> Result[SemanticEnrichmentResult]:
     """Run semantic enrichment on tables.
 
@@ -100,16 +103,18 @@ def enrich_semantic(
             analysis/relationships module (TDA + join detection)
         duckdb_conn: Optional DuckDB connection for computing RI metrics
             for relationships not in candidates
+        column_annotations: Tier 1 column annotations from ColumnAnnotationAgent
 
     Returns:
         Result containing semantic enrichment data
     """
-    # Call semantic agent with relationship candidates
+    # Call semantic agent with relationship candidates and tier 1 annotations
     llm_result = agent.analyze(
         session=session,
         table_ids=table_ids,
         ontology=ontology,
         relationship_candidates=relationship_candidates,
+        column_annotations=column_annotations,
     )
 
     if not llm_result.success:
@@ -137,6 +142,7 @@ def enrich_semantic(
             business_name=annotation.business_name,
             business_description=annotation.business_description,
             business_concept=annotation.business_concept,
+            unit_source_column=annotation.unit_source_column,
             annotation_source=annotation.annotation_source.value,
             annotated_by=annotation.annotated_by,
             confidence=annotation.confidence,

@@ -35,6 +35,15 @@ active_provider: anthropic
 
 # Feature toggles
 features:
+  column_annotation:
+    enabled: true
+    model_tier: fast
+    prompt_file: prompts/column_annotation.yaml
+    description: >
+      Fast column-level annotation: semantic roles, entity types,
+      business terms, and ontology concept mapping. Runs before
+      the capable semantic analysis model.
+
   semantic_analysis:
     enabled: true
     model_tier: balanced

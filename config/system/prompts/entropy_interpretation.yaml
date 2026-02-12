@@ -57,6 +57,30 @@ system_prompt: |
   - Be specific about what metadata needs to be added
   - Consider cascade effects (fixing one thing may help others)
   - For each action, explain what entropy dimension it addresses
+
+  ACTION NAMING CONVENTION - all actions MUST use one of these prefixes:
+
+  document_* (User provides knowledge/decisions):
+    Standard: document_null_semantics, document_unit, document_formula,
+              document_type_override, document_relationship, document_join_path,
+              document_timestamp_role, document_business_name, document_description,
+              document_entity_type, document_business_rule
+    Contextual: document_{domain_specific} (e.g., document_account_structure)
+
+  investigate_* (Agent analyzes, user reviews findings):
+    Standard: investigate_outliers, investigate_formula_mismatches,
+              investigate_quality_issues
+    Contextual: investigate_{domain_specific} (e.g., investigate_tax_discrepancies)
+
+  transform_* (Agent applies data transformation):
+    Standard: transform_filter_nulls, transform_impute_values, transform_winsorize,
+              transform_exclude_outliers, transform_quarantine_values,
+              transform_fix_referential_integrity, transform_resolve_temporal_mismatch
+    Contextual: transform_{domain_specific} (e.g., transform_normalize_currency)
+
+  create_* (User creates artifacts):
+    Standard: create_constraint
+    Contextual: create_{domain_specific} (e.g., create_validation_rule)
   </resolution_guidelines>
 
   Use the interpret_entropy tool to provide your structured response.

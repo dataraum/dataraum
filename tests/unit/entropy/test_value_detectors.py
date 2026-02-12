@@ -78,8 +78,8 @@ class TestNullRatioDetector:
         assert results[0].evidence[0]["null_impact"] == "critical"
         # Should have resolution options
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "declare_null_meaning" in actions
-        assert "filter_nulls" in actions
+        assert "document_null_semantics" in actions
+        assert "transform_filter_nulls" in actions
 
     def test_max_entropy_at_full_nulls(self, detector: NullRatioDetector):
         """Test entropy is 1.0 for fully null column."""
@@ -111,13 +111,17 @@ class TestNullRatioDetector:
 
         results = detector.detect(context)
 
-        # declare_null_meaning should cascade to semantic.business_meaning
-        null_meaning_opt = next(
-            (opt for opt in results[0].resolution_options if opt.action == "declare_null_meaning"),
+        # document_null_semantics should cascade to semantic.business_meaning
+        null_semantics_opt = next(
+            (
+                opt
+                for opt in results[0].resolution_options
+                if opt.action == "document_null_semantics"
+            ),
             None,
         )
-        assert null_meaning_opt is not None
-        assert "semantic.business_meaning" in null_meaning_opt.cascade_dimensions
+        assert null_semantics_opt is not None
+        assert "semantic.business_meaning" in null_semantics_opt.cascade_dimensions
 
     def test_detector_properties(self, detector: NullRatioDetector):
         """Test detector has correct properties."""
@@ -204,8 +208,8 @@ class TestOutlierRateDetector:
         assert results[0].evidence[0]["outlier_impact"] == "significant"
         # Should have resolution options
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "winsorize" in actions
-        assert "exclude_outliers" in actions
+        assert "transform_winsorize" in actions
+        assert "transform_exclude_outliers" in actions
 
     def test_max_entropy_at_10_percent(self, detector: OutlierRateDetector):
         """Test entropy caps at 1.0 for 10% or more outliers."""

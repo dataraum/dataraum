@@ -152,7 +152,7 @@ class BusinessMeaningDetector(EntropyDetector):
         if not raw_metrics["has_description"]:
             resolution_options.append(
                 ResolutionOption(
-                    action="add_description",
+                    action="document_description",
                     parameters={
                         "column": context.column_name,
                         "table": context.table_name,
@@ -167,7 +167,7 @@ class BusinessMeaningDetector(EntropyDetector):
         if not raw_metrics["has_business_name"]:
             resolution_options.append(
                 ResolutionOption(
-                    action="add_business_name",
+                    action="document_business_name",
                     parameters={
                         "column": context.column_name,
                         "table": context.table_name,
@@ -181,7 +181,7 @@ class BusinessMeaningDetector(EntropyDetector):
         if not raw_metrics["has_entity_type"]:
             resolution_options.append(
                 ResolutionOption(
-                    action="add_entity_type",
+                    action="document_entity_type",
                     parameters={
                         "column": context.column_name,
                         "table": context.table_name,

@@ -94,7 +94,7 @@ class NullRatioDetector(EntropyDetector):
             # Some nulls - suggest null semantics declaration
             resolution_options.append(
                 ResolutionOption(
-                    action="declare_null_meaning",
+                    action="document_null_semantics",
                     parameters={
                         "column": context.column_name,
                         "meanings": ["not_applicable", "unknown", "not_yet_set"],
@@ -110,7 +110,7 @@ class NullRatioDetector(EntropyDetector):
             # High nulls - suggest imputation or filtering
             resolution_options.append(
                 ResolutionOption(
-                    action="filter_nulls",
+                    action="transform_filter_nulls",
                     parameters={
                         "column": context.column_name,
                         "strategy": "exclude",
@@ -122,7 +122,7 @@ class NullRatioDetector(EntropyDetector):
             )
             resolution_options.append(
                 ResolutionOption(
-                    action="impute_values",
+                    action="transform_impute_values",
                     parameters={
                         "column": context.column_name,
                         "strategy": "mean",  # or median, mode, etc.

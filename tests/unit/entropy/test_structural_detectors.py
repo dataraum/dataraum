@@ -76,8 +76,8 @@ class TestTypeFidelityDetector:
 
         # Should have override_type and quarantine_values options
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "override_type" in actions
-        assert "quarantine_values" in actions
+        assert "document_type_override" in actions
+        assert "transform_quarantine_values" in actions
 
     def test_evidence_includes_failure_samples(self, detector: TypeFidelityDetector):
         """Test evidence includes failure samples."""
@@ -147,7 +147,7 @@ class TestJoinPathDeterminismDetector:
         assert results[0].evidence[0]["path_status"] == "orphan"
         # Should suggest declaring relationship
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "declare_relationship" in actions
+        assert "document_relationship" in actions
 
     def test_star_schema_deterministic(self, detector: JoinPathDeterminismDetector):
         """Test LOW entropy for star schema (multiple paths to DIFFERENT tables)."""
@@ -195,7 +195,7 @@ class TestJoinPathDeterminismDetector:
         assert "customers" in results[0].evidence[0]["ambiguous_tables"]
         # Should suggest preferred path
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "declare_preferred_path" in actions
+        assert "document_join_path" in actions
 
     def test_mixed_deterministic_and_ambiguous(self, detector: JoinPathDeterminismDetector):
         """Test HIGH entropy when ANY table has multiple paths."""

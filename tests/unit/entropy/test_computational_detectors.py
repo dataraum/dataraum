@@ -35,7 +35,7 @@ class TestDerivedValueDetector:
         assert results[0].evidence[0]["status"] == "no_formula"
         # Should suggest declaring formula
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "declare_formula" in actions
+        assert "document_formula" in actions
 
     def test_exact_formula_match(self, detector: DerivedValueDetector):
         """Test low entropy for exact formula match."""
@@ -113,7 +113,7 @@ class TestDerivedValueDetector:
         assert results[0].evidence[0]["status"] == "approximate"
         # Should suggest verification
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "verify_formula" in actions
+        assert "investigate_formula_mismatches" in actions
 
     def test_poor_formula_match(self, detector: DerivedValueDetector):
         """Test high entropy for poor formula match."""
@@ -140,8 +140,8 @@ class TestDerivedValueDetector:
         assert results[0].evidence[0]["status"] == "poor"
         # Should suggest investigation
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "verify_formula" in actions
-        assert "investigate_mismatches" in actions
+        assert "investigate_formula_mismatches" in actions
+        # investigate_formula_mismatches consolidates both verify and investigate actions
 
     def test_column_not_in_derived_list(self, detector: DerivedValueDetector):
         """Test entropy when column is not in derived columns list."""
@@ -192,8 +192,8 @@ class TestDerivedValueDetector:
         evidence = results[0].evidence[0]
         assert evidence["source_columns"] == ["qty", "price"]
 
-    def test_cascade_dimensions_on_declare(self, detector: DerivedValueDetector):
-        """Test declare_formula resolution cascades to semantic."""
+    def test_cascade_dimensions_on_document(self, detector: DerivedValueDetector):
+        """Test document_formula resolution cascades to semantic."""
         context = DetectorContext(
             table_name="orders",
             column_name="unknown",
@@ -206,12 +206,12 @@ class TestDerivedValueDetector:
 
         results = detector.detect(context)
 
-        declare_opt = next(
-            (opt for opt in results[0].resolution_options if opt.action == "declare_formula"),
+        document_opt = next(
+            (opt for opt in results[0].resolution_options if opt.action == "document_formula"),
             None,
         )
-        assert declare_opt is not None
-        assert "semantic.business_meaning" in declare_opt.cascade_dimensions
+        assert document_opt is not None
+        assert "semantic.business_meaning" in document_opt.cascade_dimensions
 
     def test_detector_properties(self, detector: DerivedValueDetector):
         """Test detector has correct properties."""

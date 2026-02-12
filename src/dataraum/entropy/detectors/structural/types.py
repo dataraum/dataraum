@@ -82,7 +82,7 @@ class TypeFidelityDetector(EntropyDetector):
             # Significant parse failures - suggest manual type override
             resolution_options.append(
                 ResolutionOption(
-                    action="override_type",
+                    action="document_type_override",
                     parameters={
                         "column": context.column_name,
                         "suggested_type": "VARCHAR",  # Fallback to string
@@ -97,7 +97,7 @@ class TypeFidelityDetector(EntropyDetector):
             # Some failures - suggest data cleanup
             resolution_options.append(
                 ResolutionOption(
-                    action="quarantine_values",
+                    action="transform_quarantine_values",
                     parameters={
                         "column": context.column_name,
                         "pattern": "non_parseable",

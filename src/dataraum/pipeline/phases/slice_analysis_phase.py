@@ -120,6 +120,7 @@ class SliceAnalysisPhase(BasePhase):
             )
 
         # Execute slice SQL templates to create slice tables in DuckDB
+        # Each sql_template contains CREATE statements for ALL values in that slice
         slices_created = 0
         errors: list[str] = []
 
@@ -127,15 +128,12 @@ class SliceAnalysisPhase(BasePhase):
             if not slice_def.sql_template:
                 continue
 
-            for value in slice_def.distinct_values or []:
-                # Substitute the value into the SQL template
-                # The template should have a placeholder like {value} or similar
-                try:
-                    sql = slice_def.sql_template.format(value=value)
-                    ctx.duckdb_conn.execute(sql)
-                    slices_created += 1
-                except Exception as e:
-                    errors.append(f"Failed to create slice for {value}: {e}")
+            try:
+                # Execute the full template (contains all CREATE OR REPLACE statements)
+                ctx.duckdb_conn.execute(slice_def.sql_template)
+                slices_created += len(slice_def.distinct_values or [])
+            except Exception as e:
+                errors.append(f"Failed to create slices for {slice_def.column_id}: {e}")
 
         # Register slice tables in metadata
         register_result = register_slice_tables(

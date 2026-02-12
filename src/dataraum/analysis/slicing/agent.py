@@ -273,7 +273,7 @@ class SlicingAgent(LLMFeature):
             quoted_column = f'"{column_name}"'
 
             lines.append(f"-- Slice: {column_name} = '{value}'")
-            lines.append(f"CREATE TABLE {slice_table} AS")
+            lines.append(f"CREATE OR REPLACE TABLE {slice_table} AS")
             lines.append(f"SELECT * FROM {table_name}")
             lines.append(f"WHERE {quoted_column} = '{value}';")
             lines.append("")
@@ -304,7 +304,7 @@ class SlicingAgent(LLMFeature):
         # Escape single quotes in value
         escaped_value = str(value).replace("'", "''")
 
-        return f"""CREATE TABLE {target_table} AS
+        return f"""CREATE OR REPLACE TABLE {target_table} AS
 SELECT * FROM {source_table}
 WHERE {quoted_column} = '{escaped_value}';"""
 

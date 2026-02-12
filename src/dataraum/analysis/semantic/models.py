@@ -88,6 +88,30 @@ class ColumnSemanticOutput(BaseModel):
         description="Confidence in this analysis (0.0-1.0). Use higher values when certain.",
     )
 
+    unit_source_column: str | None = Field(
+        default=None,
+        description=(
+            "Column name that defines the unit for this measure (e.g., 'currency_code'). "
+            "Only set for measure columns whose unit is determined by a dimension column "
+            "in the same table."
+        ),
+    )
+
+
+class UnitRelationship(BaseModel):
+    """A dimension column that defines units for one or more measure columns."""
+
+    unit_column: str = Field(
+        description="The dimension column that defines the unit (e.g., 'currency_code')."
+    )
+    measure_columns: list[str] = Field(
+        description="Measure columns whose unit is defined by this dimension (e.g., ['amount', 'debit', 'credit'])."
+    )
+    unit_values: list[str] = Field(
+        default_factory=list,
+        description="Known unit values from the dimension column (e.g., ['USD', 'EUR', 'GBP']).",
+    )
+
 
 class TableSemanticOutput(BaseModel):
     """Semantic annotation for a database table.
@@ -130,6 +154,14 @@ class TableSemanticOutput(BaseModel):
 
     columns: list[ColumnSemanticOutput] = Field(
         description="Semantic annotations for each column in this table."
+    )
+
+    unit_relationships: list[UnitRelationship] = Field(
+        default_factory=list,
+        description=(
+            "Dimension columns that define units for measure columns. "
+            "E.g., a 'currency' dimension defines units for monetary measures."
+        ),
     )
 
 
@@ -200,6 +232,30 @@ class SemanticAnalysisOutput(BaseModel):
 
 
 # =============================================================================
+# Tier 1: Column Annotation Output (fast model)
+# =============================================================================
+
+
+class TableColumnAnnotation(BaseModel):
+    """Column annotations for a single table (tier 1 fast model output)."""
+
+    table_name: str = Field(description="Exact table name from the provided schema.")
+    columns: list[ColumnSemanticOutput] = Field(
+        description="Semantic annotations for each column in this table."
+    )
+
+
+class ColumnAnnotationOutput(BaseModel):
+    """Output from tier 1 column annotation (fast model).
+
+    Contains column-level annotations only — no relationships or
+    table-level entity classification. Those are handled by tier 2.
+    """
+
+    tables: list[TableColumnAnnotation] = Field(description="Column annotations grouped by table.")
+
+
+# =============================================================================
 # Internal Models - Used for storage and processing after LLM output
 # =============================================================================
 
@@ -218,6 +274,9 @@ class SemanticAnnotation(BaseModel):
     # Business concept mapping - maps to standard domain concepts
     # from the active ontology (e.g., 'accounts_receivable', 'revenue', 'fiscal_period')
     business_concept: str | None = None
+
+    # Cross-column unit inference: column name that defines the unit for this measure
+    unit_source_column: str | None = None
 
     annotation_source: DecisionSource
     annotated_by: str | None = None  # e.g., 'claude-sonnet-4-20250514' or 'user@example.com'
@@ -270,9 +329,13 @@ class SemanticEnrichmentResult(BaseModel):
 __all__ = [
     # Tool output models for LLM structured output
     "ColumnSemanticOutput",
+    "UnitRelationship",
     "TableSemanticOutput",
     "RelationshipOutput",
     "SemanticAnalysisOutput",
+    # Tier 1 column annotation output
+    "TableColumnAnnotation",
+    "ColumnAnnotationOutput",
     # Internal models for storage and processing
     "SemanticAnnotation",
     "EntityDetection",

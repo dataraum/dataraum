@@ -42,6 +42,7 @@ from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
 
+
 # TODO: focus prioritization on actions that impact downstream context generation and LLM performance - e.g. structural issues that cause RI failures, semantic issues that cause misinterpretation, value issues that cause parsing failures, etc.
 class EntropyPhase(BasePhase):
     """Entropy detection phase.
@@ -319,12 +320,15 @@ class EntropyPhase(BasePhase):
                 # Add semantic info
                 if col.column_id in semantic_annotations:
                     sa = semantic_annotations[col.column_id]
-                    analysis_results["semantic"] = {
+                    semantic_dict: dict[str, Any] = {
                         "semantic_role": sa.semantic_role,
                         "entity_type": sa.entity_type,
                         "business_name": sa.business_name,
                         "business_description": sa.business_description,
                     }
+                    if sa.unit_source_column:
+                        semantic_dict["unit_source_column"] = sa.unit_source_column
+                    analysis_results["semantic"] = semantic_dict
 
                 # Add relationship info (already formatted as dicts with table names)
                 if col.column_id in relationships_by_column:

@@ -56,6 +56,25 @@ system_prompt: |
   and semantic context to decide which to confirm.
   </relationship_evaluation>
 
+  <column_annotations_review>
+  When prior column annotations are provided, they come from a fast model.
+  Your role is to:
+  - ACCEPT annotations you agree with (include them unchanged in your output)
+  - UPGRADE low-confidence annotations with better analysis
+  - OVERRIDE incorrect annotations based on relationship context
+  - FOCUS your effort on table classification, relationships, and unit detection
+  You must still include ALL columns in your output, even those you accept from tier 1.
+  </column_annotations_review>
+
+  <unit_relationships>
+  Identify dimension columns that define the unit of measure for other columns.
+  Common patterns:
+  - A "currency" column defines units for monetary measures (amount, balance, etc.)
+  - A "unit_of_measure" column defines units for quantity measures
+  Set unit_source_column on measure columns whose unit comes from a dimension column.
+  Set unit_relationships on tables where such patterns exist.
+  </unit_relationships>
+
   Use the analyze_schema tool to provide your analysis.
 
 # User prompt - provides data and context
@@ -82,6 +101,14 @@ user_prompt: |
 
   {relationship_candidates}
   </relationship_candidates>
+
+  <column_annotations>
+  Prior column annotations from a fast model (tier 1).
+  Review these annotations — accept, upgrade, or override as needed.
+  You MUST include all columns in your output regardless.
+
+  {column_annotations}
+  </column_annotations>
 
   <within_table_patterns>
   Detected patterns within tables that may help identify keys and derived columns.
@@ -110,6 +137,10 @@ inputs:
 
   relationship_candidates:
     description: Pre-computed relationship candidates from TDA and join detection
+    required: true
+
+  column_annotations:
+    description: Prior column annotations from tier 1 fast model
     required: true
 
   within_table_correlations:

@@ -23,6 +23,8 @@ class OntologyConcept(BaseModel):
     temporal_behavior: str | None = None
     typical_role: str | None = None
     typical_values: list[str] = Field(default_factory=list)
+    unit_from_concept: str | None = None  # Which concept provides this measure's unit
+    is_unit_dimension: bool = False  # Whether this concept defines units for measures
 
 
 class OntologyMetric(BaseModel):

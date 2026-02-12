@@ -338,6 +338,28 @@ class SlicingPhase(BasePhase):
                 }
             )
 
+        # Load enriched view dimension columns (if available from enriched_views phase)
+        enriched_columns: list[dict[str, Any]] = []
+        try:
+            from dataraum.analysis.views.db_models import EnrichedView
+
+            ev_stmt = select(EnrichedView).where(
+                EnrichedView.fact_table_id.in_(table_ids),
+                EnrichedView.is_grain_verified.is_(True),
+            )
+            for ev in ctx.session.execute(ev_stmt).scalars().all():
+                if ev.dimension_columns:
+                    for col_name in ev.dimension_columns:
+                        enriched_columns.append(
+                            {
+                                "view_name": ev.view_name,
+                                "column_name": col_name,
+                                "fact_table_id": ev.fact_table_id,
+                            }
+                        )
+        except Exception:
+            pass  # Enriched views not available, proceed without
+
         return {
             "tables": tables_data,
             "statistics": statistics_data,
@@ -345,4 +367,5 @@ class SlicingPhase(BasePhase):
             "correlations": correlations_data,
             "quality": [],  # Quality metrics would come from statistical_quality phase
             "column_count": column_count,
+            "enriched_columns": enriched_columns,
         }

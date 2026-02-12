@@ -243,6 +243,12 @@ PIPELINE_DAG: list[PhaseDefinition] = [
         outputs=["semantic_annotations", "confirmed_relationships"],
         requires_llm=True,
     ),
+    PhaseDefinition(
+        name="enriched_views",
+        description="Create enriched views joining fact + dimension tables",
+        dependencies=["semantic"],
+        outputs=["enriched_views"],
+    ),
     # validation: De-configured (domain-specific, keep code, remove from pipeline)
     # PhaseDefinition(
     #     name="validation",
@@ -257,7 +263,7 @@ PIPELINE_DAG: list[PhaseDefinition] = [
     PhaseDefinition(
         name="slicing",
         description="LLM-powered data slicing",
-        dependencies=["semantic"],  # Needs semantic annotations for context
+        dependencies=["enriched_views"],  # Uses enriched view columns for cross-table slices
         outputs=["slice_definitions"],
         requires_llm=True,
     ),

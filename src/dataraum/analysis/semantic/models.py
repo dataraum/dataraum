@@ -191,14 +191,6 @@ class RelationshipOutput(BaseModel):
         )
     )
 
-    cardinality: Literal["one_to_one", "one_to_many", "many_to_one", "many_to_many"] = Field(
-        description=(
-            "Relationship cardinality: 'many_to_one' = many source rows reference one target row "
-            "(most common for FKs); 'one_to_many' = one source row has many target rows; "
-            "'one_to_one' = exact match; 'many_to_many' = requires junction table"
-        )
-    )
-
     confidence: float = Field(
         ge=0.0,
         le=1.0,

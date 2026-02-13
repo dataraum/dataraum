@@ -619,16 +619,25 @@ def _action_matches_dimension(action: dict[str, Any], dimension: str) -> bool:
         return True
 
     # Map common action names to their related dimensions
+    # Actions follow taxonomy: document_*, investigate_*, transform_*, create_*
     action_name = str(action.get("action", "")).lower()
     action_to_dim = {
-        "types": ["add_type_declaration", "override_type", "declare_type"],
-        "units": ["declare_unit", "add_unit"],
-        "nulls": ["declare_null_meaning", "filter_nulls", "impute"],
-        "outliers": ["winsorize", "exclude_outliers"],
-        "relations": ["confirm_relationship", "add_fk_constraint"],
-        "business_meaning": ["add_definition", "document_semantics", "document_flag_semantics"],
-        "temporal": ["add_temporal_declaration"],
-        "derived_values": ["declare_formula"],
+        "types": ["document_type_override", "transform_quarantine_values"],
+        "units": ["document_unit"],
+        "nulls": ["document_null_semantics", "transform_filter_nulls", "transform_impute_values"],
+        "outliers": ["transform_winsorize", "transform_exclude_outliers", "investigate_outliers"],
+        "relations": [
+            "document_relationship",
+            "document_join_path",
+            "transform_fix_referential_integrity",
+        ],
+        "business_meaning": [
+            "document_description",
+            "document_business_name",
+            "document_entity_type",
+        ],
+        "temporal": ["document_timestamp_role", "transform_resolve_temporal_mismatch"],
+        "derived_values": ["document_formula", "investigate_formula_mismatches"],
     }
 
     related_actions = action_to_dim.get(sub, [])

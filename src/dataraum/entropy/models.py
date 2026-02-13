@@ -41,7 +41,7 @@ class ResolutionOption:
     and effort level for prioritization.
     """
 
-    action: str  # e.g., "add_column_alias", "declare_unit", "add_definition"
+    action: str  # e.g., "document_unit", "document_description", "transform_filter_nulls"
     parameters: dict[str, Any]  # Action-specific parameters
     expected_entropy_reduction: float  # Expected reduction (0.0-1.0)
     effort: str  # "low", "medium", "high"
@@ -184,7 +184,7 @@ class ResolutionCascade:
     """
 
     cascade_id: str = field(default_factory=lambda: str(uuid4()))
-    action: str = ""  # e.g., "rename_column", "add_fk_constraint"
+    action: str = ""  # e.g., "document_relationship", "transform_fix_referential_integrity"
     parameters: dict[str, Any] = field(default_factory=dict)
 
     # What gets fixed

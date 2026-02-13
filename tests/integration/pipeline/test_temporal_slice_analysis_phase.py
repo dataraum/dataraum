@@ -19,9 +19,9 @@ class TestTemporalSliceAnalysisPhase:
     def test_phase_properties(self):
         phase = TemporalSliceAnalysisPhase()
         assert phase.name == "temporal_slice_analysis"
-        assert phase.description == "Temporal + topology analysis on slices"
+        assert phase.description == "Distribution drift analysis on slices"
         assert phase.dependencies == ["slice_analysis", "temporal"]
-        assert phase.outputs == ["temporal_slice_profiles", "slice_topology", "topology_drift"]
+        assert phase.outputs == ["drift_summaries"]
         assert phase.is_llm_phase is False
 
     def test_skip_when_no_typed_tables(
@@ -156,7 +156,7 @@ class TestTemporalSliceAnalysisPhase:
 
         skip_reason = phase.should_skip(ctx)
         assert skip_reason is not None
-        assert "temporal" in skip_reason.lower()  # Covers both old and new message formats
+        assert "temporal" in skip_reason.lower()
 
     def test_does_not_skip_with_slices_and_temporal(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
@@ -281,5 +281,5 @@ class TestTemporalSliceAnalysisPhase:
         result = phase.run(ctx)
 
         assert result.status == PhaseStatus.COMPLETED
-        assert result.outputs["temporal_analyses"] == 0
+        assert result.outputs["drift_summaries"] == 0
         assert "No slice definitions" in result.outputs.get("message", "")

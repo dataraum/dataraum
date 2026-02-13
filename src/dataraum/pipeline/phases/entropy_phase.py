@@ -16,10 +16,7 @@ from dataraum.analysis.quality_summary.db_models import ColumnQualityReport, Col
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.statistics.db_models import StatisticalProfile, StatisticalQualityMetrics
-from dataraum.analysis.temporal_slicing.db_models import (
-    TemporalDriftAnalysis,
-    TemporalSliceAnalysis,
-)
+from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
 from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
 from dataraum.core.logging import get_logger
 from dataraum.entropy.config import get_entropy_config
@@ -706,64 +703,47 @@ def _run_dimensional_entropy(
                 if col_metrics["distinct_ratio"] > 2.0:
                     col_metrics["exceeded_thresholds"].append("distinct_ratio")
 
-        # Load temporal data if available
-        temporal_columns: dict[str, dict[str, Any]] = {}
-        temporal_drift: list[dict[str, Any]] = []
+        # Load drift summaries for slice tables belonging to this typed table
+        drift_summaries: list[Any] = []
+        from dataraum.analysis.slicing.db_models import SliceDefinition
 
-        # Load temporal slice analyses - filter by slice_table_name matching table name pattern
-        # TemporalSliceAnalysis stores metrics per time period for slice tables
-        temporal_stmt = select(TemporalSliceAnalysis).where(
-            TemporalSliceAnalysis.slice_table_name.like(f"{table.table_name}_%")
-        )
-        temporal_analyses = list(ctx.session.execute(temporal_stmt).scalars().all())
+        slice_def_stmt = select(SliceDefinition).where(SliceDefinition.table_id == table.table_id)
+        slice_defs = list(ctx.session.execute(slice_def_stmt).scalars().all())
 
-        # Aggregate temporal info by time_column
-        for ta in temporal_analyses:
-            col_name = ta.time_column
-            if col_name not in temporal_columns:
-                temporal_columns[col_name] = {
-                    "is_interesting": False,
-                    "reasons": [],
-                    "coverage_ratio": ta.coverage_ratio,
-                    "last_day_ratio": ta.last_day_ratio,
-                    "is_volume_anomaly": bool(ta.is_volume_anomaly),
-                }
-            # Check if interesting based on available fields
-            if (
-                (ta.coverage_ratio and ta.coverage_ratio < 0.5)
-                or (ta.last_day_ratio and ta.last_day_ratio > 1.5)
-                or ta.is_volume_anomaly
-            ):
-                temporal_columns[col_name]["is_interesting"] = True
-                if ta.coverage_ratio and ta.coverage_ratio < 0.5:
-                    temporal_columns[col_name]["reasons"].append("low_coverage")
-                if ta.last_day_ratio and ta.last_day_ratio > 1.5:
-                    temporal_columns[col_name]["reasons"].append("period_end_spike")
-                if ta.is_volume_anomaly:
-                    temporal_columns[col_name]["reasons"].append("volume_anomaly")
-
-        # Load drift analyses - filter by slice_table_name matching table name pattern
-        drift_stmt = select(TemporalDriftAnalysis).where(
-            TemporalDriftAnalysis.slice_table_name.like(f"{table.table_name}_%")
-        )
-        drift_analyses = list(ctx.session.execute(drift_stmt).scalars().all())
-
-        for da in drift_analyses:
-            temporal_drift.append(
-                {
-                    "column_name": da.column_name,
-                    "period_label": da.period_label,
-                    "js_divergence": da.js_divergence,
-                    "has_significant_drift": bool(da.has_significant_drift)
-                    if da.has_significant_drift is not None
-                    else (da.js_divergence and da.js_divergence > 0.3),
-                    "has_category_changes": bool(da.has_category_changes)
-                    if da.has_category_changes is not None
-                    else bool(da.new_categories_json or da.missing_categories_json),
-                    "new_categories_json": da.new_categories_json,
-                    "missing_categories_json": da.missing_categories_json,
-                }
+        if slice_defs:
+            # Find slice table names for this table's slice definitions
+            slice_tables_stmt = select(Table).where(
+                Table.layer == "slice",
+                Table.source_id == ctx.source_id,
             )
+            all_slice_tables = list(ctx.session.execute(slice_tables_stmt).scalars().all())
+            slice_table_names = [st.table_name for st in all_slice_tables]
+
+            if slice_table_names:
+                drift_stmt = select(ColumnDriftSummary).where(
+                    ColumnDriftSummary.slice_table_name.in_(slice_table_names)
+                )
+                drift_summaries = list(ctx.session.execute(drift_stmt).scalars().all())
+
+        # Build temporal_drift list from drift summaries for backward compatibility
+        # with DimensionalEntropyDetector
+        temporal_drift: list[dict[str, Any]] = []
+        for ds in drift_summaries:
+            if ds.max_js_divergence > 0:
+                evidence = ds.drift_evidence_json or {}
+                change_points = evidence.get("change_points", [])
+                temporal_drift.append(
+                    {
+                        "column_name": ds.column_name,
+                        "js_divergence": ds.max_js_divergence,
+                        "has_significant_drift": ds.periods_with_drift > 0,
+                        "has_category_changes": bool(
+                            evidence.get("emerged_categories")
+                            or evidence.get("vanished_categories")
+                        ),
+                        "change_points": change_points,
+                    }
+                )
 
         # Build detector context
         context = DetectorContext(
@@ -774,9 +754,10 @@ def _run_dimensional_entropy(
                 "slice_variance": {
                     "columns": columns_data,
                     "slice_data": slice_data,
-                    "temporal_columns": temporal_columns,
+                    "temporal_columns": {},
                     "temporal_drift": temporal_drift,
-                }
+                },
+                "drift_summaries": drift_summaries,
             },
         )
 
@@ -893,7 +874,7 @@ def _run_dimensional_entropy(
             table=table.table_name,
             columns_count=len(columns_data),
             slice_count=len(slice_data),
-            temporal_columns=len(temporal_columns),
+            temporal_columns=0,
         )
 
         # Run detector with details for summary generation
@@ -911,7 +892,7 @@ def _run_dimensional_entropy(
         )
 
         # Generate dataset summary if there are interesting columns
-        if columns_data or temporal_columns:
+        if columns_data:
             summary = generate_dataset_summary(
                 table_name=table.table_name,
                 columns_data=analysis_data["columns_data"],

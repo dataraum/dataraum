@@ -1,45 +1,32 @@
 """Temporal slicing analysis module.
 
-Provides temporal analysis capabilities for slice data including:
-- Period completeness analysis (data cutoffs)
-- Distribution drift detection (JS divergence)
-- Cross-slice temporal comparison
-- Volume anomaly detection
-- Temporal topology analysis (correlation structure drift)
+Provides drift detection for slice data using Jensen-Shannon divergence.
 """
 
 from dataraum.analysis.temporal_slicing.analyzer import (
-    analyze_temporal_slices,
-    analyze_temporal_topology,
+    analyze_column_drift,
+    persist_drift_results,
 )
 from dataraum.analysis.temporal_slicing.db_models import (
-    SliceTimeMatrixEntry,
-    TemporalDriftAnalysis,
-    TemporalSliceAnalysis,
-    TemporalTopologyAnalysis,
+    ColumnDriftSummary,
 )
 from dataraum.analysis.temporal_slicing.models import (
-    PeriodTopology,
+    ColumnDriftResult,
+    DriftEvidence,
     TemporalSliceConfig,
-    TemporalTopologyResult,
     TimeGrain,
-    TopologyDrift,
 )
 
 __all__ = [
     # Entry points
-    "analyze_temporal_slices",
-    "analyze_temporal_topology",
+    "analyze_column_drift",
+    "persist_drift_results",
     # Config
     "TemporalSliceConfig",
     "TimeGrain",
-    # Topology models (used by temporal_slice_analysis_phase)
-    "PeriodTopology",
-    "TopologyDrift",
-    "TemporalTopologyResult",
+    # Result models
+    "ColumnDriftResult",
+    "DriftEvidence",
     # DB Models
-    "TemporalSliceAnalysis",
-    "TemporalDriftAnalysis",
-    "SliceTimeMatrixEntry",
-    "TemporalTopologyAnalysis",
+    "ColumnDriftSummary",
 ]

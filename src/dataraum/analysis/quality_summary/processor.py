@@ -36,10 +36,7 @@ from dataraum.analysis.statistics.db_models import (
     StatisticalProfile,
     StatisticalQualityMetrics,
 )
-from dataraum.analysis.temporal_slicing.db_models import (
-    TemporalDriftAnalysis,
-    TemporalSliceAnalysis,
-)
+from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
 from dataraum.core.config import load_yaml_config
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
@@ -296,59 +293,45 @@ def aggregate_slice_results(
 
             aggregated.append(agg_data)
 
-        # Load temporal data from DB and attach to aggregated columns
+        # Load drift summaries from DB and attach to aggregated columns
         slice_table_names = [st.table_name for st, _ in slice_tables]
         if slice_table_names:
-            # Query temporal slice analyses for these slice tables
-            temporal_stmt = select(TemporalSliceAnalysis).where(
-                TemporalSliceAnalysis.slice_table_name.in_(slice_table_names)
+            drift_stmt = select(ColumnDriftSummary).where(
+                ColumnDriftSummary.slice_table_name.in_(slice_table_names)
             )
-            temporal_records = list(session.execute(temporal_stmt).scalars().all())
+            drift_summaries = list(session.execute(drift_stmt).scalars().all())
 
-            # Query temporal drift analyses for these slice tables
-            drift_stmt = select(TemporalDriftAnalysis).where(
-                TemporalDriftAnalysis.slice_table_name.in_(slice_table_names)
-            )
-            drift_records = list(session.execute(drift_stmt).scalars().all())
-
-            if temporal_records:
-                # Compute summary counts
-                incomplete_periods = sum(1 for r in temporal_records if not r.is_complete)
-                volume_anomalies = sum(1 for r in temporal_records if r.is_volume_anomaly)
-
-                # Collect issues from all records
-                temporal_issues: list[str] = []
-                for r in temporal_records:
-                    if r.issues_json:
-                        temporal_issues.extend(r.issues_json)
-
-                # Build per-period temporal data (compact)
-                temporal_data: list[dict[str, Any]] = []
-                for r in temporal_records:
-                    period_info: dict[str, Any] = {
-                        "period_label": r.period_label,
-                        "slice_table": r.slice_table_name,
-                        "row_count": r.row_count,
-                        "coverage_ratio": r.coverage_ratio,
-                        "is_complete": bool(r.is_complete),
-                        "is_volume_anomaly": bool(r.is_volume_anomaly),
-                    }
-                    if r.period_over_period_change is not None:
-                        period_info["pop_change"] = r.period_over_period_change
-                    temporal_data.append(period_info)
-
-                # Build per-column drift count map
+            if drift_summaries:
+                # Build per-column drift count and max drift
                 drift_counts: dict[str, int] = {}
-                for d in drift_records:
-                    if d.has_significant_drift:
-                        drift_counts[d.column_name] = drift_counts.get(d.column_name, 0) + 1
+                for s in drift_summaries:
+                    if s.periods_with_drift > 0:
+                        drift_counts[s.column_name] = (
+                            drift_counts.get(s.column_name, 0) + s.periods_with_drift
+                        )
 
-                # Attach temporal_context to each aggregated column
+                # Collect temporal issues from drift evidence
+                temporal_issues: list[str] = []
+                for s in drift_summaries:
+                    if s.max_js_divergence > 0.1 and s.drift_evidence_json:
+                        evidence = s.drift_evidence_json
+                        worst = evidence.get("worst_period", "")
+                        worst_js = evidence.get("worst_js", 0)
+                        temporal_issues.append(
+                            f"Distribution drift in {s.column_name}: JS={worst_js:.3f} in {worst}"
+                        )
+
+                max_drift = (
+                    max(s.max_js_divergence for s in drift_summaries) if drift_summaries else 0
+                )
+                drift_detected_total = sum(1 for s in drift_summaries if s.max_js_divergence > 0.1)
+
                 shared_context: dict[str, Any] = {
-                    "incomplete_periods": incomplete_periods,
-                    "volume_anomalies": volume_anomalies,
+                    "incomplete_periods": 0,
+                    "volume_anomalies": 0,
                     "temporal_issues": temporal_issues,
-                    "temporal_data": temporal_data,
+                    "max_drift": round(max_drift, 4),
+                    "drift_detected_total": drift_detected_total,
                 }
                 for agg in aggregated:
                     agg.temporal_context = {

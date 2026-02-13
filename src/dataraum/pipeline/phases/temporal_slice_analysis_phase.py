@@ -1,12 +1,8 @@
 """Temporal slice analysis phase implementation.
 
-Non-LLM temporal + topology analysis on slices:
-- Period completeness metrics
-- Distribution drift detection
-- Cross-slice temporal comparison (slice × time matrix)
-- Volume anomaly detection
-- Per-slice topology (full TDA: Betti numbers, persistence diagrams, entropy)
-- Temporal topology drift (via bottleneck distance between periods)
+Drift-only analysis on slices:
+- Distribution drift detection (JS divergence) per categorical column
+- Persists compact ColumnDriftSummary records
 """
 
 from __future__ import annotations
@@ -17,15 +13,13 @@ from datetime import date
 from sqlalchemy import select
 
 from dataraum.analysis.slicing.db_models import SliceDefinition
-from dataraum.analysis.slicing.slice_runner import (
-    SliceTableInfo,
-    run_temporal_analysis_on_slices,
-    run_topology_on_slices,
-)
+from dataraum.analysis.slicing.slice_runner import SliceTableInfo
 from dataraum.analysis.temporal import TemporalColumnProfile
-from dataraum.analysis.temporal_slicing.analyzer import analyze_temporal_topology
-from dataraum.analysis.temporal_slicing.db_models import TemporalTopologyAnalysis
-from dataraum.analysis.temporal_slicing.models import PeriodTopology, TopologyDrift
+from dataraum.analysis.temporal_slicing.analyzer import (
+    analyze_column_drift,
+    persist_drift_results,
+)
+from dataraum.analysis.temporal_slicing.models import TemporalSliceConfig, TimeGrain
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
@@ -46,12 +40,10 @@ logger = get_logger(__name__)
 
 
 class TemporalSliceAnalysisPhase(BasePhase):
-    """Temporal + topology analysis on slices.
+    """Drift analysis on slices.
 
-    Combines temporal analysis with TDA topology analysis:
-    - Temporal analysis per slice (completeness, drift, volume anomalies)
-    - Topology comparison across dimensional slices
-    - Temporal topology drift using bottleneck distance
+    Runs JS divergence drift detection on categorical columns
+    within slice tables, producing ColumnDriftSummary records.
 
     Requires: slice_analysis, temporal phases.
     """
@@ -62,7 +54,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
     @property
     def description(self) -> str:
-        return "Temporal + topology analysis on slices"
+        return "Distribution drift analysis on slices"
 
     @property
     def dependencies(self) -> list[str]:
@@ -70,7 +62,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
     @property
     def outputs(self) -> list[str]:
-        return ["temporal_slice_profiles", "slice_topology", "topology_drift"]
+        return ["drift_summaries"]
 
     @property
     def is_llm_phase(self) -> bool:
@@ -78,8 +70,6 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no slice definitions or no temporal columns."""
-
-        # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
         result = ctx.session.execute(stmt)
         typed_tables = result.scalars().all()
@@ -87,7 +77,6 @@ class TemporalSliceAnalysisPhase(BasePhase):
         if not typed_tables:
             return f"No typed tables found for source {ctx.source_id}"
 
-        logger.info(f"TempSlice: Found {len(typed_tables)} typed tables")
         table_ids = [t.table_id for t in typed_tables]
 
         # Check for slice definitions
@@ -97,9 +86,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
         if not slice_defs:
             return "No slice definitions found (slicing phase may have been skipped)"
 
-        logger.info(f"TempSlice: Found {len(slice_defs)} slice definitions")
-
-        # Check for temporal profiles (created by temporal phase)
+        # Check for temporal profiles
         column_ids = []
         cols_stmt = select(Column.column_id).where(Column.table_id.in_(table_ids))
         for col_id in (ctx.session.execute(cols_stmt)).scalars().all():
@@ -113,15 +100,13 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
             if not temporal_cols:
                 return "No temporal profiles found (temporal phase may have been skipped or found no temporal columns)"
-
-            logger.info(f"TempSlice: Found {len(temporal_cols)} temporal profiles")
         else:
             return "No columns found in typed tables"
 
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Run temporal and topology analysis on slices."""
+        """Run drift analysis on slices."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
         result = ctx.session.execute(stmt)
@@ -140,8 +125,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
             return PhaseResult.success(
                 outputs={
                     "message": "No slice definitions found",
-                    "temporal_analyses": 0,
-                    "topology_analyses": 0,
+                    "drift_summaries": 0,
                 },
                 records_processed=0,
                 records_created=0,
@@ -151,7 +135,6 @@ class TemporalSliceAnalysisPhase(BasePhase):
         time_column = ctx.config.get("time_column")
 
         if not time_column:
-            # Auto-detect from temporal profiles
             column_ids = []
             cols_stmt = select(Column.column_id).where(Column.table_id.in_(table_ids))
             for col_id in (ctx.session.execute(cols_stmt)).scalars().all():
@@ -164,14 +147,12 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 temporal_cols = (ctx.session.execute(temp_stmt)).scalars().all()
 
                 if temporal_cols:
-                    # Find the best temporal column - prefer ones with most data coverage
                     from dataraum.analysis.statistics.db_models import StatisticalProfile
 
                     best_col = None
-                    best_null_ratio = 1.0  # Lower is better
+                    best_null_ratio = 1.0
 
                     for tc in temporal_cols:
-                        # Get the column's null ratio from statistical profile
                         stat_stmt = (
                             select(StatisticalProfile)
                             .where(StatisticalProfile.column_id == tc.column_id)
@@ -179,7 +160,6 @@ class TemporalSliceAnalysisPhase(BasePhase):
                             .limit(1)
                         )
                         stat = (ctx.session.execute(stat_stmt)).scalar_one_or_none()
-
                         null_ratio = (
                             stat.null_ratio if stat and stat.null_ratio is not None else 1.0
                         )
@@ -187,42 +167,28 @@ class TemporalSliceAnalysisPhase(BasePhase):
                         col_stmt = select(Column).where(Column.column_id == tc.column_id)
                         col = (ctx.session.execute(col_stmt)).scalar_one_or_none()
 
-                        logger.debug(
-                            "temporal_column_candidate",
-                            column_name=col.column_name if col else "unknown",
-                            null_ratio=null_ratio,
-                        )
-
-                        # Prefer column with lowest null ratio (most data)
                         if null_ratio < best_null_ratio:
                             best_null_ratio = null_ratio
                             best_col = col
 
                     if best_col:
                         time_column = best_col.column_name
-                        logger.info(
-                            "selected_temporal_column",
-                            column_name=time_column,
-                            null_ratio=best_null_ratio,
-                        )
 
         if not time_column:
             return PhaseResult.success(
                 outputs={
                     "message": "No temporal column found or specified",
-                    "temporal_analyses": 0,
-                    "topology_analyses": 0,
+                    "drift_summaries": 0,
                 },
                 records_processed=0,
                 records_created=0,
             )
 
-        # Get time period boundaries from config or auto-detect from data
+        # Get time period boundaries
         period_start = ctx.config.get("period_start")
         period_end = ctx.config.get("period_end")
         time_grain = ctx.config.get("time_grain", "monthly")
 
-        # Convert string dates if provided
         if isinstance(period_start, str):
             period_start = date.fromisoformat(period_start)
         if isinstance(period_end, str):
@@ -243,17 +209,11 @@ class TemporalSliceAnalysisPhase(BasePhase):
                         period_start = range_row[0]
                         if isinstance(period_start, str):
                             period_start = date.fromisoformat(period_start)
-                        # Align to first of month
                         period_start = date(period_start.year, period_start.month, 1)
                     if not period_end:
                         period_end = range_row[1]
                         if isinstance(period_end, str):
                             period_end = date.fromisoformat(period_end)
-                    logger.info(
-                        "auto_detected_time_range",
-                        period_start=str(period_start),
-                        period_end=str(period_end),
-                    )
             except Exception as e:
                 logger.warning("time_range_detection_failed", error=str(e))
 
@@ -262,13 +222,18 @@ class TemporalSliceAnalysisPhase(BasePhase):
         if not period_end:
             period_end = date.today()
 
-        total_temporal_analyses = 0
-        total_topology_analyses = 0
-        total_topology_drift = 0
+        # Convert time_grain string to enum
+        grain_map = {
+            "daily": TimeGrain.DAILY,
+            "weekly": TimeGrain.WEEKLY,
+            "monthly": TimeGrain.MONTHLY,
+        }
+        grain = grain_map.get(time_grain, TimeGrain.MONTHLY)
+
+        total_drift_summaries = 0
         errors = []
 
-        # Pre-compute which typed tables actually have the time column,
-        # so we skip slice definitions from tables without it (e.g. dimension tables).
+        # Pre-compute which typed tables have the time column
         tables_with_time_col: set[str] = set()
         for tt in typed_tables:
             col_check = select(Column).where(
@@ -279,14 +244,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 tables_with_time_col.add(tt.table_id)
 
         for slice_def in slice_definitions:
-            # Skip slices from tables that don't have the time column
             if slice_def.table_id not in tables_with_time_col:
-                logger.info(
-                    "skipping_slice_def_no_time_column",
-                    slice_def_id=slice_def.slice_id,
-                    table_id=slice_def.table_id,
-                    time_column=time_column,
-                )
                 continue
 
             # Get slice tables for this definition
@@ -296,168 +254,65 @@ class TemporalSliceAnalysisPhase(BasePhase):
             )
             slice_tables = (ctx.session.execute(slice_tables_stmt)).scalars().all()
 
-            logger.info(
-                "slice_tables_found",
-                slice_def_id=slice_def.slice_id,
-                slice_tables_count=len(slice_tables),
-                slice_table_names=[t.table_name for t in slice_tables],
-            )
-
             # Build slice info list
-            # Look up slice column once (same for all tables in this definition)
             slice_column_stmt = select(Column).where(Column.column_id == slice_def.column_id)
             slice_col = (ctx.session.execute(slice_column_stmt)).scalar_one_or_none()
             if not slice_col:
-                logger.warning(
-                    "slice_column_not_found",
-                    slice_def_id=slice_def.slice_id,
-                    column_id=slice_def.column_id,
-                )
                 continue
 
-            # Sanitize column name to match the slice table naming convention
-            # (slice_runner uses _sanitize_name which lowercases and replaces
-            # non-alphanumeric chars with underscores)
             sanitized_col_name = _sanitize_name(slice_col.column_name)
-
             prefix = f"slice_{sanitized_col_name}_"
             slice_infos = []
             for st in slice_tables:
-                logger.debug(
-                    "checking_slice_table_match",
-                    slice_table=st.table_name,
-                    slice_column=slice_col.column_name,
-                    prefix=prefix,
-                    matches=st.table_name.lower().startswith(prefix),
-                )
-
                 if st.table_name.lower().startswith(prefix):
-                    # Find source table for this slice
-                    matched_table = next(
-                        (t for t in typed_tables if t.table_id == slice_def.table_id), None
-                    )
                     slice_infos.append(
                         SliceTableInfo(
                             slice_table_id=st.table_id,
                             slice_table_name=st.table_name,
                             source_table_id=slice_def.table_id,
-                            source_table_name=matched_table.table_name if matched_table else "",
+                            source_table_name="",
                             slice_column_name=slice_col.column_name,
                             slice_value=st.table_name[len(prefix) :],
                             row_count=st.row_count or 0,
                         )
                     )
 
-            logger.info(
-                "slice_infos_built",
-                slice_def_id=slice_def.slice_id,
-                slice_infos_count=len(slice_infos),
-                slice_info_tables=[si.slice_table_name for si in slice_infos],
-            )
-
             if not slice_infos:
-                logger.warning(
-                    "no_slice_infos_matched",
-                    slice_def_id=slice_def.slice_id,
-                    slice_column_id=slice_def.column_id,
-                )
                 continue
 
-            # 1. Run temporal analysis on slices
-            try:
-                temporal_result = run_temporal_analysis_on_slices(
-                    session=ctx.session,
-                    duckdb_conn=ctx.duckdb_conn,
-                    slice_infos=slice_infos,
-                    time_column=time_column,
-                    period_start=period_start,
-                    period_end=period_end,
-                    time_grain=time_grain,
-                )
-                total_temporal_analyses += temporal_result.slices_analyzed
-            except Exception as e:
-                errors.append(f"Temporal analysis error: {e}")
+            # Run drift analysis on each slice table
+            config = TemporalSliceConfig(
+                time_column=time_column,
+                period_start=period_start,
+                period_end=period_end,
+                time_grain=grain,
+            )
 
-            # 2. Run topology on slices (cross-slice comparison)
-            try:
-                topology_result = run_topology_on_slices(
-                    session=ctx.session,
-                    duckdb_conn=ctx.duckdb_conn,
-                    slice_infos=slice_infos,
-                )
-                total_topology_analyses += topology_result.slices_analyzed
-            except Exception as e:
-                errors.append(f"Topology analysis error: {e}")
-
-            # 3. Run temporal topology (bottleneck distance over time)
-            # Get the source table for temporal topology
-            topo_source = next((t for t in typed_tables if t.table_id == slice_def.table_id), None)
-            if topo_source:
+            for si in slice_infos:
                 try:
-                    topo_result = analyze_temporal_topology(
-                        duck_conn=ctx.duckdb_conn,
-                        table_name=topo_source.table_name,
+                    drift_result = analyze_column_drift(
+                        slice_table_name=si.slice_table_name,
                         time_column=time_column,
-                        period=time_grain.rstrip("ly"),  # "monthly" -> "month"
+                        duckdb_conn=ctx.duckdb_conn,
+                        session=ctx.session,
+                        config=config,
                     )
-                    total_topology_drift += len(topo_result.topology_drifts)
-
-                    # Persist topology results to DB
-                    if topo_result.periods_analyzed > 0:
-                        period_granularity = time_grain.rstrip("ly")  # "monthly" -> "month"
-
-                        def _serialize_topology(t: PeriodTopology) -> dict[str, object]:
-                            return {
-                                "period_start": t.period_start,
-                                "period_end": t.period_end,
-                                "betti_0": t.betti_0,
-                                "betti_1": t.betti_1,
-                                "betti_2": t.betti_2,
-                                "structural_complexity": t.structural_complexity,
-                                "persistent_entropy": t.persistent_entropy,
-                                "row_count": t.row_count,
-                                "has_anomalies": t.has_anomalies,
-                            }
-
-                        def _serialize_drift(d: TopologyDrift) -> dict[str, object]:
-                            return {
-                                "period_from": d.period_from,
-                                "period_to": d.period_to,
-                                "metric": d.metric,
-                                "value_from": d.value_from,
-                                "value_to": d.value_to,
-                                "change_pct": d.change_pct,
-                                "bottleneck_distance": d.bottleneck_distance,
-                                "is_significant": d.is_significant,
-                            }
-
-                        topo_record = TemporalTopologyAnalysis(
-                            run_id=None,
-                            slice_table_name=topo_source.table_name,
+                    if drift_result.success and drift_result.value is not None:
+                        persist_result = persist_drift_results(
+                            results=drift_result.value,
+                            slice_table_name=si.slice_table_name,
                             time_column=time_column,
-                            period_granularity=period_granularity,
-                            periods_analyzed=topo_result.periods_analyzed,
-                            avg_complexity=topo_result.avg_complexity,
-                            complexity_variance=topo_result.complexity_variance,
-                            trend_direction=topo_result.trend_direction,
-                            num_drifts_detected=len(topo_result.topology_drifts),
-                            num_anomaly_periods=len(topo_result.structural_anomaly_periods),
-                            period_topologies_json=[
-                                _serialize_topology(t) for t in topo_result.period_topologies
-                            ],
-                            topology_drifts_json=[
-                                _serialize_drift(d) for d in topo_result.topology_drifts
-                            ],
-                            anomaly_periods_json=topo_result.structural_anomaly_periods,
+                            session=ctx.session,
                         )
-                        ctx.session.add(topo_record)
+                        if persist_result.success and persist_result.value is not None:
+                            total_drift_summaries += persist_result.value
+                    elif not drift_result.success:
+                        errors.append(f"{si.slice_table_name}: {drift_result.error}")
                 except Exception as e:
-                    errors.append(f"Temporal topology error: {e}")
+                    errors.append(f"Drift analysis error for {si.slice_table_name}: {e}")
 
         outputs = {
-            "temporal_analyses": total_temporal_analyses,
-            "topology_analyses": total_topology_analyses,
-            "topology_drifts_detected": total_topology_drift,
+            "drift_summaries": total_drift_summaries,
             "time_column": time_column,
             "time_grain": time_grain,
             "period_start": str(period_start),
@@ -470,5 +325,5 @@ class TemporalSliceAnalysisPhase(BasePhase):
         return PhaseResult.success(
             outputs=outputs,
             records_processed=len(slice_definitions),
-            records_created=total_temporal_analyses + total_topology_analyses,
+            records_created=total_drift_summaries,
         )

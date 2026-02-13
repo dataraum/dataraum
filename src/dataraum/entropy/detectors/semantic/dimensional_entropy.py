@@ -914,28 +914,25 @@ class DimensionalEntropyDetector(EntropyDetector):
 
         Looks for:
         1. Columns with same temporal reasons (both have gaps, both have spikes)
-        2. Columns that drift in the same periods
-        3. Columns with similar completeness patterns
+        2. Columns that drift at the same change points
 
         Args:
             temporal_columns: List of INTERESTING temporal columns
-            temporal_drift: List of drift analysis records
+            temporal_drift: List of drift summary records with change_points
 
         Returns:
             List of detected temporal correlation patterns
         """
         patterns = []
 
-        # Build drift lookup: column -> list of periods with significant drift
-        drift_by_column: dict[str, list[str]] = {}
+        # Build drift lookup: column -> set of change points
+        drift_by_column: dict[str, set[str]] = {}
         for drift in temporal_drift:
             if drift.get("has_significant_drift") or drift.get("has_category_changes"):
                 col = drift.get("column_name", "")
-                period = drift.get("period_label", "")
-                if col and period:
-                    if col not in drift_by_column:
-                        drift_by_column[col] = []
-                    drift_by_column[col].append(period)
+                change_points = drift.get("change_points", [])
+                if col and change_points:
+                    drift_by_column[col] = set(change_points)
 
         # Check for correlated temporal patterns between column pairs
         for i, col_a in enumerate(temporal_columns):
@@ -962,14 +959,14 @@ class DimensionalEntropyDetector(EntropyDetector):
                         col_b.column_name: col_b.period_end_spike_ratio,
                     }
 
-                # Pattern 3: Drift in same periods
-                drift_a = set(drift_by_column.get(col_a.column_name, []))
-                drift_b = set(drift_by_column.get(col_b.column_name, []))
-                common_drift_periods = drift_a & drift_b
+                # Pattern 3: Drift at same change points
+                drift_a = drift_by_column.get(col_a.column_name, set())
+                drift_b = drift_by_column.get(col_b.column_name, set())
+                common_change_points = drift_a & drift_b
 
-                if common_drift_periods and len(common_drift_periods) >= 1:
-                    confidence += 0.3 * min(len(common_drift_periods), 3) / 3
-                    correlation_evidence["common_drift_periods"] = list(common_drift_periods)
+                if common_change_points:
+                    confidence += 0.3 * min(len(common_change_points), 3) / 3
+                    correlation_evidence["common_change_points"] = list(common_change_points)
 
                 # Pattern 4: Similar completeness (both have gaps or both complete)
                 if col_a.completeness_ratio is not None and col_b.completeness_ratio is not None:
@@ -1010,75 +1007,66 @@ class DimensionalEntropyDetector(EntropyDetector):
     ) -> list[CrossColumnPattern]:
         """Detect significant drift patterns that indicate business rule changes.
 
-        Looks for:
-        1. High JS divergence (distribution shift)
-        2. New/missing categories (value set changes)
-        3. Multiple columns drifting in same period (systemic change)
+        Uses drift summaries (one per column) with change_points to detect
+        systemic changes — multiple columns drifting at the same change point.
 
         Args:
-            temporal_drift: List of drift analysis records
+            temporal_drift: List of drift summary records with change_points
 
         Returns:
             List of detected drift patterns
         """
         patterns = []
 
-        # Group drift by period to detect systemic changes
-        drift_by_period: dict[str, list[dict[str, Any]]] = {}
+        # Group columns by change points to detect systemic changes
+        drift_by_change_point: dict[str, list[dict[str, Any]]] = {}
         for drift in temporal_drift:
-            # Skip if not interesting (pre-filter)
             if not drift.get("has_significant_drift") and not drift.get("has_category_changes"):
                 continue
 
-            # Skip expected replacements (e.g., Stapelnummer)
-            js_div = drift.get("js_divergence", 0)
+            change_points = drift.get("change_points", [])
             col_name = drift.get("column_name", "")
-            if col_name == "Stapelnummer" and js_div and abs(js_div - 0.693) < 0.01:
+
+            for cp in change_points:
+                if cp not in drift_by_change_point:
+                    drift_by_change_point[cp] = []
+                drift_by_change_point[cp].append(drift)
+
+            # If no change points but has drift, use "unknown" as period
+            if not change_points and col_name:
+                if "__no_change_point__" not in drift_by_change_point:
+                    drift_by_change_point["__no_change_point__"] = []
+                drift_by_change_point["__no_change_point__"].append(drift)
+
+        # Detect systemic drift (multiple columns at same change point)
+        for change_point, drifts in drift_by_change_point.items():
+            if change_point == "__no_change_point__" or len(drifts) < 2:
                 continue
 
-            period = drift.get("period_label", "")
-            if period:
-                if period not in drift_by_period:
-                    drift_by_period[period] = []
-                drift_by_period[period].append(drift)
+            columns = [d.get("column_name", "") for d in drifts]
+            avg_divergence = sum(d.get("js_divergence", 0) or 0 for d in drifts) / len(drifts)
 
-        # Detect systemic drift (multiple columns in same period)
-        for period, drifts in drift_by_period.items():
-            if len(drifts) >= 2:
-                columns = [d.get("column_name", "") for d in drifts]
-                avg_divergence = sum(d.get("js_divergence", 0) or 0 for d in drifts) / len(drifts)
-
-                patterns.append(
-                    CrossColumnPattern(
-                        pattern_type="temporal_drift",
-                        columns=columns,
-                        confidence=min(0.5 + 0.1 * len(drifts), 1.0),
-                        description=(
-                            f"Systemic drift in period {period}: "
-                            f"{len(drifts)} columns changed together"
-                        ),
-                        business_rule_hypothesis=(
-                            f"Multiple columns changed in {period}. This may indicate: "
-                            f"(1) Business rule change, (2) Data migration, "
-                            f"(3) New data source, or (4) Seasonal business pattern."
-                        ),
-                        evidence={
-                            "period": period,
-                            "affected_columns": columns,
-                            "avg_js_divergence": avg_divergence,
-                            "drift_details": [
-                                {
-                                    "column": d.get("column_name"),
-                                    "js_divergence": d.get("js_divergence"),
-                                    "new_categories": d.get("new_categories_json"),
-                                    "missing_categories": d.get("missing_categories_json"),
-                                }
-                                for d in drifts
-                            ],
-                        },
-                        uncertainty_bits=log2(1 + len(drifts) * avg_divergence),
-                    )
+            patterns.append(
+                CrossColumnPattern(
+                    pattern_type="temporal_drift",
+                    columns=columns,
+                    confidence=min(0.5 + 0.1 * len(drifts), 1.0),
+                    description=(
+                        f"Systemic drift at {change_point}: {len(drifts)} columns changed together"
+                    ),
+                    business_rule_hypothesis=(
+                        f"Multiple columns changed at {change_point}. This may indicate: "
+                        f"(1) Business rule change, (2) Data migration, "
+                        f"(3) New data source, or (4) Seasonal business pattern."
+                    ),
+                    evidence={
+                        "change_point": change_point,
+                        "affected_columns": columns,
+                        "avg_js_divergence": avg_divergence,
+                    },
+                    uncertainty_bits=log2(1 + len(drifts) * avg_divergence),
                 )
+            )
 
         return patterns
 

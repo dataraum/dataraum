@@ -1,16 +1,12 @@
 """Tests for temporal data loading in aggregate_slice_results."""
 
-from datetime import date
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.quality_summary.processor import aggregate_slice_results
 from dataraum.analysis.slicing.db_models import SliceDefinition
-from dataraum.analysis.temporal_slicing.db_models import (
-    TemporalDriftAnalysis,
-    TemporalSliceAnalysis,
-)
+from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
 from dataraum.storage import Column, Source, Table
 
 
@@ -100,7 +96,7 @@ class TestAggregateSliceResultsTemporalContext:
     """Tests for temporal context loading in aggregate_slice_results."""
 
     def test_no_temporal_data_gives_empty_context(self, session: Session):
-        """When no temporal records exist, temporal_context is empty."""
+        """When no drift summary records exist, temporal_context is empty."""
         slice_def = _setup_sliced_table(session)
 
         result = aggregate_slice_results(session, slice_def)
@@ -110,47 +106,34 @@ class TestAggregateSliceResultsTemporalContext:
         assert len(columns) == 1  # only 'amount' (region excluded as slice col)
         assert columns[0].temporal_context == {}
 
-    def test_temporal_data_attached_to_columns(self, session: Session):
-        """When temporal records exist for slice tables, they are loaded."""
+    def test_drift_data_attached_to_columns(self, session: Session):
+        """When drift summary records exist for slice tables, they are loaded."""
         slice_def = _setup_sliced_table(session)
 
-        # Period 1: complete
-        a1 = TemporalSliceAnalysis(
-            slice_table_name="slice_region_us",
-            time_column="order_date",
-            period_label="2024-01",
-            period_start=date(2024, 1, 1),
-            period_end=date(2024, 2, 1),
-            row_count=40,
-            coverage_ratio=1.0,
-            is_complete=True,
-            is_volume_anomaly=False,
-            issues_json=None,
-        )
-        # Period 2: incomplete with anomaly
-        a2 = TemporalSliceAnalysis(
-            slice_table_name="slice_region_us",
-            time_column="order_date",
-            period_label="2024-02",
-            period_start=date(2024, 2, 1),
-            period_end=date(2024, 3, 1),
-            row_count=10,
-            coverage_ratio=0.5,
-            is_complete=False,
-            is_volume_anomaly=True,
-            period_over_period_change=-0.75,
-            issues_json=["Low coverage: 50%", "Volume drop: z-score=-2.8"],
-        )
-        session.add_all([a1, a2])
-
-        # Add a drift record for the 'amount' column
-        drift = TemporalDriftAnalysis(
+        # Add a drift summary for the 'amount' column in slice_region_us
+        drift = ColumnDriftSummary(
             slice_table_name="slice_region_us",
             column_name="amount",
-            period_label="2024-02",
-            js_divergence=0.35,
-            has_significant_drift=True,
-            has_category_changes=False,
+            time_column="order_date",
+            max_js_divergence=0.35,
+            mean_js_divergence=0.15,
+            periods_analyzed=5,
+            periods_with_drift=2,
+            drift_evidence_json={
+                "worst_period": "2024-02",
+                "worst_js": 0.35,
+                "top_shifts": [
+                    {
+                        "category": "Active",
+                        "baseline_pct": 45.2,
+                        "period_pct": 12.1,
+                        "period": "2024-02",
+                    }
+                ],
+                "emerged_categories": [],
+                "vanished_categories": [],
+                "change_points": ["2024-02"],
+            },
         )
         session.add(drift)
         session.commit()
@@ -162,46 +145,39 @@ class TestAggregateSliceResultsTemporalContext:
         assert len(columns) == 1
         tc = columns[0].temporal_context
 
-        assert tc["incomplete_periods"] == 1
-        assert tc["volume_anomalies"] == 1
-        assert tc["drift_detected_count"] == 1
-        assert len(tc["temporal_issues"]) == 2
-        assert "Low coverage: 50%" in tc["temporal_issues"]
-        assert len(tc["temporal_data"]) == 2
+        assert tc["incomplete_periods"] == 0
+        assert tc["volume_anomalies"] == 0
+        assert tc["drift_detected_count"] == 2  # periods_with_drift from summary
+        assert len(tc["temporal_issues"]) == 1
+        assert "Distribution drift in amount" in tc["temporal_issues"][0]
 
     def test_drift_count_is_per_column(self, session: Session):
         """drift_detected_count reflects only drifts for the specific column."""
         slice_def = _setup_sliced_table(session)
 
-        # One analysis record so temporal_context is non-empty
-        analysis = TemporalSliceAnalysis(
-            slice_table_name="slice_region_us",
-            time_column="order_date",
-            period_label="2024-01",
-            period_start=date(2024, 1, 1),
-            period_end=date(2024, 2, 1),
-            row_count=50,
-            coverage_ratio=1.0,
-            is_complete=True,
-            is_volume_anomaly=False,
-        )
-        session.add(analysis)
-
         # Drift on 'amount' column
-        d1 = TemporalDriftAnalysis(
+        d1 = ColumnDriftSummary(
             slice_table_name="slice_region_us",
             column_name="amount",
-            period_label="2024-02",
-            has_significant_drift=True,
-            has_category_changes=False,
+            time_column="order_date",
+            max_js_divergence=0.25,
+            mean_js_divergence=0.12,
+            periods_analyzed=5,
+            periods_with_drift=1,
+            drift_evidence_json={
+                "worst_period": "2024-02",
+                "worst_js": 0.25,
+            },
         )
         # Drift on a different column (should NOT count for 'amount')
-        d2 = TemporalDriftAnalysis(
+        d2 = ColumnDriftSummary(
             slice_table_name="slice_region_us",
             column_name="other_col",
-            period_label="2024-02",
-            has_significant_drift=True,
-            has_category_changes=False,
+            time_column="order_date",
+            max_js_divergence=0.40,
+            mean_js_divergence=0.20,
+            periods_analyzed=5,
+            periods_with_drift=3,
         )
         session.add_all([d1, d2])
         session.commit()
@@ -209,5 +185,5 @@ class TestAggregateSliceResultsTemporalContext:
         result = aggregate_slice_results(session, slice_def)
         assert result.success
         columns = result.unwrap()
-        # 'amount' should have drift_detected_count=1, not 2
+        # 'amount' should have drift_detected_count=1, not 4
         assert columns[0].temporal_context["drift_detected_count"] == 1

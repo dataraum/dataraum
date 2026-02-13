@@ -56,6 +56,7 @@ from dataraum.entropy.detectors.structural import (
 from dataraum.entropy.detectors.value import (
     NullRatioDetector,
     OutlierRateDetector,
+    TemporalDriftDetector,
 )
 
 # All built-in detector classes (per-column detectors only)
@@ -68,6 +69,7 @@ BUILTIN_DETECTORS: list[type[EntropyDetector]] = [
     # Value
     NullRatioDetector,
     OutlierRateDetector,
+    TemporalDriftDetector,
     # Semantic
     BusinessMeaningDetector,
     UnitEntropyDetector,
@@ -108,6 +110,7 @@ __all__ = [
     # Value detectors
     "NullRatioDetector",
     "OutlierRateDetector",
+    "TemporalDriftDetector",
     # Semantic detectors
     "BusinessMeaningDetector",
     "UnitEntropyDetector",

@@ -17,12 +17,8 @@ from dataraum.analysis.slicing.models import (
 from dataraum.analysis.slicing.slice_runner import (
     SliceAnalysisResult,
     SliceTableInfo,
-    TemporalSlicesResult,
-    TopologySlicesResult,
     register_slice_tables,
     run_analysis_on_slices,
-    run_temporal_analysis_on_slices,
-    run_topology_on_slices,
 )
 
 __all__ = [
@@ -31,12 +27,8 @@ __all__ = [
     # Slice runner
     "register_slice_tables",
     "run_analysis_on_slices",
-    "run_temporal_analysis_on_slices",
-    "run_topology_on_slices",
     "SliceTableInfo",
     "SliceAnalysisResult",
-    "TemporalSlicesResult",
-    "TopologySlicesResult",
     # Models
     "SliceRecommendation",
     "SliceSQL",

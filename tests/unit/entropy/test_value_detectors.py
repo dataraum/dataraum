@@ -6,6 +6,7 @@ from dataraum.entropy.detectors import (
     DetectorContext,
     NullRatioDetector,
     OutlierRateDetector,
+    TemporalDriftDetector,
 )
 
 
@@ -321,3 +322,153 @@ class TestOutlierRateDetector:
         assert detector.layer == "value"
         assert detector.dimension == "outliers"
         assert detector.required_analyses == ["statistics", "semantic"]
+
+
+class _MockDriftSummary:
+    """Lightweight mock for ColumnDriftSummary (avoids DB session)."""
+
+    def __init__(
+        self,
+        column_name: str,
+        max_js_divergence: float,
+        mean_js_divergence: float,
+        periods_analyzed: int,
+        periods_with_drift: int,
+        drift_evidence_json: dict | None = None,
+    ):
+        self.column_name = column_name
+        self.max_js_divergence = max_js_divergence
+        self.mean_js_divergence = mean_js_divergence
+        self.periods_analyzed = periods_analyzed
+        self.periods_with_drift = periods_with_drift
+        self.drift_evidence_json = drift_evidence_json
+
+
+class TestTemporalDriftDetector:
+    """Tests for TemporalDriftDetector."""
+
+    @pytest.fixture
+    def detector(self) -> TemporalDriftDetector:
+        return TemporalDriftDetector()
+
+    def test_no_drift_summaries(self, detector: TemporalDriftDetector):
+        """Returns empty when no drift summaries available."""
+        context = DetectorContext(
+            table_name="orders",
+            column_name="status",
+            analysis_results={"drift_summaries": []},
+        )
+        results = detector.detect(context)
+        assert len(results) == 0
+
+    def test_no_matching_column(self, detector: TemporalDriftDetector):
+        """Returns empty when column not in drift summaries."""
+        summary = _MockDriftSummary("other_col", 0.5, 0.3, 5, 2)
+        context = DetectorContext(
+            table_name="orders",
+            column_name="status",
+            analysis_results={"drift_summaries": [summary]},
+        )
+        results = detector.detect(context)
+        assert len(results) == 0
+
+    def test_zero_drift(self, detector: TemporalDriftDetector):
+        """Score is 0 when JS divergence is 0."""
+        summary = _MockDriftSummary("status", 0.0, 0.0, 5, 0)
+        context = DetectorContext(
+            table_name="orders",
+            column_name="status",
+            analysis_results={"drift_summaries": [summary]},
+        )
+        results = detector.detect(context)
+        assert len(results) == 1
+        assert results[0].score == pytest.approx(0.0, abs=0.01)
+
+    def test_mild_drift(self, detector: TemporalDriftDetector):
+        """Score ~0.3 for 0.1 JS divergence."""
+        summary = _MockDriftSummary("status", 0.1, 0.05, 5, 1)
+        context = DetectorContext(
+            table_name="orders",
+            column_name="status",
+            analysis_results={"drift_summaries": [summary]},
+        )
+        results = detector.detect(context)
+        assert len(results) == 1
+        assert results[0].score == pytest.approx(0.3, abs=0.01)
+
+    def test_moderate_drift(self, detector: TemporalDriftDetector):
+        """Score ~0.7 for 0.3 JS divergence."""
+        summary = _MockDriftSummary("status", 0.3, 0.15, 5, 2)
+        context = DetectorContext(
+            table_name="orders",
+            column_name="status",
+            analysis_results={"drift_summaries": [summary]},
+        )
+        results = detector.detect(context)
+        assert len(results) == 1
+        assert results[0].score == pytest.approx(0.7, abs=0.01)
+
+    def test_severe_drift(self, detector: TemporalDriftDetector):
+        """Score 1.0 for 0.5+ JS divergence."""
+        summary = _MockDriftSummary("status", 0.6, 0.3, 5, 4)
+        context = DetectorContext(
+            table_name="orders",
+            column_name="status",
+            analysis_results={"drift_summaries": [summary]},
+        )
+        results = detector.detect(context)
+        assert len(results) == 1
+        assert results[0].score == pytest.approx(1.0, abs=0.01)
+
+    def test_evidence_includes_drift_details(self, detector: TemporalDriftDetector):
+        """Evidence includes drift summary info."""
+        summary = _MockDriftSummary(
+            "status",
+            0.4,
+            0.2,
+            5,
+            3,
+            drift_evidence_json={
+                "worst_period": "2024-Q3",
+                "worst_js": 0.4,
+                "top_shifts": [
+                    {
+                        "category": "Active",
+                        "baseline_pct": 45,
+                        "period_pct": 12,
+                        "period": "2024-Q3",
+                    }
+                ],
+            },
+        )
+        context = DetectorContext(
+            table_name="orders",
+            column_name="status",
+            analysis_results={"drift_summaries": [summary]},
+        )
+        results = detector.detect(context)
+        assert len(results) == 1
+        ev = results[0].evidence[0]
+        assert ev["max_js_divergence"] == 0.4
+        assert ev["worst_period"] == "2024-Q3"
+        assert len(ev["top_shifts"]) == 1
+
+    def test_resolution_options_for_high_drift(self, detector: TemporalDriftDetector):
+        """High drift produces resolution options."""
+        summary = _MockDriftSummary("status", 0.8, 0.4, 5, 4)
+        context = DetectorContext(
+            table_name="orders",
+            column_name="status",
+            analysis_results={"drift_summaries": [summary]},
+        )
+        results = detector.detect(context)
+        actions = [opt.action for opt in results[0].resolution_options]
+        assert "investigate_drift" in actions
+        assert "add_time_filter" in actions
+
+    def test_detector_properties(self, detector: TemporalDriftDetector):
+        """Test detector has correct properties."""
+        assert detector.detector_id == "temporal_drift"
+        assert detector.layer == "value"
+        assert detector.dimension == "temporal"
+        assert detector.required_analyses == ["drift_summaries"]

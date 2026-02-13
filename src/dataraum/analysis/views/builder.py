@@ -55,8 +55,23 @@ def build_enriched_view_sql(
     select_parts = ["f.*"]
     dimension_column_names: list[str] = []
 
-    for join in dimension_joins:
-        alias = _table_alias(join.dim_table_name)
+    # Track used aliases to avoid duplicates
+    used_aliases: dict[str, int] = {}
+
+    def get_unique_alias(table_name: str) -> str:
+        """Generate a unique alias for a dimension table."""
+        base_alias = _table_alias(table_name)
+        if base_alias not in used_aliases:
+            used_aliases[base_alias] = 1
+            return base_alias
+        # Add numeric suffix for duplicates
+        used_aliases[base_alias] += 1
+        return f"{base_alias}{used_aliases[base_alias]}"
+
+    # Pre-compute aliases for all joins
+    join_aliases = [get_unique_alias(join.dim_table_name) for join in dimension_joins]
+
+    for join, alias in zip(dimension_joins, join_aliases, strict=True):
         for col in join.include_columns:
             qualified_name = f"{join.dim_table_name}__{col}"
             select_parts.append(f'{alias}."{col}" AS "{qualified_name}"')
@@ -66,8 +81,7 @@ def build_enriched_view_sql(
 
     # Build FROM + JOIN clauses
     join_clauses = []
-    for join in dimension_joins:
-        alias = _table_alias(join.dim_table_name)
+    for join, alias in zip(dimension_joins, join_aliases, strict=True):
         join_clauses.append(
             f'LEFT JOIN "{join.dim_duckdb_path}" AS {alias} '
             f'ON f."{join.fact_fk_column}" = {alias}."{join.dim_pk_column}"'

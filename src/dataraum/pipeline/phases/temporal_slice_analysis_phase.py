@@ -17,7 +17,9 @@ from dataraum.analysis.slicing.slice_runner import SliceTableInfo
 from dataraum.analysis.temporal import TemporalColumnProfile
 from dataraum.analysis.temporal_slicing.analyzer import (
     analyze_column_drift,
+    analyze_period_metrics,
     persist_drift_results,
+    persist_period_results,
 )
 from dataraum.analysis.temporal_slicing.models import TemporalSliceConfig, TimeGrain
 from dataraum.core.logging import get_logger
@@ -62,7 +64,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
     @property
     def outputs(self) -> list[str]:
-        return ["drift_summaries"]
+        return ["drift_summaries", "period_analyses"]
 
     @property
     def is_llm_phase(self) -> bool:
@@ -251,6 +253,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
         grain = grain_map.get(time_grain, TimeGrain.MONTHLY)
 
         total_drift_summaries = 0
+        total_period_analyses = 0
         errors = []
 
         # Pre-compute which typed tables have the time column
@@ -328,11 +331,32 @@ class TemporalSliceAnalysisPhase(BasePhase):
                             total_drift_summaries += persist_result.value
                     elif not drift_result.success:
                         errors.append(f"{si.slice_table_name}: {drift_result.error}")
+
+                    # Period-level completeness + volume anomaly analysis
+                    period_result = analyze_period_metrics(
+                        slice_table_name=si.slice_table_name,
+                        time_column=time_column,
+                        duckdb_conn=ctx.duckdb_conn,
+                        config=config,
+                    )
+                    if period_result.success and period_result.value is not None:
+                        persist_count = persist_period_results(
+                            result=period_result.value,
+                            session=ctx.session,
+                        )
+                        if persist_count.success and persist_count.value is not None:
+                            total_period_analyses += persist_count.value
+                    elif not period_result.success:
+                        errors.append(
+                            f"Period analysis error for {si.slice_table_name}: {period_result.error}"
+                        )
+
                 except Exception as e:
-                    errors.append(f"Drift analysis error for {si.slice_table_name}: {e}")
+                    errors.append(f"Analysis error for {si.slice_table_name}: {e}")
 
         outputs = {
             "drift_summaries": total_drift_summaries,
+            "period_analyses": total_period_analyses,
             "time_column": time_column,
             "time_grain": time_grain,
             "period_start": str(period_start),
@@ -345,5 +369,5 @@ class TemporalSliceAnalysisPhase(BasePhase):
         return PhaseResult.success(
             outputs=outputs,
             records_processed=len(slice_definitions),
-            records_created=total_drift_summaries,
+            records_created=total_drift_summaries + total_period_analyses,
         )

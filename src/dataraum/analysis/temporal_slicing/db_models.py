@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Float, Integer, String
+from sqlalchemy import JSON, Date, DateTime, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.storage.base import Base
@@ -50,6 +50,52 @@ class ColumnDriftSummary(Base):
     )
 
 
+class TemporalSliceAnalysis(Base):
+    """Period-level completeness and volume anomaly metrics for a slice table.
+
+    One row per period per slice table. Tracks data completeness (coverage,
+    early cutoffs) and volume anomalies (z-scores, spikes/drops/gaps).
+    """
+
+    __tablename__ = "temporal_slice_analyses"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+
+    slice_table_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    time_column: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Period info
+    period_label: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+
+    # Completeness metrics
+    row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expected_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    observed_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    coverage_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_complete: Mapped[int | None] = mapped_column(Integer, nullable=True)  # SQLite bool
+    has_early_cutoff: Mapped[int | None] = mapped_column(Integer, nullable=True)  # SQLite bool
+    days_missing_at_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_day_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Volume anomaly metrics
+    z_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolling_std: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_volume_anomaly: Mapped[int | None] = mapped_column(Integer, nullable=True)  # SQLite bool
+    anomaly_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    period_over_period_change: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Issues summary
+    issues_json: Mapped[list[dict[str, str]] | None] = mapped_column(JSON, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
 __all__ = [
     "ColumnDriftSummary",
+    "TemporalSliceAnalysis",
 ]

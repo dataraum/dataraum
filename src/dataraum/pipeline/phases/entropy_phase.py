@@ -223,6 +223,25 @@ class EntropyPhase(BasePhase):
         for dc in (ctx.session.execute(derived_stmt)).scalars().all():
             derived_columns[dc.derived_column_id] = dc
 
+        # Load drift summaries for TemporalDriftDetector (keyed by column_name per table)
+        # These come from slice tables, so we need to load all and group by column_name
+        drift_summaries_by_column: dict[str, list[ColumnDriftSummary]] = {}
+        slice_tables_stmt = select(Table).where(
+            Table.layer == "slice",
+            Table.source_id == ctx.source_id,
+        )
+        slice_table_names = [
+            st.table_name for st in ctx.session.execute(slice_tables_stmt).scalars().all()
+        ]
+        if slice_table_names:
+            drift_stmt = select(ColumnDriftSummary).where(
+                ColumnDriftSummary.slice_table_name.in_(slice_table_names)
+            )
+            for ds in ctx.session.execute(drift_stmt).scalars().all():
+                if ds.column_name not in drift_summaries_by_column:
+                    drift_summaries_by_column[ds.column_name] = []
+                drift_summaries_by_column[ds.column_name].append(ds)
+
         # Initialize processor
         processor = EntropyProcessor()
 
@@ -352,6 +371,11 @@ class EntropyPhase(BasePhase):
                             }
                         ]
                     }
+
+                # Add drift summaries for this column (for TemporalDriftDetector)
+                col_drift = drift_summaries_by_column.get(col.column_name)
+                if col_drift:
+                    analysis_results["drift_summaries"] = col_drift
 
                 columns_data.append(
                     {
@@ -711,6 +735,7 @@ def _run_dimensional_entropy(
 
         # Load drift summaries for slice tables belonging to this typed table
         drift_summaries: list[Any] = []
+        slice_table_names: list[str] = []
         from dataraum.analysis.slicing.db_models import SliceDefinition
 
         slice_def_stmt = select(SliceDefinition).where(SliceDefinition.table_id == table.table_id)
@@ -751,6 +776,16 @@ def _run_dimensional_entropy(
                     }
                 )
 
+        # Load period analyses (completeness + volume anomalies) for slice tables
+        period_analyses: list[Any] = []
+        if slice_table_names:
+            from dataraum.analysis.temporal_slicing.db_models import TemporalSliceAnalysis
+
+            period_stmt = select(TemporalSliceAnalysis).where(
+                TemporalSliceAnalysis.slice_table_name.in_(slice_table_names)
+            )
+            period_analyses = list(ctx.session.execute(period_stmt).scalars().all())
+
         # Build detector context
         context = DetectorContext(
             source_id=ctx.source_id,
@@ -764,6 +799,7 @@ def _run_dimensional_entropy(
                     "temporal_drift": temporal_drift,
                 },
                 "drift_summaries": drift_summaries,
+                "period_analyses": period_analyses,
             },
         )
 

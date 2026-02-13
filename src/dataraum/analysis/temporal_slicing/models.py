@@ -26,6 +26,9 @@ class TemporalSliceConfig(BaseModel):
 
     # Thresholds
     drift_threshold: float = 0.1  # JS divergence threshold
+    completeness_threshold: float = 0.9  # coverage_ratio for "complete"
+    volume_zscore_threshold: float = 2.5  # z-score for anomaly
+    last_day_ratio_threshold: float = 0.3  # early cutoff detection
 
 
 class CategoryShift(BaseModel):
@@ -75,6 +78,56 @@ class ColumnDriftResult(BaseModel):
     drift_evidence: DriftEvidence | None = None
 
 
+class PeriodMetrics(BaseModel):
+    """Per-period volume and day-level metrics."""
+
+    period_label: str
+    period_start: date
+    period_end: date
+    row_count: int
+    expected_days: int
+    observed_days: int
+    coverage_ratio: float
+    last_day_ratio: float
+    rolling_avg: float | None = None
+    rolling_std: float | None = None
+    z_score: float | None = None
+    period_over_period_change: float | None = None
+
+
+class CompletenessResult(BaseModel):
+    """Completeness assessment for a period."""
+
+    period_label: str
+    is_complete: bool
+    coverage_ratio: float
+    has_early_cutoff: bool
+    days_missing_at_end: int
+
+
+class VolumeAnomalyResult(BaseModel):
+    """Volume anomaly detection for a period."""
+
+    period_label: str
+    is_anomaly: bool
+    anomaly_type: str | None = None  # "spike", "drop", "gap"
+    z_score: float
+    period_over_period_change: float | None = None
+
+
+class PeriodAnalysisResult(BaseModel):
+    """Combined result of period-level analysis for a slice table."""
+
+    slice_table_name: str
+    time_column: str
+    total_periods: int
+    incomplete_periods: int
+    anomaly_count: int
+    period_metrics: list[PeriodMetrics]
+    completeness_results: list[CompletenessResult]
+    volume_anomalies: list[VolumeAnomalyResult]
+
+
 __all__ = [
     "TimeGrain",
     "TemporalSliceConfig",
@@ -83,4 +136,8 @@ __all__ = [
     "CategoryDisappearance",
     "DriftEvidence",
     "ColumnDriftResult",
+    "PeriodMetrics",
+    "CompletenessResult",
+    "VolumeAnomalyResult",
+    "PeriodAnalysisResult",
 ]

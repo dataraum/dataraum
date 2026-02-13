@@ -640,6 +640,7 @@ class SemanticAgent(LLMFeature):
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
             tools=[tool],
+            tool_choice={"type": "tool", "name": "analyze_schema"},
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,

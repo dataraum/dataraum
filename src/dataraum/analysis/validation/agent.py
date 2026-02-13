@@ -403,6 +403,7 @@ class ValidationAgent(LLMFeature):
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
             tools=[tool],
+            tool_choice={"type": "tool", "name": "generate_validation_sql"},
             max_tokens=self.MAX_TOKENS,
             temperature=temperature,
             model=model,

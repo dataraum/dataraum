@@ -104,7 +104,7 @@ class TemporalDriftDetector(EntropyDetector):
         if score > 0.7:
             resolution_options.append(
                 ResolutionOption(
-                    action="add_time_filter",
+                    action="transform_add_time_filter",
                     parameters={
                         "column": context.column_name,
                         "strategy": "use_recent_periods_only",

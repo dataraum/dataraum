@@ -51,9 +51,10 @@ Bottom-up cleanup: each module gets dead code removal, config streamlining, logg
 Items that were identified during development but deferred to keep focus.
 
 ### Entropy Enhancements
-- [ ] Medium-priority detectors (Pattern, Unit, Temporal, Range, Freshness)
-- [ ] Compound risk YAML config (currently hardcoded)
-- [ ] Threshold extraction to `config/entropy/thresholds.yaml`
+- [ ] **Unit entropy currency not working in practice** — Architecture is wired (semantic prompt → `unit_source_column` → detector), but LLM never populates `unit_source_column`. All unit_entropy scores = 0.8 (missing). Needs: investigate semantic prompt or add explicit currency detection heuristic. *Medium effort, high value.*
+- [ ] **Table-level interpretation** — Schema exists (`TableInterpretation`), but interpretation phase only processes columns. Needs `TableInterpretationInput`, prompt template, and phase changes. ~400-500 lines. *Medium effort, medium value.*
+- [ ] **Contract violation text not business-focused** — Technical jargon instead of business language. Purely cosmetic prompt tuning. *Low effort, low priority. Batch with interpretation work.*
+- [ ] **TypeDecision detector** — Measure type decision certainty (automatic vs fallback vs override). Data already in pipeline (94.8% automatic, 5.2% fallback). Most useful when manual overrides become common. *Low priority now.*
 - [ ] Entropy history/trending (needs snapshot infrastructure)
 
 ### Interfaces
@@ -71,7 +72,7 @@ Items that were identified during development but deferred to keep focus.
 
 ---
 
-## Completed (Historical)
+## Completed / Resolved (Historical)
 
 All feature development through Priorities 1-4 is complete. See [PROGRESS.md](./PROGRESS.md) for details.
 
@@ -82,3 +83,23 @@ All feature development through Priorities 1-4 is complete. See [PROGRESS.md](./
 - ✅ Pipeline orchestrator: 18 phases, DAG, checkpoints, CLI
 - ✅ Project restructure: flattened layout, FastAPI removed, docs consolidated
 - ✅ Topology simplification: slice-based only, temporal bottleneck distance
+- ✅ Entropy scoring fine-tuning: piecewise outlier scoring, weighted avg for relationship entropy, proportional join path scoring, empty layer normalization, compound risk gradient preservation, evidence self-identification, Benford detector, quality context completeness, LLM resolution action parameters
+- ✅ Action taxonomy: `add_time_filter` → `transform_add_time_filter` prefix fix
+
+### Resolved — Phase F Architecture Refactor
+
+The Phase F plan (`docs/plans/entropy-phase-f-implementation.md`) documented 6 issues. **5 of 6 were resolved** during the restructuring work (modules 1-15). The plan is now largely obsolete:
+
+| Issue | Status | Notes |
+|-------|--------|-------|
+| 1. Duplicate context building | ✅ Resolved | `query/agent.py` builds once via `build_for_query()` |
+| 2. Dict copying instead of references | ✅ Resolved | Layered views (`EntropyForGraph`, `EntropyForQuery`, `EntropyForDashboard`) by design |
+| 3. Evidence partially lost | ⚠️ Verify | Evidence preserved in `EntropyObject`, but confirm LLM interpreter receives full detector evidence |
+| 4. Redundant profile classes | ✅ Resolved | Replaced with computed `ColumnSummary`/`TableSummary`/`RelationshipSummary` |
+| 5. LLMContext/HumanContext unused | ✅ Resolved | Removed; replaced by `EntropyInterpretation` |
+| 6. Typed tables not enforced | ✅ Resolved | Centralized in `EntropyRepository` with `enforce_typed=True` default |
+
+### Resolved — Entropy Scoring Items
+- ~~Compound risk YAML config (currently hardcoded)~~ → Config in `thresholds.yaml`
+- ~~Threshold extraction to `config/entropy/thresholds.yaml`~~ → Done
+- ~~Medium-priority detectors~~ → Benford detector added; Unit, Temporal already existed; Pattern/Range/Freshness not justified by data

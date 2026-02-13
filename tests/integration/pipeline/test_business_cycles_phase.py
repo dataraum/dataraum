@@ -104,11 +104,12 @@ class TestBusinessCyclesPhase:
         """Test skip when business cycle analysis already run."""
         from datetime import UTC, datetime
 
-        from dataraum.analysis.cycles.db_models import BusinessCycleAnalysisRun
+        from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
 
         phase = BusinessCyclesPhase()
         source_id = str(uuid4())
         table_id = str(uuid4())
+        run_id = str(uuid4())
 
         # Create a source with a typed table
         source = Source(
@@ -128,15 +129,26 @@ class TestBusinessCyclesPhase:
         )
         session.add(table)
 
-        # Add business cycle analysis run
-        analysis_run = BusinessCycleAnalysisRun(
-            table_ids=[table_id],
+        # Add pipeline run + phase checkpoint
+        pipeline_run = PipelineRun(
+            run_id=run_id,
+            source_id=source_id,
+            status="completed",
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
-            total_cycles_detected=2,
-            detected_processes=["order_to_cash"],
         )
-        session.add(analysis_run)
+        session.add(pipeline_run)
+
+        checkpoint = PhaseCheckpoint(
+            run_id=run_id,
+            source_id=source_id,
+            phase_name="business_cycles",
+            status="completed",
+            started_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+            duration_seconds=1.0,
+        )
+        session.add(checkpoint)
         session.commit()
 
         ctx = PhaseContext(

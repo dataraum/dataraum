@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 from dataraum.analysis.validation.config import load_all_validation_specs
 from dataraum.analysis.validation.db_models import (
     ValidationResultRecord,
-    ValidationRunRecord,
 )
 from dataraum.analysis.validation.models import (
     GeneratedSQL,
@@ -579,31 +578,12 @@ class ValidationAgent(LLMFeature):
             session: Database session
             run_result: Validation run result to persist
         """
-        # Create run record
-        run_record = ValidationRunRecord(
-            run_id=run_result.run_id,
-            table_ids=run_result.table_ids,
-            table_name=run_result.table_name,
-            started_at=run_result.started_at,
-            completed_at=run_result.completed_at,
-            total_checks=run_result.total_checks,
-            passed_checks=run_result.passed_checks,
-            failed_checks=run_result.failed_checks,
-            skipped_checks=run_result.skipped_checks,
-            error_checks=run_result.error_checks,
-            overall_status=run_result.overall_status.value,
-            has_critical_failures=run_result.has_critical_failures,
-            results=[r.model_dump(mode="json") for r in run_result.results],
-        )
-        session.add(run_record)
-
         # Create individual result records with client-side IDs
         for result in run_result.results:
             # Serialize details to ensure JSON compatibility
             result_data = result.model_dump(mode="json")
             result_record = ValidationResultRecord(
                 result_id=str(uuid4()),
-                run_id=run_result.run_id,
                 validation_id=result.validation_id,
                 table_ids=result.table_ids,
                 status=result.status.value,

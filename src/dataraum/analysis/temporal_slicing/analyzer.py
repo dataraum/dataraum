@@ -20,7 +20,6 @@ from dataraum.analysis.temporal_slicing.db_models import (
     SliceTimeMatrixEntry,
     TemporalDriftAnalysis,
     TemporalSliceAnalysis,
-    TemporalSliceRun,
 )
 from dataraum.analysis.temporal_slicing.models import (
     CompletenessResult,
@@ -183,29 +182,12 @@ class TemporalSliceAnalyzer:
             result: Analysis result to persist
 
         Returns:
-            Result containing the run_id
+            Result containing a generated batch ID
         """
         try:
-            # Generate run_id upfront — SQLAlchemy column defaults only evaluate at
-            # flush/INSERT time, so reading run.run_id before flush would return None.
-            run_id = str(uuid4())
+            batch_id = str(uuid4())
 
-            # Create run record
-            run = TemporalSliceRun(
-                run_id=run_id,
-                slice_table_name=result.slice_table_name,
-                time_column=result.time_column,
-                period_start=result.config.period_start,
-                period_end=result.config.period_end,
-                time_grain=result.config.time_grain.value,
-                total_periods=result.total_periods,
-                incomplete_periods=result.incomplete_periods,
-                anomaly_count=result.anomaly_count,
-                drift_detected=result.drift_detected,
-                config_json=result.config.model_dump(mode="json"),
-            )
-
-            # Persist period analyses - use relationship for proper FK ordering
+            # Persist period analyses
             for period_metric, completeness in zip(
                 result.period_metrics, result.completeness_results, strict=False
             ):
@@ -244,9 +226,9 @@ class TemporalSliceAnalyzer:
                     issues_json=completeness.issues
                     + (volume_anomaly.issues if volume_anomaly else []),
                 )
-                run.analyses.append(analysis)
+                self.session.add(analysis)
 
-            # Persist drift analyses - use relationship for proper FK ordering
+            # Persist drift analyses
             for drift in result.drift_results:
                 drift_record = TemporalDriftAnalysis(
                     slice_table_name=result.slice_table_name,
@@ -260,9 +242,9 @@ class TemporalSliceAnalyzer:
                     has_significant_drift=drift.has_significant_drift,
                     has_category_changes=drift.has_category_changes,
                 )
-                run.drift_analyses.append(drift_record)
+                self.session.add(drift_record)
 
-            # Persist slice-time matrix - use relationship for proper FK ordering
+            # Persist slice-time matrix
             if result.slice_time_matrix:
                 for _slice_value, periods in result.slice_time_matrix.data.items():
                     for _period_label, cell in periods.items():
@@ -274,13 +256,10 @@ class TemporalSliceAnalyzer:
                             row_count=cell.row_count,
                             period_over_period_change=cell.period_over_period_change,
                         )
-                        run.matrix_entries.append(entry)
-
-            # Add the run with all children - SQLAlchemy handles FK ordering
-            self.session.add(run)
+                        self.session.add(entry)
 
             # Note: commit handled by session_scope() in caller
-            return Result.ok(run_id)
+            return Result.ok(batch_id)
 
         except Exception as e:
             logger.error("persist_results_failed", error=str(e))

@@ -10,9 +10,9 @@ from __future__ import annotations
 from sqlalchemy import func, select
 
 from dataraum.analysis.cycles import BusinessCycleAgent
-from dataraum.analysis.cycles.db_models import BusinessCycleAnalysisRun
 from dataraum.llm import create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
+from dataraum.pipeline.db_models import PhaseCheckpoint
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.storage import Table
 
@@ -60,15 +60,15 @@ class BusinessCyclesPhase(BasePhase):
         if not typed_tables:
             return "No typed tables found"
 
-        table_ids = [t.table_id for t in typed_tables]
-
-        # Check for existing business cycle analysis
-        run_stmt = select(func.count(BusinessCycleAnalysisRun.analysis_id)).where(
-            BusinessCycleAnalysisRun.table_ids.contains(table_ids)
+        # Check for existing completed phase checkpoint
+        cp_stmt = select(func.count(PhaseCheckpoint.checkpoint_id)).where(
+            PhaseCheckpoint.source_id == ctx.source_id,
+            PhaseCheckpoint.phase_name == self.name,
+            PhaseCheckpoint.status == "completed",
         )
-        run_count = (ctx.session.execute(run_stmt)).scalar() or 0
+        cp_count = (ctx.session.execute(cp_stmt)).scalar() or 0
 
-        if run_count > 0:
+        if cp_count > 0:
             return "Business cycle analysis already run for these tables"
 
         return None

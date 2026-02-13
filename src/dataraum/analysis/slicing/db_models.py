@@ -1,6 +1,6 @@
 """SQLAlchemy models for slicing analysis.
 
-Contains database models for slice definitions and analysis runs.
+Contains database models for slice definitions.
 """
 
 from __future__ import annotations
@@ -73,39 +73,6 @@ class SliceDefinition(Base):
     column: Mapped[Column] = relationship()
 
 
-class SlicingAnalysisRun(Base):
-    """Tracks slicing analysis runs.
-
-    Records when analysis was performed and summary statistics.
-    """
-
-    __tablename__ = "slicing_analysis_runs"
-    run_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-
-    # Scope
-    table_ids: Mapped[list[str] | None] = mapped_column(JSON)
-    tables_analyzed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    columns_considered: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-    # Results
-    recommendations_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    slices_generated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-    # Timing
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(UTC)
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
-    duration_seconds: Mapped[float | None] = mapped_column(Float)
-
-    # Status
-    status: Mapped[str] = mapped_column(
-        String, nullable=False, default="running"
-    )  # running, completed, failed
-    error_message: Mapped[str | None] = mapped_column(Text)
-
-
 __all__ = [
     "SliceDefinition",
-    "SlicingAnalysisRun",
 ]

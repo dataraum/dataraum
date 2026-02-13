@@ -3,11 +3,7 @@
 SQLAlchemy models for correlation analysis persistence.
 
 Within-Table Analysis:
-- ColumnCorrelation: Numeric correlations (Pearson, Spearman)
 - DerivedColumn: Derived column detection
-
-Cross-Table Quality (post-confirmation):
-- CrossTableCorrelationDB: Correlations between columns in different tables
 """
 
 from __future__ import annotations
@@ -27,51 +23,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.storage import Base
-
-
-class ColumnCorrelation(Base):
-    """Correlation between two numeric columns.
-
-    Stores both Pearson (linear) and Spearman (monotonic) correlations.
-    Only stores correlations above a configurable threshold to avoid noise.
-    """
-
-    __tablename__ = "column_correlations"
-
-    correlation_id: Mapped[str] = mapped_column(
-        String, primary_key=True, default=lambda: str(uuid4())
-    )
-    table_id: Mapped[str] = mapped_column(
-        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
-    )
-
-    # Column pair (order doesn't matter, but we store both for query convenience)
-    column1_id: Mapped[str] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
-    )
-    column2_id: Mapped[str] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
-    )
-
-    # Pearson correlation (linear relationship)
-    pearson_r: Mapped[float | None] = mapped_column(Float)
-    pearson_p_value: Mapped[float | None] = mapped_column(Float)
-
-    # Spearman correlation (monotonic relationship)
-    spearman_rho: Mapped[float | None] = mapped_column(Float)
-    spearman_p_value: Mapped[float | None] = mapped_column(Float)
-
-    # Metadata
-    sample_size: Mapped[int] = mapped_column(Integer, nullable=False)
-    computed_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(UTC)
-    )
-
-    # Interpretation
-    correlation_strength: Mapped[str | None] = mapped_column(
-        String
-    )  # 'none', 'weak', 'moderate', 'strong', 'very_strong'
-    is_significant: Mapped[bool | None] = mapped_column(Integer)  # p_value < 0.05
 
 
 class DerivedColumn(Base):
@@ -125,55 +76,8 @@ class DerivedColumn(Base):
 
 
 # =============================================================================
-# Cross-Table Quality Models (post-confirmation)
-# =============================================================================
-
-
-class CrossTableCorrelationDB(Base):
-    """Correlation between columns in different tables.
-
-    Stored after cross-table quality analysis on confirmed relationships.
-    """
-
-    __tablename__ = "cross_table_correlations"
-
-    correlation_id: Mapped[str] = mapped_column(
-        String, primary_key=True, default=lambda: str(uuid4())
-    )
-
-    # Relationship context
-    relationship_id: Mapped[str] = mapped_column(String, nullable=False)
-
-    # Tables involved
-    from_table: Mapped[str] = mapped_column(String, nullable=False)
-    from_column: Mapped[str] = mapped_column(String, nullable=False)
-    to_table: Mapped[str] = mapped_column(String, nullable=False)
-    to_column: Mapped[str] = mapped_column(String, nullable=False)
-
-    # Correlation values
-    pearson_r: Mapped[float] = mapped_column(Float, nullable=False)
-    spearman_rho: Mapped[float] = mapped_column(Float, nullable=False)
-    strength: Mapped[str] = mapped_column(String, nullable=False)  # 'weak', 'moderate', etc.
-
-    # Is this the join column pair?
-    is_join_column: Mapped[bool] = mapped_column(Integer, nullable=False, default=False)
-
-    # Metadata
-    computed_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(UTC)
-    )
-
-
-# =============================================================================
 # Indexes for efficient queries
 # =============================================================================
 
-# Within-table correlations
-Index("idx_correlations_table", ColumnCorrelation.table_id)
-Index("idx_correlations_col1", ColumnCorrelation.column1_id)
-Index("idx_correlations_col2", ColumnCorrelation.column2_id)
 Index("idx_derived_table", DerivedColumn.table_id)
 Index("idx_derived_column", DerivedColumn.derived_column_id)
-
-# Cross-table analysis
-Index("idx_cross_corr_relationship", CrossTableCorrelationDB.relationship_id)

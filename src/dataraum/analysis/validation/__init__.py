@@ -14,7 +14,6 @@ from dataraum.analysis.validation.config import (
 )
 from dataraum.analysis.validation.db_models import (
     ValidationResultRecord,
-    ValidationRunRecord,
 )
 from dataraum.analysis.validation.models import (
     GeneratedSQL,
@@ -49,6 +48,5 @@ __all__ = [
     "ValidationSeverity",
     "ValidationStatus",
     # DB Models
-    "ValidationRunRecord",
     "ValidationResultRecord",
 ]

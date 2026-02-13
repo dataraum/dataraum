@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -22,7 +21,6 @@ from dataraum.analysis.cycles.context import (
     format_context_for_prompt,
 )
 from dataraum.analysis.cycles.db_models import (
-    BusinessCycleAnalysisRun,
     DetectedBusinessCycle,
 )
 from dataraum.analysis.cycles.models import (
@@ -618,31 +616,10 @@ class BusinessCycleAgent:
             analysis: The analysis results to persist
             table_ids: Table IDs that were analyzed
         """
-        # Create analysis run record
-        run = BusinessCycleAnalysisRun(
-            analysis_id=analysis.analysis_id,
-            table_ids=table_ids,
-            started_at=datetime.now(UTC),
-            completed_at=datetime.now(UTC),
-            duration_seconds=analysis.analysis_duration_seconds,
-            total_cycles_detected=analysis.total_cycles_detected,
-            high_value_cycles=analysis.high_value_cycles,
-            overall_cycle_health=analysis.overall_cycle_health,
-            llm_model=analysis.llm_model,
-            tool_calls_count=len(analysis.tool_calls_made),
-            business_summary=analysis.business_summary,
-            detected_processes=analysis.detected_processes,
-            data_quality_observations=analysis.data_quality_observations,
-            recommendations=analysis.recommendations,
-            context_summary=analysis.context_provided,
-        )
-        session.add(run)
-
-        # Create detected cycle records
+        # Create detected cycle records directly
         for cycle in analysis.cycles:
             db_cycle = DetectedBusinessCycle(
                 cycle_id=cycle.cycle_id,
-                analysis_id=analysis.analysis_id,
                 cycle_name=cycle.cycle_name,
                 cycle_type=cycle.cycle_type,
                 canonical_type=cycle.canonical_type,

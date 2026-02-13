@@ -8,13 +8,12 @@ LLM-powered analysis to identify optimal data slicing dimensions:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
 
 from dataraum.analysis.slicing.agent import SlicingAgent
-from dataraum.analysis.slicing.db_models import SliceDefinition, SlicingAnalysisRun
+from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
@@ -76,8 +75,6 @@ class SlicingPhase(BasePhase):
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run slicing analysis using LLM."""
-        start_time = datetime.now(UTC)
-
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
         result = ctx.session.execute(stmt)
@@ -142,17 +139,6 @@ class SlicingPhase(BasePhase):
         # Build context data for the agent
         context_data = self._build_context_data(ctx, unsliced_tables)
 
-        # Create analysis run record
-        run_record = SlicingAnalysisRun(
-            table_ids=[t.table_id for t in unsliced_tables],
-            tables_analyzed=len(unsliced_tables),
-            columns_considered=context_data.get("column_count", 0),
-            started_at=start_time,
-            status="running",
-        )
-        ctx.session.add(run_record)
-        # No flush needed - run_id is client-generated UUID, commit happens at session_scope() end
-
         # Run slicing analysis
         analysis_result = agent.analyze(
             session=ctx.session,
@@ -161,10 +147,6 @@ class SlicingPhase(BasePhase):
         )
 
         if not analysis_result.success:
-            run_record.status = "failed"
-            run_record.error_message = analysis_result.error
-            run_record.completed_at = datetime.now(UTC)
-            # Note: commit handled by session_scope() in orchestrator
             return PhaseResult.failed(analysis_result.error or "Slicing analysis failed")
 
         slicing = analysis_result.unwrap()
@@ -185,17 +167,6 @@ class SlicingPhase(BasePhase):
                 detection_source="llm",
             )
             ctx.session.add(slice_def)
-
-        # Update run record
-        run_record.status = "completed"
-        run_record.completed_at = datetime.now(UTC)
-        run_record.duration_seconds = (
-            run_record.completed_at - run_record.started_at
-        ).total_seconds()
-        run_record.recommendations_count = len(slicing.recommendations)
-        run_record.slices_generated = len(slicing.slice_queries)
-
-        # Note: commit handled by session_scope() in orchestrator
 
         return PhaseResult.success(
             outputs={

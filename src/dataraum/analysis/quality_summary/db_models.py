@@ -24,7 +24,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from dataraum.storage import Base
 
 if TYPE_CHECKING:
-    from dataraum.storage import Column, Table
+    from dataraum.storage import Column
 
 
 class ColumnQualityReport(Base):
@@ -140,53 +140,7 @@ class ColumnSliceProfile(Base):
     slice_column: Mapped[Column] = relationship(foreign_keys=[slice_column_id])
 
 
-class QualitySummaryRun(Base):
-    """Tracks quality summary analysis runs.
-
-    Records when analysis was performed and summary statistics.
-    """
-
-    __tablename__ = "quality_summary_runs"
-    __table_args__ = (
-        Index("idx_summary_runs_source_table", "source_table_id"),
-        Index("idx_summary_runs_slice_column", "slice_column_id"),
-    )
-
-    run_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-
-    # Scope
-    source_table_id: Mapped[str] = mapped_column(
-        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
-    )
-    slice_column_id: Mapped[str] = mapped_column(
-        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
-    )
-    slice_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-    # Results
-    columns_analyzed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    reports_generated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-    # Timing
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(UTC)
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
-    duration_seconds: Mapped[float | None] = mapped_column(Float)
-
-    # Status
-    status: Mapped[str] = mapped_column(
-        String, nullable=False, default="running"
-    )  # running, completed, failed
-    error_message: Mapped[str | None] = mapped_column(Text)
-
-    # Relationships
-    source_table: Mapped[Table] = relationship()
-    slice_column: Mapped[Column] = relationship()
-
-
 __all__ = [
     "ColumnQualityReport",
     "ColumnSliceProfile",
-    "QualitySummaryRun",
 ]

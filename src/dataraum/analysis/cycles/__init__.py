@@ -12,7 +12,6 @@ from dataraum.analysis.cycles.config import (
     map_to_canonical_type,
 )
 from dataraum.analysis.cycles.db_models import (
-    BusinessCycleAnalysisRun,
     DetectedBusinessCycle,
 )
 from dataraum.analysis.cycles.models import (
@@ -36,6 +35,5 @@ __all__ = [
     "CycleStage",
     "EntityFlow",
     # DB models
-    "BusinessCycleAnalysisRun",
     "DetectedBusinessCycle",
 ]

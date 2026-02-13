@@ -3,7 +3,6 @@
 Analyzes relationships between columns:
 
 Within-table (pre-semantic):
-- Numeric correlations (Pearson, Spearman)
 - Derived columns
 
 Cross-table (post-semantic):
@@ -22,10 +21,6 @@ from dataraum.analysis.correlation.cross_table import (
 )
 
 # DB Models
-from dataraum.analysis.correlation.db_models import (
-    ColumnCorrelation,
-    CrossTableCorrelationDB,
-)
 from dataraum.analysis.correlation.db_models import (
     DerivedColumn as DBDerivedColumn,
 )
@@ -64,9 +59,7 @@ __all__ = [
     # Cross-table functions
     "analyze_relationship_quality",
     # DB Models
-    "ColumnCorrelation",
     "DBDerivedColumn",
-    "CrossTableCorrelationDB",
     # Pydantic Models - Within-table
     "NumericCorrelation",
     "DerivedColumn",

@@ -8,7 +8,6 @@ the best categorical dimensions for slicing the data.
 from dataraum.analysis.slicing.agent import SlicingAgent
 from dataraum.analysis.slicing.db_models import (
     SliceDefinition,
-    SlicingAnalysisRun,
 )
 from dataraum.analysis.slicing.models import (
     SliceRecommendation,
@@ -44,5 +43,4 @@ __all__ = [
     "SlicingAnalysisResult",
     # DB Models
     "SliceDefinition",
-    "SlicingAnalysisRun",
 ]

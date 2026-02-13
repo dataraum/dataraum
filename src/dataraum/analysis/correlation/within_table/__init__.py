@@ -1,7 +1,6 @@
 """Within-table correlation analysis.
 
-Analyzes correlations and patterns within a single table:
-- Numeric correlations (Pearson, Spearman)
+Analyzes patterns within a single table:
 - Derived columns (computed from other columns)
 
 These analyses run BEFORE semantic analysis to enrich the context.

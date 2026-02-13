@@ -15,13 +15,13 @@ from typing import TYPE_CHECKING
 from sqlalchemy import func, select
 
 from dataraum.analysis.quality_summary.agent import QualitySummaryAgent
-from dataraum.analysis.quality_summary.db_models import QualitySummaryRun
 from dataraum.analysis.quality_summary.processor import summarize_quality
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.llm.config import LLMConfig
 from dataraum.llm.providers.base import LLMProvider
 from dataraum.pipeline.base import PhaseContext, PhaseResult
+from dataraum.pipeline.db_models import PhaseCheckpoint
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.storage import Table
 
@@ -155,13 +155,15 @@ class QualitySummaryPhase(BasePhase):
         if not slice_defs:
             return "No slice definitions found"
 
-        # Check for existing quality summary runs
-        run_stmt = select(func.count(QualitySummaryRun.run_id)).where(
-            QualitySummaryRun.source_table_id.in_(table_ids)
+        # Check for existing completed phase checkpoint
+        cp_stmt = select(func.count(PhaseCheckpoint.checkpoint_id)).where(
+            PhaseCheckpoint.source_id == ctx.source_id,
+            PhaseCheckpoint.phase_name == self.name,
+            PhaseCheckpoint.status == "completed",
         )
-        run_count = (ctx.session.execute(run_stmt)).scalar() or 0
+        cp_count = (ctx.session.execute(cp_stmt)).scalar() or 0
 
-        if run_count >= len(slice_defs):
+        if cp_count > 0:
             return "Quality summaries already generated"
 
         return None

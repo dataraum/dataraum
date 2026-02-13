@@ -104,11 +104,12 @@ class TestValidationPhase:
         """Test skip when all tables already validated."""
         from datetime import UTC, datetime
 
-        from dataraum.analysis.validation.db_models import ValidationRunRecord
+        from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
 
         phase = ValidationPhase()
         source_id = str(uuid4())
         table_id = str(uuid4())
+        run_id = str(uuid4())
 
         # Create a source with a typed table
         source = Source(
@@ -128,18 +129,26 @@ class TestValidationPhase:
         )
         session.add(table)
 
-        # Add validation run
-        validation_run = ValidationRunRecord(
-            run_id=str(uuid4()),
-            table_ids=[table_id],
-            table_name="test_table",
-            total_checks=5,
-            passed_checks=4,
-            failed_checks=1,
+        # Add pipeline run + phase checkpoint
+        pipeline_run = PipelineRun(
+            run_id=run_id,
+            source_id=source_id,
+            status="completed",
             started_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
         )
-        session.add(validation_run)
+        session.add(pipeline_run)
+
+        checkpoint = PhaseCheckpoint(
+            run_id=run_id,
+            source_id=source_id,
+            phase_name="validation",
+            status="completed",
+            started_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+            duration_seconds=1.0,
+        )
+        session.add(checkpoint)
         session.commit()
 
         ctx = PhaseContext(

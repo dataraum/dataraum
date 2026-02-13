@@ -8,7 +8,6 @@ from dataraum.analysis.quality_summary.agent import QualitySummaryAgent
 from dataraum.analysis.quality_summary.db_models import (
     ColumnQualityReport,
     ColumnSliceProfile,
-    QualitySummaryRun,
 )
 from dataraum.analysis.quality_summary.processor import summarize_quality
 
@@ -19,5 +18,4 @@ __all__ = [
     # DB Models
     "ColumnQualityReport",
     "ColumnSliceProfile",
-    "QualitySummaryRun",
 ]

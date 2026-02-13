@@ -4,16 +4,12 @@ Main orchestrator that runs all correlation analyses:
 
 Within-table analysis (analyze_correlations):
 - Derived column detection (sum, product, ratio, etc.)
-- Numeric correlations are computed on-demand only (not in pipeline)
 
 Cross-table quality analysis (analyze_cross_table_quality):
-- Cross-table correlations between joined data
-- Redundant/derived column detection
-- Multicollinearity (VDP) analysis
+- Cross-table quality metrics (redundant/derived columns, multicollinearity)
 - Requires confirmed relationships from semantic agent
 """
 
-import math
 import time
 from datetime import UTC, datetime
 
@@ -22,9 +18,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.correlation.cross_table import analyze_relationship_quality
-from dataraum.analysis.correlation.db_models import (
-    CrossTableCorrelationDB,
-)
 from dataraum.analysis.correlation.models import (
     CorrelationAnalysisResult,
     CrossTableQualityResult,
@@ -48,10 +41,7 @@ def analyze_correlations(
 ) -> Result[CorrelationAnalysisResult]:
     """Run correlation analysis on a table.
 
-    Currently runs derived column detection only. Numeric correlations
-    (Pearson, Spearman) are available via compute_numeric_correlations()
-    for on-demand use but are not part of the pipeline — no downstream
-    consumer acts on them.
+    Runs derived column detection.
 
     Args:
         table_id: Table ID to analyze
@@ -171,7 +161,6 @@ def analyze_cross_table_quality(
         )
 
         # Run cross-table quality analysis
-        start_time = time.time()
         quality_result = analyze_relationship_quality(
             relationship=enriched,
             duckdb_conn=duckdb_conn,
@@ -184,55 +173,7 @@ def analyze_cross_table_quality(
         if quality_result is None:
             return Result.fail("Cross-table analysis returned no results (insufficient data)")
 
-        duration = time.time() - start_time
-
-        # Store results to DB
-        _store_cross_table_results(
-            session=session,
-            relationship=relationship,
-            quality_result=quality_result,
-            from_table_name=from_table.table_name,
-            to_table_name=to_table.table_name,
-            from_column_name=from_column.column_name,
-            to_column_name=to_column.column_name,
-            duration=duration,
-        )
-
         return Result.ok(quality_result)
 
     except Exception as e:
         return Result.fail(f"Cross-table quality analysis failed: {e}")
-
-
-def _store_cross_table_results(
-    session: Session,
-    relationship: Relationship,
-    quality_result: CrossTableQualityResult,
-    from_table_name: str,
-    to_table_name: str,
-    from_column_name: str,
-    to_column_name: str,
-    duration: float,
-) -> None:
-    """Store cross-table quality analysis results to database."""
-    now = datetime.now(UTC)
-
-    # Store cross-table correlations (skip NaN values from constant columns)
-    for corr in quality_result.cross_table_correlations:
-        # Skip correlations with NaN (happens when column is constant)
-        if math.isnan(corr.pearson_r) or math.isnan(corr.spearman_rho):
-            continue
-
-        db_corr = CrossTableCorrelationDB(
-            relationship_id=relationship.relationship_id,
-            from_table=corr.from_table,
-            from_column=corr.from_column,
-            to_table=corr.to_table,
-            to_column=corr.to_column,
-            pearson_r=corr.pearson_r,
-            spearman_rho=corr.spearman_rho,
-            strength=corr.strength,
-            is_join_column=corr.is_join_column,
-            computed_at=now,
-        )
-        session.add(db_corr)

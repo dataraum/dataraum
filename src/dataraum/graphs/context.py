@@ -376,30 +376,16 @@ def build_execution_context(
 
     # 13. Load business cycles
     business_cycle_contexts: list[BusinessCycleContext] = []
-    # Get the most recent analysis run for these tables
-    from dataraum.analysis.cycles.db_models import BusinessCycleAnalysisRun
-
-    # Find analysis runs that include any of our tables
-    cycle_run_stmt = (
-        select(BusinessCycleAnalysisRun)
-        .where(BusinessCycleAnalysisRun.completed_at.isnot(None))
-        .order_by(BusinessCycleAnalysisRun.completed_at.desc())
-        .limit(1)
-    )
-    latest_run = session.execute(cycle_run_stmt).scalar_one_or_none()
-    if latest_run:
-        cycles_stmt = select(DetectedBusinessCycle).where(
-            DetectedBusinessCycle.analysis_id == latest_run.analysis_id
-        )
-        for cycle in session.execute(cycles_stmt).scalars().all():
-            business_cycle_contexts.append(
-                BusinessCycleContext(
-                    cycle_name=cycle.cycle_name,
-                    cycle_type=cycle.canonical_type or cycle.cycle_type,
-                    tables_involved=cycle.tables_involved,
-                    completion_rate=cycle.completion_rate,
-                )
+    cycles_stmt = select(DetectedBusinessCycle).order_by(DetectedBusinessCycle.detected_at.desc())
+    for cycle in session.execute(cycles_stmt).scalars().all():
+        business_cycle_contexts.append(
+            BusinessCycleContext(
+                cycle_name=cycle.cycle_name,
+                cycle_type=cycle.canonical_type or cycle.cycle_type,
+                tables_involved=cycle.tables_involved,
+                completion_rate=cycle.completion_rate,
             )
+        )
 
     # 14. Load field mappings
     field_mappings = load_semantic_mappings(session, table_ids)

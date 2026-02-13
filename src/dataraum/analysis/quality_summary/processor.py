@@ -23,7 +23,6 @@ from sqlalchemy.orm import Session
 from dataraum.analysis.quality_summary.db_models import (
     ColumnQualityReport,
     ColumnSliceProfile,
-    QualitySummaryRun,
 )
 from dataraum.analysis.quality_summary.models import (
     AggregatedColumnData,
@@ -397,24 +396,10 @@ def summarize_quality(
     if not source_table or not slice_column:
         return Result.fail("Source table or slice column not found")
 
-    # Create run record
-    run = QualitySummaryRun(
-        source_table_id=source_table.table_id,
-        slice_column_id=slice_column.column_id,
-        slice_count=len(slice_definition.distinct_values or []),
-        started_at=started_at,
-        status="running",
-    )
-    session.add(run)
-    # No flush needed - run_id is client-generated UUID, commit happens at session_scope() end
-
     try:
         # Aggregate results across slices
         agg_result = aggregate_slice_results(session, slice_definition)
         if not agg_result.success:
-            run.status = "failed"
-            run.error_message = agg_result.error
-            run.completed_at = datetime.now(UTC)
             return Result.fail(agg_result.error or "Aggregation failed")
 
         aggregated_columns = agg_result.unwrap()
@@ -450,14 +435,9 @@ def summarize_quality(
                 c for c in columns_to_process if c.column_id not in existing_column_ids
             ]
 
-        run.columns_analyzed = len(columns_to_process)
-
         if not columns_to_process:
             # All columns already have reports or filtered out
-            run.reports_generated = 0
-            run.status = "completed"
-            run.completed_at = datetime.now(UTC)
-            run.duration_seconds = (run.completed_at - started_at).total_seconds()
+            duration = (datetime.now(UTC) - started_at).total_seconds()
             return Result.ok(
                 QualitySummaryResult(
                     source_table_id=source_table.table_id,
@@ -466,7 +446,7 @@ def summarize_quality(
                     slice_count=len(slice_definition.distinct_values or []),
                     column_summaries=[],
                     column_classifications=classifications,
-                    duration_seconds=run.duration_seconds,
+                    duration_seconds=duration,
                 )
             )
 
@@ -550,11 +530,7 @@ def summarize_quality(
             session.add(report)
             reports_generated += 1
 
-        # Update run record
-        run.reports_generated = reports_generated
-        run.status = "completed"
-        run.completed_at = datetime.now(UTC)
-        run.duration_seconds = (run.completed_at - started_at).total_seconds()
+        duration = (datetime.now(UTC) - started_at).total_seconds()
 
         # Persist slice profiles from aggregated data
         _save_slice_profiles_from_aggregated(
@@ -573,15 +549,11 @@ def summarize_quality(
                 slice_count=len(slice_definition.distinct_values or []),
                 column_summaries=column_summaries,
                 column_classifications=classifications,
-                duration_seconds=run.duration_seconds,
+                duration_seconds=duration,
             )
         )
 
     except Exception as e:
-        run.status = "failed"
-        run.error_message = str(e)
-        run.completed_at = datetime.now(UTC)
-        run.duration_seconds = (run.completed_at - started_at).total_seconds()
         return Result.fail(f"Quality summary failed: {e}")
 
 

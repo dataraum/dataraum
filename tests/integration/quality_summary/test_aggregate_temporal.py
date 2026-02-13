@@ -10,7 +10,6 @@ from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.temporal_slicing.db_models import (
     TemporalDriftAnalysis,
     TemporalSliceAnalysis,
-    TemporalSliceRun,
 )
 from dataraum.storage import Column, Source, Table
 
@@ -115,24 +114,8 @@ class TestAggregateSliceResultsTemporalContext:
         """When temporal records exist for slice tables, they are loaded."""
         slice_def = _setup_sliced_table(session)
 
-        # Create a temporal run + analyses for one of the slice tables
-        run = TemporalSliceRun(
-            slice_table_name="slice_region_us",
-            time_column="order_date",
-            period_start=date(2024, 1, 1),
-            period_end=date(2024, 4, 1),
-            time_grain="monthly",
-            total_periods=3,
-            incomplete_periods=1,
-            anomaly_count=1,
-            drift_detected=False,
-        )
-        session.add(run)
-        session.flush()  # need run_id for FK
-
         # Period 1: complete
         a1 = TemporalSliceAnalysis(
-            run_id=run.run_id,
             slice_table_name="slice_region_us",
             time_column="order_date",
             period_label="2024-01",
@@ -146,7 +129,6 @@ class TestAggregateSliceResultsTemporalContext:
         )
         # Period 2: incomplete with anomaly
         a2 = TemporalSliceAnalysis(
-            run_id=run.run_id,
             slice_table_name="slice_region_us",
             time_column="order_date",
             period_label="2024-02",
@@ -163,7 +145,6 @@ class TestAggregateSliceResultsTemporalContext:
 
         # Add a drift record for the 'amount' column
         drift = TemporalDriftAnalysis(
-            run_id=run.run_id,
             slice_table_name="slice_region_us",
             column_name="amount",
             period_label="2024-02",
@@ -192,19 +173,8 @@ class TestAggregateSliceResultsTemporalContext:
         """drift_detected_count reflects only drifts for the specific column."""
         slice_def = _setup_sliced_table(session)
 
-        run = TemporalSliceRun(
-            slice_table_name="slice_region_us",
-            time_column="order_date",
-            period_start=date(2024, 1, 1),
-            period_end=date(2024, 3, 1),
-            time_grain="monthly",
-        )
-        session.add(run)
-        session.flush()
-
         # One analysis record so temporal_context is non-empty
         analysis = TemporalSliceAnalysis(
-            run_id=run.run_id,
             slice_table_name="slice_region_us",
             time_column="order_date",
             period_label="2024-01",
@@ -219,7 +189,6 @@ class TestAggregateSliceResultsTemporalContext:
 
         # Drift on 'amount' column
         d1 = TemporalDriftAnalysis(
-            run_id=run.run_id,
             slice_table_name="slice_region_us",
             column_name="amount",
             period_label="2024-02",
@@ -228,7 +197,6 @@ class TestAggregateSliceResultsTemporalContext:
         )
         # Drift on a different column (should NOT count for 'amount')
         d2 = TemporalDriftAnalysis(
-            run_id=run.run_id,
             slice_table_name="slice_region_us",
             column_name="other_col",
             period_label="2024-02",

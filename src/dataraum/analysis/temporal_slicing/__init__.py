@@ -16,7 +16,6 @@ from dataraum.analysis.temporal_slicing.db_models import (
     SliceTimeMatrixEntry,
     TemporalDriftAnalysis,
     TemporalSliceAnalysis,
-    TemporalSliceRun,
     TemporalTopologyAnalysis,
 )
 from dataraum.analysis.temporal_slicing.models import (
@@ -39,7 +38,6 @@ __all__ = [
     "TopologyDrift",
     "TemporalTopologyResult",
     # DB Models
-    "TemporalSliceRun",
     "TemporalSliceAnalysis",
     "TemporalDriftAnalysis",
     "SliceTimeMatrixEntry",

@@ -494,7 +494,7 @@ class TestTemporalDriftDetector:
         results = detector.detect(context)
         actions = [opt.action for opt in results[0].resolution_options]
         assert "investigate_drift" in actions
-        assert "add_time_filter" in actions
+        assert "transform_add_time_filter" in actions
 
     def test_detector_properties(self, detector: TemporalDriftDetector):
         """Test detector has correct properties."""

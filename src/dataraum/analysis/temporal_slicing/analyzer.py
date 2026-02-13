@@ -1,8 +1,9 @@
-"""Temporal slice analyzer — drift-only.
+"""Temporal slice analyzer — drift + period-level completeness/anomaly.
 
-Analyzes slices for distribution drift using Jensen-Shannon divergence.
-Produces one ColumnDriftResult per categorical column with evidence for
-future LLM interpretation.
+Analyzes slices for:
+- Distribution drift using Jensen-Shannon divergence (per categorical column)
+- Period-level completeness: coverage gaps, early cutoffs
+- Volume anomalies: spikes, drops, gaps per period
 """
 
 from __future__ import annotations
@@ -14,15 +15,19 @@ import duckdb
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
+from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary, TemporalSliceAnalysis
 from dataraum.analysis.temporal_slicing.models import (
     CategoryAppearance,
     CategoryDisappearance,
     CategoryShift,
     ColumnDriftResult,
+    CompletenessResult,
     DriftEvidence,
+    PeriodAnalysisResult,
+    PeriodMetrics,
     TemporalSliceConfig,
     TimeGrain,
+    VolumeAnomalyResult,
 )
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
@@ -368,7 +373,329 @@ def persist_drift_results(
         return Result.fail(f"Failed to persist drift results: {e}")
 
 
+def _compute_period_metrics(
+    slice_table_name: str,
+    time_column: str,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    periods: list[tuple[date, date, str]],
+) -> list[PeriodMetrics]:
+    """Compute row counts, day coverage, and rolling statistics per period.
+
+    Args:
+        slice_table_name: Name of the slice table in DuckDB
+        time_column: Name of the temporal column
+        duckdb_conn: DuckDB connection
+        periods: List of (start_date, end_date, period_label) tuples
+
+    Returns:
+        List of PeriodMetrics, one per period
+    """
+    metrics: list[PeriodMetrics] = []
+
+    for start, end, label in periods:
+        expected_days = (end - start).days
+        if expected_days <= 0:
+            continue
+
+        sql = f"""
+            SELECT
+                COUNT(*) AS row_count,
+                COUNT(DISTINCT CAST("{time_column}" AS DATE)) AS observed_days
+            FROM "{slice_table_name}"
+            WHERE CAST("{time_column}" AS DATE) >= ?
+              AND CAST("{time_column}" AS DATE) < ?
+        """
+        row = duckdb_conn.execute(sql, [start, end]).fetchone()
+        row_count = row[0] if row else 0
+        observed_days = row[1] if row else 0
+
+        coverage_ratio = observed_days / expected_days if expected_days > 0 else 0.0
+
+        # Last day ratio: volume of last observed day vs average daily volume
+        last_day_ratio = 0.0
+        if row_count > 0 and observed_days > 0:
+            avg_daily = row_count / observed_days
+            last_day_sql = f"""
+                SELECT COUNT(*) FROM "{slice_table_name}"
+                WHERE CAST("{time_column}" AS DATE) = (
+                    SELECT MAX(CAST("{time_column}" AS DATE))
+                    FROM "{slice_table_name}"
+                    WHERE CAST("{time_column}" AS DATE) >= ?
+                      AND CAST("{time_column}" AS DATE) < ?
+                )
+            """
+            last_row = duckdb_conn.execute(last_day_sql, [start, end]).fetchone()
+            last_day_count = last_row[0] if last_row else 0
+            last_day_ratio = last_day_count / avg_daily if avg_daily > 0 else 0.0
+
+        metrics.append(
+            PeriodMetrics(
+                period_label=label,
+                period_start=start,
+                period_end=end,
+                row_count=row_count,
+                expected_days=expected_days,
+                observed_days=observed_days,
+                coverage_ratio=round(coverage_ratio, 4),
+                last_day_ratio=round(last_day_ratio, 4),
+            )
+        )
+
+    # Compute rolling statistics (window=3) and z-scores
+    row_counts = [m.row_count for m in metrics]
+    for i, m in enumerate(metrics):
+        # Rolling window: up to 3 previous periods (including current)
+        window_start = max(0, i - 2)
+        window = row_counts[window_start : i + 1]
+
+        if len(window) >= 2:
+            rolling_avg = sum(window) / len(window)
+            rolling_std = (sum((x - rolling_avg) ** 2 for x in window) / len(window)) ** 0.5
+            z_score = (m.row_count - rolling_avg) / rolling_std if rolling_std > 0 else 0.0
+        else:
+            rolling_avg = float(m.row_count)
+            rolling_std = 0.0
+            z_score = 0.0
+
+        # Period-over-period change
+        pop_change = None
+        if i > 0 and row_counts[i - 1] > 0:
+            pop_change = round((m.row_count - row_counts[i - 1]) / row_counts[i - 1], 4)
+
+        metrics[i] = m.model_copy(
+            update={
+                "rolling_avg": round(rolling_avg, 2),
+                "rolling_std": round(rolling_std, 2),
+                "z_score": round(z_score, 4),
+                "period_over_period_change": pop_change,
+            }
+        )
+
+    return metrics
+
+
+def _analyze_completeness(
+    metrics: list[PeriodMetrics],
+    config: TemporalSliceConfig,
+) -> list[CompletenessResult]:
+    """Evaluate coverage ratios and detect early cutoffs.
+
+    Args:
+        metrics: Period metrics from _compute_period_metrics
+        config: Configuration with thresholds
+
+    Returns:
+        List of CompletenessResult, one per period
+    """
+    results: list[CompletenessResult] = []
+
+    for m in metrics:
+        is_complete = m.coverage_ratio >= config.completeness_threshold
+        days_missing_at_end = max(0, m.expected_days - m.observed_days)
+        has_early_cutoff = (
+            days_missing_at_end > 0 and m.last_day_ratio < config.last_day_ratio_threshold
+        )
+
+        results.append(
+            CompletenessResult(
+                period_label=m.period_label,
+                is_complete=is_complete,
+                coverage_ratio=m.coverage_ratio,
+                has_early_cutoff=has_early_cutoff,
+                days_missing_at_end=days_missing_at_end,
+            )
+        )
+
+    return results
+
+
+def _detect_volume_anomalies(
+    metrics: list[PeriodMetrics],
+    config: TemporalSliceConfig,
+) -> list[VolumeAnomalyResult]:
+    """Detect volume anomalies using z-scores.
+
+    Args:
+        metrics: Period metrics with rolling statistics computed
+        config: Configuration with volume_zscore_threshold
+
+    Returns:
+        List of VolumeAnomalyResult, one per period with anomaly info
+    """
+    results: list[VolumeAnomalyResult] = []
+
+    for m in metrics:
+        z = m.z_score if m.z_score is not None else 0.0
+        is_anomaly = abs(z) > config.volume_zscore_threshold
+
+        anomaly_type = None
+        if m.row_count == 0:
+            is_anomaly = True
+            anomaly_type = "gap"
+        elif is_anomaly:
+            anomaly_type = "spike" if z > 0 else "drop"
+
+        results.append(
+            VolumeAnomalyResult(
+                period_label=m.period_label,
+                is_anomaly=is_anomaly,
+                anomaly_type=anomaly_type,
+                z_score=z,
+                period_over_period_change=m.period_over_period_change,
+            )
+        )
+
+    return results
+
+
+def analyze_period_metrics(
+    slice_table_name: str,
+    time_column: str,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    config: TemporalSliceConfig,
+) -> Result[PeriodAnalysisResult]:
+    """Analyze period-level completeness and volume anomalies for a slice table.
+
+    Args:
+        slice_table_name: Name of the slice table in DuckDB
+        time_column: Name of the temporal column
+        duckdb_conn: DuckDB connection
+        config: Temporal analysis configuration
+
+    Returns:
+        Result containing PeriodAnalysisResult with metrics, completeness, and anomalies
+    """
+    try:
+        logger.info(
+            "period_analysis_start",
+            table=slice_table_name,
+            time_column=time_column,
+            grain=config.time_grain.value,
+        )
+
+        periods = _generate_periods(config)
+        if not periods:
+            return Result.ok(
+                PeriodAnalysisResult(
+                    slice_table_name=slice_table_name,
+                    time_column=time_column,
+                    total_periods=0,
+                    incomplete_periods=0,
+                    anomaly_count=0,
+                    period_metrics=[],
+                    completeness_results=[],
+                    volume_anomalies=[],
+                )
+            )
+
+        period_metrics = _compute_period_metrics(
+            slice_table_name, time_column, duckdb_conn, periods
+        )
+        completeness = _analyze_completeness(period_metrics, config)
+        anomalies = _detect_volume_anomalies(period_metrics, config)
+
+        incomplete_count = sum(1 for c in completeness if not c.is_complete)
+        anomaly_count = sum(1 for a in anomalies if a.is_anomaly)
+
+        result = PeriodAnalysisResult(
+            slice_table_name=slice_table_name,
+            time_column=time_column,
+            total_periods=len(periods),
+            incomplete_periods=incomplete_count,
+            anomaly_count=anomaly_count,
+            period_metrics=period_metrics,
+            completeness_results=completeness,
+            volume_anomalies=anomalies,
+        )
+
+        logger.info(
+            "period_analysis_complete",
+            table=slice_table_name,
+            periods=len(periods),
+            incomplete=incomplete_count,
+            anomalies=anomaly_count,
+        )
+
+        return Result.ok(result)
+
+    except Exception as e:
+        logger.error("period_analysis_failed", table=slice_table_name, error=str(e))
+        return Result.fail(f"Period analysis failed: {e}")
+
+
+def persist_period_results(
+    result: PeriodAnalysisResult,
+    session: Session,
+) -> Result[int]:
+    """Persist period analysis results to database.
+
+    Args:
+        result: PeriodAnalysisResult from analyze_period_metrics
+        session: Database session
+
+    Returns:
+        Result containing number of records created
+    """
+    try:
+        count = 0
+        # Build lookup maps for completeness and anomaly results
+        completeness_map = {c.period_label: c for c in result.completeness_results}
+        anomaly_map = {a.period_label: a for a in result.volume_anomalies}
+
+        for m in result.period_metrics:
+            comp = completeness_map.get(m.period_label)
+            anom = anomaly_map.get(m.period_label)
+
+            # Collect issues
+            issues: list[dict[str, str]] = []
+            if comp and not comp.is_complete:
+                issues.append(
+                    {"type": "incomplete", "detail": f"coverage={comp.coverage_ratio:.2f}"}
+                )
+            if comp and comp.has_early_cutoff:
+                issues.append(
+                    {"type": "early_cutoff", "detail": f"missing_days={comp.days_missing_at_end}"}
+                )
+            if anom and anom.is_anomaly:
+                issues.append(
+                    {"type": f"volume_{anom.anomaly_type}", "detail": f"z_score={anom.z_score:.2f}"}
+                )
+
+            record = TemporalSliceAnalysis(
+                slice_table_name=result.slice_table_name,
+                time_column=result.time_column,
+                period_label=m.period_label,
+                period_start=m.period_start,
+                period_end=m.period_end,
+                row_count=m.row_count,
+                expected_days=m.expected_days,
+                observed_days=m.observed_days,
+                coverage_ratio=m.coverage_ratio,
+                is_complete=int(comp.is_complete) if comp else None,
+                has_early_cutoff=int(comp.has_early_cutoff) if comp else None,
+                days_missing_at_end=comp.days_missing_at_end if comp else None,
+                last_day_ratio=m.last_day_ratio,
+                z_score=m.z_score,
+                rolling_avg=m.rolling_avg,
+                rolling_std=m.rolling_std,
+                is_volume_anomaly=int(anom.is_anomaly) if anom else None,
+                anomaly_type=anom.anomaly_type if anom else None,
+                period_over_period_change=m.period_over_period_change,
+                issues_json=issues if issues else None,
+            )
+            session.add(record)
+            count += 1
+
+        return Result.ok(count)
+
+    except Exception as e:
+        logger.error("persist_period_results_failed", error=str(e))
+        return Result.fail(f"Failed to persist period results: {e}")
+
+
 __all__ = [
     "analyze_column_drift",
+    "analyze_period_metrics",
     "persist_drift_results",
+    "persist_period_results",
 ]

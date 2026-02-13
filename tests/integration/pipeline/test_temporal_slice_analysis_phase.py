@@ -21,7 +21,7 @@ class TestTemporalSliceAnalysisPhase:
         assert phase.name == "temporal_slice_analysis"
         assert phase.description == "Distribution drift analysis on slices"
         assert phase.dependencies == ["slice_analysis", "temporal"]
-        assert phase.outputs == ["drift_summaries"]
+        assert phase.outputs == ["drift_summaries", "period_analyses"]
         assert phase.is_llm_phase is False
 
     def test_skip_when_no_typed_tables(

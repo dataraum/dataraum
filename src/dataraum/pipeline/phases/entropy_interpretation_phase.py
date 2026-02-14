@@ -14,6 +14,7 @@ from sqlalchemy import or_, select
 
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.typing.db_models import TypeDecision
+from dataraum.core.logging import get_logger
 from dataraum.entropy import (
     EntropyInterpreter,
     InterpretationInput,
@@ -26,6 +27,8 @@ from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.storage import Column, Table
+
+logger = get_logger(__name__)
 
 
 class EntropyInterpretationPhase(BasePhase):
@@ -326,7 +329,7 @@ class EntropyInterpretationPhase(BasePhase):
 
         def process_batch(
             batch_info: tuple[int, list[InterpretationInput]],
-        ) -> tuple[int, dict[str, Any] | None, str | None]:
+        ) -> tuple[int, dict[str, Any] | None, str | None, int]:
             """Process a single batch and return results."""
             batch_num, batch = batch_info
             result = interpreter.interpret_batch(
@@ -334,9 +337,9 @@ class EntropyInterpretationPhase(BasePhase):
                 inputs=batch,
             )
             if result.success:
-                return (batch_num, result.unwrap(), None)
+                return (batch_num, result.unwrap(), None, len(batch))
             else:
-                return (batch_num, None, result.error)
+                return (batch_num, None, result.error, len(batch))
 
         with ThreadPoolExecutor(max_workers=max_parallel) as executor:
             futures = {executor.submit(process_batch, b): b[0] for b in batches}
@@ -344,14 +347,31 @@ class EntropyInterpretationPhase(BasePhase):
             for future in as_completed(futures):
                 batch_num = futures[future]
                 try:
-                    _, batch_interpretations, error = future.result()
+                    _, batch_interpretations, error, batch_size = future.result()
                     if batch_interpretations:
+                        if len(batch_interpretations) < batch_size:
+                            logger.warning(
+                                "interpretation_batch_partial",
+                                batch=batch_num,
+                                returned=len(batch_interpretations),
+                                expected=batch_size,
+                                matched_keys=sorted(batch_interpretations.keys()),
+                            )
                         all_interpretations.update(batch_interpretations)
                         for interp in batch_interpretations.values():
                             total_assumptions += len(interp.assumptions)
                             total_actions += len(interp.resolution_actions)
                     elif error:
                         errors.append(f"Batch {batch_num}: {error}")
+                    else:
+                        # LLM responded successfully but no keys matched
+                        logger.warning(
+                            "interpretation_batch_empty",
+                            batch=batch_num,
+                            batch_size=batch_size,
+                            message="LLM returned OK but zero column keys matched input keys",
+                        )
+                        errors.append(f"Batch {batch_num}: 0/{batch_size} column keys matched")
                 except Exception as e:
                     errors.append(f"Batch {batch_num}: {e}")
 

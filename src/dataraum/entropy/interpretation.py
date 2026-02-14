@@ -16,9 +16,12 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.entropy.analysis.aggregator import ColumnSummary, TableSummary
 from dataraum.entropy.models import CompoundRisk
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from dataraum.llm.config import LLMConfig
@@ -529,6 +532,31 @@ class EntropyInterpreter:
 
         interpretations: dict[str, EntropyInterpretation] = {}
 
+        # Track key mismatches for diagnostics
+        expected_keys = set(inputs_by_key.keys())
+        returned_keys = set(output.columns.keys())
+        matched_keys = expected_keys & returned_keys
+        unmatched_returned = returned_keys - expected_keys
+        missing_keys = expected_keys - returned_keys
+
+        if unmatched_returned:
+            logger.warning(
+                "interpretation_key_mismatch",
+                matched=len(matched_keys),
+                expected=len(expected_keys),
+                returned=len(returned_keys),
+                unmatched_returned_keys=sorted(unmatched_returned),
+                missing_expected_keys=sorted(missing_keys),
+            )
+
+        if len(matched_keys) < len(expected_keys):
+            logger.warning(
+                "interpretation_columns_lost",
+                matched=len(matched_keys),
+                total_expected=len(expected_keys),
+                total_returned=len(returned_keys),
+            )
+
         for key, col_output in output.columns.items():
             inp = inputs_by_key.get(key)
             if not inp:
@@ -724,6 +752,18 @@ class EntropyInterpreter:
         """Convert table LLM output to EntropyInterpretation dataclasses."""
         inputs_by_name = {inp.table_name: inp for inp in inputs}
         interpretations: dict[str, EntropyInterpretation] = {}
+
+        # Track key mismatches
+        expected_keys = set(inputs_by_name.keys())
+        returned_keys = set(output.tables.keys())
+        unmatched = returned_keys - expected_keys
+        if unmatched:
+            logger.warning(
+                "table_interpretation_key_mismatch",
+                expected_keys=sorted(expected_keys),
+                returned_keys=sorted(returned_keys),
+                unmatched=sorted(unmatched),
+            )
 
         for table_name, table_output in output.tables.items():
             inp = inputs_by_name.get(table_name)

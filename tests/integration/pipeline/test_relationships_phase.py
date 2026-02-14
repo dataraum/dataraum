@@ -20,7 +20,7 @@ class TestRelationshipsPhase:
         phase = RelationshipsPhase()
         assert phase.name == "relationships"
         assert phase.description == "Cross-table relationship detection"
-        assert phase.dependencies == ["statistics"]
+        assert phase.dependencies == ["column_eligibility"]
         assert phase.outputs == ["relationship_candidates"]
 
     def test_skip_when_no_typed_tables(

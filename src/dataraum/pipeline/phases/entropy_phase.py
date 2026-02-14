@@ -62,7 +62,7 @@ class EntropyPhase(BasePhase):
     def dependencies(self) -> list[str]:
         return [
             "typing",
-            "statistics",
+            "column_eligibility",
             "semantic",
             "relationships",
             "correlations",

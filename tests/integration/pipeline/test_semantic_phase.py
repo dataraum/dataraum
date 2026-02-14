@@ -20,7 +20,7 @@ class TestSemanticPhase:
         phase = SemanticPhase()
         assert phase.name == "semantic"
         assert phase.description == "LLM-powered semantic analysis"
-        assert phase.dependencies == ["statistics", "relationships", "correlations"]
+        assert phase.dependencies == ["relationships", "correlations"]
         assert phase.outputs == ["annotations", "entities", "confirmed_relationships"]
         assert phase.is_llm_phase is True
 

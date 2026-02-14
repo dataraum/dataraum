@@ -20,7 +20,7 @@ class TestCorrelationsPhase:
         phase = CorrelationsPhase()
         assert phase.name == "correlations"
         assert phase.description == "Within-table correlation analysis"
-        assert phase.dependencies == ["statistics"]
+        assert phase.dependencies == ["column_eligibility"]
         assert phase.outputs == ["correlations", "derived_columns"]
 
     def test_skip_when_no_typed_tables(

@@ -49,7 +49,7 @@ class SemanticPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        return ["statistics", "relationships", "correlations"]
+        return ["relationships", "correlations"]
 
     @property
     def outputs(self) -> list[str]:

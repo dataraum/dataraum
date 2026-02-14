@@ -44,14 +44,13 @@ class GraphExecutionPhase(BasePhase):
         # Depends on all phases that build_execution_context pulls data from
         return [
             "semantic",  # field mappings, table entities
-            "statistics",  # statistical profiles
+            "column_eligibility",  # ensures only eligible columns in context
             "statistical_quality",  # quality metrics
             "temporal",  # temporal profiles
             "relationships",  # table relationships
             "correlations",  # derived columns
             "slicing",  # slice definitions
             "quality_summary",  # quality reports
-            "business_cycles",  # detected cycles
             "entropy_interpretation",  # entropy data
         ]
 

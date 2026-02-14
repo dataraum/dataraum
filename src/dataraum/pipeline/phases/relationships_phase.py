@@ -39,7 +39,7 @@ class RelationshipsPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        return ["statistics"]
+        return ["column_eligibility"]
 
     @property
     def outputs(self) -> list[str]:

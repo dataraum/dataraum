@@ -293,6 +293,7 @@ PIPELINE_DAG: list[PhaseDefinition] = [
             "relationships",
             "correlations",
             "quality_summary",
+            "temporal_slice_analysis",  # Entropy needs temporal drift data
         ],
         outputs=["entropy_profiles", "compound_risks"],
     ),
@@ -325,7 +326,7 @@ PIPELINE_DAG: list[PhaseDefinition] = [
     PhaseDefinition(
         name="quality_summary",
         description="LLM quality report generation",
-        dependencies=["slice_analysis"],
+        dependencies=["slice_analysis", "temporal_slice_analysis"],
         outputs=["quality_reports", "quality_grades"],
         requires_llm=True,
     ),

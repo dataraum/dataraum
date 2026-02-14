@@ -22,7 +22,7 @@ class TestEntropyPhase:
         assert phase.description == "Entropy detection across all dimensions"
         assert phase.dependencies == [
             "typing",
-            "statistics",
+            "column_eligibility",
             "semantic",
             "relationships",
             "correlations",

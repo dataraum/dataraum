@@ -12,6 +12,7 @@ from datetime import date, datetime
 
 from sqlalchemy import select
 
+from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.slicing.slice_runner import SliceTableInfo
 from dataraum.analysis.temporal import TemporalColumnProfile
@@ -178,7 +179,37 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 )
                 time_column = None
 
-        # Auto-detect: pick the temporal column with the lowest null ratio
+        # Auto-detect: prefer semantic annotation (LLM-identified primary time column),
+        # fall back to lowest null ratio among temporal profiles.
+        if not time_column and all_temporal_profiles:
+            # Check if the semantic phase identified a primary time column for any table
+            entity_stmt = select(TableEntity).where(
+                TableEntity.table_id.in_(table_ids),
+                TableEntity.time_column.isnot(None),
+            )
+            entities_with_time = list((ctx.session.execute(entity_stmt)).scalars().all())
+
+            # Match semantic time_column against actual temporal profiles
+            for entity in entities_with_time:
+                for tc in all_temporal_profiles:
+                    tc_col = col_by_id.get(tc.column_id)
+                    if (
+                        tc_col
+                        and tc_col.column_name == entity.time_column
+                        and tc_col.table_id == entity.table_id
+                    ):
+                        time_column = entity.time_column
+                        time_profile = tc
+                        logger.info(
+                            "time_column_from_semantic",
+                            time_column=time_column,
+                            table_id=entity.table_id,
+                        )
+                        break
+                if time_column:
+                    break
+
+        # Fallback: pick the temporal column with the lowest null ratio
         if not time_column and all_temporal_profiles:
             from dataraum.analysis.statistics.db_models import StatisticalProfile
 

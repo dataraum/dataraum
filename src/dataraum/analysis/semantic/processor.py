@@ -209,6 +209,7 @@ def enrich_semantic(
             grain_columns={"columns": entity.grain_columns},
             is_fact_table=entity.is_fact_table,
             is_dimension_table=entity.is_dimension_table,
+            time_column=entity.time_column,
             detection_source="llm",
         )
         session.add(db_entity)

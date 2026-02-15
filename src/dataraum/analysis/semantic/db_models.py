@@ -104,6 +104,7 @@ class TableEntity(Base):
     )  # List of column IDs that define grain
     is_fact_table: Mapped[bool | None] = mapped_column(Boolean)
     is_dimension_table: Mapped[bool | None] = mapped_column(Boolean)
+    time_column: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Provenance
     detection_source: Mapped[str | None] = mapped_column(String)  # 'llm', 'heuristic', 'manual'

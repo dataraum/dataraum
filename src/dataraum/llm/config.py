@@ -44,8 +44,8 @@ class LLMFeatures(BaseModel):
 class LLMLimits(BaseModel):
     """Cost and rate control limits."""
 
-    max_input_tokens_per_request: int = 8000
-    max_output_tokens_per_request: int = 4000
+    max_input_tokens_per_request: int = 16000
+    max_output_tokens_per_request: int = 16000
     max_columns_per_batch: int = 30
     max_requests_per_minute: int = 20
     cache_ttl_seconds: int = 86400  # 24 hours

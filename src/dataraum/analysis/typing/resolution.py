@@ -264,10 +264,12 @@ def resolve_types(
     typed_column_map: dict[str, str] = {}  # column_name -> typed_column_id
     for i, spec in enumerate(specs):
         typed_col_id = str(uuid4())
+        raw_col = raw_col_by_id[spec.column_id]
         typed_col = Column(
             column_id=typed_col_id,
             table_id=typed_table_record.table_id,
             column_name=spec.column_name,
+            original_name=raw_col.original_name,
             column_position=i,
             raw_type="VARCHAR",
             resolved_type=spec.data_type.value,
@@ -277,10 +279,12 @@ def resolve_types(
 
     # Create column records for quarantine table (all columns + _quarantined_at)
     for i, spec in enumerate(specs):
+        raw_col = raw_col_by_id[spec.column_id]
         quarantine_col = Column(
             column_id=str(uuid4()),
             table_id=quarantine_table_record.table_id,
             column_name=spec.column_name,
+            original_name=raw_col.original_name,
             column_position=i,
             raw_type="VARCHAR",
             resolved_type="VARCHAR",  # Quarantine keeps original VARCHAR

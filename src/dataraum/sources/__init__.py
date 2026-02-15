@@ -6,10 +6,11 @@ This module provides loaders for different source types:
 - sqlite: Weakly typed sources (future)
 """
 
-from dataraum.sources.base import ColumnInfo, LoaderBase, TypeSystemStrength
+from dataraum.sources.base import ColumnInfo, LoaderBase, TypeSystemStrength, normalize_column_name
 
 __all__ = [
     "LoaderBase",
     "TypeSystemStrength",
     "ColumnInfo",
+    "normalize_column_name",
 ]

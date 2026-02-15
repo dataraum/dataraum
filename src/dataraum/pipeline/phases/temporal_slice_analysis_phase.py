@@ -218,7 +218,27 @@ class TemporalSliceAnalysisPhase(BasePhase):
 
         # Auto-detect from data if not configured
         if not period_start or not period_end:
-            source_table = typed_tables[0]
+            # Find a typed table that actually has the time column
+            source_table = None
+            for tt in typed_tables:
+                col_check = select(Column).where(
+                    Column.table_id == tt.table_id,
+                    Column.column_name == time_column,
+                )
+                if ctx.session.execute(col_check).scalar_one_or_none():
+                    source_table = tt
+                    break
+
+            if source_table is None:
+                return PhaseResult.success(
+                    outputs={
+                        "message": f"No typed table contains time column '{time_column}'",
+                        "drift_summaries": 0,
+                    },
+                    records_processed=0,
+                    records_created=0,
+                )
+
             try:
                 range_row = ctx.duckdb_conn.execute(f"""
                     SELECT MIN(CAST("{time_column}" AS DATE)),

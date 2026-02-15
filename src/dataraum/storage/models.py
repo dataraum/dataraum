@@ -111,6 +111,7 @@ class Column(Base):
         ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
     )
     column_name: Mapped[str] = mapped_column(String, nullable=False)
+    original_name: Mapped[str | None] = mapped_column(String, nullable=True)
     column_position: Mapped[int] = mapped_column(Integer, nullable=False)
 
     # Type information

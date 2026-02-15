@@ -168,11 +168,11 @@ class TestCSVLoader:
         result = loader.load(config, test_duckdb, test_session)
         assert result.success, f"Load failed: {result.error}"
 
-        # Transactions has -- values in Customer name and Vendor name columns
+        # Transactions has -- values in customer_name and vendor_name columns
         null_count = test_duckdb.execute("""
             SELECT COUNT(*)
             FROM raw_transactions
-            WHERE "Customer name" IS NULL
+            WHERE "customer_name" IS NULL
         """).fetchone()[0]
 
         assert null_count > 0, "Expected some NULL values from -- conversion"

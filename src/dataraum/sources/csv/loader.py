@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models import Result, SourceConfig
-from dataraum.sources.base import ColumnInfo, LoaderBase, TypeSystemStrength
+from dataraum.sources.base import ColumnInfo, LoaderBase, TypeSystemStrength, normalize_column_name
 from dataraum.sources.csv.models import StagedTable, StagingResult
 from dataraum.sources.csv.null_values import NullValueConfig, load_null_value_config
 from dataraum.storage import Column, Source, Table
@@ -309,20 +309,39 @@ class CSVLoader(LoaderBase):
             table_name = self._sanitize_table_name(file_path.stem)
             raw_table_name = f"raw_{table_name}"
 
-            # Build column type specification (all VARCHAR)
-            column_spec = {col.name: "VARCHAR" for col in columns}
-
-            # Track which columns are junk for later filtering
+            # Track which columns are junk for later filtering (match on original name)
             junk_set = set(junk_columns) if junk_columns else set()
+
+            # Normalize column names and detect collisions
+            seen: dict[str, int] = {}
+            for col in columns:
+                col.original_name = col.name
+                normalized = normalize_column_name(col.name, col.position)
+                if normalized in seen:
+                    seen[normalized] += 1
+                    normalized = f"{normalized}_{seen[normalized]}"
+                else:
+                    seen[normalized] = 1
+                col.name = normalized
+
+            # Filter out junk columns before SQL generation (match on original name)
+            kept_columns = [col for col in columns if col.original_name not in junk_set]
+
+            # Build column type specification for read_csv (uses original headers)
+            column_spec = {col.original_name: "VARCHAR" for col in columns}
 
             # Format null strings for DuckDB
             null_strings = null_config.get_null_strings(include_placeholders=True)
             null_str_param = ", ".join(f"'{s}'" for s in null_strings)
 
-            # Create the raw table with all VARCHAR columns
+            # Build SELECT with aliasing: "OriginalName" AS "normalized_name"
+            select_exprs = [f'"{col.original_name}" AS "{col.name}"' for col in kept_columns]
+
+            # Create the raw table with normalized column names
             sql = f"""
-                CREATE TABLE {raw_table_name} AS
-                SELECT * FROM read_csv(
+                CREATE TABLE "{raw_table_name}" AS
+                SELECT {", ".join(select_exprs)}
+                FROM read_csv(
                     '{file_path}',
                     columns = {column_spec},
                     header = true,
@@ -333,20 +352,9 @@ class CSVLoader(LoaderBase):
             """
             duckdb_conn.execute(sql)
 
-            # Drop junk columns from DuckDB table
-            dropped_columns: list[str] = []
-            for junk in junk_set:
-                try:
-                    duckdb_conn.execute(f'ALTER TABLE {raw_table_name} DROP COLUMN "{junk}"')
-                    dropped_columns.append(junk)
-                except Exception as e:
-                    logger.debug(
-                        "junk_column_not_found", column=junk, table=raw_table_name, error=str(e)
-                    )
-
             # Get row count
             row_count_result = duckdb_conn.execute(
-                f"SELECT COUNT(*) FROM {raw_table_name}"
+                f'SELECT COUNT(*) FROM "{raw_table_name}"'
             ).fetchone()
             row_count = row_count_result[0] if row_count_result else 0
 
@@ -362,26 +370,22 @@ class CSVLoader(LoaderBase):
             )
             session.add(table)
 
-            # Create Column records (excluding junk columns)
-            # Adjust positions after filtering
-            position = 0
-            for col_info in columns:
-                if col_info.name in junk_set:
-                    continue  # Skip junk columns
+            # Create Column records for kept columns
+            for position, col_info in enumerate(kept_columns):
                 column_id = str(uuid4())
                 column = Column(
                     column_id=column_id,
                     table_id=table_id,
                     column_name=col_info.name,
+                    original_name=col_info.original_name,
                     column_position=position,
                     raw_type="VARCHAR",
                     resolved_type=None,
                 )
                 session.add(column)
-                position += 1
 
             # Calculate actual column count after filtering
-            actual_column_count = len(columns) - len(dropped_columns)
+            actual_column_count = len(kept_columns)
 
             return Result.ok(
                 StagedTable(

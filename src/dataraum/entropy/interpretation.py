@@ -364,7 +364,7 @@ class EntropyInterpreter:
         self.renderer = prompt_renderer
 
     @staticmethod
-    def _validate_column_output(data: dict) -> EntropyInterpretationOutput:
+    def _validate_column_output(data: dict[str, Any]) -> EntropyInterpretationOutput:
         """Validate column output, auto-wrapping if LLM omitted 'columns' key."""
         try:
             return EntropyInterpretationOutput.model_validate(data)
@@ -374,7 +374,7 @@ class EntropyInterpreter:
             raise
 
     @staticmethod
-    def _validate_table_output(data: dict) -> TableEntropyInterpretationOutput:
+    def _validate_table_output(data: dict[str, Any]) -> TableEntropyInterpretationOutput:
         """Validate table output, auto-wrapping if LLM omitted 'tables' key."""
         try:
             return TableEntropyInterpretationOutput.model_validate(data)

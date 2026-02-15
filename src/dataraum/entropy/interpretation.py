@@ -151,6 +151,10 @@ class InterpretationInput:
     # Compound risks
     compound_risks: list[CompoundRisk]
 
+    # Quality context from ColumnQualityReport (optional, added in interpretation phase)
+    quality_grade: str | None = None
+    quality_findings: list[str] | None = None
+
     @classmethod
     def from_summary(
         cls,
@@ -158,6 +162,8 @@ class InterpretationInput:
         detected_type: str = "unknown",
         business_description: str | None = None,
         raw_metrics: dict[str, Any] | None = None,
+        quality_grade: str | None = None,
+        quality_findings: list[str] | None = None,
     ) -> InterpretationInput:
         """Create input from a ColumnSummary.
 
@@ -166,6 +172,8 @@ class InterpretationInput:
             detected_type: Detected data type
             business_description: Business description if available
             raw_metrics: Raw metrics from detectors
+            quality_grade: Quality grade from ColumnQualityReport (A-F)
+            quality_findings: Top key findings from quality report
 
         Returns:
             InterpretationInput ready for LLM
@@ -185,6 +193,8 @@ class InterpretationInput:
             dimension_scores=summary.dimension_scores,
             high_entropy_dimensions=summary.high_entropy_dimensions,
             compound_risks=summary.compound_risks,
+            quality_grade=quality_grade,
+            quality_findings=quality_findings,
         )
 
 
@@ -203,6 +213,11 @@ class TableInterpretationInput:
     column_count: int
     # Summary of per-column dimension scores for pattern detection
     dimension_score_ranges: dict[str, tuple[float, float]]  # dim -> (min, max)
+
+    # Enrichment context (set by interpretation phase, not from_summary)
+    dimensional_patterns: list[dict[str, Any]] | None = None
+    column_interpretations_summary: list[dict[str, Any]] | None = None
+    quality_overview: dict[str, Any] | None = None
 
     @classmethod
     def from_summary(cls, summary: TableSummary) -> TableInterpretationInput:
@@ -427,32 +442,36 @@ class EntropyInterpreter:
         # Build columns JSON for prompt
         columns_data = []
         for inp in inputs:
-            columns_data.append(
-                {
-                    "key": f"{inp.table_name}.{inp.column_name}",
-                    "table_name": inp.table_name,
-                    "column_name": inp.column_name,
-                    "detected_type": inp.detected_type,
-                    "business_description": inp.business_description or "Not documented",
-                    "composite_score": round(inp.composite_score, 3),
-                    "readiness": inp.readiness,
-                    "structural_entropy": round(inp.structural_entropy, 3),
-                    "semantic_entropy": round(inp.semantic_entropy, 3),
-                    "value_entropy": round(inp.value_entropy, 3),
-                    "computational_entropy": round(inp.computational_entropy, 3),
-                    "dimension_scores": {k: round(v, 3) for k, v in inp.dimension_scores.items()},
-                    "high_entropy_dimensions": inp.high_entropy_dimensions,
-                    "raw_metrics": inp.raw_metrics,
-                    "compound_risks": [
-                        {
-                            "dimensions": r.dimensions,
-                            "risk_level": r.risk_level,
-                            "impact": r.impact,
-                        }
-                        for r in inp.compound_risks
-                    ],
-                }
-            )
+            col_entry: dict[str, Any] = {
+                "key": f"{inp.table_name}.{inp.column_name}",
+                "table_name": inp.table_name,
+                "column_name": inp.column_name,
+                "detected_type": inp.detected_type,
+                "business_description": inp.business_description or "Not documented",
+                "composite_score": round(inp.composite_score, 3),
+                "readiness": inp.readiness,
+                "structural_entropy": round(inp.structural_entropy, 3),
+                "semantic_entropy": round(inp.semantic_entropy, 3),
+                "value_entropy": round(inp.value_entropy, 3),
+                "computational_entropy": round(inp.computational_entropy, 3),
+                "dimension_scores": {k: round(v, 3) for k, v in inp.dimension_scores.items()},
+                "high_entropy_dimensions": inp.high_entropy_dimensions,
+                "raw_metrics": inp.raw_metrics,
+                "compound_risks": [
+                    {
+                        "dimensions": r.dimensions,
+                        "risk_level": r.risk_level,
+                        "impact": r.impact,
+                    }
+                    for r in inp.compound_risks
+                ],
+            }
+            # Add quality context if available
+            if inp.quality_grade:
+                col_entry["quality_grade"] = inp.quality_grade
+            if inp.quality_findings:
+                col_entry["quality_findings"] = inp.quality_findings
+            columns_data.append(col_entry)
 
         context: dict[str, str] = {
             "columns_json": json.dumps(columns_data, indent=2),
@@ -651,30 +670,36 @@ class EntropyInterpreter:
         # Build tables JSON for prompt
         tables_data = []
         for inp in inputs:
-            tables_data.append(
-                {
-                    "table_name": inp.table_name,
-                    "avg_composite_score": round(inp.avg_composite_score, 3),
-                    "max_composite_score": round(inp.max_composite_score, 3),
-                    "readiness": inp.readiness,
-                    "avg_layer_scores": {k: round(v, 3) for k, v in inp.avg_layer_scores.items()},
-                    "column_count": inp.column_count,
-                    "high_entropy_columns": inp.high_entropy_columns,
-                    "blocked_columns": inp.blocked_columns,
-                    "dimension_score_ranges": {
-                        k: {"min": round(v[0], 3), "max": round(v[1], 3)}
-                        for k, v in inp.dimension_score_ranges.items()
-                    },
-                    "compound_risks": [
-                        {
-                            "dimensions": r.dimensions,
-                            "risk_level": r.risk_level,
-                            "impact": r.impact,
-                        }
-                        for r in inp.compound_risks
-                    ],
-                }
-            )
+            table_entry: dict[str, Any] = {
+                "table_name": inp.table_name,
+                "avg_composite_score": round(inp.avg_composite_score, 3),
+                "max_composite_score": round(inp.max_composite_score, 3),
+                "readiness": inp.readiness,
+                "avg_layer_scores": {k: round(v, 3) for k, v in inp.avg_layer_scores.items()},
+                "column_count": inp.column_count,
+                "high_entropy_columns": inp.high_entropy_columns,
+                "blocked_columns": inp.blocked_columns,
+                "dimension_score_ranges": {
+                    k: {"min": round(v[0], 3), "max": round(v[1], 3)}
+                    for k, v in inp.dimension_score_ranges.items()
+                },
+                "compound_risks": [
+                    {
+                        "dimensions": r.dimensions,
+                        "risk_level": r.risk_level,
+                        "impact": r.impact,
+                    }
+                    for r in inp.compound_risks
+                ],
+            }
+            # Add enrichment context if available
+            if inp.dimensional_patterns:
+                table_entry["dimensional_patterns"] = inp.dimensional_patterns
+            if inp.column_interpretations_summary:
+                table_entry["column_interpretations_summary"] = inp.column_interpretations_summary
+            if inp.quality_overview:
+                table_entry["quality_overview"] = inp.quality_overview
+            tables_data.append(table_entry)
 
         # Extract resolution guidelines from column prompt for reuse
         resolution_guidelines = ""

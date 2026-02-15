@@ -40,7 +40,6 @@ entropy/
 │   ├── query_context.py     # build_for_query() → EntropyForQuery
 │   └── dashboard_context.py # build_for_dashboard() → EntropyForDashboard
 ├── interpretation.py        # LLM-powered interpretation (EntropyInterpreter)
-├── summary_agent.py         # LLM-powered dimensional summaries (DimensionalSummaryAgent)
 ├── contracts.py             # Data readiness contracts (ConfidenceLevel enum)
 ├── compound_risk.py         # Dangerous dimension combination detection
 └── resolution.py            # Resolution tracking & cascade management
@@ -84,9 +83,8 @@ EntropyProcessor.process_column(table_name, column_name, analysis_results)
 
 | Aspect | Detail |
 |--------|--------|
-| EntropyInterpreter | Generates assumptions, resolution actions, explanations from entropy objects |
-| DimensionalSummaryAgent | Executive summaries from dimensional entropy (tool-use structured output) |
-| Prompt templates | `config/system/prompts/entropy_interpretation.yaml`, `dimensional_summary.yaml` |
+| EntropyInterpreter | Generates assumptions, resolution actions, explanations from entropy objects. Column-level interpretation receives quality context (grade + findings). Table-level interpretation receives dimensional patterns, column interpretation summaries, and quality overview. |
+| Prompt templates | `config/system/prompts/entropy_interpretation.yaml`, `entropy_table_interpretation.yaml` |
 
 ## Data Model
 
@@ -197,12 +195,14 @@ Data readiness contracts by use case (executive_dashboard, operational_report, e
 |--------|-----------|
 | Removed 15 dead exports from `__init__.py` | Not imported outside module: `CompoundRiskDefinition`, `ResolutionCascade`, `TableSummary`, `RelationshipSummary`, `EntropyForGraph`, `EntropyForDashboard`, `build_for_dashboard`, `format_entropy_for_prompt`, `EntropyConfig`, `EntropyInterpreterOutput`, `Assumption`, `ResolutionAction`, `DimensionalSummaryOutput` |
 | Replaced `structlog.get_logger()` in `dimensional_entropy.py` | Use `dataraum.core.logging.get_logger()` for consistency |
+| Removed `DimensionalSummaryAgent` and `summary_agent.py` | Redundant with `EntropyInterpreter`. Table-level interpretation in Phase 16 now serves as the synthesis layer, enriched with dimensional patterns, column interpretation summaries, and quality overview from `ColumnQualityReport`. |
+| Removed `generate_dataset_summary()` and 4 dataclasses from `dimensional_entropy.py` | `ColumnQualityFinding`, `InterestingColumnSummary`, `DetectedBusinessRule`, `DatasetDimensionalSummary` — all exclusively used by the removed agent. |
+| Removed `dimensional_summary` LLM feature | From `LLMFeatures`, `config/system/llm.yaml`, and prompt file `config/system/prompts/dimensional_summary.yaml`. |
 
 ## Roadmap
 
-- **Table-level interpretation should aggregate all dimensions**: Currently table-level entropy objects are skipped in the interpretation phase (`entropy_interpretation_phase.py:130`, `column_id is None: continue`) and the only table summary comes from `DimensionalSummaryAgent` (dimensional entropy only). Table interpretations should aggregate column-level entropy across all dimensions — e.g., "3/15 columns have high null entropy, 5/15 have unit issues, 2 relationship concerns." Part of interpretation pipeline redesign.
-- **Fix quality context pipeline (information loss)**: Audit found that quality_summary produces rich data (quality issues with severity, recommendations, grades, investigation SQL, slice comparisons) that gets progressively compressed into abstract entropy scores. By the time the interpretation LLM runs, `raw_metrics` is **empty dict** — it only sees `dimension_scores` and must re-infer problems already identified by the quality_summary agent. Key gaps: (1) quality issues reduced to counts only in entropy object evidence, (2) recommendations/findings not passed to interpretation LLM, (3) investigation views completely ignored, (4) quality grades never referenced after loading. Two LLM calls doing overlapping work with the second having less context than the first. See `entropy_phase.py:779-888` (quality loading) and `interpretation.py:310-338` (LLM input construction).
-- **Structured resolution actions with dimension context**: `ResolutionActionOutput` (LLM tool schema) has no `parameters` field — the LLM is never asked for actionable parameters, so all interpretation actions have `parameters: {}`. Additionally, `to_dict()` doesn't serialize parameters even if set. Fix: add structured context to resolution actions, keyed by entropy dimension path (e.g., `semantic.units.unit_declaration`) rather than a generic `parameters` dict. This ties actions directly to the entropy objects they resolve and makes the schema self-documenting. Address together with table-level actions (Bug #7) as part of interpretation pipeline redesign.
+- **Fix quality context pipeline (information loss)**: Column-level interpretation now receives quality_grade and top findings from ColumnQualityReport. Table-level interpretation receives column interpretation summaries, dimensional patterns, and quality overview. Remaining gap: `raw_metrics` in `InterpretationInput` is still empty dict — investigation views and full quality issue detail are not yet passed through.
+- **Structured resolution actions with dimension context**: `ResolutionActionOutput` (LLM tool schema) has no `parameters` field — the LLM is never asked for actionable parameters, so all interpretation actions have `parameters: {}`. Additionally, `to_dict()` doesn't serialize parameters even if set. Fix: add structured context to resolution actions, keyed by entropy dimension path (e.g., `semantic.units.unit_declaration`) rather than a generic `parameters` dict. This ties actions directly to the entropy objects they resolve and makes the schema self-documenting.
 - **Simplify detector heuristics**: Related to the above — revisit how detectors compute resolution actions, assumptions, and score adjustments (confidence weighting, ontology bonuses, compound risk multipliers). Currently each detector has its own bespoke heuristics for actions/parameters — evaluate whether these should be simplified or removed in favor of letting the entropy interpretation agent handle action generation from raw metrics alone. Less heuristic logic in detectors = simpler code, fewer bugs, and more flexibility for the LLM interpreter.
 - **Benford entropy detector**: Benford's Law compliance is already computed in `statistics/quality.py` and stored in `StatisticalQualityMetrics`, but no entropy detector reads it. Create a dedicated `BenfordComplianceDetector` (not part of outlier rate — different concept).
 - **Evaluate outlier detection methods**: The statistics quality module computes both IQR outliers and Isolation Forest anomalies, but the entropy outlier detector only uses IQR. Evaluate whether we actually need both methods in the statistics phase, or if one is sufficient. If both are valuable, wire Isolation Forest into entropy as well.

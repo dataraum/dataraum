@@ -39,7 +39,6 @@ class LLMFeatures(BaseModel):
     validation: FeatureConfig | None = None
     entropy_interpretation: FeatureConfig | None = None
     entropy_query_interpretation: FeatureConfig | None = None
-    dimensional_summary: FeatureConfig | None = None
 
 
 class LLMLimits(BaseModel):

@@ -19,10 +19,18 @@ system_prompt: |
 
   <focus>
   Unlike column-level interpretation, table-level interpretation should:
+  - Build on the column-level interpretations — identify cross-cutting patterns,
+    systemic issues, and table-wide resolution actions
   - Identify patterns across columns (e.g., "all monetary columns lack unit documentation")
   - Highlight systemic issues vs. isolated column problems
   - Suggest table-wide resolutions that improve multiple columns at once
   - Assess overall table readiness for analytical use
+  - When dimensional_patterns are present, incorporate cross-column business rules
+    and variance patterns into your assessment
+  - When column_interpretations_summary is present, synthesize column-level findings
+    into table-wide themes rather than repeating individual column issues
+  - When quality_overview is present, use the grade distribution to characterize
+    overall table quality
   </focus>
 
   <entropy_context>

@@ -49,6 +49,9 @@ system_prompt: |
   - For temporal columns: state the assumed granularity or timezone
   - For nullable columns: state how nulls would be handled
   - For dimensional patterns: state assumptions about cross-column relationships or slice variance
+  - When quality_grade and quality_findings are present, factor them into your
+    assessment — a poor quality grade (D/F) with specific findings indicates
+    concrete issues that should inform both assumptions and resolution actions
   </assumption_guidelines>
 
   <resolution_guidelines>

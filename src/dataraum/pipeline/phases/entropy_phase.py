@@ -22,15 +22,12 @@ from dataraum.core.logging import get_logger
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.db_models import (
     CompoundRiskRecord,
-    EntropyInterpretationRecord,
     EntropyObjectRecord,
     EntropySnapshotRecord,
 )
 from dataraum.entropy.detectors.base import DetectorContext
 from dataraum.entropy.detectors.semantic import (
-    ColumnQualityFinding,
     DimensionalEntropyDetector,
-    generate_dataset_summary,
 )
 from dataraum.entropy.processor import EntropyProcessor
 from dataraum.pipeline.base import PhaseContext, PhaseResult
@@ -604,16 +601,6 @@ class EntropyPhase(BasePhase):
         )
 
 
-def _complexity_to_readiness(complexity: str) -> str:
-    """Map complexity level to readiness status."""
-    return {
-        "low": "ready",
-        "moderate": "investigate",
-        "high": "investigate",
-        "very_high": "blocked",
-    }.get(complexity, "investigate")
-
-
 def _run_dimensional_entropy(
     ctx: PhaseContext,
     typed_tables: Sequence[Table],
@@ -622,8 +609,6 @@ def _run_dimensional_entropy(
 
     Loads slice variance data from quality_summary tables and runs
     the DimensionalEntropyDetector to calculate entropy scores.
-    If LLM is available, generates dataset-level summaries and writes
-    them as table-level EntropyInterpretationRecords.
 
     Args:
         ctx: Phase context with session
@@ -636,28 +621,6 @@ def _run_dimensional_entropy(
 
     all_entropy_objects: list[EntropyObject] = []
     detector = DimensionalEntropyDetector()
-
-    # Attempt optional LLM for executive summaries
-    summary_agent = None
-    try:
-        from dataraum.entropy.summary_agent import DimensionalSummaryAgent
-        from dataraum.llm import PromptRenderer, create_provider, load_llm_config
-
-        llm_config = load_llm_config()
-        feature_config = llm_config.features.dimensional_summary
-        if feature_config and feature_config.enabled:
-            provider_config = llm_config.providers.get(llm_config.active_provider)
-            if provider_config:
-                provider = create_provider(llm_config.active_provider, provider_config.model_dump())
-                renderer = PromptRenderer()
-                summary_agent = DimensionalSummaryAgent(
-                    config=llm_config,
-                    provider=provider,
-                    prompt_renderer=renderer,
-                )
-                logger.info("dimensional_summary_agent_initialized")
-    except Exception as e:
-        logger.info("dimensional_summary_llm_unavailable", reason=str(e))
 
     logger.info("dimensional_entropy_start", tables=len(typed_tables))
 
@@ -680,12 +643,10 @@ def _run_dimensional_entropy(
         # Build slice_data structure: slice_value -> column_name -> metrics
         slice_data: dict[str, dict[str, dict[str, Any]]] = {}
         columns_data: dict[str, dict[str, Any]] = {}
-        slice_column_name: str | None = None
 
         for profile in profiles:
             slice_val = profile.slice_value
             col_name = profile.column_name
-            slice_column_name = profile.slice_column_name  # Track slice column
 
             if slice_val not in slice_data:
                 slice_data[slice_val] = {}
@@ -833,7 +794,7 @@ def _run_dimensional_entropy(
         )
         quality_reports = list(ctx.session.execute(quality_reports_stmt).scalars().all())
 
-        # Group reports by column and aggregate into ColumnQualityFinding objects
+        # Group reports by column
         reports_by_column: dict[str, list[Any]] = {}
         for report in quality_reports:
             col_name = report.column_name
@@ -846,8 +807,7 @@ def _run_dimensional_entropy(
         cols_result = ctx.session.execute(cols_stmt)
         column_id_lookup = {c.column_name: c.column_id for c in cols_result.scalars().all()}
 
-        # Create ColumnQualityFinding objects and EntropyObjects for each column
-        column_quality_findings: list[ColumnQualityFinding] = []
+        # Create EntropyObjects for each column's quality assessment
         from dataraum.entropy.models import ResolutionOption
 
         for col_name, reports in reports_by_column.items():
@@ -862,28 +822,12 @@ def _run_dimensional_entropy(
             all_key_findings: list[str] = []
             all_quality_issues: list[dict[str, Any]] = []
             all_recommendations: list[str] = []
-            all_slice_comparisons: list[dict[str, Any]] = []
 
             for report in reports:
                 data = report.report_data or {}
                 all_key_findings.extend(data.get("key_findings", []))
                 all_quality_issues.extend(data.get("quality_issues", []))
                 all_recommendations.extend(data.get("recommendations", []))
-                all_slice_comparisons.extend(data.get("slice_comparisons", []))
-
-            # Create ColumnQualityFinding
-            finding = ColumnQualityFinding(
-                column_name=col_name,
-                avg_quality_score=avg_quality_score,
-                entropy_score=entropy_score_val,
-                grades=grades,
-                slices_analyzed=len(reports),
-                key_findings=all_key_findings,
-                quality_issues=all_quality_issues,
-                recommendations=all_recommendations,
-                slice_comparisons=all_slice_comparisons,
-            )
-            column_quality_findings.append(finding)
 
             # Get column_id for this column
             col_id = column_id_lookup.get(col_name)
@@ -932,7 +876,7 @@ def _run_dimensional_entropy(
             "column_quality_reports_processed",
             table=table.table_name,
             reports_count=len(quality_reports),
-            columns_with_findings=len(column_quality_findings),
+            columns_with_findings=len(reports_by_column),
         )
 
         logger.info(
@@ -943,62 +887,15 @@ def _run_dimensional_entropy(
             temporal_columns=0,
         )
 
-        # Run detector with details for summary generation
-        entropy_objects, patterns, entropy_score, analysis_data = detector.detect_with_details(
-            context
-        )
+        # Run detector
+        entropy_objects = detector.detect(context)
         all_entropy_objects.extend(entropy_objects)
 
         logger.info(
             "dimensional_entropy_detected",
             table=table.table_name,
             entropy_objects=len(entropy_objects),
-            patterns=len(patterns),
-            entropy_score=entropy_score.total_score if entropy_score else 0,
         )
-
-        # Generate dataset summary if there are interesting columns
-        if columns_data:
-            summary = generate_dataset_summary(
-                table_name=table.table_name,
-                columns_data=analysis_data["columns_data"],
-                temporal_columns=analysis_data["temporal_columns"],
-                patterns=patterns,
-                entropy_score=entropy_score,
-                slice_column=slice_column_name,
-                summary_agent=summary_agent,
-                column_quality_findings=column_quality_findings,
-            )
-            if summary is not None:
-                # Write as table-level interpretation record
-                interp_record = EntropyInterpretationRecord(
-                    source_id=ctx.source_id,
-                    table_id=table.table_id,
-                    column_id=None,
-                    table_name=table.table_name,
-                    column_name=None,
-                    composite_score=summary.dimensional_entropy_score,
-                    readiness=_complexity_to_readiness(summary.complexity_level),
-                    explanation=summary.executive_summary,
-                    assumptions_json=summary.to_dict(),
-                    resolution_actions_json=[
-                        {
-                            "action": "review",
-                            "description": r,
-                            "priority": "medium",
-                            "effort": "low",
-                            "expected_impact": "medium",
-                            "parameters": {},
-                        }
-                        for r in summary.recommendations
-                    ],
-                )
-                ctx.session.add(interp_record)
-                logger.info(
-                    "dimensional_entropy_summary_stored",
-                    table=table.table_name,
-                    readiness=interp_record.readiness,
-                )
 
     logger.info(
         "dimensional_entropy_complete",

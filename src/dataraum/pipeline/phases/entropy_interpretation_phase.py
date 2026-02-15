@@ -12,6 +12,7 @@ from typing import Any
 
 from sqlalchemy import or_, select
 
+from dataraum.analysis.quality_summary.db_models import ColumnQualityReport
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.typing.db_models import TypeDecision
 from dataraum.core.logging import get_logger
@@ -92,9 +93,12 @@ class EntropyInterpretationPhase(BasePhase):
         if columns_with_entropy == 0:
             return "No columns with entropy records"
 
-        # Count columns with interpretations already
+        # Count column-level interpretations (column_id IS NOT NULL, model_used IS NOT NULL)
+        # This excludes stale table-level records from removed DimensionalSummaryAgent
         interp_stmt = select(func.count(EntropyInterpretationRecord.interpretation_id)).where(
-            EntropyInterpretationRecord.table_id.in_(table_ids)
+            EntropyInterpretationRecord.table_id.in_(table_ids),
+            EntropyInterpretationRecord.column_id.isnot(None),
+            EntropyInterpretationRecord.model_used.isnot(None),
         )
         interp_count = (ctx.session.execute(interp_stmt)).scalar() or 0
 
@@ -178,6 +182,23 @@ class EntropyInterpretationPhase(BasePhase):
         sem_stmt = select(SemanticAnnotation).where(SemanticAnnotation.column_id.in_(column_ids))
         for ann in (ctx.session.execute(sem_stmt)).scalars().all():
             semantic_annotations[ann.column_id] = ann
+
+        # Load quality reports for enriching column-level interpretation
+        # Aggregate per source_column_id: best grade + top findings
+        quality_by_column: dict[str, dict[str, Any]] = {}
+        qr_stmt = select(ColumnQualityReport).where(
+            ColumnQualityReport.source_column_id.in_(column_ids)
+        )
+        for qr in ctx.session.execute(qr_stmt).scalars().all():
+            col_id = qr.source_column_id
+            if col_id not in quality_by_column:
+                quality_by_column[col_id] = {
+                    "grades": [],
+                    "findings": [],
+                }
+            quality_by_column[col_id]["grades"].append(qr.quality_grade)
+            data = qr.report_data or {}
+            quality_by_column[col_id]["findings"].extend(data.get("key_findings", []))
 
         # Initialize LLM infrastructure
         try:
@@ -288,11 +309,35 @@ class EntropyInterpretationPhase(BasePhase):
             if column_id in semantic_annotations:
                 business_description = semantic_annotations[column_id].business_description
 
+            # Extract quality context if available
+            quality_grade = None
+            quality_findings = None
+            if column_id in quality_by_column:
+                qc = quality_by_column[column_id]
+                # Use worst grade as representative
+                grade_order = {"F": 0, "D": 1, "C": 2, "B": 3, "A": 4}
+                grades = qc["grades"]
+                if grades:
+                    quality_grade = min(grades, key=lambda g: grade_order.get(g, 5))
+                # Take top 3 unique findings
+                seen: set[str] = set()
+                unique_findings: list[str] = []
+                for f in qc["findings"]:
+                    if f not in seen:
+                        seen.add(f)
+                        unique_findings.append(f)
+                        if len(unique_findings) >= 3:
+                            break
+                if unique_findings:
+                    quality_findings = unique_findings
+
             # Create interpretation input
             input_item = InterpretationInput.from_summary(
                 summary=summary,
                 detected_type=detected_type,
                 business_description=business_description,
+                quality_grade=quality_grade,
+                quality_findings=quality_findings,
             )
             inputs.append(input_item)
 
@@ -433,6 +478,68 @@ class EntropyInterpretationPhase(BasePhase):
         table_interp_count = 0
         table_interp_errors: list[str] = []
 
+        # Build compact column interpretation summaries from column-level results
+        col_interp_by_table: dict[str, list[dict[str, Any]]] = {}
+        for _key, interp in all_interpretations.items():
+            tbl = interp.table_name
+            col_interp_by_table.setdefault(tbl, []).append(
+                {
+                    "column": interp.column_name,
+                    "readiness": interp.readiness,
+                    "top_assumption": interp.assumptions[0].assumption_text
+                    if interp.assumptions
+                    else None,
+                    "top_action": interp.resolution_actions[0].action
+                    if interp.resolution_actions
+                    else None,
+                }
+            )
+
+        # Load dimensional entropy objects (table-level patterns) per table
+        dim_patterns_by_table: dict[str, list[dict[str, Any]]] = {}
+        dim_stmt = select(EntropyObjectRecord).where(
+            EntropyObjectRecord.table_id.in_(table_ids),
+            EntropyObjectRecord.column_id.is_(None),
+            EntropyObjectRecord.detector_id.like("dimensional_entropy%"),
+        )
+        for rec in ctx.session.execute(dim_stmt).scalars().all():
+            tbl_id = rec.table_id
+            if not tbl_id:
+                continue
+            tbl = table_map.get(tbl_id)
+            if not tbl:
+                continue
+            tbl_name = tbl.table_name
+            # Extract first evidence entry: evidence is stored as a list of dicts in JSON
+            evidence_summary = rec.evidence if rec.evidence else {}
+            if isinstance(evidence_summary, list) and evidence_summary:
+                evidence_summary = evidence_summary[0]
+            dim_patterns_by_table.setdefault(tbl_name, []).append(
+                {
+                    "detector_id": rec.detector_id,
+                    "sub_dimension": rec.sub_dimension,
+                    "score": round(rec.score, 3),
+                    "evidence": evidence_summary,
+                }
+            )
+
+        # Build quality overview per table from quality_by_column
+        quality_overview_by_table: dict[str, dict[str, Any]] = {}
+        for col_id, qc in quality_by_column.items():
+            qc_col = column_map.get(col_id)
+            if not qc_col:
+                continue
+            qc_tbl = table_map.get(qc_col.table_id)
+            if not qc_tbl:
+                continue
+            tbl_name = qc_tbl.table_name
+            if tbl_name not in quality_overview_by_table:
+                quality_overview_by_table[tbl_name] = {"grade_counts": {}, "total": 0}
+            overview = quality_overview_by_table[tbl_name]
+            for g in qc["grades"]:
+                overview["grade_counts"][g] = overview["grade_counts"].get(g, 0) + 1
+                overview["total"] += 1
+
         # Build TableSummary objects from column summaries we already computed
         # Group column summaries by table
         summaries_by_table: dict[str, list[ColumnSummary]] = {}
@@ -507,6 +614,12 @@ class EntropyInterpretationPhase(BasePhase):
             )
 
             table_input = TableInterpretationInput.from_summary(table_summary)
+
+            # Enrich with column interpretation summaries, dimensional patterns, quality
+            table_input.column_interpretations_summary = col_interp_by_table.get(table.table_name)
+            table_input.dimensional_patterns = dim_patterns_by_table.get(table.table_name)
+            table_input.quality_overview = quality_overview_by_table.get(table.table_name)
+
             table_inputs.append(table_input)
             table_id_map[table.table_name] = table.table_id
 

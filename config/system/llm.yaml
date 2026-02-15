@@ -96,14 +96,6 @@ features:
       context of a specific query. Returns interpretations considering
       how columns interact in the query.
 
-  dimensional_summary:
-    enabled: true
-    model_tier: fast  # Haiku is sufficient - summarization of pre-computed data
-    prompt_file: prompts/dimensional_summary.yaml
-    description: >
-      Generate LLM-powered executive summaries for dimensional entropy
-      analysis results. Falls back to hardcoded summary when disabled.
-
   sql_repair:
     enabled: true
     model_tier: fast  # Haiku for quick repairs

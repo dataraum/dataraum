@@ -11,6 +11,7 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.interpretation import (
     Assumption,
     EntropyInterpretation,
+    EntropyInterpreter,
     InterpretationInput,
     ResolutionAction,
     ResolutionActionOutput,
@@ -444,3 +445,45 @@ class TestTableInterpretationInput:
         assert result.table_name == "empty_table"
         assert result.column_count == 0
         assert result.dimension_score_ranges == {}
+
+
+class TestValidateColumnOutputAutoWrap:
+    """Tests for _validate_column_output auto-wrapping when LLM omits wrapper key."""
+
+    def test_valid_with_columns_key(self):
+        """Normal case: data has 'columns' wrapper."""
+        data = {
+            "columns": {
+                "orders.amount": {
+                    "explanation": "The amount column has moderate uncertainty.",
+                    "assumptions": [],
+                    "resolution_actions": [],
+                }
+            }
+        }
+        output = EntropyInterpreter._validate_column_output(data)
+        assert "orders.amount" in output.columns
+
+    def test_auto_wraps_missing_columns_key(self):
+        """When LLM omits 'columns' key, auto-wrap the response."""
+        data = {
+            "orders.amount": {
+                "explanation": "The amount column has moderate uncertainty.",
+                "assumptions": [],
+                "resolution_actions": [],
+            }
+        }
+        output = EntropyInterpreter._validate_column_output(data)
+        assert "orders.amount" in output.columns
+
+    def test_validate_table_output_auto_wraps(self):
+        """When LLM omits 'tables' key, auto-wrap the response."""
+        data = {
+            "orders": {
+                "explanation": "Table has moderate uncertainty.",
+                "assumptions": [],
+                "resolution_actions": [],
+            }
+        }
+        output = EntropyInterpreter._validate_table_output(data)
+        assert "orders" in output.tables

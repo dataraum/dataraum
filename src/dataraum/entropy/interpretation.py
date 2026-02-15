@@ -301,7 +301,6 @@ class ResolutionActionOutput(BaseModel):
         which becomes 'document_account_structure'.
         """
         if not v.startswith(VALID_ACTION_PREFIXES):
-            # Auto-prefix with 'document_' as the most common case
             return f"document_{v}"
         return v
 
@@ -377,26 +376,6 @@ class EntropyInterpreter:
         self.config = config
         self.provider = provider
         self.renderer = prompt_renderer
-
-    @staticmethod
-    def _validate_column_output(data: dict[str, Any]) -> EntropyInterpretationOutput:
-        """Validate column output, auto-wrapping if LLM omitted 'columns' key."""
-        try:
-            return EntropyInterpretationOutput.model_validate(data)
-        except Exception:
-            if "columns" not in data:
-                return EntropyInterpretationOutput.model_validate({"columns": data})
-            raise
-
-    @staticmethod
-    def _validate_table_output(data: dict[str, Any]) -> TableEntropyInterpretationOutput:
-        """Validate table output, auto-wrapping if LLM omitted 'tables' key."""
-        try:
-            return TableEntropyInterpretationOutput.model_validate(data)
-        except Exception:
-            if "tables" not in data:
-                return TableEntropyInterpretationOutput.model_validate({"tables": data})
-            raise
 
     def interpret_batch(
         self,
@@ -520,18 +499,8 @@ class EntropyInterpreter:
 
             # Extract tool call result
             if not response.tool_calls:
-                # LLM didn't use the tool - try to parse text as fallback
-                if response.content:
-                    try:
-                        response_data = json.loads(response.content)
-                        output = self._validate_column_output(response_data)
-                        return self._convert_output_to_interpretations(inputs, output, model)
-                    except Exception:
-                        last_error = f"LLM did not use tool. Response: {response.content[:200]}"
-                        continue
-                else:
-                    last_error = "LLM did not use the interpret_entropy tool"
-                    continue
+                last_error = f"LLM did not use the interpret_entropy tool. Response: {(response.content or '')[:200]}"
+                continue
 
             # Parse tool response using Pydantic model
             tool_call = response.tool_calls[0]
@@ -540,7 +509,25 @@ class EntropyInterpreter:
                 continue
 
             try:
-                output = self._validate_column_output(tool_call.input)
+                output = EntropyInterpretationOutput.model_validate(tool_call.input)
+                # Diagnostic: log raw tool input when output is empty or partial
+                if len(output.columns) < len(inputs):
+                    raw_keys = (
+                        list(tool_call.input.get("columns", {}).keys())
+                        if isinstance(tool_call.input, dict)
+                        else []
+                    )
+                    expected_keys = [f"{inp.table_name}.{inp.column_name}" for inp in inputs]
+                    logger.warning(
+                        "interpretation_raw_response_diagnostic",
+                        parsed_column_count=len(output.columns),
+                        expected_column_count=len(inputs),
+                        raw_tool_keys=raw_keys[:20],
+                        expected_keys=expected_keys[:20],
+                        raw_top_level_keys=list(tool_call.input.keys())
+                        if isinstance(tool_call.input, dict)
+                        else str(type(tool_call.input)),
+                    )
                 return self._convert_output_to_interpretations(inputs, output, model)
             except Exception as e:
                 last_error = f"Failed to validate tool response: {e}"
@@ -578,6 +565,28 @@ class EntropyInterpreter:
         missing_keys = expected_keys - returned_keys
 
         if unmatched_returned:
+            # Dump side-by-side comparison so we can diagnose the root cause
+            # (casing, prefix, hallucination, whitespace, etc.)
+            pairs: list[dict[str, str]] = []
+            remaining_expected = sorted(missing_keys)
+            for ret_key in sorted(unmatched_returned):
+                # Try to find the closest expected key for diagnosis
+                best_match = None
+                ret_lower = ret_key.lower().strip()
+                for exp_key in remaining_expected:
+                    if exp_key.lower().strip() == ret_lower:
+                        best_match = exp_key
+                        break
+                pairs.append(
+                    {
+                        "returned": repr(ret_key),
+                        "closest_expected": repr(best_match)
+                        if best_match
+                        else "<no case-insensitive match>",
+                    }
+                )
+                if best_match:
+                    remaining_expected.remove(best_match)
             logger.warning(
                 "interpretation_key_mismatch",
                 matched=len(matched_keys),
@@ -585,6 +594,7 @@ class EntropyInterpreter:
                 returned=len(returned_keys),
                 unmatched_returned_keys=sorted(unmatched_returned),
                 missing_expected_keys=sorted(missing_keys),
+                diagnostic_pairs=pairs,
             )
 
         if len(matched_keys) < len(expected_keys):
@@ -761,17 +771,8 @@ class EntropyInterpreter:
             response = result.value
 
             if not response.tool_calls:
-                if response.content:
-                    try:
-                        response_data = json.loads(response.content)
-                        output = self._validate_table_output(response_data)
-                        return self._convert_table_output(inputs, output, model)
-                    except Exception:
-                        last_error = f"LLM did not use tool. Response: {response.content[:200]}"
-                        continue
-                else:
-                    last_error = "LLM did not use the interpret_table_entropy tool"
-                    continue
+                last_error = f"LLM did not use the interpret_table_entropy tool. Response: {(response.content or '')[:200]}"
+                continue
 
             tool_call = response.tool_calls[0]
             if tool_call.name != "interpret_table_entropy":
@@ -779,7 +780,25 @@ class EntropyInterpreter:
                 continue
 
             try:
-                output = self._validate_table_output(tool_call.input)
+                output = TableEntropyInterpretationOutput.model_validate(tool_call.input)
+                # Diagnostic: log raw tool input when output is empty or partial
+                if len(output.tables) < len(inputs):
+                    raw_keys = (
+                        list(tool_call.input.get("tables", {}).keys())
+                        if isinstance(tool_call.input, dict)
+                        else []
+                    )
+                    expected_keys = [inp.table_name for inp in inputs]
+                    logger.warning(
+                        "table_interpretation_raw_response_diagnostic",
+                        parsed_table_count=len(output.tables),
+                        expected_table_count=len(inputs),
+                        raw_tool_keys=raw_keys[:20],
+                        expected_keys=expected_keys[:20],
+                        raw_top_level_keys=list(tool_call.input.keys())
+                        if isinstance(tool_call.input, dict)
+                        else str(type(tool_call.input)),
+                    )
                 return self._convert_table_output(inputs, output, model)
             except Exception as e:
                 last_error = f"Failed to validate tool response: {e}"
@@ -801,12 +820,33 @@ class EntropyInterpreter:
         expected_keys = set(inputs_by_name.keys())
         returned_keys = set(output.tables.keys())
         unmatched = returned_keys - expected_keys
+        missing = expected_keys - returned_keys
         if unmatched:
+            pairs: list[dict[str, str]] = []
+            remaining_expected = sorted(missing)
+            for ret_key in sorted(unmatched):
+                best_match = None
+                ret_lower = ret_key.lower().strip()
+                for exp_key in remaining_expected:
+                    if exp_key.lower().strip() == ret_lower:
+                        best_match = exp_key
+                        break
+                pairs.append(
+                    {
+                        "returned": repr(ret_key),
+                        "closest_expected": repr(best_match)
+                        if best_match
+                        else "<no case-insensitive match>",
+                    }
+                )
+                if best_match:
+                    remaining_expected.remove(best_match)
             logger.warning(
                 "table_interpretation_key_mismatch",
                 expected_keys=sorted(expected_keys),
                 returned_keys=sorted(returned_keys),
                 unmatched=sorted(unmatched),
+                diagnostic_pairs=pairs,
             )
 
         for table_name, table_output in output.tables.items():

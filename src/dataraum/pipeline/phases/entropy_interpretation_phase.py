@@ -496,12 +496,25 @@ class EntropyInterpretationPhase(BasePhase):
             )
 
         # Load dimensional entropy objects (table-level patterns) per table
+        # We load cross_column_patterns (individual pattern details) and the
+        # summary record. The individual patterns contain large raw_evidence
+        # blobs that can overflow token limits, so we compact them to keep
+        # only the semantically useful fields.
         dim_patterns_by_table: dict[str, list[dict[str, Any]]] = {}
         dim_stmt = select(EntropyObjectRecord).where(
             EntropyObjectRecord.table_id.in_(table_ids),
             EntropyObjectRecord.column_id.is_(None),
             EntropyObjectRecord.detector_id.like("dimensional_entropy%"),
         )
+        # Fields to keep from cross_column_patterns evidence (drop raw_evidence)
+        _COMPACT_EVIDENCE_KEYS = {
+            "pattern_type",
+            "columns",
+            "confidence",
+            "description",
+            "business_rule_hypothesis",
+            "uncertainty_bits",
+        }
         for rec in ctx.session.execute(dim_stmt).scalars().all():
             tbl_id = rec.table_id
             if not tbl_id:
@@ -514,6 +527,11 @@ class EntropyInterpretationPhase(BasePhase):
             evidence_summary = rec.evidence if rec.evidence else {}
             if isinstance(evidence_summary, list) and evidence_summary:
                 evidence_summary = evidence_summary[0]
+            # Compact cross_column_patterns evidence: strip raw_evidence to reduce tokens
+            if isinstance(evidence_summary, dict) and rec.sub_dimension == "cross_column_patterns":
+                evidence_summary = {
+                    k: v for k, v in evidence_summary.items() if k in _COMPACT_EVIDENCE_KEYS
+                }
             dim_patterns_by_table.setdefault(tbl_name, []).append(
                 {
                     "detector_id": rec.detector_id,

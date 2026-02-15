@@ -6,15 +6,19 @@ models and prompt context building.
 
 import json
 
+import pytest
+from pydantic import ValidationError
+
 from dataraum.entropy.analysis.aggregator import ColumnSummary, TableSummary
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.interpretation import (
     Assumption,
     EntropyInterpretation,
-    EntropyInterpreter,
+    EntropyInterpretationOutput,
     InterpretationInput,
     ResolutionAction,
     ResolutionActionOutput,
+    TableEntropyInterpretationOutput,
     TableInterpretationInput,
 )
 from dataraum.entropy.models import CompoundRisk
@@ -447,8 +451,8 @@ class TestTableInterpretationInput:
         assert result.dimension_score_ranges == {}
 
 
-class TestValidateColumnOutputAutoWrap:
-    """Tests for _validate_column_output auto-wrapping when LLM omits wrapper key."""
+class TestValidateOutput:
+    """Tests for Pydantic model validation of LLM tool output."""
 
     def test_valid_with_columns_key(self):
         """Normal case: data has 'columns' wrapper."""
@@ -461,11 +465,11 @@ class TestValidateColumnOutputAutoWrap:
                 }
             }
         }
-        output = EntropyInterpreter._validate_column_output(data)
+        output = EntropyInterpretationOutput.model_validate(data)
         assert "orders.amount" in output.columns
 
-    def test_auto_wraps_missing_columns_key(self):
-        """When LLM omits 'columns' key, auto-wrap the response."""
+    def test_rejects_missing_columns_key(self):
+        """When 'columns' key is missing, validation should fail."""
         data = {
             "orders.amount": {
                 "explanation": "The amount column has moderate uncertainty.",
@@ -473,11 +477,11 @@ class TestValidateColumnOutputAutoWrap:
                 "resolution_actions": [],
             }
         }
-        output = EntropyInterpreter._validate_column_output(data)
-        assert "orders.amount" in output.columns
+        with pytest.raises(ValidationError):
+            EntropyInterpretationOutput.model_validate(data)
 
-    def test_validate_table_output_auto_wraps(self):
-        """When LLM omits 'tables' key, auto-wrap the response."""
+    def test_rejects_missing_tables_key(self):
+        """When 'tables' key is missing, validation should fail."""
         data = {
             "orders": {
                 "explanation": "Table has moderate uncertainty.",
@@ -485,5 +489,5 @@ class TestValidateColumnOutputAutoWrap:
                 "resolution_actions": [],
             }
         }
-        output = EntropyInterpreter._validate_table_output(data)
-        assert "orders" in output.tables
+        with pytest.raises(ValidationError):
+            TableEntropyInterpretationOutput.model_validate(data)

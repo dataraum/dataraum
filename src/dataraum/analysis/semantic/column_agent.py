@@ -228,13 +228,14 @@ class ColumnAnnotationAgent(LLMFeature):
         return value
 
     def _build_tables_json(
-        self, profiles: list[ColumnProfile], samples: dict[str, list[Any]]
+        self, profiles: list[ColumnProfile], samples: dict[tuple[str, str], list[Any]]
     ) -> list[dict[str, Any]]:
         """Build JSON representation of tables for prompt."""
         tables_data: dict[str, dict[str, Any]] = {}
 
         for profile in profiles:
             table_name = profile.column_ref.table_name
+            column_name = profile.column_ref.column_name
 
             if table_name not in tables_data:
                 tables_data[table_name] = {
@@ -244,14 +245,17 @@ class ColumnAnnotationAgent(LLMFeature):
                 }
 
             col_data: dict[str, Any] = {
-                "column_name": profile.column_ref.column_name,
+                "column_name": column_name,
                 "distinct_count": profile.distinct_count,
                 "cardinality_ratio": round(profile.cardinality_ratio, 4),
                 "sample_values": [
-                    self._truncate_sample(v)
-                    for v in samples.get(profile.column_ref.column_name, [])
+                    self._truncate_sample(v) for v in samples.get((table_name, column_name), [])
                 ],
             }
+
+            # Include original column name when it differs from normalized name
+            if profile.original_name and profile.original_name != column_name:
+                col_data["original_name"] = profile.original_name
 
             null_ratio = round(profile.null_ratio, 4)
             if null_ratio > 0.0:

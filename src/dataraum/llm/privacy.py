@@ -32,34 +32,36 @@ class DataSampler:
     def prepare_samples(
         self,
         column_profiles: list[ColumnProfile],
-    ) -> dict[str, list[Any]]:
+    ) -> dict[tuple[str, str], list[Any]]:
         """Prepare sample values for LLM analysis.
 
         Args:
             column_profiles: Column profiles containing top values
 
         Returns:
-            Dictionary mapping column_name -> sample_values
+            Dictionary mapping (table_name, column_name) -> sample_values
         """
-        samples = {}
+        samples: dict[tuple[str, str], list[Any]] = {}
 
         for profile in column_profiles:
             column_name = profile.column_ref.column_name
+            table_name = profile.column_ref.table_name
+            key = (table_name, column_name)
 
             # Check if column matches sensitive pattern
             if self._is_sensitive(column_name):
                 # Redact sensitive columns
-                samples[column_name] = ["<REDACTED>"] * min(
+                samples[key] = ["<REDACTED>"] * min(
                     self.config.redacted_sample_count, self.config.max_sample_values
                 )
             else:
                 # Use real top values from profile
                 if profile.top_values:
-                    samples[column_name] = [
+                    samples[key] = [
                         vc.value for vc in profile.top_values[: self.config.max_sample_values]
                     ]
                 else:
-                    samples[column_name] = []
+                    samples[key] = []
 
         return samples
 

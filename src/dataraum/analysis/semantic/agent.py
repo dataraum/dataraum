@@ -309,6 +309,7 @@ class SemanticAgent(LLMFeature):
                 profile = ColumnProfile(
                     column_id=col.column_id,
                     column_ref=ColumnRef(table_name=table.table_name, column_name=col.column_name),
+                    original_name=col.original_name,
                     profiled_at=profile_model.profiled_at,
                     total_count=profile_model.total_count,
                     null_count=profile_model.null_count,
@@ -540,13 +541,13 @@ class SemanticAgent(LLMFeature):
         return value
 
     def _build_tables_json(
-        self, profiles: list[ColumnProfile], samples: dict[str, list[Any]]
+        self, profiles: list[ColumnProfile], samples: dict[tuple[str, str], list[Any]]
     ) -> list[dict[str, Any]]:
         """Build JSON representation of tables for prompt.
 
         Args:
             profiles: Column profiles
-            samples: Sample values per column
+            samples: Sample values keyed by (table_name, column_name)
 
         Returns:
             List of table dicts for JSON serialization
@@ -556,6 +557,7 @@ class SemanticAgent(LLMFeature):
 
         for profile in profiles:
             table_name = profile.column_ref.table_name
+            column_name = profile.column_ref.column_name
 
             if table_name not in tables_data:
                 tables_data[table_name] = {
@@ -565,14 +567,17 @@ class SemanticAgent(LLMFeature):
                 }
 
             col_data: dict[str, Any] = {
-                "column_name": profile.column_ref.column_name,
+                "column_name": column_name,
                 "distinct_count": profile.distinct_count,
                 "cardinality_ratio": round(profile.cardinality_ratio, 4),  # Helps identify keys
                 "sample_values": [
-                    self._truncate_sample(v)
-                    for v in samples.get(profile.column_ref.column_name, [])
+                    self._truncate_sample(v) for v in samples.get((table_name, column_name), [])
                 ],
             }
+
+            # Include original column name when it differs from normalized name
+            if profile.original_name and profile.original_name != column_name:
+                col_data["original_name"] = profile.original_name
 
             # Only include null_ratio when non-zero to save tokens
             null_ratio = round(profile.null_ratio, 4)

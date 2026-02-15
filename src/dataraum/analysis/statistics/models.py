@@ -70,6 +70,7 @@ class ColumnProfile(BaseModel):
 
     column_id: str
     column_ref: ColumnRef
+    original_name: str | None = None
     profiled_at: datetime
 
     total_count: int

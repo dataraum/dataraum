@@ -44,6 +44,7 @@ def init_database(engine: Engine) -> None:
     # These imports ensure tables are created when init_database() is called
     from dataraum.analysis.correlation import db_models as _correlation_models  # noqa: F401
     from dataraum.analysis.cycles import db_models as _cycles_models  # noqa: F401
+    from dataraum.analysis.eligibility import db_models as _eligibility_models  # noqa: F401
     from dataraum.analysis.quality_summary import (
         db_models as _quality_summary_models,  # noqa: F401
     )
@@ -59,6 +60,8 @@ def init_database(engine: Engine) -> None:
     )
     from dataraum.analysis.typing import db_models as _typing_models  # noqa: F401
     from dataraum.analysis.validation import db_models as _validation_models  # noqa: F401
+    from dataraum.analysis.views import db_models as _views_models  # noqa: F401
+    from dataraum.entropy import db_models as _entropy_models  # noqa: F401
     from dataraum.graphs import db_models as _graphs_models  # noqa: F401
     from dataraum.pipeline import db_models as _pipeline_models  # noqa: F401
     from dataraum.query import db_models as _query_models  # noqa: F401
@@ -80,6 +83,7 @@ def reset_database(engine: Engine) -> None:
     # Import all model modules to register them with SQLAlchemy Base metadata
     from dataraum.analysis.correlation import db_models as _correlation_models  # noqa: F401
     from dataraum.analysis.cycles import db_models as _cycles_models  # noqa: F401
+    from dataraum.analysis.eligibility import db_models as _eligibility_models  # noqa: F401
     from dataraum.analysis.quality_summary import (
         db_models as _quality_summary_models,  # noqa: F401
     )
@@ -95,6 +99,8 @@ def reset_database(engine: Engine) -> None:
     )
     from dataraum.analysis.typing import db_models as _typing_models  # noqa: F401
     from dataraum.analysis.validation import db_models as _validation_models  # noqa: F401
+    from dataraum.analysis.views import db_models as _views_models  # noqa: F401
+    from dataraum.entropy import db_models as _entropy_models  # noqa: F401
     from dataraum.graphs import db_models as _graphs_models  # noqa: F401
     from dataraum.pipeline import db_models as _pipeline_models  # noqa: F401
     from dataraum.query import db_models as _query_models  # noqa: F401

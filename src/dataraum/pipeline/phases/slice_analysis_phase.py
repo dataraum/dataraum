@@ -18,9 +18,11 @@ from dataraum.analysis.slicing.slice_runner import (
 )
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
 
+@analysis_phase
 class SliceAnalysisPhase(BasePhase):
     """Execute slice SQL and analyze resulting slice tables.
 
@@ -46,10 +48,6 @@ class SliceAnalysisPhase(BasePhase):
     @property
     def outputs(self) -> list[str]:
         return ["slice_profiles"]
-
-    @property
-    def is_llm_phase(self) -> bool:
-        return False
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no slice definitions exist or all slices already analyzed."""

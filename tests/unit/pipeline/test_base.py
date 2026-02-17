@@ -1,12 +1,10 @@
-"""Tests for pipeline base types."""
+"""Tests for pipeline base types and phase registry."""
 
 from dataraum.pipeline.base import (
-    PIPELINE_DAG,
     PhaseResult,
     PhaseStatus,
-    get_all_dependencies,
-    get_phase_definition,
 )
+from dataraum.pipeline.registry import get_all_dependencies, get_phase_class, get_registry
 
 
 class TestPhaseResult:
@@ -38,43 +36,47 @@ class TestPhaseResult:
         assert result.error == "Already done"
 
 
-class TestPipelineDAG:
-    """Tests for the pipeline DAG definition."""
+class TestPhaseRegistry:
+    """Tests for the phase registry."""
 
-    def test_dag_not_empty(self):
-        assert len(PIPELINE_DAG) > 0
+    def test_registry_not_empty(self):
+        registry = get_registry()
+        assert len(registry) > 0
 
     def test_all_phases_have_names(self):
-        for phase in PIPELINE_DAG:
-            assert phase.name
-            assert isinstance(phase.name, str)
+        registry = get_registry()
+        for name, cls in registry.items():
+            instance = cls()
+            assert instance.name == name
+            assert isinstance(instance.name, str)
 
     def test_all_phases_have_descriptions(self):
-        for phase in PIPELINE_DAG:
-            assert phase.description
-            assert isinstance(phase.description, str)
+        registry = get_registry()
+        for _name, cls in registry.items():
+            instance = cls()
+            assert instance.description
+            assert isinstance(instance.description, str)
 
     def test_import_phase_has_no_dependencies(self):
-        import_phase = get_phase_definition("import")
-        assert import_phase is not None
-        assert import_phase.dependencies == []
+        cls = get_phase_class("import")
+        assert cls is not None
+        assert cls().dependencies == []
 
     def test_typing_depends_on_import(self):
-        typing_phase = get_phase_definition("typing")
-        assert typing_phase is not None
-        assert "import" in typing_phase.dependencies
+        cls = get_phase_class("typing")
+        assert cls is not None
+        assert "import" in cls().dependencies
 
     def test_entropy_phase_exists(self):
-        entropy_phase = get_phase_definition("entropy")
-        assert entropy_phase is not None
-        assert "semantic" in entropy_phase.dependencies
-        assert "quality_summary" in entropy_phase.dependencies
+        cls = get_phase_class("entropy")
+        assert cls is not None
+        instance = cls()
+        assert "semantic" in instance.dependencies
+        assert "quality_summary" in instance.dependencies
 
-    def test_graph_execution_phase_is_last(self):
-        """Graph execution is now the final phase after context was merged into it."""
-        graph_phase = get_phase_definition("graph_execution")
-        assert graph_phase is not None
-        assert PIPELINE_DAG[-1].name == "graph_execution"
+    def test_graph_execution_phase_exists(self):
+        cls = get_phase_class("graph_execution")
+        assert cls is not None
 
 
 class TestDependencyResolution:

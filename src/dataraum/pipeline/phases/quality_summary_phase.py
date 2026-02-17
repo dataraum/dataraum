@@ -23,6 +23,7 @@ from dataraum.llm.providers.base import LLMProvider
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.db_models import PhaseCheckpoint
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
 if TYPE_CHECKING:
@@ -104,6 +105,7 @@ def _process_slice_definition(
         )
 
 
+@analysis_phase
 class QualitySummaryPhase(BasePhase):
     """LLM-powered quality summary phase.
 
@@ -131,10 +133,6 @@ class QualitySummaryPhase(BasePhase):
     @property
     def outputs(self) -> list[str]:
         return ["quality_reports", "quality_grades"]
-
-    @property
-    def is_llm_phase(self) -> bool:
-        return True
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no slice definitions exist or summaries already generated."""

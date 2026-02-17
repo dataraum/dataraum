@@ -32,12 +32,14 @@ from dataraum.entropy.detectors.semantic import (
 from dataraum.entropy.processor import EntropyProcessor
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
 
 
 # TODO: focus prioritization on actions that impact downstream context generation and LLM performance - e.g. structural issues that cause RI failures, semantic issues that cause misinterpretation, value issues that cause parsing failures, etc.
+@analysis_phase
 class EntropyPhase(BasePhase):
     """Entropy detection phase.
 
@@ -70,10 +72,6 @@ class EntropyPhase(BasePhase):
     @property
     def outputs(self) -> list[str]:
         return ["entropy_profiles", "compound_risks"]
-
-    @property
-    def is_llm_phase(self) -> bool:
-        return False
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all columns already have entropy profiles."""

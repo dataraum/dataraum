@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
-from dataraum.pipeline.phases import ValidationPhase
+from dataraum.pipeline.phases.validation_phase import ValidationPhase
 from dataraum.storage import Source, Table
 
 if TYPE_CHECKING:
@@ -22,7 +22,6 @@ class TestValidationPhase:
         assert phase.description == "LLM-powered validation checks"
         assert phase.dependencies == ["semantic"]
         assert phase.outputs == ["validation_results"]
-        assert phase.is_llm_phase is True
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

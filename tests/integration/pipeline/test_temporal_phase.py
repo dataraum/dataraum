@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
-from dataraum.pipeline.phases import TemporalPhase
+from dataraum.pipeline.phases.temporal_phase import TemporalPhase
 from dataraum.storage import Column, Source, Table
 
 if TYPE_CHECKING:

@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
-from dataraum.pipeline.phases import CrossTableQualityPhase
+from dataraum.pipeline.phases.cross_table_quality_phase import CrossTableQualityPhase
 from dataraum.storage import Column, Source, Table
 
 if TYPE_CHECKING:
@@ -22,8 +22,6 @@ class TestCrossTableQualityPhase:
         assert phase.description == "Cross-table correlation analysis"
         assert phase.dependencies == ["semantic"]
         assert phase.outputs == ["cross_table_correlations"]
-        # Note: Despite the name, this is actually a non-LLM phase (statistical analysis)
-        assert phase.is_llm_phase is False
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

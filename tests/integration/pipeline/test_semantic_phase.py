@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
-from dataraum.pipeline.phases import SemanticPhase
+from dataraum.pipeline.phases.semantic_phase import SemanticPhase
 from dataraum.storage import Column, Source, Table
 
 if TYPE_CHECKING:
@@ -22,7 +22,6 @@ class TestSemanticPhase:
         assert phase.description == "LLM-powered semantic analysis"
         assert phase.dependencies == ["relationships", "correlations"]
         assert phase.outputs == ["annotations", "entities", "confirmed_relationships"]
-        assert phase.is_llm_phase is True
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

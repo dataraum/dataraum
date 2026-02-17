@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
-from dataraum.pipeline.phases import SliceAnalysisPhase
+from dataraum.pipeline.phases.slice_analysis_phase import SliceAnalysisPhase
 from dataraum.storage import Column, Source, Table
 
 
@@ -20,7 +20,6 @@ class TestSliceAnalysisPhase:
         assert phase.description == "Execute slice SQL and analyze slice tables"
         assert phase.dependencies == ["slicing"]
         assert phase.outputs == ["slice_profiles"]
-        assert phase.is_llm_phase is False
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

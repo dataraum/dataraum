@@ -13,9 +13,11 @@ from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.db_models import PhaseCheckpoint
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
 
+@analysis_phase
 class ValidationPhase(BasePhase):
     """LLM-powered validation phase.
 
@@ -41,10 +43,6 @@ class ValidationPhase(BasePhase):
     @property
     def outputs(self) -> list[str]:
         return ["validation_results"]
-
-    @property
-    def is_llm_phase(self) -> bool:
-        return True
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if validations have already been run for this source."""

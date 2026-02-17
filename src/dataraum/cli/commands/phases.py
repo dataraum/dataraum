@@ -9,7 +9,7 @@ from dataraum.cli.common import console
 
 def phases() -> None:
     """List available pipeline phases and their dependencies."""
-    from dataraum.pipeline.base import PIPELINE_DAG
+    from dataraum.pipeline.registry import get_registry
 
     console.print("\n[bold]Pipeline Phases[/bold]\n")
 
@@ -17,12 +17,12 @@ def phases() -> None:
     table.add_column("Phase")
     table.add_column("Description")
     table.add_column("Dependencies")
-    table.add_column("LLM")
 
-    for phase_def in PIPELINE_DAG:
-        deps = ", ".join(phase_def.dependencies) if phase_def.dependencies else "-"
-        llm = "Yes" if phase_def.requires_llm else "No"
-        table.add_row(phase_def.name, phase_def.description, deps, llm)
+    registry = get_registry()
+    for name, cls in registry.items():
+        instance = cls()
+        deps = ", ".join(instance.dependencies) if instance.dependencies else "-"
+        table.add_row(name, instance.description, deps)
 
     console.print(table)
     console.print()

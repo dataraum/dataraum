@@ -15,11 +15,13 @@ from sqlalchemy import select
 
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.sources.csv import CSVLoader
 from dataraum.sources.csv.null_values import load_null_value_config
 from dataraum.storage import Source, Table
 
 
+@analysis_phase
 class ImportPhase(BasePhase):
     """Import phase - loads raw data from sources.
 

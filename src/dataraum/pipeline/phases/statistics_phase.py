@@ -17,9 +17,11 @@ from dataraum.analysis.statistics import profile_statistics
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 
+@analysis_phase
 class StatisticsPhase(BasePhase):
     """Statistics profiling phase.
 

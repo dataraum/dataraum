@@ -20,9 +20,9 @@ from dataraum.api.schemas import (
     PipelineStatusResponse,
 )
 from dataraum.core.connections import get_connection_manager
-from dataraum.pipeline.base import PIPELINE_DAG
 from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
 from dataraum.pipeline.orchestrator import PipelineConfig, run_pipeline
+from dataraum.pipeline.registry import get_registry
 from dataraum.pipeline.status import get_pipeline_status
 from dataraum.storage import Source
 
@@ -240,7 +240,7 @@ async def stream_pipeline_progress(run_id: str) -> StreamingResponse:
 
     async def event_generator() -> AsyncGenerator[str]:
         """Generate SSE events for pipeline progress."""
-        total_phases = len(PIPELINE_DAG)
+        total_phases = len(get_registry())
         reported_phases: set[str] = set()
         last_status: str | None = None
 

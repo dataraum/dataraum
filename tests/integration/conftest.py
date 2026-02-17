@@ -20,16 +20,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.orchestrator import Pipeline, PipelineConfig
-from dataraum.pipeline.phases import (
-    CorrelationsPhase,
-    EntropyPhase,
-    ImportPhase,
-    RelationshipsPhase,
-    StatisticalQualityPhase,
-    StatisticsPhase,
-    TemporalPhase,
-    TypingPhase,
-)
+from dataraum.pipeline.phases.correlations_phase import CorrelationsPhase
+from dataraum.pipeline.phases.entropy_phase import EntropyPhase
+from dataraum.pipeline.phases.import_phase import ImportPhase
+from dataraum.pipeline.phases.relationships_phase import RelationshipsPhase
+from dataraum.pipeline.phases.statistical_quality_phase import StatisticalQualityPhase
+from dataraum.pipeline.phases.statistics_phase import StatisticsPhase
+from dataraum.pipeline.phases.temporal_phase import TemporalPhase
+from dataraum.pipeline.phases.typing_phase import TypingPhase
 from dataraum.storage import init_database
 
 # Paths to test data

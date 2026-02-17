@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
-from dataraum.pipeline.phases import EntropyInterpretationPhase
+from dataraum.pipeline.phases.entropy_interpretation_phase import EntropyInterpretationPhase
 from dataraum.storage import Column, Source, Table
 
 if TYPE_CHECKING:
@@ -22,7 +22,6 @@ class TestEntropyInterpretationPhase:
         assert phase.description == "LLM interpretation of entropy"
         assert phase.dependencies == ["entropy"]
         assert phase.outputs == ["interpretations", "assumptions", "resolution_actions"]
-        assert phase.is_llm_phase is True
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

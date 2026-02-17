@@ -27,11 +27,13 @@ from dataraum.entropy.interpretation import TableInterpretationInput
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
 
 
+@analysis_phase
 class EntropyInterpretationPhase(BasePhase):
     """LLM-powered entropy interpretation phase.
 
@@ -56,10 +58,6 @@ class EntropyInterpretationPhase(BasePhase):
     @property
     def outputs(self) -> list[str]:
         return ["interpretations", "assumptions", "resolution_actions"]
-
-    @property
-    def is_llm_phase(self) -> bool:
-        return True
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no entropy records exist or all columns already have interpretations."""

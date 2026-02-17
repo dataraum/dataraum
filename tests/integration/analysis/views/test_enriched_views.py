@@ -137,7 +137,6 @@ class TestEnrichedViewsPhaseProperties:
         assert phase.name == "enriched_views"
         assert "semantic" in phase.dependencies
         assert "enriched_views" in phase.outputs
-        assert phase.is_llm_phase is False
 
     def test_skip_when_no_typed_tables(self, session):
         """Test skipping when no typed tables exist."""

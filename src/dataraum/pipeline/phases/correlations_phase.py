@@ -16,9 +16,11 @@ from dataraum.analysis.correlation import analyze_correlations
 from dataraum.analysis.correlation.db_models import DerivedColumn
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
 
+@analysis_phase
 class CorrelationsPhase(BasePhase):
     """Within-table correlation analysis phase.
 

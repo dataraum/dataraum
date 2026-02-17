@@ -23,11 +23,13 @@ from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
 
 
+@analysis_phase
 class SemanticPhase(BasePhase):
     """Two-tier LLM-powered semantic analysis phase.
 
@@ -54,10 +56,6 @@ class SemanticPhase(BasePhase):
     @property
     def outputs(self) -> list[str]:
         return ["annotations", "entities", "confirmed_relationships"]
-
-    @property
-    def is_llm_phase(self) -> bool:
-        return True
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all columns already have semantic annotations."""

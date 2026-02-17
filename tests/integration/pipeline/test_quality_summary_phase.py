@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
-from dataraum.pipeline.phases import QualitySummaryPhase
+from dataraum.pipeline.phases.quality_summary_phase import QualitySummaryPhase
 from dataraum.storage import Column, Source, Table
 
 if TYPE_CHECKING:
@@ -22,7 +22,6 @@ class TestQualitySummaryPhase:
         assert phase.description == "LLM quality report generation"
         assert phase.dependencies == ["slice_analysis", "temporal_slice_analysis"]
         assert phase.outputs == ["quality_reports", "quality_grades"]
-        assert phase.is_llm_phase is True
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

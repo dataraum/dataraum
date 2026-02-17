@@ -24,6 +24,7 @@ from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
@@ -33,6 +34,7 @@ _GRAIN_SAFE_CARDINALITIES = {"many-to-one", "one-to-one"}
 _MIN_CONFIDENCE = 0.7
 
 
+@analysis_phase
 class EnrichedViewsPhase(BasePhase):
     """Create enriched DuckDB views from semantic output.
 
@@ -56,10 +58,6 @@ class EnrichedViewsPhase(BasePhase):
     @property
     def outputs(self) -> list[str]:
         return ["enriched_views"]
-
-    @property
-    def is_llm_phase(self) -> bool:
-        return False
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if enriched views already exist for all fact tables."""

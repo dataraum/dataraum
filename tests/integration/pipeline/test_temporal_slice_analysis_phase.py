@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
-from dataraum.pipeline.phases import TemporalSliceAnalysisPhase
+from dataraum.pipeline.phases.temporal_slice_analysis_phase import TemporalSliceAnalysisPhase
 from dataraum.storage import Column, Source, Table
 
 if TYPE_CHECKING:
@@ -22,7 +22,6 @@ class TestTemporalSliceAnalysisPhase:
         assert phase.description == "Distribution drift analysis on slices"
         assert phase.dependencies == ["slice_analysis", "temporal"]
         assert phase.outputs == ["drift_summaries", "period_analyses"]
-        assert phase.is_llm_phase is False
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

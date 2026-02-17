@@ -280,6 +280,7 @@ class ConnectionManager:
         # This ensures Base.metadata has all tables before create_all()
         from dataraum.analysis.correlation import db_models as _correlation  # noqa: F401
         from dataraum.analysis.cycles import db_models as _cycles  # noqa: F401
+        from dataraum.analysis.eligibility import db_models as _eligibility  # noqa: F401
         from dataraum.analysis.quality_summary import db_models as _quality  # noqa: F401
         from dataraum.analysis.relationships import db_models as _rel  # noqa: F401
         from dataraum.analysis.semantic import db_models as _semantic  # noqa: F401
@@ -291,6 +292,7 @@ class ConnectionManager:
         )
         from dataraum.analysis.typing import db_models as _typing  # noqa: F401
         from dataraum.analysis.validation import db_models as _validation  # noqa: F401
+        from dataraum.analysis.views import db_models as _views  # noqa: F401
         from dataraum.entropy import db_models as _entropy  # noqa: F401
         from dataraum.graphs import db_models as _graphs  # noqa: F401
         from dataraum.pipeline import db_models as _pipeline  # noqa: F401

@@ -37,31 +37,9 @@ from dataraum.core.config import get_config_file
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
-from dataraum.pipeline.base import PIPELINE_DAG, PhaseStatus
+from dataraum.pipeline.base import PhaseStatus
 from dataraum.pipeline.db_models import PhaseCheckpoint
-from dataraum.pipeline.orchestrator import Pipeline, PipelineConfig
-from dataraum.pipeline.phases import (
-    # BusinessCyclesPhase,  # De-configured: domain-specific
-    ColumnEligibilityPhase,
-    CorrelationsPhase,
-    # CrossTableQualityPhase,  # De-configured: write-only data, evaluate for entropy later
-    EnrichedViewsPhase,
-    EntropyInterpretationPhase,
-    EntropyPhase,
-    # GraphExecutionPhase,  # De-configured: re-introduce after pipeline cleanup
-    ImportPhase,
-    QualitySummaryPhase,
-    RelationshipsPhase,
-    SemanticPhase,
-    SliceAnalysisPhase,
-    SlicingPhase,
-    StatisticalQualityPhase,
-    StatisticsPhase,
-    TemporalPhase,
-    TemporalSliceAnalysisPhase,
-    TypingPhase,
-    # ValidationPhase,  # De-configured: domain-specific
-)
+from dataraum.pipeline.orchestrator import Pipeline, PipelineConfig, get_pipeline
 from dataraum.storage import Source
 
 logger = get_logger(__name__)
@@ -225,7 +203,7 @@ class RunResult:
 
 
 def create_pipeline(config: RunConfig, pipeline_yaml: dict[str, Any] | None = None) -> Pipeline:
-    """Create and configure the pipeline.
+    """Create and configure the pipeline from YAML config + registry.
 
     Args:
         config: Run configuration
@@ -244,58 +222,12 @@ def create_pipeline(config: RunConfig, pipeline_yaml: dict[str, Any] | None = No
         max_parallel=pcfg.get("max_parallel", 4),
     )
 
-    pipeline = Pipeline(config=pipeline_config)
+    # Active phases from YAML config (or all registered if not specified)
+    active_phases = pipeline_yaml.get("phases", None)
 
-    # Register available phases in dependency order
-    # Foundation phases
-    pipeline.register(ImportPhase())
-    pipeline.register(TypingPhase())
-    pipeline.register(StatisticsPhase())
-    pipeline.register(ColumnEligibilityPhase())
-
-    # Analysis phases
-    pipeline.register(StatisticalQualityPhase())
-    pipeline.register(RelationshipsPhase())
-    pipeline.register(CorrelationsPhase())
-    pipeline.register(TemporalPhase())
-    pipeline.register(SemanticPhase())
-    # ValidationPhase de-configured: domain-specific, keep code
-
-    # Enriched views + slicing phases
-    pipeline.register(EnrichedViewsPhase())
-    pipeline.register(SlicingPhase())
-    pipeline.register(SliceAnalysisPhase())
-    pipeline.register(TemporalSliceAnalysisPhase())
-
-    # Entropy and quality phases
-    pipeline.register(EntropyPhase())
-    pipeline.register(EntropyInterpretationPhase())
-    # BusinessCyclesPhase de-configured: domain-specific, keep code
-    # CrossTableQualityPhase de-configured: write-only data, evaluate for entropy later
-    pipeline.register(QualitySummaryPhase())
-
-    # GraphExecutionPhase de-configured: re-introduce after pipeline cleanup
-
+    pipeline = get_pipeline(active_phases=active_phases)
+    pipeline.config = pipeline_config
     return pipeline
-
-
-def get_latest_implemented_phase(pipeline: Pipeline) -> str:
-    """Get the latest phase in the DAG that has an implementation.
-
-    This allows running the pipeline without specifying a target phase,
-    limiting execution to phases that actually have implementations.
-
-    Args:
-        pipeline: Pipeline with registered phases
-
-    Returns:
-        Name of the latest implemented phase
-    """
-    latest = None
-    for phase_def in PIPELINE_DAG:
-        if phase_def.name in pipeline.phases:
-            latest = phase_def.name
-    return latest or "import"
 
 
 def run(config: RunConfig) -> Result[RunResult]:

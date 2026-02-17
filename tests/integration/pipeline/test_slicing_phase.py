@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
-from dataraum.pipeline.phases import SlicingPhase
+from dataraum.pipeline.phases.slicing_phase import SlicingPhase
 from dataraum.storage import Column, Source, Table
 
 if TYPE_CHECKING:
@@ -22,7 +22,6 @@ class TestSlicingPhase:
         assert phase.description == "LLM-powered slice dimension identification"
         assert phase.dependencies == ["enriched_views"]
         assert phase.outputs == ["slice_definitions", "slice_queries"]
-        assert phase.is_llm_phase is True
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

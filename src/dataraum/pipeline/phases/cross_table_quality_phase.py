@@ -21,11 +21,13 @@ from dataraum.core.config import load_yaml_config
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
 logger = get_logger(__name__)
 
 
+@analysis_phase
 class CrossTableQualityPhase(BasePhase):
     """Cross-table correlation and quality analysis phase.
 
@@ -50,11 +52,6 @@ class CrossTableQualityPhase(BasePhase):
     @property
     def outputs(self) -> list[str]:
         return ["cross_table_correlations"]
-
-    @property
-    def is_llm_phase(self) -> bool:
-        # This is actually a non-LLM phase - it's statistical analysis
-        return False
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no confirmed relationships exist."""

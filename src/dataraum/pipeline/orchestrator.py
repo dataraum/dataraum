@@ -30,15 +30,13 @@ from dataraum.core.logging import (
     start_pipeline_metrics,
 )
 from dataraum.pipeline.base import (
-    PIPELINE_DAG,
     Phase,
     PhaseContext,
     PhaseResult,
     PhaseStatus,
-    get_all_dependencies,
-    get_phase_definition,
 )
 from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
+from dataraum.pipeline.registry import get_all_dependencies, get_registry
 
 logger = get_logger(__name__)
 
@@ -137,24 +135,22 @@ class Pipeline:
         self.phases[phase.name] = phase
 
     def get_phases_to_run(self, target_phase: str | None = None) -> list[str]:
-        """Get phases to run in dependency order.
+        """Get phases to run based on registered phases.
 
         Args:
             target_phase: If set, only run this phase and its dependencies.
-                         If None, run all phases.
+                         If None, run all registered phases.
 
         Returns:
-            List of phase names in execution order.
+            List of phase names to execute.
         """
         if target_phase:
-            # Get target + all dependencies
+            # Get target + all transitive dependencies, filtered to registered
             deps = get_all_dependencies(target_phase)
             deps.add(target_phase)
-            phases = [p.name for p in PIPELINE_DAG if p.name in deps]
+            return [name for name in self.phases if name in deps]
         else:
-            phases = [p.name for p in PIPELINE_DAG]
-
-        return phases
+            return list(self.phases.keys())
 
     def run(
         self,
@@ -603,25 +599,25 @@ class Pipeline:
             if name in self._skipped:
                 continue
 
-            phase_def = get_phase_definition(name)
-            if not phase_def:
-                continue
-
-            # Check if phase has an implementation
-            if name not in self.phases:
+            # Get phase implementation (must be registered)
+            phase = self.phases.get(name)
+            if not phase:
                 logger.info(f"Phase {name} skipped: no implementation registered")
                 self._skipped.add(name)
                 continue
 
-            # Check dependencies
-            deps_met = all(d in done for d in phase_def.dependencies)
+            # Check dependencies using the phase instance properties
+            deps = phase.dependencies
 
             # Check if any dependency failed (can't run this phase)
-            failed_deps = [d for d in phase_def.dependencies if d in self._failed]
+            failed_deps = [d for d in deps if d in self._failed]
             if failed_deps:
                 logger.warning(f"Phase {name} blocked: dependencies failed: {failed_deps}")
                 self._skipped.add(name)
                 continue
+
+            # Check dependencies
+            deps_met = all(d in done for d in deps)
 
             if deps_met:
                 ready.add(name)
@@ -630,7 +626,7 @@ class Pipeline:
             else:
                 # Only log once per phase when it starts waiting
                 if name not in self._logged_waiting:
-                    pending_deps = [d for d in phase_def.dependencies if d not in done]
+                    pending_deps = [d for d in deps if d not in done]
                     logger.debug(f"Phase {name} waiting for dependencies: {pending_deps}")
                     self._logged_waiting.add(name)
 
@@ -641,60 +637,29 @@ class Pipeline:
 _pipeline: Pipeline | None = None
 
 
-def get_pipeline() -> Pipeline:
-    """Get the global pipeline instance."""
+def get_pipeline(active_phases: list[str] | None = None) -> Pipeline:
+    """Get a pipeline instance with phases from the registry.
+
+    Args:
+        active_phases: List of phase names to activate. If None, uses
+            all registered phases (from @analysis_phase decorators).
+
+    Returns:
+        Configured Pipeline instance.
+    """
     global _pipeline
     if _pipeline is None:
+        registry = get_registry()
+        names = active_phases if active_phases is not None else list(registry.keys())
+
         _pipeline = Pipeline()
-        _register_builtin_phases(_pipeline)
+        for name in names:
+            cls = registry.get(name)
+            if cls:
+                _pipeline.register(cls())
+            else:
+                logger.warning(f"Phase '{name}' listed in config but not found in registry")
     return _pipeline
-
-
-def _register_builtin_phases(pipeline: Pipeline) -> None:
-    """Register all built-in phase implementations."""
-    from dataraum.pipeline.phases import (
-        # BusinessCyclesPhase,  # De-configured: domain-specific
-        ColumnEligibilityPhase,
-        CorrelationsPhase,
-        # CrossTableQualityPhase,  # De-configured: write-only data
-        EntropyInterpretationPhase,
-        EntropyPhase,
-        # GraphExecutionPhase,  # De-configured: re-introduce after cleanup
-        ImportPhase,
-        QualitySummaryPhase,
-        RelationshipsPhase,
-        SemanticPhase,
-        SliceAnalysisPhase,
-        SlicingPhase,
-        StatisticalQualityPhase,
-        StatisticsPhase,
-        TemporalPhase,
-        TemporalSliceAnalysisPhase,
-        TypingPhase,
-        # ValidationPhase,  # De-configured: domain-specific
-    )
-    from dataraum.pipeline.phases.enriched_views_phase import EnrichedViewsPhase
-
-    pipeline.register(ImportPhase())
-    pipeline.register(TypingPhase())
-    pipeline.register(StatisticsPhase())
-    pipeline.register(ColumnEligibilityPhase())  # After statistics, before correlations
-    pipeline.register(StatisticalQualityPhase())
-    pipeline.register(RelationshipsPhase())
-    pipeline.register(CorrelationsPhase())
-    pipeline.register(TemporalPhase())
-    pipeline.register(SemanticPhase())
-    pipeline.register(EnrichedViewsPhase())
-    pipeline.register(SlicingPhase())
-    pipeline.register(SliceAnalysisPhase())
-    pipeline.register(QualitySummaryPhase())
-    pipeline.register(TemporalSliceAnalysisPhase())
-    # BusinessCyclesPhase de-configured: domain-specific, keep code
-    # CrossTableQualityPhase de-configured: write-only data, evaluate for entropy later
-    pipeline.register(EntropyPhase())
-    pipeline.register(EntropyInterpretationPhase())
-    # GraphExecutionPhase de-configured: re-introduce after pipeline cleanup
-    # ValidationPhase de-configured: domain-specific, keep code
 
 
 def run_pipeline(

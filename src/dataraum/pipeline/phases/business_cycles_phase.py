@@ -14,9 +14,11 @@ from dataraum.llm import create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.db_models import PhaseCheckpoint
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
 
+@analysis_phase
 class BusinessCyclesPhase(BasePhase):
     """Expert LLM agent for business cycle detection.
 
@@ -45,10 +47,6 @@ class BusinessCyclesPhase(BasePhase):
     @property
     def outputs(self) -> list[str]:
         return ["detected_cycles", "business_processes"]
-
-    @property
-    def is_llm_phase(self) -> bool:
-        return True
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if business cycles have already been detected."""

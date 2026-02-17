@@ -26,6 +26,7 @@ from dataraum.analysis.temporal_slicing.models import TemporalSliceConfig, TimeG
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 
@@ -42,6 +43,7 @@ def _sanitize_name(value: str) -> str:
 logger = get_logger(__name__)
 
 
+@analysis_phase
 class TemporalSliceAnalysisPhase(BasePhase):
     """Drift analysis on slices.
 
@@ -66,10 +68,6 @@ class TemporalSliceAnalysisPhase(BasePhase):
     @property
     def outputs(self) -> list[str]:
         return ["drift_summaries", "period_analyses"]
-
-    @property
-    def is_llm_phase(self) -> bool:
-        return False
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no slice definitions or no temporal columns."""

@@ -14,11 +14,13 @@ from dataraum.analysis.statistics.db_models import StatisticalQualityMetrics
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
 
 
+@analysis_phase
 class StatisticalQualityPhase(BasePhase):
     """Statistical quality assessment phase.
 

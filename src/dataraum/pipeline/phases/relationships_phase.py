@@ -17,11 +17,13 @@ from dataraum.core.config import load_yaml_config
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
 logger = get_logger(__name__)
 
 
+@analysis_phase
 class RelationshipsPhase(BasePhase):
     """Relationship detection phase.
 

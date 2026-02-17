@@ -17,9 +17,11 @@ from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 
+@analysis_phase
 class SlicingPhase(BasePhase):
     """LLM-powered slicing analysis phase.
 
@@ -45,10 +47,6 @@ class SlicingPhase(BasePhase):
     @property
     def outputs(self) -> list[str]:
         return ["slice_definitions", "slice_queries"]
-
-    @property
-    def is_llm_phase(self) -> bool:
-        return True
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all tables already have slice definitions."""

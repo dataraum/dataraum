@@ -19,9 +19,11 @@ from dataraum.llm import create_provider, load_llm_config
 from dataraum.llm.prompts import PromptRenderer
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
 
+@analysis_phase
 class GraphExecutionPhase(BasePhase):
     """Execute transformation graphs to calculate metrics.
 
@@ -57,10 +59,6 @@ class GraphExecutionPhase(BasePhase):
     @property
     def outputs(self) -> list[str]:
         return ["metrics_calculated", "metrics_skipped", "execution_context"]
-
-    @property
-    def is_llm_phase(self) -> bool:
-        return True
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no typed tables found."""

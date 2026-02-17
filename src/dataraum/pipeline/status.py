@@ -12,8 +12,9 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from dataraum.pipeline.base import PIPELINE_DAG, PhaseStatus
+from dataraum.pipeline.base import PhaseStatus
 from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
+from dataraum.pipeline.registry import get_registry
 
 
 @dataclass
@@ -119,16 +120,18 @@ def get_pipeline_status(session: Session, source_id: str) -> PipelineStatus:
         ):
             checkpoint_by_phase[checkpoint.phase_name] = checkpoint
 
-    # Build phase status list
+    # Build phase status list from registry
+    registry = get_registry()
     phases: list[PhaseStatusInfo] = []
-    for phase_def in PIPELINE_DAG:
-        phase_checkpoint = checkpoint_by_phase.get(phase_def.name)
+    for name, cls in registry.items():
+        instance = cls()
+        phase_checkpoint = checkpoint_by_phase.get(name)
         if phase_checkpoint is not None:
             status = PhaseStatus(phase_checkpoint.status)
             phases.append(
                 PhaseStatusInfo(
-                    name=phase_def.name,
-                    description=phase_def.description,
+                    name=name,
+                    description=instance.description,
                     status=status,
                     duration_seconds=phase_checkpoint.duration_seconds,
                     completed_at=phase_checkpoint.completed_at,
@@ -140,8 +143,8 @@ def get_pipeline_status(session: Session, source_id: str) -> PipelineStatus:
         else:
             phases.append(
                 PhaseStatusInfo(
-                    name=phase_def.name,
-                    description=phase_def.description,
+                    name=name,
+                    description=instance.description,
                     status=PhaseStatus.PENDING,
                 )
             )

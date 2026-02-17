@@ -4,6 +4,31 @@
 
 version: "1.0.0"
 
+# Active phases (display order; actual execution order determined by dependencies).
+# Comment out a phase to disable it. Dependencies are defined in the phase classes.
+phases:
+  - import
+  - typing
+  - statistics
+  - column_eligibility
+  - statistical_quality
+  - relationships
+  - correlations
+  - temporal
+  - semantic
+  - enriched_views
+  - slicing
+  - slice_analysis
+  - temporal_slice_analysis
+  - quality_summary
+  - entropy
+  - entropy_interpretation
+  # De-configured phases (uncomment to enable):
+  # - cross_table_quality
+  # - validation
+  # - business_cycles
+  # - graph_execution
+
 # Pipeline orchestrator settings
 pipeline:
   # Maximum phases to run in parallel (ThreadPoolExecutor workers)

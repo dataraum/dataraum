@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
-from dataraum.pipeline.phases import ImportPhase
+from dataraum.pipeline.phases.import_phase import ImportPhase
 from dataraum.storage import Column, Source, Table
 
 if TYPE_CHECKING:

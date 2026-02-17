@@ -1,5 +1,7 @@
 # DataRaum Context Engine - Information Architecture
 
+> **Status (2026-02-17):** Complete. Reference document — no implementation actions. Defines user journeys and interface responsibilities.
+
 > This document defines the user journeys, data needs, and interface responsibilities
 > for the DataRaum Context Engine. It serves as the reference for all UX decisions.
 

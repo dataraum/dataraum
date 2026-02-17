@@ -1,5 +1,7 @@
 # Query Agent Architecture: RAG-Based Query Reuse
 
+> **Status (2026-02-17):** Design complete, implementation deferred. Graph/query agents are out of scope for the current restructuring — will be re-introduced after pipeline stabilization and testdata work.
+
 ## Core Insight
 
 **Reusing validated queries stabilizes entropy faster than generating fresh SQL.**

@@ -6,7 +6,7 @@ Prioritized backlog for the dataraum-context project.
 
 **Related:**
 - [PROGRESS.md](./PROGRESS.md) - Completed work log
-- [ENTROPY_IMPLEMENTATION_PLAN.md](./ENTROPY_IMPLEMENTATION_PLAN.md) - Entropy system architecture
+- [plans/testdata-and-calibration-roadmap.md](./plans/testdata-and-calibration-roadmap.md) - Next major phase
 
 ---
 
@@ -33,9 +33,9 @@ Bottom-up cleanup: each module gets dead code removal, config streamlining, logg
 | 13 | `analysis/quality_summary/` | ✅ Done |
 | 14 | `analysis/temporal_slicing/` | ✅ Done |
 | 15 | `analysis/topology/` | ✅ Removed (TDA unused, relationships/graph_topology covers schema graph) |
-| 16 | `entropy/` | Pending |
-| 17 | `llm/` | Pending |
-| 18 | `pipeline/` | Pending |
+| 16 | `entropy/` | ✅ ~95% done (spec, tests, logging, dead code all done; minor fallback cleanup remains) |
+| 17 | `llm/` | ⚠️ ~70% done (spec + dead code done; missing: logging in error paths, test gaps) |
+| 18 | `pipeline/` | ⚠️ ~75% done (spec + tests done; remaining: 30 print() in runner.py, minor fallbacks) |
 | — | `graphs/` + `query/` | **Out of scope** (re-introduce after pipeline is clean) |
 
 ### After All Modules (Part 4)

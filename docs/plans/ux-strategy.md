@@ -1,5 +1,7 @@
 # UX Strategy: CLI, TUI, Web, MCP
 
+> **Status (2026-02-17):** Phases 1-4 (CLI, TUI, MCP, Python API) complete. Phase 5 (Web UI) and Phase 6 (Jupyter) deferred. Accurate reference for current UX architecture.
+
 ## Overview
 
 This document captures the UX strategy for dataraum's multiple interfaces. The goal is to provide a consistent experience across different user personas while leveraging each interface's strengths.

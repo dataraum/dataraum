@@ -1,5 +1,7 @@
 # CLI-First UX Plan
 
+> **Status (2026-02-17):** Largely implemented. CLI commands, TUI screens, and MCP server all exist. API was NOT removed (decision reversed in restructuring-plan.md §4.6 — kept as foundation for Web UI). Superseded by [interface-strategy.md](./interface-strategy.md) for future UI work.
+
 ## Goal
 Streamline to a single CLI module with Textual TUI. Remove HTTP API. Add MCP server for LLM integration.
 **Flatten project structure** to root level.

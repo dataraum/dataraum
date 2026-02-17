@@ -1,5 +1,7 @@
 # Interface Strategy: Agent Testing, HTMX UI, MCP, Jupyter
 
+> **Status (2026-02-17):** Phase 0 (agent validation) complete. Phase 1 (HTMX Web UI) and Phase 2 (MCP/Jupyter) not started. MCP server exists but as basic implementation, not the "wrap proven endpoints" approach described here. Paused pending restructuring completion and testdata work.
+
 ## Overview
 
 This plan covers the path from validated agents to multiple user interfaces, all sharing the same backend. It supersedes [ui-api-consolidation.md](../archive/ui-api-consolidation.md) (archived).

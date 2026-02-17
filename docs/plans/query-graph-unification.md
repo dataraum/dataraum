@@ -1,5 +1,7 @@
 # Plan: Unify Query and Graph Agent SQL Execution
 
+> **Status (2026-02-17):** Design complete, implementation deferred. Depends on graph/query agent re-introduction (out of scope for current restructuring).
+
 ## Problem Statement
 
 Currently, Graph Agent and Query Agent have divergent implementations:

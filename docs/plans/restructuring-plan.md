@@ -1,5 +1,7 @@
 # DataRaum Context Engine - Restructuring Plan
 
+> **Status (2026-02-17):** Parts 1-3 complete (modules 1-15 done, module 15/topology removed). Modules 16-18 substantially done through other work (~95%/70%/75%). Part 4 (overarching cleanup) not started — §4.1 (config-driven pipeline) is now Phase 2 of the [testdata roadmap](./testdata-and-calibration-roadmap.md).
+
 ## Context
 
 The project has grown organically through 4 priority phases to ~50 SQLAlchemy models, 21 pipeline phases, 692 tests, and 4 interfaces (CLI, TUI, API, MCP). The codebase needs consolidation: dead code removal, model streamlining, test improvement, configuration separation, and specification extraction — done module-by-module with a mini-plan agreed per module.

@@ -1,5 +1,7 @@
 # Phase F: Entropy Framework Architecture Refactor - Implementation Plan
 
+> **Status (2026-02-17):** Largely obsolete. 5 of 6 issues resolved during module restructuring (see BACKLOG.md "Resolved — Phase F Architecture Refactor"). Remaining item (#3 evidence partially lost) needs verification only.
+
 ## Executive Summary
 
 Phase F completes the entropy framework cleanup by simplifying the data model and establishing clear separation of concerns. The key changes:

@@ -350,14 +350,17 @@ def compute_ri_metrics(
         LEFT JOIN {to_table} t2 ON t1."{from_column}" = t2."{to_column}"
         WHERE t1."{from_column}" IS NOT NULL
     '''
+    left_total_count = None
     try:
         left_result = duckdb_conn.execute(left_query).fetchone()
         if left_result and left_result[0] > 0:
             left_ri = (left_result[1] / left_result[0]) * 100
             orphan_count = left_result[0] - left_result[1]
+            left_total_count = left_result[0]
         else:
             left_ri = 0.0
             orphan_count = 0
+            left_total_count = 0
     except Exception:
         left_ri = None
         orphan_count = None
@@ -391,6 +394,7 @@ def compute_ri_metrics(
         "left_referential_integrity": round(left_ri, 2) if left_ri is not None else None,
         "right_referential_integrity": round(right_ri, 2) if right_ri is not None else None,
         "orphan_count": orphan_count,
+        "left_total_count": left_total_count,
         "cardinality_verified": cardinality_verified,
     }
 

@@ -144,10 +144,9 @@ detectors:
     score_partial: 0.6 # Description only, no business_name/entity_type
     score_documented: 0.2 # Has description + business_name or entity_type
     score_fully_documented: 0.0 # Has description + business_name + entity_type
-    # Confidence weighting (low LLM confidence increases entropy)
-    confidence_weight: 0.3 # How much LLM confidence affects score
+    # Confidence penalty (additive: confidence_weight * (1 - confidence))
+    confidence_weight: 0.3 # How much low LLM confidence adds to entropy
     ontology_bonus: 0.1 # Reduction if business_concept is present
-    min_confidence: 0.5 # Below this, treat as speculative
     # Expected entropy reduction
     reduction_add_description: 0.8
     reduction_add_business_name: 0.2

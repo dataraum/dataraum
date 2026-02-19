@@ -38,8 +38,8 @@ def _make_config(
             EligibilityRule(
                 id="single_value",
                 condition="distinct_count == 1 and eliminate_single_value",
-                status="INELIGIBLE",
-                reason="Column has single value",
+                status="WARN",
+                reason="Column has single value - no variance for statistical analysis",
             ),
             EligibilityRule(
                 id="high_null",
@@ -94,7 +94,8 @@ class TestEvaluateRules:
         assert status == "INELIGIBLE"
         assert rule_id == "all_null"
 
-    def test_single_value_ineligible(self):
+    def test_single_value_warned(self):
+        """Single-value columns get WARN (kept but flagged), not INELIGIBLE."""
         config = _make_config()
         metrics = {
             "null_ratio": 0.0,
@@ -103,7 +104,7 @@ class TestEvaluateRules:
             "total_count": 100,
         }
         status, rule_id, reason = evaluate_rules(config, metrics, "col")
-        assert status == "INELIGIBLE"
+        assert status == "WARN"
         assert rule_id == "single_value"
 
     def test_high_null_warn(self):
@@ -221,6 +222,13 @@ class TestLoadEligibilityConfig:
         assert config.thresholds.eliminate_single_value is True
         assert len(config.rules) >= 4
         assert config.default_status == "ELIGIBLE"
+
+    def test_single_value_rule_is_warn_not_ineligible(self):
+        """Production config should WARN on single-value columns, not drop them."""
+        config = load_eligibility_config()
+        single_value_rules = [r for r in config.rules if r.id == "single_value"]
+        assert len(single_value_rules) == 1
+        assert single_value_rules[0].status == "WARN"
 
     def test_from_dict_requires_version(self):
         """Missing required fields should raise KeyError."""

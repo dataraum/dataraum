@@ -3,9 +3,12 @@
 Measures uncertainty in business meaning/description.
 Columns without clear business descriptions are harder to interpret correctly.
 
-Enhanced to use:
-- LLM confidence as a scoring weight (low confidence = higher entropy)
-- business_concept presence as ontology alignment bonus (reduces entropy)
+Scoring formula (additive):
+  score = base_score + confidence_weight * (1 - confidence) - concept_bonus
+
+- base_score: from presence of description/metadata fields (0.0 to 1.0)
+- confidence_weight * (1 - confidence): low LLM confidence adds entropy independently
+- concept_bonus: business_concept presence reduces entropy (ontology alignment)
 """
 
 from dataraum.entropy.config import get_entropy_config
@@ -16,10 +19,12 @@ from dataraum.entropy.models import EntropyObject, ResolutionOption
 class BusinessMeaningDetector(EntropyDetector):
     """Detector for business meaning clarity.
 
-    Measures semantic clarity using:
-    - Presence of description, business_name, entity_type
-    - LLM confidence as weight (low confidence = higher entropy)
-    - business_concept as ontology alignment bonus
+    Measures semantic clarity using an additive formula:
+      score = base_score + confidence_weight * (1 - confidence) - concept_bonus
+
+    - base_score: from presence of description, business_name, entity_type
+    - confidence_weight: how much LLM confidence affects score (additive penalty)
+    - concept_bonus: business_concept presence reduces entropy (ontology alignment)
 
     Source: semantic/SemanticAnnotation
     Scores configurable in config/entropy/thresholds.yaml.
@@ -35,10 +40,12 @@ class BusinessMeaningDetector(EntropyDetector):
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect business meaning entropy.
 
-        Score calculation:
-        1. Base score from presence of description/metadata
-        2. Confidence factor: low LLM confidence increases entropy
+        Score calculation (additive):
+        1. Base score from presence of description/metadata (0.0 to 1.0)
+        2. Confidence penalty: confidence_weight * (1 - confidence)
         3. Ontology bonus: business_concept presence reduces entropy
+
+        Final: score = base_score + confidence_penalty - concept_bonus
 
         Args:
             context: Detector context with semantic analysis results
@@ -59,10 +66,9 @@ class BusinessMeaningDetector(EntropyDetector):
         reduction_business_name = detector_config.get("reduction_add_business_name", 0.2)
         reduction_entity_type = detector_config.get("reduction_add_entity_type", 0.15)
 
-        # New config: confidence weighting and ontology bonus
+        # Confidence weighting and ontology bonus
         confidence_weight = detector_config.get("confidence_weight", 0.3)
         ontology_bonus = detector_config.get("ontology_bonus", 0.1)
-        min_confidence = detector_config.get("min_confidence", 0.5)
 
         semantic = context.get_analysis("semantic", {})
 
@@ -107,21 +113,16 @@ class BusinessMeaningDetector(EntropyDetector):
         else:
             base_score = score_documented  # Has description + one of the two
 
-        # 2. Confidence factor: low confidence increases entropy
-        # confidence_factor of 1.0 means no adjustment, >1.0 increases score
-        if confidence < min_confidence:
-            # Below min_confidence, treat as speculative
-            confidence_factor = 1.0 + confidence_weight
-        else:
-            # Scale confidence_factor: 1.0 at confidence=1.0, up to 1.0+weight at min_confidence
-            normalized = (confidence - min_confidence) / (1.0 - min_confidence)
-            confidence_factor = 1.0 + confidence_weight * (1.0 - normalized)
+        # 2. Confidence penalty: low confidence adds entropy independently
+        # When confidence=1.0, penalty=0; when confidence=0.0, penalty=confidence_weight
+        confidence_penalty = confidence_weight * max(0.0, 1.0 - confidence)
 
         # 3. Ontology bonus: having business_concept = ontology alignment = lower entropy
         concept_bonus = ontology_bonus if business_concept else 0.0
 
-        # Calculate final score
-        score = (base_score * confidence_factor) - concept_bonus
+        # Calculate final score (additive: base + penalty - bonus)
+        # This avoids the multiplicative bug where 0.0 * anything = 0.0
+        score = base_score + confidence_penalty - concept_bonus
         score = max(0.0, min(1.0, score))  # Clamp to [0, 1]
 
         # Build evidence with raw metrics and score components
@@ -130,7 +131,7 @@ class BusinessMeaningDetector(EntropyDetector):
                 "raw_metrics": raw_metrics,
                 "score_components": {
                     "base_score": round(base_score, 3),
-                    "confidence_factor": round(confidence_factor, 3),
+                    "confidence_penalty": round(confidence_penalty, 3),
                     "ontology_bonus": round(concept_bonus, 3),
                     "final_score": round(score, 3),
                 },

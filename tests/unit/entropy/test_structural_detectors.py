@@ -5,6 +5,7 @@ import pytest
 from dataraum.entropy.detectors import (
     DetectorContext,
     JoinPathDeterminismDetector,
+    RelationshipEntropyDetector,
     TypeFidelityDetector,
 )
 
@@ -281,6 +282,128 @@ class TestJoinPathDeterminismDetector:
     def test_detector_properties(self, detector: JoinPathDeterminismDetector):
         """Test detector has correct properties."""
         assert detector.detector_id == "join_path_determinism"
+        assert detector.layer == "structural"
+        assert detector.dimension == "relations"
+        assert detector.required_analyses == ["relationships"]
+
+
+class TestRelationshipEntropyDetector:
+    """Tests for RelationshipEntropyDetector orphan fallback formula."""
+
+    @pytest.fixture
+    def detector(self) -> RelationshipEntropyDetector:
+        """Create detector instance."""
+        return RelationshipEntropyDetector()
+
+    def test_ri_from_left_referential_integrity(self, detector: RelationshipEntropyDetector):
+        """Test RI entropy computed from left_referential_integrity percentage."""
+        context = DetectorContext(
+            table_name="orders",
+            column_name="customer_id",
+            analysis_results={
+                "relationships": [
+                    {
+                        "from_table": "orders",
+                        "to_table": "customers",
+                        "relationship_type": "foreign_key",
+                        "is_confirmed": True,
+                        "confidence": 0.9,
+                        "cardinality": "many-to-one",
+                        "evidence": {
+                            "left_referential_integrity": 95.0,
+                            "orphan_count": 50,
+                            "left_total_count": 1000,
+                            "cardinality_verified": True,
+                        },
+                    }
+                ]
+            },
+        )
+
+        results = detector.detect(context)
+
+        assert len(results) == 1
+        # RI entropy from left_referential_integrity: 1.0 - 95/100 = 0.05
+        ri_entropy = results[0].evidence[0]["ri_entropy"]
+        assert ri_entropy == pytest.approx(0.05, abs=0.01)
+
+    def test_orphan_with_total_uses_ratio(self, detector: RelationshipEntropyDetector):
+        """Test orphan count with total_count uses ratio-based formula."""
+        context = DetectorContext(
+            table_name="orders",
+            column_name="customer_id",
+            analysis_results={
+                "relationships": [
+                    {
+                        "from_table": "orders",
+                        "to_table": "customers",
+                        "relationship_type": "foreign_key",
+                        "is_confirmed": True,
+                        "confidence": 0.9,
+                        "cardinality": "many-to-one",
+                        "evidence": {
+                            # No left_referential_integrity — triggers fallback
+                            "orphan_count": 50,
+                            "left_total_count": 1000,
+                            "cardinality_verified": True,
+                        },
+                    }
+                ]
+            },
+        )
+
+        results = detector.detect(context)
+
+        assert len(results) == 1
+        # Ratio-based: 50/1000 = 0.05
+        ri_entropy = results[0].evidence[0]["ri_entropy"]
+        assert ri_entropy == pytest.approx(0.05, abs=0.01)
+
+    def test_orphan_without_total_uses_count_formula(self, detector: RelationshipEntropyDetector):
+        """Test orphan count without total falls back to count-based formula."""
+        context = DetectorContext(
+            table_name="orders",
+            column_name="customer_id",
+            analysis_results={
+                "relationships": [
+                    {
+                        "from_table": "orders",
+                        "to_table": "customers",
+                        "relationship_type": "foreign_key",
+                        "is_confirmed": True,
+                        "confidence": 0.9,
+                        "cardinality": "many-to-one",
+                        "evidence": {
+                            # No left_referential_integrity and no total_count
+                            "orphan_count": 50,
+                            "cardinality_verified": True,
+                        },
+                    }
+                ]
+            },
+        )
+
+        results = detector.detect(context)
+
+        assert len(results) == 1
+        # Count-based fallback: 0.3 + 50/1000 = 0.35
+        ri_entropy = results[0].evidence[0]["ri_entropy"]
+        assert ri_entropy == pytest.approx(0.35, abs=0.01)
+
+    def test_no_relationships_empty(self, detector: RelationshipEntropyDetector):
+        """Test empty result when no relationships exist."""
+        context = DetectorContext(
+            table_name="orders",
+            column_name="customer_id",
+            analysis_results={"relationships": []},
+        )
+
+        results = detector.detect(context)
+        assert results == []
+
+    def test_detector_properties(self, detector: RelationshipEntropyDetector):
+        """Test detector has correct properties."""
+        assert detector.detector_id == "relationship_entropy"
         assert detector.layer == "structural"
         assert detector.dimension == "relations"
         assert detector.required_analyses == ["relationships"]

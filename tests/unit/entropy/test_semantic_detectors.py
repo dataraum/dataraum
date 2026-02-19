@@ -243,6 +243,124 @@ class TestBusinessMeaningDetector:
         assert add_desc_opt is not None
         assert "computational.aggregations" in add_desc_opt.cascade_dimensions
 
+    def test_fully_documented_low_confidence_nonzero(self, detector: BusinessMeaningDetector):
+        """Test that fully documented column with low confidence has nonzero score.
+
+        This is the key regression test for the additive formula fix:
+        the old multiplicative formula produced 0.0 * confidence_factor = 0.0.
+        The additive formula gives: 0.0 + 0.3 * (1.0 - 0.5) - 0.0 = 0.15.
+        """
+        context = DetectorContext(
+            table_name="orders",
+            column_name="amount",
+            analysis_results={
+                "semantic": {
+                    "business_description": "Total order amount in USD",
+                    "business_name": "Order Amount",
+                    "entity_type": "monetary_amount",
+                    "confidence": 0.5,
+                }
+            },
+        )
+
+        results = detector.detect(context)
+
+        assert len(results) == 1
+        # Additive: 0.0 + 0.3 * 0.5 - 0.0 = 0.15
+        assert results[0].score > 0.0, "Low confidence should produce nonzero score"
+        assert results[0].score == pytest.approx(0.15, abs=0.01)
+
+    def test_fully_documented_high_confidence_near_zero(self, detector: BusinessMeaningDetector):
+        """Test that fully documented column with high confidence has near-zero score."""
+        context = DetectorContext(
+            table_name="orders",
+            column_name="amount",
+            analysis_results={
+                "semantic": {
+                    "business_description": "Total order amount in USD",
+                    "business_name": "Order Amount",
+                    "entity_type": "monetary_amount",
+                    "confidence": 0.95,
+                }
+            },
+        )
+
+        results = detector.detect(context)
+
+        assert len(results) == 1
+        # Additive: 0.0 + 0.3 * 0.05 = 0.015
+        assert results[0].score == pytest.approx(0.015, abs=0.01)
+
+    def test_low_confidence_increases_partial_score(self, detector: BusinessMeaningDetector):
+        """Test that low confidence increases score for partially documented columns."""
+        # High confidence
+        context_high = DetectorContext(
+            table_name="orders",
+            column_name="amount",
+            analysis_results={
+                "semantic": {
+                    "business_description": "Order amount",
+                    "business_name": None,
+                    "entity_type": None,
+                    "confidence": 0.95,
+                }
+            },
+        )
+        # Low confidence
+        context_low = DetectorContext(
+            table_name="orders",
+            column_name="amount",
+            analysis_results={
+                "semantic": {
+                    "business_description": "Order amount",
+                    "business_name": None,
+                    "entity_type": None,
+                    "confidence": 0.5,
+                }
+            },
+        )
+
+        results_high = detector.detect(context_high)
+        results_low = detector.detect(context_low)
+
+        assert results_low[0].score > results_high[0].score
+
+    def test_concept_bonus_reduces_score(self, detector: BusinessMeaningDetector):
+        """Test that business_concept presence reduces score."""
+        # Without concept
+        context_no_concept = DetectorContext(
+            table_name="orders",
+            column_name="amount",
+            analysis_results={
+                "semantic": {
+                    "business_description": "Order amount",
+                    "business_name": "Order Amount",
+                    "entity_type": None,
+                    "business_concept": None,
+                }
+            },
+        )
+        # With concept
+        context_with_concept = DetectorContext(
+            table_name="orders",
+            column_name="amount",
+            analysis_results={
+                "semantic": {
+                    "business_description": "Order amount",
+                    "business_name": "Order Amount",
+                    "entity_type": None,
+                    "business_concept": "revenue",
+                }
+            },
+        )
+
+        results_no = detector.detect(context_no_concept)
+        results_yes = detector.detect(context_with_concept)
+
+        assert results_yes[0].score < results_no[0].score
+        # Ontology bonus is 0.1
+        assert results_no[0].score - results_yes[0].score == pytest.approx(0.1, abs=0.01)
+
     def test_detector_properties(self, detector: BusinessMeaningDetector):
         """Test detector has correct properties."""
         assert detector.detector_id == "business_meaning"

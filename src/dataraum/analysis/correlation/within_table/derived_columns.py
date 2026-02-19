@@ -107,7 +107,7 @@ def detect_derived_columns(
     table: Table,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
-    min_match_rate: float = 0.95,
+    min_match_rate: float = 0.80,
     max_workers: int = 4,
 ) -> Result[list[DerivedColumn]]:
     """Detect columns that are arithmetic derivations of other columns.

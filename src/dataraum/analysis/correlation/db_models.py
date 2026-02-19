@@ -4,6 +4,9 @@ SQLAlchemy models for correlation analysis persistence.
 
 Within-Table Analysis:
 - DerivedColumn: Derived column detection
+
+Cross-Table Analysis:
+- CrossTableCorrelationRecord: Cross-table correlation findings
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -81,3 +85,47 @@ class DerivedColumn(Base):
 
 Index("idx_derived_table", DerivedColumn.table_id)
 Index("idx_derived_column", DerivedColumn.derived_column_id)
+
+
+class CrossTableCorrelationRecord(Base):
+    """Cross-table correlation finding between columns in different tables.
+
+    Persists the results of cross-table quality analysis, specifically
+    Pearson/Spearman correlations between numeric columns across joined tables.
+    """
+
+    __tablename__ = "cross_table_correlations"
+
+    correlation_id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid4())
+    )
+    relationship_id: Mapped[str] = mapped_column(
+        ForeignKey("relationships.relationship_id", ondelete="CASCADE"), nullable=False
+    )
+    from_table_id: Mapped[str] = mapped_column(
+        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
+    )
+    from_column_id: Mapped[str] = mapped_column(
+        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
+    )
+    to_table_id: Mapped[str] = mapped_column(
+        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
+    )
+    to_column_id: Mapped[str] = mapped_column(
+        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
+    )
+    pearson_r: Mapped[float] = mapped_column(Float, nullable=False)
+    spearman_rho: Mapped[float] = mapped_column(Float, nullable=False)
+    strength: Mapped[str] = mapped_column(
+        String, nullable=False
+    )  # weak/moderate/strong/very_strong
+    is_join_column: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+# Cross-table correlation indexes
+Index("idx_ctc_relationship", CrossTableCorrelationRecord.relationship_id)
+Index("idx_ctc_from_column", CrossTableCorrelationRecord.from_column_id)
+Index("idx_ctc_to_column", CrossTableCorrelationRecord.to_column_id)

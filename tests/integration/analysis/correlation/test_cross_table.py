@@ -82,8 +82,8 @@ def test_analyze_relationship_quality_basic(duckdb_conn, relationship):
     assert result.joined_row_count == 1000
 
 
-def test_detects_derived_columns(duckdb_conn, relationship):
-    """Test detection of derived columns (amount -> tax)."""
+def test_only_cross_table_correlations_returned(duckdb_conn, relationship):
+    """Test that only cross-table correlations are returned (no within-table)."""
     result = analyze_relationship_quality(
         relationship=relationship,
         duckdb_conn=duckdb_conn,
@@ -93,42 +93,9 @@ def test_detects_derived_columns(duckdb_conn, relationship):
 
     assert result is not None
 
-    # Should detect amount <-> tax as redundant/derived
-    orders_redundant = [r for r in result.redundant_columns if r.table == "orders"]
-    assert len(orders_redundant) >= 1
-
-    amount_tax = next(
-        (r for r in orders_redundant if {"amount", "tax"} == {r.column1, r.column2}), None
-    )
-    assert amount_tax is not None
-    assert abs(amount_tax.correlation - 1.0) < 0.01  # Should be ~1.0
-
-
-def test_detects_redundant_columns(duckdb_conn, relationship):
-    """Test detection of redundant columns (credit_limit <-> credit_limit_copy)."""
-    result = analyze_relationship_quality(
-        relationship=relationship,
-        duckdb_conn=duckdb_conn,
-        from_table_path="orders",
-        to_table_path="customers",
-    )
-
-    assert result is not None
-
-    # Should detect credit_limit <-> credit_limit_copy
-    customers_redundant = [r for r in result.redundant_columns if r.table == "customers"]
-    assert len(customers_redundant) >= 1
-
-    credit_pair = next(
-        (
-            r
-            for r in customers_redundant
-            if {"credit_limit", "credit_limit_copy"} == {r.column1, r.column2}
-        ),
-        None,
-    )
-    assert credit_pair is not None
-    assert abs(credit_pair.correlation - 1.0) < 0.001  # Should be exactly 1.0
+    # Cross-table correlations should be present
+    # (at minimum the join column pair)
+    assert len(result.cross_table_correlations) > 0
 
 
 def test_detects_cross_table_join_correlation(duckdb_conn, relationship):
@@ -149,37 +116,52 @@ def test_detects_cross_table_join_correlation(duckdb_conn, relationship):
     assert abs(join_corr.pearson_r - 1.0) < 0.01  # Should be ~1.0 for FK join
 
 
-def test_detects_multicollinearity(duckdb_conn, relationship):
-    """Test multicollinearity detection."""
+def test_vdp_skipped_by_default(duckdb_conn, relationship):
+    """Test that VDP multicollinearity is skipped by default."""
     result = analyze_relationship_quality(
         relationship=relationship,
         duckdb_conn=duckdb_conn,
         from_table_path="orders",
         to_table_path="customers",
+    )
+
+    assert result is not None
+    # VDP skipped = no dependency groups, default values
+    assert result.overall_condition_index == 1.0
+    assert result.overall_severity == "none"
+    assert len(result.dependency_groups) == 0
+    assert len(result.cross_table_dependency_groups) == 0
+
+
+def test_vdp_computed_when_enabled(duckdb_conn, relationship):
+    """Test that VDP multicollinearity is computed when enabled."""
+    result = analyze_relationship_quality(
+        relationship=relationship,
+        duckdb_conn=duckdb_conn,
+        from_table_path="orders",
+        to_table_path="customers",
+        compute_vdp=True,
     )
 
     assert result is not None
     assert result.overall_condition_index > 1.0  # Should detect some multicollinearity
-
-    # Should have dependency groups
     assert len(result.dependency_groups) > 0
 
 
 def test_quality_issues_generated(duckdb_conn, relationship):
-    """Test that quality issues are generated."""
+    """Test that quality issues are generated for strong cross-table correlations."""
     result = analyze_relationship_quality(
         relationship=relationship,
         duckdb_conn=duckdb_conn,
         from_table_path="orders",
         to_table_path="customers",
+        min_correlation=0.3,
     )
 
     assert result is not None
-    assert len(result.issues) > 0
-
-    # Should have redundant column warnings
-    redundant_issues = [i for i in result.issues if i.issue_type == "redundant_column"]
-    assert len(redundant_issues) >= 2  # amount/tax and credit_limit/credit_limit_copy
+    # All issues should be about cross-table correlations (no redundant_column issues)
+    for issue in result.issues:
+        assert issue.issue_type in ("unexpected_correlation", "multicollinearity")
 
 
 def test_returns_none_for_empty_tables(duckdb_conn):
@@ -215,22 +197,25 @@ def test_returns_none_for_empty_tables(duckdb_conn):
     conn.close()
 
 
-def test_cross_table_dependency_groups(duckdb_conn, relationship):
-    """Test that cross-table dependency groups are identified."""
-    result = analyze_relationship_quality(
+def test_min_correlation_filtering(duckdb_conn, relationship):
+    """Test that min_correlation filter works."""
+    # With high threshold, fewer correlations
+    result_high = analyze_relationship_quality(
         relationship=relationship,
         duckdb_conn=duckdb_conn,
         from_table_path="orders",
         to_table_path="customers",
+        min_correlation=0.9,
+    )
+    # With low threshold, more correlations
+    result_low = analyze_relationship_quality(
+        relationship=relationship,
+        duckdb_conn=duckdb_conn,
+        from_table_path="orders",
+        to_table_path="customers",
+        min_correlation=0.3,
     )
 
-    assert result is not None
-
-    # The join column pair should create a cross-table dependency group
-    cross_table_groups = result.cross_table_dependency_groups
-    assert len(cross_table_groups) > 0
-
-    for group in cross_table_groups:
-        assert group.is_cross_table
-        tables_in_group = {t for t, _ in group.columns}
-        assert len(tables_in_group) > 1  # Multiple tables
+    assert result_high is not None
+    assert result_low is not None
+    assert len(result_low.cross_table_correlations) >= len(result_high.cross_table_correlations)

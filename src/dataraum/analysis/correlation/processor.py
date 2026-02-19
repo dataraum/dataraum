@@ -6,7 +6,7 @@ Within-table analysis (analyze_correlations):
 - Derived column detection (sum, product, ratio, etc.)
 
 Cross-table quality analysis (analyze_cross_table_quality):
-- Cross-table quality metrics (redundant/derived columns, multicollinearity)
+- Cross-table correlations between columns in different tables
 - Requires confirmed relationships from semantic agent
 """
 
@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.correlation.cross_table import analyze_relationship_quality
+from dataraum.analysis.correlation.db_models import CrossTableCorrelationRecord
 from dataraum.analysis.correlation.models import (
     CorrelationAnalysisResult,
     CrossTableQualityResult,
@@ -92,24 +93,24 @@ def analyze_cross_table_quality(
     relationship: Relationship,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
-    min_correlation: float = 0.3,
+    min_correlation: float = 0.5,
     redundancy_threshold: float = 0.99,
+    compute_vdp: bool = False,
 ) -> Result[CrossTableQualityResult]:
     """Analyze quality of a confirmed cross-table relationship.
 
     This runs after relationships are confirmed by semantic analysis.
-    It joins the tables and analyzes:
-    - Cross-table correlations (unexpected relationships)
-    - Redundant columns (r ≈ 1.0 within same table)
-    - Derived columns (one column computed from another)
-    - Multicollinearity (VDP-based dependency groups)
+    It joins the tables and analyzes cross-table correlations.
+
+    Results are persisted as CrossTableCorrelationRecord entries.
 
     Args:
         relationship: Confirmed Relationship DB model
         duckdb_conn: DuckDB connection
         session: SQLAlchemy session
-        min_correlation: Minimum |r| to report (default: 0.3)
+        min_correlation: Minimum |r| to report (default: 0.5)
         redundancy_threshold: Threshold for redundancy detection (default: 0.99)
+        compute_vdp: Whether to compute VDP multicollinearity (default: False)
 
     Returns:
         Result containing CrossTableQualityResult
@@ -168,10 +169,63 @@ def analyze_cross_table_quality(
             to_table_path=to_table.duckdb_path,
             min_correlation=min_correlation,
             redundancy_threshold=redundancy_threshold,
+            compute_vdp=compute_vdp,
         )
 
         if quality_result is None:
             return Result.fail("Cross-table analysis returned no results (insufficient data)")
+
+        # Persist cross-table correlations
+        # Build column name -> column_id lookup for both tables
+        col_name_to_id: dict[tuple[str, str], str] = {}  # (table_name, col_name) -> col_id
+        for tbl in [from_table, to_table]:
+            cols_stmt = select(Column).where(Column.table_id == tbl.table_id)
+            for col in session.execute(cols_stmt).scalars().all():
+                col_name_to_id[(tbl.table_name, col.column_name)] = col.column_id
+
+        # Table name -> table_id
+        table_name_to_id = {
+            from_table.table_name: from_table.table_id,
+            to_table.table_name: to_table.table_id,
+        }
+
+        records_created = 0
+        for ctc in quality_result.cross_table_correlations:
+            from_col_id = col_name_to_id.get((ctc.from_table, ctc.from_column))
+            to_col_id = col_name_to_id.get((ctc.to_table, ctc.to_column))
+            from_tbl_id = table_name_to_id.get(ctc.from_table)
+            to_tbl_id = table_name_to_id.get(ctc.to_table)
+
+            if not all([from_col_id, to_col_id, from_tbl_id, to_tbl_id]):
+                logger.warning(
+                    "cross_table_correlation_missing_ids",
+                    from_table=ctc.from_table,
+                    from_column=ctc.from_column,
+                    to_table=ctc.to_table,
+                    to_column=ctc.to_column,
+                )
+                continue
+
+            record = CrossTableCorrelationRecord(
+                relationship_id=relationship.relationship_id,
+                from_table_id=from_tbl_id,
+                from_column_id=from_col_id,
+                to_table_id=to_tbl_id,
+                to_column_id=to_col_id,
+                pearson_r=ctc.pearson_r,
+                spearman_rho=ctc.spearman_rho,
+                strength=ctc.strength,
+                is_join_column=ctc.is_join_column,
+            )
+            session.add(record)
+            records_created += 1
+
+        logger.info(
+            "cross_table_correlations_persisted",
+            relationship_id=relationship.relationship_id,
+            correlations_found=len(quality_result.cross_table_correlations),
+            records_created=records_created,
+        )
 
         return Result.ok(quality_result)
 

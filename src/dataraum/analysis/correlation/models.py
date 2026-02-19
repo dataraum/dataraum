@@ -109,26 +109,6 @@ class CrossTableCorrelation(BaseModel):
     is_join_column: bool  # True if this is the join column pair
 
 
-class RedundantColumnPair(BaseModel):
-    """Two columns that appear to contain the same data."""
-
-    table: str
-    column1: str
-    column2: str
-    correlation: float
-    recommendation: str  # e.g., "Consider removing one column"
-
-
-class DerivedColumnCandidate(BaseModel):
-    """A column that may be derived from another (cross-table detection)."""
-
-    table: str
-    derived_column: str
-    source_column: str
-    correlation: float
-    likely_formula: str | None = None  # e.g., "derived = source * 0.1"
-
-
 class DependencyGroup(BaseModel):
     """A group of columns involved in multicollinearity."""
 
@@ -190,12 +170,8 @@ class CrossTableQualityResult(BaseModel):
     joined_row_count: int
     numeric_columns_analyzed: int
 
-    # Cross-table correlations (excluding join columns)
+    # Cross-table correlations
     cross_table_correlations: list[CrossTableCorrelation] = Field(default_factory=list)
-
-    # Within-table issues
-    redundant_columns: list[RedundantColumnPair] = Field(default_factory=list)
-    derived_columns: list[DerivedColumnCandidate] = Field(default_factory=list)
 
     # Multicollinearity
     overall_condition_index: float

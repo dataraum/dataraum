@@ -1,16 +1,14 @@
 """Cross-table quality analysis for confirmed relationships.
 
 Analyzes data quality issues that can only be detected AFTER relationships
-are confirmed by the semantic agent. Runs VDP and correlation analysis on
+are confirmed by the semantic agent. Runs correlation analysis on
 joined data to detect:
 
 1. Cross-table correlations (unexpected relationships between columns in different tables)
-2. Redundant columns (r ≈ 1.0 within same table)
-3. Derived columns (r ≈ 1.0 suggesting one column is computed from another)
-4. Multicollinearity groups (VDP-based, with cross-table flag)
+2. Multicollinearity groups (VDP-based, optional, with cross-table flag)
 
-This complements the pre-confirmation evaluation in analysis/relationships/evaluator.py
-which focuses on referential integrity and join quality.
+Within-table redundant/derived columns are handled by the correlations phase.
+VDP multicollinearity is expensive and optional (controlled by compute_vdp flag).
 """
 
 from __future__ import annotations
@@ -29,9 +27,7 @@ from dataraum.analysis.correlation.models import (
     CrossTableCorrelation,
     CrossTableQualityResult,
     DependencyGroup,
-    DerivedColumnCandidate,
     QualityIssue,
-    RedundantColumnPair,
 )
 from dataraum.core.logging import get_logger
 
@@ -48,14 +44,15 @@ def analyze_relationship_quality(
     duckdb_conn: duckdb.DuckDBPyConnection,
     from_table_path: str,
     to_table_path: str,
-    min_correlation: float = 0.3,
+    min_correlation: float = 0.5,
     redundancy_threshold: float = 0.99,
+    compute_vdp: bool = False,
     max_sample_size: int = 50000,
 ) -> CrossTableQualityResult | None:
     """Analyze quality of a single confirmed relationship.
 
-    Joins the tables and runs correlation + VDP analysis to detect
-    quality issues in the joined data.
+    Joins the tables and runs correlation analysis to detect cross-table
+    correlations. VDP multicollinearity analysis is optional.
 
     Args:
         relationship: The confirmed relationship to analyze
@@ -64,6 +61,7 @@ def analyze_relationship_quality(
         to_table_path: DuckDB path to to_table
         min_correlation: Minimum |r| to report
         redundancy_threshold: Correlation threshold for redundancy detection
+        compute_vdp: Whether to compute VDP multicollinearity (expensive)
         max_sample_size: Maximum rows to sample for analysis (default: 50000)
 
     Returns:
@@ -131,10 +129,8 @@ def analyze_relationship_quality(
         # Compute correlations
         correlations = compute_pairwise_correlations(data, min_correlation=min_correlation)
 
-        # Separate cross-table vs within-table correlations
+        # Only keep cross-table correlations
         cross_table_corrs: list[CrossTableCorrelation] = []
-        redundant_pairs: list[RedundantColumnPair] = []
-        derived_candidates: list[DerivedColumnCandidate] = []
 
         corr: CorrelationResult
         for corr in correlations:
@@ -142,111 +138,75 @@ def analyze_relationship_quality(
             label2 = col_labels[corr.col2_idx]
             is_cross = (corr.col1_idx < n_from) != (corr.col2_idx < n_from)
 
-            if is_cross:
-                # Cross-table correlation
-                from_label = label1 if corr.col1_idx < n_from else label2
-                to_label = label2 if corr.col1_idx < n_from else label1
-                is_join = (from_label[1] == join_col_from and to_label[1] == join_col_to) or (
-                    from_label[1] == join_col_to and to_label[1] == join_col_from
+            if not is_cross:
+                continue
+
+            # Cross-table correlation
+            from_label = label1 if corr.col1_idx < n_from else label2
+            to_label = label2 if corr.col1_idx < n_from else label1
+            is_join = (from_label[1] == join_col_from and to_label[1] == join_col_to) or (
+                from_label[1] == join_col_to and to_label[1] == join_col_from
+            )
+
+            cross_table_corrs.append(
+                CrossTableCorrelation(
+                    from_table=from_label[0],
+                    from_column=from_label[1],
+                    to_table=to_label[0],
+                    to_column=to_label[1],
+                    pearson_r=corr.pearson_r,
+                    spearman_rho=corr.spearman_rho,
+                    strength=corr.strength,
+                    is_join_column=is_join,
                 )
+            )
 
-                cross_table_corrs.append(
-                    CrossTableCorrelation(
-                        from_table=from_label[0],
-                        from_column=from_label[1],
-                        to_table=to_label[0],
-                        to_column=to_label[1],
-                        pearson_r=corr.pearson_r,
-                        spearman_rho=corr.spearman_rho,
-                        strength=corr.strength,
-                        is_join_column=is_join,
-                    )
-                )
-            else:
-                # Within-table correlation
-                table = label1[0]
-                col1, col2 = label1[1], label2[1]
-
-                if abs(corr.pearson_r) >= redundancy_threshold:
-                    # Check if likely redundant vs derived
-                    # Redundant: same semantic meaning (e.g., credit_limit vs credit_limit_copy)
-                    # Derived: different semantic meaning (e.g., amount vs tax)
-                    redundant_pairs.append(
-                        RedundantColumnPair(
-                            table=table,
-                            column1=col1,
-                            column2=col2,
-                            correlation=corr.pearson_r,
-                            recommendation="Consider if one column is redundant or derived",
-                        )
-                    )
-
-                    # Also add as derived candidate
-                    derived_candidates.append(
-                        DerivedColumnCandidate(
-                            table=table,
-                            derived_column=col2,
-                            source_column=col1,
-                            correlation=corr.pearson_r,
-                            likely_formula=None,  # Could be computed with regression
-                        )
-                    )
-
-        # Compute multicollinearity
-        col_stds = np.std(data, axis=0)
-        valid_mask = col_stds > 1e-10
-        valid_indices = np.where(valid_mask)[0]
-        data_valid = data[:, valid_mask]
-        valid_labels = [col_labels[i] for i in valid_indices]
-
+        # Optionally compute multicollinearity (VDP)
         dependency_groups: list[DependencyGroup] = []
         cross_table_groups: list[DependencyGroup] = []
         overall_ci = 1.0
         overall_severity: Literal["none", "moderate", "severe"] = "none"
 
-        if data_valid.shape[1] >= 2:
-            corr_matrix = np.corrcoef(data_valid, rowvar=False)
-            corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)
+        if compute_vdp:
+            col_stds = np.std(data, axis=0)
+            valid_mask = col_stds > 1e-10
+            valid_indices = np.where(valid_mask)[0]
+            data_valid = data[:, valid_mask]
+            valid_labels = [col_labels[i] for i in valid_indices]
 
-            mc_result = compute_multicollinearity(corr_matrix, vdp_threshold=0.5)
-            overall_ci = mc_result.overall_condition_index
-            overall_severity = mc_result.overall_severity
+            if data_valid.shape[1] >= 2:
+                corr_matrix = np.corrcoef(data_valid, rowvar=False)
+                corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)
 
-            for group in mc_result.dependency_groups:
-                involved = [valid_labels[idx] for idx in group.involved_col_indices]
-                tables_involved = {lbl[0] for lbl in involved}
-                is_cross = len(tables_involved) > 1
+                mc_result = compute_multicollinearity(corr_matrix, vdp_threshold=0.5)
+                overall_ci = mc_result.overall_condition_index
+                overall_severity = mc_result.overall_severity
 
-                vdp_dict = {
-                    valid_labels[idx]: vdp
-                    for idx, vdp in zip(
-                        group.involved_col_indices, group.variance_proportions, strict=True
+                for group in mc_result.dependency_groups:
+                    involved = [valid_labels[idx] for idx in group.involved_col_indices]
+                    tables_involved = {lbl[0] for lbl in involved}
+                    is_cross = len(tables_involved) > 1
+
+                    vdp_dict = {
+                        valid_labels[idx]: vdp
+                        for idx, vdp in zip(
+                            group.involved_col_indices, group.variance_proportions, strict=True
+                        )
+                    }
+
+                    dep_group = DependencyGroup(
+                        columns=involved,
+                        condition_index=group.condition_index,
+                        severity=group.severity,
+                        variance_proportions=vdp_dict,
+                        is_cross_table=is_cross,
                     )
-                }
-
-                dep_group = DependencyGroup(
-                    columns=involved,
-                    condition_index=group.condition_index,
-                    severity=group.severity,
-                    variance_proportions=vdp_dict,
-                    is_cross_table=is_cross,
-                )
-                dependency_groups.append(dep_group)
-                if is_cross:
-                    cross_table_groups.append(dep_group)
+                    dependency_groups.append(dep_group)
+                    if is_cross:
+                        cross_table_groups.append(dep_group)
 
         # Build issues list
         issues: list[QualityIssue] = []
-
-        for rp in redundant_pairs:
-            issues.append(
-                QualityIssue(
-                    issue_type="redundant_column",
-                    severity="warning",
-                    message=f"Columns {rp.column1} and {rp.column2} in {rp.table} are perfectly correlated (r={rp.correlation:.3f})",
-                    affected_columns=[(rp.table, rp.column1), (rp.table, rp.column2)],
-                )
-            )
 
         # Unexpected cross-table correlations (not join columns, strong correlation)
         for ctc in cross_table_corrs:
@@ -282,8 +242,6 @@ def analyze_relationship_quality(
             joined_row_count=total_rows,  # Report actual join size, not sample
             numeric_columns_analyzed=len(col_labels),
             cross_table_correlations=cross_table_corrs,
-            redundant_columns=redundant_pairs,
-            derived_columns=derived_candidates,
             overall_condition_index=overall_ci,
             overall_severity=overall_severity,
             dependency_groups=dependency_groups,

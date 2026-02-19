@@ -2,13 +2,9 @@
 
 Analyzes data quality issues across confirmed relationships:
 - Cross-table correlations (unexpected relationships between columns)
-- Redundant columns (r ≈ 1.0 within same table)
-- Derived columns (one column computed from another)
-- Multicollinearity (VDP-based dependency groups)
+- Multicollinearity (VDP-based dependency groups, optional)
 
-Note: Despite the plan labeling this as LLM, the actual analysis is
-statistical (correlation + VDP). It runs AFTER semantic phase because
-it requires confirmed relationships.
+Within-table redundant/derived columns are handled by the correlations phase.
 """
 
 from __future__ import annotations
@@ -31,8 +27,8 @@ logger = get_logger(__name__)
 class CrossTableQualityPhase(BasePhase):
     """Cross-table correlation and quality analysis phase.
 
-    Analyzes confirmed relationships for cross-table correlations,
-    redundant columns, derived columns, and multicollinearity.
+    Analyzes confirmed relationships for cross-table correlations
+    and optionally multicollinearity.
 
     Requires: semantic phase (for confirmed relationships).
     """
@@ -103,8 +99,6 @@ class CrossTableQualityPhase(BasePhase):
                 outputs={
                     "relationships_analyzed": 0,
                     "cross_table_correlations": 0,
-                    "redundant_pairs": 0,
-                    "derived_candidates": 0,
                     "multicollinearity_groups": 0,
                     "message": "No confirmed relationships to analyze",
                 },
@@ -119,11 +113,10 @@ class CrossTableQualityPhase(BasePhase):
             config = load_phase_config("cross_table_quality")
         min_correlation = config["min_correlation"]
         redundancy_threshold = config["redundancy_threshold"]
+        compute_vdp = config.get("compute_vdp", False)
 
         # Analyze each relationship
         total_correlations = 0
-        total_redundant = 0
-        total_derived = 0
         total_multicollinearity = 0
         analyzed_count = 0
         errors = []
@@ -135,6 +128,7 @@ class CrossTableQualityPhase(BasePhase):
                 session=ctx.session,
                 min_correlation=min_correlation,
                 redundancy_threshold=redundancy_threshold,
+                compute_vdp=compute_vdp,
             )
 
             if not quality_result.success:
@@ -144,15 +138,11 @@ class CrossTableQualityPhase(BasePhase):
             result_data = quality_result.unwrap()
             analyzed_count += 1
             total_correlations += len(result_data.cross_table_correlations)
-            total_redundant += len(result_data.redundant_columns)
-            total_derived += len(result_data.derived_columns)
             total_multicollinearity += len(result_data.dependency_groups)
 
         outputs: dict[str, int | list[str]] = {
             "relationships_analyzed": analyzed_count,
             "cross_table_correlations": total_correlations,
-            "redundant_pairs": total_redundant,
-            "derived_candidates": total_derived,
             "multicollinearity_groups": total_multicollinearity,
         }
 
@@ -162,8 +152,5 @@ class CrossTableQualityPhase(BasePhase):
         return PhaseResult.success(
             outputs=outputs,
             records_processed=len(relationships),
-            records_created=total_correlations
-            + total_redundant
-            + total_derived
-            + total_multicollinearity,
+            records_created=total_correlations,
         )

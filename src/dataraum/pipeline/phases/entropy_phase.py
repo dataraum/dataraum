@@ -362,10 +362,9 @@ class EntropyPhase(BasePhase):
                 if col.column_id in relationships_by_column:
                     analysis_results["relationships"] = relationships_by_column[col.column_id]
 
-                # Add derived column info (for computational entropy)
+                # Add derived column info (for DerivedValueDetector)
                 if col.column_id in derived_columns:
                     dc = derived_columns[col.column_id]
-                    # Format expected by DerivedValueDetector
                     analysis_results["correlation"] = {
                         "derived_columns": [
                             {

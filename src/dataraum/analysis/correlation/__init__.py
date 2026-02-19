@@ -6,7 +6,7 @@ Within-table (pre-semantic):
 - Derived columns
 
 Cross-table (post-semantic):
-- Cross-table quality analysis (correlations, redundant/derived columns)
+- Cross-table correlations between columns in different tables
 - Requires confirmed relationships from semantic agent
 
 Main entry points:
@@ -14,13 +14,15 @@ Main entry points:
 - analyze_cross_table_quality: Cross-table quality analysis on confirmed relationships
 """
 
-# Processors (main entry points)
 # Cross-table functions (for direct access)
 from dataraum.analysis.correlation.cross_table import (
     analyze_relationship_quality,
 )
 
 # DB Models
+from dataraum.analysis.correlation.db_models import (
+    CrossTableCorrelationRecord,
+)
 from dataraum.analysis.correlation.db_models import (
     DerivedColumn as DBDerivedColumn,
 )
@@ -32,11 +34,9 @@ from dataraum.analysis.correlation.models import (
     CrossTableQualityResult,
     DependencyGroup,
     DerivedColumn,
-    DerivedColumnCandidate,
     EnrichedRelationship,
     NumericCorrelation,
     QualityIssue,
-    RedundantColumnPair,
 )
 from dataraum.analysis.correlation.processor import (
     analyze_correlations,
@@ -59,6 +59,7 @@ __all__ = [
     # Cross-table functions
     "analyze_relationship_quality",
     # DB Models
+    "CrossTableCorrelationRecord",
     "DBDerivedColumn",
     # Pydantic Models - Within-table
     "NumericCorrelation",
@@ -67,8 +68,6 @@ __all__ = [
     # Pydantic Models - Cross-table quality
     "CrossTableQualityResult",
     "CrossTableCorrelation",
-    "RedundantColumnPair",
-    "DerivedColumnCandidate",
     "DependencyGroup",
     "QualityIssue",
     "EnrichedRelationship",

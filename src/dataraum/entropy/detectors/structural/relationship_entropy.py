@@ -97,15 +97,18 @@ class RelationshipEntropyDetector(EntropyDetector):
             # Get evaluation metrics from evidence (JoinCandidate fields)
             left_ri = evidence.get("left_referential_integrity")
             orphan_count = evidence.get("orphan_count")
+            total_count = evidence.get("total_count") or evidence.get("left_total_count")
             cardinality_verified = evidence.get("cardinality_verified")
 
             # 1. Compute referential integrity entropy
             if left_ri is not None:
                 # 100% integrity = 0 entropy, 0% integrity = 1.0 entropy
                 ri_entropy = 1.0 - (left_ri / 100.0)
+            elif orphan_count is not None and total_count and total_count > 0:
+                # Ratio-based: orphan_count / total = orphan ratio
+                ri_entropy = min(1.0, orphan_count / total_count)
             elif orphan_count is not None and orphan_count > 0:
-                # High orphan count indicates referential integrity issues
-                # Without knowing total count, use orphan presence as indicator
+                # Last resort: count-based (no total available)
                 ri_entropy = min(1.0, 0.3 + (orphan_count / 1000.0))
             else:
                 # Unknown referential integrity

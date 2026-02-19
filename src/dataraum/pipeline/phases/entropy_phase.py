@@ -351,6 +351,8 @@ class EntropyPhase(BasePhase):
                         "entity_type": sa.entity_type,
                         "business_name": sa.business_name,
                         "business_description": sa.business_description,
+                        "confidence": sa.confidence,
+                        "business_concept": sa.business_concept,
                     }
                     if sa.unit_source_column:
                         semantic_dict["unit_source_column"] = sa.unit_source_column

@@ -4,21 +4,28 @@ This phase:
 1. Infers type candidates for all VARCHAR columns using pattern matching
 2. Creates typed tables with proper data types
 3. Creates quarantine tables for rows with type cast failures
+
+For strongly-typed sources (e.g., Parquet), type inference is skipped and
+the source types are trusted directly.
 """
 
 from __future__ import annotations
 
 from types import ModuleType
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from dataraum.analysis.typing import infer_type_candidates, resolve_types
 from dataraum.analysis.typing.patterns import load_typing_config
+from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
-from dataraum.storage import Table
+from dataraum.storage import Column, Table
+
+logger = get_logger(__name__)
 
 
 @analysis_phase
@@ -87,8 +94,90 @@ class TypingPhase(BasePhase):
 
         return "All tables already typed"
 
+    def _is_strongly_typed(self, table: Table) -> bool:
+        """Check if a table comes from a strongly-typed source (e.g., Parquet).
+
+        A table is strongly typed if any of its columns have a non-VARCHAR raw_type,
+        meaning the source already provided type information.
+        """
+        for col in table.columns:
+            if col.raw_type and col.raw_type != "VARCHAR":
+                return True
+        return False
+
+    def _promote_strongly_typed(
+        self,
+        table: Table,
+        ctx: PhaseContext,
+    ) -> tuple[str, dict[str, str]]:
+        """Create typed table for a strongly-typed source by copying the raw table.
+
+        No type inference or TRY_CAST needed - source types are trusted.
+
+        Args:
+            table: Raw table with non-VARCHAR types
+            ctx: Phase context
+
+        Returns:
+            Tuple of (typed_table_id, column type decisions)
+        """
+        raw_table_name = table.duckdb_path or f"raw_{table.table_name}"
+        typed_table_name = f"typed_{table.table_name}"
+
+        # Create typed table as direct copy (types already correct)
+        ctx.duckdb_conn.execute(
+            f'CREATE TABLE "{typed_table_name}" AS SELECT * FROM "{raw_table_name}"'
+        )
+
+        # Get row count
+        row_count_result = ctx.duckdb_conn.execute(
+            f'SELECT COUNT(*) FROM "{typed_table_name}"'
+        ).fetchone()
+        row_count = row_count_result[0] if row_count_result else 0
+
+        # Create typed Table record
+        typed_table_id = str(uuid4())
+        typed_table = Table(
+            table_id=typed_table_id,
+            source_id=table.source_id,
+            table_name=table.table_name,
+            layer="typed",
+            duckdb_path=typed_table_name,
+            row_count=row_count,
+        )
+        ctx.session.add(typed_table)
+
+        # Create Column records for the typed table, using raw_type as resolved_type
+        type_decisions: dict[str, str] = {}
+        for col in table.columns:
+            resolved_type = col.raw_type or "VARCHAR"
+            new_col_id = str(uuid4())
+            typed_col = Column(
+                column_id=new_col_id,
+                table_id=typed_table_id,
+                column_name=col.column_name,
+                original_name=col.original_name,
+                column_position=col.column_position,
+                raw_type=col.raw_type,
+                resolved_type=resolved_type,
+            )
+            ctx.session.add(typed_col)
+            type_decisions[new_col_id] = resolved_type
+
+        logger.info(
+            "strongly_typed_promoted",
+            table=table.table_name,
+            columns=len(table.columns),
+            rows=row_count,
+        )
+
+        return typed_table_id, type_decisions
+
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run type inference and resolution.
+
+        For strongly-typed sources (Parquet), skips inference and promotes
+        types directly. For untyped sources (CSV), runs full inference pipeline.
 
         Args:
             ctx: Phase context
@@ -130,6 +219,16 @@ class TypingPhase(BasePhase):
                 warnings.append(f"Table {table.table_name} is not a raw table")
                 continue
 
+            # Check if source is strongly typed (e.g., Parquet)
+            if self._is_strongly_typed(table):
+                typed_table_id, decisions = self._promote_strongly_typed(table, ctx)
+                typed_tables.append(typed_table_id)
+                type_decisions.update(decisions)
+                total_rows_processed += table.row_count or 0
+                total_typed_created += 1
+                continue
+
+            # Untyped source: run full inference pipeline
             # Phase 1: Infer type candidates
             inference_result = infer_type_candidates(
                 table=table,

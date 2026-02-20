@@ -43,9 +43,10 @@ evaluate_contract(contract_name="executive_dashboard")
 
 ## Response Pattern
 
-1. Call the `evaluate_contract` tool with the appropriate contract name
-2. Report pass/fail status and overall score
-3. Show dimension scores vs. thresholds
-4. List violations with affected columns
-5. Suggest remediation steps for failing dimensions
-6. If unsure which contract to use, recommend `aggregation_safe` as a good default
+1. If no data has been analyzed yet, call `analyze` first with the user's data path
+2. Call the `evaluate_contract` tool with the appropriate contract name
+3. Report pass/fail status and overall score
+4. Show dimension scores vs. thresholds
+5. List violations with affected columns
+6. Suggest remediation steps for failing dimensions
+7. If unsure which contract to use, recommend `aggregation_safe` as a good default

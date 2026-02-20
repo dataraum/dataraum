@@ -47,9 +47,10 @@ Pass `contract_name` when the user needs to know if the data is reliable enough 
 
 ## Response Pattern
 
-1. Call the `query` tool with the user's question
-2. Present the answer clearly
-3. Show confidence level
-4. If confidence is medium or low, explain why and what caveats apply
-5. Optionally show the generated SQL for transparency
-6. If the query fails, suggest rephrasing or check if the data exists using `get_context`
+1. If no data has been analyzed yet, call `analyze` first with the user's data path
+2. Call the `query` tool with the user's question
+3. Present the answer clearly
+4. Show confidence level
+5. If confidence is medium or low, explain why and what caveats apply
+6. Optionally show the generated SQL for transparency
+7. If the query fails, suggest rephrasing or check if the data exists using `get_context`

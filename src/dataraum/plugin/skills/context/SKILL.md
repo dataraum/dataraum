@@ -51,8 +51,9 @@ The context document includes:
 
 ## Response Pattern
 
-1. Call the `get_context` tool
-2. Summarize the tables and their row counts
-3. Highlight key relationships
-4. Note any quality concerns (investigate/blocked status)
-5. Suggest what questions the data can answer
+1. If no data has been analyzed yet, call `analyze` first with the user's data path
+2. Call the `get_context` tool
+3. Summarize the tables and their row counts
+4. Highlight key relationships
+5. Note any quality concerns (investigate/blocked status)
+6. Suggest what questions the data can answer

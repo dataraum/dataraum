@@ -8,13 +8,12 @@ How to connect DataRaum to Claude Code, Claude Desktop, and Claude for Work.
 # 1. Install dependencies
 uv sync
 
-# 2. Run the pipeline on your data (if not already done)
-uv run dataraum run /path/to/your/csv --output ./pipeline_output
-
-# 3. Verify the MCP server starts
+# 2. Verify the MCP server starts
 uv run dataraum-mcp
 # Should hang waiting for stdio input — Ctrl+C to stop
 ```
+
+> **Note:** You no longer need to run the pipeline from the CLI first. The `analyze` MCP tool lets Claude run the pipeline directly.
 
 ---
 
@@ -49,6 +48,7 @@ If `DATARAUM_OUTPUT_DIR` needs to point elsewhere, edit `.mcp.json`:
 ### Test it
 
 ```
+> Analyze the CSV at /path/to/data.csv
 > What tables do I have?
 > Show me the entropy for the orders table
 > Is my data aggregation safe?
@@ -86,7 +86,7 @@ Add this to the file (create it if it doesn't exist):
 
 **Important:** Claude Desktop doesn't inherit your shell's working directory, so use absolute paths for both `--project` and `DATARAUM_OUTPUT_DIR`.
 
-Restart Claude Desktop after editing. The hammer icon in the text input should show 5 DataRaum tools.
+Restart Claude Desktop after editing. The hammer icon in the text input should show 6 DataRaum tools.
 
 ---
 
@@ -98,10 +98,11 @@ Use the plugin directory at `src/dataraum/plugin/`:
 2. The plugin includes `.mcp.json`, skill definitions, and `plugin.json`
 3. Edit `src/dataraum/plugin/.mcp.json` to set the correct `DATARAUM_OUTPUT_DIR`
 
-The plugin provides 5 skills that map to the MCP tools:
+The plugin provides 6 skills that map to the MCP tools:
 
 | Skill | Trigger examples |
 |-------|-----------------|
+| Analyze | "analyze this CSV", "process my data" |
 | Context | "what tables", "describe the data" |
 | Entropy | "entropy", "how reliable" |
 | Contracts | "aggregation safe", "contract compliance" |
@@ -114,6 +115,7 @@ The plugin provides 5 skills that map to the MCP tools:
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
+| `analyze` | `path`, `name?` | Run pipeline on CSV/Parquet data |
 | `get_context` | — | Schema, relationships, semantic annotations, quality |
 | `get_entropy` | `table_name?` | Uncertainty by dimension (structural, semantic, value, computational) |
 | `evaluate_contract` | `contract_name` | Quality evaluation against a contract |
@@ -128,7 +130,7 @@ The plugin provides 5 skills that map to the MCP tools:
 
 ## Troubleshooting
 
-**"No metadata database"** — Run the pipeline first: `uv run dataraum run /path/to/data --output ./pipeline_output`
+**"No analyzed data found"** — Use the `analyze` tool first: `analyze(path='/path/to/data.csv')`. Or run from CLI: `uv run dataraum run /path/to/data --output ./pipeline_output`
 
 **Server not showing up in Claude Code** — Run `/mcp` to check status. Make sure you're in the project root where `.mcp.json` lives.
 

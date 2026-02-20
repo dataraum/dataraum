@@ -19,6 +19,7 @@ from dataraum.mcp.formatters import (
     format_context_for_llm,
     format_contract_evaluation,
     format_entropy_summary,
+    format_pipeline_result,
     format_query_result,
 )
 
@@ -39,6 +40,28 @@ def create_server(output_dir: Path | None = None) -> Server:
     async def list_tools() -> list[Tool]:
         """List available tools."""
         return [
+            Tool(
+                name="analyze",
+                description=(
+                    "Analyze CSV or Parquet data to build metadata context. "
+                    "Must be called before other tools if no data has been analyzed yet. "
+                    "Takes a path to a file or directory. Runs the full 18-phase pipeline."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to CSV/Parquet file or directory of files",
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Optional: name for the data source",
+                        },
+                    },
+                    "required": ["path"],
+                },
+            ),
             Tool(
                 name="get_context",
                 description=(
@@ -130,7 +153,11 @@ def create_server(output_dir: Path | None = None) -> Server:
     @server.call_tool()  # type: ignore[no-untyped-call, untyped-decorator]
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         """Execute a tool and return results."""
-        if name == "get_context":
+        if name == "analyze":
+            path = arguments["path"]
+            source_name = arguments.get("name")
+            result = _analyze(output_dir, path, source_name)
+        elif name == "get_context":
             result = _get_context(output_dir)
         elif name == "get_entropy":
             table_name = arguments.get("table_name")
@@ -154,6 +181,43 @@ def create_server(output_dir: Path | None = None) -> Server:
     return server
 
 
+_NO_DATA_MSG = (
+    "No analyzed data found at {path}. Use the `analyze` tool first:\n"
+    "  analyze(path='/path/to/your/data.csv')"
+)
+
+
+def _analyze(output_dir: Path, path: str, name: str | None = None) -> str:
+    """Run the pipeline on a data source.
+
+    Args:
+        output_dir: Pipeline output directory
+        path: Path to CSV/Parquet file or directory
+        name: Optional source name
+
+    Returns:
+        Formatted pipeline result summary
+    """
+    from dataraum.pipeline.runner import RunConfig, run
+
+    source_path = Path(path)
+    if not source_path.exists():
+        return f"Error: Path not found: {path}"
+
+    config = RunConfig(
+        source_path=source_path,
+        output_dir=output_dir,
+        source_name=name,
+    )
+
+    result = run(config)
+
+    if not result.success or not result.value:
+        return f"Error: Pipeline failed: {result.error}"
+
+    return format_pipeline_result(result.value)
+
+
 def _get_context(output_dir: Path) -> str:
     """Get formatted context document."""
     from sqlalchemy import select
@@ -162,7 +226,10 @@ def _get_context(output_dir: Path) -> str:
     from dataraum.graphs.context import build_execution_context, format_context_for_prompt
     from dataraum.storage import Source, Table
 
-    manager = get_manager_for_directory(output_dir)
+    try:
+        manager = get_manager_for_directory(output_dir)
+    except FileNotFoundError:
+        return _NO_DATA_MSG.format(path=output_dir)
 
     try:
         with manager.session_scope() as session:
@@ -208,7 +275,10 @@ def _get_entropy(output_dir: Path, table_name: str | None = None) -> str:
     from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
     from dataraum.storage import Source
 
-    manager = get_manager_for_directory(output_dir)
+    try:
+        manager = get_manager_for_directory(output_dir)
+    except FileNotFoundError:
+        return _NO_DATA_MSG.format(path=output_dir)
 
     try:
         with manager.session_scope() as session:
@@ -261,7 +331,10 @@ def _evaluate_contract(output_dir: Path, contract_name: str) -> str:
     from dataraum.entropy.core.storage import EntropyRepository
     from dataraum.storage import Source, Table
 
-    manager = get_manager_for_directory(output_dir)
+    try:
+        manager = get_manager_for_directory(output_dir)
+    except FileNotFoundError:
+        return _NO_DATA_MSG.format(path=output_dir)
 
     try:
         with manager.session_scope() as session:
@@ -322,7 +395,10 @@ def _query(output_dir: Path, question: str, contract_name: str | None = None) ->
     from dataraum.query import answer_question
     from dataraum.storage import Source
 
-    manager = get_manager_for_directory(output_dir)
+    try:
+        manager = get_manager_for_directory(output_dir)
+    except FileNotFoundError:
+        return _NO_DATA_MSG.format(path=output_dir)
 
     try:
         with manager.session_scope() as session:
@@ -371,7 +447,10 @@ def _get_actions(
     from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
     from dataraum.storage import Column, Source, Table
 
-    manager = get_manager_for_directory(output_dir)
+    try:
+        manager = get_manager_for_directory(output_dir)
+    except FileNotFoundError:
+        return _NO_DATA_MSG.format(path=output_dir)
 
     try:
         with manager.session_scope() as session:

@@ -8,15 +8,22 @@ This plugin provides an MCP server that exposes DataRaum tools directly to Claud
 
 ## Quick Start
 
-### 1. Run Your Data Pipeline
+### 1. Set Your Output Directory
+
+Edit `.mcp.json` and set `DATARAUM_OUTPUT_DIR` to your pipeline output path.
+
+### 2. Analyze Your Data
+
+Just ask Claude to analyze your data — no CLI required:
+
+- "Analyze the CSV at /path/to/data.csv"
+- "Process my Parquet files in /path/to/data/"
+
+Or run the pipeline from the command line:
 
 ```bash
 dataraum run /path/to/your/data --output ./pipeline_output
 ```
-
-### 2. Set Your Output Directory
-
-Edit `.mcp.json` and set `DATARAUM_OUTPUT_DIR` to your pipeline output path.
 
 ### 3. Ask Questions
 
@@ -27,6 +34,11 @@ Edit `.mcp.json` and set `DATARAUM_OUTPUT_DIR` to your pipeline output path.
 - "How many customers placed orders last month?"
 
 ## Skills
+
+### Analyze
+**Trigger:** "analyze this data", "process my CSV", "load this file", "run the pipeline"
+
+Runs the full 18-phase analysis pipeline on CSV or Parquet data. Must be called before other tools if no data has been analyzed yet.
 
 ### Context
 **Trigger:** "what tables", "show me the schema", "describe the data", "what data is available"
@@ -57,6 +69,7 @@ Returns prioritized steps to improve data quality, sorted by impact and effort.
 
 | Tool | Description |
 |------|-------------|
+| `analyze` | Run analysis pipeline on CSV/Parquet data |
 | `get_context` | Full data context document for AI analysis |
 | `get_entropy` | Entropy analysis by dimension |
 | `evaluate_contract` | Data quality contract evaluation |

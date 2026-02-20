@@ -2,7 +2,7 @@
 
 This module provides loaders for different source types:
 - csv: Untyped sources (VARCHAR-first approach)
-- parquet: Strongly typed sources (future)
+- parquet: Strongly typed sources
 - sqlite: Weakly typed sources (future)
 """
 

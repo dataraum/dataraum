@@ -1,6 +1,6 @@
 {
   "name": "dataraum",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Data context and quality analysis for knowledge work. Get rich metadata about your data, understand quality issues, and get prioritized actions to fix them.",
   "author": {
     "name": "DataRaum"

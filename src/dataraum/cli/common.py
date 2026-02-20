@@ -98,15 +98,12 @@ def get_manager(output_dir: Path) -> ConnectionManager:
     """Create and initialize a ConnectionManager for the output directory.
 
     Returns the manager. Caller is responsible for closing it.
+    Wraps core get_manager_for_directory with CLI-friendly error handling.
     """
-    from dataraum.core import ConnectionConfig, ConnectionManager
+    from dataraum.core.connections import get_manager_for_directory
 
-    config = ConnectionConfig.for_directory(output_dir)
-
-    if not config.sqlite_path.exists():
-        console.print(f"[red]No metadata database found at {config.sqlite_path}[/red]")
-        raise typer.Exit(1)
-
-    manager = ConnectionManager(config)
-    manager.initialize()
-    return manager
+    try:
+        return get_manager_for_directory(output_dir)
+    except FileNotFoundError:
+        console.print(f"[red]No metadata database found at {output_dir / 'metadata.db'}[/red]")
+        raise typer.Exit(1) from None

@@ -1,35 +1,23 @@
 ---
 description: "Use when the user asks about data schema, table structure, column types, relationships between tables, or needs to understand what data is available before analysis. Trigger phrases: 'what tables do I have', 'show me the schema', 'data context', 'what columns are in', 'describe the data', 'what data is available'."
 tools:
-  - WebFetch
+  - dataraum:get_context
 alwaysApply: false
 ---
 
 # Data Context
 
-Retrieve comprehensive context about a dataset from the DataRaum API.
+Retrieve comprehensive context about a dataset using the DataRaum MCP tool.
 
 ## How to Use
 
-Call the DataRaum API to get the data context:
+Call the `get_context` MCP tool with no parameters:
 
 ```
-GET ~~dataraum_api~~/api/v1/context/{source_id}
+get_context()
 ```
 
-The response includes a `prompt_text` field optimized for LLM consumption.
-
-## API Response Structure
-
-```json
-{
-  "source_id": "...",
-  "tables": [...],
-  "relationships": [...],
-  "entropy_summary": {...},
-  "prompt_text": "..."  // Use this for your response
-}
-```
+The output directory is configured via the `DATARAUM_OUTPUT_DIR` environment variable on the MCP server.
 
 ## What You Get
 
@@ -61,18 +49,10 @@ The context document includes:
 - **temporal**: Dates and timestamps
 - **attribute**: Descriptive fields
 
-## If No Data Exists Yet
-
-If the API returns 404 or "No tables found", the user needs to:
-1. Upload their CSV file first via `POST ~~dataraum_api~~/api/v1/upload`
-2. The pipeline will run automatically
-3. Then call this endpoint with the returned source_id
-
 ## Response Pattern
 
-1. Call the context API endpoint
-2. Extract the `prompt_text` from the response
-3. Summarize the tables and their row counts
-4. Highlight key relationships
-5. Note any quality concerns (investigate/blocked status)
-6. Suggest what questions the data can answer
+1. Call the `get_context` tool
+2. Summarize the tables and their row counts
+3. Highlight key relationships
+4. Note any quality concerns (investigate/blocked status)
+5. Suggest what questions the data can answer

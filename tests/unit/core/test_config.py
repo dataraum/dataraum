@@ -95,7 +95,7 @@ class TestLoadPhaseConfig:
     def test_loads_semantic_phase_config(self):
         data = load_phase_config("semantic")
         assert isinstance(data, dict)
-        assert "ontology" in data
+        assert "vertical" in data
 
     def test_loads_quality_summary_phase_config(self):
         data = load_phase_config("quality_summary")

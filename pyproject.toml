@@ -77,13 +77,6 @@ cli = [
     "textual>=0.50.0",
 ]
 
-# Web API server
-api = [
-    "fastapi>=0.110.0",
-    "uvicorn>=0.27.0",
-    "jinja2>=3.1.0",
-]
-
 # MCP server for LLM integration
 mcp = ["mcp>=1.0.0"]
 
@@ -97,7 +90,7 @@ privacy = ["sdv>=1.17.0"]
 
 # Common optional features (excluding heavy privacy/SDV dependencies)
 complete = [
-    "dataraum[cli,api,mcp,anthropic,openai,postgres,statistical-quality]",
+    "dataraum[cli,mcp,anthropic,openai,postgres,statistical-quality]",
 ]
 
 # Everything including heavy ML dependencies
@@ -205,15 +198,8 @@ module = [
     "pyarrow.*",
     "networkx.*",
     "textual.*",
-    "fastapi.*",
-    "uvicorn.*",
 ]
 ignore_missing_imports = true
-
-# API module uses fastapi decorators that produce untyped-decorator warnings
-[[tool.mypy.overrides]]
-module = "dataraum.api.*"
-disallow_untyped_decorators = false
 
 # Unfinished features that depend on not-yet-implemented context module
 [[tool.mypy.overrides]]

@@ -17,15 +17,6 @@ wheels = [
 ]
 
 [[package]]
-name = "annotated-doc"
-version = "0.0.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/57/ba/046ceea27344560984e26a590f90bc7f4a75b06701f653222458922b558c/annotated_doc-0.0.4.tar.gz", hash = "sha256:fbcda96e87e9c92ad167c2e53839e57503ecfda18804ea28102353485033faa4", size = 7288, upload-time = "2025-11-10T22:07:42.062Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/d3/26bf1008eb3d2daa8ef4cacc7f3bfdc11818d111f7e2d0201bc6e3b49d45/annotated_doc-0.0.4-py3-none-any.whl", hash = "sha256:571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320", size = 5303, upload-time = "2025-11-10T22:07:40.673Z" },
-]
-
-[[package]]
 name = "annotated-types"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -377,8 +368,6 @@ dependencies = [
 all = [
     { name = "anthropic" },
     { name = "asyncpg" },
-    { name = "fastapi" },
-    { name = "jinja2" },
     { name = "mcp" },
     { name = "openai" },
     { name = "rich" },
@@ -386,15 +375,9 @@ all = [
     { name = "sdv" },
     { name = "textual" },
     { name = "typer" },
-    { name = "uvicorn" },
 ]
 anthropic = [
     { name = "anthropic" },
-]
-api = [
-    { name = "fastapi" },
-    { name = "jinja2" },
-    { name = "uvicorn" },
 ]
 cli = [
     { name = "rich" },
@@ -404,15 +387,12 @@ cli = [
 complete = [
     { name = "anthropic" },
     { name = "asyncpg" },
-    { name = "fastapi" },
-    { name = "jinja2" },
     { name = "mcp" },
     { name = "openai" },
     { name = "rich" },
     { name = "scikit-learn" },
     { name = "textual" },
     { name = "typer" },
-    { name = "uvicorn" },
 ]
 dev = [
     { name = "hypothesis" },
@@ -465,12 +445,10 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40.0" },
     { name = "anthropic", marker = "extra == 'llm'", specifier = ">=0.40.0" },
     { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29.0" },
-    { name = "dataraum", extras = ["cli", "api", "mcp", "anthropic", "openai", "postgres", "statistical-quality"], marker = "extra == 'complete'" },
+    { name = "dataraum", extras = ["cli", "mcp", "anthropic", "openai", "postgres", "statistical-quality"], marker = "extra == 'complete'" },
     { name = "dataraum", extras = ["complete", "privacy"], marker = "extra == 'all'" },
     { name = "duckdb", specifier = ">=1.0.0" },
-    { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.110.0" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.98.0" },
-    { name = "jinja2", marker = "extra == 'api'", specifier = ">=3.1.0" },
     { name = "mcp", specifier = ">=1.0.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
@@ -502,9 +480,8 @@ requires-dist = [
     { name = "textual", marker = "extra == 'cli'", specifier = ">=0.50.0" },
     { name = "typer", specifier = ">=0.9.0" },
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.9.0" },
-    { name = "uvicorn", marker = "extra == 'api'", specifier = ">=0.27.0" },
 ]
-provides-extras = ["dev", "anthropic", "openai", "llm", "postgres", "cli", "api", "mcp", "statistical-quality", "privacy", "complete", "all"]
+provides-extras = ["dev", "anthropic", "openai", "llm", "postgres", "cli", "mcp", "statistical-quality", "privacy", "complete", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -588,21 +565,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5e/77/1c3ff07b6739b9a1d23ca01ec0a90a309a33b78e345a3eb52f9ce9240e36/faker-40.1.2.tar.gz", hash = "sha256:b76a68163aa5f171d260fc24827a8349bc1db672f6a665359e8d0095e8135d30", size = 1949802, upload-time = "2026-01-13T20:51:49.917Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/46/ec/91a434c8a53d40c3598966621dea9c50512bec6ce8e76fa1751015e74cef/faker-40.1.2-py3-none-any.whl", hash = "sha256:93503165c165d330260e4379fd6dc07c94da90c611ed3191a0174d2ab9966a42", size = 1985633, upload-time = "2026-01-13T20:51:47.982Z" },
-]
-
-[[package]]
-name = "fastapi"
-version = "0.128.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "annotated-doc" },
-    { name = "pydantic" },
-    { name = "starlette" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/52/08/8c8508db6c7b9aae8f7175046af41baad690771c9bcde676419965e338c7/fastapi-0.128.0.tar.gz", hash = "sha256:1cc179e1cef10a6be60ffe429f79b829dce99d8de32d7acb7e6c8dfdf7f2645a", size = 365682, upload-time = "2025-12-27T15:21:13.714Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/5c/05/5cbb59154b093548acd0f4c7c474a118eda06da25aa75c616b72d8fcd92a/fastapi-0.128.0-py3-none-any.whl", hash = "sha256:aebd93f9716ee3b4f4fcfe13ffb7cf308d99c9f3ab5622d8877441072561582d", size = 103094, upload-time = "2025-12-27T15:21:12.154Z" },
 ]
 
 [[package]]
@@ -2375,8 +2337,8 @@ name = "uvicorn"
 version = "0.40.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
-    { name = "h11" },
+    { name = "click", marker = "sys_platform != 'emscripten'" },
+    { name = "h11", marker = "sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c3/d1/8f3c683c9561a4e6689dd3b1d345c815f10f86acd044ee1fb9a4dcd0b8c5/uvicorn-0.40.0.tar.gz", hash = "sha256:839676675e87e73694518b5574fd0f24c9d97b46bea16df7b8c05ea1a51071ea", size = 81761, upload-time = "2025-12-21T14:16:22.45Z" }
 wheels = [

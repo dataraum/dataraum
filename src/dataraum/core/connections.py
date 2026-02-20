@@ -568,9 +568,33 @@ def close_default_manager() -> None:
         _default_manager = None
 
 
+def get_manager_for_directory(output_dir: Path) -> ConnectionManager:
+    """Create and initialize a ConnectionManager for a pipeline output directory.
+
+    Framework-agnostic: raises FileNotFoundError instead of using CLI-specific
+    error handling (typer.Exit, etc.).
+
+    Args:
+        output_dir: Directory containing pipeline databases (metadata.db, data.duckdb)
+
+    Returns:
+        Initialized ConnectionManager. Caller is responsible for closing it.
+
+    Raises:
+        FileNotFoundError: If no metadata database exists at the expected path
+    """
+    config = ConnectionConfig.for_directory(output_dir)
+    if not config.sqlite_path.exists():
+        raise FileNotFoundError(f"No metadata database at {config.sqlite_path}")
+    manager = ConnectionManager(config)
+    manager.initialize()
+    return manager
+
+
 __all__ = [
     "ConnectionConfig",
     "ConnectionManager",
     "get_connection_manager",
+    "get_manager_for_directory",
     "close_default_manager",
 ]

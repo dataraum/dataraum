@@ -4,82 +4,69 @@ Data context and quality analysis for knowledge work. Understand your data struc
 
 ## How It Works
 
-This plugin connects to a DataRaum API server to analyze your data. It provides two main skills:
-
-1. **Context**: Get schema, relationships, and quality indicators
-2. **Actions**: Get prioritized steps to improve data quality
+This plugin provides an MCP server that exposes DataRaum tools directly to Claude. No HTTP API, no external services — everything runs locally against your pipeline output.
 
 ## Quick Start
 
-### 1. Start the DataRaum API
+### 1. Run Your Data Pipeline
 
 ```bash
-# Install
-pip install dataraum
-
-# Start API server
-dataraum-api --output-dir ./pipeline_output --port 8000
+dataraum run /path/to/your/data --output ./pipeline_output
 ```
 
-### 2. Configure the Connector
+### 2. Set Your Output Directory
 
-In your Cowork settings, set the connector:
-- `~~dataraum_api~~` → `http://localhost:8000` (or your deployed URL)
+Edit `.mcp.json` and set `DATARAUM_OUTPUT_DIR` to your pipeline output path.
 
-### 3. Upload and Analyze
+### 3. Ask Questions
 
-Ask questions like:
 - "What tables do I have in my data?"
+- "Show me the entropy for the orders table"
 - "What data quality issues should I fix?"
-
-The plugin will call the API to get answers.
+- "Is my data ready for aggregation?"
+- "How many customers placed orders last month?"
 
 ## Skills
 
 ### Context
-**Trigger phrases:** "what tables do I have", "show me the schema", "describe the data"
+**Trigger:** "what tables", "show me the schema", "describe the data", "what data is available"
 
-Returns:
-- Table and column schema
-- Semantic annotations
-- Relationships between tables
-- Quality indicators (ready, investigate, blocked)
+Returns schema, semantic annotations, relationships, and quality indicators.
+
+### Entropy
+**Trigger:** "entropy", "uncertainty", "how reliable", "data quality dimensions"
+
+Returns entropy analysis showing data uncertainty across structural, semantic, value, and computational dimensions.
+
+### Contracts
+**Trigger:** "contract", "compliance", "data ready for", "aggregation safe"
+
+Evaluates data quality against named contracts (e.g., `aggregation_safe`, `executive_dashboard`).
+
+### Query
+**Trigger:** "how many", "total", "calculate", "analyze", "what is the"
+
+Executes natural language queries against the data with entropy-aware confidence levels.
 
 ### Actions
-**Trigger phrases:** "what should I fix", "data quality issues", "improve the data"
+**Trigger:** "fix quality", "what should I fix", "improve data", "resolution actions"
 
-Returns:
-- Prioritized resolution actions (high/medium/low)
-- Effort estimates
-- Expected impact
-- Quick wins (high priority + low effort)
+Returns prioritized steps to improve data quality, sorted by impact and effort.
 
-## For Cowork Cloud
+## MCP Tools
 
-To use this plugin in Cowork cloud (not local Claude Code):
-
-1. **Expose your API** using ngrok or deploy to cloud:
-   ```bash
-   ngrok http 8000
-   ```
-
-2. **Configure connector** with the public URL
-
-3. **Upload your CSV** - the API handles the rest
-
-See [CONNECTORS.md](CONNECTORS.md) for detailed setup instructions.
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/upload` | POST | Upload CSV, auto-runs pipeline |
-| `/api/v1/context/{source_id}` | GET | Get data context |
-| `/api/v1/actions/{source_id}` | GET | Get resolution actions |
-| `/api/v1/sources` | GET | List all sources |
-| `/health` | GET | Health check |
+| Tool | Description |
+|------|-------------|
+| `get_context` | Full data context document for AI analysis |
+| `get_entropy` | Entropy analysis by dimension |
+| `evaluate_contract` | Data quality contract evaluation |
+| `query` | Natural language query execution |
+| `get_actions` | Prioritized resolution actions |
 
 ## Requirements
 
-- DataRaum API server running and accessible
-- Connector configured with API URL
+- DataRaum installed (`pip install dataraum`)
+- Pipeline output directory with analyzed data
+- `DATARAUM_OUTPUT_DIR` environment variable set
+
+See [CONNECTORS.md](CONNECTORS.md) for detailed setup.

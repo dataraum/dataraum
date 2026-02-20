@@ -1,76 +1,43 @@
 # Connectors
 
-## How tool references work
+## MCP Server
 
-Plugin files use `~~category~~` as a placeholder for whatever tool the user connects in that category. Plugins are tool-agnostic — they describe workflows in terms of categories rather than specific products.
-
-## Connectors for this plugin
-
-| Category | Placeholder | Description |
-|----------|-------------|-------------|
-| DataRaum API | `~~dataraum_api~~` | The base URL of the DataRaum API server |
+This plugin uses an MCP (Model Context Protocol) server to communicate with the DataRaum engine. No HTTP API or external services are needed — everything runs locally.
 
 ## Setup
 
-This plugin requires a running DataRaum API server that the skills can call via WebFetch.
-
-### Option 1: Self-Hosted API
-
-Run the DataRaum API server locally or on your infrastructure:
+### 1. Install DataRaum
 
 ```bash
-# Install DataRaum
 pip install dataraum
-
-# Start the API server
-dataraum-api --output-dir ./pipeline_output --port 8000
-
-# The API will be available at http://localhost:8000
+# or with uv
+uv add dataraum
 ```
 
-Then configure the connector:
-- `~~dataraum_api~~` → `http://localhost:8000`
-
-### Option 2: Expose via ngrok (for Cowork cloud access)
-
-If using Cowork cloud, expose your local API:
+### 2. Run Your Data Pipeline
 
 ```bash
-# Start the API
-dataraum-api --output-dir ./pipeline_output --port 8000
-
-# In another terminal, expose via ngrok
-ngrok http 8000
-
-# Use the ngrok URL as your connector
-# ~~dataraum_api~~ → https://xxxx.ngrok.io
+dataraum run /path/to/your/data --output ./pipeline_output
 ```
 
-### Option 3: Deploy to Cloud
+### 3. Configure MCP Server
 
-Deploy the DataRaum API to a cloud provider:
-- Fly.io
-- Railway
-- AWS/GCP/Azure
-- Docker on any VPS
+The `.mcp.json` file in this plugin directory configures the MCP server. Set `DATARAUM_OUTPUT_DIR` to your pipeline output directory.
 
-## API Endpoints Used
+The MCP server starts automatically when Claude Code or Claude Desktop loads the plugin.
 
-The skills call these endpoints:
+## Available MCP Tools
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/upload` | POST | Upload CSV and run pipeline |
-| `/api/v1/context/{source_id}` | GET | Get data context |
-| `/api/v1/actions/{source_id}` | GET | Get resolution actions |
-| `/api/v1/sources` | GET | List sources |
-| `/health` | GET | Health check |
+| Tool | Description | Required Parameters |
+|------|-------------|---------------------|
+| `get_context` | Full data context: schema, relationships, semantic annotations, quality | None |
+| `get_entropy` | Entropy analysis: data uncertainty by dimension | `table_name` (optional) |
+| `evaluate_contract` | Evaluate data quality against a contract | `contract_name` |
+| `query` | Natural language query against the data | `question`, `contract_name` (optional) |
+| `get_actions` | Prioritized resolution actions for data quality | `priority` (optional), `table_name` (optional) |
 
-## File Upload Flow
+## Environment Variables
 
-When a user provides a CSV file:
-
-1. Upload to `/api/v1/upload` (multipart form)
-2. Pipeline runs automatically
-3. Returns `source_id` for subsequent queries
-4. Use `source_id` with `/context` and `/actions` endpoints
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DATARAUM_OUTPUT_DIR` | Path to pipeline output directory | `./pipeline_output` |

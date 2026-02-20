@@ -14,13 +14,7 @@ pip install dataraum
 uv add dataraum
 ```
 
-### 2. Run Your Data Pipeline
-
-```bash
-dataraum run /path/to/your/data --output ./pipeline_output
-```
-
-### 3. Configure MCP Server
+### 2. Configure MCP Server
 
 The `.mcp.json` file in this plugin directory configures the MCP server. Set `DATARAUM_OUTPUT_DIR` to your pipeline output directory.
 
@@ -30,6 +24,7 @@ The MCP server starts automatically when Claude Code or Claude Desktop loads the
 
 | Tool | Description | Required Parameters |
 |------|-------------|---------------------|
+| `analyze` | Run analysis pipeline on CSV/Parquet data | `path`, `name` (optional) |
 | `get_context` | Full data context: schema, relationships, semantic annotations, quality | None |
 | `get_entropy` | Entropy analysis: data uncertainty by dimension | `table_name` (optional) |
 | `evaluate_contract` | Evaluate data quality against a contract | `contract_name` |

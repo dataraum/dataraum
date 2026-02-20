@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from dataraum.entropy.contracts import ContractEvaluation, ContractProfile
+    from dataraum.pipeline.runner import RunResult
     from dataraum.query.models import QueryResult
 
 
@@ -337,5 +338,73 @@ def format_actions_report(
         for a in quick_wins[:3]:
             lines.append(f"- **{a['action']}**: {a.get('description', '')[:100]}")
         lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_pipeline_result(result: RunResult) -> str:
+    """Format pipeline run result for LLM consumption.
+
+    Args:
+        result: RunResult from pipeline execution
+
+    Returns:
+        Formatted markdown summary
+    """
+    lines = ["# Pipeline Analysis Complete"]
+    lines.append("")
+
+    # Source info
+    if result.output_dir:
+        lines.append(f"**Output:** `{result.output_dir}`")
+
+    # Duration
+    minutes = int(result.duration_seconds // 60)
+    seconds = result.duration_seconds % 60
+    if minutes > 0:
+        lines.append(f"**Duration:** {minutes}m {seconds:.1f}s")
+    else:
+        lines.append(f"**Duration:** {seconds:.1f}s")
+    lines.append("")
+
+    # Tables
+    if result.total_tables_processed > 0:
+        lines.append(f"**Tables:** {result.total_tables_processed}")
+        lines.append(f"**Rows:** {result.total_rows_processed:,}")
+        lines.append("")
+
+    # Phase summary
+    lines.append("## Phases")
+    lines.append(
+        f"- Completed: {result.phases_completed}"
+        f" | Failed: {result.phases_failed}"
+        f" | Skipped: {result.phases_skipped}"
+    )
+    lines.append("")
+
+    # Failed phases detail
+    failed = result.get_failed_phases()
+    if failed:
+        lines.append("## Failures")
+        for phase in failed:
+            lines.append(f"- **{phase.phase_name}**: {phase.error}")
+        lines.append("")
+
+    # LLM usage
+    if result.total_llm_calls > 0:
+        lines.append(f"**LLM calls:** {result.total_llm_calls}")
+        if result.total_llm_tokens > 0:
+            lines.append(f"**LLM tokens:** {result.total_llm_tokens:,}")
+        lines.append("")
+
+    # Next steps
+    lines.append("## Next Steps")
+    if result.success:
+        lines.append("- Use `get_context` for full schema and relationships")
+        lines.append("- Use `get_entropy` for data quality overview")
+        lines.append("- Use `query` to ask questions about the data")
+    else:
+        lines.append("- Check the failures above and fix the data issues")
+        lines.append("- Re-run `analyze` after fixing")
 
     return "\n".join(lines)

@@ -109,7 +109,7 @@ Before declaring any task complete, verify:
 
 **Current Focus (from BACKLOG.md):**
 - CLI/TUI: Textual screens for status, entropy, contracts, query
-- MCP Server: 4 tools (get_context, get_entropy, evaluate_contract, query)
+- MCP Server: 6 tools (analyze, get_context, get_entropy, evaluate_contract, query, get_actions)
 
 **Core Concept - Entropy:**
 The key innovation is quantifying **uncertainty (entropy)** in data so LLMs can make deterministic decisions. See `entropy-management-framework.md` for the full spec.
@@ -206,7 +206,7 @@ src/dataraum/
 │   └── interpretation.py # LLM entropy interpretation
 ├── graphs/         # Calculation graphs, context assembly
 ├── pipeline/       # Pipeline orchestrator (18 phases)
-├── sources/        # Data source loaders
+├── sources/        # Data source loaders (CSV, Parquet)
 ├── storage/        # SQLAlchemy models
 ├── llm/            # LLM providers and prompts
 ├── core/           # Config, connections, utilities
@@ -273,11 +273,13 @@ with all relevant metadata already computed and interpreted through the
 selected ontology.
 
 ### Minimal AI Tools
-Only 4 MCP tools:
+Only 6 MCP tools:
+- `analyze` - Run pipeline on CSV/Parquet data
 - `get_context` - Primary context retrieval
 - `get_entropy` - Entropy analysis for tables/columns
 - `evaluate_contract` - Data readiness evaluation
 - `query` - Execute SQL with entropy awareness
+- `get_actions` - Prioritized resolution actions
 
 ### Ontologies as Configuration
 Domain ontologies (financial_reporting, marketing, etc.) are YAML configs that:

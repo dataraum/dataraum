@@ -60,8 +60,9 @@ Actions marked as **high priority + low effort** are quick wins. Start with thes
 
 ## Response Pattern
 
-1. Call the `get_actions` tool
-2. Summarize the counts by priority
-3. Present the top high-priority actions
-4. Highlight any quick wins (high priority + low effort)
-5. Suggest a remediation order
+1. If no data has been analyzed yet, call `analyze` first with the user's data path
+2. Call the `get_actions` tool
+3. Summarize the counts by priority
+4. Present the top high-priority actions
+5. Highlight any quick wins (high priority + low effort)
+6. Suggest a remediation order

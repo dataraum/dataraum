@@ -50,8 +50,9 @@ Each column gets a weighted composite score across all dimensions. Higher scores
 
 ## Response Pattern
 
-1. Call the `get_entropy` tool (optionally filtered to a table)
-2. Report overall entropy status
-3. Highlight columns with highest entropy
-4. Explain which dimensions contribute most to uncertainty
-5. Connect entropy findings to practical implications for analysis
+1. If no data has been analyzed yet, call `analyze` first with the user's data path
+2. Call the `get_entropy` tool (optionally filtered to a table)
+3. Report overall entropy status
+4. Highlight columns with highest entropy
+5. Explain which dimensions contribute most to uncertainty
+6. Connect entropy findings to practical implications for analysis

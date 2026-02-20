@@ -2,7 +2,7 @@
 
 This is the first phase in the pipeline. It:
 1. Creates or retrieves the Source record
-2. Loads data into DuckDB as raw VARCHAR tables
+2. Loads data into DuckDB as raw tables (VARCHAR for CSV, native types for Parquet)
 3. Creates Table and Column records in SQLAlchemy
 """
 
@@ -18,7 +18,11 @@ from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.sources.csv import CSVLoader
 from dataraum.sources.csv.null_values import load_null_value_config
+from dataraum.sources.parquet import ParquetLoader
 from dataraum.storage import Source, Table
+
+_CSV_EXTENSIONS = {".csv", ".tsv"}
+_PARQUET_EXTENSIONS = {".parquet", ".pq"}
 
 
 @analysis_phase
@@ -41,7 +45,7 @@ class ImportPhase(BasePhase):
 
     @property
     def description(self) -> str:
-        return "Load CSV files into raw tables"
+        return "Load data files into raw tables"
 
     @property
     def dependencies(self) -> list[str]:
@@ -93,29 +97,61 @@ class ImportPhase(BasePhase):
         # Get or create source
         source = self._get_or_create_source(ctx, source_name, path)
 
-        # Load data based on path type
-        loader = CSVLoader()
+        # Detect source type from path
+        source_type = self._detect_source_type(path, ctx.config)
         junk_columns = ctx.config.get("junk_columns", [])
 
-        if path.is_dir():
-            result = self._load_directory(
-                ctx=ctx,
-                loader=loader,
-                source=source,
-                directory=path,
-                file_pattern=ctx.config.get("file_pattern", "*.csv"),
-                junk_columns=junk_columns,
-            )
+        if source_type == "parquet":
+            return self._load_parquet(ctx, source, path)
         else:
-            result = self._load_single_file(
-                ctx=ctx,
-                loader=loader,
-                source=source,
-                file_path=path,
-                junk_columns=junk_columns,
-            )
+            # Default to CSV
+            loader = CSVLoader()
+            if path.is_dir():
+                return self._load_directory(
+                    ctx=ctx,
+                    loader=loader,
+                    source=source,
+                    directory=path,
+                    file_pattern=ctx.config.get("file_pattern", "*.csv"),
+                    junk_columns=junk_columns,
+                )
+            else:
+                return self._load_single_file(
+                    ctx=ctx,
+                    loader=loader,
+                    source=source,
+                    file_path=path,
+                    junk_columns=junk_columns,
+                )
 
-        return result
+    def _detect_source_type(self, path: Path, config: dict) -> str:
+        """Detect source type from file extension or directory contents.
+
+        Args:
+            path: Path to file or directory
+            config: Phase configuration
+
+        Returns:
+            Source type string: "csv" or "parquet"
+        """
+        if path.is_file():
+            if path.suffix.lower() in _PARQUET_EXTENSIONS:
+                return "parquet"
+            return "csv"
+
+        # Directory: check file_pattern config, then scan for files
+        file_pattern = config.get("file_pattern", "")
+        if "parquet" in file_pattern or ".pq" in file_pattern:
+            return "parquet"
+
+        # Check what files exist in the directory
+        parquet_files = list(path.glob("*.parquet")) + list(path.glob("*.pq"))
+        csv_files = list(path.glob("*.csv"))
+
+        if parquet_files and not csv_files:
+            return "parquet"
+
+        return "csv"
 
     def _get_or_create_source(self, ctx: PhaseContext, source_name: str, path: Path) -> Source:
         """Get existing source or create a new one."""
@@ -123,11 +159,14 @@ class ImportPhase(BasePhase):
         source = ctx.session.get(Source, ctx.source_id)
 
         if source is None:
-            # Create new source
+            source_type = self._detect_source_type(path, ctx.config)
+            if path.is_dir():
+                source_type = f"{source_type}_directory"
+
             source = Source(
                 source_id=ctx.source_id,
                 name=source_name,
-                source_type="csv" if path.is_file() else "csv_directory",
+                source_type=source_type,
                 connection_config={"path": str(path)},
             )
             ctx.session.add(source)
@@ -228,3 +267,77 @@ class ImportPhase(BasePhase):
             duration=duration,
             warnings=result.warnings,
         )
+
+    def _load_parquet(
+        self,
+        ctx: PhaseContext,
+        source: Source,
+        path: Path,
+    ) -> PhaseResult:
+        """Load Parquet file(s) using ParquetLoader."""
+        start_time = time.time()
+        loader = ParquetLoader()
+
+        if path.is_dir():
+            # Find parquet files
+            file_pattern = ctx.config.get("file_pattern", "*.parquet")
+            parquet_files = sorted(path.glob(file_pattern))
+            # Also check .pq if default pattern
+            if file_pattern == "*.parquet":
+                parquet_files.extend(sorted(path.glob("*.pq")))
+
+            if not parquet_files:
+                return PhaseResult.failed(f"No Parquet files found in {path}")
+
+            warnings: list[str] = []
+            table_ids: list[str] = []
+            total_rows = 0
+
+            for pq_file in parquet_files:
+                result = loader._load_single_file(
+                    file_path=pq_file,
+                    source_id=source.source_id,
+                    duckdb_conn=ctx.duckdb_conn,
+                    session=ctx.session,
+                )
+
+                if not result.success:
+                    warnings.append(f"Failed to load {pq_file.name}: {result.error}")
+                    continue
+
+                staged_table = result.unwrap()
+                table_ids.append(str(staged_table.table_id))
+                total_rows += staged_table.row_count
+
+            if not table_ids:
+                return PhaseResult.failed("No Parquet files were successfully loaded")
+
+            duration = time.time() - start_time
+            return PhaseResult.success(
+                outputs={"raw_tables": table_ids},
+                records_processed=total_rows,
+                records_created=len(table_ids),
+                duration=duration,
+                warnings=warnings,
+            )
+        else:
+            result = loader._load_single_file(
+                file_path=path,
+                source_id=source.source_id,
+                duckdb_conn=ctx.duckdb_conn,
+                session=ctx.session,
+            )
+
+            if not result.success:
+                return PhaseResult.failed(result.error or "Failed to load Parquet file")
+
+            staged_table = result.unwrap()
+            duration = time.time() - start_time
+
+            return PhaseResult.success(
+                outputs={"raw_tables": [str(staged_table.table_id)]},
+                records_processed=staged_table.row_count,
+                records_created=1,
+                duration=duration,
+                warnings=result.warnings,
+            )

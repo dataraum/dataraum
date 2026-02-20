@@ -54,7 +54,7 @@ class TestImportPhase:
     def test_phase_properties(self):
         phase = ImportPhase()
         assert phase.name == "import"
-        assert phase.description == "Load CSV files into raw tables"
+        assert phase.description == "Load data files into raw tables"
         assert phase.dependencies == []
         assert phase.outputs == ["raw_tables"]
 

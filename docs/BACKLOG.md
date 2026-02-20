@@ -2,11 +2,11 @@
 
 Prioritized backlog for the dataraum-context project.
 
-**Current work:** [plans/restructuring-plan.md](./plans/restructuring-plan.md) — module-by-module cleanup on `refactor/streamline` branch.
+**Current work:** Phase A — local, open-source MCP-first architecture.
 
 **Related:**
 - [PROGRESS.md](./PROGRESS.md) - Completed work log
-- [plans/testdata-and-calibration-roadmap.md](./plans/testdata-and-calibration-roadmap.md) - Next major phase
+- [plans/testdata-and-calibration-roadmap.md](./plans/testdata-and-calibration-roadmap.md) - Test data and calibration
 
 ---
 
@@ -46,9 +46,47 @@ Bottom-up cleanup: each module gets dead code removal, config streamlining, logg
 
 ---
 
+## Roadmap
+
+### Phase A — Local, Open-Source (NOW)
+
+- [x] MCP server with 6 tools, plugin rewritten
+- [x] `analyze` tool — run pipeline from MCP (no CLI required)
+- [x] Parquet source type (DuckDB-native, strong types)
+- [x] Plugin skills for `analyze`
+- [ ] Tiered `get_context` detail levels (summary/standard/full) — needed before Connectors
+- [ ] `list_sources` tool for multi-source workspaces
+- [ ] Read-only mode for shared deployments
+- [ ] Claude Code slash commands (`/project:context`, `/project:entropy`)
+- [ ] PostgreSQL source loader
+
+### Phase B — Remote MCP + Connectors Directory (Q3-Q4 2026)
+
+- Streamable HTTP transport for remote MCP server (Python MCP SDK supports `FastMCP`)
+- OAuth authentication layer for multi-user
+- Submit to Claude Connectors Directory (50+ curated integrations)
+- Token budget enforcement: tiered `get_context` mandatory, 25K token cap per tool result
+- Desktop Extension packaging for easy install
+- Data ingest from other connectors (Google Sheets → analyze flow via `data` parameter)
+
+### Phase C — Cloud-Hosted Service (2027+)
+
+- Hosted pipeline: upload data, analysis runs server-side
+- Connector-native data sources: pull directly from Google Sheets, PostgreSQL, Salesforce
+- Interactive artifacts: entropy charts, contract dashboards rendered inline in Claude Desktop
+- Team workspaces with access control
+
+### Key Insight: Claude Desktop Connectors
+
+Connectors ARE remote MCP servers (HTTPS + OAuth). Building a remote version of our current stdio MCP server is the path to the Connectors Directory. Same 6 tools, different transport. The Python MCP SDK makes this straightforward — main work is auth and hosting, not protocol.
+
+Data source integration via connectors: in Phase B, the `analyze` tool can accept a `data` parameter (CSV text from another connector). In Phase C, DataRaum pulls directly from source connectors. This eliminates the "bring your own file" step.
+
+---
+
 ## Deferred Work
 
-Items that were identified during development but deferred to keep focus.
+Items identified during development but deferred to keep focus.
 
 ### Entropy Enhancements
 - [ ] **Unit entropy currency not working in practice** — Architecture is wired (semantic prompt → `unit_source_column` → detector), but LLM never populates `unit_source_column`. All unit_entropy scores = 0.8 (missing). Needs: investigate semantic prompt or add explicit currency detection heuristic. *Medium effort, high value.*
@@ -58,7 +96,6 @@ Items that were identified during development but deferred to keep focus.
 - [ ] Entropy history/trending (needs snapshot infrastructure)
 
 ### Interfaces
-- [ ] MCP Server (4 tools: get_context, get_entropy, evaluate_contract, query)
 - [ ] TUI enhancements (real-time progress, `--from-phase`, `--force-restart`)
 
 ### Agents (Out of Scope for Restructuring)

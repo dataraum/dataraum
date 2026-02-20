@@ -362,8 +362,7 @@ Once in TUI, user can navigate between screens:
 
 ## Related Documents
 
-- [docs/ui/01-architecture-overview.md](../ui/01-architecture-overview.md) - HTMX/HATEOAS vision
-- [docs/ui/05-summary.md](../ui/05-summary.md) - UI summary
+- Web UI docs moved to `dataraum-ui` project (sibling repo)
 - [docs/plans/cli-tui-plan.md](./cli-tui-plan.md) - Previous CLI-first plan (superseded)
 - [docs/ENTROPY_IMPLEMENTATION_PLAN.md](../ENTROPY_IMPLEMENTATION_PLAN.md) - Entropy system
 

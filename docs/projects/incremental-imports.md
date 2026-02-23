@@ -6,7 +6,7 @@
 
 ## Problem
 
-Today, every `analyze` call runs the full 18-phase pipeline (~11 minutes). When a user gets new data (next month's bookings, updated export, corrected file), the pipeline re-analyzes everything from zero. This is wasteful: most of the schema and metadata hasn't changed.
+Today, every `analyze` call runs the full pipeline (~11 minutes). When a user gets new data (next month's bookings, updated export, corrected file), the pipeline re-analyzes everything from zero. This is wasteful: most of the schema and metadata hasn't changed.
 
 More importantly, users can't easily see **what changed** — they just get a fresh analysis that looks the same as the last one unless they manually compare.
 
@@ -67,17 +67,17 @@ Not all phases need to re-run on incremental data:
 |---|---|---|---|
 | import | Yes | Partial (new rows only) | DuckDB can append |
 | typing | Yes | Skip (schema unchanged) | Types don't change |
-| statistics | Yes | **Merge** | Update distributions with new data |
-| correlations | Yes | **Merge** | Re-compute with expanded dataset |
+| statistics | Yes | **Re-run on full dataset** | Merging stats incrementally is complex; re-scanning is fast (~1s) |
+| correlations | Yes | **Re-run** | Depends on updated stats |
 | relationships | Yes | Skip (schema unchanged) | Join paths don't change |
 | semantic | Yes | Skip (pinned by fixes) | Only run on new columns |
 | temporal | Yes | **Extend** | Add new time periods |
 | slicing | Yes | **Re-evaluate** | Slice definitions may change |
 | quality_summary | Yes | **Re-run** | Depends on updated stats |
 | entropy | Yes | **Re-run** | Depends on updated profiles |
-| entropy_interpretation | Yes | **Re-run** | Most expensive phase, only if scores changed |
+| entropy_interpretation | Yes | **Skip if scores stable** | Most expensive phase — only re-run if entropy scores changed >5% |
 
-Potential speedup: skip 4 phases entirely, merge 2, only fully re-run 5. The `entropy_interpretation` phase (currently 78% of runtime at ~9 min) could be skipped if entropy scores haven't changed materially.
+Potential speedup: skip 3 phases entirely, and conditionally skip `entropy_interpretation` (78% of runtime). For incremental data where entropy scores haven't changed materially, this reduces re-analysis from ~11 min to ~2.5 min.
 
 ### "What Changed?" Report
 
@@ -90,7 +90,7 @@ Rows: 12,450 → 15,230 (+2,780 new)
 Schema: unchanged (41 columns)
 
 Distribution changes:
-  - kost1kostenstelle: null rate 12% → 28% (⚠ investigate)
+  - kost1kostenstelle: null rate 12% → 28% (investigate)
   - buchungsdatum: new range extends to 2026-02-28
   - betrag: mean shifted 1,240 → 1,380 (+11%)
 
@@ -118,8 +118,7 @@ Entry point: *"You have a previous run from Feb 19. Want me to compare?"*
 
 | Tool | Purpose |
 |---|---|
-| `detect_changes` | Compare new data against last analysis, return change summary |
-| `analyze_incremental` | Run only necessary pipeline phases based on detected changes |
+| `analyze_incremental` | Detect changes + run only necessary pipeline phases. Subsumes change detection — the user doesn't need to orchestrate detect vs analyze separately. |
 | `compare_runs` | Diff two pipeline runs, return delta summary |
 
 ## New Skills
@@ -154,11 +153,10 @@ Note: LLM call counters show 0 in phase metadata — the counters may not be wir
 
 ## Priority
 
-Lower than the other projects — this is an optimization, not a capability gap. The full pipeline works; it's just slow. However, the value increases significantly once users have fixes in the ledger that need re-applying, and once they're doing regular data refreshes.
+Lowest of the three projects — this is an optimization, not a capability gap. The full pipeline works; it's just slow. However, the value increases significantly once users have fixes in the ledger that need re-applying, and once they're doing regular data refreshes.
 
 ## Open Questions
 
-- How do we handle the case where the user replaces the file entirely (same filename, different content)?
-- Should incremental analysis create a new `PipelineRun` or update the existing one?
-- Can DuckDB efficiently merge statistics (histograms, percentiles) without re-scanning all data?
-- Should we support streaming/appending (new rows arrive continuously) or only batch (new file replaces old)?
+- How do we handle the case where the user replaces the file entirely (same filename, different content)? Fingerprint comparison handles detection, but the pipeline should default to full re-analysis.
+- Should incremental analysis create a new `PipelineRun` or update the existing one? (New run — preserves history for `compare_runs`.)
+- Should we support streaming/appending (new rows arrive continuously) or only batch (new file replaces old)? (Batch only for v1.)

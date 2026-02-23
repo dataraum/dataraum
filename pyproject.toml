@@ -44,6 +44,7 @@ dependencies = [
     "typer>=0.9.0",
     "rich>=13.0.0",
     "networkx>=3.6",
+    "pgmpy>=0.1.25",
     "anthropic>=0.76.0",
     "sentence-transformers>=5.2.0",
     # TUI
@@ -143,6 +144,8 @@ filterwarnings = [
     "ignore:divide by zero encountered in scalar divide:RuntimeWarning",
     # DuckDB GIL warning on Python 3.14 free-threaded (external library)
     "ignore:The global interpreter lock.*:RuntimeWarning",
+    # pgmpy invalid escape sequences (external library)
+    "ignore:.*is an invalid escape sequence.*:SyntaxWarning",
 ]
 
 [tool.ruff]
@@ -197,6 +200,7 @@ module = [
     "ruptures.*",
     "pyarrow.*",
     "networkx.*",
+    "pgmpy.*",
     "textual.*",
 ]
 ignore_missing_imports = true

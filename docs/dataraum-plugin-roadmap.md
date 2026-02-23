@@ -10,14 +10,14 @@ This roadmap covers the **MCP plugin** — the Claude Desktop integration. It is
 
 **Current state:** 6 MCP tools (`analyze`, `get_context`, `get_entropy`, `evaluate_contract`, `query`, `get_actions`) and 6 skills. The `analyze` tool returns immediately with background execution; `get_context` polls for progress.
 
-### Related Projects
+### Related Projects (priority order)
 
-| Project | Scope | Definition |
-|---|---|---|
-| [Onboarding](projects/onboarding.md) | Role identification, source configuration, multi-source management | Separate project |
-| [Data Fixes](projects/fixes.md) | Persistent state, resolve workflow, progress dashboard, fixes ledger, re-application during import | Separate project |
-| [Quality UI](projects/quality-ui.md) | Web dashboard, report export, trend charts, fix review — lives in `dataraum-ui` | Separate project |
-| [Incremental Imports](projects/incremental-imports.md) | Change detection, partial re-analysis, run comparison | Separate project |
+| # | Project | Scope | Why this order |
+|---|---|---|---|
+| 1 | [Data Fixes](projects/fixes.md) | Persistent state, resolve workflow, fixes ledger, re-application | Highest value — semantic pinning solves measured LLM reproducibility problem |
+| 2 | [Onboarding](projects/onboarding.md) | Source configuration, data backends (DuckDB extensions), multi-source management | Unblocks non-developer users and database/cloud sources |
+| 3 | [Quality UI](projects/quality-ui.md) | Web dashboard, report export, trend charts — lives in `dataraum-ui` | Visualization layer, depends on fixes for interesting data to display |
+| 4 | [Incremental Imports](projects/incremental-imports.md) | Change detection, partial re-analysis, run comparison | Optimization — full pipeline works, just slow. Value grows after fixes exist |
 
 ---
 
@@ -102,8 +102,7 @@ Items 1 and 2 are independent and can start now.
 
 | Item | Now lives in |
 |---|---|
-| Auto-detect file path, source configuration | [Onboarding](projects/onboarding.md) |
-| Role/profession onboarding | [Onboarding](projects/onboarding.md) |
+| Source configuration, data backends | [Onboarding](projects/onboarding.md) |
 | Persistent state layer (DB models) | [Data Fixes](projects/fixes.md) |
 | Guided fix workflow (`resolve` skill) | [Data Fixes](projects/fixes.md) |
 | Progress dashboard entry point | [Data Fixes](projects/fixes.md) |

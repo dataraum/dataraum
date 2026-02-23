@@ -642,6 +642,8 @@ def _get_actions(
     from dataraum.entropy.core.storage import EntropyRepository
     from dataraum.entropy.db_models import EntropyObjectRecord
     from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
+    from dataraum.entropy.network.model import EntropyNetwork
+    from dataraum.entropy.views.network_context import _assemble_network_context
     from dataraum.storage import Column, Source, Table
 
     try:
@@ -685,6 +687,7 @@ def _get_actions(
             typed_table_ids = repo.get_typed_table_ids(table_ids)
             column_summaries: dict[str, Any] = {}
             compound_risks: list[Any] = []
+            network_context = None
 
             if typed_table_ids:
                 table_map, column_map = repo.get_table_column_mapping(typed_table_ids)
@@ -698,6 +701,12 @@ def _get_actions(
                     )
                     for summary in column_summaries.values():
                         compound_risks.extend(summary.compound_risks)
+
+                    # Build Bayesian network context for causal prioritization
+                    network = EntropyNetwork()
+                    network_context = _assemble_network_context(
+                        entropy_objects, network,
+                    )
 
             # Get LLM interpretations with resolution actions
             interp_result = session.execute(
@@ -732,12 +741,13 @@ def _get_actions(
                     if v.dimension:
                         violation_dims.setdefault(v.dimension, []).extend(v.affected_columns)
 
-            # Merge actions from all sources
+            # Merge actions from all sources (including network causal impact)
             actions = merge_actions(
                 column_summaries=column_summaries,
                 interp_by_col=interp_by_col,
                 entropy_objects_by_col=entropy_objects_by_col,
                 violation_dims=violation_dims,
+                network_context=network_context,
             )
 
             # Apply filters

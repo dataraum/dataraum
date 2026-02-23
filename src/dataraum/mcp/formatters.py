@@ -234,16 +234,11 @@ def format_actions_report(
         return "\n".join(lines)
 
     # Summary
-    by_priority: dict[str, list[dict[str, Any]]] = {"high": [], "medium": [], "low": []}
-    for a in actions:
-        p = a.get("priority", "medium")
-        if p in by_priority:
-            by_priority[p].append(a)
-
     lines.append("## Summary")
-    lines.append(f"- **HIGH** priority: {len(by_priority['high'])} actions")
-    lines.append(f"- **MEDIUM** priority: {len(by_priority['medium'])} actions")
-    lines.append(f"- **LOW** priority: {len(by_priority['low'])} actions")
+    lines.append(f"- **{len(actions)}** resolution actions ranked by combined score")
+    lines.append(
+        "- Score combines: detector reduction + column breadth + network causal impact"
+    )
 
     if actions:
         top = actions[0]
@@ -253,90 +248,98 @@ def format_actions_report(
         lines.append(f"- Top action: **{top['action']}** ({cols} columns{reduction_str})")
     lines.append("")
 
-    # Actions by priority
-    for priority in ["high", "medium", "low"]:
-        priority_actions = by_priority[priority]
-        if not priority_actions:
-            continue
+    # Ranked actions (single list, score-ordered)
+    lines.append("## Actions (ranked by impact)")
+    lines.append("")
 
-        priority_label = priority.upper()
-        lines.append(f"## {priority_label} Priority Actions")
+    for i, action in enumerate(actions, 1):
+        lines.append(f"### {i}. {action['action']}")
+
+        # Score and effort
+        score = action.get("priority_score", 0)
+        effort = action.get("effort", "medium")
+        lines.append(f"**Score:** {score:.3f} | **Effort:** {effort}")
         lines.append("")
 
-        for i, action in enumerate(priority_actions, 1):
-            lines.append(f"### {i}. {action['action']}")
-
-            # Priority score
-            score = action.get("priority_score", 0)
-            lines.append(f"**Priority Score:** {score:.3f}")
+        # Description
+        if action.get("description"):
+            lines.append(f"**Description:** {action['description']}")
             lines.append("")
 
-            # Description
-            if action.get("description"):
-                lines.append(f"**Description:** {action['description']}")
-                lines.append("")
-
-            # Effort and reduction
-            effort = action.get("effort", "medium")
+        # Network causal impact
+        network_impact = action.get("network_impact", 0.0)
+        network_cols = action.get("network_columns", 0)
+        if network_impact > 0:
             reduction = action.get("max_reduction", 0)
-            reduction_str = f" | **Expected Reduction:** ~{reduction:.0%}" if reduction else ""
-            lines.append(f"**Effort:** {effort}{reduction_str}")
+            reduction_str = f" | Detector reduction: ~{reduction:.0%}" if reduction else ""
+            lines.append(
+                f"**Network Impact:** {network_impact:.3f} causal delta "
+                f"across {network_cols} columns{reduction_str}"
+            )
             lines.append("")
 
-            # Affected columns
-            affected = action.get("affected_columns", [])
-            if affected:
-                lines.append(f"**Affected Columns ({len(affected)}):**")
-                for col in affected[:10]:  # Limit to 10
-                    lines.append(f"- {col}")
-                if len(affected) > 10:
-                    lines.append(f"- ... and {len(affected) - 10} more")
-                lines.append("")
-
-            # Parameters
-            params = action.get("parameters", {})
-            if params and isinstance(params, dict):
-                lines.append("**Parameters:**")
-                for k, v in params.items():
-                    lines.append(f"- {k}: {v}")
-                lines.append("")
-
-            # Expected impact
-            if action.get("expected_impact"):
-                lines.append(f"**Expected Impact:** {action['expected_impact']}")
-                lines.append("")
-
-            # Cascade dimensions
-            cascade = action.get("cascade_dimensions", [])
-            if cascade:
-                lines.append(f"**Cascade Dimensions:** {', '.join(cascade)}")
-                lines.append("")
-
-            # Contract violations this fixes
-            fixes = action.get("fixes_violations", [])
-            if fixes:
-                lines.append(f"**Fixes Contract Violations:** {', '.join(fixes)}")
-                lines.append("")
-
-            # Source tags
-            sources = []
-            if action.get("from_llm"):
-                sources.append("LLM")
-            if action.get("from_detector"):
-                sources.append("Detector")
-            if sources:
-                lines.append(f"*Source: {', '.join(sources)}*")
-                lines.append("")
-
-            lines.append("---")
+        # Affected columns
+        affected = action.get("affected_columns", [])
+        if affected:
+            lines.append(f"**Affected Columns ({len(affected)}):**")
+            for col in affected[:10]:
+                lines.append(f"- {col}")
+            if len(affected) > 10:
+                lines.append(f"- ... and {len(affected) - 10} more")
             lines.append("")
 
-    # Recommendations section
-    quick_wins = [a for a in actions if a.get("effort") == "low" and a.get("priority") == "high"]
+        # Parameters
+        params = action.get("parameters", {})
+        if params and isinstance(params, dict):
+            lines.append("**Parameters:**")
+            for k, v in params.items():
+                lines.append(f"- {k}: {v}")
+            lines.append("")
+
+        # Expected impact
+        if action.get("expected_impact"):
+            lines.append(f"**Expected Impact:** {action['expected_impact']}")
+            lines.append("")
+
+        # Cascade dimensions
+        cascade = action.get("cascade_dimensions", [])
+        if cascade:
+            lines.append(f"**Cascade Dimensions:** {', '.join(cascade)}")
+            lines.append("")
+
+        # Contract violations this fixes
+        fixes = action.get("fixes_violations", [])
+        if fixes:
+            lines.append(f"**Fixes Contract Violations:** {', '.join(fixes)}")
+            lines.append("")
+
+        # Source tags
+        sources = []
+        if action.get("from_llm"):
+            sources.append("LLM")
+        if action.get("from_detector"):
+            sources.append("Detector")
+        if action.get("from_network"):
+            sources.append("Network")
+        if sources:
+            lines.append(f"*Source: {', '.join(sources)}*")
+            lines.append("")
+
+        lines.append("---")
+        lines.append("")
+
+    # Quick wins: low effort + high score
+    quick_wins = [
+        a for a in actions
+        if a.get("effort") == "low" and a.get("priority_score", 0) > 0.5
+    ]
     if quick_wins:
-        lines.append("## Quick Wins (High Impact, Low Effort)")
+        lines.append("## Quick Wins (High Score, Low Effort)")
         for a in quick_wins[:3]:
-            lines.append(f"- **{a['action']}**: {a.get('description', '')[:100]}")
+            lines.append(
+                f"- **{a['action']}** (score={a.get('priority_score', 0):.3f}): "
+                f"{a.get('description', '')[:100]}"
+            )
         lines.append("")
 
     return "\n".join(lines)

@@ -5,7 +5,51 @@ Used by MCP server and API to produce actionable steps for improving data qualit
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from dataraum.entropy.views.network_context import EntropyForNetwork
+
+
+def _build_network_impact(
+    network_context: EntropyForNetwork,
+) -> dict[str, dict[str, Any]]:
+    """Build action_name -> network impact mapping from per-column results.
+
+    Walks all columns' node evidence, finds non-low nodes with resolution
+    options, and sums causal impact_delta per action across columns.
+
+    Returns:
+        Dict keyed by action name with total_delta, columns_affected,
+        column list, and a representative resolution_option dict.
+    """
+    impact: dict[str, dict[str, Any]] = {}
+
+    for target, col_result in network_context.columns.items():
+        for node_ev in col_result.node_evidence:
+            if node_ev.state == "low" or not node_ev.resolution_options:
+                continue
+
+            for ro in node_ev.resolution_options:
+                action_name = ro.get("action", "")
+                if not action_name:
+                    continue
+
+                if action_name not in impact:
+                    impact[action_name] = {
+                        "total_delta": 0.0,
+                        "columns_affected": 0,
+                        "columns": [],
+                        "resolution_option": ro,
+                    }
+
+                ni = impact[action_name]
+                ni["total_delta"] += node_ev.impact_delta
+                ni["columns_affected"] += 1
+                if target not in ni["columns"]:
+                    ni["columns"].append(target)
+
+    return impact
 
 
 def merge_actions(
@@ -13,6 +57,7 @@ def merge_actions(
     interp_by_col: dict[str, Any],
     entropy_objects_by_col: dict[str, list[Any]],
     violation_dims: dict[str, list[str]],
+    network_context: EntropyForNetwork | None = None,
 ) -> list[dict[str, Any]]:
     """Merge actions from all sources into a unified list.
 
@@ -21,6 +66,8 @@ def merge_actions(
         interp_by_col: Column key -> EntropyInterpretationRecord from LLM
         entropy_objects_by_col: Column key -> list of EntropyObjectRecord
         violation_dims: Dimension -> list of affected column keys from contracts
+        network_context: Optional EntropyForNetwork with per-column Bayesian
+            network results. Provides causal impact_delta for prioritization.
 
     Returns:
         Sorted list of action dicts with priority, effort, affected columns, etc.
@@ -44,6 +91,9 @@ def merge_actions(
                     "total_reduction": 0.0,
                     "from_llm": False,
                     "from_detector": True,
+                    "from_network": False,
+                    "network_impact": 0.0,
+                    "network_columns": 0,
                     "fixes_violations": [],
                     "evidence": [],
                 }
@@ -83,6 +133,9 @@ def merge_actions(
                     "total_reduction": 0.0,
                     "from_llm": True,
                     "from_detector": False,
+                    "from_network": False,
+                    "network_impact": 0.0,
+                    "network_columns": 0,
                     "fixes_violations": [],
                     "evidence": [],
                 }
@@ -108,6 +161,39 @@ def merge_actions(
             if col_key not in ma["affected_columns"]:
                 ma["affected_columns"].append(col_key)
 
+    # From Bayesian network: causal impact per action
+    if network_context is not None:
+        network_impact = _build_network_impact(network_context)
+
+        for action_name, ni in network_impact.items():
+            if action_name not in actions_map:
+                # New action from network — create from resolution_option
+                ro = ni["resolution_option"]
+                actions_map[action_name] = {
+                    "action": action_name,
+                    "priority": "medium",
+                    "description": ro.get("description", ""),
+                    "effort": ro.get("effort", "medium"),
+                    "expected_impact": "",
+                    "parameters": ro.get("parameters", {}),
+                    "affected_columns": [],
+                    "cascade_dimensions": list(ro.get("cascade_dimensions", [])),
+                    "max_reduction": ro.get("expected_entropy_reduction", 0.0),
+                    "total_reduction": 0.0,
+                    "from_llm": False,
+                    "from_detector": False,
+                    "from_network": True,
+                    "network_impact": ni["total_delta"],
+                    "network_columns": ni["columns_affected"],
+                    "fixes_violations": [],
+                    "evidence": [],
+                }
+            else:
+                ma = actions_map[action_name]
+                ma["from_network"] = True
+                ma["network_impact"] = ni["total_delta"]
+                ma["network_columns"] = ni["columns_affected"]
+
     # Map contract violations to actions
     for dim, cols in violation_dims.items():
         for ma in actions_map.values():
@@ -116,17 +202,21 @@ def merge_actions(
                 ma["fixes_violations"].append(dim)
 
     # Calculate priority scores
+    # network_impact is the sum of causal impact_delta across columns,
+    # measuring how much fixing this action reduces P(intent=high).
     effort_factors = {"low": 1.0, "medium": 2.0, "high": 4.0}
     for ma in actions_map.values():
         effort_factor = effort_factors.get(ma["effort"], 2.0)
         impact = ma["total_reduction"] + len(ma["affected_columns"]) * 0.1
+        impact += ma.get("network_impact", 0.0)
         ma["priority_score"] = impact / effort_factor
 
-    # Sort by priority bucket then by priority_score
-    priority_order = {"high": 0, "medium": 1, "low": 2}
+    # Sort by priority_score descending. The LLM-assigned priority label
+    # is kept as metadata for display, but the ranking reflects the combined
+    # score from detectors, LLM, network causal impact, and column breadth.
     result = sorted(
         actions_map.values(),
-        key=lambda a: (priority_order.get(a["priority"], 1), -a["priority_score"]),
+        key=lambda a: -a["priority_score"],
     )
 
     return result

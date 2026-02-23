@@ -490,7 +490,30 @@ def _get_entropy(output_dir: Path, table_name: str | None = None) -> str:
             interp_result = session.execute(interp_query)
             interpretations = interp_result.scalars().all()
 
-            return format_entropy_summary(source.name, snapshot, interpretations, table_name)
+            result = format_entropy_summary(source.name, snapshot, interpretations, table_name)
+
+            # Append network context (inference + evidence + direct signals)
+            try:
+                from dataraum.entropy.views.network_context import (
+                    build_for_network,
+                    format_network_context,
+                )
+                from dataraum.storage import Table
+
+                tables_result = session.execute(
+                    select(Table).where(Table.source_id == source.source_id)
+                )
+                tables = tables_result.scalars().all()
+                table_ids = [t.table_id for t in tables]
+
+                if table_ids:
+                    network_context = build_for_network(session, table_ids)
+                    if network_context.total_columns > 0:
+                        result += "\n\n" + format_network_context(network_context)
+            except Exception:
+                _log.debug("Network context unavailable", exc_info=True)
+
+            return result
     finally:
         manager.close()
 

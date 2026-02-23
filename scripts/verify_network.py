@@ -7,6 +7,8 @@ Loads EntropyObjects from the metadata.db, feeds them through the
 network bridge, runs all 4 inference operations, and computes priorities.
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from sqlalchemy import select
 
 from dataraum.core.connections import get_manager_for_directory
 from dataraum.entropy.core.storage import EntropyRepository
+from dataraum.entropy.models import EntropyObject
 from dataraum.entropy.network.bridge import entropy_objects_to_evidence
 from dataraum.entropy.network.inference import (
     backward_diagnose,
@@ -55,7 +58,7 @@ def main(output_dir: Path) -> None:
             console.print(f"Total EntropyObjects: {len(all_objects)}\n")
 
             # Group objects by target for per-column analysis
-            by_target: dict[str, list] = {}
+            by_target: dict[str, list[EntropyObject]] = {}
             for obj in all_objects:
                 by_target.setdefault(obj.target, []).append(obj)
 
@@ -192,6 +195,75 @@ def main(output_dir: Path) -> None:
                 )
                 for intent, dist in sorted(wi.items()):
                     console.print(f"  {intent}: P(high) = {dist['high']:.3f}")
+
+            # 6. Network context assembler (per-column)
+            console.rule("[bold]Network Context Assembler (per-column)[/bold]")
+            from dataraum.entropy.views.network_context import (
+                _assemble_network_context,
+                format_network_context,
+            )
+
+            net_ctx = _assemble_network_context(all_objects, network)
+            console.print(f"Total columns: {net_ctx.total_columns}")
+            console.print(f"  Blocked: {net_ctx.columns_blocked}")
+            console.print(f"  Investigate: {net_ctx.columns_investigate}")
+            console.print(f"  Ready: {net_ctx.columns_ready}")
+            console.print(f"Direct signals: {net_ctx.total_direct_signals}")
+            console.print(f"Aggregate intents: {len(net_ctx.intents)}")
+            console.print(f"Overall readiness: {net_ctx.overall_readiness}")
+
+            if net_ctx.intents:
+                intent_table = RichTable(title="Aggregate Intent Readiness")
+                intent_table.add_column("Intent")
+                intent_table.add_column("Worst P(high)")
+                intent_table.add_column("Mean P(high)")
+                intent_table.add_column("Blocked")
+                intent_table.add_column("Investigate")
+                intent_table.add_column("Ready")
+                for ai in net_ctx.intents:
+                    intent_table.add_row(
+                        ai.intent_name,
+                        f"{ai.worst_p_high:.3f}",
+                        f"{ai.mean_p_high:.3f}",
+                        str(ai.columns_blocked),
+                        str(ai.columns_investigate),
+                        str(ai.columns_ready),
+                    )
+                console.print(intent_table)
+
+            if net_ctx.top_fix:
+                tf = net_ctx.top_fix
+                console.print(
+                    f"\nTop fix: [cyan]{tf.node_name}[/cyan] across "
+                    f"{tf.columns_affected} columns, "
+                    f"total delta: {tf.total_intent_delta:.3f}"
+                )
+                if tf.example_columns:
+                    console.print(f"  Worst: {', '.join(tf.example_columns)}")
+
+            # Show a few at-risk columns
+            at_risk = [
+                (t, c) for t, c in net_ctx.columns.items()
+                if c.readiness != "ready"
+            ]
+            if at_risk:
+                at_risk.sort(key=lambda x: x[1].worst_intent_p_high, reverse=True)
+                console.print(f"\nAt-risk columns ({len(at_risk)}):")
+                for target, col in at_risk[:5]:
+                    high_nodes = ", ".join(
+                        f"{ne.node_name}={ne.state}({ne.score:.2f})"
+                        for ne in col.node_evidence if ne.state != "low"
+                    )
+                    console.print(
+                        f"  {target} ({col.readiness}, "
+                        f"P(high)={col.worst_intent_p_high:.3f}) "
+                        f"[dim]{high_nodes}[/dim]"
+                    )
+
+            console.print()
+            formatted = format_network_context(net_ctx)
+            console.print("[dim]--- Formatted output ---[/dim]")
+            console.print(formatted)
 
     finally:
         manager.close()

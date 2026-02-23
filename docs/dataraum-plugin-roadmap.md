@@ -14,10 +14,11 @@ This roadmap covers the **MCP plugin** — the Claude Desktop integration. It is
 
 | # | Project | Scope | Why this order |
 |---|---|---|---|
-| 1 | [Data Fixes](projects/fixes.md) | Persistent state, resolve workflow, fixes ledger, re-application | Highest value — semantic pinning solves measured LLM reproducibility problem |
-| 2 | [Onboarding](projects/onboarding.md) | Source configuration, data backends (DuckDB extensions), multi-source management | Unblocks non-developer users and database/cloud sources |
-| 3 | [Quality UI](projects/quality-ui.md) | Web dashboard, report export, trend charts — lives in `dataraum-ui` | Visualization layer, depends on fixes for interesting data to display |
-| 4 | [Incremental Imports](projects/incremental-imports.md) | Change detection, partial re-analysis, run comparison | Optimization — full pipeline works, just slow. Value grows after fixes exist |
+| 1 | [Release & Productization](projects/release.md) | CI, PyPI publish, plugin repo, Zensical docs, GitHub Issues, Claude Desktop | Foundation — nothing else ships without this |
+| 2 | [Data Fixes](projects/fixes.md) | Persistent state, resolve workflow, fixes ledger, re-application | Highest product value — semantic pinning solves measured LLM reproducibility problem |
+| 3 | [Onboarding](projects/onboarding.md) | Source configuration, data backends (DuckDB extensions), multi-source management | Unblocks non-developer users and database/cloud sources |
+| 4 | [Quality UI](projects/quality-ui.md) | Web dashboard, report export, trend charts — lives in `dataraum-ui` | Visualization layer, depends on fixes for interesting data to display |
+| 5 | [Incremental Imports](projects/incremental-imports.md) | Change detection, partial re-analysis, run comparison | Optimization — full pipeline works, just slow. Value grows after fixes exist |
 
 ---
 

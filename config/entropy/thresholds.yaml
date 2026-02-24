@@ -156,17 +156,6 @@ detectors:
     reduction_mark_timestamp: 0.6
 
 # ============================================================================
-# RESOLUTION EFFORT FACTORS
-# ============================================================================
-# Used to calculate priority_score = entropy_reduction / effort_factor
-# Higher priority_score = more worthwhile to implement
-
-effort_factors:
-  low: 1.0
-  medium: 2.0
-  high: 4.0
-
-# ============================================================================
 # DIMENSION DISPLAY LABELS
 # ============================================================================
 # Human-readable labels for dimension paths. Used in contract violations,

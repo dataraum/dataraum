@@ -240,10 +240,8 @@ class EntropyRepository:
                     ResolutionOption(
                         action=opt_dict.get("action", ""),
                         parameters=opt_dict.get("parameters", {}),
-                        expected_entropy_reduction=opt_dict.get("expected_entropy_reduction", 0.0),
                         effort=opt_dict.get("effort", "medium"),
                         description=opt_dict.get("description", ""),
-                        cascade_dimensions=opt_dict.get("cascade_dimensions", []),
                     )
                 )
 
@@ -262,7 +260,6 @@ class EntropyRepository:
             sub_dimension=record.sub_dimension,
             target=record.target,
             score=record.score,
-            confidence=record.confidence,
             evidence=evidence,
             resolution_options=resolution_options,
             computed_at=record.computed_at,

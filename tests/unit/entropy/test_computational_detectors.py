@@ -192,27 +192,6 @@ class TestDerivedValueDetector:
         evidence = results[0].evidence[0]
         assert evidence["source_columns"] == ["qty", "price"]
 
-    def test_cascade_dimensions_on_document(self, detector: DerivedValueDetector):
-        """Test document_formula resolution cascades to semantic."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="unknown",
-            analysis_results={
-                "correlation": {
-                    "derived_columns": [],
-                }
-            },
-        )
-
-        results = detector.detect(context)
-
-        document_opt = next(
-            (opt for opt in results[0].resolution_options if opt.action == "document_formula"),
-            None,
-        )
-        assert document_opt is not None
-        assert "semantic.business_meaning" in document_opt.cascade_dimensions
-
     def test_detector_properties(self, detector: DerivedValueDetector):
         """Test detector has correct properties."""
         assert detector.detector_id == "derived_value"

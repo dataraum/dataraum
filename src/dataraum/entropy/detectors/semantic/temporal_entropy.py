@@ -59,7 +59,6 @@ class TemporalEntropyDetector(EntropyDetector):
         score_unmarked = detector_config.get("score_unmarked", 0.6)
         score_mismatch = detector_config.get("score_mismatch", 0.8)
         score_aligned = detector_config.get("score_aligned", 0.1)
-        reduction_mark_timestamp = detector_config.get("reduction_mark_timestamp", 0.6)
 
         typing = context.get_analysis("typing", {})
         semantic = context.get_analysis("semantic", {})
@@ -122,7 +121,6 @@ class TemporalEntropyDetector(EntropyDetector):
                         "table": context.table_name,
                         "data_type": data_type,
                     },
-                    expected_entropy_reduction=reduction_mark_timestamp,
                     effort="low",
                     description=f"Mark date column '{context.column_name}' as timestamp",
                 )
@@ -137,7 +135,6 @@ class TemporalEntropyDetector(EntropyDetector):
                         "data_type": data_type,
                         "semantic_role": semantic_role,
                     },
-                    expected_entropy_reduction=reduction_mark_timestamp,
                     effort="medium",
                     description=f"Resolve type/role mismatch for '{context.column_name}'",
                 )

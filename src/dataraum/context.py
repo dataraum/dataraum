@@ -236,12 +236,6 @@ class EntropyAccessor:
                 "source": source.name,
                 "overall_readiness": snapshot.overall_readiness,
                 "entropy_score": snapshot.avg_entropy_score,
-                "dimensions": {
-                    "structural": snapshot.avg_structural_entropy,
-                    "semantic": snapshot.avg_semantic_entropy,
-                    "value": snapshot.avg_value_entropy,
-                    "computational": snapshot.avg_computational_entropy,
-                },
                 "columns": [
                     {
                         "table": i.table_name,

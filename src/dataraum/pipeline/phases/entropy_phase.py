@@ -393,10 +393,8 @@ class EntropyPhase(BasePhase):
                         {
                             "action": opt.action,
                             "parameters": opt.parameters,
-                            "expected_entropy_reduction": opt.expected_entropy_reduction,
                             "effort": opt.effort,
                             "description": opt.description,
-                            "cascade_dimensions": opt.cascade_dimensions,
                         }
                         for opt in entropy_obj.resolution_options
                     ]
@@ -410,7 +408,6 @@ class EntropyPhase(BasePhase):
                         dimension=entropy_obj.dimension,
                         sub_dimension=entropy_obj.sub_dimension,
                         score=entropy_obj.score,
-                        confidence=entropy_obj.confidence,
                         evidence=entropy_obj.evidence,
                         resolution_options=resolution_dicts if resolution_dicts else None,
                         detector_id=entropy_obj.detector_id,
@@ -435,10 +432,8 @@ class EntropyPhase(BasePhase):
                 {
                     "action": opt.action,
                     "parameters": opt.parameters,
-                    "expected_entropy_reduction": opt.expected_entropy_reduction,
                     "effort": opt.effort,
                     "description": opt.description,
-                    "cascade_dimensions": opt.cascade_dimensions,
                 }
                 for opt in entropy_obj.resolution_options
             ]
@@ -469,7 +464,6 @@ class EntropyPhase(BasePhase):
                 dimension=entropy_obj.dimension,
                 sub_dimension=entropy_obj.sub_dimension,
                 score=entropy_obj.score,
-                confidence=entropy_obj.confidence,
                 evidence=entropy_obj.evidence,
                 resolution_options=resolution_dicts if resolution_dicts else None,
                 detector_id=entropy_obj.detector_id,
@@ -497,42 +491,7 @@ class EntropyPhase(BasePhase):
         p_highs = [c.worst_intent_p_high for c in network_ctx.columns.values()]
         avg_entropy = sum(p_highs) / len(p_highs) if p_highs else 0.0
 
-        # Average scores by layer from node evidence
-        layer_scores: dict[str, list[float]] = {
-            "structural": [],
-            "semantic": [],
-            "value": [],
-            "computational": [],
-        }
-        for col_result in network_ctx.columns.values():
-            for ne in col_result.node_evidence:
-                if ne.dimension_path:
-                    layer = ne.dimension_path.split(".")[0]
-                    if layer in layer_scores:
-                        layer_scores[layer].append(ne.score)
-
-        avg_structural = (
-            sum(layer_scores["structural"]) / len(layer_scores["structural"])
-            if layer_scores["structural"]
-            else 0.0
-        )
-        avg_semantic = (
-            sum(layer_scores["semantic"]) / len(layer_scores["semantic"])
-            if layer_scores["semantic"]
-            else 0.0
-        )
-        avg_value = (
-            sum(layer_scores["value"]) / len(layer_scores["value"])
-            if layer_scores["value"]
-            else 0.0
-        )
-        avg_computational = (
-            sum(layer_scores["computational"]) / len(layer_scores["computational"])
-            if layer_scores["computational"]
-            else 0.0
-        )
-
-        # Create snapshot record with network-derived averages
+        # Create snapshot record
         snapshot = EntropySnapshotRecord(
             source_id=ctx.source_id,
             total_entropy_objects=total_entropy_objects,
@@ -540,10 +499,6 @@ class EntropyPhase(BasePhase):
             critical_entropy_count=critical_entropy_count,
             overall_readiness=overall_readiness,
             avg_entropy_score=avg_entropy,
-            avg_structural_entropy=avg_structural,
-            avg_semantic_entropy=avg_semantic,
-            avg_value_entropy=avg_value,
-            avg_computational_entropy=avg_computational,
         )
         ctx.session.add(snapshot)
 
@@ -800,7 +755,6 @@ def _run_dimensional_entropy(
                 sub_dimension="column_quality",
                 target=f"column:{table.table_name}.{col_name}",
                 score=entropy_score_val,
-                confidence=0.9,  # High confidence for LLM-assessed quality
                 evidence=[
                     {
                         "source": "column_quality_report",
@@ -823,7 +777,6 @@ def _run_dimensional_entropy(
                             "quality_issues": all_quality_issues,
                             "recommendations": all_recommendations,
                         },
-                        expected_entropy_reduction=entropy_score_val * 0.6,
                         effort="medium",
                         description=f"Review {len(all_quality_issues)} quality issues and {len(all_recommendations)} recommendations for {col_name}",
                     ),

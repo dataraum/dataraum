@@ -61,8 +61,6 @@ class BenfordDetector(EntropyDetector):
 
         score_compliant = detector_config.get("score_compliant", 0.1)
         score_non_compliant = detector_config.get("score_non_compliant", 0.7)
-        reduction_investigate = detector_config.get("reduction_investigate", 0.5)
-
         stats = context.get_analysis("statistics", {})
         quality = stats.get("quality", stats)
 
@@ -120,7 +118,6 @@ class BenfordDetector(EntropyDetector):
                         "chi_square": chi_square,
                         "p_value": p_value,
                     },
-                    expected_entropy_reduction=score * reduction_investigate,
                     effort="medium",
                     description="Investigate Benford's Law deviation — may indicate data quality issues or systematic rounding",
                 )

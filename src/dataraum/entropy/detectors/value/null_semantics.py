@@ -45,10 +45,6 @@ class NullRatioDetector(EntropyDetector):
         impact_significant = detector_config.get("impact_significant", 0.50)
         suggest_declare = detector_config.get("suggest_declare_threshold", 0.1)
         suggest_filter = detector_config.get("suggest_filter_threshold", 0.4)
-        reduction_declare = detector_config.get("reduction_declare", 0.3)
-        reduction_filter = detector_config.get("reduction_filter", 0.8)
-        reduction_impute = detector_config.get("reduction_impute", 0.6)
-
         stats = context.get_analysis("statistics", {})
 
         # Extract null ratio
@@ -99,10 +95,8 @@ class NullRatioDetector(EntropyDetector):
                         "column": context.column_name,
                         "meanings": ["not_applicable", "unknown", "not_yet_set"],
                     },
-                    expected_entropy_reduction=score * reduction_declare,
                     effort="low",
                     description="Declare what null values mean in this context",
-                    cascade_dimensions=["semantic.business_meaning"],
                 )
             )
 
@@ -115,7 +109,6 @@ class NullRatioDetector(EntropyDetector):
                         "column": context.column_name,
                         "strategy": "exclude",
                     },
-                    expected_entropy_reduction=score * reduction_filter,
                     effort="low",
                     description="Exclude null values from aggregations",
                 )
@@ -127,7 +120,6 @@ class NullRatioDetector(EntropyDetector):
                         "column": context.column_name,
                         "strategy": "mean",  # or median, mode, etc.
                     },
-                    expected_entropy_reduction=score * reduction_impute,
                     effort="medium",
                     description="Impute missing values using statistical methods",
                 )

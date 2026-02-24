@@ -97,12 +97,7 @@ def merge_actions(
                     "expected_impact": "",
                     "parameters": {},
                     "affected_columns": [],
-                    "cascade_dimensions": [],
-                    "max_reduction": 0.0,
-                    "total_reduction": 0.0,
                     "from_llm": True,
-                    "from_detector": False,
-                    "from_network": False,
                     "network_impact": 0.0,
                     "network_columns": 0,
                     "fixes_violations": [],
@@ -142,12 +137,7 @@ def merge_actions(
                     "expected_impact": "",
                     "parameters": ro.get("parameters", {}),
                     "affected_columns": [],
-                    "cascade_dimensions": list(ro.get("cascade_dimensions", [])),
-                    "max_reduction": ro.get("expected_entropy_reduction", 0.0),
-                    "total_reduction": 0.0,
                     "from_llm": False,
-                    "from_detector": False,
-                    "from_network": True,
                     "network_impact": ni["total_delta"],
                     "network_columns": ni["columns_affected"],
                     "fixes_violations": [],
@@ -155,7 +145,6 @@ def merge_actions(
                 }
             else:
                 ma = actions_map[action_name]
-                ma["from_network"] = True
                 ma["network_impact"] = ni["total_delta"]
                 ma["network_columns"] = ni["columns_affected"]
 
@@ -172,8 +161,7 @@ def merge_actions(
     effort_factors = {"low": 1.0, "medium": 2.0, "high": 4.0}
     for ma in actions_map.values():
         effort_factor = effort_factors.get(ma["effort"], 2.0)
-        impact = ma["total_reduction"] + len(ma["affected_columns"]) * 0.1
-        impact += ma.get("network_impact", 0.0)
+        impact = len(ma["affected_columns"]) * 0.1 + ma.get("network_impact", 0.0)
         ma["priority_score"] = impact / effort_factor
 
     # Derive priority labels from score thresholds (replaces LLM-assigned labels)

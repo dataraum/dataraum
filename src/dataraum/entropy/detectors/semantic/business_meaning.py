@@ -62,9 +62,6 @@ class BusinessMeaningDetector(EntropyDetector):
         score_partial = detector_config.get("score_partial", 0.6)
         score_documented = detector_config.get("score_documented", 0.2)
         score_fully_documented = detector_config.get("score_fully_documented", 0.0)
-        reduction_description = detector_config.get("reduction_add_description", 0.8)
-        reduction_business_name = detector_config.get("reduction_add_business_name", 0.2)
-        reduction_entity_type = detector_config.get("reduction_add_entity_type", 0.15)
 
         # Confidence weighting and ontology bonus
         confidence_weight = detector_config.get("confidence_weight", 0.3)
@@ -158,10 +155,8 @@ class BusinessMeaningDetector(EntropyDetector):
                         "column": context.column_name,
                         "table": context.table_name,
                     },
-                    expected_entropy_reduction=reduction_description,
                     effort="low",
                     description="Add a business description for this column",
-                    cascade_dimensions=["computational.aggregations"],
                 )
             )
 
@@ -173,7 +168,6 @@ class BusinessMeaningDetector(EntropyDetector):
                         "column": context.column_name,
                         "table": context.table_name,
                     },
-                    expected_entropy_reduction=reduction_business_name,
                     effort="low",
                     description="Add a human-readable business name",
                 )
@@ -187,7 +181,6 @@ class BusinessMeaningDetector(EntropyDetector):
                         "column": context.column_name,
                         "table": context.table_name,
                     },
-                    expected_entropy_reduction=reduction_entity_type,
                     effort="low",
                     description="Classify the entity type for this column",
                 )

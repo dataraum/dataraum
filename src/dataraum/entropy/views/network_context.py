@@ -40,7 +40,6 @@ class DirectSignal:
     dimension_path: str = ""
     target: str = ""
     score: float = 0.0
-    confidence: float = 1.0
     evidence: list[dict[str, Any]] = field(default_factory=list)
     resolution_options: list[dict[str, Any]] = field(default_factory=list)
     detector_id: str = ""
@@ -65,7 +64,6 @@ class ColumnNodeEvidence:
     dimension_path: str = ""
     state: str = "low"
     score: float = 0.0
-    confidence: float = 1.0
     impact_delta: float = 0.0  # causal impact of fixing this node (from priorities)
     evidence: list[dict[str, Any]] = field(default_factory=list)
     resolution_options: list[dict[str, Any]] = field(default_factory=list)
@@ -142,10 +140,8 @@ def _serialize_resolution_options(
         {
             "action": opt.action,
             "parameters": opt.parameters,
-            "expected_entropy_reduction": opt.expected_entropy_reduction,
             "effort": opt.effort,
             "description": opt.description,
-            "cascade_dimensions": opt.cascade_dimensions,
         }
         for opt in options
     ]
@@ -157,7 +153,6 @@ def _object_to_direct_signal(obj: EntropyObject) -> DirectSignal:
         dimension_path=obj.dimension_path,
         target=obj.target,
         score=obj.score,
-        confidence=obj.confidence,
         evidence=list(obj.evidence),
         resolution_options=_serialize_resolution_options(obj.resolution_options),
         detector_id=obj.detector_id,
@@ -247,7 +242,6 @@ def _build_column_result(
             dimension_path=network.get_node_config(node_name).dimension_path,
             state=state,
             score=source_obj.score if source_obj else 0.0,
-            confidence=source_obj.confidence if source_obj else 1.0,
             impact_delta=node_to_delta.get(node_name, 0.0),
             evidence=list(source_obj.evidence) if source_obj else [],
             resolution_options=(

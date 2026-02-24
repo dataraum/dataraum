@@ -197,4 +197,3 @@ class TestMergedAction:
         assert action.effort == "medium"
         assert action.affected_columns == []
         assert action.from_llm is False
-        assert action.from_detector is False

@@ -63,7 +63,6 @@ class RelationshipEntropyDetector(EntropyDetector):
         score_cardinality_mismatch = detector_config.get("score_cardinality_mismatch", 0.7)
         score_unconfirmed = detector_config.get("score_unconfirmed", 0.3)
         score_unknown_type = detector_config.get("score_unknown_type", 0.6)
-        reduction_verify = detector_config.get("reduction_verify_relationship", 0.6)
 
         # Component weights for weighted average (replaces MAX aggregation)
         component_weights = detector_config.get("component_weights", {})
@@ -177,7 +176,6 @@ class RelationshipEntropyDetector(EntropyDetector):
                                 "to_table": to_table,
                                 "column": context.column_name,
                             },
-                            expected_entropy_reduction=reduction_verify,
                             effort="low",
                             description=f"Confirm relationship between {from_table} and {to_table}",
                         )
@@ -192,7 +190,6 @@ class RelationshipEntropyDetector(EntropyDetector):
                                 "to_table": to_table,
                                 "orphan_count": orphan_count,
                             },
-                            expected_entropy_reduction=ri_entropy * 0.8,
                             effort="high",
                             description="Fix referential integrity issues (orphan records)",
                         )

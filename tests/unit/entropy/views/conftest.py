@@ -104,7 +104,6 @@ def make_entropy_object(
     sub_dimension: str = "type_fidelity",
     target: str = "column:test_table.col1",
     score: float = 0.5,
-    confidence: float = 0.9,
     evidence: list | None = None,
     resolution_options: list | None = None,
     detector_id: str = "test_detector",
@@ -116,7 +115,6 @@ def make_entropy_object(
         sub_dimension=sub_dimension,
         target=target,
         score=score,
-        confidence=confidence,
         evidence=evidence or [{"metric": "test", "value": score}],
         resolution_options=resolution_options or [],
         detector_id=detector_id,
@@ -126,7 +124,6 @@ def make_entropy_object(
 def make_resolution_option(
     *,
     action: str = "fix_something",
-    expected_entropy_reduction: float = 0.3,
     effort: str = "low",
     description: str = "Fix the thing",
 ) -> ResolutionOption:
@@ -134,8 +131,6 @@ def make_resolution_option(
     return ResolutionOption(
         action=action,
         parameters={"key": "value"},
-        expected_entropy_reduction=expected_entropy_reduction,
         effort=effort,
         description=description,
-        cascade_dimensions=["dim1"],
     )

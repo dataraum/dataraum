@@ -469,11 +469,8 @@ dependencies = [
 # Run on CSV data
 dataraum run /path/to/data --output ./output
 
-# Check status (launches TUI by default)
+# Check status
 dataraum status ./output
-
-# Check status (raw output)
-dataraum status ./output --no-tui
 
 # View entropy dashboard
 dataraum entropy ./output
@@ -491,9 +488,32 @@ dataraum phases
 See `docs/CLI.md` for full CLI documentation.
 
 ### Run tests
+
+This project uses `pytest-testmon` to only re-run tests affected by code changes. Follow these rules strictly:
+
+**During development (after each code change):**
 ```bash
-pytest tests/ -v
+# Run only the specific unit test file(s) related to what you changed
+uv run pytest tests/unit/path/to/test_file.py -v
 ```
+
+**After finishing a feature or fix:**
+```bash
+# Run testmon across unit tests to catch regressions
+uv run pytest --testmon tests/unit -q
+```
+
+**Before declaring a task done:**
+```bash
+# Run testmon across the full suite — this is fast when only a few things changed
+uv run pytest --testmon tests -q
+```
+
+**Rules:**
+- **NEVER run `pytest tests/ -v` (full suite without testmon)** — it takes 2+ minutes. The end-of-turn hook uses testmon to catch regressions automatically.
+- **Only run specific integration test files** when you changed integration-level code (pipeline phases, DB models, loaders, graph agents). Example: `uv run pytest tests/integration/pipeline/test_import_phase.py -v`
+- **Never run the entire `tests/integration/` directory** as a manual step — testmon in the hook handles this.
+- Unit tests live in `tests/unit/` (~760 tests, ~13s). Integration tests live in `tests/integration/` (~300 tests, ~2min). Always prefer running unit tests during development.
 
 ### Start MCP server
 ```bash

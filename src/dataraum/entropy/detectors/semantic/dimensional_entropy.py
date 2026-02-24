@@ -320,7 +320,6 @@ class DimensionalEntropyDetector(EntropyDetector):
                         "columns": pattern.columns,
                         "hypothesis": pattern.business_rule_hypothesis,
                     },
-                    expected_entropy_reduction=0.6,
                     effort="medium",
                     description=f"Document business rule: {pattern.description}",
                 ),
@@ -330,7 +329,6 @@ class DimensionalEntropyDetector(EntropyDetector):
                         "pattern_type": pattern.pattern_type,
                         "columns": pattern.columns,
                     },
-                    expected_entropy_reduction=0.3,
                     effort="high",
                     description="Add database constraint to enforce this rule",
                 ),
@@ -379,7 +377,6 @@ class DimensionalEntropyDetector(EntropyDetector):
                         ResolutionOption(
                             action="document_business_rule",
                             parameters={"pattern_count": entropy_score.total_patterns},
-                            expected_entropy_reduction=entropy_score.total_score * 0.8,
                             effort="high",
                             description=f"Document all {entropy_score.total_patterns} detected business rules",
                         )
@@ -519,7 +516,6 @@ class DimensionalEntropyDetector(EntropyDetector):
                         "columns": pattern.columns,
                         "hypothesis": pattern.business_rule_hypothesis,
                     },
-                    expected_entropy_reduction=0.6,
                     effort="medium",
                     description=f"Document business rule: {pattern.description}",
                 ),
@@ -529,7 +525,6 @@ class DimensionalEntropyDetector(EntropyDetector):
                         "pattern_type": pattern.pattern_type,
                         "columns": pattern.columns,
                     },
-                    expected_entropy_reduction=0.3,
                     effort="high",
                     description="Add database constraint to enforce this rule",
                 ),
@@ -578,7 +573,6 @@ class DimensionalEntropyDetector(EntropyDetector):
                         ResolutionOption(
                             action="document_business_rule",
                             parameters={"pattern_count": entropy_score.total_patterns},
-                            expected_entropy_reduction=entropy_score.total_score * 0.8,
                             effort="high",
                             description=f"Document all {entropy_score.total_patterns} detected business rules",
                         )

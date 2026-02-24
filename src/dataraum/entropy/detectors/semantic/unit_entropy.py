@@ -61,7 +61,6 @@ class UnitEntropyDetector(EntropyDetector):
         score_declared = detector_config.get("score_declared", 0.1)
         score_inferred = detector_config.get("score_inferred", 0.2)
         confidence_threshold = detector_config.get("confidence_threshold", 0.5)
-        reduction_declare_unit = detector_config.get("reduction_declare_unit", 0.8)
 
         typing = context.get_analysis("typing", {})
         semantic = context.get_analysis("semantic", {})
@@ -129,10 +128,8 @@ class UnitEntropyDetector(EntropyDetector):
                         "table": context.table_name,
                         "detected_unit": detected_unit,
                     },
-                    expected_entropy_reduction=reduction_declare_unit,
                     effort="low",
                     description=f"Declare the unit for measure column '{context.column_name}'",
-                    cascade_dimensions=["computational.derived_values"],
                 )
             )
 

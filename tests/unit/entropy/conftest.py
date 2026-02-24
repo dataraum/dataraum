@@ -130,7 +130,6 @@ def sample_entropy_object() -> EntropyObject:
             ResolutionOption(
                 action="declare_type",
                 parameters={"column": "amount", "type": "DECIMAL(10,2)"},
-                expected_entropy_reduction=0.3,
                 effort="low",
                 description="Declare explicit type for amount column",
             ),

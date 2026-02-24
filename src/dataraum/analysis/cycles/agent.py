@@ -136,6 +136,7 @@ class BusinessCycleAgent:
         max_tool_calls: int = 15,
         *,
         domain: str | None = None,
+        vertical: str,
     ) -> Result[BusinessCycleAnalysis]:
         """Analyze tables for business cycles.
 
@@ -145,6 +146,7 @@ class BusinessCycleAgent:
             table_ids: Tables to analyze
             max_tool_calls: Unused (kept for API compatibility)
             domain: Optional domain for enhanced vocabulary
+            vertical: Vertical name (e.g. 'finance')
 
         Returns:
             Result containing BusinessCycleAnalysis
@@ -154,7 +156,7 @@ class BusinessCycleAgent:
         try:
             # 1. Build rich context from all pipeline metadata
             context = build_cycle_detection_context(
-                session, duckdb_conn, table_ids, domain=domain,
+                session, duckdb_conn, table_ids, domain=domain, vertical=vertical,
             )
             context_str = format_context_for_prompt(context)
 
@@ -201,7 +203,7 @@ class BusinessCycleAgent:
                 return Result.fail(f"Unexpected tool call: {tool_call.name}")
 
             analysis = self._parse_output(
-                tool_call.input, context, start_time,
+                tool_call.input, context, start_time, vertical=vertical,
             )
 
             # 4. Persist to database
@@ -217,6 +219,8 @@ class BusinessCycleAgent:
         tool_input: dict[str, Any],
         context: dict[str, Any],
         start_time: float,
+        *,
+        vertical: str,
     ) -> BusinessCycleAnalysis:
         """Parse submit_analysis tool input into structured analysis.
 
@@ -267,7 +271,7 @@ class BusinessCycleAgent:
             ]
 
             raw_cycle_type = cd.get("cycle_type", "unknown")
-            canonical_type, is_known_type = map_to_canonical_type(raw_cycle_type)
+            canonical_type, is_known_type = map_to_canonical_type(raw_cycle_type, vertical)
 
             cycle = DetectedCycle(
                 cycle_id=str(uuid4()),

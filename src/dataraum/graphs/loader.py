@@ -69,17 +69,20 @@ class GraphLoader:
             └── profitability/
     """
 
-    def __init__(self, graphs_dir: Path | None = None):
+    def __init__(self, graphs_dir: Path | None = None, *, vertical: str | None = None):
         """Initialize loader.
 
         Args:
             graphs_dir: Root directory containing graphs.
-                        Defaults to config/graphs/
+                        Defaults to config/verticals/<vertical>/
+            vertical: Vertical name, required when graphs_dir is None.
         """
         if graphs_dir is None:
-            from dataraum.core.config import get_config_dir
+            if vertical is None:
+                raise ValueError("vertical is required when graphs_dir is not provided")
+            from dataraum.core.vertical import VerticalConfig
 
-            graphs_dir = get_config_dir("verticals/finance")
+            graphs_dir = VerticalConfig(vertical).base_dir
         self.graphs_dir = graphs_dir
         self.graphs: dict[str, TransformationGraph] = {}
         self._load_errors: list[GraphLoadError] = []

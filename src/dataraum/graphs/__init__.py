@@ -18,7 +18,7 @@ Usage:
     )
 
     # Load graphs
-    loader = GraphLoader()
+    loader = GraphLoader(vertical="finance")
     loader.load_all()
     graph = loader.get_graph("dso")
 

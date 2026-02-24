@@ -7,11 +7,12 @@ from typing import Any
 
 from rich.table import Table as RichTable
 
-from dataraum.cli.common import OutputDirArg, console, get_manager
+from dataraum.cli.common import OutputDirArg, VerticalOption, console, get_manager
 
 
 def inspect(
     output_dir: OutputDirArg = Path("./pipeline_output"),
+    vertical: VerticalOption = "finance",
 ) -> None:
     """Inspect graph definitions and execution context.
 
@@ -47,7 +48,7 @@ def inspect(
             console.print("\n[bold]Graph Loader Status[/bold]\n")
 
             # Load graphs
-            loader = GraphLoader()
+            loader = GraphLoader(vertical=vertical)
             graphs = loader.load_all()
 
             console.print(f"Loaded {len(graphs)} graphs")

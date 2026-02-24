@@ -94,7 +94,12 @@ class GraphExecutionPhase(BasePhase):
         field_mappings = load_semantic_mappings(ctx.session, table_ids)
 
         # Load graph definitions
-        loader = GraphLoader()
+        vertical = ctx.config.get("vertical")
+        if not vertical:
+            return PhaseResult.failed(
+                "No vertical configured. Set 'vertical' in config/phases/graph_execution.yaml."
+            )
+        loader = GraphLoader(vertical=vertical)
         loader.load_all()
         metric_graphs = loader.get_metric_graphs()
 

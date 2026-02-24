@@ -432,8 +432,8 @@ Each session:
 | A | A1b | New cycle agent (single-call synthesis, no tools) | Rewrite (_legacy/) | ✅ Done |
 | A | A2a | Enrich validation resolver (business_concept, enriched views, row counts) | In-place edit | ✅ Done |
 | A | A2b | Fix validation execution (EXPLAIN, no pandas, fix evaluation) | In-place edit | ✅ Done |
-| B | B1 | Create VerticalConfig abstraction | New code | Pending |
-| B | B2 | Extract quality metrics to entropy system | Move + rewire | Pending |
+| B | B1 | Create VerticalConfig abstraction | New code | ✅ Done |
+| B | B2 | Extract quality metrics to entropy system | Move + rewire | ✅ Done |
 | C | C1 | Surface validation results in GraphExecutionContext | Additive | Pending |
 | C | C2 | Forward full cycle data to context | Additive | Pending |
 | C | C3 | Align ontology concepts ↔ standard_field vocabulary | Audit + fix | Pending |

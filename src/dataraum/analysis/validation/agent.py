@@ -88,6 +88,8 @@ class ValidationAgent(LLMFeature):
         validation_ids: list[str] | None = None,
         category: str | None = None,
         persist: bool = True,
+        *,
+        vertical: str,
     ) -> Result[ValidationRunResult]:
         """Run validation checks across multiple tables.
 
@@ -98,6 +100,7 @@ class ValidationAgent(LLMFeature):
             validation_ids: Specific validations to run (None = all applicable)
             category: Filter by category (e.g., 'financial')
             persist: Whether to save results to the database (default True)
+            vertical: Vertical name (e.g. 'finance')
 
         Returns:
             Result containing ValidationRunResult
@@ -121,7 +124,7 @@ class ValidationAgent(LLMFeature):
         combined_table_name = ", ".join(table_names)
 
         # Determine which validations to run
-        specs = self._get_applicable_specs(validation_ids, category)
+        specs = self._get_applicable_specs(validation_ids, category, vertical)
 
         if not specs:
             return Result.ok(
@@ -220,17 +223,19 @@ class ValidationAgent(LLMFeature):
         self,
         validation_ids: list[str] | None,
         category: str | None,
+        vertical: str,
     ) -> list[ValidationSpec]:
         """Get validation specs to run.
 
         Args:
             validation_ids: Specific IDs to run
             category: Category filter
+            vertical: Vertical name (e.g. 'finance')
 
         Returns:
             List of ValidationSpecs
         """
-        all_specs = load_all_validation_specs()
+        all_specs = load_all_validation_specs(vertical)
 
         if validation_ids:
             return [all_specs[vid] for vid in validation_ids if vid in all_specs]

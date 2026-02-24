@@ -112,6 +112,11 @@ class BusinessCyclesPhase(BasePhase):
 
         # Get optional domain from config (e.g., "financial", "retail", "manufacturing")
         domain = ctx.config.get("domain")
+        vertical = ctx.config.get("vertical")
+        if not vertical:
+            return PhaseResult.failed(
+                "No vertical configured. Set 'vertical' in config/phases/business_cycles.yaml."
+            )
 
         # Get max tool calls from config
         max_tool_calls = ctx.config.get("max_tool_calls", 10)
@@ -123,6 +128,7 @@ class BusinessCyclesPhase(BasePhase):
             table_ids=table_ids,
             max_tool_calls=max_tool_calls,
             domain=domain,
+            vertical=vertical,
         )
 
         if not analysis_result.success:

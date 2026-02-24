@@ -58,6 +58,76 @@ This file tracks completed work and session notes for the dataraum-context proje
 
 ## Session Log
 
+### 2026-02-24 (Session 13)
+
+**Focus:** Phase B — VerticalConfig abstraction + quality metric relocation
+
+**Outcome:** ✅ Phase B Complete (B1 + B2)
+
+**Completed:**
+1. Created `VerticalConfig` abstraction (`core/vertical.py`):
+   - Resolves all vertical-specific paths: ontology, cycles, validations, filters, metrics
+   - Fails loudly on construction if vertical directory doesn't exist
+   - Error message lists available verticals for discoverability
+   - Follows `OntologyLoader` pattern (optional `verticals_dir`, default from `get_config_dir`)
+
+2. Removed hardcoded `"verticals/finance"` from three modules:
+   - `GraphLoader.__init__()` — now requires `vertical` kwarg when `graphs_dir` is None
+   - `analysis/validation/config.py` — all functions require `vertical: str` parameter
+   - `analysis/cycles/config.py` — all functions require `vertical: str` parameter
+
+3. No silent defaults — vertical must be explicitly configured:
+   - Pipeline phases read `vertical` from phase YAML config, fail with clear message if missing
+   - CLI inspect command has `--vertical` option (default "finance" at CLI level only)
+   - Internal APIs have no defaults — callers must pass vertical explicitly
+
+4. Removed unnecessary infrastructure:
+   - Deleted `_CYCLE_CONFIG_CACHE` (unnecessary for single-call agents)
+   - Removed config function re-exports from `validation/__init__.py`, `cycles/__init__.py`
+
+5. Relocated quality metrics (B2):
+   - Moved 3 YAML files from `config/verticals/finance/metrics/quality/` to `config/quality_metrics/`
+   - GraphLoader no longer finds them when scanning metrics/
+
+**Files Created:**
+- `src/dataraum/core/vertical.py`
+- `config/quality_metrics/data_completeness.yaml`
+- `config/quality_metrics/data_freshness.yaml`
+- `config/quality_metrics/anomaly_rate.yaml`
+- `tests/unit/core/test_vertical.py`
+
+**Files Modified:**
+- `src/dataraum/core/__init__.py` — removed VerticalConfig re-export
+- `src/dataraum/graphs/loader.py` — vertical kwarg, no default
+- `src/dataraum/graphs/__init__.py` — docstring update
+- `src/dataraum/analysis/validation/config.py` — vertical required, no default
+- `src/dataraum/analysis/validation/__init__.py` — removed config re-exports
+- `src/dataraum/analysis/validation/agent.py` — vertical param in run_validations
+- `src/dataraum/analysis/cycles/config.py` — vertical required, cache removed
+- `src/dataraum/analysis/cycles/__init__.py` — removed config re-exports
+- `src/dataraum/analysis/cycles/agent.py` — vertical param throughout
+- `src/dataraum/analysis/cycles/context.py` — vertical param
+- `src/dataraum/pipeline/phases/graph_execution_phase.py` — reads vertical from config
+- `src/dataraum/pipeline/phases/business_cycles_phase.py` — reads vertical from config
+- `src/dataraum/pipeline/phases/validation_phase.py` — reads vertical from config
+- `src/dataraum/cli/common.py` — VerticalOption type
+- `src/dataraum/cli/commands/inspect.py` — --vertical option
+- `config/phases/business_cycles.yaml` — added `vertical: finance`
+- `tests/unit/graphs/test_loader.py` — updated for new API
+- `tests/unit/analysis/validation/test_config.py` — updated for new API
+- `tests/integration/analysis/validation/test_agent.py` — added vertical param
+
+**Key Design Decisions:**
+- VerticalConfig validates on construction (fail-fast), not on property access
+- No `= "finance"` defaults anywhere in internal APIs — crashes with clear error if unconfigured
+- CLI-level default is acceptable (user-facing convenience), but everything below must be explicit
+- Config re-exports removed — callers import from `.config` module directly
+
+**What's Next:**
+- Phase C: Complete the Context (C1: validation results, C2: cycle data, C3: ontology alignment)
+
+---
+
 ### 2026-01-28 (Session 12)
 
 **Focus:** Phase 0 Agent Validation - Integration Tests

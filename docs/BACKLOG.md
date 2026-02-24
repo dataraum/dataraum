@@ -24,9 +24,9 @@ merge graph + query agents into unified DataAgent.
 | A | A1b | New cycle agent (single-call, no tools) | Rewrite | ✅ Done |
 | A | A2a | Enrich validation resolver | In-place | ✅ Done |
 | A | A2b | Fix validation execution | In-place | ✅ Done |
-| B | B1 | Create VerticalConfig abstraction | New code | **Next** |
-| B | B2 | Extract quality metrics to entropy system | Move | Pending |
-| C | C1 | Surface validation results in GraphExecutionContext | Additive | Pending |
+| B | B1 | Create VerticalConfig abstraction | New code | ✅ Done |
+| B | B2 | Extract quality metrics to entropy system | Move | ✅ Done |
+| C | C1 | Surface validation results in GraphExecutionContext | Additive | **Next** |
 | C | C2 | Forward full cycle data to context | Additive | Pending |
 | C | C3 | Align ontology concepts ↔ standard_field vocabulary | Audit | Pending |
 | D | D1 | Consolidate shared agent infrastructure | Refactor | Pending |

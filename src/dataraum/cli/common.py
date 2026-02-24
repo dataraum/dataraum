@@ -45,6 +45,14 @@ OutputDirOption = Annotated[
     ),
 ]
 
+VerticalOption = Annotated[
+    str,
+    typer.Option(
+        "--vertical",
+        help="Vertical name (e.g. 'finance'). Must match a directory in config/verticals/.",
+    ),
+]
+
 VerboseOption = Annotated[
     int,
     typer.Option(

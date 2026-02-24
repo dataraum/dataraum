@@ -395,6 +395,7 @@ class TestValidationAgentRunValidations:
             session=session,
             duckdb_conn=duckdb_conn,
             table_ids=["nonexistent-id"],
+            vertical="finance",
         )
 
         assert not result.success
@@ -414,6 +415,7 @@ class TestValidationAgentRunValidations:
                 session=session,
                 duckdb_conn=duckdb_conn,
                 table_ids=[table.table_id],
+                vertical="finance",
             )
 
         assert result.success

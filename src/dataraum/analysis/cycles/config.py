@@ -1,6 +1,7 @@
 """Configuration loader for business cycle detection.
 
-Loads domain vocabulary from config/cycles/ to enhance cycle detection.
+Loads domain vocabulary from config/verticals/<vertical>/cycles.yaml
+to enhance cycle detection.
 """
 
 from __future__ import annotations
@@ -9,60 +10,56 @@ from typing import Any
 
 import yaml
 
-from dataraum.core.config import get_config_file
 
-# Module-level cache
-_CYCLE_CONFIG_CACHE: dict[str, Any] | None = None
+def get_cycles_config(vertical: str) -> dict[str, Any]:
+    """Load the cycles configuration for a vertical.
 
-
-def get_cycles_config() -> dict[str, Any]:
-    """Load the cycles configuration.
-
-    Searches for config/cycles/cycle_vocabulary.yaml in:
-    1. Current working directory
-    2. Project root (relative to this file)
+    Args:
+        vertical: Vertical name (e.g. 'finance')
 
     Returns:
         Configuration dictionary, or empty dict if not found
     """
-    global _CYCLE_CONFIG_CACHE
+    from dataraum.core.vertical import VerticalConfig
 
-    if _CYCLE_CONFIG_CACHE is not None:
-        return _CYCLE_CONFIG_CACHE
-
-    config_path = get_config_file("verticals/finance/cycles.yaml")
+    config_path = VerticalConfig(vertical).cycles_path
     with open(config_path) as f:
-        _CYCLE_CONFIG_CACHE = yaml.safe_load(f) or {}
-        return _CYCLE_CONFIG_CACHE
+        return yaml.safe_load(f) or {}
 
 
-def get_cycle_types() -> dict[str, Any]:
+def get_cycle_types(vertical: str) -> dict[str, Any]:
     """Get cycle type definitions.
+
+    Args:
+        vertical: Vertical name (e.g. 'finance')
 
     Returns:
         Dictionary of cycle_type_name -> cycle definition
     """
-    config = get_cycles_config()
+    config = get_cycles_config(vertical)
     result: dict[str, Any] = config.get("cycle_types", {})
     return result
 
 
-def get_domain_config(domain: str = "financial") -> dict[str, Any]:
+def get_domain_config(domain: str, vertical: str) -> dict[str, Any]:
     """Get domain-specific configuration.
 
     Args:
         domain: Domain name (financial, retail, manufacturing)
+        vertical: Vertical name (e.g. 'finance')
 
     Returns:
         Domain-specific configuration, or empty dict if not found
     """
-    config = get_cycles_config()
+    config = get_cycles_config(vertical)
     domains: dict[str, Any] = config.get("domains", {})
     result: dict[str, Any] = domains.get(domain, {})
     return result
 
 
-def map_to_canonical_type(cycle_type: str) -> tuple[str | None, bool]:
+def map_to_canonical_type(
+    cycle_type: str, vertical: str
+) -> tuple[str | None, bool]:
     """Map an LLM-returned cycle_type to a canonical vocabulary type.
 
     Handles aliases (e.g., "ar_cycle" -> "accounts_receivable") and
@@ -70,6 +67,7 @@ def map_to_canonical_type(cycle_type: str) -> tuple[str | None, bool]:
 
     Args:
         cycle_type: The cycle type string from LLM output
+        vertical: Vertical name (e.g. 'finance')
 
     Returns:
         Tuple of (canonical_type, is_known_type):
@@ -79,7 +77,7 @@ def map_to_canonical_type(cycle_type: str) -> tuple[str | None, bool]:
     if not cycle_type:
         return None, False
 
-    cycle_types = get_cycle_types()
+    cycle_types = get_cycle_types(vertical)
     cycle_type_lower = cycle_type.lower().strip()
 
     # Direct match (case-insensitive)
@@ -98,17 +96,20 @@ def map_to_canonical_type(cycle_type: str) -> tuple[str | None, bool]:
     return None, False
 
 
-def format_cycle_vocabulary_for_context(domain: str | None = None) -> str:
+def format_cycle_vocabulary_for_context(
+    domain: str | None = None, *, vertical: str
+) -> str:
     """Format cycle vocabulary as readable context for the LLM.
 
     Args:
         domain: Optional domain to include domain-specific cycles
+        vertical: Vertical name (e.g. 'finance')
 
     Returns:
         Formatted string suitable for LLM context
     """
     lines = []
-    config = get_cycles_config()
+    config = get_cycles_config(vertical)
 
     if not config:
         return ""
@@ -149,7 +150,7 @@ def format_cycle_vocabulary_for_context(domain: str | None = None) -> str:
 
     # Domain-specific cycles
     if domain:
-        domain_config = get_domain_config(domain)
+        domain_config = get_domain_config(domain, vertical)
         if domain_config:
             lines.append(f"## {domain.upper()} DOMAIN SPECIFICS")
 

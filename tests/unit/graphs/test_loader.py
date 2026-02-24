@@ -16,11 +16,16 @@ from dataraum.graphs.models import (
 class TestGraphLoaderBasics:
     """Basic GraphLoader functionality tests."""
 
-    def test_loader_init_default_path(self) -> None:
-        """Loader uses default config/verticals/finance path."""
-        loader = GraphLoader()
+    def test_loader_init_with_vertical(self) -> None:
+        """Loader resolves config/verticals/finance path from vertical name."""
+        loader = GraphLoader(vertical="finance")
         assert loader.graphs_dir.name == "finance"
         assert loader.graphs_dir.parent.name == "verticals"
+
+    def test_loader_init_no_args_raises(self) -> None:
+        """Loader without vertical or graphs_dir raises ValueError."""
+        with pytest.raises(ValueError, match="vertical is required"):
+            GraphLoader()
 
     def test_loader_init_custom_path(self, tmp_path: Path) -> None:
         """Loader accepts custom path."""
@@ -39,8 +44,8 @@ class TestLoadNewRuleGraphs:
 
     @pytest.fixture
     def loader(self) -> GraphLoader:
-        """Create loader with default config path."""
-        loader = GraphLoader()
+        """Create loader with finance vertical."""
+        loader = GraphLoader(vertical="finance")
         loader.load_all()
         return loader
 
@@ -70,12 +75,11 @@ class TestLoadNewRuleGraphs:
             assert graph.metadata.applies_to.column_pattern is not None
             assert "email" in graph.metadata.applies_to.column_pattern
 
-    def test_loads_quality_metrics(self, loader: GraphLoader) -> None:
-        """Quality metric graphs are loaded."""
-        graph = loader.get_graph("data_completeness")
-        if graph:
-            assert graph.graph_type == GraphType.METRIC
-            assert graph.metadata.category == "quality"
+    def test_quality_metrics_not_loaded(self, loader: GraphLoader) -> None:
+        """Quality metrics were relocated out of verticals — not loaded by default."""
+        assert loader.get_graph("data_completeness") is None
+        assert loader.get_graph("data_freshness") is None
+        assert loader.get_graph("anomaly_rate") is None
 
     def test_filter_graphs_loaded(self, loader: GraphLoader) -> None:
         """At least some filter graphs are loaded."""
@@ -86,7 +90,7 @@ class TestLoadNewRuleGraphs:
     def test_metric_graphs_loaded(self, loader: GraphLoader) -> None:
         """Metric graphs are loaded."""
         metrics = loader.get_metric_graphs()
-        # Should have quality metrics + business metrics
+        # Should have business metrics (DSO, DPO, etc.)
         assert len(metrics) >= 1
 
 

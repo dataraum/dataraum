@@ -85,7 +85,7 @@ class DimensionThreshold:
 class BlockingCondition:
     """A condition that blocks contract compliance."""
 
-    condition_type: str  # e.g., "any_dimension_exceeds", "has_critical_compound_risk"
+    condition_type: str  # e.g., "any_dimension_exceeds", "has_blocked_columns"
     parameters: dict[str, Any] = field(default_factory=dict)
     description: str = ""
 
@@ -642,7 +642,7 @@ def _calculate_confidence_level(
         if len(blocking_violations) >= 3:
             return ConfidenceLevel.RED
 
-        # Check for critical compound risk blocking
+        # Check for blocking conditions (e.g., blocked columns exist)
         blocking_types = [v.violation_type for v in blocking_violations]
         if "blocking_condition" in blocking_types:
             return ConfidenceLevel.RED

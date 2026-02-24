@@ -503,7 +503,7 @@ class EntropyScreen(Screen[None]):
         self._update_actions_section(interp, entropy_objects)
 
     def _update_overview_section(self, interp: Any) -> None:
-        """Update the Overview section with explanation and compound risks."""
+        """Update the Overview section with explanation and blocked columns."""
 
         overview = self.query_one("#overview-content", Static)
         parts: list[str] = []

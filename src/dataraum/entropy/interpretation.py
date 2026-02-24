@@ -116,8 +116,7 @@ class InterpretationInput:
     Contains the minimal context needed for LLM interpretation:
     column identity, type, quality context, and Bayesian network analysis.
 
-    The network_analysis dict replaces raw entropy scores (layer scores,
-    dimension scores, compound risks) with pre-computed causal analysis:
+    The network_analysis dict provides pre-computed causal analysis:
     intent readiness, high-impact nodes, and top fix.
     """
 

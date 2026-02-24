@@ -539,13 +539,13 @@ class GraphAgent(LLMFeature):
             - max_entropy: Highest entropy score encountered
             - warnings: List of warning messages
             - high_entropy_columns: List of columns with entropy > 0.6
-            - compound_risks: List of compound risk descriptions
+            - readiness_blockers: List of blocked column descriptions
         """
         result: dict[str, Any] = {
             "max_entropy": 0.0,
             "warnings": [],
             "high_entropy_columns": [],
-            "compound_risks": [],
+            "readiness_blockers": [],
         }
 
         if context.rich_context is None:
@@ -588,7 +588,7 @@ class GraphAgent(LLMFeature):
                         )
 
         # Add blockers
-        result["compound_risks"] = blockers
+        result["readiness_blockers"] = blockers
 
         return result
 

@@ -726,7 +726,7 @@ def format_entropy_for_prompt(context: GraphExecutionContext) -> str:
     Creates a concise entropy summary that helps the LLM understand:
     - Overall data readiness
     - High-entropy columns that need assumptions
-    - Dangerous combinations (compound risks)
+    - Blocked columns per table
     - Columns that may block reliable answers
 
     Args:
@@ -786,12 +786,12 @@ def format_entropy_for_prompt(context: GraphExecutionContext) -> str:
             lines.append(f"  - {col_info['name']} (entropy: {col_info['score']:.2f}) - {dims}")
         lines.append("")
 
-    # Compound risks
-    compound_warnings = _format_compound_risks(context)
-    if compound_warnings:
-        lines.append("### DANGEROUS COMBINATIONS")
-        lines.append("These dimension combinations create multiplicative risk:")
-        lines.extend(compound_warnings)
+    # Blocked columns per table
+    blocked_warnings = _format_blocked_columns(context)
+    if blocked_warnings:
+        lines.append("### BLOCKED COLUMNS")
+        lines.append("These columns have critical entropy issues:")
+        lines.extend(blocked_warnings)
         lines.append("")
 
     return "\n".join(lines)
@@ -828,8 +828,8 @@ def _collect_high_entropy_columns(context: GraphExecutionContext) -> list[dict[s
     return high_cols
 
 
-def _format_compound_risks(context: GraphExecutionContext) -> list[str]:
-    """Format compound risk warnings (blocked columns per table).
+def _format_blocked_columns(context: GraphExecutionContext) -> list[str]:
+    """Format blocked column warnings per table.
 
     Args:
         context: GraphExecutionContext

@@ -1,8 +1,7 @@
 """Network-aware intervention priority ranking.
 
 Computes which entropy dimensions to fix first based on their causal
-impact on intent nodes. Replaces compound risk detection with
-network-derived dependency analysis.
+impact on intent nodes via network-derived dependency analysis.
 """
 
 from collections import deque

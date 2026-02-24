@@ -7,7 +7,6 @@ Usage:
     from dataraum.entropy.config import get_entropy_config
 
     config = get_entropy_config()
-    weights = config.composite_weights
     threshold = config.detector("null_ratio").multiplier
 """
 
@@ -47,24 +46,6 @@ class DetectorConfig:
 class EntropyConfig:
     """Complete entropy configuration."""
 
-    # Composite scoring weights
-    composite_weights: dict[str, float] = field(
-        default_factory=lambda: {
-            "structural": 0.25,
-            "semantic": 0.30,
-            "value": 0.30,
-            "computational": 0.15,
-        }
-    )
-
-    # Readiness thresholds
-    ready_threshold: float = 0.3
-    blocked_threshold: float = 0.6
-
-    # Entropy level thresholds
-    high_entropy_threshold: float = 0.5
-    critical_entropy_threshold: float = 0.8
-
     # Detector configurations
     detectors: dict[str, DetectorConfig] = field(default_factory=dict)
 
@@ -86,22 +67,6 @@ class EntropyConfig:
         Returns empty config if detector not found.
         """
         return self.detectors.get(detector_id, DetectorConfig(name=detector_id))
-
-    def get_readiness(self, score: float) -> str:
-        """Classify readiness based on composite score."""
-        if score < self.ready_threshold:
-            return "ready"
-        elif score < self.blocked_threshold:
-            return "investigate"
-        return "blocked"
-
-    def is_high_entropy(self, score: float) -> bool:
-        """Check if score exceeds high entropy threshold."""
-        return score >= self.high_entropy_threshold
-
-    def is_critical_entropy(self, score: float) -> bool:
-        """Check if score exceeds critical entropy threshold."""
-        return score >= self.critical_entropy_threshold
 
     def effort_factor(self, effort: str) -> float:
         """Get effort factor for priority calculation.
@@ -157,20 +122,6 @@ def _parse_config(raw: dict[str, Any]) -> EntropyConfig:
     """Parse raw YAML config into EntropyConfig."""
     config = EntropyConfig()
 
-    # Parse composite weights
-    if "composite_weights" in raw:
-        config.composite_weights = dict(raw["composite_weights"])
-
-    # Parse readiness thresholds
-    if "readiness" in raw:
-        config.ready_threshold = raw["readiness"].get("ready_threshold", 0.3)
-        config.blocked_threshold = raw["readiness"].get("blocked_threshold", 0.6)
-
-    # Parse entropy level thresholds
-    if "entropy_levels" in raw:
-        config.high_entropy_threshold = raw["entropy_levels"].get("high_entropy", 0.5)
-        config.critical_entropy_threshold = raw["entropy_levels"].get("critical_entropy", 0.8)
-
     # Parse detector configurations
     if "detectors" in raw:
         for detector_id, values in raw["detectors"].items():
@@ -208,7 +159,7 @@ def get_entropy_config(
     global _config_cache, _config_path_cache
 
     # If a config dict is provided with entropy-specific keys, use it directly
-    if config_dict is not None and "composite_weights" in config_dict:
+    if config_dict is not None and "detectors" in config_dict:
         return _parse_config(config_dict)
 
     # Resolve path: explicit arg or central config

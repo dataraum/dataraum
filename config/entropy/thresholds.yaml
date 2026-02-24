@@ -7,33 +7,6 @@
 # See BACKLOG.md Step 2.5.1 for context on this configuration.
 
 # ============================================================================
-# COMPOSITE SCORING
-# ============================================================================
-# Weights for combining layer scores into composite score.
-# Must sum to 1.0.
-composite_weights:
-  structural: 0.25 # Schema, types, relations
-  semantic: 0.30 # Business meaning, units, temporal
-  value: 0.30 # Nulls, outliers, ranges
-  computational: 0.15 # Derived values, aggregations
-
-# ============================================================================
-# READINESS CLASSIFICATION
-# ============================================================================
-# Thresholds for classifying data readiness based on composite score.
-# ready:       score < ready_threshold
-# investigate: ready_threshold <= score < blocked_threshold
-# blocked:     score >= blocked_threshold
-readiness:
-  ready_threshold: 0.3
-  blocked_threshold: 0.6
-
-# High entropy and critical entropy thresholds (for flagging/warnings)
-entropy_levels:
-  high_entropy: 0.5 # Columns flagged as high entropy
-  critical_entropy: 0.8 # Columns flagged as critical/blocked
-
-# ============================================================================
 # DETECTOR CONFIGURATIONS
 # ============================================================================
 # Each detector has its own section with formula parameters and thresholds.
@@ -181,83 +154,6 @@ detectors:
     score_mismatch: 0.8 # Marked as timestamp but not date type
     score_aligned: 0.1 # Properly identified temporal column
     reduction_mark_timestamp: 0.6
-
-# ============================================================================
-# COMPOUND RISK DEFINITIONS
-# ============================================================================
-# Dangerous combinations of entropy dimensions that create multiplicative risk.
-# Each risk pattern specifies which dimensions must both be high.
-#
-# NOTE: Only dimensions with active detectors should be used here:
-# - structural.types (TypeFidelityDetector)
-# - structural.relations (JoinPathDeterminismDetector, RelationshipEntropyDetector)
-# - semantic.business_meaning (BusinessMeaningDetector)
-# - semantic.units (UnitEntropyDetector)
-# - semantic.temporal (TemporalEntropyDetector)
-# - value.nulls (NullRatioDetector)
-# - value.outliers (OutlierRateDetector)
-# - computational.derived_values (DerivedValueDetector)
-
-compound_risks:
-  # Critical: Unknown units in derived calculations
-  units_derived:
-    dimensions:
-      - semantic.units
-      - computational.derived_values
-    threshold: 0.5
-    multiplier: 2.0
-    risk_level: critical
-    impact_template: >
-      Numeric measures without declared units are used in formulas.
-      Results may be incorrect if units don't match.
-
-  # High: Temporal columns with null values
-  temporal_nulls:
-    dimensions:
-      - semantic.temporal
-      - value.nulls
-    threshold: 0.5
-    multiplier: 1.5
-    risk_level: high
-    impact_template: >
-      Timestamp columns have null values.
-      Time-based analysis may have gaps.
-
-  # High: Type issues in derived calculations
-  types_derived:
-    dimensions:
-      - structural.types
-      - computational.derived_values
-    threshold: 0.6
-    multiplier: 1.5
-    risk_level: high
-    impact_template: >
-      Type inference issues in columns used for calculations.
-      Some values may fail to parse, skewing results.
-
-  # High: Relationship issues in derived calculations
-  relations_derived:
-    dimensions:
-      - structural.relations
-      - computational.derived_values
-    threshold: 0.5
-    multiplier: 1.5
-    risk_level: high
-    impact_template: >
-      Relationships with integrity issues are used in derived columns.
-      Join results may be incomplete or duplicated.
-
-  # Medium: Unclear business meaning with outliers
-  meaning_outliers:
-    dimensions:
-      - semantic.business_meaning
-      - value.outliers
-    threshold: 0.5
-    multiplier: 1.3
-    risk_level: medium
-    impact_template: >
-      Columns with unclear business meaning have outliers.
-      Cannot determine if outliers are valid edge cases or errors.
 
 # ============================================================================
 # RESOLUTION EFFORT FACTORS

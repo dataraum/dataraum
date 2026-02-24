@@ -1,15 +1,10 @@
 """Entropy layer data models.
 
 This module defines the core data structures for the entropy layer.
-All models follow the specification in docs/ENTROPY_MODELS.md.
 
 Key models:
 - EntropyObject: Core measurement with evidence and resolution options
 - ResolutionOption: Actionable fix with effort and expected entropy reduction
-
-For aggregated entropy views, use:
-- entropy.analysis.aggregator: ColumnSummary, TableSummary, RelationshipSummary
-- entropy.views: EntropyForQuery, EntropyForNetwork
 
 Default thresholds loaded from config/entropy/thresholds.yaml.
 """
@@ -87,14 +82,6 @@ class EntropyObject:
     computed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     source_analysis_ids: list[str] = field(default_factory=list)  # Links to source analyses
     detector_id: str = ""  # Which detector produced this
-
-    def is_high_entropy(self, threshold: float = 0.6) -> bool:
-        """Check if entropy exceeds threshold."""
-        return self.score >= threshold
-
-    def is_critical(self, threshold: float = 0.8) -> bool:
-        """Check if entropy is at critical level."""
-        return self.score >= threshold
 
     @property
     def dimension_path(self) -> str:

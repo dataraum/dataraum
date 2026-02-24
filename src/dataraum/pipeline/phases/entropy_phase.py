@@ -22,7 +22,6 @@ from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
 from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
 from dataraum.core.logging import get_logger
 from dataraum.entropy.db_models import (
-    CompoundRiskRecord,
     EntropyObjectRecord,
     EntropySnapshotRecord,
 )
@@ -72,7 +71,7 @@ class EntropyPhase(BasePhase):
 
     @property
     def outputs(self) -> list[str]:
-        return ["entropy_profiles", "compound_risks"]
+        return ["entropy_profiles"]
 
     @property
     def db_models(self) -> list[ModuleType]:
@@ -257,16 +256,13 @@ class EntropyPhase(BasePhase):
 
         # Process each table
         total_entropy_objects = 0
-        total_compound_risks = 0
-        table_profiles = []
+        tables_processed = 0
 
         for table in typed_tables:
             table_columns = columns_by_table.get(table.table_id, [])
             if not table_columns:
                 continue
 
-            # Build column specs with analysis_results
-            columns_data: list[dict[str, Any]] = []
             for col in table_columns:
                 analysis_results: dict[str, Any] = {}
 
@@ -381,28 +377,18 @@ class EntropyPhase(BasePhase):
                 if col_drift:
                     analysis_results["drift_summaries"] = col_drift
 
-                columns_data.append(
-                    {
-                        "name": col.column_name,
-                        "column_id": col.column_id,
-                        "analysis_results": analysis_results,
-                    }
+                # Process the column - returns list[EntropyObject] directly
+                entropy_objects = processor.process_column(
+                    table_name=table.table_name,
+                    column_name=col.column_name,
+                    analysis_results=analysis_results,
+                    source_id=ctx.source_id,
+                    table_id=table.table_id,
+                    column_id=col.column_id,
                 )
 
-            # Process the table
-            table_profile = processor.process_table(
-                table_name=table.table_name,
-                columns=columns_data,
-                source_id=ctx.source_id,
-                table_id=table.table_id,
-            )
-            table_profiles.append(table_profile)
-
-            # Persist entropy records
-            for col_profile in table_profile.columns:
                 # Persist each EntropyObject with full evidence
-                for entropy_obj in col_profile.entropy_objects:
-                    # Serialize resolution options to dicts
+                for entropy_obj in entropy_objects:
                     resolution_dicts = [
                         {
                             "action": opt.action,
@@ -418,7 +404,7 @@ class EntropyPhase(BasePhase):
                     record = EntropyObjectRecord(
                         source_id=ctx.source_id,
                         table_id=table.table_id,
-                        column_id=col_profile.column_id,
+                        column_id=col.column_id,
                         target=entropy_obj.target,
                         layer=entropy_obj.layer,
                         dimension=entropy_obj.dimension,
@@ -432,21 +418,7 @@ class EntropyPhase(BasePhase):
                     ctx.session.add(record)
                     total_entropy_objects += 1
 
-                # Persist compound risks
-                for risk in col_profile.compound_risks:
-                    risk_record = CompoundRiskRecord(
-                        source_id=ctx.source_id,
-                        table_id=table.table_id,
-                        target=risk.target,
-                        dimensions=risk.dimensions,
-                        dimension_scores=risk.dimension_scores,
-                        risk_level=risk.risk_level,
-                        impact=risk.impact,
-                        multiplier=risk.multiplier,
-                        combined_score=risk.combined_score,
-                    )
-                    ctx.session.add(risk_record)
-                    total_compound_risks += 1
+            tables_processed += 1
 
         # Run table-level dimensional entropy detection
         # This detects cross-column patterns from quality_summary data
@@ -566,7 +538,6 @@ class EntropyPhase(BasePhase):
             total_entropy_objects=total_entropy_objects,
             high_entropy_count=high_entropy_count,
             critical_entropy_count=critical_entropy_count,
-            compound_risk_count=total_compound_risks,
             overall_readiness=overall_readiness,
             avg_composite_score=avg_composite,
             avg_structural_entropy=avg_structural,
@@ -580,15 +551,14 @@ class EntropyPhase(BasePhase):
 
         return PhaseResult.success(
             outputs={
-                "entropy_profiles": len(table_profiles),
-                "compound_risks": total_compound_risks,
+                "entropy_profiles": tables_processed,
                 "entropy_objects": total_entropy_objects,
                 "overall_readiness": overall_readiness,
                 "high_entropy_columns": high_entropy_count,
                 "critical_entropy_columns": critical_entropy_count,
             },
             records_processed=len(all_columns),
-            records_created=total_entropy_objects + total_compound_risks + 1,
+            records_created=total_entropy_objects + 1,
         )
 
 

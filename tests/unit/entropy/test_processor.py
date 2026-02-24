@@ -8,10 +8,7 @@ from dataraum.entropy.detectors.base import (
     EntropyDetector,
 )
 from dataraum.entropy.models import EntropyObject
-from dataraum.entropy.processor import (
-    EntropyProcessor,
-    ProcessorConfig,
-)
+from dataraum.entropy.processor import EntropyProcessor
 
 
 class MockTypeFidelityDetector(EntropyDetector):
@@ -102,27 +99,29 @@ def test_registry() -> DetectorRegistry:
 class TestEntropyProcessor:
     """Tests for EntropyProcessor."""
 
-    def test_process_column(
+    def test_process_column_returns_entropy_objects(
         self,
         test_registry: DetectorRegistry,
         sample_detector_context: DetectorContext,
     ):
-        """Test processing a single column."""
+        """Test processing a single column returns list of EntropyObject."""
         processor = EntropyProcessor(registry=test_registry)
 
-        profile = processor.process_column(
+        result = processor.process_column(
             table_name=sample_detector_context.table_name,
             column_name=sample_detector_context.column_name,
             analysis_results=sample_detector_context.analysis_results,
         )
 
-        assert profile.table_name == "orders"
-        assert profile.column_name == "amount"
-        assert profile.layer_scores.get("structural", 0) >= 0
-        assert profile.layer_scores.get("semantic", 0) >= 0
-        assert profile.layer_scores.get("value", 0) >= 0
-        assert profile.composite_score >= 0
-        assert profile.readiness in ["ready", "investigate", "blocked"]
+        assert isinstance(result, list)
+        assert len(result) == 3  # One per mock detector
+        assert all(isinstance(obj, EntropyObject) for obj in result)
+
+        # Check layers present
+        layers = {obj.layer for obj in result}
+        assert "structural" in layers
+        assert "semantic" in layers
+        assert "value" in layers
 
     def test_process_column_with_high_entropy(
         self,
@@ -132,18 +131,20 @@ class TestEntropyProcessor:
         """Test processing a column with high entropy characteristics."""
         processor = EntropyProcessor(registry=test_registry)
 
-        profile = processor.process_column(
+        result = processor.process_column(
             table_name=high_entropy_context.table_name,
             column_name=high_entropy_context.column_name,
             analysis_results=high_entropy_context.analysis_results,
         )
 
+        scores_by_layer = {obj.layer: obj.score for obj in result}
+
         # High parse failure rate (0.60) -> structural entropy = 0.40
+        assert scores_by_layer["structural"] == pytest.approx(0.40, abs=0.01)
         # High null ratio (0.35) -> value entropy = 0.70
+        assert scores_by_layer["value"] == pytest.approx(0.70, abs=0.01)
         # No description -> semantic entropy = 1.0
-        assert profile.layer_scores.get("structural", 0) == pytest.approx(0.40, abs=0.01)
-        assert profile.layer_scores.get("value", 0) == pytest.approx(0.70, abs=0.01)
-        assert profile.layer_scores.get("semantic", 0) == pytest.approx(1.0, abs=0.01)
+        assert scores_by_layer["semantic"] == pytest.approx(1.0, abs=0.01)
 
     def test_process_column_with_low_entropy(
         self,
@@ -153,92 +154,33 @@ class TestEntropyProcessor:
         """Test processing a clean column with low entropy."""
         processor = EntropyProcessor(registry=test_registry)
 
-        profile = processor.process_column(
+        result = processor.process_column(
             table_name=low_entropy_context.table_name,
             column_name=low_entropy_context.column_name,
             analysis_results=low_entropy_context.analysis_results,
         )
 
+        scores_by_layer = {obj.layer: obj.score for obj in result}
+
         # Perfect parse rate -> structural entropy = 0.0
+        assert scores_by_layer["structural"] == pytest.approx(0.0, abs=0.01)
         # Zero null ratio -> value entropy = 0.0
-        # Has description -> semantic entropy = 0.2
-        assert profile.layer_scores.get("structural", 0) == pytest.approx(0.0, abs=0.01)
-        assert profile.layer_scores.get("value", 0) == pytest.approx(0.0, abs=0.01)
-        assert profile.readiness == "ready"
+        assert scores_by_layer["value"] == pytest.approx(0.0, abs=0.01)
 
-    def test_process_table(self, test_registry: DetectorRegistry):
-        """Test processing a table with multiple columns."""
+    def test_process_column_with_missing_analyses(
+        self,
+        test_registry: DetectorRegistry,
+    ):
+        """Test processing column when some analyses are missing."""
         processor = EntropyProcessor(registry=test_registry)
 
-        columns = [
-            {
-                "name": "id",
-                "analysis_results": {
-                    "typing": {"parse_success_rate": 1.0},
-                    "statistics": {"null_ratio": 0.0},
-                    "semantic": {"business_description": "Primary key"},
-                },
-            },
-            {
-                "name": "amount",
-                "analysis_results": {
-                    "typing": {"parse_success_rate": 0.95},
-                    "statistics": {"null_ratio": 0.05},
-                    "semantic": {"business_description": "Order total amount in USD"},
-                },
-            },
-        ]
-
-        table_profile = processor.process_table(
+        # Only provide typing data - semantic and statistics detectors won't run
+        result = processor.process_column(
             table_name="orders",
-            columns=columns,
+            column_name="amount",
+            analysis_results={"typing": {"parse_success_rate": 0.9}},
         )
 
-        assert table_profile.table_name == "orders"
-        assert len(table_profile.columns) == 2
-        assert table_profile.avg_composite_score >= 0
-        assert table_profile.max_composite_score >= table_profile.avg_composite_score
-
-    def test_table_summary_has_columns(self, test_registry: DetectorRegistry):
-        """Test that TableSummary contains column summaries."""
-        processor = EntropyProcessor(registry=test_registry)
-
-        # Process a table
-        table_summary = processor.process_table(
-            table_name="orders",
-            columns=[
-                {
-                    "name": "amount",
-                    "analysis_results": {
-                        "typing": {"parse_success_rate": 0.90},
-                        "statistics": {"null_ratio": 0.1},
-                        "semantic": {"business_description": "Amount"},
-                    },
-                },
-            ],
-        )
-
-        # Check table summary has column summaries
-        assert len(table_summary.columns) == 1
-        assert table_summary.columns[0].column_name == "amount"
-        assert table_summary.readiness in ["ready", "investigate", "blocked"]
-
-
-class TestProcessorConfig:
-    """Tests for ProcessorConfig."""
-
-    def test_default_weights(self):
-        """Test default layer weights."""
-        config = ProcessorConfig()
-
-        assert config.layer_weights["structural"] == 0.25
-        assert config.layer_weights["semantic"] == 0.30
-        assert config.layer_weights["value"] == 0.30
-        assert config.layer_weights["computational"] == 0.15
-
-    def test_default_thresholds(self):
-        """Test default thresholds."""
-        config = ProcessorConfig()
-
-        assert config.high_entropy_threshold == 0.5
-        assert config.critical_entropy_threshold == 0.8
+        # Only the typing detector should have run
+        assert len(result) == 1
+        assert result[0].layer == "structural"

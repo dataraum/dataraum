@@ -54,8 +54,6 @@ class JoinPathDeterminismDetector(EntropyDetector):
         score_orphan = detector_config.get("score_orphan", 0.9)
         score_deterministic = detector_config.get("score_deterministic", 0.1)
         score_ambiguous = detector_config.get("score_ambiguous", 0.7)
-        reduction_declare_rel = detector_config.get("reduction_declare_relationship", 0.8)
-        reduction_preferred = detector_config.get("reduction_declare_preferred_path", 0.5)
 
         relationships = context.get_analysis("relationships", [])
 
@@ -121,7 +119,6 @@ class JoinPathDeterminismDetector(EntropyDetector):
                 ResolutionOption(
                     action="document_relationship",
                     parameters={"table": context.table_name, "type": "foreign_key"},
-                    expected_entropy_reduction=reduction_declare_rel,
                     effort="medium",
                     description="Declare a relationship to connect this table to the schema",
                 )
@@ -134,7 +131,6 @@ class JoinPathDeterminismDetector(EntropyDetector):
                         "table": context.table_name,
                         "ambiguous_targets": ambiguous_tables,
                     },
-                    expected_entropy_reduction=reduction_preferred,
                     effort="low",
                     description=f"Specify preferred join path for: {', '.join(ambiguous_tables)}",
                 )

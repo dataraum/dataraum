@@ -45,22 +45,6 @@ OutputDirOption = Annotated[
     ),
 ]
 
-TuiFlag = Annotated[
-    bool,
-    typer.Option(
-        "--tui",
-        help="Launch interactive TUI instead of printing summary",
-    ),
-]
-
-JsonFlag = Annotated[
-    bool,
-    typer.Option(
-        "--json",
-        help="Output as JSON for scripting",
-    ),
-]
-
 VerboseOption = Annotated[
     int,
     typer.Option(

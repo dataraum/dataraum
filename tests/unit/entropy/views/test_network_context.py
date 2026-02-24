@@ -39,7 +39,6 @@ class TestDataclassDefaults:
         assert cne.node_name == ""
         assert cne.state == "low"
         assert cne.score == 0.0
-        assert cne.confidence == 1.0
         assert cne.impact_delta == 0.0
         assert cne.evidence == []
         assert cne.resolution_options == []
@@ -114,7 +113,6 @@ class TestSerializeResolutionOptions:
     def test_preserves_all_fields(self):
         opt = make_resolution_option(
             action="document_unit",
-            expected_entropy_reduction=0.4,
             effort="medium",
             description="Add unit annotation",
         )
@@ -122,11 +120,9 @@ class TestSerializeResolutionOptions:
         assert len(result) == 1
         d = result[0]
         assert d["action"] == "document_unit"
-        assert d["expected_entropy_reduction"] == 0.4
         assert d["effort"] == "medium"
         assert d["description"] == "Add unit annotation"
         assert d["parameters"] == {"key": "value"}
-        assert d["cascade_dimensions"] == ["dim1"]
 
     def test_multiple_options(self):
         opts = [
@@ -147,7 +143,6 @@ class TestObjectToDirectSignal:
             sub_dimension="cross_column_patterns",
             target="table:sales",
             score=0.7,
-            confidence=0.85,
             evidence=[{"pattern": "mixed_units"}],
             detector_id="dimensional_detector",
         )
@@ -155,7 +150,6 @@ class TestObjectToDirectSignal:
         assert ds.dimension_path == "semantic.dimensional.cross_column_patterns"
         assert ds.target == "table:sales"
         assert ds.score == 0.7
-        assert ds.confidence == 0.85
         assert ds.evidence == [{"pattern": "mixed_units"}]
         assert ds.detector_id == "dimensional_detector"
 
@@ -310,12 +304,12 @@ class TestPerColumnAssembly:
         assert result.direct_signals[0].target == "table:sales"
 
     def test_node_evidence_carries_raw_data(self, small_network):
-        """ColumnNodeEvidence has score, confidence, evidence from source object."""
+        """ColumnNodeEvidence has score, evidence from source object."""
         evidence_data = [{"metric": "type_mismatch_ratio", "value": 0.3}]
         objects = [
             make_entropy_object(
                 layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.75, confidence=0.88,
+                score=0.75,
                 evidence=evidence_data,
                 detector_id="type_detector",
                 target="column:t.c1",
@@ -325,7 +319,6 @@ class TestPerColumnAssembly:
         col = result.columns["column:t.c1"]
         ne = next(n for n in col.node_evidence if n.node_name == "root_a")
         assert ne.score == 0.75
-        assert ne.confidence == 0.88
         assert ne.evidence == evidence_data
         assert ne.detector_id == "type_detector"
 
@@ -669,9 +662,7 @@ class TestFormatNetworkContext:
                         "action": "document_unit",
                         "description": "Add unit annotation",
                         "effort": "low",
-                        "expected_entropy_reduction": 0.4,
                         "parameters": {},
-                        "cascade_dimensions": [],
                     }
                 ],
             ),

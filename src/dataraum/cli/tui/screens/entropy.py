@@ -707,8 +707,7 @@ class EntropyScreen(Screen[None]):
             sub = escape_markup(str(obj.sub_dimension))
             parts.append(
                 f"[bold]{layer} > {dim} > {sub}[/bold]  "
-                f"[{score_color}]{obj.score:.3f}[/{score_color}]  "
-                f"[dim]confidence: {obj.confidence:.2f}[/dim]"
+                f"[{score_color}]{obj.score:.3f}[/{score_color}]"
             )
 
             # All evidence fields
@@ -728,15 +727,10 @@ class EntropyScreen(Screen[None]):
                     if not isinstance(opt, dict):
                         continue
                     action = escape_markup(str(opt.get("action", "?")))
-                    reduction = opt.get("expected_entropy_reduction", 0) or 0
                     effort = escape_markup(str(opt.get("effort", "?")))
-                    cascade = opt.get("cascade_dimensions", [])
                     parts.append(
-                        f"  [dim]-> {action}[/dim]  reduction: {reduction:.0%}, effort: {effort}"
+                        f"  [dim]-> {action}[/dim]  effort: {effort}"
                     )
-                    if cascade:
-                        safe = escape_markup(", ".join(str(c) for c in cascade))
-                        parts.append(f"     cascades: {safe}")
 
             parts.append("")  # Blank line between objects
 
@@ -811,21 +805,6 @@ class EntropyScreen(Screen[None]):
             container.mount(Static("[dim]No actions recommended[/dim]"))
             return
 
-        # Build cascade lookup from raw entropy objects' resolution_options
-        cascade_by_action: dict[str, list[str]] = {}
-        reduction_by_action: dict[str, float] = {}
-        if entropy_objects:
-            for obj in entropy_objects:
-                if not obj.resolution_options:
-                    continue
-                for opt in obj.resolution_options:
-                    if not isinstance(opt, dict):
-                        continue
-                    act = opt.get("action", "")
-                    if act and act not in cascade_by_action:
-                        cascade_by_action[act] = opt.get("cascade_dimensions", [])
-                        reduction_by_action[act] = opt.get("expected_entropy_reduction", 0.0)
-
         # Sort by priority
         priority_order = {"high": 0, "medium": 1, "low": 2}
         actions = sorted(
@@ -845,12 +824,9 @@ class EntropyScreen(Screen[None]):
 
             p_color = priority_colors.get(priority.lower(), "white")
 
-            # Title with reduction if available
-            reduction = reduction_by_action.get(action_name, 0.0)
-            reduction_str = f" {reduction:.0%}" if reduction else ""
             title = (
                 f"[{p_color}]{escape_markup(priority.upper())}[/{p_color}] {escape_markup(action_name)} "
-                f"[dim](effort: {escape_markup(effort)}{reduction_str})[/dim]"
+                f"[dim](effort: {escape_markup(effort)})[/dim]"
             )
 
             # Full content for expanded state
@@ -865,12 +841,6 @@ class EntropyScreen(Screen[None]):
                     for k, v in parameters.items()
                 ]
                 content += "\n\n[bold]Parameters:[/bold]\n" + "\n".join(param_lines)
-
-            # Cascade dimensions from raw resolution options
-            cascade = cascade_by_action.get(action_name, [])
-            if cascade:
-                safe_cascade = ", ".join(escape_markup(str(c)) for c in cascade)
-                content += f"\n\n[bold]Cascades to:[/bold]\n  {safe_cascade}"
 
             content += f"\n\n[dim]Priority: {escape_markup(priority)} | Effort: {escape_markup(effort)}[/dim]"
 

@@ -99,32 +99,6 @@ class TestNullRatioDetector:
 
         assert results[0].score == pytest.approx(1.0, abs=0.01)
 
-    def test_resolution_cascade_dimensions(self, detector: NullRatioDetector):
-        """Test resolution options include cascade dimensions."""
-        context = DetectorContext(
-            table_name="test",
-            column_name="col",
-            analysis_results={
-                "statistics": {
-                    "null_ratio": 0.2,
-                }
-            },
-        )
-
-        results = detector.detect(context)
-
-        # document_null_semantics should cascade to semantic.business_meaning
-        null_semantics_opt = next(
-            (
-                opt
-                for opt in results[0].resolution_options
-                if opt.action == "document_null_semantics"
-            ),
-            None,
-        )
-        assert null_semantics_opt is not None
-        assert "semantic.business_meaning" in null_semantics_opt.cascade_dimensions
-
     def test_detector_properties(self, detector: NullRatioDetector):
         """Test detector has correct properties."""
         assert detector.detector_id == "null_ratio"

@@ -451,8 +451,7 @@ class ContractsScreen(Screen[None]):
                     )
                     content_parts.append(
                         f"  [bold]{obj.sub_dimension}[/bold]  "
-                        f"[{score_color}]{obj.score:.3f}[/{score_color}]  "
-                        f"[dim]confidence: {obj.confidence:.2f}[/dim]"
+                        f"[{score_color}]{obj.score:.3f}[/{score_color}]"
                     )
 
                     # Show all evidence fields
@@ -481,45 +480,22 @@ class ContractsScreen(Screen[None]):
 
         # Collect top resolution hints from ColumnSummary for affected columns
         hint_counts: dict[str, int] = {}  # action -> number of columns affected
-        hint_reduction: dict[str, float] = {}  # action -> best reduction
         for col_key in affected_columns:
             summary = self._column_summaries.get(col_key)
             if not summary or not summary.top_resolution_hints:
                 continue
             for hint in summary.top_resolution_hints:
                 hint_counts[hint.action] = hint_counts.get(hint.action, 0) + 1
-                hint_reduction[hint.action] = max(
-                    hint_reduction.get(hint.action, 0.0),
-                    hint.expected_entropy_reduction,
-                )
 
         # Show summary header if hints found
         if hint_counts:
             top_action = max(hint_counts, key=lambda a: hint_counts[a])
             top_count = hint_counts[top_action]
-            top_red = hint_reduction.get(top_action, 0.0)
             content_parts.append(
                 f"[bold]Top action:[/bold] {top_action}, "
-                f"affects {top_count} column{'s' if top_count != 1 else ''}, "
-                f"~{top_red:.0%} reduction"
+                f"affects {top_count} column{'s' if top_count != 1 else ''}"
             )
             content_parts.append("")
-
-        # Build cascade lookup from detector resolution_options (secondary source)
-        cascade_by_action: dict[str, list[str]] = {}
-        reduction_by_action: dict[str, float] = {}
-        for col_key in affected_columns:
-            dim_key = (dimension, col_key)
-            for obj in self._entropy_by_dim_col.get(dim_key, []):
-                if not obj.resolution_options:
-                    continue
-                for opt in obj.resolution_options:
-                    if not isinstance(opt, dict):
-                        continue
-                    act = opt.get("action", "")
-                    if act and act not in cascade_by_action:
-                        cascade_by_action[act] = opt.get("cascade_dimensions", [])
-                        reduction_by_action[act] = opt.get("expected_entropy_reduction", 0.0)
 
         # Primary source: LLM interpretation actions filtered by dimension
         for col_key in affected_columns:
@@ -570,14 +546,6 @@ class ContractsScreen(Screen[None]):
                 if parameters and isinstance(parameters, dict):
                     param_str = ", ".join(f"{k}={v}" for k, v in parameters.items())
                     content_parts.append(f"    [dim]params: {param_str}[/dim]")
-
-                # Cross-reference cascade from detector data
-                cascade = cascade_by_action.get(action_name, [])
-                reduction = reduction_by_action.get(action_name, 0.0)
-                if cascade:
-                    content_parts.append(f"    [dim]cascades: {', '.join(cascade)}[/dim]")
-                if reduction:
-                    content_parts.append(f"    [dim]reduction: {reduction:.0%}[/dim]")
 
             content_parts.append("")
 

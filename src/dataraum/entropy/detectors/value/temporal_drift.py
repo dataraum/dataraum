@@ -95,7 +95,6 @@ class TemporalDriftDetector(EntropyDetector):
                         "column": context.column_name,
                         "worst_period": evidence_data.get("worst_period", ""),
                     },
-                    expected_entropy_reduction=score * 0.5,
                     effort="medium",
                     description="Investigate the cause of distribution drift",
                 )
@@ -109,7 +108,6 @@ class TemporalDriftDetector(EntropyDetector):
                         "column": context.column_name,
                         "strategy": "use_recent_periods_only",
                     },
-                    expected_entropy_reduction=score * 0.8,
                     effort="low",
                     description="Filter to recent stable periods to reduce drift impact",
                 )

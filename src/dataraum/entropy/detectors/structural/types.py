@@ -44,8 +44,6 @@ class TypeFidelityDetector(EntropyDetector):
         # Get configurable thresholds
         suggest_override = detector_config.get("suggest_override_threshold", 0.3)
         suggest_quarantine = detector_config.get("suggest_quarantine_threshold", 0.1)
-        reduction_override = detector_config.get("reduction_override", 0.8)
-        reduction_quarantine = detector_config.get("reduction_quarantine", 0.9)
 
         typing_result = context.get_analysis("typing", {})
 
@@ -87,7 +85,6 @@ class TypeFidelityDetector(EntropyDetector):
                         "column": context.column_name,
                         "suggested_type": "VARCHAR",  # Fallback to string
                     },
-                    expected_entropy_reduction=score * reduction_override,
                     effort="low",
                     description="Override detected type with VARCHAR to preserve all values",
                 )
@@ -102,7 +99,6 @@ class TypeFidelityDetector(EntropyDetector):
                         "column": context.column_name,
                         "pattern": "non_parseable",
                     },
-                    expected_entropy_reduction=score * reduction_quarantine,
                     effort="medium",
                     description="Move non-parseable values to quarantine table",
                 )

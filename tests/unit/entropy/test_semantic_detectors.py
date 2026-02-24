@@ -222,27 +222,6 @@ class TestBusinessMeaningDetector:
         assert "document_business_name" in actions
         assert "document_entity_type" in actions
 
-    def test_cascade_dimensions(self, detector: BusinessMeaningDetector):
-        """Test resolution options include cascade dimensions."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="col1",
-            analysis_results={
-                "semantic": {
-                    "business_description": "",
-                }
-            },
-        )
-
-        results = detector.detect(context)
-
-        add_desc_opt = next(
-            (opt for opt in results[0].resolution_options if opt.action == "document_description"),
-            None,
-        )
-        assert add_desc_opt is not None
-        assert "computational.aggregations" in add_desc_opt.cascade_dimensions
-
     def test_fully_documented_low_confidence_nonzero(self, detector: BusinessMeaningDetector):
         """Test that fully documented column with low confidence has nonzero score.
 

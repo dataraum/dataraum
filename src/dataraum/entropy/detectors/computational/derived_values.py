@@ -47,9 +47,6 @@ class DerivedValueDetector(EntropyDetector):
         match_exact = detector_config.get("match_exact", 0.99)
         match_near_exact = detector_config.get("match_near_exact", 0.95)
         match_approximate = detector_config.get("match_approximate", 0.80)
-        reduction_declare = detector_config.get("reduction_declare_formula", 0.8)
-        reduction_verify = detector_config.get("reduction_verify_formula", 0.7)
-
         correlation = context.get_analysis("correlation", {})
 
         # Extract derived column information
@@ -130,10 +127,8 @@ class DerivedValueDetector(EntropyDetector):
                         "column": context.column_name,
                         "table": context.table_name,
                     },
-                    expected_entropy_reduction=reduction_declare,
                     effort="medium",
                     description="Declare the computation formula for this column",
-                    cascade_dimensions=["semantic.business_meaning"],
                 )
             )
         elif status in ["approximate", "poor"]:
@@ -144,7 +139,6 @@ class DerivedValueDetector(EntropyDetector):
                         "column": context.column_name,
                         "detected_formula": formula,
                     },
-                    expected_entropy_reduction=score * reduction_verify,
                     effort="medium",
                     description="Verify formula and investigate rows where it doesn't match",
                 )

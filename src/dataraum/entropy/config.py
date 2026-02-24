@@ -49,15 +49,6 @@ class EntropyConfig:
     # Detector configurations
     detectors: dict[str, DetectorConfig] = field(default_factory=dict)
 
-    # Effort factors for priority calculation
-    effort_factors: dict[str, float] = field(
-        default_factory=lambda: {
-            "low": 1.0,
-            "medium": 2.0,
-            "high": 4.0,
-        }
-    )
-
     # Human-readable dimension labels
     dimension_labels: dict[str, str] = field(default_factory=dict)
 
@@ -67,18 +58,6 @@ class EntropyConfig:
         Returns empty config if detector not found.
         """
         return self.detectors.get(detector_id, DetectorConfig(name=detector_id))
-
-    def effort_factor(self, effort: str) -> float:
-        """Get effort factor for priority calculation.
-
-        Raises:
-            KeyError: If effort level is not recognized (fail-fast behavior).
-        """
-        if effort not in self.effort_factors:
-            raise KeyError(
-                f"Unknown effort level '{effort}'. Valid levels: {list(self.effort_factors.keys())}"
-            )
-        return self.effort_factors[effort]
 
 
 # Module-level cache for configuration
@@ -129,10 +108,6 @@ def _parse_config(raw: dict[str, Any]) -> EntropyConfig:
                 name=detector_id,
                 values=dict(values) if values else {},
             )
-
-    # Parse effort factors
-    if "effort_factors" in raw:
-        config.effort_factors = dict(raw["effort_factors"])
 
     # Parse dimension labels
     if "dimension_labels" in raw:

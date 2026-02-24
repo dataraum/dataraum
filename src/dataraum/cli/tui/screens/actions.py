@@ -39,14 +39,10 @@ class MergedAction:
 
     # Aggregated data
     affected_columns: list[str] = field(default_factory=list)
-    cascade_dimensions: list[str] = field(default_factory=list)
-    max_reduction: float = 0.0
-    total_reduction: float = 0.0
     priority_score: float = 0.0
 
     # Source tracking
     from_llm: bool = False
-    from_detector: bool = False
 
     # Related entropy objects for evidence
     related_objects: list[Any] = field(default_factory=list)
@@ -281,7 +277,7 @@ class ActionsScreen(Screen[None]):
         effort_factors = {"low": 1.0, "medium": 2.0, "high": 4.0}
         for ma in actions_map.values():
             effort_factor = effort_factors.get(ma.effort, 2.0)
-            impact = ma.total_reduction + len(ma.affected_columns) * 0.1
+            impact = len(ma.affected_columns) * 0.1
             ma.priority_score = impact / effort_factor
 
         # Derive priority labels from score thresholds (replaces LLM-assigned labels)
@@ -325,9 +321,7 @@ class ActionsScreen(Screen[None]):
         # Top action
         if self._actions:
             top = self._actions[0]
-            dims = len(top.cascade_dimensions) if top.cascade_dimensions else 0
-            dims_str = f", {dims} dims" if dims else ""
-            parts.append(f"Top: {top.action} ({len(top.affected_columns)} cols{dims_str})")
+            parts.append(f"Top: {top.action} ({len(top.affected_columns)} cols)")
 
         status = self.query_one("#summary-status", Static)
         status.update(" | ".join(parts) if parts else "[dim]No actions found[/dim]")
@@ -354,10 +348,9 @@ class ActionsScreen(Screen[None]):
 
             for action in actions:
                 cols = len(action.affected_columns)
-                reduction_str = f" ~{action.max_reduction:.0%}" if action.max_reduction else ""
                 node_label = (
                     f"{action.action} "
-                    f"[dim]({cols} col{'s' if cols != 1 else ''}{reduction_str})[/dim]"
+                    f"[dim]({cols} col{'s' if cols != 1 else ''})[/dim]"
                 )
                 priority_node.add_leaf(node_label, data=f"action:{action.action}")
 
@@ -387,12 +380,7 @@ class ActionsScreen(Screen[None]):
         # Header
         header = self.query_one("#detail-header", Static)
         p_color = format_priority_color(action.priority)
-        source_tags = []
-        if action.from_llm:
-            source_tags.append("LLM")
-        if action.from_detector:
-            source_tags.append("Detector")
-        source_str = f" [dim]({', '.join(source_tags)})[/dim]" if source_tags else ""
+        source_str = " [dim](LLM)[/dim]" if action.from_llm else ""
 
         header.update(
             f"[bold]{action.action}[/bold] | "
@@ -416,9 +404,6 @@ class ActionsScreen(Screen[None]):
             parts.append("")
 
         parts.append(f"[bold]Effort:[/bold] {action.effort}")
-
-        if action.max_reduction:
-            parts.append(f"[bold]Expected Reduction:[/bold] {action.max_reduction:.0%}")
 
         if action.expected_impact:
             parts.append("\n[bold]Expected Impact[/bold]")
@@ -462,8 +447,7 @@ class ActionsScreen(Screen[None]):
                 color = format_score_color(obj.score)
                 parts.append(
                     f"  [{color}]{obj.score:.3f}[/{color}] "
-                    f"[bold]{obj.layer}.{obj.dimension}.{obj.sub_dimension}[/bold]  "
-                    f"[dim]conf: {obj.confidence:.2f}[/dim]"
+                    f"[bold]{obj.layer}.{obj.dimension}.{obj.sub_dimension}[/bold]"
                 )
 
                 evidence = obj.evidence or {}
@@ -478,22 +462,9 @@ class ActionsScreen(Screen[None]):
         content.update("\n".join(parts))
 
     def _update_impact_tab(self, action: MergedAction) -> None:
-        """Update the Impact tab with cascade and violation data."""
+        """Update the Impact tab with violation data."""
         content = self.query_one("#impact-content", Static)
         parts: list[str] = []
-
-        # Cascade dimensions
-        if action.cascade_dimensions:
-            parts.append("[bold]Cascade Dimensions[/bold]")
-            for dim in action.cascade_dimensions:
-                parts.append(f"  {dim}")
-            parts.append("")
-
-        # Total reduction
-        if action.total_reduction:
-            parts.append(f"[bold]Total Reduction:[/bold] {action.total_reduction:.2f}")
-            parts.append(f"[bold]Max Single Reduction:[/bold] {action.max_reduction:.0%}")
-            parts.append("")
 
         # Contract violations this fixes
         if action.fixes_violations:
@@ -504,7 +475,7 @@ class ActionsScreen(Screen[None]):
 
         # Priority score
         parts.append(f"[bold]Priority Score:[/bold] {action.priority_score:.3f}")
-        parts.append("[dim]Score = (total_reduction + affected_cols * 0.1) / effort_factor[/dim]")
+        parts.append("[dim]Score = (affected_cols * 0.1 + network_impact) / effort_factor[/dim]")
 
         if not parts:
             parts.append("[dim]No impact data available[/dim]")

@@ -44,14 +44,6 @@ def format_entropy_summary(
     lines.append(f"Entropy Score: {snapshot.avg_entropy_score:.3f}")
     lines.append("")
 
-    # Dimension breakdown
-    lines.append("## Entropy by Dimension")
-    lines.append(f"- Structural: {snapshot.avg_structural_entropy:.3f}")
-    lines.append(f"- Semantic: {snapshot.avg_semantic_entropy:.3f}")
-    lines.append(f"- Value: {snapshot.avg_value_entropy:.3f}")
-    lines.append(f"- Computational: {snapshot.avg_computational_entropy:.3f}")
-    lines.append("")
-
     lines.append("## Issue Summary")
     lines.append(f"- Total columns analyzed: {len(interpretations)}")
     lines.append("")
@@ -231,9 +223,7 @@ def format_actions_report(
     if actions:
         top = actions[0]
         cols = len(top.get("affected_columns", []))
-        reduction = top.get("max_reduction", 0)
-        reduction_str = f", ~{reduction:.0%} reduction" if reduction else ""
-        lines.append(f"- Top action: **{top['action']}** ({cols} columns{reduction_str})")
+        lines.append(f"- Top action: **{top['action']}** ({cols} columns)")
     lines.append("")
 
     # Ranked actions (single list, score-ordered)
@@ -258,11 +248,9 @@ def format_actions_report(
         network_impact = action.get("network_impact", 0.0)
         network_cols = action.get("network_columns", 0)
         if network_impact > 0:
-            reduction = action.get("max_reduction", 0)
-            reduction_str = f" | Detector reduction: ~{reduction:.0%}" if reduction else ""
             lines.append(
                 f"**Network Impact:** {network_impact:.3f} causal delta "
-                f"across {network_cols} columns{reduction_str}"
+                f"across {network_cols} columns"
             )
             lines.append("")
 
@@ -289,28 +277,10 @@ def format_actions_report(
             lines.append(f"**Expected Impact:** {action['expected_impact']}")
             lines.append("")
 
-        # Cascade dimensions
-        cascade = action.get("cascade_dimensions", [])
-        if cascade:
-            lines.append(f"**Cascade Dimensions:** {', '.join(cascade)}")
-            lines.append("")
-
         # Contract violations this fixes
         fixes = action.get("fixes_violations", [])
         if fixes:
             lines.append(f"**Fixes Contract Violations:** {', '.join(fixes)}")
-            lines.append("")
-
-        # Source tags
-        sources = []
-        if action.get("from_llm"):
-            sources.append("LLM")
-        if action.get("from_detector"):
-            sources.append("Detector")
-        if action.get("from_network"):
-            sources.append("Network")
-        if sources:
-            lines.append(f"*Source: {', '.join(sources)}*")
             lines.append("")
 
         lines.append("---")

@@ -65,10 +65,6 @@ class OutlierRateDetector(EntropyDetector):
         impact_significant = detector_config.get("impact_significant", 0.10)
         suggest_winsorize = detector_config.get("suggest_winsorize_threshold", 0.2)
         suggest_exclude = detector_config.get("suggest_exclude_threshold", 0.5)
-        reduction_winsorize = detector_config.get("reduction_winsorize", 0.7)
-        reduction_exclude = detector_config.get("reduction_exclude", 0.9)
-        reduction_investigate = detector_config.get("reduction_investigate", 0.5)
-
         stats = context.get_analysis("statistics", {})
 
         # Extract outlier information
@@ -157,7 +153,6 @@ class OutlierRateDetector(EntropyDetector):
                         "lower_percentile": 1,
                         "upper_percentile": 99,
                     },
-                    expected_entropy_reduction=score * reduction_winsorize,
                     effort="low",
                     description="Cap extreme values at specified percentiles",
                 )
@@ -173,7 +168,6 @@ class OutlierRateDetector(EntropyDetector):
                         "method": "iqr",
                         "multiplier": 1.5,
                     },
-                    expected_entropy_reduction=score * reduction_exclude,
                     effort="low",
                     description="Exclude IQR-based outliers from aggregations",
                 )
@@ -184,7 +178,6 @@ class OutlierRateDetector(EntropyDetector):
                     parameters={
                         "column": context.column_name,
                     },
-                    expected_entropy_reduction=score * reduction_investigate,
                     effort="high",
                     description="Manual review of outlier values for data quality issues",
                 )

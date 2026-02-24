@@ -18,22 +18,24 @@ class TestEntropyObject:
 class TestResolutionOption:
     """Tests for ResolutionOption."""
 
-    def test_priority_score_low_effort(self):
-        """Test priority score calculation for low effort."""
+    def test_basic_construction(self):
+        """Test ResolutionOption can be constructed with required fields."""
         opt = ResolutionOption(
-            action="test",
-            parameters={},
-            expected_entropy_reduction=0.5,
+            action="declare_type",
+            parameters={"column": "amount", "type": "DECIMAL"},
             effort="low",
+            description="Declare explicit type",
         )
-        assert opt.priority_score() == 0.5  # 0.5 / 1.0
+        assert opt.action == "declare_type"
+        assert opt.parameters == {"column": "amount", "type": "DECIMAL"}
+        assert opt.effort == "low"
+        assert opt.description == "Declare explicit type"
 
-    def test_priority_score_high_effort(self):
-        """Test priority score calculation for high effort."""
+    def test_default_description(self):
+        """Test ResolutionOption defaults description to empty string."""
         opt = ResolutionOption(
             action="test",
             parameters={},
-            expected_entropy_reduction=0.8,
-            effort="high",
+            effort="medium",
         )
-        assert opt.priority_score() == 0.2  # 0.8 / 4.0
+        assert opt.description == ""

@@ -156,7 +156,6 @@ class TestNetworkEnrichesExistingActions:
         action = result[0]
         assert action["action"] == "declare_unit"
         assert action["from_llm"] is True
-        assert action["from_network"] is True
         assert action["network_impact"] == 0.25
         assert action["network_columns"] == 1
 
@@ -259,14 +258,10 @@ class TestNetworkCreatesNewActions:
         assert len(result) == 1
         action = result[0]
         assert action["action"] == "transform_winsorize"
-        assert action["from_network"] is True
-        assert action["from_detector"] is False
         assert action["from_llm"] is False
         assert action["description"] == "Cap extreme values at percentile boundaries"
         assert action["effort"] == "medium"
         assert action["parameters"] == {"percentile": 0.99}
-        assert action["max_reduction"] == 0.4
-        assert action["cascade_dimensions"] == ["statistical.outliers"]
         assert action["network_impact"] == 0.20
         assert action["network_columns"] == 1
 
@@ -345,7 +340,7 @@ class TestNetworkImpactPriorityScoring:
     def test_network_impact_formula(self):
         """Verify exact priority_score calculation with network impact.
 
-        priority_score = (total_reduction + affected_cols * 0.1 + network_impact) / effort_factor
+        priority_score = (affected_cols * 0.1 + network_impact) / effort_factor
         """
         ne = _make_node_evidence(
             node_name="outlier_rate",
@@ -371,9 +366,9 @@ class TestNetworkImpactPriorityScoring:
             network_context=network_ctx,
         )
 
-        # total_reduction=0.0, affected_columns=0 (network doesn't add to affected_columns),
+        # affected_columns=0 (network doesn't add to affected_columns),
         # network_impact=0.40, effort_factor=1.0
-        # score = (0.0 + 0 * 0.1 + 0.40) / 1.0 = 0.40
+        # score = (0 * 0.1 + 0.40) / 1.0 = 0.40
         assert len(result) == 1
         assert abs(result[0]["priority_score"] - 0.40) < 1e-6
 
@@ -414,8 +409,8 @@ class TestNetworkImpactPriorityScoring:
         )
 
         # Both are medium priority, so ordering is by priority_score
-        # action_a: (0.0 + 1*0.1 + 0.0) / 1.0 = 0.10 (LLM only, no reduction)
-        # action_b: (0.0 + 0*0.1 + 0.80) / 1.0 = 0.80 (from network only)
+        # action_a: (1*0.1 + 0.0) / 1.0 = 0.10 (LLM only)
+        # action_b: (0*0.1 + 0.80) / 1.0 = 0.80 (from network only)
         assert len(result) == 2
         assert result[0]["action"] == "action_b"
         assert result[1]["action"] == "action_a"
@@ -558,7 +553,7 @@ class TestScoreDerivedPriority:
         )
 
         assert len(result) == 1
-        # priority_score = (0.0 + 0*0.1 + 0.10) / 4.0 = 0.025
+        # priority_score = (0*0.1 + 0.10) / 4.0 = 0.025
         assert result[0]["priority"] == "low"
         assert result[0]["priority_score"] <= 0.3
 
@@ -581,7 +576,7 @@ class TestScoreDerivedPriority:
         )
 
         assert len(result) == 1
-        # With effort=high (factor 4.0), total_reduction=0.0, affected_columns=1
-        # score = (0.0 + 1*0.1) / 4.0 = 0.025 -> low priority
+        # With effort=high (factor 4.0), affected_columns=1
+        # score = (1*0.1) / 4.0 = 0.025 -> low priority
         assert result[0]["priority"] == "low"
         assert result[0]["priority_score"] <= 0.3

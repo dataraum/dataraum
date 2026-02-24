@@ -660,7 +660,6 @@ def _column_network_to_dict(result: Any) -> dict[str, Any]:
                 {
                     "action": best.get("action", ""),
                     "description": best.get("description", ""),
-                    "expected_reduction": best.get("expected_entropy_reduction", 0.0),
                     "effort": best.get("effort", ""),
                 }
             )

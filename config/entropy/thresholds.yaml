@@ -53,6 +53,10 @@ detectors:
     impact_moderate: 0.05 # < 5% outliers = moderate impact
     impact_significant: 0.10 # < 10% outliers = significant impact
     # >= 10% = critical impact
+    # Piecewise-linear score breakpoints at each impact boundary
+    score_at_minimal: 0.15
+    score_at_moderate: 0.40
+    score_at_significant: 0.65
     # Resolution thresholds (based on score)
     suggest_winsorize_threshold: 0.2 # Score above which to suggest winsorization
     suggest_exclude_threshold: 0.5 # Score above which to suggest exclusion
@@ -144,6 +148,23 @@ detectors:
     score_compliant: 0.1       # Benford-compliant = low entropy
     score_non_compliant: 0.7   # Non-compliant = high entropy
     reduction_investigate: 0.5
+
+  # --------------------------------------------------------------------------
+  # DIMENSIONAL ENTROPY DETECTOR (semantic.dimensional.cross_column_patterns)
+  # --------------------------------------------------------------------------
+  # Pattern weights for cross-column entropy calculation
+  dimensional_entropy:
+    score_undocumented_rule: 0.7  # High-confidence undocumented pattern
+    score_partial_pattern: 0.5   # Lower-confidence pattern
+    correlation_threshold: 0.8   # Min correlation to flag as pattern
+    mutual_exclusivity_threshold: 0.95  # Min inverse null correlation
+    # Pattern type weights for DimensionalEntropyScore.calculate_total()
+    pattern_weights:
+      mutual_exclusivity: 0.8   # Critical business rule
+      conditional_dependency: 0.6  # Context-dependent behavior
+      correlated_variance: 0.4  # Relationship exists
+      temporal_correlation: 0.5 # Time-based relationship
+      temporal_drift: 0.3       # Expected in some cases
 
   # --------------------------------------------------------------------------
   # TEMPORAL ENTROPY DETECTOR (semantic.temporal.time_role)

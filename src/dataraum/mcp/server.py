@@ -493,14 +493,14 @@ def _get_entropy(output_dir: Path, table_name: str | None = None) -> str:
             interp_result = session.execute(interp_query)
             interpretations = interp_result.scalars().all()
 
-            result = format_entropy_summary(source.name, snapshot, interpretations, table_name)
-
-            # Append network context (inference + evidence + direct signals)
+            # Build dimension breakdown from network + direct signals
+            dimension_scores: dict[str, float] | None = None
             try:
                 from dataraum.entropy.views.network_context import (
                     build_for_network,
                     format_network_context,
                 )
+                from dataraum.entropy.views.query_context import network_to_column_summaries
                 from dataraum.storage import Table
 
                 tables_result = session.execute(
@@ -509,12 +509,32 @@ def _get_entropy(output_dir: Path, table_name: str | None = None) -> str:
                 tables = tables_result.scalars().all()
                 table_ids = [t.table_id for t in tables]
 
+                network_context = None
                 if table_ids:
                     network_context = build_for_network(session, table_ids)
-                    if network_context.total_columns > 0:
-                        result += "\n\n" + format_network_context(network_context)
             except Exception:
+                network_context = None
                 _log.debug("Network context unavailable", exc_info=True)
+
+            # Compute per-dimension averages across columns
+            if network_context and network_context.total_columns > 0:
+                col_summaries = network_to_column_summaries(network_context)
+                dim_totals: dict[str, list[float]] = {}
+                for summary in col_summaries.values():
+                    for dim_path, score in summary.dimension_scores.items():
+                        dim_totals.setdefault(dim_path, []).append(score)
+                dimension_scores = {
+                    dim: sum(scores) / len(scores)
+                    for dim, scores in dim_totals.items()
+                }
+
+            result = format_entropy_summary(
+                source.name, snapshot, interpretations, table_name, dimension_scores
+            )
+
+            # Append network context (inference + evidence + direct signals)
+            if network_context and network_context.total_columns > 0:
+                result += "\n\n" + format_network_context(network_context)
 
             return result
     finally:
@@ -528,7 +548,7 @@ def _evaluate_contract(output_dir: Path, contract_name: str) -> str:
     from dataraum.core.connections import get_manager_for_directory
     from dataraum.entropy.contracts import evaluate_contract, get_contract
     from dataraum.entropy.views.network_context import build_for_network
-    from dataraum.entropy.views.query_context import _network_to_column_summaries
+    from dataraum.entropy.views.query_context import network_to_column_summaries
     from dataraum.storage import Source, Table
 
     try:
@@ -558,7 +578,7 @@ def _evaluate_contract(output_dir: Path, contract_name: str) -> str:
 
             # Build column summaries via network
             network_ctx = build_for_network(session, table_ids)
-            column_summaries = _network_to_column_summaries(network_ctx)
+            column_summaries = network_to_column_summaries(network_ctx)
 
             profile = get_contract(contract_name)
             if profile is None:
@@ -627,7 +647,7 @@ def _get_actions(
     from dataraum.entropy.db_models import EntropyObjectRecord
     from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
     from dataraum.entropy.views.network_context import build_for_network
-    from dataraum.entropy.views.query_context import _network_to_column_summaries
+    from dataraum.entropy.views.query_context import network_to_column_summaries
     from dataraum.storage import Column, Source, Table
 
     try:
@@ -666,7 +686,7 @@ def _get_actions(
 
             # Build column summaries and network context
             network_context = build_for_network(session, table_ids)
-            column_summaries = _network_to_column_summaries(network_context)
+            column_summaries = network_to_column_summaries(network_context)
 
             # Get LLM interpretations with resolution actions
             interp_result = session.execute(

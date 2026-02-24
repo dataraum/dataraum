@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 class ColumnSummary:
     """Minimal column entropy summary for contract evaluation.
 
-    Built from network context via _network_to_column_summaries().
+    Built from network context via network_to_column_summaries().
     """
 
     column_id: str = ""

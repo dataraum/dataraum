@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
@@ -157,12 +158,28 @@ def build_for_query(
     high_entropy_count = network_ctx.columns_blocked + network_ctx.columns_investigate
     critical_entropy_count = network_ctx.columns_blocked
 
-    # Calculate overall entropy score (average worst_intent_p_high)
-    p_highs = [c.worst_intent_p_high for c in network_ctx.columns.values()]
-    overall_entropy_score = sum(p_highs) / len(p_highs) if p_highs else None
+    # Read avg_entropy_score from the snapshot (computed by entropy phase from
+    # all in-memory domain objects, covering both network-mapped and unmapped).
+    from dataraum.entropy.db_models import EntropySnapshotRecord
+    from dataraum.storage import Table
+
+    source_id_result = session.execute(
+        select(Table.source_id).where(Table.table_id.in_(table_ids)).limit(1)
+    )
+    source_id = source_id_result.scalar()
+
+    overall_entropy_score: float | None = None
+    if source_id:
+        snapshot_result = session.execute(
+            select(EntropySnapshotRecord.avg_entropy_score)
+            .where(EntropySnapshotRecord.source_id == source_id)
+            .order_by(EntropySnapshotRecord.snapshot_at.desc())
+            .limit(1)
+        )
+        overall_entropy_score = snapshot_result.scalar()
 
     # Convert network results to ColumnSummary for contract evaluation
-    column_summaries = _network_to_column_summaries(network_ctx)
+    column_summaries = network_to_column_summaries(network_ctx)
 
     # Evaluate contracts
     contract_name: str | None = None
@@ -217,13 +234,13 @@ def build_for_query(
     )
 
 
-def _network_to_column_summaries(
+def network_to_column_summaries(
     network_ctx: EntropyForNetwork,
 ) -> dict[str, ColumnSummary]:
     """Convert network results to ColumnSummary for contract evaluation.
 
     Contracts evaluate raw dimension scores, which we extract from
-    the network's per-node evidence.
+    the network's per-node evidence AND direct signals (unmapped detectors).
 
     Args:
         network_ctx: EntropyForNetwork with per-column results
@@ -251,5 +268,33 @@ def _network_to_column_summaries(
             dimension_scores=dimension_scores,
         )
         summaries[col_key] = summary
+
+    # Fold in direct signals (unmapped detector results) so that
+    # dimensions like semantic.dimensional are visible to contracts.
+    for ds in network_ctx.direct_signals:
+        if not ds.dimension_path or not ds.target:
+            continue
+
+        col_key = ds.target.removeprefix("column:")
+        if col_key in summaries:
+            # Add direct signal score to existing summary's dimension_scores.
+            # If the dimension path already exists (from node evidence), keep
+            # the higher score to be conservative.
+            existing = summaries[col_key].dimension_scores.get(ds.dimension_path)
+            if existing is None or ds.score > existing:
+                summaries[col_key].dimension_scores[ds.dimension_path] = ds.score
+        else:
+            # Column only has direct signals (no network-mapped detectors).
+            # Create a new summary for it.
+            parts = col_key.split(".", 1)
+            table_name = parts[0] if len(parts) > 1 else ""
+            column_name = parts[1] if len(parts) > 1 else col_key
+
+            summaries[col_key] = ColumnSummary(
+                column_name=column_name,
+                table_name=table_name,
+                readiness="ready",  # No network inference available
+                dimension_scores={ds.dimension_path: ds.score},
+            )
 
     return summaries

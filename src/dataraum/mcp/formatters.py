@@ -6,6 +6,7 @@ Focus on clarity and structured information.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -32,8 +33,17 @@ def format_entropy_summary(
     snapshot: Any,
     interpretations: Sequence[Any],
     table_filter: str | None = None,
+    dimension_scores: dict[str, float] | None = None,
 ) -> str:
-    """Format entropy summary for LLM consumption."""
+    """Format entropy summary for LLM consumption.
+
+    Args:
+        source_name: Name of the data source
+        snapshot: EntropySnapshotRecord with overall stats
+        interpretations: List of EntropyInterpretationRecord
+        table_filter: Optional table filter applied
+        dimension_scores: Optional dict of dimension path -> avg score across columns
+    """
     lines = [f"# Entropy Summary: {source_name}"]
 
     if table_filter:
@@ -43,6 +53,16 @@ def format_entropy_summary(
     lines.append(f"## Overall Status: {snapshot.overall_readiness.upper()}")
     lines.append(f"Entropy Score: {snapshot.avg_entropy_score:.3f}")
     lines.append("")
+
+    # Dimension breakdown
+    if dimension_scores:
+        lines.append("## Dimension Breakdown")
+        # Sort by score descending to highlight worst dimensions first
+        sorted_dims = sorted(dimension_scores.items(), key=lambda x: -x[1])
+        for dim, score in sorted_dims:
+            if score > 0:
+                lines.append(f"- {dim}: {score:.3f}")
+        lines.append("")
 
     lines.append("## Issue Summary")
     lines.append(f"- Total columns analyzed: {len(interpretations)}")
@@ -56,8 +76,11 @@ def format_entropy_summary(
                 f"- {interp.table_name}.{interp.column_name}"
             )
             if interp.explanation:
-                explanation = interp.explanation.split(".")[0]
-                lines.append(f"  {explanation}")
+                # Extract first sentence. Naive split(".") breaks on
+                # decimal numbers (e.g. "score is 0.39"). Split only
+                # on period followed by space+uppercase.
+                parts = re.split(r"(?<=[.!?])\s+(?=[A-Z])", interp.explanation, maxsplit=1)
+                lines.append(f"  {parts[0]}")
 
     return "\n".join(lines)
 
@@ -244,14 +267,24 @@ def format_actions_report(
             lines.append(f"**Description:** {action['description']}")
             lines.append("")
 
-        # Network causal impact
+        # Network causal impact with per-column breakdown
         network_impact = action.get("network_impact", 0.0)
         network_cols = action.get("network_columns", 0)
+        column_deltas = action.get("column_deltas", {})
         if network_impact > 0:
             lines.append(
                 f"**Network Impact:** {network_impact:.3f} causal delta "
                 f"across {network_cols} columns"
             )
+            if column_deltas:
+                # Show top columns by delta
+                sorted_deltas = sorted(
+                    column_deltas.items(), key=lambda x: -x[1]
+                )
+                for col, delta in sorted_deltas[:5]:
+                    lines.append(f"  - {col}: {delta:.3f}")
+                if len(sorted_deltas) > 5:
+                    lines.append(f"  - ... and {len(sorted_deltas) - 5} more")
             lines.append("")
 
         # Affected columns

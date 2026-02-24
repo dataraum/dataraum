@@ -112,7 +112,7 @@ class ActionsScreen(Screen[None]):
         )
         from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
         from dataraum.entropy.views.network_context import build_for_network
-        from dataraum.entropy.views.query_context import _network_to_column_summaries
+        from dataraum.entropy.views.query_context import network_to_column_summaries
         from dataraum.storage import Column, Source, Table
 
         manager = get_manager(self.output_dir)
@@ -152,7 +152,7 @@ class ActionsScreen(Screen[None]):
 
                 # Source 1: ColumnSummary from network
                 network_ctx = build_for_network(session, table_ids)
-                column_summaries: dict[str, Any] = _network_to_column_summaries(network_ctx)
+                column_summaries: dict[str, Any] = network_to_column_summaries(network_ctx)
 
                 # Source 2: LLM resolution_actions_json from interpretations
                 interp_result = session.execute(

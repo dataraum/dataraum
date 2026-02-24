@@ -81,10 +81,24 @@ class TemporalEntropyDetector(EntropyDetector):
         # Check if column is marked as timestamp
         is_marked_timestamp = semantic_role == "timestamp"
 
+        # Get semantic confidence (if available) for score modulation
+        semantic_confidence: float | None = None
+        if hasattr(semantic, "confidence"):
+            semantic_confidence = semantic.confidence
+        elif isinstance(semantic, dict):
+            semantic_confidence = semantic.get("confidence")
+
         # Determine status and score
         if is_datetime_type and not is_marked_timestamp:
             # Date column not marked as timestamp - may confuse time-based queries
             score = score_unmarked
+            # Modulate by semantic confidence: high-confidence "not timestamp"
+            # analysis deserves lower entropy than low-confidence.
+            if semantic_confidence is not None and isinstance(semantic_confidence, (int, float)):
+                # Higher confidence that role is NOT timestamp → lower entropy
+                # score_unmarked * (1 - confidence * 0.5): at confidence=1.0, reduce by 50%
+                score = score_unmarked * (1.0 - semantic_confidence * 0.5)
+                score = max(score_aligned, score)  # Never below aligned score
             temporal_status = "unmarked"
         elif not is_datetime_type and is_marked_timestamp:
             # Marked as timestamp but not date type - data type mismatch

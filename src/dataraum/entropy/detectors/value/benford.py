@@ -90,8 +90,15 @@ class BenfordDetector(EntropyDetector):
             digit_distribution = None
             interpretation = ""
 
-        # Calculate score
-        if is_compliant:
+        # Calculate score: use p-value gradient when available,
+        # fall back to binary compliant/non-compliant.
+        if p_value is not None and isinstance(p_value, (int, float)):
+            # Gradient: high p-value (compliant) → low score,
+            # low p-value (non-compliant) → high score.
+            # Linear interpolation: score = compliant + (non_compliant - compliant) * (1 - p_value)
+            score = score_compliant + (score_non_compliant - score_compliant) * (1.0 - p_value)
+            score = max(score_compliant, min(score_non_compliant, score))
+        elif is_compliant:
             score = score_compliant
         else:
             score = score_non_compliant

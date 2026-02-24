@@ -73,9 +73,6 @@ class EntropyObjectRecord(Base):
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
 
-    # Versioning (for history tracking)
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    superseded_by: Mapped[str | None] = mapped_column(String)  # Reference to newer version
 
 
 # Indexes for common queries

@@ -110,16 +110,24 @@ class DimensionalEntropyScore:
     # Interpretation
     interpretation: str = ""
 
-    def calculate_total(self) -> None:
-        """Calculate total entropy score from components."""
-        # Weight factors for different pattern types
-        weights = {
-            "mutual_exclusivity": 0.8,  # High - critical business rule
-            "conditional_dependency": 0.6,  # Medium - context-dependent behavior
-            "correlated_variance": 0.4,  # Lower - relationship exists
-            "temporal_correlation": 0.5,  # Medium - time-based relationship
-            "temporal_drift": 0.3,  # Lower - expected in some cases
-        }
+    def calculate_total(
+        self,
+        weights: dict[str, float] | None = None,
+    ) -> None:
+        """Calculate total entropy score from components.
+
+        Args:
+            weights: Optional pattern type weights. Defaults to built-in values
+                     if not provided (or loaded from config by caller).
+        """
+        if weights is None:
+            weights = {
+                "mutual_exclusivity": 0.8,
+                "conditional_dependency": 0.6,
+                "correlated_variance": 0.4,
+                "temporal_correlation": 0.5,
+                "temporal_drift": 0.3,
+            }
 
         # Calculate weighted pattern score
         pattern_score = (
@@ -220,6 +228,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         score_partial_pattern = detector_config.get("score_partial_pattern", 0.5)
         correlation_threshold = detector_config.get("correlation_threshold", 0.8)
         mutual_exclusivity_threshold = detector_config.get("mutual_exclusivity_threshold", 0.95)
+        pattern_weights = detector_config.get("pattern_weights", {})
 
         slice_variance = context.get_analysis("slice_variance", {})
         columns_data = slice_variance.get("columns", {})
@@ -240,6 +249,13 @@ class DimensionalEntropyDetector(EntropyDetector):
 
         # Extract INTERESTING temporal columns
         interesting_temporal = self._get_interesting_temporal_columns(temporal_columns)
+
+        # Resolve weights (config or defaults)
+        w_me = pattern_weights.get("mutual_exclusivity", 0.8)
+        w_cd = pattern_weights.get("conditional_dependency", 0.6)
+        w_cv = pattern_weights.get("correlated_variance", 0.4)
+        w_tc = pattern_weights.get("temporal_correlation", 0.5)
+        w_td = pattern_weights.get("temporal_drift", 0.3)
 
         # Detect categorical patterns
         patterns: list[CrossColumnPattern] = []
@@ -280,19 +296,19 @@ class DimensionalEntropyDetector(EntropyDetector):
         patterns.extend(drift_patterns)
         entropy_score.temporal_drift_count = len(drift_patterns)
 
-        # Calculate overall entropy score
+        # Calculate overall entropy score using configurable weights
         entropy_score.categorical_entropy = (
-            entropy_score.mutual_exclusivity_count * 0.8
-            + entropy_score.conditional_dependency_count * 0.6
-            + entropy_score.correlated_variance_count * 0.4
+            entropy_score.mutual_exclusivity_count * w_me
+            + entropy_score.conditional_dependency_count * w_cd
+            + entropy_score.correlated_variance_count * w_cv
         ) / max(len(interesting_columns), 1)
 
         entropy_score.temporal_entropy = (
-            entropy_score.temporal_correlation_count * 0.5
-            + entropy_score.temporal_drift_count * 0.3
+            entropy_score.temporal_correlation_count * w_tc
+            + entropy_score.temporal_drift_count * w_td
         ) / max(len(interesting_temporal), 1)
 
-        entropy_score.calculate_total()
+        entropy_score.calculate_total(weights=pattern_weights or None)
 
         # Create entropy objects for each pattern
         entropy_objects: list[EntropyObject] = []
@@ -416,6 +432,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         score_partial_pattern = detector_config.get("score_partial_pattern", 0.5)
         correlation_threshold = detector_config.get("correlation_threshold", 0.8)
         mutual_exclusivity_threshold = detector_config.get("mutual_exclusivity_threshold", 0.95)
+        pattern_weights = detector_config.get("pattern_weights", {})
 
         slice_variance = context.get_analysis("slice_variance", {})
         columns_data = slice_variance.get("columns", {})
@@ -436,6 +453,13 @@ class DimensionalEntropyDetector(EntropyDetector):
 
         # Extract INTERESTING temporal columns
         interesting_temporal = self._get_interesting_temporal_columns(temporal_columns)
+
+        # Resolve weights (config or defaults)
+        w_me = pattern_weights.get("mutual_exclusivity", 0.8)
+        w_cd = pattern_weights.get("conditional_dependency", 0.6)
+        w_cv = pattern_weights.get("correlated_variance", 0.4)
+        w_tc = pattern_weights.get("temporal_correlation", 0.5)
+        w_td = pattern_weights.get("temporal_drift", 0.3)
 
         # Detect categorical patterns
         patterns: list[CrossColumnPattern] = []
@@ -476,19 +500,19 @@ class DimensionalEntropyDetector(EntropyDetector):
         patterns.extend(drift_patterns)
         entropy_score.temporal_drift_count = len(drift_patterns)
 
-        # Calculate overall entropy score
+        # Calculate overall entropy score using configurable weights
         entropy_score.categorical_entropy = (
-            entropy_score.mutual_exclusivity_count * 0.8
-            + entropy_score.conditional_dependency_count * 0.6
-            + entropy_score.correlated_variance_count * 0.4
+            entropy_score.mutual_exclusivity_count * w_me
+            + entropy_score.conditional_dependency_count * w_cd
+            + entropy_score.correlated_variance_count * w_cv
         ) / max(len(interesting_columns), 1)
 
         entropy_score.temporal_entropy = (
-            entropy_score.temporal_correlation_count * 0.5
-            + entropy_score.temporal_drift_count * 0.3
+            entropy_score.temporal_correlation_count * w_tc
+            + entropy_score.temporal_drift_count * w_td
         ) / max(len(interesting_temporal), 1)
 
-        entropy_score.calculate_total()
+        entropy_score.calculate_total(weights=pattern_weights or None)
 
         # Create entropy objects for each pattern
         entropy_objects: list[EntropyObject] = []

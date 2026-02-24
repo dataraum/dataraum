@@ -257,6 +257,7 @@ class EntropyPhase(BasePhase):
         # Process each table
         total_entropy_objects = 0
         tables_processed = 0
+        all_domain_objects: list[Any] = []  # Collect EntropyObject for network inference
 
         for table in typed_tables:
             table_columns = columns_by_table.get(table.table_id, [])
@@ -387,6 +388,9 @@ class EntropyPhase(BasePhase):
                     column_id=col.column_id,
                 )
 
+                # Keep domain objects for in-memory network inference
+                all_domain_objects.extend(entropy_objects)
+
                 # Persist each EntropyObject with full evidence
                 for entropy_obj in entropy_objects:
                     resolution_dicts = [
@@ -423,6 +427,7 @@ class EntropyPhase(BasePhase):
             ctx=ctx,
             typed_tables=typed_tables,
         )
+        all_domain_objects.extend(dimensional_objects)
         logger.info(
             "dimensional_entropy_results",
             objects_count=len(dimensional_objects),
@@ -477,19 +482,22 @@ class EntropyPhase(BasePhase):
                 score=entropy_obj.score,
             )
 
-        # Compute summary statistics via network inference
-        # Session auto-flushes, so just-added entropy objects are visible
-        from dataraum.entropy.views.network_context import build_for_network
+        # Compute summary statistics from in-memory domain objects.
+        # No DB round-trip needed — the session hasn't committed yet and
+        # uses autoflush=False, so re-querying the DB would see nothing.
+        from dataraum.entropy.network.model import EntropyNetwork
+        from dataraum.entropy.views.network_context import _assemble_network_context
 
-        network_ctx = build_for_network(ctx.session, table_ids)
+        network = EntropyNetwork()
+        network_ctx = _assemble_network_context(all_domain_objects, network)
 
         high_entropy_count = network_ctx.columns_blocked + network_ctx.columns_investigate
         critical_entropy_count = network_ctx.columns_blocked
         overall_readiness = network_ctx.overall_readiness
 
-        # Average worst_intent_p_high across columns
-        p_highs = [c.worst_intent_p_high for c in network_ctx.columns.values()]
-        avg_entropy = sum(p_highs) / len(p_highs) if p_highs else 0.0
+        # Average entropy score from ALL in-memory domain objects
+        all_scores = [obj.score for obj in all_domain_objects]
+        avg_entropy = sum(all_scores) / len(all_scores) if all_scores else 0.0
 
         # Create snapshot record
         snapshot = EntropySnapshotRecord(

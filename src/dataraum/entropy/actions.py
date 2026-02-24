@@ -21,7 +21,7 @@ def _build_network_impact(
 
     Returns:
         Dict keyed by action name with total_delta, columns_affected,
-        column list, and a representative resolution_option dict.
+        column list, per-column deltas, and a representative resolution_option dict.
     """
     impact: dict[str, dict[str, Any]] = {}
 
@@ -40,6 +40,7 @@ def _build_network_impact(
                         "total_delta": 0.0,
                         "columns_affected": 0,
                         "columns": [],
+                        "column_deltas": {},
                         "resolution_option": ro,
                     }
 
@@ -48,6 +49,10 @@ def _build_network_impact(
                 ni["columns_affected"] += 1
                 if target not in ni["columns"]:
                     ni["columns"].append(target)
+                # Accumulate per-column delta (a column may appear in multiple nodes)
+                ni["column_deltas"][target] = (
+                    ni["column_deltas"].get(target, 0.0) + node_ev.impact_delta
+                )
 
     return impact
 
@@ -140,6 +145,7 @@ def merge_actions(
                     "from_llm": False,
                     "network_impact": ni["total_delta"],
                     "network_columns": ni["columns_affected"],
+                    "column_deltas": ni["column_deltas"],
                     "fixes_violations": [],
                     "evidence": [],
                 }
@@ -147,6 +153,7 @@ def merge_actions(
                 ma = actions_map[action_name]
                 ma["network_impact"] = ni["total_delta"]
                 ma["network_columns"] = ni["columns_affected"]
+                ma["column_deltas"] = ni["column_deltas"]
 
     # Map contract violations to actions
     for dim, cols in violation_dims.items():

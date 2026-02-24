@@ -573,6 +573,26 @@ def evaluate_contract(
                 )
             )
 
+    # Check if any column has blocked readiness (from Bayesian network).
+    # This ensures contract evaluation is consistent with overall readiness:
+    # if readiness=BLOCKED, no contract should pass.
+    blocked_columns = [
+        key for key, s in column_summaries.items() if s.readiness == "blocked"
+    ]
+    if blocked_columns:
+        violations.append(
+            Violation(
+                violation_type="blocking_condition",
+                severity="blocking",
+                condition="blocked_columns",
+                details=(
+                    f"{len(blocked_columns)} column(s) have blocked readiness: "
+                    + ", ".join(blocked_columns[:5])
+                ),
+                affected_columns=blocked_columns[:10],
+            )
+        )
+
     # Determine compliance
     blocking_violations = [v for v in violations if v.severity == "blocking"]
     is_compliant = len(blocking_violations) == 0

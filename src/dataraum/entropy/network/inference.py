@@ -1,10 +1,8 @@
 """Inference operations for the Bayesian Entropy Network.
 
-Provides four core inference operations:
+Provides two core inference operations:
 - forward_propagate: Compute posterior distributions given observed evidence
-- backward_diagnose: Find root causes of observed problems
 - what_if_analysis: Simulate interventions (do-calculus)
-- most_probable_explanation: MAP inference for most likely state assignment
 """
 
 from pgmpy.inference import CausalInference, VariableElimination
@@ -57,31 +55,6 @@ def forward_propagate(
     return results
 
 
-def backward_diagnose(
-    network: EntropyNetwork,
-    observed_problem: dict[str, str],
-    candidate_causes: list[str] | None = None,
-) -> dict[str, dict[str, float]]:
-    """Given a problem, find most likely root causes.
-
-    Uses Bayesian inference in reverse: given high entropy at an intent
-    or computational node, infer which root nodes are most likely
-    responsible.
-
-    Args:
-        network: The entropy network.
-        observed_problem: Problem evidence, e.g. {"aggregation_intent": "high"}.
-        candidate_causes: Nodes to investigate. None = all root nodes.
-
-    Returns:
-        Dict mapping each candidate cause to its posterior distribution.
-    """
-    if candidate_causes is None:
-        candidate_causes = network.get_root_nodes()
-
-    return forward_propagate(network, observed_problem, query_nodes=candidate_causes)
-
-
 def what_if_analysis(
     network: EntropyNetwork,
     current_evidence: dict[str, str],
@@ -131,31 +104,3 @@ def what_if_analysis(
         }
 
     return results
-
-
-def most_probable_explanation(
-    network: EntropyNetwork,
-    evidence: dict[str, str],
-) -> dict[str, str]:
-    """MAP inference: most likely state assignment for all nodes given evidence.
-
-    Args:
-        network: The entropy network.
-        evidence: Observed node states.
-
-    Returns:
-        Dict mapping every non-evidence node to its most probable state.
-    """
-    query_vars = [n for n in network.node_names if n not in evidence]
-    if not query_vars:
-        return {}
-
-    ve = VariableElimination(network.model)
-    map_result = ve.map_query(
-        variables=query_vars,
-        evidence=evidence,
-        show_progress=False,
-    )
-
-    # pgmpy with state_names returns string states directly
-    return dict(map_result)

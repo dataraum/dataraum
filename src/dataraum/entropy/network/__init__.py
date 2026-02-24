@@ -15,9 +15,7 @@ from dataraum.entropy.network.bridge import (
 )
 from dataraum.entropy.network.config import NetworkConfig, get_network_config
 from dataraum.entropy.network.inference import (
-    backward_diagnose,
     forward_propagate,
-    most_probable_explanation,
     what_if_analysis,
 )
 from dataraum.entropy.network.model import EntropyNetwork
@@ -34,9 +32,7 @@ __all__ = [
     "get_network_config",
     # Inference
     "forward_propagate",
-    "backward_diagnose",
     "what_if_analysis",
-    "most_probable_explanation",
     # Bridge
     "discretize_score",
     "entropy_objects_to_evidence",

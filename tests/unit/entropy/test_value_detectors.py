@@ -522,7 +522,7 @@ class TestBenfordDetector:
         assert len(results) == 0
 
     def test_compliant(self, detector: BenfordDetector):
-        """Compliant column gets low entropy."""
+        """Compliant column with high p-value gets low entropy (gradient)."""
         context = DetectorContext(
             table_name="orders",
             column_name="amount",
@@ -544,7 +544,8 @@ class TestBenfordDetector:
         )
         results = detector.detect(context)
         assert len(results) == 1
-        assert results[0].score == pytest.approx(0.1, abs=0.01)
+        # p_value=0.8 → score = 0.1 + (0.7 - 0.1) * (1 - 0.8) = 0.22
+        assert results[0].score == pytest.approx(0.22, abs=0.01)
         assert results[0].evidence[0]["is_compliant"] is True
         assert len(results[0].resolution_options) == 0
 

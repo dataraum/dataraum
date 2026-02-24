@@ -287,6 +287,16 @@ def _build_column_result(
         worst_intent_p_high, disc.medium_upper, disc.low_upper,
     )
 
+    # When every observed detector says "low", no actual issue was found.
+    # The posterior may still exceed the threshold because unobserved
+    # nodes fall back to their priors, but that is an artifact of
+    # incomplete detector coverage, not a real signal.
+    all_evidence_low = all(s == "low" for s in evidence.values())
+    if all_evidence_low:
+        readiness = "ready"
+        for intent in intents:
+            intent.readiness = "ready"
+
     # Top priority node
     top_priority_node = ""
     top_priority_impact = 0.0
@@ -509,12 +519,12 @@ def _assemble_network_context(
         1 for c in columns.values() if c.readiness == "ready"
     )
 
-    # Overall readiness from worst aggregate intent
-    if agg_intents:
-        worst_p_high = max(ai.worst_p_high for ai in agg_intents)
-        overall_readiness = _readiness_from_p_high(
-            worst_p_high, disc.medium_upper, disc.low_upper,
-        )
+    # Overall readiness derived from per-column readiness (which already
+    # accounts for the all-evidence-low override in _build_column_result).
+    if columns_blocked > 0:
+        overall_readiness = "blocked"
+    elif columns_investigate > 0:
+        overall_readiness = "investigate"
     else:
         overall_readiness = "ready"
 

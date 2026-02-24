@@ -592,6 +592,38 @@ class TestAssembleFullNetwork:
         assert result.overall_readiness == "ready"
         assert result.top_fix is None
 
+    def test_partial_low_evidence_still_ready(self, full_network):
+        """Column with partial low evidence is ready despite prior bleed-through.
+
+        When only 4 of 8 detectors fire (all with low scores), unobserved
+        nodes fall back to priors which can push the posterior P(high) just
+        above the discretization threshold.  The readiness should still be
+        "ready" because all observed evidence is low.
+        """
+        # Only 4 roots — the common pattern for many baseline columns
+        partial_roots = [
+            ("structural", "types", "type_fidelity"),
+            ("value", "nulls", "null_ratio"),
+            ("value", "outliers", "outlier_rate"),
+            ("semantic", "business_meaning", "naming_clarity"),
+        ]
+        objects = [
+            make_entropy_object(
+                layer=layer, dimension=dim, sub_dimension=sub,
+                score=0.0, target="column:t.c1",
+            )
+            for layer, dim, sub in partial_roots
+        ]
+        result = _assemble_network_context(objects, full_network)
+        col = result.columns["column:t.c1"]
+
+        # All evidence is low, so readiness must be "ready" even though
+        # the posterior P(high) may be slightly above 0.3 due to priors.
+        assert col.readiness == "ready"
+        assert all(i.readiness == "ready" for i in col.intents)
+        assert result.overall_readiness == "ready"
+        assert result.columns_investigate == 0
+
 
 # ===================================================================
 # F. Formatter tests

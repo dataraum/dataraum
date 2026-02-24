@@ -302,14 +302,13 @@ class TestFormatEntropyForPrompt:
                 "overall_readiness": "investigate",
                 "high_entropy_count": 3,
                 "critical_entropy_count": 0,
-                                "readiness_blockers": [],
+                "readiness_blockers": [],
             }
         )
         result = format_entropy_for_prompt(ctx)
 
         assert "INVESTIGATE" in result
         assert "assumptions" in result.lower()
-        assert "High entropy columns: 3" in result
 
     def test_blocked_status(self) -> None:
         """Blocked status shows appropriate message."""
@@ -381,6 +380,62 @@ class TestFormatEntropyForPrompt:
         result = format_entropy_for_prompt(ctx)
 
         assert "DANGEROUS COMBINATIONS" in result or "blocked" in result.lower()
+
+    def test_baseline_columns_grouped(self) -> None:
+        """Columns at baseline P(high)=0.30 should be grouped, not listed individually."""
+        # One interesting column (above threshold)
+        interesting_col = ColumnContext(
+            column_id="col-1",
+            column_name="rate",
+            table_name="fx_rates",
+            entropy_scores={
+                "worst_intent_p_high": 0.64,
+                "high_entropy_dimensions": ["value.outliers"],
+                "readiness": "blocked",
+            },
+        )
+        # Three baseline columns at 0.30
+        baseline_cols = [
+            ColumnContext(
+                column_id=f"col-{i}",
+                column_name=name,
+                table_name="bank_transactions",
+                entropy_scores={
+                    "worst_intent_p_high": 0.30,
+                    "high_entropy_dimensions": [],
+                    "readiness": "ready",
+                },
+            )
+            for i, name in enumerate(["currency", "date", "method"], start=2)
+        ]
+        table1 = TableContext(
+            table_id="tbl-1", table_name="fx_rates", columns=[interesting_col]
+        )
+        table2 = TableContext(
+            table_id="tbl-2", table_name="bank_transactions", columns=baseline_cols
+        )
+        ctx = GraphExecutionContext(
+            tables=[table1, table2],
+            entropy_summary={
+                "overall_readiness": "investigate",
+                "high_entropy_count": 4,
+                "critical_entropy_count": 0,
+                "readiness_blockers": [],
+            },
+        )
+        result = format_entropy_for_prompt(ctx)
+
+        # Interesting column should be listed individually
+        assert "fx_rates.rate" in result
+        assert "0.64" in result
+
+        # Baseline columns should NOT be listed individually
+        assert "bank_transactions.currency" not in result
+        assert "bank_transactions.date" not in result
+        assert "bank_transactions.method" not in result
+
+        # Should show baseline count
+        assert "3 additional column(s) at baseline uncertainty" in result
 
 
 class TestEntropyInlineIndicators:

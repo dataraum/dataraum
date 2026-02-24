@@ -125,13 +125,53 @@ class SliceContext:
 
 
 @dataclass
+class CycleStageContext:
+    """A stage within a business cycle."""
+
+    stage_name: str
+    stage_order: int
+    indicator_column: str | None = None
+    indicator_values: list[str] = field(default_factory=list)
+    completion_rate: float | None = None
+
+
+@dataclass
+class EntityFlowContext:
+    """An entity flowing through a business cycle."""
+
+    entity_type: str  # "customer", "vendor"
+    entity_column: str  # "customer_id"
+    entity_table: str  # "customers"
+    fact_table: str | None = None
+    relationship_type: str | None = None
+
+
+@dataclass
 class BusinessCycleContext:
-    """Detected business cycle/process."""
+    """Detected business cycle with full metadata."""
 
     cycle_name: str
     cycle_type: str  # e.g., "order_to_cash", "procure_to_pay"
     tables_involved: list[str] = field(default_factory=list)
     completion_rate: float | None = None  # What % of cycles complete
+    description: str | None = None
+    business_value: str = "medium"
+    confidence: float = 0.0
+    stages: list[CycleStageContext] = field(default_factory=list)
+    entity_flows: list[EntityFlowContext] = field(default_factory=list)
+    status_column: str | None = None  # "invoices.status"
+    completion_value: str | None = None  # "paid"
+
+
+@dataclass
+class ValidationContext:
+    """Result of a validation check."""
+
+    validation_id: str
+    status: str  # passed, failed, skipped, error
+    severity: str  # info, warning, error, critical
+    passed: bool
+    message: str
 
 
 @dataclass
@@ -174,6 +214,9 @@ class GraphExecutionContext:
 
     # Business cycles (from cycles analysis)
     business_cycles: list[BusinessCycleContext] = field(default_factory=list)
+
+    # Validation results (from validation analysis)
+    validations: list[ValidationContext] = field(default_factory=list)
 
     # Field mappings (business_concept → column mappings for metrics)
     field_mappings: FieldMappings | None = None
@@ -380,12 +423,73 @@ def build_execution_context(
     business_cycle_contexts: list[BusinessCycleContext] = []
     cycles_stmt = select(DetectedBusinessCycle).order_by(DetectedBusinessCycle.detected_at.desc())
     for cycle in session.execute(cycles_stmt).scalars().all():
+        stages = [
+            CycleStageContext(
+                stage_name=s.get("stage_name", ""),
+                stage_order=s.get("stage_order", 0),
+                indicator_column=s.get("indicator_column"),
+                indicator_values=s.get("indicator_values", []),
+                completion_rate=s.get("completion_rate"),
+            )
+            for s in (cycle.stages or [])
+        ]
+        entity_flows = [
+            EntityFlowContext(
+                entity_type=ef.get("entity_type", ""),
+                entity_column=ef.get("entity_column", ""),
+                entity_table=ef.get("entity_table", ""),
+                fact_table=ef.get("fact_table"),
+                relationship_type=ef.get("relationship_type"),
+            )
+            for ef in (cycle.entity_flows or [])
+        ]
+        # Combine status_table + status_column for concise reference
+        status_col = None
+        if cycle.status_table and cycle.status_column:
+            status_col = f"{cycle.status_table}.{cycle.status_column}"
+        elif cycle.status_column:
+            status_col = cycle.status_column
+
         business_cycle_contexts.append(
             BusinessCycleContext(
                 cycle_name=cycle.cycle_name,
                 cycle_type=cycle.canonical_type or cycle.cycle_type,
                 tables_involved=cycle.tables_involved,
                 completion_rate=cycle.completion_rate,
+                description=cycle.description,
+                business_value=cycle.business_value,
+                confidence=cycle.confidence,
+                stages=stages,
+                entity_flows=entity_flows,
+                status_column=status_col,
+                completion_value=cycle.completion_value,
+            )
+        )
+
+    # 13b. Load validation results
+    from dataraum.analysis.validation.db_models import ValidationResultRecord
+
+    validation_contexts: list[ValidationContext] = []
+    val_stmt = select(ValidationResultRecord).order_by(
+        ValidationResultRecord.executed_at.desc()
+    )
+    table_id_set = set(table_ids)
+    seen_validation_ids: set[str] = set()
+    for val_rec in session.execute(val_stmt).scalars().all():
+        # Filter by table overlap
+        if not (table_id_set & set(val_rec.table_ids)):
+            continue
+        # Deduplicate: keep only the most recent run per validation_id
+        if val_rec.validation_id in seen_validation_ids:
+            continue
+        seen_validation_ids.add(val_rec.validation_id)
+        validation_contexts.append(
+            ValidationContext(
+                validation_id=val_rec.validation_id,
+                status=val_rec.status,
+                severity=val_rec.severity,
+                passed=val_rec.passed,
+                message=val_rec.message or "",
             )
         )
 
@@ -591,6 +695,7 @@ def build_execution_context(
         slice_value=slice_value,
         available_slices=slice_contexts,
         business_cycles=business_cycle_contexts,
+        validations=validation_contexts,
         field_mappings=field_mappings,
     )
 
@@ -926,6 +1031,22 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
             lines.append(f"- {sev}: {count} issues")
         lines.append("")
 
+    # Validation rule compliance
+    if context.validations:
+        lines.append("## VALIDATION RULE COMPLIANCE")
+        failed = [v for v in context.validations if not v.passed]
+        passed = [v for v in context.validations if v.passed]
+        skipped = [v for v in context.validations if v.status in ("skipped", "error")]
+        if failed:
+            lines.append(f"FAILED: {len(failed)} checks")
+            for v in failed:
+                lines.append(f"  - [{v.severity.upper()}] {v.validation_id}: {v.message}")
+        if passed:
+            lines.append(f"PASSED: {len(passed)} checks")
+        if skipped:
+            lines.append(f"SKIPPED/ERROR: {len(skipped)} checks")
+        lines.append("")
+
     # Entropy/Data readiness section
     entropy_section = format_entropy_for_prompt(context)
     if entropy_section:
@@ -994,11 +1115,57 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
         lines.append("")
         lines.append("## DETECTED BUSINESS CYCLES")
         for cycle in context.business_cycles:
-            tables_str = ", ".join(cycle.tables_involved[:3])
-            if len(cycle.tables_involved) > 3:
-                tables_str += f" +{len(cycle.tables_involved) - 3} more"
-            completion = f" ({cycle.completion_rate:.0%} complete)" if cycle.completion_rate else ""
-            lines.append(f"  - {cycle.cycle_name} ({cycle.cycle_type}): {tables_str}{completion}")
+            # Header: name (type) — value, confidence
+            value_str = f", {cycle.business_value} value" if cycle.business_value else ""
+            conf_str = f", {cycle.confidence:.0%} confident" if cycle.confidence else ""
+            lines.append(f"\n### {cycle.cycle_name} ({cycle.cycle_type}){value_str}{conf_str}")
+
+            if cycle.description:
+                lines.append(cycle.description)
+
+            # Stages
+            if cycle.stages:
+                lines.append("")
+                lines.append("Stages:")
+                for stage in sorted(cycle.stages, key=lambda s: s.stage_order):
+                    vals = ", ".join(stage.indicator_values) if stage.indicator_values else ""
+                    ind_col = f" {stage.indicator_column}" if stage.indicator_column else ""
+                    indicator = f" →{ind_col} in [{vals}]" if vals else ""
+                    progress = (
+                        f" ({stage.completion_rate:.0%} progress)"
+                        if stage.completion_rate is not None
+                        else ""
+                    )
+                    lines.append(
+                        f"  {stage.stage_order}. {stage.stage_name}{indicator}{progress}"
+                    )
+
+            # Entity flows
+            if cycle.entity_flows:
+                lines.append("")
+                lines.append("Entity Flows:")
+                for ef in cycle.entity_flows:
+                    rel_type = f", {ef.relationship_type}" if ef.relationship_type else ""
+                    fact = f" → {ef.fact_table}" if ef.fact_table else ""
+                    lines.append(
+                        f"  - {ef.entity_type} ({ef.entity_table}.{ef.entity_column}{fact}{rel_type})"
+                    )
+
+            # Completion tracking
+            if cycle.status_column or cycle.completion_rate is not None:
+                parts = []
+                if cycle.status_column and cycle.completion_value:
+                    parts.append(f"{cycle.status_column} = \"{cycle.completion_value}\"")
+                if cycle.completion_rate is not None:
+                    parts.append(f"{cycle.completion_rate:.0%} complete")
+                if parts:
+                    lines.append(f"\nCompletion: {', '.join(parts)}")
+
+            # Tables involved
+            tables_str = ", ".join(cycle.tables_involved[:5])
+            if len(cycle.tables_involved) > 5:
+                tables_str += f" +{len(cycle.tables_involved) - 5} more"
+            lines.append(f"Tables: {tables_str}")
 
     return "\n".join(lines)
 
@@ -1008,7 +1175,10 @@ __all__ = [
     "TableContext",
     "RelationshipContext",
     "SliceContext",
+    "CycleStageContext",
+    "EntityFlowContext",
     "BusinessCycleContext",
+    "ValidationContext",
     "GraphExecutionContext",
     "build_execution_context",
     "format_context_for_prompt",

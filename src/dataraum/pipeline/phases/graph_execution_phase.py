@@ -12,6 +12,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from dataraum.core.logging import get_logger
 from dataraum.graphs.agent import ExecutionContext, GraphAgent
 from dataraum.graphs.field_mapping import can_execute_metric, load_semantic_mappings
 from dataraum.graphs.loader import GraphLoader
@@ -22,6 +23,8 @@ from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
+
+logger = get_logger(__name__)
 
 
 @analysis_phase
@@ -101,6 +104,12 @@ class GraphExecutionPhase(BasePhase):
             )
         loader = GraphLoader(vertical=vertical)
         loader.load_all()
+
+        # Validate standard_field references against ontology
+        field_warnings = loader.validate_standard_fields(vertical)
+        for warning in field_warnings:
+            logger.warning(warning)
+
         metric_graphs = loader.get_metric_graphs()
 
         if not metric_graphs:

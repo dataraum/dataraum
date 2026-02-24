@@ -68,19 +68,22 @@ def format_entropy_summary(
     lines.append(f"- Total columns analyzed: {len(interpretations)}")
     lines.append("")
 
-    # Column interpretations
+    # Column interpretations (grouped by table)
     if interpretations:
         lines.append("## Column Interpretations")
-        for interp in interpretations[:10]:
-            lines.append(
-                f"- {interp.table_name}.{interp.column_name}"
-            )
+        current_table = None
+        for interp in interpretations:
+            if interp.table_name != current_table:
+                current_table = interp.table_name
+                lines.append(f"\n**{current_table}**")
             if interp.explanation:
                 # Extract first sentence. Naive split(".") breaks on
                 # decimal numbers (e.g. "score is 0.39"). Split only
                 # on period followed by space+uppercase.
                 parts = re.split(r"(?<=[.!?])\s+(?=[A-Z])", interp.explanation, maxsplit=1)
-                lines.append(f"  {parts[0]}")
+                lines.append(f"- {interp.column_name}: {parts[0]}")
+            else:
+                lines.append(f"- {interp.column_name}")
 
     return "\n".join(lines)
 

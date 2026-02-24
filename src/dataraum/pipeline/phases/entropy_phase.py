@@ -16,6 +16,8 @@ from dataraum.analysis.correlation.db_models import DerivedColumn
 from dataraum.analysis.quality_summary.db_models import ColumnQualityReport, ColumnSliceProfile
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
+from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.analysis.slicing.slice_runner import _get_slice_table_name
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.statistics.quality_db_models import StatisticalQualityMetrics
 from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
@@ -225,24 +227,30 @@ class EntropyPhase(BasePhase):
         for dc in (ctx.session.execute(derived_stmt)).scalars().all():
             derived_columns[dc.derived_column_id] = dc
 
-        # Load drift summaries for TemporalDriftDetector (keyed by column_name per table)
-        # These come from slice tables, so we need to load all and group by column_name
-        drift_summaries_by_column: dict[str, list[ColumnDriftSummary]] = {}
-        slice_tables_stmt = select(Table).where(
-            Table.layer == "slice",
-            Table.source_id == ctx.source_id,
-        )
-        slice_table_names = [
-            st.table_name for st in ctx.session.execute(slice_tables_stmt).scalars().all()
-        ]
-        if slice_table_names:
+        # Load drift summaries for TemporalDriftDetector, scoped per typed table.
+        # Key by (table_id, column_name) to prevent cross-table leakage when
+        # different tables share column names (e.g. "amount", "date").
+        drift_summaries_by_table_column: dict[tuple[str, str], list[ColumnDriftSummary]] = {}
+        col_name_by_id = {c.column_id: c.column_name for c in all_columns}
+        # Map slice_table_name -> owning typed table_id
+        slice_table_to_typed: dict[str, str] = {}
+        for table in typed_tables:
+            sd_stmt = select(SliceDefinition).where(SliceDefinition.table_id == table.table_id)
+            for sd in ctx.session.execute(sd_stmt).scalars().all():
+                col_name = col_name_by_id.get(sd.column_id)
+                if col_name and sd.distinct_values:
+                    for value in sd.distinct_values:
+                        stn = _get_slice_table_name(col_name, value)
+                        slice_table_to_typed[stn] = table.table_id
+        if slice_table_to_typed:
             drift_stmt = select(ColumnDriftSummary).where(
-                ColumnDriftSummary.slice_table_name.in_(slice_table_names)
+                ColumnDriftSummary.slice_table_name.in_(slice_table_to_typed.keys())
             )
             for ds in ctx.session.execute(drift_stmt).scalars().all():
-                if ds.column_name not in drift_summaries_by_column:
-                    drift_summaries_by_column[ds.column_name] = []
-                drift_summaries_by_column[ds.column_name].append(ds)
+                owning_table_id = slice_table_to_typed.get(ds.slice_table_name)
+                if owning_table_id:
+                    key = (owning_table_id, ds.column_name)
+                    drift_summaries_by_table_column.setdefault(key, []).append(ds)
 
         # Initialize processor
         processor = EntropyProcessor()
@@ -374,7 +382,7 @@ class EntropyPhase(BasePhase):
                     }
 
                 # Add drift summaries for this column (for TemporalDriftDetector)
-                col_drift = drift_summaries_by_column.get(col.column_name)
+                col_drift = drift_summaries_by_table_column.get((table.table_id, col.column_name))
                 if col_drift:
                     analysis_results["drift_summaries"] = col_drift
 
@@ -627,19 +635,17 @@ def _run_dimensional_entropy(
         # Load drift summaries for slice tables belonging to this typed table
         drift_summaries: list[Any] = []
         slice_table_names: list[str] = []
-        from dataraum.analysis.slicing.db_models import SliceDefinition
-
         slice_def_stmt = select(SliceDefinition).where(SliceDefinition.table_id == table.table_id)
         slice_defs = list(ctx.session.execute(slice_def_stmt).scalars().all())
 
         if slice_defs:
-            # Find slice table names for this table's slice definitions
-            slice_tables_stmt = select(Table).where(
-                Table.layer == "slice",
-                Table.source_id == ctx.source_id,
-            )
-            all_slice_tables = list(ctx.session.execute(slice_tables_stmt).scalars().all())
-            slice_table_names = [st.table_name for st in all_slice_tables]
+            # Derive slice table names from this table's slice definitions
+            col_name_by_id = {c.column_id: c.column_name for c in table_columns}
+            for sd in slice_defs:
+                sd_col_name = col_name_by_id.get(sd.column_id)
+                if sd_col_name and sd.distinct_values:
+                    for value in sd.distinct_values:
+                        slice_table_names.append(_get_slice_table_name(sd_col_name, value))
 
             if slice_table_names:
                 drift_stmt = select(ColumnDriftSummary).where(

@@ -482,6 +482,15 @@ def _assemble_network_context(
         for obj in target_objects:
             all_direct_signals.append(_object_to_direct_signal(obj))
 
+    # Step 5b: Deduplicate direct signals — keep highest score per key
+    seen: dict[tuple[str, str, str], DirectSignal] = {}
+    for ds in all_direct_signals:
+        key = (ds.dimension_path, ds.target, ds.detector_id)
+        existing = seen.get(key)
+        if existing is None or ds.score > existing.score:
+            seen[key] = ds
+    all_direct_signals = list(seen.values())
+
     # Step 6: Aggregate intents across columns
     agg_intents = _aggregate_intents(columns, disc.medium_upper, disc.low_upper)
 

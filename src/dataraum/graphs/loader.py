@@ -676,6 +676,31 @@ class GraphLoader:
 
         return result
 
+    def validate_standard_fields(self, vertical: str) -> list[str]:
+        """Warn about standard_field values not found in ontology.
+
+        Args:
+            vertical: Vertical name (e.g. 'finance')
+
+        Returns:
+            List of warning messages for unknown fields
+        """
+        from dataraum.analysis.semantic.ontology import OntologyLoader
+
+        loader = OntologyLoader()
+        ontology = loader.load(vertical)
+        if not ontology:
+            return []
+
+        concept_names = {c.name for c in ontology.concepts}
+        abstract_fields = self.get_all_abstract_fields()
+        unknown = abstract_fields - concept_names
+
+        warnings = []
+        for field_name in sorted(unknown):
+            warnings.append(f"standard_field '{field_name}' not found in {vertical} ontology")
+        return warnings
+
     def get_quality_filter_summary(
         self,
         columns: list[dict[str, Any]],

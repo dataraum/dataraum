@@ -476,3 +476,57 @@ class TestAppliesTo:
         )
         assert applies_to.column_pairs is not None
         assert "start_pattern" in applies_to.column_pairs
+
+
+class TestValidateStandardFields:
+    """Tests for validate_standard_fields() method."""
+
+    def test_all_known_fields_no_warnings(self) -> None:
+        """Finance graphs + finance ontology = no warnings."""
+        loader = GraphLoader(vertical="finance")
+        loader.load_all()
+        warnings = loader.validate_standard_fields("finance")
+        assert warnings == []
+
+    def test_unknown_field_produces_warning(self, tmp_path: Path) -> None:
+        """Graph with made-up standard_field = warning."""
+        # Create a minimal metric graph with an unknown standard_field
+        metrics_dir = tmp_path / "metrics"
+        metrics_dir.mkdir()
+        graph_yaml = metrics_dir / "fake.yaml"
+        graph_yaml.write_text(
+            """
+graph_id: fake_metric
+graph_type: metric
+version: "1.0"
+metadata:
+  name: Fake Metric
+  description: Test metric
+  category: test
+  source: system
+output:
+  type: scalar
+  metric_id: fake
+dependencies:
+  extract_nonexistent:
+    level: 1
+    type: extract
+    source:
+      standard_field: nonexistent_concept_xyz
+    output_step: true
+"""
+        )
+
+        loader = GraphLoader(graphs_dir=tmp_path)
+        loader.load_all()
+
+        warnings = loader.validate_standard_fields("finance")
+        assert len(warnings) == 1
+        assert "nonexistent_concept_xyz" in warnings[0]
+        assert "finance" in warnings[0]
+
+    def test_no_ontology_returns_empty(self, tmp_path: Path) -> None:
+        """Nonexistent vertical returns no warnings."""
+        loader = GraphLoader(graphs_dir=tmp_path)
+        warnings = loader.validate_standard_fields("nonexistent_vertical")
+        assert warnings == []

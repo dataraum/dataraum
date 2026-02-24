@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from dataraum.graphs.context import (
+    BusinessCycleContext,
     ColumnContext,
+    CycleStageContext,
+    EntityFlowContext,
     GraphExecutionContext,
     RelationshipContext,
     TableContext,
+    ValidationContext,
     format_context_for_prompt,
     format_entropy_for_prompt,
 )
@@ -515,3 +519,190 @@ class TestEntropyInlineIndicators:
 
         # Should have warning on relationship line
         assert "⚠" in result
+
+
+class TestValidationContext:
+    """Tests for ValidationContext dataclass."""
+
+    def test_create(self) -> None:
+        """Create validation context."""
+        ctx = ValidationContext(
+            validation_id="double_entry_balance",
+            status="failed",
+            severity="critical",
+            passed=False,
+            message="Debits and credits do not balance: diff=42.50",
+        )
+        assert ctx.validation_id == "double_entry_balance"
+        assert ctx.passed is False
+        assert ctx.severity == "critical"
+
+
+class TestFormatValidationSection:
+    """Tests for validation section in format_context_for_prompt."""
+
+    def test_no_validations_no_section(self) -> None:
+        """No validation results means no section in output."""
+        ctx = GraphExecutionContext()
+        result = format_context_for_prompt(ctx)
+        assert "VALIDATION RULE COMPLIANCE" not in result
+
+    def test_failed_validations_shown(self) -> None:
+        """Failed validation checks show details."""
+        ctx = GraphExecutionContext(
+            validations=[
+                ValidationContext(
+                    validation_id="double_entry_balance",
+                    status="failed",
+                    severity="critical",
+                    passed=False,
+                    message="Debits and credits do not balance",
+                ),
+                ValidationContext(
+                    validation_id="trial_balance",
+                    status="failed",
+                    severity="error",
+                    passed=False,
+                    message="Trial balance failed: diff=100",
+                ),
+            ],
+        )
+        result = format_context_for_prompt(ctx)
+
+        assert "VALIDATION RULE COMPLIANCE" in result
+        assert "FAILED: 2 checks" in result
+        assert "[CRITICAL] double_entry_balance" in result
+        assert "[ERROR] trial_balance" in result
+
+    def test_passed_validations_count_only(self) -> None:
+        """Passed validations show count only, no details."""
+        ctx = GraphExecutionContext(
+            validations=[
+                ValidationContext(
+                    validation_id="non_negative_amounts",
+                    status="passed",
+                    severity="warning",
+                    passed=True,
+                    message="All amounts are non-negative",
+                ),
+                ValidationContext(
+                    validation_id="referential_integrity",
+                    status="passed",
+                    severity="error",
+                    passed=True,
+                    message="All FKs resolve",
+                ),
+            ],
+        )
+        result = format_context_for_prompt(ctx)
+
+        assert "VALIDATION RULE COMPLIANCE" in result
+        assert "PASSED: 2 checks" in result
+        # Passed check messages should NOT appear
+        assert "non_negative_amounts" not in result
+
+    def test_mixed_validations(self) -> None:
+        """Mix of passed and failed validations."""
+        ctx = GraphExecutionContext(
+            validations=[
+                ValidationContext(
+                    validation_id="balance_check",
+                    status="failed",
+                    severity="critical",
+                    passed=False,
+                    message="Balance mismatch",
+                ),
+                ValidationContext(
+                    validation_id="fk_check",
+                    status="passed",
+                    severity="warning",
+                    passed=True,
+                    message="OK",
+                ),
+            ],
+        )
+        result = format_context_for_prompt(ctx)
+
+        assert "FAILED: 1 checks" in result
+        assert "PASSED: 1 checks" in result
+        assert "[CRITICAL] balance_check: Balance mismatch" in result
+
+
+class TestFormatBusinessCycleSection:
+    """Tests for expanded business cycle formatting."""
+
+    def test_no_cycles_no_section(self) -> None:
+        """No cycles means no section."""
+        ctx = GraphExecutionContext()
+        result = format_context_for_prompt(ctx)
+        assert "DETECTED BUSINESS CYCLES" not in result
+
+    def test_cycle_with_stages(self) -> None:
+        """Cycle with stages shows ordered progression."""
+        cycle = BusinessCycleContext(
+            cycle_name="Accounts Receivable",
+            cycle_type="accounts_receivable",
+            tables_involved=["invoices", "payments"],
+            completion_rate=0.85,
+            description="Invoice to payment collection cycle.",
+            business_value="high",
+            confidence=0.94,
+            stages=[
+                CycleStageContext(
+                    stage_name="Invoice Created",
+                    stage_order=1,
+                    indicator_column="invoices.status",
+                    indicator_values=["new", "draft"],
+                    completion_rate=0.98,
+                ),
+                CycleStageContext(
+                    stage_name="Payment Received",
+                    stage_order=2,
+                    indicator_column="invoices.status",
+                    indicator_values=["paid"],
+                    completion_rate=0.85,
+                ),
+            ],
+            status_column="invoices.status",
+            completion_value="paid",
+        )
+        ctx = GraphExecutionContext(business_cycles=[cycle])
+        result = format_context_for_prompt(ctx)
+
+        assert "Accounts Receivable" in result
+        assert "accounts_receivable" in result
+        assert "high value" in result
+        assert "94% confident" in result
+        assert "Invoice to payment collection cycle." in result
+        assert "Stages:" in result
+        assert "1. Invoice Created" in result
+        assert "2. Payment Received" in result
+        assert "new, draft" in result
+        assert "98% progress" in result
+        assert 'invoices.status = "paid"' in result
+
+    def test_cycle_with_entity_flows(self) -> None:
+        """Cycle with entity flows shows FK paths."""
+        cycle = BusinessCycleContext(
+            cycle_name="Order to Cash",
+            cycle_type="order_to_cash",
+            tables_involved=["orders", "customers"],
+            entity_flows=[
+                EntityFlowContext(
+                    entity_type="customer",
+                    entity_column="customer_id",
+                    entity_table="customers",
+                    fact_table="orders",
+                    relationship_type="FK",
+                ),
+            ],
+        )
+        ctx = GraphExecutionContext(business_cycles=[cycle])
+        result = format_context_for_prompt(ctx)
+
+        assert "Entity Flows:" in result
+        assert "customer" in result
+        assert "customers.customer_id" in result
+        assert "orders" in result
+        assert "FK" in result
+

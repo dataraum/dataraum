@@ -131,7 +131,6 @@ class ContractsScreen(Screen[None]):
                 # Build column summaries via network
                 network_ctx = build_for_network(session, table_ids)
                 column_summaries = _network_to_column_summaries(network_ctx)
-                compound_risks: list[Any] = []
 
                 self._column_summaries = column_summaries
 
@@ -174,7 +173,7 @@ class ContractsScreen(Screen[None]):
                     self._interp_by_col[col_key] = interp
 
                 # Evaluate all contracts and store
-                self._evaluations = evaluate_all_contracts(column_summaries, compound_risks)
+                self._evaluations = evaluate_all_contracts(column_summaries)
 
                 # Store profiles
                 for name in self._evaluations:

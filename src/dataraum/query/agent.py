@@ -193,12 +193,8 @@ class QueryAgent(LLMFeature):
 
             behavior_config = get_default_config("balanced")
             max_entropy = entropy_context.overall_entropy_score or 0.0
-            has_critical = entropy_context.critical_entropy_count > 0
-            has_high = entropy_context.high_entropy_count > 0
             action = behavior_config.determine_action(
                 max_entropy=max_entropy,
-                has_critical_compound_risk=has_critical,
-                has_high_compound_risk=has_high,
             )
             entropy_action = action.value
 

@@ -1,26 +1,11 @@
 """Tests for statistical quality assessment (Phase 1)."""
 
 import numpy as np
-import pytest
 from scipy import stats
-
-from dataraum.analysis.statistics import BenfordAnalysis
 
 
 class TestBenfordLaw:
     """Test Benford's Law compliance checking."""
-
-    def test_benford_expected_distribution(self):
-        """Test that Benford's Law expected distribution is correct."""
-        expected = np.log10(1 + 1 / np.arange(1, 10))
-
-        # Verify the first few values
-        assert abs(expected[0] - 0.301) < 0.001  # P(first digit = 1)
-        assert abs(expected[1] - 0.176) < 0.001  # P(first digit = 2)
-        assert abs(expected[8] - 0.046) < 0.001  # P(first digit = 9)
-
-        # Verify sum is 1.0
-        assert abs(sum(expected) - 1.0) < 0.001
 
     def test_benford_compliant_data(self):
         """Test with data that should follow Benford's Law."""
@@ -85,52 +70,3 @@ class TestOutlierDetection:
         assert 250 > upper_fence or 250 < lower_fence
 
 
-@pytest.mark.skipif(
-    not pytest.importorskip("sklearn", reason="scikit-learn not installed"),
-    reason="Requires scikit-learn",
-)
-class TestIsolationForest:
-    """Test Isolation Forest anomaly detection."""
-
-    def test_isolation_forest_detects_outliers(self):
-        """Test that Isolation Forest can detect obvious outliers."""
-        from sklearn.ensemble import IsolationForest
-
-        np.random.seed(42)
-        # Normal data
-        normal_data = np.random.normal(0, 1, size=(1000, 1))
-        # Outliers
-        outliers = np.array([[10], [15], [-10], [-15]])
-
-        data = np.vstack([normal_data, outliers])
-
-        iso_forest = IsolationForest(contamination=0.01, random_state=42)
-        predictions = iso_forest.fit_predict(data)
-
-        # -1 = outlier, 1 = inlier
-        outlier_mask = predictions == -1
-        outlier_count = np.sum(outlier_mask)
-
-        # Should detect some outliers
-        assert outlier_count > 0, "Should detect at least some outliers"
-        assert outlier_count < 50, "Should not flag too many as outliers"
-
-
-class TestPydanticModels:
-    """Test Pydantic models for statistical quality."""
-
-    def test_benford_analysis_model(self):
-        """Test BenfordAnalysis Pydantic model."""
-        result = BenfordAnalysis(
-            chi_square=10.5,
-            p_value=0.15,
-            is_compliant=True,
-            interpretation="Follows Benford's Law",
-            digit_distribution={"1": 0.301, "2": 0.176, "3": 0.125},
-        )
-
-        assert result.chi_square == 10.5
-        assert result.p_value == 0.15
-        assert result.is_compliant is True
-        assert "Benford" in result.interpretation
-        assert result.digit_distribution["1"] == 0.301

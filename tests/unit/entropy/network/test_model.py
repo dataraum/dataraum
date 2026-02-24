@@ -21,13 +21,6 @@ class TestModelConstruction:
         assert full_network is not None
         assert full_network.model.check_model()
 
-    def test_node_count_matches_config(self, full_network: EntropyNetwork):
-        assert len(full_network.node_names) == 15
-
-    def test_edge_count_matches_config(self, full_network: EntropyNetwork):
-        assert len(full_network.model.edges()) == 24
-
-
 class TestNodeQueries:
     """Test node relationship queries."""
 

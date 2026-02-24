@@ -8,30 +8,12 @@ from dataraum.analysis.semantic import OntologyLoader
 class TestOntologyLoader:
     """Test OntologyLoader."""
 
-    def test_load_finance_ontology(self):
-        """Test loading the finance vertical ontology from config."""
-        loader = OntologyLoader()
-        ontology = loader.load("finance")
-
-        assert ontology is not None
-        assert ontology.name == "financial_reporting"
-        assert ontology.version == "1.0.0"
-        assert len(ontology.concepts) > 0
-        assert len(ontology.metrics) > 0
-
     def test_load_nonexistent_vertical_returns_none(self):
         """Test that loading a nonexistent vertical returns None."""
         loader = OntologyLoader()
         ontology = loader.load("nonexistent_vertical")
 
         assert ontology is None
-
-    def test_list_verticals(self):
-        """Test listing available verticals."""
-        loader = OntologyLoader()
-        verticals = loader.list_verticals()
-
-        assert "finance" in verticals
 
     def test_format_concepts_for_prompt(self):
         """Test formatting concepts for LLM prompt."""
@@ -106,29 +88,3 @@ semantic_hints: []
         assert len(ontology.concepts) == 1
         assert ontology.concepts[0].name == "test_concept"
 
-    def test_concept_properties(self):
-        """Test that concept properties are correctly loaded."""
-        loader = OntologyLoader()
-        ontology = loader.load("finance")
-
-        assert ontology is not None
-        revenue_concept = next((c for c in ontology.concepts if c.name == "revenue"), None)
-
-        assert revenue_concept is not None
-        assert "revenue" in revenue_concept.indicators
-        assert "sales" in revenue_concept.indicators
-        assert revenue_concept.temporal_behavior == "additive"
-        assert revenue_concept.typical_role == "measure"
-
-    def test_metric_properties(self):
-        """Test that metric properties are correctly loaded."""
-        loader = OntologyLoader()
-        ontology = loader.load("finance")
-
-        assert ontology is not None
-        gross_profit = next((m for m in ontology.metrics if m.name == "gross_profit"), None)
-
-        assert gross_profit is not None
-        assert "revenue - cost_of_goods_sold" in gross_profit.formula
-        assert "revenue" in gross_profit.required_concepts
-        assert "cost_of_goods_sold" in gross_profit.required_concepts

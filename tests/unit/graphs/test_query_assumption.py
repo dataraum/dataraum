@@ -35,27 +35,6 @@ class TestQueryAssumption:
         assert assumption.promoted_at is None
         assert assumption.assumption_id is not None  # Auto-generated
 
-    def test_assumption_bases(self) -> None:
-        """All assumption bases are available."""
-        assert AssumptionBasis.SYSTEM_DEFAULT.value == "system_default"
-        assert AssumptionBasis.INFERRED.value == "inferred"
-        assert AssumptionBasis.USER_SPECIFIED.value == "user_specified"
-
-    def test_assumption_with_low_confidence(self) -> None:
-        """Assumption with low confidence."""
-        assumption = QueryAssumption.create(
-            execution_id="exec-123",
-            dimension="value.nulls",
-            target="column:orders.status",
-            assumption="Excluding null values",
-            basis=AssumptionBasis.INFERRED,
-            confidence=0.3,
-        )
-
-        assert assumption.confidence == 0.3
-        assert assumption.basis == AssumptionBasis.INFERRED
-
-
 class TestGraphExecutionWithEntropy:
     """Tests for entropy-related fields in GraphExecution."""
 

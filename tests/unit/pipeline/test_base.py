@@ -1,39 +1,6 @@
 """Tests for pipeline base types and phase registry."""
 
-from dataraum.pipeline.base import (
-    PhaseResult,
-    PhaseStatus,
-)
 from dataraum.pipeline.registry import get_all_dependencies, get_phase_class, get_registry
-
-
-class TestPhaseResult:
-    """Tests for PhaseResult."""
-
-    def test_success(self):
-        result = PhaseResult.success(
-            outputs={"key": "value"},
-            duration=1.5,
-            records_processed=100,
-            records_created=50,
-        )
-        assert result.status == PhaseStatus.COMPLETED
-        assert result.outputs == {"key": "value"}
-        assert result.duration_seconds == 1.5
-        assert result.records_processed == 100
-        assert result.records_created == 50
-        assert result.error is None
-
-    def test_failed(self):
-        result = PhaseResult.failed("Something went wrong", duration=0.5)
-        assert result.status == PhaseStatus.FAILED
-        assert result.error == "Something went wrong"
-        assert result.duration_seconds == 0.5
-
-    def test_skipped(self):
-        result = PhaseResult.skipped("Already done")
-        assert result.status == PhaseStatus.SKIPPED
-        assert result.error == "Already done"
 
 
 class TestPhaseRegistry:

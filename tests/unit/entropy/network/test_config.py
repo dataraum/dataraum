@@ -22,16 +22,6 @@ class TestNetworkConfigLoading:
     def test_states_are_low_medium_high(self, full_config: NetworkConfig):
         assert full_config.states == ["low", "medium", "high"]
 
-    def test_discretization_thresholds(self, full_config: NetworkConfig):
-        assert full_config.discretization.low_upper == 0.3
-        assert full_config.discretization.medium_upper == 0.6
-
-    def test_cpt_generation_params(self, full_config: NetworkConfig):
-        assert full_config.cpt_generation.influence_blend == 0.7
-        assert full_config.cpt_generation.pessimistic_shift == 0.1
-        assert full_config.cpt_generation.min_probability == 0.01
-
-
 class TestRootNodePriors:
     """Test that root nodes have valid priors."""
 

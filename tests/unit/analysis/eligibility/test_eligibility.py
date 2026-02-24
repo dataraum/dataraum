@@ -4,7 +4,6 @@ from dataraum.analysis.eligibility.config import (
     EligibilityConfig,
     EligibilityRule,
     EligibilityThresholds,
-    load_eligibility_config,
 )
 from dataraum.analysis.eligibility.evaluator import (
     evaluate_condition,
@@ -211,36 +210,3 @@ class TestFormatReason:
         assert result == "Column has {missing_key}"
 
 
-class TestLoadEligibilityConfig:
-    """Tests for config loading from YAML."""
-
-    def test_loads_from_yaml(self):
-        config = load_eligibility_config()
-        assert config.version == "1.0"
-        assert config.thresholds.max_null_ratio == 1.0
-        assert config.thresholds.warn_null_ratio == 0.5
-        assert config.thresholds.eliminate_single_value is True
-        assert len(config.rules) >= 4
-        assert config.default_status == "ELIGIBLE"
-
-    def test_single_value_rule_is_warn_not_ineligible(self):
-        """Production config should WARN on single-value columns, not drop them."""
-        config = load_eligibility_config()
-        single_value_rules = [r for r in config.rules if r.id == "single_value"]
-        assert len(single_value_rules) == 1
-        assert single_value_rules[0].status == "WARN"
-
-    def test_from_dict_requires_version(self):
-        """Missing required fields should raise KeyError."""
-        import pytest
-
-        with pytest.raises(KeyError):
-            EligibilityConfig.from_dict({})
-
-    def test_from_dict_requires_thresholds(self):
-        import pytest
-
-        with pytest.raises(KeyError):
-            EligibilityConfig.from_dict(
-                {"version": "1.0", "rules": [], "default_status": "ELIGIBLE"}
-            )

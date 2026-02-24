@@ -1,6 +1,5 @@
 """Tests for entropy models."""
 
-import pytest
 
 from dataraum.entropy.models import (
     EntropyObject,

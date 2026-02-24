@@ -29,7 +29,7 @@ class TestEntropyPhase:
             "quality_summary",
             "temporal_slice_analysis",
         ]
-        assert phase.outputs == ["entropy_profiles", "compound_risks"]
+        assert phase.outputs == ["entropy_profiles"]
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

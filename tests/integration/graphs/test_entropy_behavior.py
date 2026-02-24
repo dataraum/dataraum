@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from dataraum.graphs.entropy_behavior import (
     BehaviorMode,
-    CompoundRiskAction,
-    CompoundRiskBehavior,
     DimensionBehavior,
     EntropyAction,
     EntropyBehaviorConfig,
@@ -80,26 +78,6 @@ class TestDetermineAction:
         action = config.determine_action(max_entropy=0.9)
         assert action == EntropyAction.REFUSE
 
-    def test_critical_compound_risk_refuses(self) -> None:
-        """Critical compound risk should refuse regardless of entropy."""
-        config = EntropyBehaviorConfig.balanced()
-
-        action = config.determine_action(
-            max_entropy=0.3,  # Low entropy
-            has_critical_compound_risk=True,
-        )
-        assert action == EntropyAction.REFUSE
-
-    def test_high_compound_risk_asks(self) -> None:
-        """High compound risk should ask/caveat."""
-        config = EntropyBehaviorConfig.balanced()
-
-        action = config.determine_action(
-            max_entropy=0.3,
-            has_high_compound_risk=True,
-        )
-        assert action == EntropyAction.ASK_OR_CAVEAT
-
     def test_strict_mode_asks_at_medium_entropy(self) -> None:
         """Strict mode should ask at medium entropy."""
         config = EntropyBehaviorConfig.strict()
@@ -172,25 +150,3 @@ class TestGetDefaultConfig:
         assert "structural.relations" in dimensions
 
 
-class TestCompoundRiskBehavior:
-    """Tests for CompoundRiskBehavior configuration."""
-
-    def test_defaults(self) -> None:
-        """Default compound risk behavior."""
-        behavior = CompoundRiskBehavior()
-
-        assert behavior.critical_action == CompoundRiskAction.REFUSE
-        assert behavior.critical_explain is True
-        assert behavior.high_action == CompoundRiskAction.WARN_STRONGLY
-        assert behavior.high_require_confirmation is True
-        assert behavior.medium_action == CompoundRiskAction.NOTE_IN_RESPONSE
-
-    def test_custom_behavior(self) -> None:
-        """Custom compound risk behavior."""
-        behavior = CompoundRiskBehavior(
-            critical_action=CompoundRiskAction.WARN_STRONGLY,
-            high_action=CompoundRiskAction.NOTE_IN_RESPONSE,
-        )
-
-        assert behavior.critical_action == CompoundRiskAction.WARN_STRONGLY
-        assert behavior.high_action == CompoundRiskAction.NOTE_IN_RESPONSE

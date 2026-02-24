@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.table import Table as RichTable
@@ -69,14 +69,14 @@ def _contracts_json(output_dir: Path, contract_name: str | None) -> None:
 
     from sqlalchemy import select
 
-    from dataraum.entropy.analysis.aggregator import ColumnSummary, EntropyAggregator
     from dataraum.entropy.contracts import (
         evaluate_all_contracts,
         evaluate_contract,
         get_contract,
         list_contracts,
     )
-    from dataraum.entropy.core.storage import EntropyRepository
+    from dataraum.entropy.views.network_context import build_for_network
+    from dataraum.entropy.views.query_context import _network_to_column_summaries
     from dataraum.storage import Source, Table
 
     manager = get_manager(output_dir)
@@ -103,26 +103,9 @@ def _contracts_json(output_dir: Path, contract_name: str | None) -> None:
 
             table_ids = [t.table_id for t in tables]
 
-            # Build column summaries
-            repo = EntropyRepository(session)
-            aggregator = EntropyAggregator()
-
-            typed_table_ids = repo.get_typed_table_ids(table_ids)
-            column_summaries: dict[str, ColumnSummary] = {}
-            compound_risks: list[Any] = []
-
-            if typed_table_ids:
-                table_map, column_map = repo.get_table_column_mapping(typed_table_ids)
-                entropy_objects = repo.load_for_tables(typed_table_ids, enforce_typed=True)
-
-                if entropy_objects:
-                    column_summaries, _ = aggregator.summarize_columns_by_table(
-                        entropy_objects=entropy_objects,
-                        table_map=table_map,
-                        column_map=column_map,
-                    )
-                    for summary in column_summaries.values():
-                        compound_risks.extend(summary.compound_risks)
+            # Build column summaries via network
+            network_ctx = build_for_network(session, table_ids)
+            column_summaries = _network_to_column_summaries(network_ctx)
 
             if contract_name:
                 profile = get_contract(contract_name)
@@ -137,7 +120,7 @@ def _contracts_json(output_dir: Path, contract_name: str | None) -> None:
                     )
                     return
 
-                evaluation = evaluate_contract(column_summaries, contract_name, compound_risks)
+                evaluation = evaluate_contract(column_summaries, contract_name)
                 console.print(
                     json.dumps(
                         {
@@ -159,7 +142,7 @@ def _contracts_json(output_dir: Path, contract_name: str | None) -> None:
                     )
                 )
             else:
-                evaluations = evaluate_all_contracts(column_summaries, compound_risks)
+                evaluations = evaluate_all_contracts(column_summaries)
                 console.print(
                     json.dumps(
                         {
@@ -185,7 +168,6 @@ def _contracts_rich(output_dir: Path, contract_name: str | None) -> None:
     """Print contracts with Rich tables."""
     from sqlalchemy import select
 
-    from dataraum.entropy.analysis.aggregator import ColumnSummary, EntropyAggregator
     from dataraum.entropy.contracts import (
         ConfidenceLevel,
         evaluate_all_contracts,
@@ -193,7 +175,8 @@ def _contracts_rich(output_dir: Path, contract_name: str | None) -> None:
         get_contract,
         list_contracts,
     )
-    from dataraum.entropy.core.storage import EntropyRepository
+    from dataraum.entropy.views.network_context import build_for_network
+    from dataraum.entropy.views.query_context import _network_to_column_summaries
     from dataraum.storage import Source, Table
 
     manager = get_manager(output_dir)
@@ -208,10 +191,8 @@ def _contracts_rich(output_dir: Path, contract_name: str | None) -> None:
                 console.print("[yellow]No sources found in database[/yellow]")
                 return
 
-            # Get first source (or could iterate)
             source = sources[0]
 
-            # Get tables for this source
             tables_result = session.execute(
                 select(Table).where(Table.source_id == source.source_id)
             )
@@ -225,26 +206,9 @@ def _contracts_rich(output_dir: Path, contract_name: str | None) -> None:
 
             console.print(f"\n[bold]Contract Evaluation[/bold] - {source.name}\n")
 
-            # Build column summaries for contract evaluation
-            repo = EntropyRepository(session)
-            aggregator = EntropyAggregator()
-
-            typed_table_ids = repo.get_typed_table_ids(table_ids)
-            column_summaries: dict[str, ColumnSummary] = {}
-            compound_risks: list[Any] = []
-
-            if typed_table_ids:
-                table_map, column_map = repo.get_table_column_mapping(typed_table_ids)
-                entropy_objects = repo.load_for_tables(typed_table_ids, enforce_typed=True)
-
-                if entropy_objects:
-                    column_summaries, _ = aggregator.summarize_columns_by_table(
-                        entropy_objects=entropy_objects,
-                        table_map=table_map,
-                        column_map=column_map,
-                    )
-                    for summary in column_summaries.values():
-                        compound_risks.extend(summary.compound_risks)
+            # Build column summaries via network
+            network_ctx = build_for_network(session, table_ids)
+            column_summaries = _network_to_column_summaries(network_ctx)
 
             if contract_name:
                 # Evaluate specific contract
@@ -256,12 +220,12 @@ def _contracts_rich(output_dir: Path, contract_name: str | None) -> None:
                         console.print(f"  - {c['name']}: {c['description']}")
                     raise typer.Exit(1)
 
-                evaluation = evaluate_contract(column_summaries, contract_name, compound_risks)
+                evaluation = evaluate_contract(column_summaries, contract_name)
                 _print_contract_detail(evaluation, profile)
 
             else:
                 # Evaluate all contracts
-                evaluations = evaluate_all_contracts(column_summaries, compound_risks)
+                evaluations = evaluate_all_contracts(column_summaries)
 
                 def _get_threshold(name: str) -> float:
                     """Get threshold for sorting, defaulting to 1.0 if not found."""

@@ -164,9 +164,6 @@ def build_for_query(
     # Convert network results to ColumnSummary for contract evaluation
     column_summaries = _network_to_column_summaries(network_ctx)
 
-    # Collect compound risks (empty - network doesn't produce compound risks)
-    all_compound_risks: list[Any] = []
-
     # Evaluate contracts
     contract_name: str | None = None
     contract_evaluation: ContractEvaluation | None = None
@@ -174,7 +171,7 @@ def build_for_query(
 
     if auto_contract:
         # Find strictest passing contract
-        best_name, best_eval = find_best_contract(column_summaries, all_compound_risks)
+        best_name, best_eval = find_best_contract(column_summaries)
         if best_name and best_eval:
             contract_name = best_name
             contract_evaluation = best_eval
@@ -188,7 +185,7 @@ def build_for_query(
         if get_contract(contract) is None:
             logger.warning(f"Contract not found: {contract}")
         else:
-            contract_evaluation = evaluate_contract(column_summaries, contract, all_compound_risks)
+            contract_evaluation = evaluate_contract(column_summaries, contract)
             contract_name = contract
             confidence_level = contract_evaluation.confidence_level
     else:
@@ -196,7 +193,7 @@ def build_for_query(
         contract_name = "exploratory_analysis"
         try:
             contract_evaluation = evaluate_contract(
-                column_summaries, "exploratory_analysis", all_compound_risks
+                column_summaries, "exploratory_analysis"
             )
             confidence_level = contract_evaluation.confidence_level
         except ValueError:
@@ -248,12 +245,9 @@ def _network_to_column_summaries(
                 dimension_scores[ne.dimension_path] = ne.score
 
         summary = ColumnSummary(
-            column_id="",
             column_name=column_name,
-            table_id="",
             table_name=table_name,
             readiness=col_result.readiness,
-            composite_score=col_result.worst_intent_p_high,
             dimension_scores=dimension_scores,
         )
         summaries[col_key] = summary

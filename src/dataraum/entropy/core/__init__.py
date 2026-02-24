@@ -8,10 +8,7 @@ Layer 1 of the entropy framework - provides:
 
 from dataraum.entropy.core.storage import EntropyRepository
 from dataraum.entropy.models import (
-    CompoundRisk,
-    CompoundRiskDefinition,
     EntropyObject,
-    ResolutionCascade,
     ResolutionOption,
 )
 
@@ -19,9 +16,6 @@ __all__ = [
     # Core types (re-exported from models)
     "EntropyObject",
     "ResolutionOption",
-    "CompoundRisk",
-    "CompoundRiskDefinition",
-    "ResolutionCascade",
     # Repository
     "EntropyRepository",
 ]

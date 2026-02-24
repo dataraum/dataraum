@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from dataraum.entropy.actions import merge_actions
@@ -14,30 +14,8 @@ from dataraum.entropy.views.network_context import (
 )
 
 # ---------------------------------------------------------------------------
-# Stubs for detector / LLM inputs (same pattern as test_actions_screen.py)
+# Stubs for LLM inputs
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class FakeResolutionOption:
-    action: str = "declare_unit"
-    parameters: dict[str, Any] = field(default_factory=dict)
-    expected_entropy_reduction: float = 0.3
-    effort: str = "low"
-    description: str = "Add unit declaration"
-    cascade_dimensions: list[str] = field(default_factory=list)
-
-
-@dataclass
-class FakeColumnSummary:
-    column_id: str = "col1"
-    column_name: str = "amount"
-    table_id: str = "t1"
-    table_name: str = "orders"
-    composite_score: float = 0.25
-    readiness: str = "investigate"
-    top_resolution_hints: list[Any] = field(default_factory=list)
-    compound_risks: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -112,33 +90,14 @@ class TestMergeActionsBackwardCompat:
 
     def test_empty_inputs(self):
         result = merge_actions(
-            column_summaries={},
             interp_by_col={},
             entropy_objects_by_col={},
             violation_dims={},
         )
         assert result == []
 
-    def test_detector_hints_still_work(self):
-        hint = FakeResolutionOption(action="declare_unit", expected_entropy_reduction=0.3)
-        summary = FakeColumnSummary(top_resolution_hints=[hint])
-
-        result = merge_actions(
-            column_summaries={"orders.amount": summary},
-            interp_by_col={},
-            entropy_objects_by_col={},
-            violation_dims={},
-        )
-
-        assert len(result) == 1
-        assert result[0]["action"] == "declare_unit"
-        assert result[0]["from_detector"] is True
-        assert result[0]["from_network"] is False
-        assert result[0]["network_impact"] == 0.0
-
     def test_none_network_context_is_default(self):
         result = merge_actions(
-            column_summaries={},
             interp_by_col={},
             entropy_objects_by_col={},
             violation_dims={},
@@ -153,12 +112,18 @@ class TestMergeActionsBackwardCompat:
 
 
 class TestNetworkEnrichesExistingActions:
-    """Network adds causal impact to actions from detectors/LLM."""
+    """Network adds causal impact to actions from LLM."""
 
-    def test_network_adds_impact_to_detector_action(self):
-        # Detector produces declare_unit action
-        hint = FakeResolutionOption(action="declare_unit", expected_entropy_reduction=0.3)
-        summary = FakeColumnSummary(top_resolution_hints=[hint])
+    def test_network_adds_impact_to_llm_action(self):
+        # LLM produces declare_unit action
+        interp = FakeInterp(
+            resolution_actions_json=[{
+                "action": "declare_unit",
+                "description": "Add unit declaration",
+                "effort": "low",
+                "expected_impact": "Reduces semantic.units entropy",
+            }],
+        )
 
         # Network also sees unit_declaration node with resolution_option "declare_unit"
         ne = _make_node_evidence(
@@ -181,8 +146,7 @@ class TestNetworkEnrichesExistingActions:
         )
 
         result = merge_actions(
-            column_summaries={"orders.amount": summary},
-            interp_by_col={},
+            interp_by_col={"orders.amount": interp},
             entropy_objects_by_col={},
             violation_dims={},
             network_context=network_ctx,
@@ -191,7 +155,7 @@ class TestNetworkEnrichesExistingActions:
         assert len(result) == 1
         action = result[0]
         assert action["action"] == "declare_unit"
-        assert action["from_detector"] is True
+        assert action["from_llm"] is True
         assert action["from_network"] is True
         assert action["network_impact"] == 0.25
         assert action["network_columns"] == 1
@@ -223,12 +187,7 @@ class TestNetworkEnrichesExistingActions:
             ),
         })
 
-        # Detector also has this action
-        hint = FakeResolutionOption(action="declare_unit", expected_entropy_reduction=0.3)
-        summary = FakeColumnSummary(top_resolution_hints=[hint])
-
         result = merge_actions(
-            column_summaries={"orders.amount": summary},
             interp_by_col={},
             entropy_objects_by_col={},
             violation_dims={},
@@ -254,7 +213,6 @@ class TestNetworkEnrichesExistingActions:
         })
 
         result = merge_actions(
-            column_summaries={},
             interp_by_col={},
             entropy_objects_by_col={},
             violation_dims={},
@@ -271,7 +229,7 @@ class TestNetworkEnrichesExistingActions:
 
 
 class TestNetworkCreatesNewActions:
-    """Network resolution_options not in detector/LLM sources create new actions."""
+    """Network resolution_options not in LLM sources create new actions."""
 
     def test_network_only_action(self):
         ne = _make_node_evidence(
@@ -292,7 +250,6 @@ class TestNetworkCreatesNewActions:
         })
 
         result = merge_actions(
-            column_summaries={},
             interp_by_col={},
             entropy_objects_by_col={},
             violation_dims={},
@@ -326,7 +283,6 @@ class TestNetworkCreatesNewActions:
         })
 
         result = merge_actions(
-            column_summaries={},
             interp_by_col={},
             entropy_objects_by_col={},
             violation_dims={},
@@ -345,21 +301,24 @@ class TestNetworkImpactPriorityScoring:
     """Network impact should boost priority_score."""
 
     def test_network_impact_increases_score(self):
-        """Action with network impact should score higher than without."""
-        hint = FakeResolutionOption(
-            action="declare_unit", expected_entropy_reduction=0.3, effort="low",
+        """Action with network impact should score higher than LLM-only action."""
+        interp = FakeInterp(
+            resolution_actions_json=[{
+                "action": "declare_unit",
+                "description": "Add unit declaration",
+                "effort": "low",
+                "expected_impact": "Reduces semantic.units entropy",
+            }],
         )
-        summary = FakeColumnSummary(top_resolution_hints=[hint])
 
-        # Without network
+        # LLM-only (no network)
         result_no_net = merge_actions(
-            column_summaries={"orders.amount": summary},
-            interp_by_col={},
+            interp_by_col={"orders.amount": interp},
             entropy_objects_by_col={},
             violation_dims={},
         )
 
-        # With network
+        # Same LLM action plus network impact
         ne = _make_node_evidence(
             node_name="unit_declaration",
             state="high",
@@ -373,8 +332,7 @@ class TestNetworkImpactPriorityScoring:
         })
 
         result_with_net = merge_actions(
-            column_summaries={"orders.amount": summary},
-            interp_by_col={},
+            interp_by_col={"orders.amount": interp},
             entropy_objects_by_col={},
             violation_dims={},
             network_context=network_ctx,
@@ -407,7 +365,6 @@ class TestNetworkImpactPriorityScoring:
         })
 
         result = merge_actions(
-            column_summaries={},
             interp_by_col={},
             entropy_objects_by_col={},
             violation_dims={},
@@ -422,9 +379,14 @@ class TestNetworkImpactPriorityScoring:
 
     def test_network_reranks_actions(self):
         """Action with high network impact should rank above one without."""
-        # Action A: from detector, no network impact
-        hint_a = FakeResolutionOption(
-            action="action_a", expected_entropy_reduction=0.2, effort="low",
+        # Action A: from LLM interpretation, no network impact
+        interp = FakeInterp(
+            resolution_actions_json=[{
+                "action": "action_a",
+                "description": "LLM suggested fix",
+                "effort": "low",
+                "expected_impact": "Some improvement",
+            }],
         )
         # Action B: from network only, high impact
         ne = _make_node_evidence(
@@ -445,16 +407,15 @@ class TestNetworkImpactPriorityScoring:
         })
 
         result = merge_actions(
-            column_summaries={"orders.amount": FakeColumnSummary(top_resolution_hints=[hint_a])},
-            interp_by_col={},
+            interp_by_col={"orders.amount": interp},
             entropy_objects_by_col={},
             violation_dims={},
             network_context=network_ctx,
         )
 
         # Both are medium priority, so ordering is by priority_score
-        # action_a: (0.2 + 1*0.1 + 0.0) / 1.0 = 0.30
-        # action_b: (0.0 + 0*0.1 + 0.80) / 1.0 = 0.90 (from network only)
+        # action_a: (0.0 + 1*0.1 + 0.0) / 1.0 = 0.10 (LLM only, no reduction)
+        # action_b: (0.0 + 0*0.1 + 0.80) / 1.0 = 0.80 (from network only)
         assert len(result) == 2
         assert result[0]["action"] == "action_b"
         assert result[1]["action"] == "action_a"
@@ -530,7 +491,6 @@ class TestScoreDerivedPriority:
         })
 
         result = merge_actions(
-            column_summaries={},
             interp_by_col={},
             entropy_objects_by_col={},
             violation_dims={},
@@ -561,7 +521,6 @@ class TestScoreDerivedPriority:
         })
 
         result = merge_actions(
-            column_summaries={},
             interp_by_col={},
             entropy_objects_by_col={},
             violation_dims={},
@@ -592,7 +551,6 @@ class TestScoreDerivedPriority:
         })
 
         result = merge_actions(
-            column_summaries={},
             interp_by_col={},
             entropy_objects_by_col={},
             violation_dims={},
@@ -617,7 +575,6 @@ class TestScoreDerivedPriority:
         )
 
         result = merge_actions(
-            column_summaries={},
             interp_by_col={"orders.amount": interp},
             entropy_objects_by_col={},
             violation_dims={},

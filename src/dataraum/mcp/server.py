@@ -416,7 +416,10 @@ def _get_context(output_dir: Path) -> str:
             source = sources[0]
 
             tables_result = session.execute(
-                select(Table).where(Table.source_id == source.source_id)
+                select(Table).where(
+                    Table.source_id == source.source_id,
+                    Table.layer == "typed",
+                )
             )
             tables = tables_result.scalars().all()
 
@@ -476,9 +479,10 @@ def _get_entropy(output_dir: Path, table_name: str | None = None) -> str:
             if not snapshot:
                 return "Error: No entropy data. Run entropy phase first."
 
-            # Get interpretations
+            # Get interpretations (column-level only; table-level have column_id=NULL)
             interp_query = select(EntropyInterpretationRecord).where(
-                EntropyInterpretationRecord.source_id == source.source_id
+                EntropyInterpretationRecord.source_id == source.source_id,
+                EntropyInterpretationRecord.column_id.isnot(None),
             )
 
             if table_name:
@@ -504,7 +508,10 @@ def _get_entropy(output_dir: Path, table_name: str | None = None) -> str:
                 from dataraum.storage import Table
 
                 tables_result = session.execute(
-                    select(Table).where(Table.source_id == source.source_id)
+                    select(Table).where(
+                        Table.source_id == source.source_id,
+                        Table.layer == "typed",
+                    )
                 )
                 tables = tables_result.scalars().all()
                 table_ids = [t.table_id for t in tables]
@@ -567,7 +574,10 @@ def _evaluate_contract(output_dir: Path, contract_name: str) -> str:
             source = sources[0]
 
             tables_result = session.execute(
-                select(Table).where(Table.source_id == source.source_id)
+                select(Table).where(
+                    Table.source_id == source.source_id,
+                    Table.layer == "typed",
+                )
             )
             tables = tables_result.scalars().all()
 
@@ -668,7 +678,10 @@ def _get_actions(
 
             # Get tables
             tables_result = session.execute(
-                select(Table).where(Table.source_id == source.source_id)
+                select(Table).where(
+                    Table.source_id == source.source_id,
+                    Table.layer == "typed",
+                )
             )
             tables = tables_result.scalars().all()
 

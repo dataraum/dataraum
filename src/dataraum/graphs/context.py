@@ -302,7 +302,7 @@ def build_execution_context(
     rel_stmt = select(Relationship).where(
         (Relationship.from_table_id.in_(table_ids))
         & (Relationship.to_table_id.in_(table_ids))
-        & ((Relationship.detection_method == "llm") | (Relationship.confidence > 0.7))
+        & (Relationship.detection_method == "llm")
     )
     relationships_db = session.execute(rel_stmt).scalars().all()
 

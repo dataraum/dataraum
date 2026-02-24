@@ -79,7 +79,10 @@ class Context:
             source = sources[0]
 
             tables_result = session.execute(
-                select(Table).where(Table.source_id == source.source_id)
+                select(Table).where(
+                    Table.source_id == source.source_id,
+                    Table.layer == "typed",
+                )
             )
             tables = tables_result.scalars().all()
 
@@ -130,7 +133,10 @@ class Context:
             source = sources[0]
 
             tables_result = session.execute(
-                select(Table).where(Table.source_id == source.source_id)
+                select(Table).where(
+                    Table.source_id == source.source_id,
+                    Table.layer == "typed",
+                )
             )
             tables = tables_result.scalars().all()
 
@@ -249,7 +255,10 @@ class Context:
             source = sources[0]
 
             tables_result = session.execute(
-                select(Table).where(Table.source_id == source.source_id)
+                select(Table).where(
+                    Table.source_id == source.source_id,
+                    Table.layer == "typed",
+                )
             )
             tables = tables_result.scalars().all()
 
@@ -311,9 +320,10 @@ class EntropyAccessor:
             if not snapshot:
                 return {"error": "No entropy data"}
 
-            # Get interpretations
+            # Get interpretations (column-level only; table-level have column_id=NULL)
             interp_query = select(EntropyInterpretationRecord).where(
-                EntropyInterpretationRecord.source_id == source.source_id
+                EntropyInterpretationRecord.source_id == source.source_id,
+                EntropyInterpretationRecord.column_id.isnot(None),
             )
 
             if table_name:
@@ -332,7 +342,10 @@ class EntropyAccessor:
             dimension_scores: dict[str, float] = {}
             try:
                 tables_result = session.execute(
-                    select(Table).where(Table.source_id == source.source_id)
+                    select(Table).where(
+                        Table.source_id == source.source_id,
+                        Table.layer == "typed",
+                    )
                 )
                 tables = tables_result.scalars().all()
                 table_ids = [t.table_id for t in tables]
@@ -460,7 +473,10 @@ class ContractsAccessor:
             source = sources[0]
 
             tables_result = session.execute(
-                select(Table).where(Table.source_id == source.source_id)
+                select(Table).where(
+                    Table.source_id == source.source_id,
+                    Table.layer == "typed",
+                )
             )
             tables = tables_result.scalars().all()
 

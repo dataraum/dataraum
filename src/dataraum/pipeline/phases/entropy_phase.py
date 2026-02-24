@@ -549,9 +549,14 @@ def _run_dimensional_entropy(
     logger.info("dimensional_entropy_start", tables=len(typed_tables))
 
     for table in typed_tables:
-        # Load column slice profiles directly by table name
+        # Get column IDs for this typed table (FK-based scoping)
+        table_cols_stmt = select(Column).where(Column.table_id == table.table_id)
+        table_columns = list(ctx.session.execute(table_cols_stmt).scalars().all())
+        table_column_ids = [c.column_id for c in table_columns]
+
+        # Load column slice profiles by FK to typed table's columns
         profiles_stmt = select(ColumnSliceProfile).where(
-            ColumnSliceProfile.source_table_name == table.table_name
+            ColumnSliceProfile.source_column_id.in_(table_column_ids)
         )
         profiles = list(ctx.session.execute(profiles_stmt).scalars().all())
 
@@ -714,7 +719,7 @@ def _run_dimensional_entropy(
 
         # Load ColumnQualityReports for this table (LLM-generated quality assessments)
         quality_reports_stmt = select(ColumnQualityReport).where(
-            ColumnQualityReport.source_table_name == table.table_name
+            ColumnQualityReport.source_column_id.in_(table_column_ids)
         )
         quality_reports = list(ctx.session.execute(quality_reports_stmt).scalars().all())
 
@@ -726,10 +731,8 @@ def _run_dimensional_entropy(
                 reports_by_column[col_name] = []
             reports_by_column[col_name].append(report)
 
-        # Build column_id lookup for this table
-        cols_stmt = select(Column).where(Column.table_id == table.table_id)
-        cols_result = ctx.session.execute(cols_stmt)
-        column_id_lookup = {c.column_name: c.column_id for c in cols_result.scalars().all()}
+        # Build column_id lookup for this table (reuse table_columns from above)
+        column_id_lookup = {c.column_name: c.column_id for c in table_columns}
 
         # Create EntropyObjects for each column's quality assessment
         from dataraum.entropy.models import ResolutionOption
@@ -753,8 +756,10 @@ def _run_dimensional_entropy(
                 all_quality_issues.extend(data.get("quality_issues", []))
                 all_recommendations.extend(data.get("recommendations", []))
 
-            # Get column_id for this column
+            # Get column_id for this column — skip if not in this typed table
             col_id = column_id_lookup.get(col_name)
+            if col_id is None:
+                continue
 
             # Create EntropyObject for this column's quality assessment
             column_entropy_obj = EntropyObject(

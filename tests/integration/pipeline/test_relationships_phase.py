@@ -42,11 +42,10 @@ class TestRelationshipsPhase:
         assert "No typed tables" in skip_reason
 
     def test_skip_when_single_table(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection):
-        """Test skip when only one typed table exists."""
+        """Test skip and empty success when only one typed table exists."""
         phase = RelationshipsPhase()
         source_id = str(uuid4())
 
-        # Create a source with a single typed table
         source = Source(
             source_id=source_id,
             name="test_source",
@@ -76,6 +75,12 @@ class TestRelationshipsPhase:
         assert skip_reason is not None
         assert "at least 2 tables" in skip_reason
 
+        # Running the phase also succeeds with empty results
+        result = phase.run(ctx)
+        assert result.status == PhaseStatus.COMPLETED
+        assert result.outputs["relationship_candidates"] == []
+        assert "at least 2" in result.outputs.get("message", "")
+
     def test_fails_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
@@ -94,46 +99,6 @@ class TestRelationshipsPhase:
 
         assert result.status == PhaseStatus.FAILED
         assert "No typed tables" in (result.error or "")
-
-    def test_returns_success_with_single_table(
-        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
-    ):
-        """Test returns success with message when only one table exists."""
-        phase = RelationshipsPhase()
-        source_id = str(uuid4())
-
-        # Create a source with a single typed table
-        source = Source(
-            source_id=source_id,
-            name="test_source",
-            source_type="csv",
-        )
-        session.add(source)
-
-        table = Table(
-            table_id=str(uuid4()),
-            source_id=source_id,
-            table_name="test_table",
-            layer="typed",
-            duckdb_path="typed_test_table",
-            row_count=10,
-        )
-        session.add(table)
-        session.commit()
-
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=duckdb_conn,
-            source_id=source_id,
-            config={},
-        )
-
-        result = phase.run(ctx)
-
-        # Should succeed with message about needing 2 tables
-        assert result.status == PhaseStatus.COMPLETED
-        assert result.outputs["relationship_candidates"] == []
-        assert "at least 2" in result.outputs.get("message", "")
 
     def test_does_not_skip_with_multiple_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

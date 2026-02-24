@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+import pytest
 from sqlalchemy.orm import Session
 
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
@@ -48,7 +49,6 @@ class TestTemporalPhase:
         phase = TemporalPhase()
         source_id = str(uuid4())
 
-        # Create a source with a typed table containing only non-temporal columns
         source = Source(
             source_id=source_id,
             name="test_source",
@@ -66,7 +66,6 @@ class TestTemporalPhase:
         )
         session.add(table)
 
-        # Add only non-temporal columns
         col = Column(
             column_id=str(uuid4()),
             table_id=table.table_id,
@@ -89,6 +88,12 @@ class TestTemporalPhase:
         assert skip_reason is not None
         assert "No temporal columns" in skip_reason
 
+        # Running the phase also succeeds with empty results
+        result = phase.run(ctx)
+        assert result.status == PhaseStatus.COMPLETED
+        assert result.outputs["temporal_profiles"] == []
+        assert "No temporal columns" in result.outputs.get("message", "")
+
     def test_fails_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
@@ -107,57 +112,6 @@ class TestTemporalPhase:
 
         assert result.status == PhaseStatus.FAILED
         assert "No typed tables" in (result.error or "")
-
-    def test_returns_empty_when_no_temporal_columns(
-        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
-    ):
-        """Test returns empty results when no temporal columns exist."""
-        phase = TemporalPhase()
-        source_id = str(uuid4())
-
-        # Create a typed table with non-temporal columns only
-        source = Source(
-            source_id=source_id,
-            name="test_source",
-            source_type="csv",
-        )
-        session.add(source)
-
-        table = Table(
-            table_id=str(uuid4()),
-            source_id=source_id,
-            table_name="test_table",
-            layer="typed",
-            duckdb_path="typed_test_table",
-            row_count=10,
-        )
-        session.add(table)
-
-        # Add only non-temporal column
-        col = Column(
-            column_id=str(uuid4()),
-            table_id=table.table_id,
-            column_name="category",
-            column_position=0,
-            raw_type="VARCHAR",
-            resolved_type="VARCHAR",
-        )
-        session.add(col)
-        session.commit()
-
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=duckdb_conn,
-            source_id=source_id,
-            config={},
-        )
-
-        result = phase.run(ctx)
-
-        # Should succeed with message about no temporal columns
-        assert result.status == PhaseStatus.COMPLETED
-        assert result.outputs["temporal_profiles"] == []
-        assert "No temporal columns" in result.outputs.get("message", "")
 
     def test_does_not_skip_with_temporal_columns(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
@@ -207,14 +161,14 @@ class TestTemporalPhase:
         # Should not skip - has temporal columns that need profiling
         assert skip_reason is None
 
+    @pytest.mark.parametrize("col_type", ["TIMESTAMP", "TIMESTAMPTZ"])
     def test_recognizes_timestamp_columns(
-        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, col_type: str
     ):
-        """Test that TIMESTAMP columns are recognized as temporal."""
+        """Test that TIMESTAMP and TIMESTAMPTZ columns are recognized as temporal."""
         phase = TemporalPhase()
         source_id = str(uuid4())
 
-        # Create a source with a typed table containing TIMESTAMP columns
         source = Source(
             source_id=source_id,
             name="test_source",
@@ -232,14 +186,13 @@ class TestTemporalPhase:
         )
         session.add(table)
 
-        # Add a TIMESTAMP column
         col = Column(
             column_id=str(uuid4()),
             table_id=table.table_id,
             column_name="event_time",
             column_position=0,
-            raw_type="TIMESTAMP",
-            resolved_type="TIMESTAMP",
+            raw_type=col_type,
+            resolved_type=col_type,
         )
         session.add(col)
         session.commit()
@@ -252,53 +205,4 @@ class TestTemporalPhase:
         )
 
         skip_reason = phase.should_skip(ctx)
-        # Should not skip - TIMESTAMP is a temporal type
-        assert skip_reason is None
-
-    def test_recognizes_timestamptz_columns(
-        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
-    ):
-        """Test that TIMESTAMPTZ columns are recognized as temporal."""
-        phase = TemporalPhase()
-        source_id = str(uuid4())
-
-        # Create a source with a typed table containing TIMESTAMPTZ columns
-        source = Source(
-            source_id=source_id,
-            name="test_source",
-            source_type="csv",
-        )
-        session.add(source)
-
-        table = Table(
-            table_id=str(uuid4()),
-            source_id=source_id,
-            table_name="test_table",
-            layer="typed",
-            duckdb_path="typed_test_table",
-            row_count=10,
-        )
-        session.add(table)
-
-        # Add a TIMESTAMPTZ column
-        col = Column(
-            column_id=str(uuid4()),
-            table_id=table.table_id,
-            column_name="created_at_utc",
-            column_position=0,
-            raw_type="TIMESTAMPTZ",
-            resolved_type="TIMESTAMPTZ",
-        )
-        session.add(col)
-        session.commit()
-
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=duckdb_conn,
-            source_id=source_id,
-            config={},
-        )
-
-        skip_reason = phase.should_skip(ctx)
-        # Should not skip - TIMESTAMPTZ is a temporal type
         assert skip_reason is None

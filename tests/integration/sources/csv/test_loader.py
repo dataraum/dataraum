@@ -6,48 +6,10 @@ Uses small_finance fixture data from tests/integration/fixtures/.
 
 from pathlib import Path
 
-import duckdb
-import pytest
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import sessionmaker
-
 from dataraum.core.models import SourceConfig
 from dataraum.sources.csv import CSVLoader
-from dataraum.storage import init_database
 
 FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures" / "small_finance"
-
-
-@pytest.fixture
-def test_session():
-    """Create an in-memory SQLite session for testing."""
-    engine = create_engine(
-        "sqlite:///:memory:",
-        echo=False,
-    )
-
-    @event.listens_for(engine, "connect")
-    def set_sqlite_pragma(dbapi_conn, connection_record):
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
-
-    init_database(engine)
-
-    factory = sessionmaker(bind=engine, expire_on_commit=False)
-
-    with factory() as session:
-        yield session
-
-    engine.dispose()
-
-
-@pytest.fixture
-def test_duckdb():
-    """Create an in-memory DuckDB connection for testing."""
-    conn = duckdb.connect(":memory:")
-    yield conn
-    conn.close()
 
 
 class TestCSVLoader:
@@ -58,7 +20,7 @@ class TestCSVLoader:
         loader = CSVLoader()
         assert loader.type_system_strength.value == "untyped"
 
-    def test_get_schema(self, test_duckdb):
+    def test_get_schema(self, duckdb_conn):
         """Test getting schema from a CSV file."""
         loader = CSVLoader()
         config = SourceConfig(
@@ -103,7 +65,7 @@ class TestCSVLoader:
         assert not result.success
         assert "path" in result.error.lower()
 
-    def test_load_single_file(self, test_duckdb, test_session):
+    def test_load_single_file(self, duckdb_conn, session):
         """Test loading a single CSV file."""
         loader = CSVLoader()
         config = SourceConfig(
@@ -112,7 +74,7 @@ class TestCSVLoader:
             path=str(FIXTURES_DIR / "payment_methods.csv"),
         )
 
-        result = loader.load(config, test_duckdb, test_session)
+        result = loader.load(config, duckdb_conn, session)
 
         assert result.success, f"Load failed: {result.error}"
 
@@ -127,14 +89,14 @@ class TestCSVLoader:
         assert table.column_count == 3
 
         # Verify table exists in DuckDB
-        tables = test_duckdb.execute("""
+        tables = duckdb_conn.execute("""
             SELECT table_name FROM information_schema.tables
             WHERE table_schema = 'main'
         """).fetchall()
         table_names = [t[0] for t in tables]
         assert "raw_payment_methods" in table_names
 
-    def test_load_all_columns_varchar(self, test_duckdb, test_session):
+    def test_load_all_columns_varchar(self, duckdb_conn, session):
         """Verify all loaded columns are VARCHAR (VARCHAR-first approach)."""
         loader = CSVLoader()
         config = SourceConfig(
@@ -143,10 +105,10 @@ class TestCSVLoader:
             path=str(FIXTURES_DIR / "customers.csv"),
         )
 
-        result = loader.load(config, test_duckdb, test_session)
+        result = loader.load(config, duckdb_conn, session)
         assert result.success
 
-        schema = test_duckdb.execute("""
+        schema = duckdb_conn.execute("""
             SELECT column_name, data_type
             FROM information_schema.columns
             WHERE table_name = 'raw_customers'
@@ -156,7 +118,7 @@ class TestCSVLoader:
         for col_name, data_type in schema:
             assert data_type == "VARCHAR", f"Column {col_name} is {data_type}, expected VARCHAR"
 
-    def test_load_null_values_recognized(self, test_duckdb, test_session):
+    def test_load_null_values_recognized(self, duckdb_conn, session):
         """Test that null values (--) are converted to NULL during loading."""
         loader = CSVLoader()
         config = SourceConfig(
@@ -165,11 +127,11 @@ class TestCSVLoader:
             path=str(FIXTURES_DIR / "transactions.csv"),
         )
 
-        result = loader.load(config, test_duckdb, test_session)
+        result = loader.load(config, duckdb_conn, session)
         assert result.success, f"Load failed: {result.error}"
 
         # Transactions has -- values in customer_name and vendor_name columns
-        null_count = test_duckdb.execute("""
+        null_count = duckdb_conn.execute("""
             SELECT COUNT(*)
             FROM raw_transactions
             WHERE "customer_name" IS NULL
@@ -177,7 +139,7 @@ class TestCSVLoader:
 
         assert null_count > 0, "Expected some NULL values from -- conversion"
 
-    def test_load_missing_file(self, test_duckdb, test_session):
+    def test_load_missing_file(self, duckdb_conn, session):
         """Test loading a non-existent file."""
         loader = CSVLoader()
         config = SourceConfig(
@@ -186,6 +148,6 @@ class TestCSVLoader:
             path="nonexistent.csv",
         )
 
-        result = loader.load(config, test_duckdb, test_session)
+        result = loader.load(config, duckdb_conn, session)
         assert not result.success
         assert "not found" in result.error.lower()

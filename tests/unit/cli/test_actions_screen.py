@@ -9,32 +9,6 @@ from dataraum.cli.tui.screens.actions import ActionsScreen, MergedAction
 
 
 @dataclass
-class FakeResolutionOption:
-    """Minimal stub for ResolutionOption."""
-
-    action: str = "declare_unit"
-    parameters: dict[str, Any] = field(default_factory=dict)
-    expected_entropy_reduction: float = 0.3
-    effort: str = "low"
-    description: str = "Add unit declaration"
-    cascade_dimensions: list[str] = field(default_factory=list)
-
-
-@dataclass
-class FakeColumnSummary:
-    """Minimal stub for ColumnSummary."""
-
-    column_id: str = "col1"
-    column_name: str = "amount"
-    table_id: str = "t1"
-    table_name: str = "orders"
-    composite_score: float = 0.25
-    readiness: str = "investigate"
-    top_resolution_hints: list[Any] = field(default_factory=list)
-    compound_risks: list[Any] = field(default_factory=list)
-
-
-@dataclass
 class FakeInterp:
     """Minimal stub for EntropyInterpretationRecord."""
 
@@ -68,29 +42,11 @@ class TestMergeActions:
     def test_empty_inputs(self):
         screen = self._make_screen()
         result = screen._merge_actions(
-            column_summaries={},
             interp_by_col={},
             entropy_objects_by_col={},
             violation_dims={},
         )
         assert result == []
-
-    def test_detector_hints_create_actions(self):
-        screen = self._make_screen()
-        hint = FakeResolutionOption(action="declare_unit", expected_entropy_reduction=0.3)
-        summary = FakeColumnSummary(top_resolution_hints=[hint])
-
-        result = screen._merge_actions(
-            column_summaries={"orders.amount": summary},
-            interp_by_col={},
-            entropy_objects_by_col={},
-            violation_dims={},
-        )
-
-        assert len(result) == 1
-        assert result[0].action == "declare_unit"
-        assert result[0].from_detector is True
-        assert "orders.amount" in result[0].affected_columns
 
     def test_llm_actions_create_actions(self):
         screen = self._make_screen()
@@ -106,7 +62,6 @@ class TestMergeActions:
         )
 
         result = screen._merge_actions(
-            column_summaries={},
             interp_by_col={"orders.amount": interp},
             entropy_objects_by_col={},
             violation_dims={},
@@ -118,58 +73,6 @@ class TestMergeActions:
         # Priority is now score-derived, not from LLM JSON
         # score = (0.0 + 1*0.1) / 1.0 = 0.1 -> low
         assert result[0].priority == "low"
-
-    def test_merge_deduplicates_by_action_name(self):
-        screen = self._make_screen()
-        hint = FakeResolutionOption(action="declare_unit", expected_entropy_reduction=0.3)
-        summary = FakeColumnSummary(top_resolution_hints=[hint])
-
-        interp = FakeInterp(
-            resolution_actions_json=[
-                {
-                    "action": "declare_unit",
-                    "description": "Declare unit for column",
-                    "priority": "high",
-                    "effort": "low",
-                }
-            ]
-        )
-
-        result = screen._merge_actions(
-            column_summaries={"orders.amount": summary},
-            interp_by_col={"orders.amount": interp},
-            entropy_objects_by_col={},
-            violation_dims={},
-        )
-
-        assert len(result) == 1
-        merged = result[0]
-        assert merged.from_detector is True
-        assert merged.from_llm is True
-        # Priority is score-derived: (0.3 + 1*0.1) / 1.0 = 0.4 -> medium
-        assert merged.priority == "medium"
-
-    def test_multiple_columns_same_action(self):
-        screen = self._make_screen()
-        hint1 = FakeResolutionOption(action="declare_unit", expected_entropy_reduction=0.3)
-        hint2 = FakeResolutionOption(action="declare_unit", expected_entropy_reduction=0.2)
-
-        result = screen._merge_actions(
-            column_summaries={
-                "orders.amount": FakeColumnSummary(top_resolution_hints=[hint1]),
-                "orders.price": FakeColumnSummary(
-                    column_name="price", top_resolution_hints=[hint2]
-                ),
-            },
-            interp_by_col={},
-            entropy_objects_by_col={},
-            violation_dims={},
-        )
-
-        assert len(result) == 1
-        assert len(result[0].affected_columns) == 2
-        assert result[0].max_reduction == 0.3
-        assert result[0].total_reduction == 0.5
 
     def test_sorted_by_priority_score_descending(self):
         """Actions sorted by score: more affected columns = higher score."""
@@ -200,7 +103,6 @@ class TestMergeActions:
         )
 
         result = screen._merge_actions(
-            column_summaries={},
             interp_by_col={
                 "orders.amount": interp1,
                 "orders.price": interp2,
@@ -217,18 +119,73 @@ class TestMergeActions:
 
     def test_violation_dims_mapped_to_actions(self):
         screen = self._make_screen()
-        hint = FakeResolutionOption(action="declare_unit", expected_entropy_reduction=0.3)
-        summary = FakeColumnSummary(top_resolution_hints=[hint])
+        interp = FakeInterp(
+            resolution_actions_json=[
+                {
+                    "action": "declare_unit",
+                    "description": "Add unit declaration",
+                    "effort": "low",
+                }
+            ]
+        )
 
         result = screen._merge_actions(
-            column_summaries={"orders.amount": summary},
-            interp_by_col={},
+            interp_by_col={"orders.amount": interp},
             entropy_objects_by_col={},
             violation_dims={"semantic.units": ["orders.amount"]},
         )
 
         assert len(result) == 1
         assert "semantic.units" in result[0].fixes_violations
+
+    def test_llm_actions_attach_entropy_objects(self):
+        """Entropy objects for a column are attached to LLM actions."""
+        screen = self._make_screen()
+        interp = FakeInterp(
+            resolution_actions_json=[
+                {"action": "resolve_ambiguity", "effort": "medium"}
+            ]
+        )
+        eo = FakeEntropyObject(target="column:orders.amount")
+
+        result = screen._merge_actions(
+            interp_by_col={"orders.amount": interp},
+            entropy_objects_by_col={"orders.amount": [eo]},
+            violation_dims={},
+        )
+
+        assert len(result) == 1
+        assert eo in result[0].related_objects
+
+    def test_multiple_columns_same_llm_action(self):
+        """Same action from LLM interps on different columns is deduplicated."""
+        screen = self._make_screen()
+        interp1 = FakeInterp(
+            table_name="orders",
+            column_name="amount",
+            resolution_actions_json=[
+                {"action": "standardize_format", "effort": "low"}
+            ],
+        )
+        interp2 = FakeInterp(
+            table_name="orders",
+            column_name="price",
+            resolution_actions_json=[
+                {"action": "standardize_format", "effort": "low"}
+            ],
+        )
+
+        result = screen._merge_actions(
+            interp_by_col={
+                "orders.amount": interp1,
+                "orders.price": interp2,
+            },
+            entropy_objects_by_col={},
+            violation_dims={},
+        )
+
+        assert len(result) == 1
+        assert set(result[0].affected_columns) == {"orders.amount", "orders.price"}
 
 
 class TestMergedAction:

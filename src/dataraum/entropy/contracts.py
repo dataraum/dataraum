@@ -34,7 +34,7 @@ import yaml
 from dataraum.core.config import get_config_file
 from dataraum.core.logging import get_logger
 from dataraum.entropy.config import get_dimension_label
-from dataraum.entropy.models import CompoundRisk, ResolutionOption
+from dataraum.entropy.models import ResolutionOption
 
 if TYPE_CHECKING:
     from dataraum.entropy.analysis.aggregator import ColumnSummary
@@ -92,7 +92,6 @@ class BlockingCondition:
     def evaluate(
         self,
         column_summaries: dict[str, ColumnSummary],
-        compound_risks: list[CompoundRisk],
         evaluation: ContractEvaluation,
     ) -> bool:
         """Check if this blocking condition is triggered.
@@ -105,12 +104,6 @@ class BlockingCondition:
                 if score > threshold:
                     return True
             return False
-
-        elif self.condition_type == "has_critical_compound_risk":
-            return any(r.risk_level == "critical" for r in compound_risks)
-
-        elif self.condition_type == "has_high_compound_risk":
-            return any(r.risk_level in ("critical", "high") for r in compound_risks)
 
         elif self.condition_type == "critical_entropy_count_exceeds":
             threshold = int(self.parameters.get("threshold", 0))
@@ -456,7 +449,6 @@ def _find_affected_columns(
 def evaluate_contract(
     column_summaries: dict[str, ColumnSummary],
     contract_name: str,
-    compound_risks: list[CompoundRisk] | None = None,
     config_path: Path | None = None,
 ) -> ContractEvaluation:
     """Evaluate entropy against a contract.
@@ -464,7 +456,6 @@ def evaluate_contract(
     Args:
         column_summaries: Dict mapping column key to ColumnSummary
         contract_name: Name of the contract to evaluate against
-        compound_risks: Optional list of compound risks
         config_path: Optional path to contracts config
 
     Returns:
@@ -476,8 +467,6 @@ def evaluate_contract(
     contract = get_contract(contract_name, config_path)
     if contract is None:
         raise ValueError(f"Contract not found: {contract_name}")
-
-    compound_risks = compound_risks or []
 
     violations: list[Violation] = []
     warnings: list[Violation] = []
@@ -573,7 +562,7 @@ def evaluate_contract(
 
     # Check blocking conditions
     for condition in contract.blocking_conditions:
-        if condition.evaluate(column_summaries, compound_risks, evaluation):
+        if condition.evaluate(column_summaries, evaluation):
             violations.append(
                 Violation(
                     violation_type="blocking_condition",
@@ -685,7 +674,6 @@ def get_confidence_level(evaluation: ContractEvaluation) -> ConfidenceLevel:
 
 def evaluate_all_contracts(
     column_summaries: dict[str, ColumnSummary],
-    compound_risks: list[CompoundRisk] | None = None,
     config_path: Path | None = None,
 ) -> dict[str, ContractEvaluation]:
     """Evaluate entropy against all available contracts.
@@ -694,7 +682,6 @@ def evaluate_all_contracts(
 
     Args:
         column_summaries: Dict mapping column key to ColumnSummary
-        compound_risks: Optional list of compound risks
         config_path: Optional path to contracts config
 
     Returns:
@@ -704,28 +691,26 @@ def evaluate_all_contracts(
     evaluations: dict[str, ContractEvaluation] = {}
 
     for name in contracts:
-        evaluations[name] = evaluate_contract(column_summaries, name, compound_risks, config_path)
+        evaluations[name] = evaluate_contract(column_summaries, name, config_path)
 
     return evaluations
 
 
 def find_best_contract(
     column_summaries: dict[str, ColumnSummary],
-    compound_risks: list[CompoundRisk] | None = None,
     config_path: Path | None = None,
 ) -> tuple[str | None, ContractEvaluation | None]:
     """Find the strictest contract that passes.
 
     Args:
         column_summaries: Dict mapping column key to ColumnSummary
-        compound_risks: Optional list of compound risks
         config_path: Optional path to contracts config
 
     Returns:
         Tuple of (contract_name, evaluation) for strictest passing contract.
         Returns (None, None) if no contracts pass.
     """
-    evaluations = evaluate_all_contracts(column_summaries, compound_risks, config_path)
+    evaluations = evaluate_all_contracts(column_summaries, config_path)
     contracts = get_contracts(config_path)
 
     # Sort by strictness (lower overall_threshold = stricter)

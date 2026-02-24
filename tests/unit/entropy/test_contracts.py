@@ -3,7 +3,6 @@
 import pytest
 
 from dataraum.entropy.analysis.aggregator import ColumnSummary
-from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.contracts import (
     ConfidenceLevel,
     ContractProfile,
@@ -16,49 +15,20 @@ from dataraum.entropy.contracts import (
     get_contracts,
     list_contracts,
 )
-from dataraum.entropy.models import CompoundRisk
 
 
 def _make_column_summary(
     column_name: str = "test_column",
     table_name: str = "test_table",
-    layer_scores: dict[str, float] | None = None,
     dimension_scores: dict[str, float] | None = None,
-    compound_risks: list[CompoundRisk] | None = None,
+    readiness: str = "ready",
 ) -> ColumnSummary:
     """Helper to create ColumnSummary for tests."""
-    config = get_entropy_config()
-    weights = config.composite_weights
-
-    layer_scores = layer_scores or {
-        "structural": 0.1,
-        "semantic": 0.1,
-        "value": 0.1,
-        "computational": 0.1,
-    }
-
-    composite_score = (
-        layer_scores.get("structural", 0.0) * weights["structural"]
-        + layer_scores.get("semantic", 0.0) * weights["semantic"]
-        + layer_scores.get("value", 0.0) * weights["value"]
-        + layer_scores.get("computational", 0.0) * weights["computational"]
-    )
-
-    dimension_scores = dimension_scores or {}
-    high_threshold = config.high_entropy_threshold
-    high_entropy_dims = [d for d, s in dimension_scores.items() if s >= high_threshold]
-
     return ColumnSummary(
-        column_id=f"col_{column_name}",
         column_name=column_name,
-        table_id=f"tbl_{table_name}",
         table_name=table_name,
-        composite_score=composite_score,
-        readiness=config.get_readiness(composite_score),
-        layer_scores=layer_scores,
-        dimension_scores=dimension_scores,
-        high_entropy_dimensions=high_entropy_dims,
-        compound_risks=compound_risks or [],
+        dimension_scores=dimension_scores or {},
+        readiness=readiness,
     )
 
 
@@ -184,15 +154,9 @@ class TestContractEvaluation:
     """Tests for contract evaluation."""
 
     @pytest.fixture
-    def low_entropy_summaries(self) -> tuple[dict[str, ColumnSummary], list[CompoundRisk]]:
+    def low_entropy_summaries(self) -> dict[str, ColumnSummary]:
         """Column summaries with low entropy across all dimensions."""
         summary = _make_column_summary(
-            layer_scores={
-                "structural": 0.1,
-                "semantic": 0.1,
-                "value": 0.1,
-                "computational": 0.1,
-            },
             dimension_scores={
                 "structural.types": 0.1,
                 "structural.relations": 0.1,
@@ -205,18 +169,13 @@ class TestContractEvaluation:
                 "computational.aggregations": 0.1,
             },
         )
-        return {"test_table.test_column": summary}, []
+        return {"test_table.test_column": summary}
 
     @pytest.fixture
-    def high_entropy_summaries(self) -> tuple[dict[str, ColumnSummary], list[CompoundRisk]]:
+    def high_entropy_summaries(self) -> dict[str, ColumnSummary]:
         """Column summaries with high entropy across dimensions."""
         summary = _make_column_summary(
-            layer_scores={
-                "structural": 0.7,
-                "semantic": 0.8,
-                "value": 0.6,
-                "computational": 0.5,
-            },
+            readiness="blocked",
             dimension_scores={
                 "structural.types": 0.7,
                 "structural.relations": 0.6,
@@ -229,37 +188,12 @@ class TestContractEvaluation:
                 "computational.aggregations": 0.5,
             },
         )
-        return {"test_table.test_column": summary}, []
-
-    @pytest.fixture
-    def summaries_with_critical_risk(self) -> tuple[dict[str, ColumnSummary], list[CompoundRisk]]:
-        """Column summaries with critical compound risk."""
-        critical_risk = CompoundRisk(
-            target="test_table.test_column",
-            dimensions=["semantic.units", "computational.aggregations"],
-            risk_level="critical",
-            impact="Unknown currencies being summed",
-            combined_score=0.9,
-        )
-        summary = _make_column_summary(
-            layer_scores={
-                "structural": 0.3,
-                "semantic": 0.3,
-                "value": 0.3,
-                "computational": 0.3,
-            },
-            dimension_scores={
-                "structural.types": 0.2,
-                "semantic.units": 0.3,
-            },
-            compound_risks=[critical_risk],
-        )
-        return {"test_table.test_column": summary}, [critical_risk]
+        return {"test_table.test_column": summary}
 
     def test_evaluate_exploratory_low_entropy(self, low_entropy_summaries):
         """Low entropy passes exploratory contract."""
-        summaries, risks = low_entropy_summaries
-        evaluation = evaluate_contract(summaries, "exploratory_analysis", risks)
+        summaries = low_entropy_summaries
+        evaluation = evaluate_contract(summaries, "exploratory_analysis")
 
         assert evaluation.is_compliant is True
         assert evaluation.confidence_level == ConfidenceLevel.GREEN
@@ -267,8 +201,8 @@ class TestContractEvaluation:
 
     def test_evaluate_regulatory_low_entropy(self, low_entropy_summaries):
         """Low entropy passes regulatory contract."""
-        summaries, risks = low_entropy_summaries
-        evaluation = evaluate_contract(summaries, "regulatory_reporting", risks)
+        summaries = low_entropy_summaries
+        evaluation = evaluate_contract(summaries, "regulatory_reporting")
 
         assert evaluation.is_compliant is True
         # Score of 0.1 equals the threshold, so may be YELLOW (approaching threshold)
@@ -276,8 +210,8 @@ class TestContractEvaluation:
 
     def test_evaluate_exploratory_high_entropy(self, high_entropy_summaries):
         """High entropy may fail exploratory contract."""
-        summaries, risks = high_entropy_summaries
-        evaluation = evaluate_contract(summaries, "exploratory_analysis", risks)
+        summaries = high_entropy_summaries
+        evaluation = evaluate_contract(summaries, "exploratory_analysis")
 
         # Exploratory is lenient but 0.8+ scores will trigger blocking
         # Our fixture has 0.8 for semantic.business_meaning
@@ -286,28 +220,17 @@ class TestContractEvaluation:
 
     def test_evaluate_regulatory_high_entropy(self, high_entropy_summaries):
         """High entropy fails regulatory contract."""
-        summaries, risks = high_entropy_summaries
-        evaluation = evaluate_contract(summaries, "regulatory_reporting", risks)
+        summaries = high_entropy_summaries
+        evaluation = evaluate_contract(summaries, "regulatory_reporting")
 
         assert evaluation.is_compliant is False
         assert evaluation.confidence_level in (ConfidenceLevel.ORANGE, ConfidenceLevel.RED)
         assert len(evaluation.violations) > 0
 
-    def test_critical_risk_blocks_strict_contracts(self, summaries_with_critical_risk):
-        """Critical compound risk blocks strict contracts."""
-        summaries, risks = summaries_with_critical_risk
-        # Regulatory should be blocked by critical risk
-        reg_eval = evaluate_contract(summaries, "regulatory_reporting", risks)
-        assert reg_eval.is_compliant is False
-
-        # Executive should also be blocked
-        exec_eval = evaluate_contract(summaries, "executive_dashboard", risks)
-        assert exec_eval.is_compliant is False
-
     def test_evaluation_has_dimension_scores(self, low_entropy_summaries):
         """Evaluation includes dimension scores."""
-        summaries, risks = low_entropy_summaries
-        evaluation = evaluate_contract(summaries, "exploratory_analysis", risks)
+        summaries = low_entropy_summaries
+        evaluation = evaluate_contract(summaries, "exploratory_analysis")
 
         assert len(evaluation.dimension_scores) > 0
         # Should have scores for dimensions in contract
@@ -317,8 +240,8 @@ class TestContractEvaluation:
 
     def test_evaluation_to_dict(self, low_entropy_summaries):
         """Evaluation can be serialized to dict."""
-        summaries, risks = low_entropy_summaries
-        evaluation = evaluate_contract(summaries, "exploratory_analysis", risks)
+        summaries = low_entropy_summaries
+        evaluation = evaluate_contract(summaries, "exploratory_analysis")
         d = evaluation.to_dict()
 
         assert d["contract_name"] == "exploratory_analysis"
@@ -329,9 +252,9 @@ class TestContractEvaluation:
 
     def test_unknown_contract_raises(self, low_entropy_summaries):
         """Evaluating unknown contract raises ValueError."""
-        summaries, risks = low_entropy_summaries
+        summaries = low_entropy_summaries
         with pytest.raises(ValueError, match="Contract not found"):
-            evaluate_contract(summaries, "nonexistent_contract", risks)
+            evaluate_contract(summaries, "nonexistent_contract")
 
 
 class TestFindBestContract:
@@ -340,12 +263,6 @@ class TestFindBestContract:
     def test_find_best_with_low_entropy(self):
         """Low entropy data should pass strict contracts."""
         summary = _make_column_summary(
-            layer_scores={
-                "structural": 0.05,
-                "semantic": 0.05,
-                "value": 0.05,
-                "computational": 0.05,
-            },
             dimension_scores={
                 "structural.types": 0.05,
                 "structural.relations": 0.05,
@@ -360,7 +277,7 @@ class TestFindBestContract:
         )
         summaries = {"test_table.test_column": summary}
 
-        name, evaluation = find_best_contract(summaries, [])
+        name, evaluation = find_best_contract(summaries)
 
         # Should find regulatory_reporting as strictest passing
         assert name == "regulatory_reporting"
@@ -369,12 +286,7 @@ class TestFindBestContract:
     def test_find_best_with_medium_entropy(self):
         """Medium entropy should find appropriate contract."""
         summary = _make_column_summary(
-            layer_scores={
-                "structural": 0.3,
-                "semantic": 0.35,
-                "value": 0.3,
-                "computational": 0.25,
-            },
+            readiness="investigate",
             dimension_scores={
                 "structural.types": 0.25,
                 "structural.relations": 0.3,
@@ -389,7 +301,7 @@ class TestFindBestContract:
         )
         summaries = {"test_table.test_column": summary}
 
-        name, evaluation = find_best_contract(summaries, [])
+        name, evaluation = find_best_contract(summaries)
 
         # Should find something less strict than regulatory
         assert name in ("operational_analytics", "data_science", "exploratory_analysis")
@@ -398,12 +310,7 @@ class TestFindBestContract:
     def test_find_best_with_very_high_entropy(self):
         """Very high entropy data should return None when no contracts pass."""
         summary = _make_column_summary(
-            layer_scores={
-                "structural": 0.9,
-                "semantic": 0.9,
-                "value": 0.9,
-                "computational": 0.9,
-            },
+            readiness="blocked",
             dimension_scores={
                 "structural.types": 0.9,
                 "structural.relations": 0.9,
@@ -418,7 +325,7 @@ class TestFindBestContract:
         )
         summaries = {"test_table.test_column": summary}
 
-        name, evaluation = find_best_contract(summaries, [])
+        name, evaluation = find_best_contract(summaries)
 
         # Should return None when no contracts pass
         assert name is None
@@ -546,8 +453,8 @@ class TestConfidenceLevelCalculation:
         violation = Violation(
             violation_type="blocking_condition",
             severity="blocking",
-            condition="has_critical_compound_risk",
-            details="Critical compound risk exists",
+            condition="has_blocked_columns",
+            details="Blocked columns exist",
         )
 
         level = _calculate_confidence_level(

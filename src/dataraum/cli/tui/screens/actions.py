@@ -157,7 +157,6 @@ class ActionsScreen(Screen[None]):
                 # Source 1: ColumnSummary from network
                 network_ctx = build_for_network(session, table_ids)
                 column_summaries: dict[str, Any] = _network_to_column_summaries(network_ctx)
-                compound_risks: list[Any] = []
 
                 # Source 2: LLM resolution_actions_json from interpretations
                 interp_result = session.execute(
@@ -185,7 +184,7 @@ class ActionsScreen(Screen[None]):
                             entropy_objects_by_col.setdefault(col_key, []).append(obj)
 
                 # Source 4: Contract violations
-                evaluations = evaluate_all_contracts(column_summaries, compound_risks)
+                evaluations = evaluate_all_contracts(column_summaries)
                 violation_dims: dict[str, list[str]] = {}
                 for eval_result in evaluations.values():
                     for v in eval_result.violations:
@@ -194,7 +193,6 @@ class ActionsScreen(Screen[None]):
 
                 # Merge all sources into MergedAction list
                 self._actions = self._merge_actions(
-                    column_summaries=column_summaries,
                     interp_by_col=interp_by_col,
                     entropy_objects_by_col=entropy_objects_by_col,
                     violation_dims=violation_dims,
@@ -220,35 +218,12 @@ class ActionsScreen(Screen[None]):
 
     def _merge_actions(
         self,
-        column_summaries: dict[str, Any],
         interp_by_col: dict[str, Any],
         entropy_objects_by_col: dict[str, list[Any]],
         violation_dims: dict[str, list[str]],
     ) -> list[MergedAction]:
         """Merge actions from all sources, deduplicate by action name."""
         actions_map: dict[str, MergedAction] = {}
-
-        # From ColumnSummary.top_resolution_hints (detector source)
-        for col_key, summary in column_summaries.items():
-            for hint in summary.top_resolution_hints:
-                if hint.action not in actions_map:
-                    actions_map[hint.action] = MergedAction(
-                        action=hint.action,
-                        description=hint.description,
-                        effort=hint.effort,
-                        cascade_dimensions=list(hint.cascade_dimensions),
-                        max_reduction=hint.expected_entropy_reduction,
-                        from_detector=True,
-                    )
-                ma = actions_map[hint.action]
-                if col_key not in ma.affected_columns:
-                    ma.affected_columns.append(col_key)
-                ma.max_reduction = max(ma.max_reduction, hint.expected_entropy_reduction)
-                ma.total_reduction += hint.expected_entropy_reduction
-                # Add related entropy objects
-                for obj in entropy_objects_by_col.get(col_key, []):
-                    if obj not in ma.related_objects:
-                        ma.related_objects.append(obj)
 
         # From LLM interpretation resolution_actions_json
         for col_key, interp in interp_by_col.items():

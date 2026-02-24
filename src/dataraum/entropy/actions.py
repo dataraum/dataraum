@@ -53,7 +53,6 @@ def _build_network_impact(
 
 
 def merge_actions(
-    column_summaries: dict[str, Any],
     interp_by_col: dict[str, Any],
     entropy_objects_by_col: dict[str, list[Any]],
     violation_dims: dict[str, list[str]],
@@ -62,7 +61,6 @@ def merge_actions(
     """Merge actions from all sources into a unified list.
 
     Args:
-        column_summaries: Column key -> ColumnSummary from EntropyAggregator
         interp_by_col: Column key -> EntropyInterpretationRecord from LLM
         entropy_objects_by_col: Column key -> list of EntropyObjectRecord
         violation_dims: Dimension -> list of affected column keys from contracts
@@ -73,35 +71,6 @@ def merge_actions(
         Sorted list of action dicts with priority, effort, affected columns, etc.
     """
     actions_map: dict[str, dict[str, Any]] = {}
-
-    # From ColumnSummary.top_resolution_hints (detector source)
-    for col_key, summary in column_summaries.items():
-        for hint in summary.top_resolution_hints:
-            if hint.action not in actions_map:
-                actions_map[hint.action] = {
-                    "action": hint.action,
-                    "priority": "medium",
-                    "description": hint.description,
-                    "effort": hint.effort,
-                    "expected_impact": "",
-                    "parameters": {},
-                    "affected_columns": [],
-                    "cascade_dimensions": list(hint.cascade_dimensions),
-                    "max_reduction": hint.expected_entropy_reduction,
-                    "total_reduction": 0.0,
-                    "from_llm": False,
-                    "from_detector": True,
-                    "from_network": False,
-                    "network_impact": 0.0,
-                    "network_columns": 0,
-                    "fixes_violations": [],
-                    "evidence": [],
-                }
-            ma = actions_map[hint.action]
-            if col_key not in ma["affected_columns"]:
-                ma["affected_columns"].append(col_key)
-            ma["max_reduction"] = max(ma["max_reduction"], hint.expected_entropy_reduction)
-            ma["total_reduction"] += hint.expected_entropy_reduction
 
     # From LLM interpretation resolution_actions_json
     for col_key, interp in interp_by_col.items():

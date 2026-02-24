@@ -5,10 +5,9 @@ Measures and manages data entropy across multiple dimensions
 analytics to make deterministic, reliable decisions.
 """
 
-from dataraum.entropy.analysis import ColumnSummary, EntropyAggregator
+from dataraum.entropy.analysis import ColumnSummary
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.core import (
-    CompoundRisk,
     EntropyObject,
     EntropyRepository,
     ResolutionOption,
@@ -30,11 +29,9 @@ __all__ = [
     # Core
     "EntropyObject",
     "ResolutionOption",
-    "CompoundRisk",
     "EntropyRepository",
     # Analysis
     "ColumnSummary",
-    "EntropyAggregator",
     # Views
     "EntropyForNetwork",
     "EntropyForQuery",

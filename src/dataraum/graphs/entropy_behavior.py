@@ -27,14 +27,6 @@ class EntropyAction(str, Enum):
     REFUSE = "refuse"  # Explain what needs resolution first
 
 
-class CompoundRiskAction(str, Enum):
-    """Action for compound risks."""
-
-    REFUSE = "refuse"
-    WARN_STRONGLY = "warn_strongly"
-    NOTE_IN_RESPONSE = "note_in_response"
-
-
 @dataclass
 class DimensionBehavior:
     """Behavior override for a specific entropy dimension."""
@@ -42,17 +34,6 @@ class DimensionBehavior:
     dimension: str  # e.g., "semantic.units", "structural.relations"
     clarification_threshold: float  # Override threshold for this dimension
     always_disclose: bool = False  # Always show in response even at low entropy
-
-
-@dataclass
-class CompoundRiskBehavior:
-    """Behavior configuration for compound risks."""
-
-    critical_action: CompoundRiskAction = CompoundRiskAction.REFUSE
-    critical_explain: bool = True
-    high_action: CompoundRiskAction = CompoundRiskAction.WARN_STRONGLY
-    high_require_confirmation: bool = True
-    medium_action: CompoundRiskAction = CompoundRiskAction.NOTE_IN_RESPONSE
 
 
 @dataclass
@@ -75,9 +56,6 @@ class EntropyBehaviorConfig:
 
     # Dimension-specific overrides
     dimension_overrides: list[DimensionBehavior] = field(default_factory=list)
-
-    # Compound risk handling
-    compound_risk_behavior: CompoundRiskBehavior = field(default_factory=CompoundRiskBehavior)
 
     @classmethod
     def strict(cls) -> EntropyBehaviorConfig:
@@ -129,31 +107,15 @@ class EntropyBehaviorConfig:
     def determine_action(
         self,
         max_entropy: float,
-        has_critical_compound_risk: bool = False,
-        has_high_compound_risk: bool = False,
     ) -> EntropyAction:
         """Determine what action to take based on entropy level.
 
         Args:
             max_entropy: Maximum entropy score encountered
-            has_critical_compound_risk: Whether critical compound risks exist
-            has_high_compound_risk: Whether high compound risks exist
 
         Returns:
             The recommended action for the agent
         """
-        # Compound risks override normal thresholds
-        if has_critical_compound_risk:
-            if self.compound_risk_behavior.critical_action == CompoundRiskAction.REFUSE:
-                return EntropyAction.REFUSE
-            return EntropyAction.ASK_OR_CAVEAT
-
-        if has_high_compound_risk:
-            if self.compound_risk_behavior.high_action == CompoundRiskAction.REFUSE:
-                return EntropyAction.REFUSE
-            if self.compound_risk_behavior.high_action == CompoundRiskAction.WARN_STRONGLY:
-                return EntropyAction.ASK_OR_CAVEAT
-
         # Standard entropy-based decisions
         if max_entropy >= self.refusal_threshold:
             return EntropyAction.REFUSE

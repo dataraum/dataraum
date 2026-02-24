@@ -49,8 +49,6 @@ from .context import (
 )
 from .entropy_behavior import (
     BehaviorMode,
-    CompoundRiskAction,
-    CompoundRiskBehavior,
     DimensionBehavior,
     EntropyAction,
     EntropyBehaviorConfig,
@@ -109,8 +107,6 @@ __all__ = [
     "EntropyAction",
     "EntropyBehaviorConfig",
     "DimensionBehavior",
-    "CompoundRiskAction",
-    "CompoundRiskBehavior",
     "get_default_config",
     # Enums
     "GraphType",

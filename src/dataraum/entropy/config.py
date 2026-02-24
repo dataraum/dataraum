@@ -44,18 +44,6 @@ class DetectorConfig:
 
 
 @dataclass
-class CompoundRiskConfig:
-    """Configuration for a compound risk pattern."""
-
-    risk_type: str
-    dimensions: list[str]
-    threshold: float
-    multiplier: float
-    risk_level: str
-    impact_template: str
-
-
-@dataclass
 class EntropyConfig:
     """Complete entropy configuration."""
 
@@ -79,9 +67,6 @@ class EntropyConfig:
 
     # Detector configurations
     detectors: dict[str, DetectorConfig] = field(default_factory=dict)
-
-    # Compound risk definitions
-    compound_risks: dict[str, CompoundRiskConfig] = field(default_factory=dict)
 
     # Effort factors for priority calculation
     effort_factors: dict[str, float] = field(
@@ -192,18 +177,6 @@ def _parse_config(raw: dict[str, Any]) -> EntropyConfig:
             config.detectors[detector_id] = DetectorConfig(
                 name=detector_id,
                 values=dict(values) if values else {},
-            )
-
-    # Parse compound risk definitions
-    if "compound_risks" in raw:
-        for risk_type, definition in raw["compound_risks"].items():
-            config.compound_risks[risk_type] = CompoundRiskConfig(
-                risk_type=risk_type,
-                dimensions=definition.get("dimensions", []),
-                threshold=definition.get("threshold", 0.5),
-                multiplier=definition.get("multiplier", 1.5),
-                risk_level=definition.get("risk_level", "high"),
-                impact_template=definition.get("impact_template", ""),
             )
 
     # Parse effort factors

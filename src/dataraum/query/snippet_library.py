@@ -85,22 +85,19 @@ class SnippetLibrary:
     def __init__(
         self,
         session: Session,
-        manager: ConnectionManager | None = None,
+        manager: ConnectionManager,
     ):
         """Initialize with database connections.
 
         Args:
             session: SQLAlchemy session for snippet metadata
-            manager: Optional ConnectionManager for semantic search (vectors database)
+            manager: ConnectionManager for semantic search (vectors database)
         """
+        from dataraum.query.embeddings import QueryEmbeddings
+
         self.session = session
         self._manager = manager
-        self._embeddings = None
-
-        if manager and manager.vectors_enabled:
-            from dataraum.query.embeddings import QueryEmbeddings
-
-            self._embeddings = QueryEmbeddings(manager)
+        self._embeddings = QueryEmbeddings(manager)
 
     # --- Discovery ---
 
@@ -219,9 +216,6 @@ class SnippetLibrary:
         Returns:
             List of SnippetMatch ordered by similarity (descending)
         """
-        if self._embeddings is None:
-            return []
-
         # Search embeddings (prefixed with "snippet:" to distinguish from query library)
         similar = self._embeddings.find_similar(
             text=text,
@@ -378,8 +372,8 @@ class SnippetLibrary:
             self.session.add(record)
             logger.debug(f"Created snippet {record.snippet_id} ({snippet_type}:{standard_field})")
 
-        # Store embedding for semantic search (query and formula snippets)
-        if self._embeddings and description:
+        # Store embedding for semantic search
+        if description:
             embedding_text = description
             if standard_field:
                 embedding_text = f"{standard_field}: {description}"

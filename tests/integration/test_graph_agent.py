@@ -293,6 +293,7 @@ class TestGraphAgentSQLGeneration:
             duckdb_conn=analyzed_small_finance.duckdb_conn,
             table_name="typed_transactions",
             schema_mapping_id="test-mapping",
+            manager=MagicMock(),
         )
 
         with analyzed_small_finance.session_factory() as session:

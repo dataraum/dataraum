@@ -387,10 +387,7 @@ def mock_connection_manager(
     vectors_conn: duckdb.DuckDBPyConnection,
 ) -> MagicMock:
     """Mock ConnectionManager with real vectors database for library tests."""
-    from unittest.mock import PropertyMock
-
     manager = MagicMock()
-    type(manager).vectors_enabled = PropertyMock(return_value=True)
 
     def vectors_cursor_ctx():
         class CursorCtx:

@@ -119,10 +119,6 @@ class QueryEmbeddings:
             query_id: Unique query identifier
             text: Text to embed (question or graph description)
         """
-        if not self.manager.vectors_enabled:
-            logger.warning("Vectors database not enabled, skipping embedding")
-            return
-
         embedding = generate_embedding(text)
 
         with self.manager.vectors_write() as conn:
@@ -142,10 +138,6 @@ class QueryEmbeddings:
             queries: List of (query_id, text) tuples
         """
         if not queries:
-            return
-
-        if not self.manager.vectors_enabled:
-            logger.warning("Vectors database not enabled, skipping embeddings")
             return
 
         query_ids = [q[0] for q in queries]
@@ -173,9 +165,6 @@ class QueryEmbeddings:
         Args:
             query_id: Query identifier to remove
         """
-        if not self.manager.vectors_enabled:
-            return
-
         with self.manager.vectors_write() as conn:
             conn.execute("DELETE FROM query_embeddings WHERE query_id = ?", [query_id])
 
@@ -195,10 +184,6 @@ class QueryEmbeddings:
         Returns:
             List of SimilarQuery results, ordered by similarity (descending)
         """
-        if not self.manager.vectors_enabled:
-            logger.warning("Vectors database not enabled")
-            return []
-
         query_embedding = generate_embedding(text)
 
         with self.manager.vectors_cursor() as cursor:
@@ -225,9 +210,6 @@ class QueryEmbeddings:
         Returns:
             Count of embeddings in the database
         """
-        if not self.manager.vectors_enabled:
-            return 0
-
         with self.manager.vectors_cursor() as cursor:
             result = cursor.execute("SELECT COUNT(*) FROM query_embeddings").fetchone()
             return result[0] if result else 0

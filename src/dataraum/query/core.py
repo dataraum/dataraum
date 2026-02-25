@@ -36,7 +36,7 @@ def answer_question(
     contract: str | None = None,
     auto_contract: bool = False,
     table_ids: list[str] | None = None,
-    manager: ConnectionManager | None = None,
+    manager: ConnectionManager,
     ephemeral: bool = False,
 ) -> Result[QueryResult]:
     """Answer a natural language question about the data.
@@ -53,7 +53,7 @@ def answer_question(
         contract: Explicit contract name (e.g., "executive_dashboard")
         auto_contract: If True, find the strictest passing contract
         table_ids: Optional list of specific table IDs (defaults to all tables in source)
-        manager: ConnectionManager (kept for API compatibility)
+        manager: ConnectionManager for snippet library and embeddings
         ephemeral: If True, don't save novel snippets to knowledge base
 
     Returns:

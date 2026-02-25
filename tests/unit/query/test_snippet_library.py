@@ -1,17 +1,25 @@
 """Tests for SQL Snippet Library."""
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from dataraum.query.snippet_library import SnippetLibrary
 from dataraum.query.snippet_models import SQLSnippetRecord
 
 
+@pytest.fixture
+def mock_manager():
+    """Create a mock ConnectionManager for tests."""
+    return MagicMock()
+
+
 class TestSnippetLibraryFindByKey:
     """Tests for exact key lookup."""
 
-    def test_find_extract_snippet(self, session):
+    def test_find_extract_snippet(self, session, mock_manager):
         """Find an extract snippet by exact key."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         # Save a snippet
         library.save_snippet(
@@ -42,9 +50,9 @@ class TestSnippetLibraryFindByKey:
         assert match.snippet.standard_field == "revenue"
         assert match.snippet.sql == "SELECT SUM(amount) AS value FROM typed_orders"
 
-    def test_find_no_match(self, session):
+    def test_find_no_match(self, session, mock_manager):
         """No snippet for this key."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         match = library.find_by_key(
             snippet_type="extract",
@@ -53,9 +61,9 @@ class TestSnippetLibraryFindByKey:
         )
         assert match is None
 
-    def test_find_different_schema(self, session):
+    def test_find_different_schema(self, session, mock_manager):
         """Same field but different schema doesn't match."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         library.save_snippet(
             snippet_type="extract",
@@ -78,9 +86,9 @@ class TestSnippetLibraryFindByKey:
         )
         assert match is None
 
-    def test_find_constant_snippet(self, session):
+    def test_find_constant_snippet(self, session, mock_manager):
         """Find a constant snippet including parameter value."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         library.save_snippet(
             snippet_type="constant",
@@ -112,9 +120,9 @@ class TestSnippetLibraryFindByKey:
         )
         assert match2 is None
 
-    def test_null_fields_match_correctly(self, session):
+    def test_null_fields_match_correctly(self, session, mock_manager):
         """Null fields in key must match null (not anything)."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         # Snippet with no statement
         library.save_snippet(
@@ -152,9 +160,9 @@ class TestSnippetLibraryFindByKey:
 class TestSnippetLibrarySave:
     """Tests for snippet save with upsert semantics."""
 
-    def test_save_new_snippet(self, session):
+    def test_save_new_snippet(self, session, mock_manager):
         """Save creates a new record."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         record = library.save_snippet(
             snippet_type="extract",
@@ -172,9 +180,9 @@ class TestSnippetLibrarySave:
         assert record.snippet_id is not None
         assert record.sql == "SELECT SUM(x) AS value FROM t"
 
-    def test_save_updates_existing(self, session):
+    def test_save_updates_existing(self, session, mock_manager):
         """Save with same key updates instead of duplicating."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         # First save
         record1 = library.save_snippet(
@@ -207,9 +215,9 @@ class TestSnippetLibrarySave:
         assert record2.description == "Updated"
         assert record2.source == "graph:v2"
 
-    def test_save_formula_snippet(self, session):
+    def test_save_formula_snippet(self, session, mock_manager):
         """Save a formula snippet with normalized expression."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         record = library.save_snippet(
             snippet_type="formula",
@@ -226,9 +234,9 @@ class TestSnippetLibrarySave:
         assert record.normalized_expression == "({A} / {B}) * {C}"
         assert record.input_fields == ["accounts_receivable", "days_in_period", "revenue"]
 
-    def test_save_with_column_mappings(self, session):
+    def test_save_with_column_mappings(self, session, mock_manager):
         """Column mappings are persisted."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         record = library.save_snippet(
             snippet_type="extract",
@@ -248,11 +256,11 @@ class TestSnippetLibrarySave:
 class TestSnippetLibraryFindByExpression:
     """Tests for formula pattern matching."""
 
-    def test_find_formula(self, session):
+    def test_find_formula(self, session, mock_manager):
         """Find a formula by normalized expression."""
         from dataraum.query.snippet_utils import normalize_expression
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         # Normalize the expression the same way find_by_expression will
         expr = "(accounts_receivable / revenue) * days_in_period"
@@ -278,9 +286,9 @@ class TestSnippetLibraryFindByExpression:
         assert match.match_confidence == 0.9
         assert match.match_strategy == "expression_pattern"
 
-    def test_find_formula_no_match(self, session):
+    def test_find_formula_no_match(self, session, mock_manager):
         """No formula for a different expression."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         library.save_snippet(
             snippet_type="formula",
@@ -304,9 +312,9 @@ class TestSnippetLibraryFindByExpression:
 class TestSnippetLibraryRecordUsage:
     """Tests for usage tracking."""
 
-    def test_record_exact_reuse(self, session):
+    def test_record_exact_reuse(self, session, mock_manager):
         """Record an exact reuse and update snippet stats."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         snippet = library.save_snippet(
             snippet_type="extract",
@@ -338,9 +346,9 @@ class TestSnippetLibraryRecordUsage:
         assert snippet.execution_count == 1
         assert snippet.last_used_at is not None
 
-    def test_record_newly_generated(self, session):
+    def test_record_newly_generated(self, session, mock_manager):
         """Record a newly generated step (no snippet)."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         usage = library.record_usage(
             execution_id="exec_002",
@@ -353,9 +361,9 @@ class TestSnippetLibraryRecordUsage:
         assert usage.snippet_id is None
         assert usage.usage_type == "newly_generated"
 
-    def test_record_provided_not_used(self, session):
+    def test_record_provided_not_used(self, session, mock_manager):
         """Record when snippet was provided but LLM ignored it."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         snippet = library.save_snippet(
             snippet_type="extract",
@@ -385,17 +393,17 @@ class TestSnippetLibraryRecordUsage:
 class TestSnippetLibraryStats:
     """Tests for stabilization metrics."""
 
-    def test_empty_stats(self, session):
+    def test_empty_stats(self, session, mock_manager):
         """Stats with no data."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
         stats = library.get_stats()
 
         assert stats["total_snippets"] == 0
         assert stats["cache_hit_rate"] == 0.0
 
-    def test_basic_stats(self, session):
+    def test_basic_stats(self, session, mock_manager):
         """Stats with some snippets and usages."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         # Create snippets
         s1 = library.save_snippet(
@@ -445,9 +453,9 @@ class TestSnippetLibraryStats:
         # cache_hit_rate = 2 / 3 = 0.667
         assert stats["cache_hit_rate"] == pytest.approx(0.667, abs=0.001)
 
-    def test_stats_filtered_by_schema(self, session):
+    def test_stats_filtered_by_schema(self, session, mock_manager):
         """Stats can be filtered by schema_mapping_id."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         library.save_snippet(
             snippet_type="extract", sql="SELECT 1", description="test",
@@ -471,9 +479,9 @@ class TestSnippetLibraryStats:
 class TestSnippetLibraryInvalidation:
     """Tests for schema change invalidation."""
 
-    def test_invalidate_for_schema(self, session):
+    def test_invalidate_for_schema(self, session, mock_manager):
         """Invalidating a schema marks all its snippets as unvalidated."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         s1 = library.save_snippet(
             snippet_type="extract", sql="SELECT 1", description="test",
@@ -514,9 +522,9 @@ class TestSnippetLibraryInvalidation:
 class TestSnippetLibraryFindAllForSchema:
     """Tests for find_all_for_schema."""
 
-    def test_find_all(self, session):
+    def test_find_all(self, session, mock_manager):
         """Find all snippets for a schema."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         library.save_snippet(
             snippet_type="extract", sql="SELECT 1", description="rev",
@@ -538,9 +546,9 @@ class TestSnippetLibraryFindAllForSchema:
         results = library.find_all_for_schema("schema_abc")
         assert len(results) == 2
 
-    def test_find_all_with_type_filter(self, session):
+    def test_find_all_with_type_filter(self, session, mock_manager):
         """Filter by snippet type."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
 
         library.save_snippet(
             snippet_type="extract", sql="SELECT 1", description="rev",

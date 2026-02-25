@@ -444,11 +444,6 @@ class ConnectionManager:
             yield self._vectors_conn
 
     @property
-    def vectors_enabled(self) -> bool:
-        """Check if vectors database is enabled."""
-        return self._vectors_conn is not None
-
-    @property
     def engine(self) -> Engine:
         """Get the SQLAlchemy engine.
 

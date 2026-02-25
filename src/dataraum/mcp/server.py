@@ -436,7 +436,35 @@ def _get_context(output_dir: Path) -> str:
                 )
 
             formatted = format_context_for_prompt(context)
-            return format_context_for_llm(source.name, formatted)
+            result = format_context_for_llm(source.name, formatted)
+
+            # Append snippet knowledge base stats if available
+            try:
+                from dataraum.query.snippet_library import SnippetLibrary
+
+                library = SnippetLibrary(session, manager)
+                stats = library.get_stats(schema_mapping_id=source.source_id)
+                if stats.get("total_snippets", 0) > 0:
+                    kb_lines = [
+                        "",
+                        "## SQL Knowledge Base",
+                        f"- Total snippets: {stats['total_snippets']}",
+                        f"- Validated (used at least once): {stats['validated_snippets']}",
+                    ]
+                    if stats.get("snippets_by_type"):
+                        parts = [
+                            f"{t}: {c}" for t, c in stats["snippets_by_type"].items()
+                        ]
+                        kb_lines.append(f"- By type: {', '.join(parts)}")
+                    if stats.get("cache_hit_rate", 0) > 0:
+                        kb_lines.append(
+                            f"- Cache hit rate: {stats['cache_hit_rate']:.1%}"
+                        )
+                    result += "\n".join(kb_lines)
+            except Exception:
+                pass  # Snippet stats are non-critical
+
+            return result
     finally:
         manager.close()
 

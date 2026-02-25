@@ -8,7 +8,7 @@ Tests cover:
 - Contract-based confidence evaluation
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import duckdb
 import pytest
@@ -508,12 +508,20 @@ class TestQueryAgentIntegration:
 class TestQueryAgentSnippets:
     """Tests for QueryAgent snippet lifecycle."""
 
-    def test_discover_snippets_returns_matching(self, mock_agent, session: Session):
-        """Test that _discover_snippets returns snippets for the schema."""
-        from dataraum.query.snippet_library import SnippetLibrary
+    @pytest.fixture
+    def mock_manager(self):
+        """Create a mock ConnectionManager for snippet library tests."""
+        return MagicMock()
 
-        library = SnippetLibrary(session)
-        library.save_snippet(
+    def test_discover_snippets_returns_matching(self, mock_agent, session: Session):
+        """Test that _discover_snippets returns snippets via similarity search."""
+        from dataraum.query.snippet_library import SnippetLibrary, SnippetMatch
+
+        mgr = MagicMock()
+
+        # Save a snippet
+        library = SnippetLibrary(session, mgr)
+        snippet = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) AS revenue FROM typed_orders",
             description="Sum of order amounts (revenue)",
@@ -526,24 +534,38 @@ class TestQueryAgentSnippets:
         )
         session.flush()
 
-        snippets = mock_agent._discover_snippets(
-            session=session,
-            question="What is total revenue?",
-            schema_mapping_id="source_123",
+        # Mock find_by_similarity to return the snippet
+        mock_match = SnippetMatch(
+            snippet=snippet,
+            match_confidence=0.85,
+            match_strategy="semantic_similarity",
         )
+
+        with patch.object(
+            SnippetLibrary, "find_by_similarity", return_value=[mock_match]
+        ):
+            snippets = mock_agent._discover_snippets(
+                session=session,
+                question="What is total revenue?",
+                schema_mapping_id="source_123",
+                manager=mgr,
+            )
 
         assert len(snippets) == 1
         assert snippets[0]["step_id"] == "revenue"
         assert "SUM(amount)" in snippets[0]["sql"]
         assert snippets[0]["snippet_id"] is not None
 
-    def test_discover_snippets_empty_for_other_schema(
+    def test_discover_snippets_empty_when_no_match(
         self, mock_agent, session: Session
     ):
-        """Test that _discover_snippets returns empty for different schema."""
+        """Test that _discover_snippets returns empty when similarity finds nothing."""
         from dataraum.query.snippet_library import SnippetLibrary
 
-        library = SnippetLibrary(session)
+        mgr = MagicMock()
+
+        # Save snippet for a different schema
+        library = SnippetLibrary(session, mgr)
         library.save_snippet(
             snippet_type="extract",
             sql="SELECT 1",
@@ -555,15 +577,21 @@ class TestQueryAgentSnippets:
         )
         session.flush()
 
-        snippets = mock_agent._discover_snippets(
-            session=session,
-            question="What is total revenue?",
-            schema_mapping_id="source_123",
-        )
+        with patch.object(
+            SnippetLibrary, "find_by_similarity", return_value=[]
+        ):
+            snippets = mock_agent._discover_snippets(
+                session=session,
+                question="What is total revenue?",
+                schema_mapping_id="source_123",
+                manager=mgr,
+            )
 
         assert len(snippets) == 0
 
-    def test_track_snippet_usage_exact_reuse(self, mock_agent, session: Session):
+    def test_track_snippet_usage_exact_reuse(
+        self, mock_agent, session: Session, mock_manager
+    ):
         """Test that _track_snippet_usage records exact reuse correctly."""
         from sqlalchemy import select
 
@@ -572,7 +600,7 @@ class TestQueryAgentSnippets:
         from dataraum.query.snippet_models import SnippetUsageRecord
 
         # Create a real snippet to satisfy FK constraint
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_manager)
         snippet = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) FROM typed_orders",
@@ -612,6 +640,7 @@ class TestQueryAgentSnippets:
             execution_id="exec-001",
             analysis_output=analysis,
             provided_snippets=provided,
+            manager=mock_manager,
         )
         session.flush()
 
@@ -621,7 +650,9 @@ class TestQueryAgentSnippets:
         assert usages[0].execution_type == "query"
         assert usages[0].snippet_id == snippet.snippet_id
 
-    def test_track_snippet_usage_newly_generated(self, mock_agent, session: Session):
+    def test_track_snippet_usage_newly_generated(
+        self, mock_agent, session: Session, mock_manager
+    ):
         """Test that _track_snippet_usage records newly generated steps."""
         from sqlalchemy import select
 
@@ -642,12 +673,12 @@ class TestQueryAgentSnippets:
             final_sql="SELECT * FROM new_calc",
         )
 
-        # No provided snippets
         mock_agent._track_snippet_usage(
             session=session,
             execution_id="exec-002",
             analysis_output=analysis,
             provided_snippets={},
+            manager=mock_manager,
         )
         session.flush()
 
@@ -656,7 +687,9 @@ class TestQueryAgentSnippets:
         assert usages[0].usage_type == "newly_generated"
         assert usages[0].snippet_id is None
 
-    def test_save_novel_snippets(self, mock_agent, session: Session):
+    def test_save_novel_snippets(
+        self, mock_agent, session: Session, mock_manager
+    ):
         """Test that _save_novel_snippets saves new query steps."""
         from sqlalchemy import select
 
@@ -683,7 +716,8 @@ class TestQueryAgentSnippets:
             execution_id="exec-003",
             analysis_output=analysis,
             schema_mapping_id="source_123",
-            provided_snippets={},  # None were provided, so all are novel
+            provided_snippets={},
+            manager=mock_manager,
         )
         session.flush()
 
@@ -695,7 +729,9 @@ class TestQueryAgentSnippets:
         assert "SUM(amount)" in snippets[0].sql
         assert snippets[0].column_mappings == {"revenue": "amount"}
 
-    def test_save_novel_snippets_skips_existing(self, mock_agent, session: Session):
+    def test_save_novel_snippets_skips_existing(
+        self, mock_agent, session: Session, mock_manager
+    ):
         """Test that _save_novel_snippets skips steps that came from snippets."""
         from sqlalchemy import select
 
@@ -721,7 +757,6 @@ class TestQueryAgentSnippets:
             final_sql="SELECT * FROM new_step",
         )
 
-        # reused_step was provided, new_step was not
         provided = {
             "reused_step": {
                 "step_id": "reused_step",
@@ -736,10 +771,86 @@ class TestQueryAgentSnippets:
             analysis_output=analysis,
             schema_mapping_id="source_123",
             provided_snippets=provided,
+            manager=mock_manager,
         )
         session.flush()
 
         snippets = list(session.execute(select(SQLSnippetRecord)).scalars().all())
-        # Only new_step should be saved, not reused_step
         assert len(snippets) == 1
         assert snippets[0].standard_field == "new_step"
+
+    def test_discover_snippets_includes_query_type(self, mock_agent, session: Session):
+        """Test that _discover_snippets returns query-type snippets."""
+        from dataraum.query.snippet_library import SnippetLibrary, SnippetMatch
+
+        mgr = MagicMock()
+
+        library = SnippetLibrary(session, mgr)
+        snippet = library.save_snippet(
+            snippet_type="query",
+            sql="SELECT COUNT(*) AS order_count FROM typed_orders",
+            description="Count all orders",
+            schema_mapping_id="source_123",
+            source="query:exec-001",
+            standard_field="order_count",
+            confidence=0.5,
+        )
+        session.flush()
+
+        mock_match = SnippetMatch(
+            snippet=snippet,
+            match_confidence=0.7,
+            match_strategy="semantic_similarity",
+        )
+
+        with patch.object(
+            SnippetLibrary, "find_by_similarity", return_value=[mock_match]
+        ):
+            snippets = mock_agent._discover_snippets(
+                session=session,
+                question="How many orders are there?",
+                schema_mapping_id="source_123",
+                manager=mgr,
+            )
+
+        assert len(snippets) == 1
+        assert snippets[0]["snippet_type"] == "query"
+        assert snippets[0]["step_id"] == "order_count"
+
+    def test_usage_tracked_without_provided_snippets(
+        self, mock_agent, session: Session, mock_manager
+    ):
+        """Test that usage is tracked even when no snippets were provided (first-time)."""
+        from sqlalchemy import select
+
+        from dataraum.query.models import QueryAnalysisOutput, SQLStepOutput
+        from dataraum.query.snippet_models import SnippetUsageRecord
+
+        analysis = QueryAnalysisOutput(
+            summary="Test first-time execution",
+            interpreted_question="Test",
+            metric_type="scalar",
+            steps=[
+                SQLStepOutput(
+                    step_id="first_calc",
+                    sql="SELECT SUM(amount) FROM typed_orders",
+                    description="Sum amounts",
+                ),
+            ],
+            final_sql="SELECT * FROM first_calc",
+        )
+
+        mock_agent._track_snippet_usage(
+            session=session,
+            execution_id="exec-first",
+            analysis_output=analysis,
+            provided_snippets={},
+            manager=mock_manager,
+        )
+        session.flush()
+
+        usages = list(session.execute(select(SnippetUsageRecord)).scalars().all())
+        assert len(usages) == 1
+        assert usages[0].usage_type == "newly_generated"
+        assert usages[0].step_id == "first_calc"
+        assert usages[0].snippet_id is None

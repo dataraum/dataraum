@@ -99,7 +99,7 @@ class QueryAgent(LLMFeature):
         contract: str | None = None,
         auto_contract: bool = False,
         source_id: str | None = None,
-        manager: ConnectionManager | None = None,
+        manager: ConnectionManager,
         ephemeral: bool = False,
     ) -> Result[QueryResult]:
         """Analyze a natural language question and generate SQL.
@@ -114,7 +114,7 @@ class QueryAgent(LLMFeature):
             contract: Explicit contract name for evaluation
             auto_contract: If True, find the strictest passing contract
             source_id: Optional source ID for context
-            manager: ConnectionManager for library access
+            manager: ConnectionManager for snippet library and embeddings
             ephemeral: If True, don't save novel snippets
 
         Returns:
@@ -214,6 +214,7 @@ class QueryAgent(LLMFeature):
             session=session,
             question=question,
             schema_mapping_id=source_id or "default",
+            manager=manager,
         )
         if discovered_snippets:
             provided_snippets = {
@@ -289,12 +290,13 @@ class QueryAgent(LLMFeature):
         )
 
         # Track snippet usage (compare generated steps to provided snippets)
-        if exec_error is None and provided_snippets:
+        if exec_error is None:
             self._track_snippet_usage(
                 session=session,
                 execution_id=execution_id,
                 analysis_output=analysis_output,
                 provided_snippets=provided_snippets,
+                manager=manager,
             )
 
         # Save novel snippets for future reuse (skip if ephemeral or failed)
@@ -305,6 +307,7 @@ class QueryAgent(LLMFeature):
                 analysis_output=analysis_output,
                 schema_mapping_id=source_id,
                 provided_snippets=provided_snippets,
+                manager=manager,
             )
 
         # Record execution
@@ -351,56 +354,49 @@ class QueryAgent(LLMFeature):
         session: Session,
         question: str,
         schema_mapping_id: str,
+        manager: ConnectionManager,
     ) -> list[dict[str, Any]]:
-        """Search the SQL Knowledge Base for relevant snippets.
+        """Search the SQL Knowledge Base for relevant snippets via similarity.
 
-        Discovers validated SQL patterns that might be relevant to the
-        user's question. These are injected into the LLM prompt.
+        Uses semantic similarity search to find validated SQL patterns
+        relevant to the user's question. Returns empty list when nothing
+        is similar enough — the LLM then generates fresh SQL.
 
         Args:
             session: SQLAlchemy session
             question: Natural language question
             schema_mapping_id: Schema mapping identifier
+            manager: ConnectionManager for embeddings
 
         Returns:
             List of snippet dicts with step_id, sql, description, snippet_id
         """
         from dataraum.query.snippet_library import SnippetLibrary
 
-        try:
-            library = SnippetLibrary(session)
-        except Exception:
-            return []
+        library = SnippetLibrary(session, manager)
 
-        # Get all validated snippets for this schema
-        # (for query agent, we provide all known snippets as context)
-        # TODO: When snippet counts grow (>100), switch to semantic filtering
-        # via library.find_by_similarity(question, schema_mapping_id) instead
-        # of returning all snippets. Current approach is fine for <100 snippets.
-        all_snippets = library.find_all_for_schema(
-            schema_mapping_id,
-            snippet_types=["extract", "constant", "formula"],
+        matches = library.find_by_similarity(
+            text=question,
+            schema_mapping_id=schema_mapping_id,
+            min_similarity=0.3,
+            limit=20,
         )
-
-        if not all_snippets:
+        if not matches:
             return []
 
         results = []
-        for snippet in all_snippets:
-            # Use standard_field or a generated name as step_id
-            step_id = snippet.standard_field or snippet.snippet_id[:8]
+        for m in matches:
+            step_id = m.snippet.standard_field or m.snippet.snippet_id[:8]
             results.append({
                 "step_id": step_id,
-                "sql": snippet.sql,
-                "description": snippet.description,
-                "snippet_id": snippet.snippet_id,
-                "snippet_type": snippet.snippet_type,
-                "confidence": snippet.confidence,
+                "sql": m.snippet.sql,
+                "description": m.snippet.description,
+                "snippet_id": m.snippet.snippet_id,
+                "snippet_type": m.snippet.snippet_type,
+                "confidence": m.snippet.confidence,
             })
 
-        if results:
-            logger.info(f"Discovered {len(results)} snippets for query context")
-
+        logger.info(f"Discovered {len(results)} snippets via similarity search")
         return results
 
     def _track_snippet_usage(
@@ -409,6 +405,7 @@ class QueryAgent(LLMFeature):
         execution_id: str,
         analysis_output: QueryAnalysisOutput,
         provided_snippets: dict[str, dict[str, str]],
+        manager: ConnectionManager,
     ) -> None:
         """Compare generated SQL steps to provided snippets and record usage.
 
@@ -417,14 +414,12 @@ class QueryAgent(LLMFeature):
             execution_id: Execution ID
             analysis_output: Generated query analysis with steps
             provided_snippets: Dict of step_id -> {sql, snippet_id, ...}
+            manager: ConnectionManager for embeddings
         """
         from dataraum.query.snippet_library import SnippetLibrary
         from dataraum.query.snippet_utils import determine_usage_type, sql_similarity
 
-        try:
-            library = SnippetLibrary(session)
-        except Exception:
-            return
+        library = SnippetLibrary(session, manager)
 
         # Track which provided snippets were used
         used_snippet_ids: set[str] = set()
@@ -485,6 +480,7 @@ class QueryAgent(LLMFeature):
         analysis_output: QueryAnalysisOutput,
         schema_mapping_id: str,
         provided_snippets: dict[str, dict[str, str]],
+        manager: ConnectionManager,
     ) -> None:
         """Save novel query steps as snippets for future reuse.
 
@@ -497,13 +493,11 @@ class QueryAgent(LLMFeature):
             analysis_output: Generated query analysis with steps
             schema_mapping_id: Schema mapping identifier (source_id)
             provided_snippets: Dict of step_id -> snippet info that were provided
+            manager: ConnectionManager for embeddings
         """
         from dataraum.query.snippet_library import SnippetLibrary
 
-        try:
-            library = SnippetLibrary(session)
-        except Exception:
-            return
+        library = SnippetLibrary(session, manager)
 
         saved_count = 0
         for step in analysis_output.steps:
@@ -573,7 +567,6 @@ class QueryAgent(LLMFeature):
             "dataset_context": context_str,
             "entropy_warnings": entropy_warnings
             or "Data quality assessment not available - proceed with caution.",
-            "similar_queries": "",
             "validated_snippets": snippets_str,
         }
 

@@ -108,9 +108,15 @@ user_prompt: |
   4. Returns the final result with proper column names
 
   CACHED STEPS:
-  If cached_steps are provided above, prefer reusing them exactly. These are validated SQL fragments
-  from previous successful executions. Only modify a cached step if the schema has changed or if the
-  step is clearly incorrect for the current context.
+  The <cached_steps> section above contains a JSON object of previously validated SQL steps
+  from the snippet knowledge base. Each key is a step_id mapping to {sql, description}.
+
+  Rules:
+  - If a cached step matches the graph step, reuse the SQL exactly (same step_id and SQL)
+  - Only modify a cached step if the schema has changed or the step is clearly wrong
+  - Cached steps come from previous successful graph executions (high confidence)
+  - If no cached steps are provided, generate all SQL from scratch
+  - You may add new steps beyond what's cached if the graph requires them
 
   IMPORTANT: If a standard_field like 'revenue' is not directly mapped, analyze the available columns
   and their business_concepts to construct an appropriate aggregation query.

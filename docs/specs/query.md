@@ -142,7 +142,7 @@ The query library enables RAG-style query reuse:
 - **LLM config**: `config/llm.yaml` (provider, model, limits)
 - **Entropy integration**: `build_for_query()` from `entropy/views/query_context.py`
 - **Contract evaluation**: Optional `--contract` or `--auto-contract` flags
-- **Library**: Requires `ConnectionManager` with `vectors_enabled=True`
+- **Library**: Requires `ConnectionManager` with vectors database configured
 
 ## Roadmap
 

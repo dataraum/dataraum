@@ -87,10 +87,6 @@ user_prompt: |
   {entropy_warnings}
   </data_quality>
 
-  <similar_queries>
-  {similar_queries}
-  </similar_queries>
-
   <validated_snippets>
   {validated_snippets}
   </validated_snippets>
@@ -125,15 +121,15 @@ user_prompt: |
   final_sql: "SELECT r.month, r.revenue, c.cost, r.revenue - c.cost as profit FROM monthly_revenue r JOIN monthly_costs c ON r.month = c.month ORDER BY r.month"
 
   VALIDATED SNIPPETS:
-  If validated_snippets are provided above, prefer reusing them. These are validated SQL fragments
-  from the knowledge base (previous successful graph executions or queries). You can use them as
-  building blocks for your steps - reference the same step_id and SQL where applicable.
+  The <validated_snippets> section above contains a JSON array of SQL building blocks
+  from the knowledge base. Each has: step_id, sql, description, type, confidence.
 
-  SIMILAR QUERIES:
-  If similar queries are provided above, use them as inspiration:
-  - Reuse step patterns that worked for similar questions
-  - Adapt column mappings from similar queries
-  - Note: Don't copy blindly - adapt to the current question
+  Rules:
+  - If a snippet's SQL matches what you need, reuse it exactly (same step_id and SQL)
+  - If a snippet is close but needs adaptation, use it as a starting point
+  - Snippets with confidence >= 0.9 are from verified graph executions (prefer these)
+  - Snippets with confidence < 0.9 are from previous queries (use with more caution)
+  - You are NOT required to use any snippet — generate fresh SQL if none are relevant
 
   IMPORTANT:
   - The summary should be a complete sentence describing what the query calculates,
@@ -168,12 +164,6 @@ inputs:
     required: false
     default: "Data quality assessment not available - proceed with caution."
     description: "Data quality warnings and entropy scores"
-
-  similar_queries:
-    type: "string"
-    required: false
-    default: ""
-    description: "Similar queries from library as inspiration (JSON array of query documents)"
 
   validated_snippets:
     type: "string"

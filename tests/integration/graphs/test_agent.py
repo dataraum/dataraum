@@ -311,6 +311,7 @@ class TestGraphAgentIntegration:
             duckdb_conn=duckdb_with_data,
             table_name="test_data",
             schema_mapping_id="test-mapping",
+            manager=MagicMock(),
         )
 
         # Execute
@@ -371,6 +372,7 @@ class TestGraphAgentIntegration:
             duckdb_conn=duckdb_with_data,
             table_name="test_data",
             schema_mapping_id="test-mapping",
+            manager=MagicMock(),
         )
 
         # First execution - should call LLM
@@ -442,6 +444,7 @@ class TestGraphAgentSnippets:
             duckdb_conn=duckdb_with_data,
             table_name="test_data",
             schema_mapping_id="test-mapping",
+            manager=MagicMock(),
         )
 
         result = agent.execute(session, sample_graph, context)
@@ -479,8 +482,10 @@ class TestGraphAgentSnippets:
         mock_renderer = MagicMock()
         mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
 
+        mock_mgr = MagicMock()
+
         # Pre-populate snippet library with a matching snippet
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_mgr)
         library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) AS value FROM test_data",
@@ -504,6 +509,7 @@ class TestGraphAgentSnippets:
             duckdb_conn=duckdb_with_data,
             table_name="test_data",
             schema_mapping_id="test-mapping",
+            manager=mock_mgr,
         )
 
         # Execute — should assemble from snippets (no LLM call)
@@ -534,8 +540,10 @@ class TestGraphAgentSnippets:
         mock_renderer = MagicMock()
         mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
 
+        mock_mgr = MagicMock()
+
         # Pre-populate snippet
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, mock_mgr)
         snippet = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) AS value FROM test_data",
@@ -559,6 +567,7 @@ class TestGraphAgentSnippets:
             duckdb_conn=duckdb_with_data,
             table_name="test_data",
             schema_mapping_id="test-mapping",
+            manager=mock_mgr,
         )
 
         result = agent.execute(session, sample_graph, context)
@@ -598,7 +607,8 @@ class TestGraphAgentSnippets:
         mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
 
         # Pre-populate snippet with column_mappings
-        library = SnippetLibrary(session)
+        mock_manager = MagicMock()
+        library = SnippetLibrary(session, mock_manager)
         library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) AS value FROM test_data",
@@ -620,9 +630,97 @@ class TestGraphAgentSnippets:
         )
 
         # Access internal _lookup_snippets to verify column_mappings are returned
+        mock_manager = MagicMock()
         cached = agent._lookup_snippets(
-            session, sample_graph, "test-mapping", {}
+            session, sample_graph, "test-mapping", {}, manager=mock_manager
         )
 
         assert "value" in cached
         assert cached["value"]["column_mappings"] == {"test_field": "amount"}
+
+    def test_usage_tracked_without_cached_snippets(
+        self,
+        session: Session,
+        duckdb_with_data,
+        sample_graph,
+    ):
+        """Test that usage is tracked on first-time execution (no cached snippets)."""
+        from sqlalchemy import select
+
+        from dataraum.query.snippet_models import SnippetUsageRecord
+
+        mock_provider = MagicMock()
+        mock_provider.get_model_for_tier.return_value = "test-model"
+
+        mock_config = MagicMock()
+        mock_config.limits.max_output_tokens_per_request = 4000
+        mock_config.limits.cache_ttl_seconds = 3600
+
+        mock_renderer = MagicMock()
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+
+        agent = GraphAgent(
+            config=mock_config,
+            provider=mock_provider,
+            prompt_renderer=mock_renderer,
+        )
+
+        # Mock LLM response
+        mock_tool_call = MagicMock()
+        mock_tool_call.name = "generate_sql"
+        mock_tool_call.input = {
+            "summary": "Extracts sum of amounts.",
+            "steps": [
+                {
+                    "step_id": "value",
+                    "sql": "SELECT SUM(amount) AS value FROM test_data",
+                    "description": "Sum amounts from test data",
+                }
+            ],
+            "final_sql": "SELECT * FROM value",
+            "column_mappings": {"amount": "amount"},
+        }
+
+        mock_response = MagicMock()
+        mock_response.tool_calls = [mock_tool_call]
+        mock_response.content = None
+        agent.provider.converse = MagicMock(return_value=Result.ok(mock_response))
+
+        context = ExecutionContext(
+            duckdb_conn=duckdb_with_data,
+            table_name="test_data",
+            schema_mapping_id="test-mapping",
+            manager=MagicMock(),
+        )
+
+        # Execute — no cached snippets (first time), should still track usage
+        result = agent.execute(session, sample_graph, context)
+        assert result.success
+
+        # Verify usage records were created
+        usages = list(
+            session.execute(select(SnippetUsageRecord)).scalars().all()
+        )
+        assert len(usages) >= 1
+
+        # All steps should be newly_generated
+        newly_generated = [u for u in usages if u.usage_type == "newly_generated"]
+        assert len(newly_generated) >= 1
+        assert newly_generated[0].execution_type == "graph"
+
+    def test_execution_context_has_manager_field(self, duckdb_with_data):
+        """Test that ExecutionContext supports the manager field."""
+        context = ExecutionContext(
+            duckdb_conn=duckdb_with_data,
+            table_name="test_data",
+            manager=None,
+        )
+        assert context.manager is None
+
+        mock_manager = MagicMock()
+        context_with_manager = ExecutionContext(
+            duckdb_conn=duckdb_with_data,
+            table_name="test_data",
+            manager=mock_manager,
+        )
+        assert context_with_manager.manager is mock_manager

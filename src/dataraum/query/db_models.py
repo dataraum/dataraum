@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.storage import Base
@@ -44,7 +44,7 @@ class QueryExecutionRecord(Base):
     )
 
     # Results summary
-    success: Mapped[bool] = mapped_column(Integer, nullable=False, default=True)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 

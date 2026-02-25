@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
-from dataraum.pipeline.runner import RunConfig, RunResult, run
+from dataraum.pipeline.runner import PhaseRunResult, RunConfig, RunResult, run
 from dataraum.storage import Table
 
 # Load .env for ANTHROPIC_API_KEY (same as CLI does in cli/common.py)
@@ -125,12 +125,13 @@ def _run_pipeline_cached(
 ) -> RunResult:
     """Run pipeline if not already cached."""
     if not fresh and _pipeline_completed(output_dir):
-        # Pipeline completed successfully — return cached result
+        # Pipeline completed successfully — return cached result with phases
         return RunResult(
             success=True,
             source_id=_read_source_id(output_dir),
             duration_seconds=0.0,
             output_dir=output_dir,
+            phases=_read_phases(output_dir),
         )
 
     # Fresh start
@@ -159,6 +160,29 @@ def _read_source_id(output_dir: Path) -> str:
         result: str = row[0]
     engine.dispose()
     return result
+
+
+def _read_phases(output_dir: Path) -> list[PhaseRunResult]:
+    """Read phase results from an existing pipeline output."""
+    from sqlalchemy import create_engine, text
+
+    db_path = output_dir / "metadata.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    phases: list[PhaseRunResult] = []
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT phase_name, status, duration_seconds FROM phase_checkpoints")
+        ).fetchall()
+        for row in rows:
+            phases.append(
+                PhaseRunResult(
+                    phase_name=row[0],
+                    status=row[1],
+                    duration_seconds=row[2] or 0.0,
+                )
+            )
+    engine.dispose()
+    return phases
 
 
 # =============================================================================

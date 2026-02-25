@@ -91,6 +91,10 @@ user_prompt: |
   {similar_queries}
   </similar_queries>
 
+  <validated_snippets>
+  {validated_snippets}
+  </validated_snippets>
+
   <instructions>
   1. Write a brief summary (one sentence) describing what this query answers
   2. Restate the question to show your understanding
@@ -119,6 +123,11 @@ user_prompt: |
       sql: "SELECT DATE_TRUNC('month', \"Date\") as month, SUM(\"Cost\") as cost FROM typed_expenses GROUP BY 1"
 
   final_sql: "SELECT r.month, r.revenue, c.cost, r.revenue - c.cost as profit FROM monthly_revenue r JOIN monthly_costs c ON r.month = c.month ORDER BY r.month"
+
+  VALIDATED SNIPPETS:
+  If validated_snippets are provided above, prefer reusing them. These are validated SQL fragments
+  from the knowledge base (previous successful graph executions or queries). You can use them as
+  building blocks for your steps - reference the same step_id and SQL where applicable.
 
   SIMILAR QUERIES:
   If similar queries are provided above, use them as inspiration:
@@ -165,3 +174,9 @@ inputs:
     required: false
     default: ""
     description: "Similar queries from library as inspiration (JSON array of query documents)"
+
+  validated_snippets:
+    type: "string"
+    required: false
+    default: ""
+    description: "Validated SQL snippets from the knowledge base (JSON array)"

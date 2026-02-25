@@ -33,7 +33,6 @@ Usage:
 
 # Re-export DB models for convenience
 from dataraum.graphs.db_models import (
-    GeneratedCodeRecord,
     GraphExecutionRecord,
     StepResultRecord,
 )
@@ -140,7 +139,6 @@ __all__ = [
     "SchemaMapping",
     "DatasetSchemaMapping",
     # Persistence
-    "GeneratedCodeRecord",
     "GraphExecutionRecord",
     "StepResultRecord",
     "GraphExecutionRepository",

@@ -136,11 +136,6 @@ class QueryResult:
     column_mappings: dict[str, str] = field(default_factory=dict)
     validation_notes: list[str] = field(default_factory=list)
 
-    # Library reuse tracking
-    library_entry_id: str | None = None  # If reused from library
-    similarity_score: float | None = None  # Similarity to library entry
-    was_reused: bool = False  # True if SQL came from library
-
     # Error handling
     success: bool = True
     error: str | None = None
@@ -180,9 +175,6 @@ class QueryResult:
             "metric_type": self.metric_type,
             "column_mappings": self.column_mappings,
             "validation_notes": self.validation_notes,
-            "library_entry_id": self.library_entry_id,
-            "similarity_score": round(self.similarity_score, 3) if self.similarity_score else None,
-            "was_reused": self.was_reused,
             "success": self.success,
             "error": self.error,
         }

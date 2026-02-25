@@ -1,13 +1,14 @@
 """Query Agent for natural language to SQL conversion.
 
 This agent converts natural language questions into executable SQL
-with entropy awareness, assumption tracking, and query library reuse.
+with entropy awareness, assumption tracking, and snippet knowledge base.
 
-The agent implements RAG-based query reuse:
-1. Search library for similar queries by semantic similarity
-2. If match found, reuse SQL (with confidence from original)
-3. If no match, generate fresh SQL using LLM
-4. Save successful queries to library for future reuse
+The agent uses the SQL Knowledge Base:
+1. Discover validated SQL snippets from previous graph/query executions
+2. Inject snippets into LLM prompt as validated building blocks
+3. Generate SQL using LLM (with snippet hints)
+4. Track snippet usage for stabilization metrics
+5. Save novel query patterns as snippets for future reuse
 
 Usage:
     agent = QueryAgent(config, provider, renderer, cache)
@@ -16,7 +17,6 @@ Usage:
         duckdb_conn=conn,
         question="What was total revenue last month?",
         table_ids=["t1", "t2"],
-        manager=manager,  # For library access
     )
 """
 
@@ -43,7 +43,6 @@ from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import ConversationRequest, Message, ToolDefinition
 from dataraum.storage import Table
 
-from .document import QueryDocument
 from .models import (
     QueryAnalysisOutput,
     QueryResult,
@@ -58,12 +57,8 @@ if TYPE_CHECKING:
     from dataraum.entropy.views import EntropyForQuery
     from dataraum.graphs.context import GraphExecutionContext
     from dataraum.graphs.models import QueryAssumption
-    from dataraum.query.library import LibraryMatch
 
 logger = get_logger(__name__)
-
-# Default similarity threshold for library reuse
-DEFAULT_SIMILARITY_THRESHOLD = 0.85
 
 
 @dataclass
@@ -106,11 +101,10 @@ class QueryAgent(LLMFeature):
         source_id: str | None = None,
         manager: ConnectionManager | None = None,
         ephemeral: bool = False,
-        similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     ) -> Result[QueryResult]:
         """Analyze a natural language question and generate SQL.
 
-        Uses RAG-based query reuse when a library match is found.
+        Uses snippet knowledge base for validated SQL patterns.
 
         Args:
             session: SQLAlchemy session for metadata access
@@ -120,15 +114,13 @@ class QueryAgent(LLMFeature):
             contract: Explicit contract name for evaluation
             auto_contract: If True, find the strictest passing contract
             source_id: Optional source ID for context
-            manager: ConnectionManager for library access (enables reuse)
-            ephemeral: If True, don't save query to library
-            similarity_threshold: Minimum similarity for library reuse (0.0-1.0)
+            manager: ConnectionManager for library access
+            ephemeral: If True, don't save novel snippets
 
         Returns:
             Result containing QueryResult with SQL, data, and confidence level
         """
         execution_id = str(uuid4())
-        library_match: LibraryMatch | None = None
 
         # Filter to only typed tables (these are the tables the LLM should query)
         typed_table_ids = [
@@ -214,71 +206,42 @@ class QueryAgent(LLMFeature):
                 )
             )
 
-        # Try to find similar query in library (RAG-based reuse)
-        analysis_output: QueryAnalysisOutput | None = None
+        # Discover validated SQL snippets from the knowledge base
+        # Track snippets provided to LLM for post-execution comparison
+        provided_snippets: dict[str, dict[str, str]] = {}
 
-        if manager and source_id:
-            library_match = self._search_library(
-                session=session,
-                manager=manager,
-                question=question,
-                source_id=source_id,
-                min_similarity=similarity_threshold,
-            )
+        discovered_snippets = self._discover_snippets(
+            session=session,
+            question=question,
+            schema_mapping_id=source_id or "default",
+        )
+        if discovered_snippets:
+            provided_snippets = {
+                s["step_id"]: s for s in discovered_snippets
+            }
 
-            if library_match:
-                logger.info(
-                    f"Reusing query from library: {library_match.entry.query_id} "
-                    f"(similarity: {library_match.similarity:.3f})"
-                )
-                # Create analysis output from library entry
-                analysis_output = QueryAnalysisOutput(
-                    summary=library_match.entry.summary or "Reused from query library",
-                    interpreted_question=library_match.entry.original_question or question,
-                    metric_type="table",  # Default, could be stored in library
-                    final_sql=library_match.entry.final_sql,
-                    column_mappings=library_match.entry.column_mappings or {},
-                    assumptions=[],  # Will be loaded from library
-                    validation_notes=["Reused from query library"],
-                )
+        gen_result = self._generate_query(
+            question=question,
+            execution_id=execution_id,
+            execution_context=execution_context,
+            entropy_context=entropy_context,
+            discovered_snippets=discovered_snippets if discovered_snippets else None,
+        )
 
-        # Generate SQL using LLM if no library match
-        if analysis_output is None:
-            # Search for similar queries as inspiration (lower threshold than reuse)
-            similar_queries: list[dict[str, Any]] = []
-            if manager and source_id:
-                inspiration_matches = self._search_library_for_inspiration(
-                    session=session,
-                    manager=manager,
+        if not gen_result.success or not gen_result.value:
+            return Result.ok(
+                QueryResult(
+                    execution_id=execution_id,
                     question=question,
-                    source_id=source_id,
-                    limit=3,
-                    min_similarity=0.5,
+                    success=False,
+                    confidence_level=confidence_level,
+                    contract=contract,
+                    contract_evaluation=contract_evaluation,
+                    error=gen_result.error or "Query generation failed",
                 )
-                similar_queries = [m.to_context() for m in inspiration_matches]
-
-            gen_result = self._generate_query(
-                question=question,
-                execution_id=execution_id,
-                execution_context=execution_context,
-                entropy_context=entropy_context,
-                similar_queries=similar_queries if similar_queries else None,
             )
 
-            if not gen_result.success or not gen_result.value:
-                return Result.ok(
-                    QueryResult(
-                        execution_id=execution_id,
-                        question=question,
-                        success=False,
-                        confidence_level=confidence_level,
-                        contract=contract,
-                        contract_evaluation=contract_evaluation,
-                        error=gen_result.error or "Query generation failed",
-                    )
-                )
-
-            analysis_output = gen_result.value
+        analysis_output = gen_result.value
 
         # Execute with step-by-step model (if steps exist) or simple execution
         if analysis_output.steps:
@@ -325,34 +288,32 @@ class QueryAgent(LLMFeature):
             confidence_level=confidence_level,
         )
 
-        # Determine if this was a library reuse
-        was_reused = library_match is not None
-        library_entry_id = library_match.entry.query_id if library_match else None
-        similarity_score = library_match.similarity if library_match else None
-
-        # Save to library if successful and not ephemeral
-        if exec_error is None and not ephemeral and not was_reused and manager and source_id:
-            self._save_to_library(
+        # Track snippet usage (compare generated steps to provided snippets)
+        if exec_error is None and provided_snippets:
+            self._track_snippet_usage(
                 session=session,
-                manager=manager,
-                source_id=source_id,
-                question=question,
+                execution_id=execution_id,
                 analysis_output=analysis_output,
-                assumptions=assumptions,
-                contract=contract,
-                confidence_level=confidence_level,
+                provided_snippets=provided_snippets,
+            )
+
+        # Save novel snippets for future reuse (skip if ephemeral or failed)
+        if exec_error is None and not ephemeral and source_id:
+            self._save_novel_snippets(
+                session=session,
+                execution_id=execution_id,
+                analysis_output=analysis_output,
+                schema_mapping_id=source_id,
+                provided_snippets=provided_snippets,
             )
 
         # Record execution
-        if manager and source_id:
+        if source_id:
             self._record_execution(
                 session=session,
-                manager=manager,
                 source_id=source_id,
                 question=question,
                 sql=analysis_output.final_sql,
-                library_entry_id=library_entry_id,
-                similarity_score=similarity_score,
                 success=exec_error is None,
                 row_count=len(data) if data else None,
                 error_message=exec_error,
@@ -380,13 +341,191 @@ class QueryAgent(LLMFeature):
                 metric_type=analysis_output.metric_type,
                 column_mappings=analysis_output.column_mappings,
                 validation_notes=analysis_output.validation_notes,
-                library_entry_id=library_entry_id,
-                similarity_score=similarity_score,
-                was_reused=was_reused,
                 success=exec_error is None,
                 error=exec_error,
             )
         )
+
+    def _discover_snippets(
+        self,
+        session: Session,
+        question: str,
+        schema_mapping_id: str,
+    ) -> list[dict[str, Any]]:
+        """Search the SQL Knowledge Base for relevant snippets.
+
+        Discovers validated SQL patterns that might be relevant to the
+        user's question. These are injected into the LLM prompt.
+
+        Args:
+            session: SQLAlchemy session
+            question: Natural language question
+            schema_mapping_id: Schema mapping identifier
+
+        Returns:
+            List of snippet dicts with step_id, sql, description, snippet_id
+        """
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        try:
+            library = SnippetLibrary(session)
+        except Exception:
+            return []
+
+        # Get all validated snippets for this schema
+        # (for query agent, we provide all known snippets as context)
+        # TODO: When snippet counts grow (>100), switch to semantic filtering
+        # via library.find_by_similarity(question, schema_mapping_id) instead
+        # of returning all snippets. Current approach is fine for <100 snippets.
+        all_snippets = library.find_all_for_schema(
+            schema_mapping_id,
+            snippet_types=["extract", "constant", "formula"],
+        )
+
+        if not all_snippets:
+            return []
+
+        results = []
+        for snippet in all_snippets:
+            # Use standard_field or a generated name as step_id
+            step_id = snippet.standard_field or snippet.snippet_id[:8]
+            results.append({
+                "step_id": step_id,
+                "sql": snippet.sql,
+                "description": snippet.description,
+                "snippet_id": snippet.snippet_id,
+                "snippet_type": snippet.snippet_type,
+                "confidence": snippet.confidence,
+            })
+
+        if results:
+            logger.info(f"Discovered {len(results)} snippets for query context")
+
+        return results
+
+    def _track_snippet_usage(
+        self,
+        session: Session,
+        execution_id: str,
+        analysis_output: QueryAnalysisOutput,
+        provided_snippets: dict[str, dict[str, str]],
+    ) -> None:
+        """Compare generated SQL steps to provided snippets and record usage.
+
+        Args:
+            session: SQLAlchemy session
+            execution_id: Execution ID
+            analysis_output: Generated query analysis with steps
+            provided_snippets: Dict of step_id -> {sql, snippet_id, ...}
+        """
+        from dataraum.query.snippet_library import SnippetLibrary
+        from dataraum.query.snippet_utils import determine_usage_type, sql_similarity
+
+        try:
+            library = SnippetLibrary(session)
+        except Exception:
+            return
+
+        # Track which provided snippets were used
+        used_snippet_ids: set[str] = set()
+
+        for step in analysis_output.steps:
+            provided = provided_snippets.get(step.step_id)
+
+            if provided is None:
+                # Step generated fresh (no matching snippet was provided)
+                library.record_usage(
+                    execution_id=execution_id,
+                    execution_type="query",
+                    usage_type="newly_generated",
+                    step_id=step.step_id,
+                )
+            else:
+                snippet_id = provided.get("snippet_id")
+                provided_sql = provided.get("sql", "")
+                usage_type = determine_usage_type(step.sql, provided_sql)
+                match_ratio = sql_similarity(step.sql, provided_sql)
+
+                raw_confidence = provided.get("confidence", 0.0)
+                confidence = float(raw_confidence) if isinstance(raw_confidence, (int, float)) else 0.0
+
+                library.record_usage(
+                    execution_id=execution_id,
+                    execution_type="query",
+                    usage_type=usage_type,
+                    snippet_id=snippet_id,
+                    match_confidence=confidence,
+                    sql_match_ratio=match_ratio,
+                    step_id=step.step_id,
+                )
+                if snippet_id:
+                    used_snippet_ids.add(snippet_id)
+
+        # Record provided_not_used for snippets that were provided but not referenced
+        for step_id, provided in provided_snippets.items():
+            snippet_id = provided.get("snippet_id")
+            if snippet_id and snippet_id not in used_snippet_ids:
+                # Check if any generated step matched this snippet
+                matched = any(
+                    s.step_id == step_id for s in analysis_output.steps
+                )
+                if not matched:
+                    library.record_usage(
+                        execution_id=execution_id,
+                        execution_type="query",
+                        usage_type="provided_not_used",
+                        snippet_id=snippet_id,
+                        step_id=step_id,
+                    )
+
+    def _save_novel_snippets(
+        self,
+        session: Session,
+        execution_id: str,
+        analysis_output: QueryAnalysisOutput,
+        schema_mapping_id: str,
+        provided_snippets: dict[str, dict[str, str]],
+    ) -> None:
+        """Save novel query steps as snippets for future reuse.
+
+        After a successful query execution, saves any freshly generated steps
+        (not reused from existing snippets) as "query" type snippets.
+
+        Args:
+            session: SQLAlchemy session
+            execution_id: Query execution ID
+            analysis_output: Generated query analysis with steps
+            schema_mapping_id: Schema mapping identifier (source_id)
+            provided_snippets: Dict of step_id -> snippet info that were provided
+        """
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        try:
+            library = SnippetLibrary(session)
+        except Exception:
+            return
+
+        saved_count = 0
+        for step in analysis_output.steps:
+            # Skip steps that came from existing snippets
+            if step.step_id in provided_snippets:
+                continue
+
+            # Save as a query-type snippet
+            library.save_snippet(
+                snippet_type="query",
+                sql=step.sql,
+                description=step.description or f"Query step: {step.step_id}",
+                schema_mapping_id=schema_mapping_id,
+                source=f"query:{execution_id}",
+                confidence=0.5,  # Lower confidence for query-derived snippets
+                standard_field=step.step_id,
+                column_mappings=analysis_output.column_mappings,
+            )
+            saved_count += 1
+
+        if saved_count:
+            logger.info(f"Saved {saved_count} novel query snippet(s) for reuse")
 
     def _generate_query(
         self,
@@ -394,7 +533,7 @@ class QueryAgent(LLMFeature):
         execution_id: str,
         execution_context: GraphExecutionContext,
         entropy_context: EntropyForQuery | None,
-        similar_queries: list[dict[str, Any]] | None = None,
+        discovered_snippets: list[dict[str, Any]] | None = None,
     ) -> Result[QueryAnalysisOutput]:
         """Use LLM to analyze question and generate SQL."""
         # Build schema information
@@ -410,10 +549,22 @@ class QueryAgent(LLMFeature):
 
             entropy_warnings = format_entropy_for_prompt(execution_context)
 
-        # Format similar queries for RAG inspiration
-        similar_queries_str = ""
-        if similar_queries:
-            similar_queries_str = json.dumps(similar_queries, indent=2)
+        # Format discovered snippets for injection
+        snippets_str = ""
+        if discovered_snippets:
+            snippets_str = json.dumps(
+                [
+                    {
+                        "step_id": s["step_id"],
+                        "sql": s["sql"],
+                        "description": s["description"],
+                        "type": s.get("snippet_type", "unknown"),
+                        "confidence": s.get("confidence", 0.5),
+                    }
+                    for s in discovered_snippets
+                ],
+                indent=2,
+            )
 
         # Build prompt context
         prompt_context = {
@@ -422,7 +573,8 @@ class QueryAgent(LLMFeature):
             "dataset_context": context_str,
             "entropy_warnings": entropy_warnings
             or "Data quality assessment not available - proceed with caution.",
-            "similar_queries": similar_queries_str,
+            "similar_queries": "",
+            "validated_snippets": snippets_str,
         }
 
         # Render prompt
@@ -593,96 +745,13 @@ class QueryAgent(LLMFeature):
 
         return "\n".join(lines)
 
-    def _search_library(
-        self,
-        session: Session,
-        manager: ConnectionManager,
-        question: str,
-        source_id: str,
-        min_similarity: float,
-    ) -> LibraryMatch | None:
-        """Search the query library for similar queries.
-
-        Args:
-            session: SQLAlchemy session
-            manager: ConnectionManager with vectors
-            question: Question to search for
-            source_id: Source ID to filter by
-            min_similarity: Minimum similarity threshold
-
-        Returns:
-            LibraryMatch if found, None otherwise
-        """
-        from dataraum.query.library import QueryLibrary
-
-        library = QueryLibrary(session, manager)
-        return library.find_similar(
-            question=question,
-            source_id=source_id,
-            min_similarity=min_similarity,
-        )
-
-    def _save_to_library(
-        self,
-        session: Session,
-        manager: ConnectionManager,
-        source_id: str,
-        question: str,
-        analysis_output: QueryAnalysisOutput,
-        assumptions: list[QueryAssumption],
-        contract: str | None,
-        confidence_level: ConfidenceLevel,
-    ) -> None:
-        """Save a query to the library.
-
-        Uses QueryDocument to preserve all semantic information (summary, steps,
-        assumptions) for better similarity search and context retrieval.
-
-        Args:
-            session: SQLAlchemy session
-            manager: ConnectionManager with vectors
-            source_id: Source ID
-            question: Original question
-            analysis_output: Generated analysis
-            assumptions: List of assumptions
-            contract: Contract name
-            confidence_level: Confidence level
-        """
-        from dataraum.query.library import QueryLibrary
-
-        # Build QueryDocument with all semantic content
-        document = QueryDocument.from_query_analysis(
-            output=analysis_output,
-            assumptions=[
-                {
-                    "dimension": a.dimension,
-                    "target": a.target,
-                    "assumption": a.assumption,
-                    "basis": a.basis.value,
-                    "confidence": a.confidence,
-                }
-                for a in assumptions
-            ],
-        )
-
-        library = QueryLibrary(session, manager)
-        library.save(
-            source_id=source_id,
-            document=document,
-            original_question=question,
-            contract_name=contract,
-            confidence_level=confidence_level.value,
-        )
 
     def _record_execution(
         self,
         session: Session,
-        manager: ConnectionManager,
         source_id: str,
         question: str,
         sql: str,
-        library_entry_id: str | None,
-        similarity_score: float | None,
         success: bool,
         row_count: int | None,
         error_message: str | None,
@@ -690,16 +759,13 @@ class QueryAgent(LLMFeature):
         contract: str | None,
         entropy_action: str | None = None,
     ) -> None:
-        """Record a query execution.
+        """Record a query execution for audit trail.
 
         Args:
             session: SQLAlchemy session
-            manager: ConnectionManager
             source_id: Source ID
             question: Question asked
             sql: SQL executed
-            library_entry_id: Library entry if reused
-            similarity_score: Similarity if reused
             success: Whether execution succeeded
             row_count: Number of rows returned
             error_message: Error if failed
@@ -707,15 +773,14 @@ class QueryAgent(LLMFeature):
             contract: Contract name
             entropy_action: Entropy action determined at query time
         """
-        from dataraum.query.library import QueryLibrary
+        from dataraum.query.db_models import QueryExecutionRecord
 
-        library = QueryLibrary(session, manager)
-        library.record_execution(
+        record = QueryExecutionRecord(
+            execution_id=str(uuid4()),
             source_id=source_id,
             question=question,
-            sql=sql,
-            library_entry_id=library_entry_id,
-            similarity_score=similarity_score,
+            sql_executed=sql,
+            executed_at=datetime.now(UTC),
             success=success,
             row_count=row_count,
             error_message=error_message,
@@ -723,45 +788,7 @@ class QueryAgent(LLMFeature):
             contract_name=contract,
             entropy_action=entropy_action,
         )
-
-    def _search_library_for_inspiration(
-        self,
-        session: Session,
-        manager: ConnectionManager,
-        question: str,
-        source_id: str,
-        limit: int = 3,
-        min_similarity: float = 0.5,
-    ) -> list[LibraryMatch]:
-        """Search the query library for similar queries as inspiration.
-
-        Unlike _search_library which finds exact reuse candidates,
-        this returns multiple lower-threshold matches for RAG inspiration.
-
-        Args:
-            session: SQLAlchemy session
-            manager: ConnectionManager with vectors
-            question: Question to search for
-            source_id: Source ID to filter by
-            limit: Maximum number of matches
-            min_similarity: Minimum similarity threshold (lower than reuse)
-
-        Returns:
-            List of LibraryMatch for inspiration
-        """
-        from dataraum.query.library import QueryLibrary
-
-        try:
-            library = QueryLibrary(session, manager)
-            return library.find_similar_all(
-                question=question,
-                source_id=source_id,
-                min_similarity=min_similarity,
-                limit=limit,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to search library for inspiration: {e}")
-            return []
+        session.add(record)
 
     def _execute_with_steps(
         self,

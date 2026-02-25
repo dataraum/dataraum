@@ -503,3 +503,243 @@ class TestQueryAgentIntegration:
 
         assert not result.success
         assert "prompt" in result.error.lower()
+
+
+class TestQueryAgentSnippets:
+    """Tests for QueryAgent snippet lifecycle."""
+
+    def test_discover_snippets_returns_matching(self, mock_agent, session: Session):
+        """Test that _discover_snippets returns snippets for the schema."""
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        library = SnippetLibrary(session)
+        library.save_snippet(
+            snippet_type="extract",
+            sql="SELECT SUM(amount) AS revenue FROM typed_orders",
+            description="Sum of order amounts (revenue)",
+            schema_mapping_id="source_123",
+            source="graph:revenue",
+            standard_field="revenue",
+            statement="income_statement",
+            aggregation="sum",
+            confidence=1.0,
+        )
+        session.flush()
+
+        snippets = mock_agent._discover_snippets(
+            session=session,
+            question="What is total revenue?",
+            schema_mapping_id="source_123",
+        )
+
+        assert len(snippets) == 1
+        assert snippets[0]["step_id"] == "revenue"
+        assert "SUM(amount)" in snippets[0]["sql"]
+        assert snippets[0]["snippet_id"] is not None
+
+    def test_discover_snippets_empty_for_other_schema(
+        self, mock_agent, session: Session
+    ):
+        """Test that _discover_snippets returns empty for different schema."""
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        library = SnippetLibrary(session)
+        library.save_snippet(
+            snippet_type="extract",
+            sql="SELECT 1",
+            description="test",
+            schema_mapping_id="other_source",
+            source="graph:test",
+            standard_field="test",
+            confidence=1.0,
+        )
+        session.flush()
+
+        snippets = mock_agent._discover_snippets(
+            session=session,
+            question="What is total revenue?",
+            schema_mapping_id="source_123",
+        )
+
+        assert len(snippets) == 0
+
+    def test_track_snippet_usage_exact_reuse(self, mock_agent, session: Session):
+        """Test that _track_snippet_usage records exact reuse correctly."""
+        from sqlalchemy import select
+
+        from dataraum.query.models import QueryAnalysisOutput, SQLStepOutput
+        from dataraum.query.snippet_library import SnippetLibrary
+        from dataraum.query.snippet_models import SnippetUsageRecord
+
+        # Create a real snippet to satisfy FK constraint
+        library = SnippetLibrary(session)
+        snippet = library.save_snippet(
+            snippet_type="extract",
+            sql="SELECT SUM(amount) FROM typed_orders",
+            description="Sum revenue",
+            schema_mapping_id="source_123",
+            source="graph:test",
+            standard_field="revenue",
+            confidence=1.0,
+        )
+        session.flush()
+
+        analysis = QueryAnalysisOutput(
+            summary="Test",
+            interpreted_question="Test",
+            metric_type="scalar",
+            steps=[
+                SQLStepOutput(
+                    step_id="revenue",
+                    sql="SELECT SUM(amount) FROM typed_orders",
+                    description="Sum revenue",
+                ),
+            ],
+            final_sql="SELECT * FROM revenue",
+        )
+
+        provided = {
+            "revenue": {
+                "step_id": "revenue",
+                "sql": "SELECT SUM(amount) FROM typed_orders",
+                "snippet_id": snippet.snippet_id,
+                "confidence": 1.0,
+            },
+        }
+
+        mock_agent._track_snippet_usage(
+            session=session,
+            execution_id="exec-001",
+            analysis_output=analysis,
+            provided_snippets=provided,
+        )
+        session.flush()
+
+        usages = list(session.execute(select(SnippetUsageRecord)).scalars().all())
+        assert len(usages) == 1
+        assert usages[0].usage_type == "exact_reuse"
+        assert usages[0].execution_type == "query"
+        assert usages[0].snippet_id == snippet.snippet_id
+
+    def test_track_snippet_usage_newly_generated(self, mock_agent, session: Session):
+        """Test that _track_snippet_usage records newly generated steps."""
+        from sqlalchemy import select
+
+        from dataraum.query.models import QueryAnalysisOutput, SQLStepOutput
+        from dataraum.query.snippet_models import SnippetUsageRecord
+
+        analysis = QueryAnalysisOutput(
+            summary="Test",
+            interpreted_question="Test",
+            metric_type="scalar",
+            steps=[
+                SQLStepOutput(
+                    step_id="new_calc",
+                    sql="SELECT COUNT(*) FROM typed_orders",
+                    description="Count orders",
+                ),
+            ],
+            final_sql="SELECT * FROM new_calc",
+        )
+
+        # No provided snippets
+        mock_agent._track_snippet_usage(
+            session=session,
+            execution_id="exec-002",
+            analysis_output=analysis,
+            provided_snippets={},
+        )
+        session.flush()
+
+        usages = list(session.execute(select(SnippetUsageRecord)).scalars().all())
+        assert len(usages) == 1
+        assert usages[0].usage_type == "newly_generated"
+        assert usages[0].snippet_id is None
+
+    def test_save_novel_snippets(self, mock_agent, session: Session):
+        """Test that _save_novel_snippets saves new query steps."""
+        from sqlalchemy import select
+
+        from dataraum.query.models import QueryAnalysisOutput, SQLStepOutput
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        analysis = QueryAnalysisOutput(
+            summary="Calculates total revenue",
+            interpreted_question="What is total revenue?",
+            metric_type="scalar",
+            steps=[
+                SQLStepOutput(
+                    step_id="total_rev",
+                    sql="SELECT SUM(amount) AS total FROM typed_orders",
+                    description="Sum all order amounts",
+                ),
+            ],
+            final_sql="SELECT * FROM total_rev",
+            column_mappings={"revenue": "amount"},
+        )
+
+        mock_agent._save_novel_snippets(
+            session=session,
+            execution_id="exec-003",
+            analysis_output=analysis,
+            schema_mapping_id="source_123",
+            provided_snippets={},  # None were provided, so all are novel
+        )
+        session.flush()
+
+        snippets = list(session.execute(select(SQLSnippetRecord)).scalars().all())
+        assert len(snippets) == 1
+        assert snippets[0].snippet_type == "query"
+        assert snippets[0].standard_field == "total_rev"
+        assert snippets[0].schema_mapping_id == "source_123"
+        assert "SUM(amount)" in snippets[0].sql
+        assert snippets[0].column_mappings == {"revenue": "amount"}
+
+    def test_save_novel_snippets_skips_existing(self, mock_agent, session: Session):
+        """Test that _save_novel_snippets skips steps that came from snippets."""
+        from sqlalchemy import select
+
+        from dataraum.query.models import QueryAnalysisOutput, SQLStepOutput
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        analysis = QueryAnalysisOutput(
+            summary="Test",
+            interpreted_question="Test",
+            metric_type="scalar",
+            steps=[
+                SQLStepOutput(
+                    step_id="reused_step",
+                    sql="SELECT SUM(amount) FROM typed_orders",
+                    description="Reused from snippet",
+                ),
+                SQLStepOutput(
+                    step_id="new_step",
+                    sql="SELECT COUNT(*) FROM typed_orders",
+                    description="New step",
+                ),
+            ],
+            final_sql="SELECT * FROM new_step",
+        )
+
+        # reused_step was provided, new_step was not
+        provided = {
+            "reused_step": {
+                "step_id": "reused_step",
+                "sql": "SELECT SUM(amount) FROM typed_orders",
+                "snippet_id": "existing-snip",
+            },
+        }
+
+        mock_agent._save_novel_snippets(
+            session=session,
+            execution_id="exec-004",
+            analysis_output=analysis,
+            schema_mapping_id="source_123",
+            provided_snippets=provided,
+        )
+        session.flush()
+
+        snippets = list(session.execute(select(SQLSnippetRecord)).scalars().all())
+        # Only new_step should be saved, not reused_step
+        assert len(snippets) == 1
+        assert snippets[0].standard_field == "new_step"

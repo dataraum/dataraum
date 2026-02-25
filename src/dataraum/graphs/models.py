@@ -418,9 +418,6 @@ class GraphExecution:
     # Links to other executions
     depends_on_executions: list[str] = field(default_factory=list)
 
-    # Link to query library entry (bidirectional)
-    library_entry_id: str | None = None
-
     # Entropy-related tracking
     assumptions: list[QueryAssumption] = field(default_factory=list)
     max_entropy_score: float = 0.0  # Highest entropy encountered

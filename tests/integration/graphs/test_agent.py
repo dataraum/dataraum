@@ -165,64 +165,6 @@ class TestGraphAgentCaching:
         assert key2 == "test_metric:1.0:mapping-2"
         assert key1 != key2
 
-    def test_db_cache_save_and_load(self, session: Session, sample_graph):
-        """Test saving and loading generated code from database."""
-        agent = GraphAgent(
-            config=MagicMock(),
-            provider=MagicMock(),
-            prompt_renderer=MagicMock(),
-        )
-
-        # Create generated code
-        code = GeneratedCode(
-            code_id="test-save-load",
-            graph_id=sample_graph.graph_id,
-            graph_version=sample_graph.version,
-            schema_mapping_id="test-mapping",
-            summary="Calculates sum of test values.",
-            steps=[{"step_id": "value", "sql": "SELECT 1", "description": "test"}],
-            final_sql="SELECT SUM(amount) FROM test",
-            column_mappings={"test_field": "amount"},
-            llm_model="test-model",
-            prompt_hash="hash123",
-            generated_at=datetime.now(UTC),
-            is_validated=True,
-        )
-
-        # Save to DB
-        agent._save_to_db(session, code)
-        session.commit()
-
-        # Load from DB
-        loaded = agent._load_from_db(
-            session,
-            sample_graph.graph_id,
-            sample_graph.version,
-            "test-mapping",
-        )
-
-        assert loaded is not None
-        assert loaded.code_id == code.code_id
-        assert loaded.final_sql == code.final_sql
-        assert loaded.column_mappings == code.column_mappings
-        assert loaded.is_validated is True
-
-    def test_db_cache_miss(self, session: Session):
-        """Test that cache miss returns None."""
-        agent = GraphAgent(
-            config=MagicMock(),
-            provider=MagicMock(),
-            prompt_renderer=MagicMock(),
-        )
-
-        loaded = agent._load_from_db(
-            session,
-            "nonexistent",
-            "1.0",
-            "mapping",
-        )
-
-        assert loaded is None
 
 
 class TestGraphAgentExecution:
@@ -443,3 +385,244 @@ class TestGraphAgentIntegration:
 
         # Both should produce same result
         assert result1.value.output_value == result2.value.output_value
+
+
+class TestGraphAgentSnippets:
+    """Tests for GraphAgent snippet lifecycle."""
+
+    def test_execute_saves_snippets(
+        self,
+        session: Session,
+        duckdb_with_data,
+        sample_graph,
+    ):
+        """Test that executing a graph saves SQL snippets."""
+        from sqlalchemy import select
+
+        from dataraum.query.snippet_models import SQLSnippetRecord
+
+        mock_provider = MagicMock()
+        mock_provider.get_model_for_tier.return_value = "test-model"
+
+        mock_config = MagicMock()
+        mock_config.limits.max_output_tokens_per_request = 4000
+        mock_config.limits.cache_ttl_seconds = 3600
+
+        mock_renderer = MagicMock()
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+
+        agent = GraphAgent(
+            config=mock_config,
+            provider=mock_provider,
+            prompt_renderer=mock_renderer,
+        )
+
+        # Mock LLM response with step matching the graph's "value" extract step
+        mock_tool_call = MagicMock()
+        mock_tool_call.name = "generate_sql"
+        mock_tool_call.input = {
+            "summary": "Extracts sum of amounts.",
+            "steps": [
+                {
+                    "step_id": "value",
+                    "sql": "SELECT SUM(amount) AS value FROM test_data",
+                    "description": "Sum amounts from test data",
+                }
+            ],
+            "final_sql": "SELECT * FROM value",
+            "column_mappings": {"amount": "amount"},
+        }
+
+        mock_response = MagicMock()
+        mock_response.tool_calls = [mock_tool_call]
+        mock_response.content = None
+        agent.provider.converse = MagicMock(return_value=Result.ok(mock_response))
+
+        context = ExecutionContext(
+            duckdb_conn=duckdb_with_data,
+            table_name="test_data",
+            schema_mapping_id="test-mapping",
+        )
+
+        result = agent.execute(session, sample_graph, context)
+        assert result.success
+
+        # Verify snippet was saved
+        snippets = list(session.execute(select(SQLSnippetRecord)).scalars().all())
+        assert len(snippets) >= 1
+
+        extract_snippet = next(
+            (s for s in snippets if s.snippet_type == "extract"), None
+        )
+        assert extract_snippet is not None
+        assert extract_snippet.standard_field == "test_field"
+        assert extract_snippet.statement == "test_table"
+        assert extract_snippet.schema_mapping_id == "test-mapping"
+        assert "SUM(amount)" in extract_snippet.sql
+
+    def test_execute_reuses_snippets(
+        self,
+        session: Session,
+        duckdb_with_data,
+        sample_graph,
+    ):
+        """Test that second execution reuses snippets without LLM call."""
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        mock_provider = MagicMock()
+        mock_provider.get_model_for_tier.return_value = "test-model"
+
+        mock_config = MagicMock()
+        mock_config.limits.max_output_tokens_per_request = 4000
+        mock_config.limits.cache_ttl_seconds = 3600
+
+        mock_renderer = MagicMock()
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+
+        # Pre-populate snippet library with a matching snippet
+        library = SnippetLibrary(session)
+        library.save_snippet(
+            snippet_type="extract",
+            sql="SELECT SUM(amount) AS value FROM test_data",
+            description="Sum amounts from test data",
+            schema_mapping_id="test-mapping",
+            source="graph:test_metric",
+            standard_field="test_field",
+            statement="test_table",
+            aggregation="sum",
+            confidence=1.0,
+        )
+        session.flush()
+
+        agent = GraphAgent(
+            config=mock_config,
+            provider=mock_provider,
+            prompt_renderer=mock_renderer,
+        )
+
+        context = ExecutionContext(
+            duckdb_conn=duckdb_with_data,
+            table_name="test_data",
+            schema_mapping_id="test-mapping",
+        )
+
+        # Execute — should assemble from snippets (no LLM call)
+        result = agent.execute(session, sample_graph, context)
+        assert result.success
+        assert result.value.output_value == 600.0  # 100 + 200 + 300
+        assert agent.provider.converse.call_count == 0  # No LLM call needed
+
+    def test_snippet_usage_tracked_on_assembly(
+        self,
+        session: Session,
+        duckdb_with_data,
+        sample_graph,
+    ):
+        """Test that snippet usage is tracked when assembled from cache."""
+        from sqlalchemy import select
+
+        from dataraum.query.snippet_library import SnippetLibrary
+        from dataraum.query.snippet_models import SnippetUsageRecord
+
+        mock_provider = MagicMock()
+        mock_provider.get_model_for_tier.return_value = "test-model"
+
+        mock_config = MagicMock()
+        mock_config.limits.max_output_tokens_per_request = 4000
+        mock_config.limits.cache_ttl_seconds = 3600
+
+        mock_renderer = MagicMock()
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+
+        # Pre-populate snippet
+        library = SnippetLibrary(session)
+        snippet = library.save_snippet(
+            snippet_type="extract",
+            sql="SELECT SUM(amount) AS value FROM test_data",
+            description="Sum amounts",
+            schema_mapping_id="test-mapping",
+            source="graph:test_metric",
+            standard_field="test_field",
+            statement="test_table",
+            aggregation="sum",
+            confidence=1.0,
+        )
+        session.flush()
+
+        agent = GraphAgent(
+            config=mock_config,
+            provider=mock_provider,
+            prompt_renderer=mock_renderer,
+        )
+
+        context = ExecutionContext(
+            duckdb_conn=duckdb_with_data,
+            table_name="test_data",
+            schema_mapping_id="test-mapping",
+        )
+
+        result = agent.execute(session, sample_graph, context)
+        assert result.success
+
+        # Verify usage record was created
+        usages = list(
+            session.execute(select(SnippetUsageRecord)).scalars().all()
+        )
+        assert len(usages) >= 1
+
+        # Should be an exact_reuse since snippet was assembled without LLM
+        exact_reuse = next(
+            (u for u in usages if u.usage_type == "exact_reuse"), None
+        )
+        assert exact_reuse is not None
+        assert exact_reuse.execution_type == "graph"
+        assert exact_reuse.snippet_id == snippet.snippet_id
+
+    def test_snippet_column_mappings_preserved(
+        self,
+        session: Session,
+        duckdb_with_data,
+        sample_graph,
+    ):
+        """Test that column_mappings are preserved when assembling from snippets."""
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        mock_provider = MagicMock()
+        mock_provider.get_model_for_tier.return_value = "test-model"
+
+        mock_config = MagicMock()
+        mock_config.limits.max_output_tokens_per_request = 4000
+        mock_config.limits.cache_ttl_seconds = 3600
+
+        mock_renderer = MagicMock()
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+
+        # Pre-populate snippet with column_mappings
+        library = SnippetLibrary(session)
+        library.save_snippet(
+            snippet_type="extract",
+            sql="SELECT SUM(amount) AS value FROM test_data",
+            description="Sum amounts",
+            schema_mapping_id="test-mapping",
+            source="graph:test_metric",
+            standard_field="test_field",
+            statement="test_table",
+            aggregation="sum",
+            confidence=1.0,
+            column_mappings={"test_field": "amount"},
+        )
+        session.flush()
+
+        agent = GraphAgent(
+            config=mock_config,
+            provider=mock_provider,
+            prompt_renderer=mock_renderer,
+        )
+
+        # Access internal _lookup_snippets to verify column_mappings are returned
+        cached = agent._lookup_snippets(
+            session, sample_graph, "test-mapping", {}
+        )
+
+        assert "value" in cached
+        assert cached["value"]["column_mappings"] == {"test_field": "amount"}

@@ -53,8 +53,8 @@ def answer_question(
         contract: Explicit contract name (e.g., "executive_dashboard")
         auto_contract: If True, find the strictest passing contract
         table_ids: Optional list of specific table IDs (defaults to all tables in source)
-        manager: ConnectionManager for query library (enables save/reuse)
-        ephemeral: If True, don't save query to library (default: saves successful queries)
+        manager: ConnectionManager (kept for API compatibility)
+        ephemeral: If True, don't save novel snippets to knowledge base
 
     Returns:
         Result containing QueryResult with:

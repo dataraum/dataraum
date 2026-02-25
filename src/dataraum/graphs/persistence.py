@@ -58,7 +58,6 @@ def execution_to_record(execution: GraphExecution) -> GraphExecutionRecord:
         execution_hash=execution.execution_hash,
         executed_at=execution.executed_at,
         depends_on_executions=execution.depends_on_executions,
-        library_entry_id=execution.library_entry_id,
     )
 
 
@@ -78,7 +77,6 @@ def record_to_execution(record: GraphExecutionRecord) -> GraphExecution:
         execution_hash=record.execution_hash,
         executed_at=record.executed_at,
         depends_on_executions=record.depends_on_executions,
-        library_entry_id=record.library_entry_id,
     )
 
     # Convert step results

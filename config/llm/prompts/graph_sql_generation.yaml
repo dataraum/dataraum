@@ -94,6 +94,10 @@ user_prompt: |
   {entropy_warnings}
   </data_quality>
 
+  <cached_steps>
+  {cached_steps}
+  </cached_steps>
+
   <instructions>
   Generate SQL that:
   1. Maps abstract fields (standard_field references) to concrete columns using:
@@ -102,6 +106,11 @@ user_prompt: |
   2. Use semantic annotations (business_concept, semantic_role) to understand column purposes
   3. Implements each step as standalone SQL (no CTEs, no step references)
   4. Returns the final result with proper column names
+
+  CACHED STEPS:
+  If cached_steps are provided above, prefer reusing them exactly. These are validated SQL fragments
+  from previous successful executions. Only modify a cached step if the schema has changed or if the
+  step is clearly incorrect for the current context.
 
   IMPORTANT: If a standard_field like 'revenue' is not directly mapped, analyze the available columns
   and their business_concepts to construct an appropriate aggregation query.
@@ -170,3 +179,9 @@ inputs:
     required: false
     default: "Data quality assessment not available - proceed with caution."
     description: "Data quality warnings and entropy scores"
+
+  cached_steps:
+    type: "string"
+    required: false
+    default: ""
+    description: "JSON of previously validated SQL steps from the snippet knowledge base"

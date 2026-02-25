@@ -122,7 +122,7 @@ class QueryScreen(Screen[None]):
         """Load recent queries from database."""
         from sqlalchemy import select
 
-        from dataraum.query.db_models import QueryLibraryEntry
+        from dataraum.query.db_models import QueryExecutionRecord
         from dataraum.storage import Source
 
         manager = get_manager(self.output_dir)
@@ -137,11 +137,11 @@ class QueryScreen(Screen[None]):
 
                 source = sources[0]
 
-                # Get recent queries
+                # Get recent query executions
                 queries_result = session.execute(
-                    select(QueryLibraryEntry)
-                    .where(QueryLibraryEntry.source_id == source.source_id)
-                    .order_by(QueryLibraryEntry.created_at.desc())
+                    select(QueryExecutionRecord)
+                    .where(QueryExecutionRecord.source_id == source.source_id)
+                    .order_by(QueryExecutionRecord.executed_at.desc())
                     .limit(10)
                 )
                 queries = queries_result.scalars().all()
@@ -149,7 +149,7 @@ class QueryScreen(Screen[None]):
                 tree: Tree[str] = self.query_one("#query-history-tree", Tree)
                 for q in queries:
                     confidence = q.confidence_level or "-"
-                    question_text = q.original_question or q.name or "-"
+                    question_text = q.question or "-"
                     question_display = (
                         question_text[:40] + "..." if len(question_text) > 40 else question_text
                     )
@@ -265,11 +265,6 @@ class QueryScreen(Screen[None]):
                 query_result.entropy_action, ("white", query_result.entropy_action)
             )
             parts.append(f"[{a_color}]{a_label}[/{a_color}]")
-
-        if query_result.was_reused:
-            sim = query_result.similarity_score
-            sim_str = f" ({sim:.0%})" if sim else ""
-            parts.append(f"[cyan]Reused{sim_str}[/cyan]")
 
         if query_result.contract:
             parts.append(f"Contract: {query_result.contract}")

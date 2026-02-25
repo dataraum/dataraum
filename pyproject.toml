@@ -121,6 +121,12 @@ dev = [
     "scipy-stubs>=1.16.3.2",
     "pytest-testmon>=2.2.0",
 ]
+e2e = [
+    "dataraum-testdata",
+]
+
+[tool.uv.sources]
+dataraum-testdata = { path = "../dataraum-testdata", editable = true }
 
 [build-system]
 requires = ["hatchling"]
@@ -136,6 +142,7 @@ addopts = "-v --tb=short"
 markers = [
     "integration: marks tests as integration tests (may be slower)",
     "slow: marks tests as slow (use real data, skip in CI)",
+    "e2e: end-to-end tests using dataraum-testdata (excluded from testmon)",
 ]
 filterwarnings = [
     # Numpy warnings during correlation calculations with constant columns (expected)
@@ -201,6 +208,7 @@ module = [
     "networkx.*",
     "pgmpy.*",
     "textual.*",
+    "typer.*",
 ]
 ignore_missing_imports = true
 

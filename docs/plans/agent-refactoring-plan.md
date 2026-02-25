@@ -4,7 +4,7 @@
 > Each phase leaves the codebase green and shippable. No half-done states.
 
 **Created:** 2026-02-24
-**Updated:** 2026-02-24 (post-deep-dive: revised A1/A2 scope based on metadata analysis)
+**Updated:** 2026-02-25 (revised Phase D: shared infra extraction, not merge; added temporal_behavior gap; added Phase 0.6 E2E tests)
 **Branch:** `refactor/streamline`
 **Related:** [BACKLOG.md](../BACKLOG.md), [PROGRESS.md](../PROGRESS.md)
 
@@ -214,34 +214,110 @@ Tangible change to schema XML:
 
 ---
 
-## Phase D: Merge Graph + Query Agents
+## Phase D: Extract Shared Infrastructure *(revised 2026-02-25)*
 
-**Goal:** Single `DataAgent` with two entry points: `execute_graph()` and `answer_question()`.
+**Goal:** Extract shared SQL execution infrastructure from graph + query agents.
+Keep agents separate — they have fundamentally different runtime characteristics.
 
-### D1. Consolidate Shared Infrastructure
+> **Why not merge?** The original D2 ("Create unified DataAgent") was dropped because:
+> - Graph agent is deterministic — can skip LLM entirely via cached snippets
+> - Query agent is exploratory — always needs LLM
+> - Different snippet discovery patterns (exact key vs term-based search)
+> - Different output types (scalar metric vs table rows)
+> - Merging creates a kitchen-sink class with if/else branching everywhere
+>
+> The right approach: extract shared infrastructure, keep agents as thin wrappers.
 
-- Unify context building (both already use `build_execution_context`)
-- Unify SQL generation prompts (both use tool-use pattern)
-- Unify execution (both use `execute_sql_steps` from `query/execution.py`)
-- Unify assumption tracking (both produce `QueryAssumption`)
-- Unify repair logic (both have `_repair_sql`)
-- Unify library storage (both save to `QueryLibrary`)
+### D1. Extract Shared Base
 
-### D2. Create DataAgent
+Extract into a shared module (e.g., `agents/sql_base.py` or `agents/shared/`):
+- Context building (`build_execution_context` — already shared)
+- SQL execution (`execute_sql_steps` — already in `query/execution.py`)
+- SQL repair logic (both agents have `_repair_sql`)
+- Assumption tracking (both produce `QueryAssumption`)
+- Snippet/library storage (both save to `QueryLibrary`)
 
-- Single agent class with:
-  - `execute_graph(graph_spec, context)` — deterministic metric calculation
-  - `answer_question(question, context)` — ad-hoc natural language query
-- Graph execution phase calls `execute_graph()`
-- MCP `query` tool calls `answer_question()`
-- Shared: context building, SQL generation, execution, assumptions, library
+### D2. Refactor Both Agents to Use Shared Base
 
-### D3. Clean Up Old Modules
+- Graph agent delegates SQL execution and repair to shared base
+- Query agent delegates SQL execution and repair to shared base
+- Each agent retains its own: prompt construction, snippet discovery, output formatting
 
-- Remove `graphs/agent.py` and `query/agent.py` after merge
-- Update all imports
-- Update pipeline phases and MCP server
+### D3. Cleanup Dead Code
+
+- Remove duplicated execution/repair logic from individual agents
+- Update imports across pipeline phases and MCP server
 - Verify all tests pass with new structure
+
+---
+
+## Known Gap: temporal_behavior Not Reaching SQL Generation *(added 2026-02-25)*
+
+### Problem
+
+The ontology defines `temporal_behavior: point_in_time` vs `additive` per business concept.
+This is the right semantic distinction for SQL aggregation (snapshot vs sum):
+- **additive** (e.g., revenue): `SUM(amount)` across periods is valid
+- **point_in_time** (e.g., accounts_receivable): only the latest period's value is valid;
+  `SUM(amount)` across periods is meaningless
+
+Currently this information **never flows** to the SQL generation prompt. The DSO
+`accounts_receivable` step (3/4 failure in testdata calibration) is caused by this gap:
+the LLM uses `ORDER BY period DESC LIMIT 1` instead of a subquery pattern that filters
+to the latest reporting period. The repair LLM makes the same mistake because it also
+lacks this context.
+
+### Planned Fix: Store on SemanticAnnotation During Semantic Phase
+
+`temporal_behavior` is semantic information — it belongs in the semantic phase output.
+
+1. The semantic agent already reads the ontology to assign `business_concept`
+2. After assignment, look up `temporal_behavior` from the matched concept
+   (no new LLM call — just a metadata join in `_parse_tool_output()`)
+3. Add `temporal_behavior: str | None` field to `SemanticAnnotation` DB model
+4. Information then flows automatically:
+   `SemanticAnnotation` → `ColumnContext` → `format_context_for_prompt()` →
+   all agents see `(point_in_time)` or `(additive)` per column
+
+This is domain-agnostic: any vertical's ontology can define temporal behavior.
+Implementation deferred until after E2E tests validate the feedback loop.
+
+---
+
+## Phase 0.6: E2E Validation Tests *(added 2026-02-25)*
+
+**Goal:** Validate the pipeline end-to-end against synthetic data with known correct answers.
+Priority work before continuing to Phase C/D.
+
+### Motivation
+
+- The mocked integration tests (Session 12 / Phase 0.5) validate code paths, not actual behavior
+- `dataraum-testdata` generates synthetic finance data with known properties (8 tables,
+  deterministic with seed, manifest with row counts)
+- Nothing currently connects testdata to the pipeline — this phase bridges that gap
+
+### Approach
+
+- Add `dataraum-testdata` as uv path dev dependency (editable, `../dataraum-testdata`)
+- `@pytest.mark.e2e` marker — excluded from testmon and end-of-turn hook
+- Session-scoped fixtures: generate once, run pipeline once, many test functions query results
+- `clean` strategy = no entropy injections = predictable data for arithmetic verification
+- Non-LLM phases only in base fixture (import → typing → statistics → ... → entropy)
+
+### Test Coverage
+
+| Test File | What It Validates |
+|-----------|-------------------|
+| `test_pipeline_phases.py` | Import row counts, type detection, statistics, relationships, temporal, entropy |
+| `test_context_building.py` | `build_execution_context()` completeness, semantic annotations, field mappings, relationships |
+
+### Running
+
+```bash
+uv sync --group e2e                       # Install testdata dependency
+uv run pytest tests/e2e -v -m e2e         # Run E2E tests only
+uv run pytest --testmon tests/unit -q     # Normal dev (excludes E2E)
+```
 
 ---
 
@@ -405,7 +481,10 @@ The schema XML shows column names, types, semantic roles, entity types, business
 |------|----------|-----------|
 | 2026-02-24 | Fix context loading before architecture | Broken context makes all later changes unreliable |
 | 2026-02-24 | Quality metrics → entropy, not graph metrics | They measure data health, not business KPIs |
-| 2026-02-24 | Merge graph + query into DataAgent | 80% shared code, same execution pattern |
+| 2026-02-24 | ~~Merge graph + query into DataAgent~~ | ~~80% shared code, same execution pattern~~ |
+| 2026-02-25 | **Revised:** Extract shared infrastructure, keep agents separate | Graph is deterministic (skippable LLM), query is exploratory (always LLM). Different snippet discovery, different output types. Merge creates kitchen-sink class |
+| 2026-02-25 | temporal_behavior gap identified | Ontology defines additive vs point_in_time but it never reaches SQL generation prompt. Root cause of DSO failures. Fix: store on SemanticAnnotation during semantic phase |
+| 2026-02-25 | E2E tests before Phase C/D | Pipeline + agents never validated against known-correct data. dataraum-testdata provides it. Must close feedback loop before further architecture changes |
 | 2026-02-24 | Phase A starts with audit (A0) | Deep dive prevents wasted effort on wrong fixes |
 | 2026-02-24 | Eliminate cycle agent tools, use context only | Pipeline now produces slice defs, statistical profiles, temporal profiles, enriched views — all the data the tools re-queried. Single LLM call with rich context replaces 3-15 tool call loop |
 | 2026-02-24 | Rewrite cycle agent (move to _legacy/) | ~73% of code replaced/deleted (context.py, agent.py, tools.py). In-place editing would leave dead code. Move to _legacy/, rewrite from scratch, delete when tests pass |
@@ -434,12 +513,16 @@ Each session:
 | A | A2b | Fix validation execution (EXPLAIN, no pandas, fix evaluation) | In-place edit | ✅ Done |
 | B | B1 | Create VerticalConfig abstraction | New code | ✅ Done |
 | B | B2 | Extract quality metrics to entropy system | Move + rewire | ✅ Done |
+| 0.6 | 0.6 | E2E validation tests (testdata → pipeline → verify) | New tests | **Current** |
+| — | — | temporal_behavior on SemanticAnnotation | Semantic phase fix | Pending |
 | C | C1 | Surface validation results in GraphExecutionContext | Additive | Pending |
 | C | C2 | Forward full cycle data to context | Additive | Pending |
 | C | C3 | Align ontology concepts ↔ standard_field vocabulary | Audit + fix | Pending |
-| D | D1 | Consolidate shared agent infrastructure | Refactor | Pending |
-| D | D2 | Create unified DataAgent | Rewrite | Pending |
-| D | D3 | Clean up old modules | Delete | Pending |
+| D | D1 | Extract shared SQL execution base | Refactor | Pending |
+| D | D2 | Refactor both agents to use shared base | Refactor | Pending |
+| D | D3 | Cleanup dead code, update imports | Delete | Pending |
 
 Dependencies: A1a → A1b (context before agent). A2a → A2b (resolver before agent).
-A1 and A2 are independent of each other. B depends on A. C depends on B. D depends on C.
+A1 and A2 are independent of each other. B depends on A.
+**Revised sequencing:** 0.6 → temporal_behavior fix → C → D(revised).
+C depends on B. D depends on C.

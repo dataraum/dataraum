@@ -70,9 +70,6 @@ class PhaseRunResult:
     tables_processed: int = 0
     columns_processed: int = 0
     rows_processed: int = 0
-    llm_calls: int = 0
-    llm_input_tokens: int = 0
-    llm_output_tokens: int = 0
     db_queries: int = 0
     db_writes: int = 0
     timings: dict[str, float] = field(default_factory=dict)
@@ -110,16 +107,6 @@ class RunResult:
     def phases_skipped(self) -> int:
         """Count of skipped phases."""
         return sum(1 for p in self.phases if p.status == "skipped")
-
-    @property
-    def total_llm_calls(self) -> int:
-        """Total LLM calls across all phases."""
-        return sum(p.llm_calls for p in self.phases)
-
-    @property
-    def total_llm_tokens(self) -> int:
-        """Total LLM tokens (input + output) across all phases."""
-        return sum(p.llm_input_tokens + p.llm_output_tokens for p in self.phases)
 
     @property
     def total_tables_processed(self) -> int:
@@ -287,9 +274,6 @@ def run(config: RunConfig) -> Result[RunResult]:
                     tables_processed=checkpoint.tables_processed if checkpoint else 0,
                     columns_processed=checkpoint.columns_processed if checkpoint else 0,
                     rows_processed=checkpoint.rows_processed if checkpoint else 0,
-                    llm_calls=checkpoint.llm_calls if checkpoint else 0,
-                    llm_input_tokens=checkpoint.llm_input_tokens if checkpoint else 0,
-                    llm_output_tokens=checkpoint.llm_output_tokens if checkpoint else 0,
                     db_queries=checkpoint.db_queries if checkpoint else 0,
                     db_writes=checkpoint.db_writes if checkpoint else 0,
                     timings=checkpoint.timings if checkpoint else {},

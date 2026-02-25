@@ -46,11 +46,6 @@ class PipelineRun(Base):
     # Timing metrics
     total_duration_seconds: Mapped[float] = mapped_column(Float, default=0.0)
 
-    # Aggregate LLM metrics
-    total_llm_calls: Mapped[int] = mapped_column(Integer, default=0)
-    total_llm_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    total_llm_output_tokens: Mapped[int] = mapped_column(Integer, default=0)
-
     # Aggregate data metrics
     total_tables_processed: Mapped[int] = mapped_column(Integer, default=0)
     total_rows_processed: Mapped[int] = mapped_column(Integer, default=0)
@@ -103,9 +98,6 @@ class PhaseCheckpoint(Base):
     tables_processed: Mapped[int] = mapped_column(Integer, default=0)
     columns_processed: Mapped[int] = mapped_column(Integer, default=0)
     rows_processed: Mapped[int] = mapped_column(Integer, default=0)
-    llm_calls: Mapped[int] = mapped_column(Integer, default=0)
-    llm_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    llm_output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     db_queries: Mapped[int] = mapped_column(Integer, default=0)
     db_writes: Mapped[int] = mapped_column(Integer, default=0)
 

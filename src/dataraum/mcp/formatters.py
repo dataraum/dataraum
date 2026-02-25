@@ -383,13 +383,6 @@ def format_pipeline_result(result: RunResult) -> str:
             lines.append(f"- **{phase.phase_name}**: {phase.error}")
         lines.append("")
 
-    # LLM usage
-    if result.total_llm_calls > 0:
-        lines.append(f"**LLM calls:** {result.total_llm_calls}")
-        if result.total_llm_tokens > 0:
-            lines.append(f"**LLM tokens:** {result.total_llm_tokens:,}")
-        lines.append("")
-
     # Next steps
     lines.append("## Next Steps")
     if result.success:

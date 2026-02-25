@@ -389,17 +389,11 @@ class Pipeline:
                         error_msg = results[failed_name].error
 
                 # Calculate aggregate metrics from collected phase metrics
-                total_llm_calls = 0
-                total_llm_input_tokens = 0
-                total_llm_output_tokens = 0
                 total_tables_processed = 0
                 total_rows_processed = 0
 
                 if final_metrics:
                     for pm in final_metrics.phases:
-                        total_llm_calls += pm.llm_calls
-                        total_llm_input_tokens += pm.llm_input_tokens
-                        total_llm_output_tokens += pm.llm_output_tokens
                         total_tables_processed += pm.tables_processed
                         total_rows_processed += pm.rows_processed
 
@@ -413,9 +407,6 @@ class Pipeline:
                         phases_completed=phases_completed,
                         phases_failed=phases_failed,
                         phases_skipped=phases_skipped,
-                        total_llm_calls=total_llm_calls,
-                        total_llm_input_tokens=total_llm_input_tokens,
-                        total_llm_output_tokens=total_llm_output_tokens,
                         total_tables_processed=total_tables_processed,
                         total_rows_processed=total_rows_processed,
                         error=error_msg,
@@ -584,11 +575,6 @@ class Pipeline:
                     if collected_metrics
                     else 0,
                     rows_processed=collected_metrics.rows_processed if collected_metrics else 0,
-                    llm_calls=collected_metrics.llm_calls if collected_metrics else 0,
-                    llm_input_tokens=collected_metrics.llm_input_tokens if collected_metrics else 0,
-                    llm_output_tokens=collected_metrics.llm_output_tokens
-                    if collected_metrics
-                    else 0,
                     db_queries=collected_metrics.db_queries if collected_metrics else 0,
                     db_writes=collected_metrics.db_writes if collected_metrics else 0,
                     timings=_sanitize_for_json(
@@ -623,13 +609,6 @@ class Pipeline:
                         if collected_metrics
                         else 0,
                         rows_processed=collected_metrics.rows_processed if collected_metrics else 0,
-                        llm_calls=collected_metrics.llm_calls if collected_metrics else 0,
-                        llm_input_tokens=collected_metrics.llm_input_tokens
-                        if collected_metrics
-                        else 0,
-                        llm_output_tokens=collected_metrics.llm_output_tokens
-                        if collected_metrics
-                        else 0,
                         db_queries=collected_metrics.db_queries if collected_metrics else 0,
                         db_writes=collected_metrics.db_writes if collected_metrics else 0,
                         timings=_sanitize_for_json(

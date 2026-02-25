@@ -2,6 +2,8 @@
 
 Runs the real pipeline (all phases including LLM) via `runner.run()`
 against testdata with known properties, then verifies outputs.
+
+GROUND TRUTH: Do not modify assertions to fix failures — fix the production code instead.
 """
 
 from __future__ import annotations

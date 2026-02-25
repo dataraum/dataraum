@@ -2,6 +2,8 @@
 
 Tests graph execution (finance metrics), validation checks,
 and business cycle detection against clean pipeline output.
+
+GROUND TRUTH: Do not modify assertions to fix failures — fix the production code instead.
 """
 
 from __future__ import annotations

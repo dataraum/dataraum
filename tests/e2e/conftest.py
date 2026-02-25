@@ -4,6 +4,9 @@ Runs the full pipeline (including LLM phases) via `runner.run()` against
 testdata with known properties. Tests then query the output databases
 to verify correctness.
 
+Pipeline output is cached in `.e2e/` at the project root. If output already
+exists, the pipeline is not re-run. Use `--e2e-fresh` to force a full re-run.
+
 Requires:
 - `uv sync --group e2e` to install dataraum-testdata
 - ANTHROPIC_API_KEY set in environment (for LLM phases)
@@ -11,6 +14,7 @@ Requires:
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -29,29 +33,125 @@ load_dotenv()
 
 pytestmark = pytest.mark.e2e
 
+# Fixed output root — cached between test sessions
+E2E_ROOT = Path(__file__).resolve().parents[2] / ".e2e"
+
 
 # =============================================================================
-# Testdata generation (session-scoped)
+# pytest hook: --e2e-fresh flag
 # =============================================================================
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--e2e-fresh",
+        action="store_true",
+        default=False,
+        help="Delete cached E2E output and re-run pipelines from scratch",
+    )
 
 
 @pytest.fixture(scope="session")
-def testdata_csvs(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Generate testdata CSVs using the clean strategy (no entropy injections).
+def e2e_fresh(request: pytest.FixtureRequest) -> bool:
+    return bool(request.config.getoption("--e2e-fresh", default=False))
 
-    Returns the directory containing the exported CSV files and manifest.
-    """
+
+# =============================================================================
+# Testdata generation (session-scoped, cached)
+# =============================================================================
+
+
+def _generate_testdata(output_dir: Path, strategy: str, fresh: bool) -> Path:
+    """Generate testdata CSVs if not already cached."""
+    manifest = output_dir / "manifest.yaml"
+    if manifest.exists() and not fresh:
+        return output_dir
+
+    # Fresh start
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     from testdata.scenarios.runner import run_scenario
 
-    output_dir = tmp_path_factory.mktemp("testdata")
-    run_scenario(
+    result = run_scenario(
         "month-end-close",
-        strategy_name="clean",
+        strategy_name=strategy,
         seed=42,
         output_dir=output_dir,
         fmt="csv",
     )
+
+    # For medium strategy, persist injection registry as YAML for debugging
+    if strategy == "medium" and "registry" in result:
+        injections = result["registry"].injections
+        injection_dicts = [
+            {
+                "table": inj.table,
+                "column": inj.column,
+                "detector_id": inj.detector_id,
+                "description": inj.description,
+            }
+            for inj in injections
+        ]
+        with open(output_dir / "injections.yaml", "w") as f:
+            yaml.dump(injection_dicts, f)
+
     return output_dir
+
+
+def _run_pipeline_cached(
+    csv_dir: Path, output_dir: Path, source_name: str, fresh: bool
+) -> RunResult:
+    """Run pipeline if not already cached."""
+    metadata_db = output_dir / "metadata.db"
+    if metadata_db.exists() and not fresh:
+        # Pipeline already ran — return a minimal RunResult for fixture chain
+        # The actual assertions use output_manager to query the DB directly
+        return RunResult(
+            success=True,
+            source_id=_read_source_id(output_dir),
+            duration_seconds=0.0,
+            output_dir=output_dir,
+        )
+
+    # Fresh start
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    config = RunConfig(
+        source_path=csv_dir,
+        output_dir=output_dir,
+        source_name=source_name,
+    )
+    return run(config).unwrap()
+
+
+def _read_source_id(output_dir: Path) -> str:
+    """Read source_id from an existing pipeline output."""
+    from sqlalchemy import create_engine, text
+
+    db_path = output_dir / "metadata.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT source_id FROM sources LIMIT 1")).fetchone()
+        if row is None:
+            raise RuntimeError(f"No source found in {db_path}")
+        result: str = row[0]
+    engine.dispose()
+    return result
+
+
+# =============================================================================
+# Clean strategy fixtures
+# =============================================================================
+
+
+@pytest.fixture(scope="session")
+def testdata_csvs(e2e_fresh: bool) -> Path:
+    """Generate testdata CSVs using the clean strategy (no entropy injections)."""
+    return _generate_testdata(E2E_ROOT / "clean" / "testdata", "clean", e2e_fresh)
 
 
 @pytest.fixture(scope="session")
@@ -61,35 +161,26 @@ def testdata_manifest(testdata_csvs: Path) -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
-# =============================================================================
-# Full pipeline run (session-scoped — runs once, all phases including LLM)
-# =============================================================================
-
-
 @pytest.fixture(scope="session")
-def pipeline_output_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Output directory for the pipeline run."""
-    return tmp_path_factory.mktemp("pipeline_output")
+def pipeline_output_dir() -> Path:
+    """Output directory for the clean pipeline run."""
+    return E2E_ROOT / "clean" / "pipeline"
 
 
 @pytest.fixture(scope="session")
 def pipeline_run(
     testdata_csvs: Path,
     pipeline_output_dir: Path,
+    e2e_fresh: bool,
 ) -> RunResult:
-    """Run the full pipeline against testdata.
+    """Run the full pipeline against clean testdata.
 
-    Uses `runner.run()` — the same code path as `dataraum run`.
-    All phases from pipeline.yaml execute, including LLM phases.
+    Cached: skips if .e2e/clean/pipeline/metadata.db exists.
+    Use --e2e-fresh to force a re-run.
     """
-    config = RunConfig(
-        source_path=testdata_csvs,
-        output_dir=pipeline_output_dir,
-        source_name="e2e_testdata",
+    return _run_pipeline_cached(
+        testdata_csvs, pipeline_output_dir, "e2e_testdata", e2e_fresh
     )
-
-    result = run(config)
-    return result.unwrap()
 
 
 # =============================================================================
@@ -102,10 +193,7 @@ def output_manager(
     pipeline_run: RunResult,
     pipeline_output_dir: Path,
 ) -> ConnectionManager:
-    """ConnectionManager pointing at the pipeline output databases.
-
-    Opens the metadata.db and data.duckdb produced by the pipeline run.
-    """
+    """ConnectionManager pointing at the pipeline output databases."""
     conn_config = ConnectionConfig.for_directory(pipeline_output_dir)
     manager = ConnectionManager(conn_config)
     manager.initialize()
@@ -136,54 +224,56 @@ def typed_table_names(output_manager: ConnectionManager) -> list[str]:
 
 
 # =============================================================================
-# Medium strategy testdata + pipeline (for entropy detection tests)
+# Medium strategy fixtures (for entropy detection tests)
 # =============================================================================
 
 
 @pytest.fixture(scope="session")
-def _medium_testdata(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
-    """Generate testdata with medium strategy entropy injections.
+def _medium_testdata(e2e_fresh: bool) -> Path:
+    """Generate testdata with medium strategy entropy injections."""
+    return _generate_testdata(E2E_ROOT / "medium" / "testdata", "medium", e2e_fresh)
 
-    Internal fixture — returns the full result dict with an added '_csv_dir' key.
+
+@pytest.fixture(scope="session")
+def entropy_injections(_medium_testdata: Path) -> list[Any]:
+    """Ground truth: list of injections from medium strategy.
+
+    Reads from cached injections.yaml, or regenerates from testdata if needed.
     """
+    injections_file = _medium_testdata / "injections.yaml"
+    if injections_file.exists():
+        with open(injections_file) as f:
+            return yaml.safe_load(f)
+
+    # Fallback: re-generate to get registry (shouldn't happen with cache)
     from testdata.scenarios.runner import run_scenario
 
-    output_dir = tmp_path_factory.mktemp("testdata_medium")
     result = run_scenario(
         "month-end-close",
         strategy_name="medium",
         seed=42,
-        output_dir=output_dir,
+        output_dir=_medium_testdata,
         fmt="csv",
     )
-    result["_csv_dir"] = output_dir
-    return result
+    return result["registry"].injections
 
 
 @pytest.fixture(scope="session")
-def entropy_injections(_medium_testdata: dict[str, Any]) -> list[Any]:
-    """Ground truth: list of EntropyInjection from medium strategy."""
-    return _medium_testdata["registry"].injections
-
-
-@pytest.fixture(scope="session")
-def medium_pipeline_output_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def medium_pipeline_output_dir() -> Path:
     """Output directory for the medium pipeline run."""
-    return tmp_path_factory.mktemp("pipeline_medium")
+    return E2E_ROOT / "medium" / "pipeline"
 
 
 @pytest.fixture(scope="session")
 def medium_pipeline_run(
-    _medium_testdata: dict[str, Any],
+    _medium_testdata: Path,
     medium_pipeline_output_dir: Path,
+    e2e_fresh: bool,
 ) -> RunResult:
     """Run full pipeline on medium-strategy (entropy-injected) data."""
-    config = RunConfig(
-        source_path=_medium_testdata["_csv_dir"],
-        output_dir=medium_pipeline_output_dir,
-        source_name="e2e_medium",
+    return _run_pipeline_cached(
+        _medium_testdata, medium_pipeline_output_dir, "e2e_medium", e2e_fresh
     )
-    return run(config).unwrap()
 
 
 @pytest.fixture(scope="session")

@@ -507,6 +507,25 @@ class EntropyPhase(BasePhase):
         all_scores = [obj.score for obj in all_domain_objects]
         avg_entropy = sum(all_scores) / len(all_scores) if all_scores else 0.0
 
+        # Serialize Bayesian network state for downstream consumers
+        snapshot_data: dict[str, Any] = {
+            "node_states": {
+                intent.intent_name: {
+                    "worst_p_high": intent.worst_p_high,
+                    "mean_p_high": intent.mean_p_high,
+                    "columns_blocked": intent.columns_blocked,
+                    "columns_investigate": intent.columns_investigate,
+                    "columns_ready": intent.columns_ready,
+                    "overall_readiness": intent.overall_readiness,
+                }
+                for intent in network_ctx.intents
+            },
+            "total_columns": network_ctx.total_columns,
+            "columns_blocked": network_ctx.columns_blocked,
+            "columns_investigate": network_ctx.columns_investigate,
+            "columns_ready": network_ctx.columns_ready,
+        }
+
         # Create snapshot record
         snapshot = EntropySnapshotRecord(
             source_id=ctx.source_id,
@@ -515,6 +534,7 @@ class EntropyPhase(BasePhase):
             critical_entropy_count=critical_entropy_count,
             overall_readiness=overall_readiness,
             avg_entropy_score=avg_entropy,
+            snapshot_data=snapshot_data,
         )
         ctx.session.add(snapshot)
 

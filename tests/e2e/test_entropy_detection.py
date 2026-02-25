@@ -240,18 +240,16 @@ class TestBayesianNetwork:
             pytest.skip("No node_states in snapshot_data")
 
         intent_nodes = ["query_intent", "aggregation_intent", "reporting_intent"]
-        non_low_intents = []
+        non_ready_intents = []
         for node in intent_nodes:
             state = node_states.get(node, {})
-            # State is typically a dict of probabilities: {"low": 0.x, "medium": 0.y, "high": 0.z}
             if isinstance(state, dict):
-                low_prob = state.get("low", 1.0)
-                if low_prob < 0.8:  # Not dominated by "low"
-                    non_low_intents.append(node)
-            elif isinstance(state, str) and state != "low":
-                non_low_intents.append(node)
+                # Structure: {worst_p_high, mean_p_high, overall_readiness, ...}
+                readiness = state.get("overall_readiness", "ready")
+                if readiness != "ready":
+                    non_ready_intents.append(node)
 
-        assert len(non_low_intents) > 0, (
-            f"All intent nodes show 'low' state despite injected entropy. "
+        assert len(non_ready_intents) > 0, (
+            f"All intent nodes show 'ready' state despite injected entropy. "
             f"States: {[(n, node_states.get(n)) for n in intent_nodes]}"
         )

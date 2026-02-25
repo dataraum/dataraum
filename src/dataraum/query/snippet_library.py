@@ -530,7 +530,7 @@ class SnippetLibrary:
             existing.column_hash = column_hash
             existing.updated_at = datetime.now(UTC)
             record = existing
-            logger.debug(f"Updated snippet {record.snippet_id} ({snippet_type}:{standard_field})")
+            logger.debug("snippet_updated", snippet_id=record.snippet_id, snippet_type=snippet_type, field=standard_field)
         else:
             # Create new snippet
             record = SQLSnippetRecord(
@@ -553,7 +553,7 @@ class SnippetLibrary:
                 updated_at=datetime.now(UTC),
             )
             self.session.add(record)
-            logger.debug(f"Created snippet {record.snippet_id} ({snippet_type}:{standard_field})")
+            logger.debug("snippet_created", snippet_id=record.snippet_id, snippet_type=snippet_type, field=standard_field)
 
         return record
 
@@ -633,7 +633,7 @@ class SnippetLibrary:
 
         count = len(snippets)
         if count > 0:
-            logger.info(f"Invalidated {count} snippets for schema {schema_mapping_id}")
+            logger.info("snippets_invalidated", count=count, schema_mapping_id=schema_mapping_id)
         return count
 
     # --- Statistics ---

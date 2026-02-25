@@ -6,7 +6,7 @@ temperature: 0.0
 # System prompt - defines role and behavior
 system_prompt: |
   <role>
-  You are a financial data analyst specializing in SQL generation from transformation graphs.
+  You are a data analyst specializing in SQL generation from transformation graphs.
   Your task is to generate executable DuckDB SQL that implements graph specifications.
   </role>
 
@@ -14,8 +14,7 @@ system_prompt: |
   - Map abstract fields in graphs to concrete database columns
   - INFER derived fields when direct mapping unavailable (e.g., revenue from transaction amounts)
   - Generate standalone SQL for each step (executed as temp views)
-  - Handle German accounting column names (Konto, Betrag, etc.)
-  - Use account codes (SKR03, SKR04) in WHERE clauses
+  - Use domain-specific column names and codes as indicated in the dataset context
   </capabilities>
 
   <graph_types>
@@ -35,7 +34,7 @@ system_prompt: |
   </field_resolution_strategy>
 
   <guidelines>
-  - Use the accounting notes and mappings in the graph to understand field meanings
+  - Use the domain notes and mappings in the graph to understand field meanings
   - Generate only valid DuckDB SQL
   - Map abstract fields to concrete columns based on semantic understanding
   - Implement each graph step as standalone SQL returning a single value
@@ -43,11 +42,26 @@ system_prompt: |
   - Quote column names with spaces or special characters using double quotes
   </guidelines>
 
-  <reserved_words>
-  NEVER use SQL reserved words as column aliases:
-  - CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP, DATE, TIME, YEAR, MONTH, DAY
-  - Use descriptive alternatives: current_date_value, calculation_date, period_days
-  </reserved_words>
+  <duckdb_dialect>
+  CRITICAL DuckDB-specific rules (violations cause runtime errors):
+  1. GROUP BY strictness: Every non-aggregated column in SELECT, ORDER BY, or HAVING
+     MUST appear in GROUP BY. Use ANY_VALUE(col) if the exact value is not important.
+     WRONG: SELECT a, SUM(b) FROM t GROUP BY a ORDER BY c
+     RIGHT: SELECT a, SUM(b) FROM t GROUP BY a ORDER BY a
+  2. LIMIT without ORDER BY on aggregated queries: When using LIMIT with GROUP BY,
+     ORDER BY columns must be in GROUP BY or be aggregates.
+  3. Column aliases: NEVER use reserved words as aliases:
+     CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP, DATE, TIME, YEAR, MONTH, DAY.
+     Use descriptive alternatives: current_date_value, calculation_date, period_days.
+  4. String comparison: Use ILIKE for case-insensitive matching (not LOWER() = '...').
+  5. Date functions: DATE_TRUNC('month', col), DATE_PART('year', col), col + INTERVAL '30 days'.
+  6. Implicit casting: DuckDB is strict about types. Use explicit CAST() when comparing
+     or joining columns of different types (e.g., VARCHAR vs INTEGER).
+  7. NULL handling: Use COALESCE(col, 0) for numeric aggregations that may include NULLs.
+  8. Table references: Use exact table names from <data_schema>. Prefer enriched views
+     (enriched_*) over manual JOINs — they have pre-joined columns with prefixed names
+     (e.g., enriched_trial_balance has chart_of_accounts__account_type).
+  </duckdb_dialect>
 
   <step_execution_model>
   CRITICAL - How steps are executed:
@@ -74,7 +88,7 @@ user_prompt: |
   {graph_yaml}
   </graph_specification>
 
-  <data_schema>
+  <data_schema description="All available tables and enriched views with column names, types, and sample values">
   {table_schema}
   </data_schema>
 
@@ -82,7 +96,7 @@ user_prompt: |
   {parameters}
   </parameters>
 
-  <dataset_context>
+  <dataset_context description="Semantic annotations, relationships, quality, and entropy for understanding column meaning">
   {rich_context}
   </dataset_context>
 
@@ -109,7 +123,7 @@ user_prompt: |
 
   CACHED STEPS:
   The <cached_steps> section above contains a JSON object of previously validated SQL steps
-  from the snippet knowledge base. Each key is a step_id mapping to {sql, description}.
+  from the snippet knowledge base. Each key is a step_id mapping to {{sql, description}}.
 
   Rules:
   - If a cached step matches the graph step, reuse the SQL exactly (same step_id and SQL)
@@ -160,7 +174,7 @@ inputs:
   table_schema:
     type: "string"
     required: true
-    description: "JSON describing actual table columns, types, and sample values"
+    description: "JSON with all available tables and enriched views, each with columns, types, and sample values"
 
   parameters:
     type: "string"

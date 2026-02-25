@@ -147,8 +147,8 @@ class TestQueryAgentSchemaBuilding:
         assert len(schema_info["tables"]) == 1
 
         table = schema_info["tables"][0]
-        # Table name is prefixed with 'typed_' to match DuckDB table names
-        assert table["name"] == "typed_orders"
+        # Uses duckdb_name if set, otherwise falls back to table_name
+        assert table["name"] == "orders"
         assert table["row_count"] == 4
         assert len(table["columns"]) == 4
 
@@ -195,9 +195,9 @@ class TestQueryAgentSchemaBuilding:
 
         assert len(schema_info["tables"]) == 2
         table_names = [t["name"] for t in schema_info["tables"]]
-        # Table names are prefixed with 'typed_' to match DuckDB table names
-        assert "typed_customers" in table_names
-        assert "typed_orders" in table_names
+        # Uses duckdb_name if set, otherwise falls back to table_name
+        assert "customers" in table_names
+        assert "orders" in table_names
 
 
 class TestQueryAgentExecution:
@@ -345,6 +345,7 @@ class TestQueryAgentIntegration:
         mock_renderer.render_split.return_value = ("System prompt", "User prompt", 0.0)
 
         mock_provider = MagicMock()
+        mock_provider.get_model_for_tier.return_value = "test-model"
 
         agent = QueryAgent(
             config=mock_config,
@@ -395,9 +396,12 @@ class TestQueryAgentIntegration:
         mock_renderer = MagicMock()
         mock_renderer.render_split.return_value = ("System prompt", "User prompt", 0.0)
 
+        mock_provider = MagicMock()
+        mock_provider.get_model_for_tier.return_value = "test-model"
+
         agent = QueryAgent(
             config=mock_config,
-            provider=MagicMock(),
+            provider=mock_provider,
             prompt_renderer=mock_renderer,
         )
 
@@ -426,9 +430,12 @@ class TestQueryAgentIntegration:
         mock_renderer = MagicMock()
         mock_renderer.render_split.return_value = ("System prompt", "User prompt", 0.0)
 
+        mock_provider = MagicMock()
+        mock_provider.get_model_for_tier.return_value = "test-model"
+
         agent = QueryAgent(
             config=mock_config,
-            provider=MagicMock(),
+            provider=mock_provider,
             prompt_renderer=mock_renderer,
         )
 
@@ -461,9 +468,12 @@ class TestQueryAgentIntegration:
         mock_renderer = MagicMock()
         mock_renderer.render_split.return_value = ("System prompt", "User prompt", 0.0)
 
+        mock_provider = MagicMock()
+        mock_provider.get_model_for_tier.return_value = "test-model"
+
         agent = QueryAgent(
             config=mock_config,
-            provider=MagicMock(),
+            provider=mock_provider,
             prompt_renderer=mock_renderer,
         )
 

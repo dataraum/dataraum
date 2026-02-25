@@ -155,7 +155,7 @@ class QueryAgent(LLMFeature):
                 duckdb_conn=duckdb_conn,
             )
         except Exception as e:
-            logger.error(f"Failed to build execution context: {e}")
+            logger.error("context_build_failed", error=str(e))
             return Result.fail(f"Failed to build context: {e}")
 
         # Evaluate contract using column_summaries from execution_context
@@ -409,7 +409,7 @@ class QueryAgent(LLMFeature):
         if total_count <= _MAX_FULL_INJECT:
             graphs = library.find_all_graphs(schema_mapping_id)
             snippets = self._flatten_graphs(graphs)
-            logger.info(f"Full injection: {len(snippets)} snippets in {len(graphs)} graphs")
+            logger.info("full_injection", snippet_count=len(snippets), graph_count=len(graphs))
             return DiscoveryResult(snippets=snippets, mode="full")
         else:
             vocabulary = library.get_search_vocabulary(schema_mapping_id)
@@ -663,7 +663,7 @@ class QueryAgent(LLMFeature):
             saved_count += 1
 
         if saved_count:
-            logger.info(f"Saved {saved_count} novel query snippet(s) for reuse")
+            logger.info("saved_novel_snippets", count=saved_count)
 
     def _handle_snippet_search(
         self,
@@ -788,7 +788,7 @@ class QueryAgent(LLMFeature):
 
         # Compute prompt hash
         prompt_hash = hashlib.sha256(user_prompt.encode()).hexdigest()[:16]
-        logger.debug(f"Query prompt hash: {prompt_hash}")
+        logger.debug("query_prompt_rendered", prompt_hash=prompt_hash)
 
         # Define tools
         analyze_tool = ToolDefinition(
@@ -831,6 +831,7 @@ class QueryAgent(LLMFeature):
             None if use_search_tool
             else {"type": "tool", "name": "analyze_query"}
         )
+        model = self.provider.get_model_for_tier("balanced")
         max_turns = 3
 
         for _ in range(max_turns):
@@ -841,6 +842,7 @@ class QueryAgent(LLMFeature):
                 tool_choice=tool_choice,
                 max_tokens=self.config.limits.max_output_tokens_per_request,
                 temperature=temperature,
+                model=model,
             )
 
             result = self.provider.converse(request)
@@ -897,6 +899,24 @@ class QueryAgent(LLMFeature):
 
         return Result.fail("Max tool turns exceeded")
 
+    @staticmethod
+    def _is_read_only_sql(sql: str) -> str | None:
+        """Check if SQL is read-only. Returns error message if not, None if safe."""
+        import re
+
+        sql_upper = sql.upper().strip()
+        # Check for DML/DDL keywords as standalone words (not inside strings)
+        dangerous = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE"]
+        for keyword in dangerous:
+            if re.search(rf"\b{keyword}\b", sql_upper):
+                return f"Query contains dangerous keyword: {keyword}"
+        # Allow CREATE only for TEMP VIEW (used by step execution)
+        if re.search(r"\bCREATE\b", sql_upper) and not re.search(
+            r"\bCREATE\s+(OR\s+REPLACE\s+)?TEMP\s+VIEW\b", sql_upper
+        ):
+            return "Query contains CREATE (only TEMP VIEW allowed)"
+        return None
+
     def _execute_query(
         self,
         sql: str,
@@ -905,11 +925,9 @@ class QueryAgent(LLMFeature):
         """Execute generated SQL and return results."""
         try:
             # Validate SQL is read-only
-            sql_upper = sql.upper().strip()
-            dangerous = ["INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE"]
-            for keyword in dangerous:
-                if keyword in sql_upper and not sql_upper.startswith("SELECT"):
-                    return Result.fail(f"Query contains dangerous keyword: {keyword}")
+            safety_error = self._is_read_only_sql(sql)
+            if safety_error:
+                return Result.fail(safety_error)
 
             result = duckdb_conn.execute(sql)
             columns = [desc[0] for desc in result.description]
@@ -945,8 +963,8 @@ class QueryAgent(LLMFeature):
                     col_info["business_concept"] = col_ctx.business_concept
                 columns.append(col_info)
 
-            # Use the actual DuckDB table name (typed_ prefix)
-            duckdb_table_name = f"typed_{table_ctx.table_name}"
+            # Use the actual DuckDB table name from context
+            duckdb_table_name = table_ctx.duckdb_name or table_ctx.table_name
 
             tables.append(
                 {

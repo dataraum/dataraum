@@ -61,6 +61,7 @@ class BusinessCycleAgent(LLMFeature):
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_ids: list[str],
         *,
+        source_id: str,
         domain: str | None = None,
         vertical: str,
     ) -> Result[BusinessCycleAnalysis]:
@@ -70,6 +71,7 @@ class BusinessCycleAgent(LLMFeature):
             session: SQLAlchemy session
             duckdb_conn: DuckDB connection
             table_ids: Tables to analyze
+            source_id: Source ID for persisting results
             domain: Optional domain for enhanced vocabulary
             vertical: Vertical name (e.g. 'finance')
 
@@ -143,7 +145,7 @@ class BusinessCycleAgent(LLMFeature):
             )
 
             # 5. Persist to database
-            self._persist_results(session, analysis)
+            self._persist_results(session, analysis, source_id=source_id)
 
             return Result.ok(analysis)
 
@@ -274,16 +276,20 @@ class BusinessCycleAgent(LLMFeature):
         self,
         session: Session,
         analysis: BusinessCycleAnalysis,
+        *,
+        source_id: str,
     ) -> None:
         """Persist analysis results to database.
 
         Args:
             session: SQLAlchemy session
             analysis: The analysis results to persist
+            source_id: Source ID to associate cycles with
         """
         for cycle in analysis.cycles:
             db_cycle = DetectedBusinessCycle(
                 cycle_id=cycle.cycle_id,
+                source_id=source_id,
                 cycle_name=cycle.cycle_name,
                 cycle_type=cycle.cycle_type,
                 canonical_type=cycle.canonical_type,

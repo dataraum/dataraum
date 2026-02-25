@@ -78,6 +78,7 @@ class TableContext:
 
     table_id: str
     table_name: str
+    duckdb_name: str | None = None  # Actual DuckDB table name (e.g., "typed_sales")
     row_count: int | None = None
     column_count: int = 0
 
@@ -122,6 +123,7 @@ class SliceContext:
     priority: int = 0  # Higher = more recommended for slicing
     value_count: int = 0  # Number of distinct values
     business_context: str | None = None  # e.g., "Regional breakdown"
+    distinct_values: list[str] = field(default_factory=list)  # Actual categorical values
 
 
 @dataclass
@@ -175,6 +177,16 @@ class ValidationContext:
 
 
 @dataclass
+class EnrichedViewContext:
+    """A pre-built enriched view joining fact + dimension tables."""
+
+    view_name: str
+    fact_table: str
+    dimension_columns: list[str] = field(default_factory=list)
+    is_grain_verified: bool = False
+
+
+@dataclass
 class GraphExecutionContext:
     """Complete context for graph execution.
 
@@ -223,6 +235,9 @@ class GraphExecutionContext:
 
     # Validation results (from validation analysis)
     validations: list[ValidationContext] = field(default_factory=list)
+
+    # Enriched views (pre-joined fact + dimension tables)
+    enriched_views: list[EnrichedViewContext] = field(default_factory=list)
 
     # Field mappings (business_concept → column mappings for metrics)
     field_mappings: FieldMappings | None = None
@@ -401,6 +416,7 @@ def build_execution_context(
                     priority=slice_def.slice_priority,
                     value_count=slice_def.value_count or 0,
                     business_context=slice_def.business_context,
+                    distinct_values=slice_def.distinct_values or [],
                 )
             )
     # Sort by priority descending
@@ -425,9 +441,24 @@ def build_execution_context(
         for derived in session.execute(derived_stmt).scalars().all():
             derived_columns[derived.derived_column_id] = derived.formula
 
-    # 13. Load business cycles
+    # 13. Load business cycles (filtered to current source)
+    #     Derive source_id from table_ids — reused later for entropy snapshot
+    source_id_result = session.execute(
+        select(Table.source_id).where(Table.table_id.in_(table_ids)).limit(1)
+    )
+    _source_id = source_id_result.scalar()
+
     business_cycle_contexts: list[BusinessCycleContext] = []
-    cycles_stmt = select(DetectedBusinessCycle).order_by(DetectedBusinessCycle.detected_at.desc())
+    if _source_id:
+        cycles_stmt = (
+            select(DetectedBusinessCycle)
+            .where(DetectedBusinessCycle.source_id == _source_id)
+            .order_by(DetectedBusinessCycle.detected_at.desc())
+        )
+    else:
+        cycles_stmt = select(DetectedBusinessCycle).order_by(
+            DetectedBusinessCycle.detected_at.desc()
+        )
     for cycle in session.execute(cycles_stmt).scalars().all():
         stages = [
             CycleStageContext(
@@ -499,6 +530,23 @@ def build_execution_context(
             )
         )
 
+    # 13c. Load enriched views
+    from dataraum.analysis.views.db_models import EnrichedView
+
+    enriched_view_contexts: list[EnrichedViewContext] = []
+    ev_stmt = select(EnrichedView).where(EnrichedView.fact_table_id.in_(table_ids))
+    for ev in session.execute(ev_stmt).scalars().all():
+        fact_table = table_map.get(ev.fact_table_id)
+        if fact_table:
+            enriched_view_contexts.append(
+                EnrichedViewContext(
+                    view_name=ev.view_name,
+                    fact_table=fact_table.table_name,
+                    dimension_columns=ev.dimension_columns or [],
+                    is_grain_verified=ev.is_grain_verified,
+                )
+            )
+
     # 14. Load field mappings
     field_mappings = load_semantic_mappings(session, table_ids)
 
@@ -554,13 +602,9 @@ def build_execution_context(
 
     column_summaries = network_to_column_summaries(network_ctx)
 
-    # 16c. Read overall entropy score from snapshot
+    # 16c. Read overall entropy score from snapshot (_source_id resolved in step 13)
     from dataraum.entropy.db_models import EntropySnapshotRecord
 
-    source_id_result = session.execute(
-        select(Table.source_id).where(Table.table_id.in_(table_ids)).limit(1)
-    )
-    _source_id = source_id_result.scalar()
     overall_entropy_score: float | None = None
     if _source_id:
         snapshot_result = session.execute(
@@ -598,7 +642,7 @@ def build_execution_context(
                 if result:
                     row_count = result[0]
             except Exception as e:
-                logger.warning(f"Could not get row count for {table.duckdb_path}: {e}")
+                logger.warning("row_count_query_failed", table=table.duckdb_path, error=str(e))
 
         # Build column contexts
         table_columns = columns_by_table.get(table_id, [])
@@ -695,6 +739,7 @@ def build_execution_context(
             TableContext(
                 table_id=table_id,
                 table_name=table.table_name,
+                duckdb_name=table.duckdb_path,
                 row_count=row_count,
                 column_count=len(column_contexts),
                 is_fact_table=table_entity.is_fact_table if table_entity else None,
@@ -726,6 +771,7 @@ def build_execution_context(
         available_slices=slice_contexts,
         business_cycles=business_cycle_contexts,
         validations=validation_contexts,
+        enriched_views=enriched_view_contexts,
         field_mappings=field_mappings,
     )
 
@@ -1091,7 +1137,9 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
         elif table.is_dimension_table:
             table_type = " (DIMENSION)"
 
-        lines.append(f"\n### {table.table_name}{table_type}")
+        # Show DuckDB table name for SQL reference
+        display_name = table.duckdb_name or table.table_name
+        lines.append(f"\n### {display_name}{table_type}")
         if table.row_count:
             lines.append(f"Rows: {table.row_count:,}")
         if table.entity_type:
@@ -1132,13 +1180,31 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
     if context.available_slices:
         lines.append("")
         lines.append("## AVAILABLE SLICES")
-        lines.append("Recommended dimensions for filtering/grouping:")
+        lines.append("Recommended dimensions for filtering/grouping (use these EXACT values in SQL):")
         for slice_ctx in context.available_slices[:5]:  # Show top 5
             context_str = f" - {slice_ctx.business_context}" if slice_ctx.business_context else ""
             lines.append(
                 f"  - {slice_ctx.table_name}.{slice_ctx.column_name} "
                 f"(priority: {slice_ctx.priority}, values: {slice_ctx.value_count}){context_str}"
             )
+            if slice_ctx.distinct_values:
+                vals = ", ".join(f'"{v}"' for v in slice_ctx.distinct_values[:20])
+                if len(slice_ctx.distinct_values) > 20:
+                    vals += f" +{len(slice_ctx.distinct_values) - 20} more"
+                lines.append(f"    Values: [{vals}]")
+
+    # Enriched views
+    if context.enriched_views:
+        lines.append("")
+        lines.append("## ENRICHED VIEWS")
+        lines.append("Pre-joined fact + dimension views (prefer over manual JOINs):")
+        for ev in context.enriched_views:
+            verified = " (grain verified)" if ev.is_grain_verified else ""
+            dims = ", ".join(ev.dimension_columns[:10]) if ev.dimension_columns else "none"
+            if len(ev.dimension_columns) > 10:
+                dims += f" +{len(ev.dimension_columns) - 10} more"
+            lines.append(f"  - {ev.view_name} (fact: {ev.fact_table}){verified}")
+            lines.append(f"    Added columns: {dims}")
 
     # Business cycles
     if context.business_cycles:
@@ -1209,6 +1275,7 @@ __all__ = [
     "EntityFlowContext",
     "BusinessCycleContext",
     "ValidationContext",
+    "EnrichedViewContext",
     "GraphExecutionContext",
     "build_execution_context",
     "format_context_for_prompt",

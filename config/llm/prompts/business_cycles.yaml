@@ -29,13 +29,16 @@ system_prompt: |
   <context_description>
   The context contains rich metadata pre-computed by the analysis pipeline:
 
-  1. **Categorical Dimensions** — Pre-identified status/type columns with their values and counts. These are strong cycle indicators (e.g., invoice status: paid/open/cancelled).
-  2. **Enriched Views** — Pre-joined tables showing confirmed relationships between facts and dimensions.
-  3. **Confirmed Relationships** — LLM-verified foreign key and hierarchy relationships.
-  4. **Temporal Patterns** — Date ranges, granularity, and completeness per date column.
-  5. **Entity Classifications** — Fact vs dimension table types with grain columns.
-  6. **Quality Signals** — Data quality grades and anomalies for columns with issues.
-  7. **Column Semantics** — Business concepts, semantic roles, and descriptions per column.
+  1. **Domain Vocabulary** — Known business cycle types with typical stages, completion indicators, and aliases. Use this as a reference framework for classifying detected cycles.
+  2. **Dataset Summary** — Table counts, relationship counts, fact/dimension counts, and overall graph pattern.
+  3. **Entity Classifications** — Fact vs dimension table types with grain columns.
+  4. **Categorical Dimensions** — Pre-identified status/type columns with their values and counts. These are strong cycle indicators (e.g., invoice status: paid/open/cancelled).
+  5. **Enriched Views** — Pre-joined tables showing confirmed relationships between facts and dimensions.
+  6. **Confirmed Relationships** — LLM-verified foreign key and hierarchy relationships.
+  7. **Graph Topology** — Schema structure analysis: hub tables (central, 3+ connections), leaf tables (dimensions), bridge tables, isolated tables, and overall pattern (star_schema, hub_and_spoke, etc.).
+  8. **Temporal Patterns** — Date ranges, granularity, and completeness per date column.
+  9. **Quality Signals** — Data quality grades and anomalies for columns with issues.
+  10. **Column Semantics** — Business concepts, semantic roles, and descriptions per column.
   </context_description>
 
   <methodology>
@@ -48,6 +51,10 @@ system_prompt: |
   4. **Temporal patterns suggest cycle frequency.** Monthly trial balance vs daily transactions indicates different cycle periods.
 
   5. **Compute completion rates from value counts.** If invoices.status shows paid=2555 (85.2%), open=227 (7.6%), etc., the completion rate is 85.2%.
+
+  6. **Match against domain vocabulary.** When a detected cycle matches a known type from the DOMAIN KNOWLEDGE section, use the exact vocabulary key as `cycle_type` (e.g., `accounts_payable`, `order_to_cash`). Use `custom` only when no vocabulary type fits.
+
+  7. **Graph topology reveals cycle scope.** Hub tables participate in multiple cycles. Isolated tables may represent standalone processes. The overall pattern (star_schema, hub_and_spoke) indicates how interconnected the business processes are.
   </methodology>
 
   Call the `submit_analysis` tool with your structured findings. Be specific:

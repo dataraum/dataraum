@@ -19,7 +19,6 @@ from dataraum.graphs.agent import (
     ExecutionContext,
     GeneratedCode,
     GraphAgent,
-    TableSchema,
 )
 from dataraum.graphs.models import (
     GraphMetadata,
@@ -127,23 +126,26 @@ class TestExecutionContext:
         assert context.period is None
 
 
-class TestTableSchema:
-    """Tests for TableSchema dataclass."""
+class TestDescribeTable:
+    """Tests for _describe_table static method."""
 
-    def test_create_table_schema(self):
-        """Test creating a TableSchema."""
-        schema = TableSchema(
-            table_name="transactions",
-            columns=[
-                {"name": "id", "type": "INTEGER", "sample_values": ["1", "2"]},
-                {"name": "amount", "type": "DECIMAL", "sample_values": ["100", "200"]},
-            ],
-            row_count=1000,
-        )
+    def test_describe_table(self, duckdb_with_data):
+        """Test describing a DuckDB table."""
+        result = GraphAgent._describe_table(duckdb_with_data, "test_data")
 
-        assert schema.table_name == "transactions"
-        assert len(schema.columns) == 2
-        assert schema.row_count == 1000
+        assert result is not None
+        assert result["table_name"] == "test_data"
+        assert result["row_count"] == 3
+        assert len(result["columns"]) == 2
+
+        col_names = [c["name"] for c in result["columns"]]
+        assert "id" in col_names
+        assert "amount" in col_names
+
+    def test_describe_nonexistent_table(self, duckdb_with_data):
+        """Test describing a table that doesn't exist returns None."""
+        result = GraphAgent._describe_table(duckdb_with_data, "nonexistent")
+        assert result is None
 
 
 class TestGraphAgentCaching:
@@ -170,30 +172,40 @@ class TestGraphAgentCaching:
 class TestGraphAgentExecution:
     """Tests for GraphAgent SQL execution."""
 
-    def test_get_table_schema(self, duckdb_with_data):
-        """Test extracting table schema from DuckDB."""
+    def test_build_schema_info_with_rich_context(self, duckdb_with_data):
+        """Test building multi-table schema from rich context."""
+        from dataraum.graphs.context import TableContext
+
         agent = GraphAgent(
             config=MagicMock(),
             provider=MagicMock(),
             prompt_renderer=MagicMock(),
         )
 
+        # Create a mock rich context with table info
+        rich_context = MagicMock()
+        rich_context.tables = [
+            TableContext(
+                table_id="t1",
+                table_name="test_data",
+                duckdb_name="test_data",
+            ),
+        ]
+        rich_context.enriched_views = []
+
         context = ExecutionContext(
             duckdb_conn=duckdb_with_data,
-            table_name="test_data",
+            rich_context=rich_context,
         )
 
-        result = agent._get_table_schema(context)
+        result = agent._build_schema_info(context)
 
-        assert result.success
-        assert result.value is not None
-        schema = result.value
-        assert schema.table_name == "test_data"
-        assert schema.row_count == 3
-        assert len(schema.columns) == 2
+        assert "tables" in result
+        assert len(result["tables"]) == 1
+        assert result["tables"][0]["table_name"] == "test_data"
+        assert result["tables"][0]["row_count"] == 3
 
-        # Check column names
-        col_names = [c["name"] for c in schema.columns]
+        col_names = [c["name"] for c in result["tables"][0]["columns"]]
         assert "id" in col_names
         assert "amount" in col_names
 

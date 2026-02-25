@@ -75,7 +75,7 @@ class ExecutionContext:
     """Context for graph execution."""
 
     duckdb_conn: duckdb.DuckDBPyConnection
-    table_name: str
+    table_name: str = ""  # Deprecated: use rich_context.tables for multi-table access
     schema_mapping: DatasetSchemaMapping | None = None
     schema_mapping_id: str | None = None
     period: str | None = None
@@ -96,7 +96,6 @@ class ExecutionContext:
         cls,
         session: Any,  # Session
         duckdb_conn: duckdb.DuckDBPyConnection,
-        table_name: str,
         table_ids: list[str],
         **kwargs: Any,
     ) -> ExecutionContext:
@@ -108,7 +107,6 @@ class ExecutionContext:
         Args:
             session: SQLAlchemy session
             duckdb_conn: DuckDB connection for queries
-            table_name: Primary table name for execution
             table_ids: List of table IDs to include in context
             **kwargs: Additional ExecutionContext arguments
 
@@ -116,6 +114,9 @@ class ExecutionContext:
             ExecutionContext with rich_context populated
         """
         from dataraum.graphs.context import build_execution_context
+
+        # Pop table_name if passed (backward compat), but it's no longer used
+        kwargs.pop("table_name", None)
 
         rich_context = build_execution_context(
             session=session,
@@ -127,19 +128,9 @@ class ExecutionContext:
 
         return cls(
             duckdb_conn=duckdb_conn,
-            table_name=table_name,
             rich_context=rich_context,
             **kwargs,
         )
-
-
-@dataclass
-class TableSchema:
-    """Schema information for a table."""
-
-    table_name: str
-    columns: list[dict[str, Any]]  # name, type, sample_values
-    row_count: int
 
 
 class GraphAgent(LLMFeature):
@@ -212,8 +203,9 @@ class GraphAgent(LLMFeature):
                 )
                 if generated_code:
                     logger.info(
-                        f"Assembled graph '{graph.graph_id}' entirely from "
-                        f"{len(cached_snippets)} cached snippets (no LLM call)"
+                        "assembled_from_snippets",
+                        graph_id=graph.graph_id,
+                        snippet_count=len(cached_snippets),
                     )
                     # Track usage: all steps were exact reuses
                     self._track_snippet_usage(
@@ -338,12 +330,8 @@ class GraphAgent(LLMFeature):
             ToolDefinition,
         )
 
-        # Get table schema
-        schema_result = self._get_table_schema(context)
-        if not schema_result.success or not schema_result.value:
-            return Result.fail(schema_result.error or "Failed to get schema")
-
-        table_schema = schema_result.value
+        # Build multi-table schema from rich context
+        schema_info = self._build_schema_info(context)
 
         # Serialize graph to YAML for LLM context
         graph_yaml = self._graph_to_yaml(graph)
@@ -352,14 +340,7 @@ class GraphAgent(LLMFeature):
         prompt_context = {
             "graph_yaml": graph_yaml,
             "graph_type": graph.graph_type.value,
-            "table_schema": json.dumps(
-                {
-                    "table_name": table_schema.table_name,
-                    "columns": table_schema.columns,
-                    "row_count": table_schema.row_count,
-                },
-                indent=2,
-            ),
+            "table_schema": json.dumps(schema_info, indent=2),
             "parameters": json.dumps(parameters, indent=2),
         }
 
@@ -437,6 +418,7 @@ class GraphAgent(LLMFeature):
             tool_choice={"type": "tool", "name": "generate_sql"},
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
+            model=model,
         )
 
         result = self.provider.converse(request)
@@ -495,8 +477,9 @@ class GraphAgent(LLMFeature):
         if not validation_result.success:
             generated_code.validation_errors = [validation_result.error or "Unknown"]
             logger.warning(
-                f"SQL validation failed for graph '{graph.graph_id}': "
-                f"{validation_result.error}"
+                "sql_validation_failed",
+                graph_id=graph.graph_id,
+                error=validation_result.error,
             )
 
         return Result.ok(generated_code)
@@ -744,12 +727,46 @@ class GraphAgent(LLMFeature):
 
         return assumptions
 
-    def _get_table_schema(self, context: ExecutionContext) -> Result[TableSchema]:
-        """Get schema information from the actual table."""
+    def _build_schema_info(
+        self,
+        context: ExecutionContext,
+    ) -> dict[str, Any]:
+        """Build multi-table schema information from rich context and DuckDB.
+
+        Iterates over all tables in the execution context and enriched views,
+        querying DuckDB for column types and sample values.
+
+        Returns:
+            Dict with 'tables' list, each containing name, columns (with
+            sample_values), and row_count.
+        """
+        tables: list[dict[str, Any]] = []
+
+        if context.rich_context is not None:
+            # Typed tables from rich context
+            for table_ctx in context.rich_context.tables:
+                duckdb_name = table_ctx.duckdb_name or table_ctx.table_name
+                table_info = self._describe_table(context.duckdb_conn, duckdb_name)
+                if table_info:
+                    tables.append(table_info)
+
+            # Enriched views (pre-joined fact + dimension)
+            for ev in context.rich_context.enriched_views:
+                table_info = self._describe_table(context.duckdb_conn, ev.view_name)
+                if table_info:
+                    tables.append(table_info)
+
+        return {"tables": tables}
+
+    @staticmethod
+    def _describe_table(
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        table_name: str,
+    ) -> dict[str, Any] | None:
+        """DESCRIBE a single DuckDB table and return schema with sample values."""
         try:
-            # Get column info
-            columns_result = context.duckdb_conn.execute(
-                f'DESCRIBE "{context.table_name}"'
+            columns_result = duckdb_conn.execute(
+                f'DESCRIBE "{table_name}"'
             ).fetchall()
 
             columns = []
@@ -757,11 +774,11 @@ class GraphAgent(LLMFeature):
                 col_name = col[0]
                 col_type = col[1]
 
-                # Get sample values (quote column name for spaces/special chars)
-                sample_result = context.duckdb_conn.execute(
-                    f'SELECT DISTINCT "{col_name}" FROM "{context.table_name}" LIMIT 5'
+                sample_result = duckdb_conn.execute(
+                    f'SELECT DISTINCT "{col_name}" FROM "{table_name}" '
+                    f"WHERE \"{col_name}\" IS NOT NULL LIMIT 5"
                 ).fetchall()
-                samples = [str(r[0]) for r in sample_result if r[0] is not None]
+                samples = [str(r[0]) for r in sample_result]
 
                 columns.append(
                     {
@@ -771,22 +788,19 @@ class GraphAgent(LLMFeature):
                     }
                 )
 
-            # Get row count
-            count_result = context.duckdb_conn.execute(
-                f'SELECT COUNT(*) FROM "{context.table_name}"'
+            count_result = duckdb_conn.execute(
+                f'SELECT COUNT(*) FROM "{table_name}"'
             ).fetchone()
             row_count = count_result[0] if count_result else 0
 
-            return Result.ok(
-                TableSchema(
-                    table_name=context.table_name,
-                    columns=columns,
-                    row_count=row_count,
-                )
-            )
-
-        except Exception as e:
-            return Result.fail(f"Failed to get table schema: {e}")
+            return {
+                "table_name": table_name,
+                "columns": columns,
+                "row_count": row_count,
+            }
+        except Exception:
+            logger.warning("describe_table_failed", table=table_name)
+            return None
 
     def _graph_to_yaml(self, graph: TransformationGraph) -> str:
         """Serialize graph to YAML for LLM context."""
@@ -890,24 +904,14 @@ class GraphAgent(LLMFeature):
         # Get model tier from config (default to fast)
         model_tier = getattr(feature_config, "model_tier", "fast")
 
-        # Get table schema for context
-        schema_result = self._get_table_schema(context)
-        if not schema_result.success or not schema_result.value:
-            return Result.fail("Cannot repair: failed to get schema")
-
-        table_schema = schema_result.value
+        # Build multi-table schema for context
+        schema_info = self._build_schema_info(context)
 
         # Build prompt context
         prompt_context = {
             "error_message": error_message,
             "failed_sql": failed_sql,
-            "table_schema": json.dumps(
-                {
-                    "table_name": table_schema.table_name,
-                    "columns": table_schema.columns,
-                },
-                indent=2,
-            ),
+            "table_schema": json.dumps(schema_info, indent=2),
             "step_description": step_description or "Execute the query",
         }
 
@@ -1155,7 +1159,7 @@ class GraphAgent(LLMFeature):
                     llm_model=generated_code.llm_model,
                 )
 
-        logger.debug(f"Saved snippets for graph '{graph.graph_id}'")
+        logger.debug("saved_snippets", graph_id=graph.graph_id)
 
     def _lookup_snippets(
         self,
@@ -1225,8 +1229,10 @@ class GraphAgent(LLMFeature):
 
         if cached_steps:
             logger.info(
-                f"Found {len(cached_steps)}/{len(graph.steps)} cached snippets "
-                f"for graph '{graph.graph_id}'"
+                "found_cached_snippets",
+                cached=len(cached_steps),
+                total=len(graph.steps),
+                graph_id=graph.graph_id,
             )
 
         return cached_steps

@@ -146,26 +146,10 @@ class GraphExecutionPhase(BasePhase):
             prompt_renderer=renderer,
         )
 
-        # Find primary fact table for execution
-        primary_table = next(
-            (
-                t
-                for t in typed_tables
-                if any(
-                    kw in t.table_name.lower() for kw in ["txn", "transaction", "fact", "master"]
-                )
-            ),
-            typed_tables[0] if typed_tables else None,
-        )
-
-        if not primary_table:
-            return PhaseResult.failed("No suitable table found for metric execution")
-
-        # Create execution context with rich metadata
+        # Create execution context with rich metadata (all tables)
         exec_context = ExecutionContext.with_rich_context(
             session=ctx.session,
             duckdb_conn=ctx.duckdb_conn,
-            table_name=f"typed_{primary_table.table_name}",
             table_ids=table_ids,
         )
 
@@ -250,7 +234,7 @@ class GraphExecutionPhase(BasePhase):
                 "metrics_calculated": calculated_metrics,
                 "metrics_skipped": skipped_metrics,
                 "total_graphs": len(metric_graphs),
-                "primary_table": primary_table.table_name,
+                "tables": len(typed_tables),
                 "execution_context": context_stats,
             },
             records_processed=len(metric_graphs),

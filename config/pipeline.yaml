@@ -24,10 +24,10 @@ phases:
   - entropy
   - entropy_interpretation
   - business_cycles
+  - validation
+  - graph_execution
   # De-configured phases (uncomment to enable):
   # - cross_table_quality
-  # - validation
-  # - graph_execution
 
 # Pipeline orchestrator settings
 pipeline:

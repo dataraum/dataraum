@@ -103,7 +103,7 @@ def answer_question(
         provider = create_provider(config.active_provider, provider_config.model_dump())
         renderer = PromptRenderer()
     except Exception as e:
-        logger.error(f"Failed to initialize LLM: {e}")
+        logger.error("llm_init_failed", error=str(e))
         return Result.fail(f"Failed to initialize LLM: {e}")
 
     # Create agent and analyze

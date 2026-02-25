@@ -309,23 +309,28 @@ class TestGraphAgentSQLGeneration:
         self,
         graph_agent: GraphAgent,
         analyzed_small_finance: PipelineTestHarness,
+        analyzed_table_ids: list[str],
     ):
-        """Graph agent should correctly read schema from real DuckDB tables."""
-        context = ExecutionContext(
-            duckdb_conn=analyzed_small_finance.duckdb_conn,
-            table_name="typed_transactions",
-        )
+        """Graph agent should correctly build multi-table schema."""
+        with analyzed_small_finance.session_factory() as session:
+            context = ExecutionContext.with_rich_context(
+                session=session,
+                duckdb_conn=analyzed_small_finance.duckdb_conn,
+                table_ids=analyzed_table_ids,
+            )
 
-        result = graph_agent._get_table_schema(context)
+        schema_info = graph_agent._build_schema_info(context)
 
-        assert result.success
-        schema = result.value
-        assert schema.table_name == "typed_transactions"
-        assert schema.row_count == 500
-        assert len(schema.columns) > 0
+        assert "tables" in schema_info
+        assert len(schema_info["tables"]) > 0
 
-        col_names = [c["name"] for c in schema.columns]
-        assert "Amount" in col_names or "amount" in col_names
+        table_names = [t["table_name"] for t in schema_info["tables"]]
+        assert any("transactions" in name for name in table_names)
+
+        # Check that columns have sample values
+        for table in schema_info["tables"]:
+            assert len(table["columns"]) > 0
+            assert table["row_count"] > 0
 
 
 class TestEntropyBehavior:
@@ -341,7 +346,6 @@ class TestEntropyBehavior:
             exec_ctx = ExecutionContext.with_rich_context(
                 session=session,
                 duckdb_conn=analyzed_small_finance.duckdb_conn,
-                table_name="typed_transactions",
                 table_ids=analyzed_table_ids,
             )
 

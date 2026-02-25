@@ -134,6 +134,7 @@ class BusinessCyclesPhase(BasePhase):
             session=ctx.session,
             duckdb_conn=ctx.duckdb_conn,
             table_ids=table_ids,
+            source_id=ctx.source_id,
             domain=domain,
             vertical=vertical,
         )

@@ -46,8 +46,9 @@ def _make_task_progress_callback(
 
     def _callback(current: int, total: int, message: str) -> None:
         try:
+            label = _PHASE_LABELS.get(message, message)
             future = asyncio.run_coroutine_threadsafe(
-                task.update_status(f"[{current}/{total}] {message}"),
+                task.update_status(f"Phase {current}/{total}: {label}"),
                 loop,
             )
             future.result(timeout=5.0)
@@ -221,6 +222,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                     _work,
                     model_immediate_response=(
                         f"Pipeline started for: {path}. "
+                        f"This typically takes 3–7 minutes depending on file size. "
                         f"Running in the background — status updates will follow."
                     ),
                 )
@@ -233,7 +235,8 @@ def create_server(output_dir: Path | None = None) -> Server:
                 bg.add_done_callback(_background_tasks.discard)
                 result = (
                     f"Pipeline started for: {path}. "
-                    f"Call `get_context` to check progress."
+                    f"This typically takes 3–7 minutes depending on file size. "
+                    f"Call `get_context` every ~2 minutes to check progress."
                 )
         elif name == "get_context":
             result = _get_context(output_dir)
@@ -260,9 +263,38 @@ def create_server(output_dir: Path | None = None) -> Server:
 
 
 _NO_DATA_MSG = (
-    "No analyzed data found at {path}. Use the `analyze` tool first:\n"
-    "  analyze(path='/path/to/your/data.csv')"
+    "No analyzed data found at {path}. "
+    "This can happen if the output directory was cleared or never created.\n\n"
+    "To fix this, run the `analyze` tool:\n"
+    "  analyze(path='/path/to/your/data.csv')\n\n"
+    "If analysis results existed earlier in this conversation, "
+    "re-run `analyze` with the same source path to regenerate them."
 )
+
+# Human-readable phase descriptions for progress reporting.
+# Keys must match the `name` property of each phase class.
+_PHASE_LABELS: dict[str, str] = {
+    "import": "Loading data",
+    "typing": "Detecting column types",
+    "statistics": "Profiling value distributions",
+    "correlations": "Checking for correlations",
+    "cross_table_quality": "Cross-table correlation analysis",
+    "relationships": "Finding table relationships",
+    "semantic": "Understanding business meaning (AI step)",
+    "temporal": "Detecting date/time patterns",
+    "slicing": "Identifying data slices (AI step)",
+    "slice_analysis": "Analyzing slice distributions",
+    "temporal_slice_analysis": "Detecting distribution drift",
+    "statistical_quality": "Running statistical quality checks",
+    "enriched_views": "Creating enriched views",
+    "column_eligibility": "Evaluating column eligibility",
+    "quality_summary": "Summarizing quality findings (AI step)",
+    "entropy": "Measuring data uncertainty",
+    "entropy_interpretation": "Writing quality summaries (AI step)",
+    "business_cycles": "Detecting business cycles (AI step)",
+    "validation": "Running validation checks (AI step)",
+    "graph_execution": "Executing metric graphs",
+}
 
 
 async def _run_analyze_background(
@@ -341,10 +373,11 @@ def _get_pipeline_progress(manager: Any) -> str | None:
 
         current_detail = ""
         if running_phases:
-            current_detail = f" Current: Running {', '.join(running_phases)}..."
+            labels = [_PHASE_LABELS.get(p, p) for p in running_phases]
+            current_detail = f" Current: {', '.join(labels)}."
 
         return (
-            f"Pipeline is still running ({completed_count}/{total_phases} phases complete)."
+            f"Phase {completed_count} of {total_phases} complete."
             f"{current_detail}"
         )
 

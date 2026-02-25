@@ -25,7 +25,7 @@ class TestMakeTaskProgressCallback:
 
         await asyncio.to_thread(callback, 3, 10, "Running typing...")
 
-        task.update_status.assert_called_once_with("[3/10] Running typing...")
+        task.update_status.assert_called_once_with("Phase 3/10: Running typing...")
 
     @pytest.mark.asyncio
     async def test_callback_swallows_update_failure(self):
@@ -48,7 +48,7 @@ class TestMakeTaskProgressCallback:
 
         await asyncio.to_thread(callback, 15, 18, "Pipeline complete")
 
-        task.update_status.assert_called_once_with("[15/18] Pipeline complete")
+        task.update_status.assert_called_once_with("Phase 15/18: Pipeline complete")
 
     @pytest.mark.asyncio
     async def test_callback_called_multiple_times(self):
@@ -63,9 +63,9 @@ class TestMakeTaskProgressCallback:
         await asyncio.to_thread(callback, 3, 5, "phase C")
 
         assert task.update_status.call_count == 3
-        task.update_status.assert_any_call("[1/5] phase A")
-        task.update_status.assert_any_call("[2/5] phase B")
-        task.update_status.assert_any_call("[3/5] phase C")
+        task.update_status.assert_any_call("Phase 1/5: phase A")
+        task.update_status.assert_any_call("Phase 2/5: phase B")
+        task.update_status.assert_any_call("Phase 3/5: phase C")
 
 
 class TestAnalyzeFunction:

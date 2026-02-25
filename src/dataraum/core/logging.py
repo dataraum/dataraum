@@ -62,9 +62,6 @@ class PhaseMetrics:
     tables_processed: int = 0
     columns_processed: int = 0
     rows_processed: int = 0
-    llm_calls: int = 0
-    llm_input_tokens: int = 0
-    llm_output_tokens: int = 0
     db_queries: int = 0
     db_writes: int = 0
 
@@ -94,9 +91,6 @@ class PhaseMetrics:
             "tables_processed": self.tables_processed,
             "columns_processed": self.columns_processed,
             "rows_processed": self.rows_processed,
-            "llm_calls": self.llm_calls,
-            "llm_input_tokens": self.llm_input_tokens,
-            "llm_output_tokens": self.llm_output_tokens,
             "db_queries": self.db_queries,
             "db_writes": self.db_writes,
             "timings": self.timings,
@@ -133,8 +127,6 @@ class PipelineMetrics:
             "source_id": self.source_id,
             "duration_seconds": self.duration_seconds,
             "phase_count": len(self.phases),
-            "total_llm_calls": sum(p.llm_calls for p in self.phases),
-            "total_llm_tokens": sum(p.llm_input_tokens + p.llm_output_tokens for p in self.phases),
             "total_tables_processed": sum(p.tables_processed for p in self.phases),
             "total_rows_processed": sum(p.rows_processed for p in self.phases),
             "phases": [p.to_dict() for p in self.phases],
@@ -334,15 +326,6 @@ def log_context(**context: Any) -> LogContext:
 
 
 # Convenience functions for metrics tracking
-def increment_llm_call(input_tokens: int = 0, output_tokens: int = 0) -> None:
-    """Increment LLM call counter in current phase metrics."""
-    metrics = _current_phase_metrics.get()
-    if metrics:
-        metrics.llm_calls += 1
-        metrics.llm_input_tokens += input_tokens
-        metrics.llm_output_tokens += output_tokens
-
-
 def increment_db_query() -> None:
     """Increment database query counter in current phase metrics."""
     metrics = _current_phase_metrics.get()

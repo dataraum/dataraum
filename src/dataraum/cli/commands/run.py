@@ -153,14 +153,6 @@ def run(
             console.print(f"  Tables: {run_result.total_tables_processed}")
             console.print(f"  Rows: {run_result.total_rows_processed:,}")
 
-        # LLM metrics
-        if run_result.total_llm_calls > 0:
-            console.print()
-            console.print("[bold]LLM Usage[/bold]")
-            console.print("-" * 60)
-            console.print(f"  Calls: {run_result.total_llm_calls}")
-            console.print(f"  Tokens: {run_result.total_llm_tokens:,}")
-
         # Slowest phases (show top 5 if more than 3 phases ran)
         slowest = run_result.get_slowest_phases(5)
         if len(slowest) > 3:

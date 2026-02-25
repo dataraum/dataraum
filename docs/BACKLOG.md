@@ -15,7 +15,7 @@ Prioritized backlog for the dataraum-context project.
 > See [plans/agent-refactoring-plan.md](./plans/agent-refactoring-plan.md) for master plan.
 
 Streamline the four LLM agents around vertical configuration, fix context loading,
-merge graph + query agents into unified DataAgent.
+extract shared SQL infrastructure (graph + query agents stay separate).
 
 | Phase | Step | Description | Strategy | Status |
 |-------|------|-------------|----------|--------|
@@ -26,12 +26,19 @@ merge graph + query agents into unified DataAgent.
 | A | A2b | Fix validation execution | In-place | ✅ Done |
 | B | B1 | Create VerticalConfig abstraction | New code | ✅ Done |
 | B | B2 | Extract quality metrics to entropy system | Move | ✅ Done |
-| C | C1 | Surface validation results in GraphExecutionContext | Additive | **Next** |
+| 0.6 | — | E2E validation tests (testdata → pipeline → verify) | New tests | **Current** |
+| — | — | temporal_behavior on SemanticAnnotation | Semantic fix | Next |
+| C | C1 | Surface validation results in GraphExecutionContext | Additive | Pending |
 | C | C2 | Forward full cycle data to context | Additive | Pending |
 | C | C3 | Align ontology concepts ↔ standard_field vocabulary | Audit | Pending |
-| D | D1 | Consolidate shared agent infrastructure | Refactor | Pending |
-| D | D2 | Create unified DataAgent | Rewrite | Pending |
-| D | D3 | Clean up old modules | Delete | Pending |
+| D | D1 | Extract shared SQL execution base | Refactor | Pending |
+| D | D2 | Refactor both agents to use shared base | Refactor | Pending |
+| D | D3 | Cleanup dead code, update imports | Delete | Pending |
+
+**Revised decisions (2026-02-25):**
+- Phase D changed from "merge into DataAgent" → "extract shared infrastructure, keep agents separate"
+- temporal_behavior gap identified: ontology defines additive/point_in_time but never reaches SQL prompt
+- Phase 0.6 (E2E tests) prioritized before C/D to close the feedback loop
 
 ### Previous: Module-by-Module Streamlining ✅
 

@@ -4,6 +4,8 @@ Measures uncertainty from outlier values.
 High outlier rate indicates data quality issues that affect aggregations.
 """
 
+from typing import Any
+
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
@@ -68,6 +70,8 @@ class OutlierRateDetector(EntropyDetector):
         score_at_significant = detector_config.get("score_at_significant", 0.65)
         suggest_winsorize = detector_config.get("suggest_winsorize_threshold", 0.2)
         suggest_exclude = detector_config.get("suggest_exclude_threshold", 0.5)
+        cv_attenuation_threshold = detector_config.get("cv_attenuation_threshold", 2.0)
+        cv_attenuated_max_score = detector_config.get("cv_attenuated_max_score", 0.4)
         stats = context.get_analysis("statistics", {})
 
         # Extract outlier information
@@ -129,6 +133,19 @@ class OutlierRateDetector(EntropyDetector):
                 * (1.0 - score_at_significant),
             )
 
+        # Attenuate score for high-CV columns where IQR outlier detection is unreliable.
+        # Columns with high coefficient of variation (e.g., FX rates spanning 0.7 to 150)
+        # naturally have wide ranges — IQR "outliers" are legitimate values, not quality issues.
+        cv_attenuated = False
+        profile_data = stats.get("profile_data", {})
+        if isinstance(profile_data, dict):
+            numeric_stats = profile_data.get("numeric_stats", {})
+            if isinstance(numeric_stats, dict):
+                cv = numeric_stats.get("cv")
+                if cv is not None and cv > cv_attenuation_threshold and score > cv_attenuated_max_score:
+                    score = cv_attenuated_max_score
+                    cv_attenuated = True
+
         # Classify outlier impact using configurable thresholds
         if outlier_ratio == 0:
             outlier_impact = "none"
@@ -142,15 +159,17 @@ class OutlierRateDetector(EntropyDetector):
             outlier_impact = "critical"
 
         # Build evidence
-        evidence = [
-            {
-                "outlier_ratio": outlier_ratio,
-                "outlier_count": outlier_count,
-                "outlier_impact": outlier_impact,
-                "iqr_lower_fence": lower_fence,
-                "iqr_upper_fence": upper_fence,
-            }
-        ]
+        evidence_dict: dict[str, Any] = {
+            "outlier_ratio": outlier_ratio,
+            "outlier_count": outlier_count,
+            "outlier_impact": outlier_impact,
+            "iqr_lower_fence": lower_fence,
+            "iqr_upper_fence": upper_fence,
+        }
+        if cv_attenuated:
+            evidence_dict["cv_attenuated"] = True
+            evidence_dict["cv"] = cv  # type: ignore[possibly-undefined]
+        evidence = [evidence_dict]
 
         # Build resolution options using configurable thresholds
         resolution_options: list[ResolutionOption] = []

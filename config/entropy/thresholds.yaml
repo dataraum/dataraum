@@ -57,6 +57,11 @@ detectors:
     score_at_minimal: 0.15
     score_at_moderate: 0.40
     score_at_significant: 0.65
+    # CV attenuation: cap score when coefficient of variation is high.
+    # High-CV columns (e.g., FX rates spanning 0.7–150) have naturally wide
+    # ranges — IQR "outliers" are legitimate values, not quality issues.
+    cv_attenuation_threshold: 2.0  # CV above which to attenuate outlier score
+    cv_attenuated_max_score: 0.4   # Maximum score for high-CV columns
     # Resolution thresholds (based on score)
     suggest_winsorize_threshold: 0.2 # Score above which to suggest winsorization
     suggest_exclude_threshold: 0.5 # Score above which to suggest exclusion

@@ -1,10 +1,9 @@
 """E2E tests: verify the query agent against real pipeline output.
 
 Runs answer_question() against the clean pipeline's output databases
-and verifies the response structure. The query agent always evaluates
-entropy contracts — even clean data may have blocked columns (e.g.,
-fx_rates.rate), causing the default contract to block the query.
-Tests validate both the blocking path and the query structure.
+and verifies the response structure. Clean data should NOT produce
+blocked columns — if a query is blocked, that indicates a false positive
+in the entropy detectors.
 """
 
 from __future__ import annotations
@@ -51,15 +50,22 @@ def query_result(
 
 
 class TestQueryAgent:
-    """Verify the query agent produces valid structured responses."""
+    """Verify the query agent produces valid structured responses on clean data."""
 
     def test_query_returns_result(self, query_result: QueryResult) -> None:
         """Query should return a QueryResult with an execution_id."""
         assert query_result.execution_id, "No execution_id"
         assert query_result.question == "What is the total revenue?"
 
+    def test_query_not_blocked_on_clean_data(self, query_result: QueryResult) -> None:
+        """Clean data should NOT block queries — blocked means false positive detectors."""
+        assert query_result.success, (
+            f"Query blocked on clean data! error={query_result.error}. "
+            "This indicates false positives in entropy detectors."
+        )
+
     def test_query_has_answer(self, query_result: QueryResult) -> None:
-        """Query should produce a non-empty answer (even if blocked)."""
+        """Query should produce a non-empty answer."""
         assert query_result.answer, "Answer is empty"
 
     def test_query_has_confidence(self, query_result: QueryResult) -> None:
@@ -71,44 +77,18 @@ class TestQueryAgent:
         assert query_result.contract is not None, "No contract evaluated"
         assert query_result.contract_evaluation is not None, "No contract evaluation"
 
-    def test_blocked_query_has_correct_structure(self, query_result: QueryResult) -> None:
-        """If query was blocked by contract, verify the blocking response."""
-        if query_result.success:
-            pytest.skip("Query succeeded — blocking path not exercised")
-
-        assert query_result.error is not None, "Blocked query should have error"
-        assert query_result.contract_evaluation is not None
-        assert len(query_result.contract_evaluation.violations) > 0, (
-            "Blocked query should have contract violations"
-        )
-
-    def test_successful_query_has_sql_and_data(self, query_result: QueryResult) -> None:
-        """If query succeeded, verify SQL and data are present."""
-        if not query_result.success:
-            pytest.skip("Query was blocked by contract — SQL path not exercised")
-
-        assert query_result.sql, "Successful query should have SQL"
-        assert query_result.data is not None and len(query_result.data) > 0
-        assert query_result.columns is not None and len(query_result.columns) > 0
+    def test_query_has_sql_and_data(self, query_result: QueryResult) -> None:
+        """Successful query should have SQL and data."""
+        assert query_result.sql, "No SQL generated"
+        assert query_result.data is not None and len(query_result.data) > 0, "No data returned"
+        assert query_result.columns is not None and len(query_result.columns) > 0, "No columns"
 
     def test_query_execution_persisted(
         self,
         query_result: QueryResult,
         output_manager: ConnectionManager,
     ) -> None:
-        """Query execution should be persisted in the database (if not blocked)."""
-        if not query_result.success:
-            # Blocked queries may not persist an execution record
-            with output_manager.session_scope() as session:
-                count = session.execute(
-                    select(func.count())
-                    .select_from(QueryExecutionRecord)
-                ).scalar()
-                # Even if this query was blocked, there should be no
-                # spurious records — just verify the table exists
-                assert count is not None  # Table is queryable
-            return
-
+        """Query execution should be persisted in the database."""
         with output_manager.session_scope() as session:
             record = session.execute(
                 select(QueryExecutionRecord).where(

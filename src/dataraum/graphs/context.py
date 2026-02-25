@@ -205,6 +205,12 @@ class GraphExecutionContext:
     # Entropy summary (from entropy layer)
     entropy_summary: dict[str, Any] | None = None  # Overall entropy and readiness
 
+    # Column summaries for contract evaluation (from entropy network)
+    column_summaries: dict[str, Any] = field(default_factory=dict)
+
+    # Overall entropy score (average from snapshot)
+    overall_entropy_score: float | None = None
+
     # Slice context (if filtering by dimension)
     slice_column: str | None = None
     slice_value: str | None = None
@@ -543,6 +549,28 @@ def build_execution_context(
         ],
     }
 
+    # 16b. Build column summaries for contract evaluation (reuses network_ctx)
+    from dataraum.entropy.views.query_context import network_to_column_summaries
+
+    column_summaries = network_to_column_summaries(network_ctx)
+
+    # 16c. Read overall entropy score from snapshot
+    from dataraum.entropy.db_models import EntropySnapshotRecord
+
+    source_id_result = session.execute(
+        select(Table.source_id).where(Table.table_id.in_(table_ids)).limit(1)
+    )
+    _source_id = source_id_result.scalar()
+    overall_entropy_score: float | None = None
+    if _source_id:
+        snapshot_result = session.execute(
+            select(EntropySnapshotRecord.avg_entropy_score)
+            .where(EntropySnapshotRecord.source_id == _source_id)
+            .order_by(EntropySnapshotRecord.snapshot_at.desc())
+            .limit(1)
+        )
+        overall_entropy_score = snapshot_result.scalar()
+
     # 17. Build table contexts
     table_contexts: list[TableContext] = []
     quality_issues_by_severity: dict[str, int] = {}
@@ -691,6 +719,8 @@ def build_execution_context(
         quality_issues_by_severity=quality_issues_by_severity,
         quality_flags=list(set(quality_flags)),  # Deduplicate
         entropy_summary=entropy_summary_dict,
+        column_summaries=column_summaries,
+        overall_entropy_score=overall_entropy_score,
         slice_column=slice_column,
         slice_value=slice_value,
         available_slices=slice_contexts,

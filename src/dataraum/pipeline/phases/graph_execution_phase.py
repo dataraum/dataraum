@@ -167,7 +167,6 @@ class GraphExecutionPhase(BasePhase):
             duckdb_conn=ctx.duckdb_conn,
             table_name=f"typed_{primary_table.table_name}",
             table_ids=table_ids,
-            entropy_behavior_mode="balanced",
             manager=ctx.manager,
         )
 

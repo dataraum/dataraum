@@ -31,7 +31,6 @@ class TestSnippetLibraryFindByKey:
             standard_field="revenue",
             statement="income_statement",
             aggregation="sum",
-            confidence=1.0,
         )
         session.flush()
 
@@ -173,7 +172,6 @@ class TestSnippetLibrarySave:
             standard_field="revenue",
             statement="income_statement",
             aggregation="sum",
-            confidence=1.0,
         )
         session.flush()
 
@@ -227,7 +225,6 @@ class TestSnippetLibrarySave:
             source="graph:dso",
             normalized_expression="({A} / {B}) * {C}",
             input_fields=["accounts_receivable", "days_in_period", "revenue"],
-            confidence=0.9,
         )
         session.flush()
 
@@ -486,18 +483,18 @@ class TestSnippetLibraryInvalidation:
         s1 = library.save_snippet(
             snippet_type="extract", sql="SELECT 1", description="test",
             schema_mapping_id="schema_abc", source="graph:test",
-            standard_field="revenue", confidence=1.0,
+            standard_field="revenue",
         )
         s2 = library.save_snippet(
             snippet_type="extract", sql="SELECT 2", description="test",
             schema_mapping_id="schema_abc", source="graph:test",
-            standard_field="cost", confidence=1.0,
+            standard_field="cost",
         )
         # Different schema - should not be affected
         s3 = library.save_snippet(
             snippet_type="extract", sql="SELECT 3", description="test",
             schema_mapping_id="schema_xyz", source="graph:test",
-            standard_field="revenue", confidence=1.0,
+            standard_field="revenue",
         )
         session.flush()
 

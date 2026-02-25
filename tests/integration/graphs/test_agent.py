@@ -495,7 +495,6 @@ class TestGraphAgentSnippets:
             standard_field="test_field",
             statement="test_table",
             aggregation="sum",
-            confidence=1.0,
         )
         session.flush()
 
@@ -553,7 +552,6 @@ class TestGraphAgentSnippets:
             standard_field="test_field",
             statement="test_table",
             aggregation="sum",
-            confidence=1.0,
         )
         session.flush()
 
@@ -618,7 +616,6 @@ class TestGraphAgentSnippets:
             standard_field="test_field",
             statement="test_table",
             aggregation="sum",
-            confidence=1.0,
             column_mappings={"test_field": "amount"},
         )
         session.flush()

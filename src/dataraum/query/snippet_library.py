@@ -37,7 +37,6 @@ Usage:
         statement="income_statement",
         aggregation="sum",
         source="graph:dso",
-        confidence=1.0,
     )
 """
 
@@ -277,7 +276,6 @@ class SnippetLibrary:
         schema_mapping_id: str,
         source: str,
         *,
-        confidence: float = 0.5,
         standard_field: str | None = None,
         statement: str | None = None,
         aggregation: str | None = None,
@@ -299,7 +297,6 @@ class SnippetLibrary:
             description: Human-readable description
             schema_mapping_id: Schema mapping identifier
             source: Provenance string (e.g. "graph:dso", "query:exec_456")
-            confidence: Confidence score 0.0-1.0
             standard_field: Standard field name (for extracts)
             statement: Statement type (for extracts)
             aggregation: Aggregation method (for extracts)
@@ -340,7 +337,6 @@ class SnippetLibrary:
             existing.sql = sql
             existing.description = description
             existing.source = source
-            existing.confidence = confidence
             existing.llm_model = llm_model
             existing.column_mappings = column_mappings or {}
             existing.column_hash = column_hash
@@ -364,7 +360,6 @@ class SnippetLibrary:
                 column_mappings=column_mappings or {},
                 source=source,
                 llm_model=llm_model,
-                confidence=confidence,
                 column_hash=column_hash,
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),

@@ -330,7 +330,7 @@ class TestGraphAgentSQLGeneration:
 
 
 class TestEntropyBehavior:
-    """Test entropy-aware behavior modes."""
+    """Test entropy-aware context population."""
 
     def test_execution_context_with_rich_context(
         self,
@@ -344,43 +344,6 @@ class TestEntropyBehavior:
                 duckdb_conn=analyzed_small_finance.duckdb_conn,
                 table_name="typed_transactions",
                 table_ids=analyzed_table_ids,
-                entropy_behavior_mode="balanced",
             )
 
         assert exec_ctx.rich_context is not None
-        assert exec_ctx.entropy_behavior is not None
-        assert exec_ctx.entropy_behavior.mode == "balanced"
-
-    def test_strict_mode_context(
-        self,
-        analyzed_small_finance: PipelineTestHarness,
-        analyzed_table_ids: list[str],
-    ):
-        """Strict mode should be configurable via ExecutionContext."""
-        with analyzed_small_finance.session_factory() as session:
-            exec_ctx = ExecutionContext.with_rich_context(
-                session=session,
-                duckdb_conn=analyzed_small_finance.duckdb_conn,
-                table_name="typed_transactions",
-                table_ids=analyzed_table_ids,
-                entropy_behavior_mode="strict",
-            )
-
-        assert exec_ctx.entropy_behavior.mode == "strict"
-
-    def test_lenient_mode_context(
-        self,
-        analyzed_small_finance: PipelineTestHarness,
-        analyzed_table_ids: list[str],
-    ):
-        """Lenient mode should be configurable via ExecutionContext."""
-        with analyzed_small_finance.session_factory() as session:
-            exec_ctx = ExecutionContext.with_rich_context(
-                session=session,
-                duckdb_conn=analyzed_small_finance.duckdb_conn,
-                table_name="typed_transactions",
-                table_ids=analyzed_table_ids,
-                entropy_behavior_mode="lenient",
-            )
-
-        assert exec_ctx.entropy_behavior.mode == "lenient"

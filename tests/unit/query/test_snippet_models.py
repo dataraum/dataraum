@@ -20,7 +20,6 @@ class TestSQLSnippetRecord:
             sql="SELECT SUM(\"Betrag\") AS value FROM typed_transactions WHERE \"Kontoart\" IN ('Erlöse')",
             description="Sum of revenue from income statement",
             source="graph:dso",
-            confidence=1.0,
         )
         session.add(record)
         session.flush()
@@ -41,7 +40,6 @@ class TestSQLSnippetRecord:
             sql="SELECT 30 AS value",
             description="Analysis period of 30 days",
             source="graph:dso",
-            confidence=1.0,
         )
         session.add(record)
         session.flush()
@@ -62,7 +60,6 @@ class TestSQLSnippetRecord:
             ),
             description="DSO = (accounts_receivable / revenue) * days_in_period",
             source="graph:dso",
-            confidence=0.9,
         )
         session.add(record)
         session.flush()
@@ -80,7 +77,6 @@ class TestSQLSnippetRecord:
             description="Monthly revenue breakdown",
             embedding_text="Monthly revenue breakdown. Show me revenue by month.",
             source="query:exec_456",
-            confidence=0.6,
         )
         session.add(record)
         session.flush()

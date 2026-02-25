@@ -4,11 +4,13 @@ Provides:
 - SQL similarity comparison (normalized whitespace + Levenshtein ratio)
 - Expression normalization (commutative sorting, placeholder substitution)
 - Usage type determination (exact_reuse, adapted, etc.)
+- Shared snippet usage tracking (used by both graph and query agents)
 """
 
 from __future__ import annotations
 
 import re
+from typing import Any
 
 
 def normalize_sql(sql: str) -> str:
@@ -269,9 +271,80 @@ def determine_usage_type(
         return "provided_not_used"
 
 
+def track_snippet_usage(
+    library: Any,
+    execution_id: str,
+    execution_type: str,
+    provided_snippets: dict[str, dict[str, Any]],
+    generated_steps: list[dict[str, str]],
+) -> None:
+    """Track how provided snippets were used in an execution.
+
+    Shared by both the graph and query agents. Compares generated steps
+    against provided snippets and records usage via the snippet library.
+
+    Args:
+        library: SnippetLibrary instance
+        execution_id: Execution or cache key identifier
+        execution_type: "query" or "graph"
+        provided_snippets: Dict of step_id -> {sql, snippet_id, similarity?, ...}
+        generated_steps: List of dicts with step_id, sql, description
+    """
+    used_snippet_ids: set[str] = set()
+
+    for gen_step in generated_steps:
+        step_id = gen_step.get("step_id", "")
+        provided = provided_snippets.get(step_id)
+
+        if provided is None:
+            library.record_usage(
+                execution_id=execution_id,
+                execution_type=execution_type,
+                usage_type="newly_generated",
+                step_id=step_id,
+            )
+        else:
+            snippet_id = provided.get("snippet_id")
+            provided_sql = provided.get("sql", "")
+            gen_sql = gen_step.get("sql", "")
+            usage_type = determine_usage_type(gen_sql, provided_sql)
+            match_ratio = sql_similarity(gen_sql, provided_sql)
+
+            # Use similarity (semantic search) if available, default 1.0 (exact-key match)
+            raw_similarity = provided.get("similarity", 1.0)
+            match_confidence = float(raw_similarity) if isinstance(raw_similarity, (int, float)) else 1.0
+
+            library.record_usage(
+                execution_id=execution_id,
+                execution_type=execution_type,
+                usage_type=usage_type,
+                snippet_id=snippet_id,
+                match_confidence=match_confidence,
+                sql_match_ratio=match_ratio,
+                step_id=step_id,
+            )
+            if snippet_id:
+                used_snippet_ids.add(snippet_id)
+
+    # Record provided_not_used for snippets not referenced by any generated step
+    generated_step_ids = {s.get("step_id", "") for s in generated_steps}
+    for step_id, provided in provided_snippets.items():
+        if step_id not in generated_step_ids:
+            snippet_id = provided.get("snippet_id")
+            if snippet_id and snippet_id not in used_snippet_ids:
+                library.record_usage(
+                    execution_id=execution_id,
+                    execution_type=execution_type,
+                    usage_type="provided_not_used",
+                    snippet_id=snippet_id,
+                    step_id=step_id,
+                )
+
+
 __all__ = [
     "normalize_sql",
     "sql_similarity",
     "normalize_expression",
     "determine_usage_type",
+    "track_snippet_usage",
 ]

@@ -47,16 +47,15 @@ class TestQueryResult:
         assert d["contract"] == "executive_dashboard"
         assert d["entropy_action"] is None
 
-    def test_to_dict_with_entropy_action(self):
-        """Result to_dict includes entropy_action when set."""
+    def test_to_dict_entropy_action_always_none(self):
+        """Result to_dict has entropy_action as None (field kept for DB compat)."""
         result = QueryResult(
             execution_id="exec_ea",
             question="Test",
-            entropy_action="answer_with_assumptions",
         )
 
         d = result.to_dict()
-        assert d["entropy_action"] == "answer_with_assumptions"
+        assert d["entropy_action"] is None
 
     def test_format_cli_response_success(self):
         """CLI response formatting for success."""
@@ -76,18 +75,17 @@ class TestQueryResult:
         assert "exploratory_analysis" in cli_output
         assert "500,000" in cli_output or "500000" in cli_output
 
-    def test_format_cli_response_with_entropy_action(self):
-        """CLI response includes entropy action label."""
+    def test_format_cli_response_without_entropy_action(self):
+        """CLI response omits entropy action line when None."""
         result = QueryResult(
             execution_id="exec_ea",
             question="What was revenue?",
             answer="Total revenue was $500,000",
             confidence_level=ConfidenceLevel.YELLOW,
-            entropy_action="answer_with_assumptions",
         )
 
         cli_output = result.format_cli_response()
-        assert "With Assumptions" in cli_output
+        assert "Entropy Assessment" not in cli_output
 
     def test_format_cli_response_with_assumptions(self):
         """CLI response includes assumptions."""

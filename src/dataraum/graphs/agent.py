@@ -34,10 +34,6 @@ from dataraum.llm.providers.base import LLMProvider
 if TYPE_CHECKING:
     from dataraum.core.connections import ConnectionManager
 
-from .entropy_behavior import (
-    EntropyBehaviorConfig,
-    get_default_config,
-)
 from .models import (
     AssumptionBasis,
     DatasetSchemaMapping,
@@ -98,9 +94,6 @@ class ExecutionContext:
     # - Entropy scores and data readiness
     rich_context: Any | None = None  # GraphExecutionContext from graphs.context
 
-    # Entropy behavior configuration (controls how agent responds to uncertainty)
-    entropy_behavior: EntropyBehaviorConfig | None = None
-
     # ConnectionManager for snippet library embeddings (required for snippet KB)
     manager: ConnectionManager | None = None
 
@@ -111,7 +104,6 @@ class ExecutionContext:
         duckdb_conn: duckdb.DuckDBPyConnection,
         table_name: str,
         table_ids: list[str],
-        entropy_behavior_mode: str = "balanced",
         **kwargs: Any,
     ) -> ExecutionContext:
         """Create ExecutionContext with rich metadata loaded from analysis modules.
@@ -124,11 +116,10 @@ class ExecutionContext:
             duckdb_conn: DuckDB connection for queries
             table_name: Primary table name for execution
             table_ids: List of table IDs to include in context
-            entropy_behavior_mode: One of "strict", "balanced", "lenient"
             **kwargs: Additional ExecutionContext arguments
 
         Returns:
-            ExecutionContext with rich_context and entropy_behavior populated
+            ExecutionContext with rich_context populated
         """
         from dataraum.graphs.context import build_execution_context
 
@@ -140,13 +131,10 @@ class ExecutionContext:
             slice_value=kwargs.pop("slice_value", None),
         )
 
-        entropy_behavior = get_default_config(entropy_behavior_mode)
-
         return cls(
             duckdb_conn=duckdb_conn,
             table_name=table_name,
             rich_context=rich_context,
-            entropy_behavior=entropy_behavior,
             **kwargs,
         )
 
@@ -523,6 +511,10 @@ class GraphAgent(LLMFeature):
         generated_code.is_validated = validation_result.success
         if not validation_result.success:
             generated_code.validation_errors = [validation_result.error or "Unknown"]
+            logger.warning(
+                f"SQL validation failed for graph '{graph.graph_id}': "
+                f"{validation_result.error}"
+            )
 
         return Result.ok(generated_code)
 
@@ -1034,69 +1026,19 @@ class GraphAgent(LLMFeature):
         graph: TransformationGraph,
         manager: ConnectionManager,
     ) -> None:
-        """Track how cached snippets were used in graph execution.
-
-        Compares generated steps against provided snippets and records usage.
-
-        Args:
-            session: SQLAlchemy session
-            execution_id: Graph execution or cache key identifier
-            cached_snippets: Dict of step_id -> {sql, description, snippet_id}
-            generated_steps: List of generated step dicts with step_id, sql, description
-            graph: Graph specification (for step count context)
-            manager: ConnectionManager for embeddings
-        """
+        """Track how cached snippets were used in graph execution."""
         from dataraum.query.snippet_library import SnippetLibrary
-        from dataraum.query.snippet_utils import determine_usage_type, sql_similarity
+        from dataraum.query.snippet_utils import track_snippet_usage
 
         library = SnippetLibrary(session, manager)
 
-        used_snippet_ids: set[str] = set()
-
-        for gen_step in generated_steps:
-            step_id = gen_step.get("step_id", "")
-            cached = cached_snippets.get(step_id)
-
-            if cached is None:
-                # Newly generated step (no snippet was provided)
-                library.record_usage(
-                    execution_id=execution_id,
-                    execution_type="graph",
-                    usage_type="newly_generated",
-                    step_id=step_id,
-                )
-            else:
-                snippet_id = cached.get("snippet_id")
-                cached_sql = cached.get("sql", "")
-                gen_sql = gen_step.get("sql", "")
-                usage_type = determine_usage_type(gen_sql, cached_sql)
-                match_ratio = sql_similarity(gen_sql, cached_sql)
-
-                library.record_usage(
-                    execution_id=execution_id,
-                    execution_type="graph",
-                    usage_type=usage_type,
-                    snippet_id=snippet_id,
-                    match_confidence=1.0,
-                    sql_match_ratio=match_ratio,
-                    step_id=step_id,
-                )
-                if snippet_id:
-                    used_snippet_ids.add(snippet_id)
-
-        # Record provided_not_used for snippets not referenced by any generated step
-        generated_step_ids = {s.get("step_id", "") for s in generated_steps}
-        for step_id, cached in cached_snippets.items():
-            if step_id not in generated_step_ids:
-                snippet_id = cached.get("snippet_id")
-                if snippet_id and snippet_id not in used_snippet_ids:
-                    library.record_usage(
-                        execution_id=execution_id,
-                        execution_type="graph",
-                        usage_type="provided_not_used",
-                        snippet_id=snippet_id,
-                        step_id=step_id,
-                    )
+        track_snippet_usage(
+            library=library,
+            execution_id=execution_id,
+            execution_type="graph",
+            provided_snippets=cached_snippets,
+            generated_steps=generated_steps,
+        )
 
     def _save_snippets(
         self,
@@ -1157,7 +1099,6 @@ class GraphAgent(LLMFeature):
                     aggregation=graph_step.aggregation,
                     column_mappings=generated_code.column_mappings,
                     llm_model=generated_code.llm_model,
-                    confidence=1.0,
                 )
 
             elif graph_step.step_type == StepType.CONSTANT:
@@ -1179,7 +1120,6 @@ class GraphAgent(LLMFeature):
                     standard_field=graph_step.parameter or step_id,
                     parameter_value=param_value,
                     llm_model=generated_code.llm_model,
-                    confidence=1.0,
                 )
 
             elif graph_step.step_type == StepType.FORMULA and graph_step.expression:
@@ -1197,7 +1137,6 @@ class GraphAgent(LLMFeature):
                     normalized_expression=normalized,
                     input_fields=sorted_fields,
                     llm_model=generated_code.llm_model,
-                    confidence=0.9,
                 )
 
         logger.debug(f"Saved snippets for graph '{graph.graph_id}'")

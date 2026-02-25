@@ -79,7 +79,6 @@ class SQLSnippetRecord(Base):
         String, nullable=False
     )  # e.g. "graph:dso", "query:exec_456"
     llm_model: Mapped[str | None] = mapped_column(String, nullable=True)
-    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
 
     # --- Quality tracking ---
     is_validated: Mapped[bool] = mapped_column(Integer, nullable=False, default=False)

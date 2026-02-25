@@ -37,7 +37,6 @@ from dataraum.entropy.contracts import (
     ConfidenceLevel,
     ContractEvaluation,
 )
-from dataraum.entropy.views import build_for_query
 from dataraum.graphs.context import build_execution_context, format_context_for_prompt
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import ConversationRequest, Message, ToolDefinition
@@ -54,7 +53,6 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from dataraum.core.connections import ConnectionManager
-    from dataraum.entropy.views import EntropyForQuery
     from dataraum.graphs.context import GraphExecutionContext
     from dataraum.graphs.models import QueryAssumption
 
@@ -72,7 +70,6 @@ class QueryContext:
 
     # Rich metadata context
     execution_context: GraphExecutionContext | None = None
-    entropy_context: EntropyForQuery | None = None
 
     # Contract settings
     contract_name: str | None = None
@@ -149,46 +146,63 @@ class QueryAgent(LLMFeature):
             logger.error(f"Failed to build execution context: {e}")
             return Result.fail(f"Failed to build context: {e}")
 
-        # Validate contract name if explicitly specified
-        if contract and not auto_contract:
-            from dataraum.entropy.contracts import get_contract
-
-            if get_contract(contract) is None:
-                return Result.fail(f"Contract not found: {contract}")
-
-        # Build entropy context using new views module (enforces typed tables)
-        try:
-            entropy_context = build_for_query(
-                session=session,
-                table_ids=typed_table_ids,  # Use typed tables only
-                contract=contract,
-                auto_contract=auto_contract,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to build entropy context: {e}")
-            entropy_context = None
-
-        # Get contract and confidence from entropy context
+        # Evaluate contract using column_summaries from execution_context
         contract_evaluation: ContractEvaluation | None = None
-        # Default to YELLOW when entropy unavailable (data quality unknown)
-        confidence_level = ConfidenceLevel.YELLOW
+        confidence_level = ConfidenceLevel.YELLOW  # Default when unknown
 
-        if entropy_context:
-            confidence_level = entropy_context.confidence_level
-            contract_evaluation = entropy_context.contract_evaluation
-            contract = entropy_context.contract_name
-
-        # Determine entropy action
-        entropy_action: str | None = None
-        if entropy_context:
-            from dataraum.graphs.entropy_behavior import get_default_config
-
-            behavior_config = get_default_config("balanced")
-            max_entropy = entropy_context.overall_entropy_score or 0.0
-            action = behavior_config.determine_action(
-                max_entropy=max_entropy,
+        if execution_context.column_summaries:
+            from dataraum.entropy.contracts import (
+                evaluate_contract,
+                find_best_contract,
+                get_contract,
             )
-            entropy_action = action.value
+
+            if contract and not auto_contract:
+                # Explicit contract — validate it exists
+                if get_contract(contract) is None:
+                    return Result.fail(f"Contract not found: {contract}")
+                contract_evaluation = evaluate_contract(
+                    execution_context.column_summaries, contract
+                )
+                confidence_level = contract_evaluation.confidence_level
+            elif auto_contract:
+                best_name, best_eval = find_best_contract(
+                    execution_context.column_summaries
+                )
+                if best_name and best_eval:
+                    contract = best_name
+                    contract_evaluation = best_eval
+                    confidence_level = best_eval.confidence_level
+                else:
+                    contract = "exploratory_analysis"
+                    confidence_level = ConfidenceLevel.RED
+            else:
+                # Default: evaluate exploratory_analysis
+                contract = "exploratory_analysis"
+                try:
+                    contract_evaluation = evaluate_contract(
+                        execution_context.column_summaries, "exploratory_analysis"
+                    )
+                    confidence_level = contract_evaluation.confidence_level
+                except ValueError:
+                    readiness = (execution_context.entropy_summary or {}).get(
+                        "overall_readiness", "investigate"
+                    )
+                    if readiness == "blocked":
+                        confidence_level = ConfidenceLevel.RED
+                    elif readiness == "investigate":
+                        confidence_level = ConfidenceLevel.YELLOW
+                    else:
+                        confidence_level = ConfidenceLevel.GREEN
+        elif execution_context.entropy_summary:
+            # No column summaries but have entropy summary — use heuristic
+            readiness = execution_context.entropy_summary.get("overall_readiness", "investigate")
+            if readiness == "blocked":
+                confidence_level = ConfidenceLevel.RED
+            elif readiness == "investigate":
+                confidence_level = ConfidenceLevel.YELLOW
+            else:
+                confidence_level = ConfidenceLevel.GREEN
 
         # Check if query is blocked
         if confidence_level == ConfidenceLevel.RED and contract_evaluation:
@@ -198,7 +212,6 @@ class QueryAgent(LLMFeature):
                     question=question,
                     success=False,
                     confidence_level=ConfidenceLevel.RED,
-                    entropy_action=entropy_action,
                     contract=contract,
                     contract_evaluation=contract_evaluation,
                     answer=self._format_blocked_response(contract_evaluation),
@@ -225,7 +238,6 @@ class QueryAgent(LLMFeature):
             question=question,
             execution_id=execution_id,
             execution_context=execution_context,
-            entropy_context=entropy_context,
             discovered_snippets=discovered_snippets if discovered_snippets else None,
         )
 
@@ -273,11 +285,8 @@ class QueryAgent(LLMFeature):
             for a in analysis_output.assumptions
         ]
 
-        # Calculate overall entropy score (None = unknown, not computed)
-        entropy_score: float | None = None
-        if entropy_context:
-            # Use the pre-computed overall_entropy_score from EntropyForQuery
-            entropy_score = entropy_context.overall_entropy_score
+        # Overall entropy score from execution context
+        entropy_score = execution_context.overall_entropy_score
 
         # Format answer
         answer = self._format_answer(
@@ -322,7 +331,6 @@ class QueryAgent(LLMFeature):
                 error_message=exec_error,
                 confidence_level=confidence_level,
                 contract=contract,
-                entropy_action=entropy_action,
             )
 
         return Result.ok(
@@ -336,7 +344,6 @@ class QueryAgent(LLMFeature):
                 columns=columns,
                 confidence_level=confidence_level,
                 entropy_score=entropy_score,
-                entropy_action=entropy_action,
                 assumptions=assumptions,
                 contract=contract,
                 contract_evaluation=contract_evaluation,
@@ -393,7 +400,8 @@ class QueryAgent(LLMFeature):
                 "description": m.snippet.description,
                 "snippet_id": m.snippet.snippet_id,
                 "snippet_type": m.snippet.snippet_type,
-                "confidence": m.snippet.confidence,
+                "source": m.snippet.source,
+                "similarity": m.match_confidence,
             })
 
         logger.info(f"Discovered {len(results)} snippets via similarity search")
@@ -407,71 +415,25 @@ class QueryAgent(LLMFeature):
         provided_snippets: dict[str, dict[str, str]],
         manager: ConnectionManager,
     ) -> None:
-        """Compare generated SQL steps to provided snippets and record usage.
-
-        Args:
-            session: SQLAlchemy session
-            execution_id: Execution ID
-            analysis_output: Generated query analysis with steps
-            provided_snippets: Dict of step_id -> {sql, snippet_id, ...}
-            manager: ConnectionManager for embeddings
-        """
+        """Compare generated SQL steps to provided snippets and record usage."""
         from dataraum.query.snippet_library import SnippetLibrary
-        from dataraum.query.snippet_utils import determine_usage_type, sql_similarity
+        from dataraum.query.snippet_utils import track_snippet_usage
 
         library = SnippetLibrary(session, manager)
 
-        # Track which provided snippets were used
-        used_snippet_ids: set[str] = set()
+        # Normalize Pydantic steps to list[dict] for the shared function
+        generated_steps = [
+            {"step_id": s.step_id, "sql": s.sql, "description": s.description or ""}
+            for s in analysis_output.steps
+        ]
 
-        for step in analysis_output.steps:
-            provided = provided_snippets.get(step.step_id)
-
-            if provided is None:
-                # Step generated fresh (no matching snippet was provided)
-                library.record_usage(
-                    execution_id=execution_id,
-                    execution_type="query",
-                    usage_type="newly_generated",
-                    step_id=step.step_id,
-                )
-            else:
-                snippet_id = provided.get("snippet_id")
-                provided_sql = provided.get("sql", "")
-                usage_type = determine_usage_type(step.sql, provided_sql)
-                match_ratio = sql_similarity(step.sql, provided_sql)
-
-                raw_confidence = provided.get("confidence", 0.0)
-                confidence = float(raw_confidence) if isinstance(raw_confidence, (int, float)) else 0.0
-
-                library.record_usage(
-                    execution_id=execution_id,
-                    execution_type="query",
-                    usage_type=usage_type,
-                    snippet_id=snippet_id,
-                    match_confidence=confidence,
-                    sql_match_ratio=match_ratio,
-                    step_id=step.step_id,
-                )
-                if snippet_id:
-                    used_snippet_ids.add(snippet_id)
-
-        # Record provided_not_used for snippets that were provided but not referenced
-        for step_id, provided in provided_snippets.items():
-            snippet_id = provided.get("snippet_id")
-            if snippet_id and snippet_id not in used_snippet_ids:
-                # Check if any generated step matched this snippet
-                matched = any(
-                    s.step_id == step_id for s in analysis_output.steps
-                )
-                if not matched:
-                    library.record_usage(
-                        execution_id=execution_id,
-                        execution_type="query",
-                        usage_type="provided_not_used",
-                        snippet_id=snippet_id,
-                        step_id=step_id,
-                    )
+        track_snippet_usage(
+            library=library,
+            execution_id=execution_id,
+            execution_type="query",
+            provided_snippets=provided_snippets,
+            generated_steps=generated_steps,
+        )
 
     def _save_novel_snippets(
         self,
@@ -512,7 +474,6 @@ class QueryAgent(LLMFeature):
                 description=step.description or f"Query step: {step.step_id}",
                 schema_mapping_id=schema_mapping_id,
                 source=f"query:{execution_id}",
-                confidence=0.5,  # Lower confidence for query-derived snippets
                 standard_field=step.step_id,
                 column_mappings=analysis_output.column_mappings,
             )
@@ -526,7 +487,6 @@ class QueryAgent(LLMFeature):
         question: str,
         execution_id: str,
         execution_context: GraphExecutionContext,
-        entropy_context: EntropyForQuery | None,
         discovered_snippets: list[dict[str, Any]] | None = None,
     ) -> Result[QueryAnalysisOutput]:
         """Use LLM to analyze question and generate SQL."""
@@ -536,7 +496,7 @@ class QueryAgent(LLMFeature):
         # Format context for prompt
         context_str = format_context_for_prompt(execution_context)
 
-        # Format entropy warnings (use execution_context's entropy, not separate entropy_context)
+        # Format entropy warnings from execution_context
         entropy_warnings = ""
         if execution_context.entropy_summary:
             from dataraum.graphs.context import format_entropy_for_prompt
@@ -553,18 +513,27 @@ class QueryAgent(LLMFeature):
                         "sql": s["sql"],
                         "description": s["description"],
                         "type": s.get("snippet_type", "unknown"),
-                        "confidence": s.get("confidence", 0.5),
+                        "source": s.get("source", "unknown"),
+                        "similarity": round(s.get("similarity", 0.0), 2),
                     }
                     for s in discovered_snippets
                 ],
                 indent=2,
             )
 
+        # Build field mappings string
+        field_mappings_str = ""
+        if execution_context.field_mappings:
+            from dataraum.graphs.field_mapping import format_mappings_for_prompt
+
+            field_mappings_str = format_mappings_for_prompt(execution_context.field_mappings)
+
         # Build prompt context
         prompt_context = {
             "question": question,
             "schema_info": json.dumps(schema_info, indent=2),
             "dataset_context": context_str,
+            "field_mappings": field_mappings_str,
             "entropy_warnings": entropy_warnings
             or "Data quality assessment not available - proceed with caution.",
             "validated_snippets": snippets_str,

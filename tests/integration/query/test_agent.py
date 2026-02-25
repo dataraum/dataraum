@@ -377,7 +377,7 @@ class TestQueryAgentIntegration:
             question="What was total revenue from completed orders?",
             execution_id="test-exec-123",
             execution_context=sample_execution_context,
-            entropy_context=None,
+
         )
 
         assert result.success
@@ -412,7 +412,7 @@ class TestQueryAgentIntegration:
             question="What is the meaning of life?",
             execution_id="test-exec-456",
             execution_context=sample_execution_context,
-            entropy_context=None,
+
         )
 
         assert not result.success
@@ -447,7 +447,7 @@ class TestQueryAgentIntegration:
             question="Test question",
             execution_id="test-exec-789",
             execution_context=sample_execution_context,
-            entropy_context=None,
+
         )
 
         assert not result.success
@@ -474,7 +474,7 @@ class TestQueryAgentIntegration:
             question="Test question",
             execution_id="test-exec-fail",
             execution_context=sample_execution_context,
-            entropy_context=None,
+
         )
 
         assert not result.success
@@ -498,7 +498,7 @@ class TestQueryAgentIntegration:
             question="Test question",
             execution_id="test-exec-render-fail",
             execution_context=sample_execution_context,
-            entropy_context=None,
+
         )
 
         assert not result.success
@@ -530,7 +530,6 @@ class TestQueryAgentSnippets:
             standard_field="revenue",
             statement="income_statement",
             aggregation="sum",
-            confidence=1.0,
         )
         session.flush()
 
@@ -573,7 +572,6 @@ class TestQueryAgentSnippets:
             schema_mapping_id="other_source",
             source="graph:test",
             standard_field="test",
-            confidence=1.0,
         )
         session.flush()
 
@@ -608,7 +606,6 @@ class TestQueryAgentSnippets:
             schema_mapping_id="source_123",
             source="graph:test",
             standard_field="revenue",
-            confidence=1.0,
         )
         session.flush()
 
@@ -793,7 +790,6 @@ class TestQueryAgentSnippets:
             schema_mapping_id="source_123",
             source="query:exec-001",
             standard_field="order_count",
-            confidence=0.5,
         )
         session.flush()
 

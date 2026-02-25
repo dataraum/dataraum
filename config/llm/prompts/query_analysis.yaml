@@ -83,6 +83,10 @@ user_prompt: |
   {dataset_context}
   </dataset_context>
 
+  <field_mappings>
+  {field_mappings}
+  </field_mappings>
+
   <data_quality>
   {entropy_warnings}
   </data_quality>
@@ -122,19 +126,23 @@ user_prompt: |
 
   VALIDATED SNIPPETS:
   The <validated_snippets> section above contains a JSON array of SQL building blocks
-  from the knowledge base. Each has: step_id, sql, description, type, confidence.
+  from the knowledge base. Each has: step_id, sql, description, type, source, similarity.
+
+  - `source`: provenance — "graph:..." = verified calculation graph, "query:..." = previous ad-hoc query
+  - `similarity`: how relevant this snippet is to your question (0.0–1.0)
 
   Rules:
+  - Prefer snippets with high similarity (>= 0.7)
+  - Graph-sourced snippets are pre-validated; prefer them when similarity is comparable
   - If a snippet's SQL matches what you need, reuse it exactly (same step_id and SQL)
   - If a snippet is close but needs adaptation, use it as a starting point
-  - Snippets with confidence >= 0.9 are from verified graph executions (prefer these)
-  - Snippets with confidence < 0.9 are from previous queries (use with more caution)
   - You are NOT required to use any snippet — generate fresh SQL if none are relevant
 
   IMPORTANT:
   - The summary should be a complete sentence describing what the query calculates,
     e.g., "Calculates total revenue by region for Q3 2024."
   - Use column names exactly as they appear in the schema
+  - Use field_mappings to resolve business concepts to concrete columns
   - If a concept isn't directly available, check business_concept annotations
   - If currency/units are uncertain, document the assumption
   </instructions>
@@ -158,6 +166,12 @@ inputs:
     required: false
     default: ""
     description: "Rich context with semantic annotations, relationships, and statistics"
+
+  field_mappings:
+    type: "string"
+    required: false
+    default: ""
+    description: "Business concept to column mappings from semantic analysis"
 
   entropy_warnings:
     type: "string"

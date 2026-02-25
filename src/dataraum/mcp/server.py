@@ -628,7 +628,11 @@ def _evaluate_contract(output_dir: Path, contract_name: str) -> str:
         manager.close()
 
 
-def _query(output_dir: Path, question: str, contract_name: str | None = None) -> str:
+def _query(
+    output_dir: Path,
+    question: str,
+    contract_name: str | None = None,
+) -> str:
     """Execute a natural language query."""
     from sqlalchemy import select
 

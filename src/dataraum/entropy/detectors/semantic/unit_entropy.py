@@ -96,6 +96,11 @@ class UnitEntropyDetector(EntropyDetector):
         elif detected_unit and unit_confidence < confidence_threshold:
             score = score_low_confidence
             unit_status = "low_confidence"
+        elif unit_source_column == "dimensionless":
+            # Measure is inherently dimensionless (ratio, rate, index, etc.)
+            # Having no unit is correct — not a quality issue
+            score = score_declared
+            unit_status = "dimensionless"
         elif unit_source_column:
             # Unit is inferred from a dimension column — lower entropy than missing
             score = score_inferred

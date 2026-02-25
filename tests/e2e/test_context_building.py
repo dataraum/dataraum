@@ -2,6 +2,8 @@
 
 After the full pipeline (including LLM phases) runs against testdata,
 `build_execution_context()` should produce a rich, populated context.
+
+GROUND TRUTH: Do not modify assertions to fix failures — fix the production code instead.
 """
 
 from __future__ import annotations

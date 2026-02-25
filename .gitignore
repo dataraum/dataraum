@@ -43,6 +43,9 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# E2E test output (cached pipeline runs)
+.e2e/
+
 # Unit test / coverage reports
 htmlcov/
 .tox/

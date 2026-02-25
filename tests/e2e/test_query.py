@@ -3,6 +3,8 @@
 Runs answer_question() against the clean pipeline's output databases
 and verifies the response structure. Clean data should NOT produce
 blocked columns — if a query is blocked, that indicates a false positive
+
+GROUND TRUTH: Do not modify assertions to fix failures — fix the production code instead.
 in the entropy detectors.
 """
 

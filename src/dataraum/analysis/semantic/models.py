@@ -95,7 +95,10 @@ class ColumnSemanticOutput(BaseModel):
             "For same-table references, use just the column name (e.g., 'currency_code'). "
             "For cross-table references via a confirmed FK relationship, use "
             "'table_name.column_name' (e.g., 'chart_of_accounts.currency'). "
-            "Only set when there is a concrete dimension column — never guess a unit."
+            "For measures that are inherently dimensionless (ratios, rates, indices, "
+            "percentages, scores), set to 'dimensionless'. "
+            "Only set a column reference when there is a concrete dimension column — "
+            "never guess a unit."
         ),
     )
 

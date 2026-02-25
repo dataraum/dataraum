@@ -80,6 +80,11 @@ system_prompt: |
   (from the relationship_candidates), reference it as 'table_name.column_name' in the
   column-level unit_source_column field.
   Set unit_relationships on tables where such patterns exist.
+
+  For measures that are inherently dimensionless (ratios, rates, indices, percentages,
+  scores, proportions), set unit_source_column to "dimensionless". These measures correctly
+  have no unit — leaving them as null would flag a false quality issue.
+  Examples: exchange rates, profit margins, conversion rates, coverage ratios.
   </unit_relationships>
 
   Use the analyze_schema tool to provide your analysis.

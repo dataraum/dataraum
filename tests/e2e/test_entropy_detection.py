@@ -3,6 +3,8 @@
 Runs the pipeline against medium-strategy testdata (12 entropy injections)
 and verifies the pipeline detects what was injected. Also tests the Bayesian
 network produces elevated scores for injected entropy.
+
+GROUND TRUTH: Do not modify assertions to fix failures — fix the production code instead.
 """
 
 from __future__ import annotations

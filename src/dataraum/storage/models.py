@@ -55,6 +55,14 @@ class Source(Base):
         onupdate=lambda: datetime.now(UTC),
     )
 
+    # Source management fields (onboarding)
+    status: Mapped[str | None] = mapped_column(String, nullable=True)
+    backend: Mapped[str | None] = mapped_column(String, nullable=True)
+    credential_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    discovered_schema: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    last_validated: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # Relationships
     tables: Mapped[list[Table]] = relationship(
         back_populates="source", cascade="all, delete-orphan"

@@ -71,7 +71,6 @@ class OutlierRateDetector(EntropyDetector):
         suggest_winsorize = detector_config.get("suggest_winsorize_threshold", 0.2)
         suggest_exclude = detector_config.get("suggest_exclude_threshold", 0.5)
         cv_attenuation_threshold = detector_config.get("cv_attenuation_threshold", 2.0)
-        cv_attenuated_max_score = detector_config.get("cv_attenuated_max_score", 0.4)
         stats = context.get_analysis("statistics", {})
 
         # Extract outlier information
@@ -136,14 +135,16 @@ class OutlierRateDetector(EntropyDetector):
         # Attenuate score for high-CV columns where IQR outlier detection is unreliable.
         # Columns with high coefficient of variation (e.g., FX rates spanning 0.7 to 150)
         # naturally have wide ranges — IQR "outliers" are legitimate values, not quality issues.
+        # Proportional dampening: higher CV → more attenuation, but preserves relative ordering.
         cv_attenuated = False
         profile_data = stats.get("profile_data", {})
         if isinstance(profile_data, dict):
             numeric_stats = profile_data.get("numeric_stats", {})
             if isinstance(numeric_stats, dict):
                 cv = numeric_stats.get("cv")
-                if cv is not None and cv > cv_attenuation_threshold and score > cv_attenuated_max_score:
-                    score = cv_attenuated_max_score
+                if cv is not None and cv > cv_attenuation_threshold:
+                    dampen = cv_attenuation_threshold / cv
+                    score = score * dampen
                     cv_attenuated = True
 
         # Classify outlier impact using configurable thresholds

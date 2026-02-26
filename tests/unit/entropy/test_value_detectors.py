@@ -320,6 +320,64 @@ class TestOutlierRateDetector:
         assert len(results) == 1
         assert results[0].score > 0
 
+    def test_cv_attenuation_proportional(self, detector: OutlierRateDetector):
+        """High-CV columns get proportionally dampened scores, not hard-capped."""
+        context = DetectorContext(
+            table_name="orders",
+            column_name="fx_rate",
+            analysis_results={
+                "statistics": {
+                    "outlier_detection": {"iqr_outlier_ratio": 0.10},
+                    "profile_data": {"numeric_stats": {"cv": 6.5}},
+                },
+                "semantic": {"semantic_role": "measure"},
+            },
+        )
+        results = detector.detect(context)
+        assert len(results) == 1
+        # Raw score at 10% = 0.65. CV=6.5, threshold=2.0 → dampen = 2.0/6.5 = 0.308
+        # Attenuated = 0.65 * 0.308 = 0.200
+        assert results[0].score == pytest.approx(0.200, abs=0.01)
+        assert results[0].evidence[0]["cv_attenuated"] is True
+
+    def test_cv_attenuation_preserves_ordering(self, detector: OutlierRateDetector):
+        """Two columns with same CV: higher outlier ratio → higher attenuated score."""
+        scores = []
+        for ratio in [0.10, 0.15]:
+            context = DetectorContext(
+                table_name="orders",
+                column_name="amount",
+                analysis_results={
+                    "statistics": {
+                        "outlier_detection": {"iqr_outlier_ratio": ratio},
+                        "profile_data": {"numeric_stats": {"cv": 4.0}},
+                    },
+                    "semantic": {"semantic_role": "measure"},
+                },
+            )
+            results = detector.detect(context)
+            scores.append(results[0].score)
+        assert scores[1] > scores[0], f"Higher ratio should give higher score: {scores}"
+
+    def test_no_cv_attenuation_below_threshold(self, detector: OutlierRateDetector):
+        """Scores are not attenuated when CV is below threshold."""
+        context = DetectorContext(
+            table_name="orders",
+            column_name="amount",
+            analysis_results={
+                "statistics": {
+                    "outlier_detection": {"iqr_outlier_ratio": 0.10},
+                    "profile_data": {"numeric_stats": {"cv": 1.5}},
+                },
+                "semantic": {"semantic_role": "measure"},
+            },
+        )
+        results = detector.detect(context)
+        assert len(results) == 1
+        # No attenuation: raw score at 10% = 0.65
+        assert results[0].score == pytest.approx(0.65, abs=0.01)
+        assert "cv_attenuated" not in results[0].evidence[0]
+
     def test_detector_properties(self, detector: OutlierRateDetector):
         """Test detector has correct properties."""
         assert detector.detector_id == "outlier_rate"
@@ -470,12 +528,69 @@ class TestTemporalDriftDetector:
         assert "investigate_drift" in actions
         assert "transform_add_time_filter" in actions
 
+    def test_skip_key_column(self, detector: TemporalDriftDetector):
+        """Drift detection is skipped for key columns."""
+        summary = _MockDriftSummary("order_id", 0.693, 0.5, 5, 5)
+        context = DetectorContext(
+            table_name="orders",
+            column_name="order_id",
+            analysis_results={
+                "drift_summaries": [summary],
+                "semantic": {"semantic_role": "key"},
+            },
+        )
+        results = detector.detect(context)
+        assert len(results) == 0
+
+    def test_skip_foreign_key_column(self, detector: TemporalDriftDetector):
+        """Drift detection is skipped for foreign key columns."""
+        summary = _MockDriftSummary("vendor_id", 0.693, 0.5, 5, 5)
+        context = DetectorContext(
+            table_name="invoices",
+            column_name="vendor_id",
+            analysis_results={
+                "drift_summaries": [summary],
+                "semantic": {"semantic_role": "foreign_key"},
+            },
+        )
+        results = detector.detect(context)
+        assert len(results) == 0
+
+    def test_skip_identifier_column(self, detector: TemporalDriftDetector):
+        """Drift detection is skipped for identifier columns."""
+        summary = _MockDriftSummary("entry_id", 0.693, 0.5, 5, 5)
+        context = DetectorContext(
+            table_name="journal_entries",
+            column_name="entry_id",
+            analysis_results={
+                "drift_summaries": [summary],
+                "semantic": {"semantic_role": "identifier"},
+            },
+        )
+        results = detector.detect(context)
+        assert len(results) == 0
+
+    def test_runs_for_measure_column(self, detector: TemporalDriftDetector):
+        """Drift detection runs normally for measure columns."""
+        summary = _MockDriftSummary("amount", 0.3, 0.15, 5, 2)
+        context = DetectorContext(
+            table_name="orders",
+            column_name="amount",
+            analysis_results={
+                "drift_summaries": [summary],
+                "semantic": {"semantic_role": "measure"},
+            },
+        )
+        results = detector.detect(context)
+        assert len(results) == 1
+        assert results[0].score > 0
+
     def test_detector_properties(self, detector: TemporalDriftDetector):
         """Test detector has correct properties."""
         assert detector.detector_id == "temporal_drift"
         assert detector.layer == "value"
         assert detector.dimension == "temporal"
-        assert detector.required_analyses == ["drift_summaries"]
+        assert detector.required_analyses == ["drift_summaries", "semantic"]
 
 
 class TestBenfordDetector:
@@ -549,8 +664,37 @@ class TestBenfordDetector:
         assert results[0].evidence[0]["is_compliant"] is True
         assert len(results[0].resolution_options) == 0
 
-    def test_non_compliant(self, detector: BenfordDetector):
-        """Non-compliant column gets high entropy."""
+    def test_non_compliant_mild(self, detector: BenfordDetector):
+        """Non-compliant column with p_value above escalation threshold uses p-value gradient."""
+        context = DetectorContext(
+            table_name="orders",
+            column_name="amount",
+            analysis_results={
+                "statistics": {
+                    "quality": {
+                        "benford_compliant": False,
+                        "benford_analysis": {
+                            "is_compliant": False,
+                            "chi_square": 20.0,
+                            "p_value": 0.02,
+                            "digit_distribution": [0.11, 0.11, 0.11],
+                            "interpretation": "Mild deviation from Benford's Law",
+                        },
+                    },
+                },
+                "semantic": {"semantic_role": "measure"},
+            },
+        )
+        results = detector.detect(context)
+        assert len(results) == 1
+        # p_value=0.02 > 0.01 threshold → p-value gradient
+        # score = 0.1 + 0.6 * (1 - 0.02) = 0.688
+        assert results[0].score == pytest.approx(0.688, abs=0.01)
+        actions = [opt.action for opt in results[0].resolution_options]
+        assert "investigate_benford_deviation" in actions
+
+    def test_non_compliant_severe_chi_square(self, detector: BenfordDetector):
+        """Non-compliant column with very low p-value uses chi-square severity gradient."""
         context = DetectorContext(
             table_name="orders",
             column_name="amount",
@@ -572,10 +716,35 @@ class TestBenfordDetector:
         )
         results = detector.detect(context)
         assert len(results) == 1
-        assert results[0].score == pytest.approx(0.7, abs=0.01)
-        assert results[0].evidence[0]["is_compliant"] is False
-        actions = [opt.action for opt in results[0].resolution_options]
-        assert "investigate_benford_deviation" in actions
+        # p_value=0.001 < 0.01 → chi-sq severity: log10(50)/3.0 = 0.566
+        # score = 0.7 + 0.3 * 0.566 = 0.870
+        assert results[0].score == pytest.approx(0.870, abs=0.01)
+
+    def test_extreme_chi_square_caps_at_1(self, detector: BenfordDetector):
+        """Extreme chi-square values cap score at 1.0."""
+        context = DetectorContext(
+            table_name="orders",
+            column_name="amount",
+            analysis_results={
+                "statistics": {
+                    "quality": {
+                        "benford_compliant": False,
+                        "benford_analysis": {
+                            "is_compliant": False,
+                            "chi_square": 2000.0,
+                            "p_value": 0.0,
+                            "digit_distribution": [0.11, 0.11, 0.11],
+                            "interpretation": "Extreme deviation",
+                        },
+                    },
+                },
+                "semantic": {"semantic_role": "measure"},
+            },
+        )
+        results = detector.detect(context)
+        assert len(results) == 1
+        # log10(2000)/3.0 = 1.1 → capped at 1.0 → score = 0.7 + 0.3*1.0 = 1.0
+        assert results[0].score == pytest.approx(1.0, abs=0.01)
 
     def test_boolean_only_fallback(self, detector: BenfordDetector):
         """Works with only benford_compliant boolean (no full analysis)."""

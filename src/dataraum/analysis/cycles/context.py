@@ -104,6 +104,7 @@ def build_cycle_detection_context(
                 col_info["semantic_role"] = ann.semantic_role
                 col_info["entity_type"] = ann.entity_type
                 col_info["business_concept"] = ann.business_concept
+                col_info["temporal_behavior"] = ann.temporal_behavior
                 col_info["business_name"] = ann.business_name
                 col_info["business_description"] = ann.business_description
             columns.append(col_info)

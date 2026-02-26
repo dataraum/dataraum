@@ -272,6 +272,9 @@ class SemanticAnnotation(BaseModel):
     # from the active ontology (e.g., 'accounts_receivable', 'revenue', 'fiscal_period')
     business_concept: str | None = None
 
+    # Temporal behavior from ontology: 'additive' or 'point_in_time'
+    temporal_behavior: str | None = None
+
     # Cross-column unit inference: column name that defines the unit for this measure
     unit_source_column: str | None = None
 

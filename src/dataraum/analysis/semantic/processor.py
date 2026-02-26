@@ -204,6 +204,7 @@ def enrich_semantic(
             business_name=annotation.business_name,
             business_description=annotation.business_description,
             business_concept=annotation.business_concept,
+            temporal_behavior=annotation.temporal_behavior,
             unit_source_column=annotation.unit_source_column,
             annotation_source=annotation.annotation_source.value,
             annotated_by=annotation.annotated_by,

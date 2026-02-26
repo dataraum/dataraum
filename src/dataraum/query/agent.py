@@ -962,6 +962,8 @@ class QueryAgent(LLMFeature):
                     col_info["semantic_role"] = col_ctx.semantic_role
                 if col_ctx.business_concept:
                     col_info["business_concept"] = col_ctx.business_concept
+                if col_ctx.temporal_behavior:
+                    col_info["temporal_behavior"] = col_ctx.temporal_behavior
                 columns.append(col_info)
 
             # Use the actual DuckDB table name from context

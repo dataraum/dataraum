@@ -46,6 +46,7 @@ class ColumnContext:
 
     # Business concept mapping (from ontology, for metric calculations)
     business_concept: str | None = None  # e.g., 'revenue', 'accounts_receivable'
+    temporal_behavior: str | None = None  # 'additive' or 'point_in_time'
 
     # Statistical metrics
     null_ratio: float | None = None
@@ -704,6 +705,7 @@ def build_execution_context(
                     semantic_role=sem_ann.semantic_role if sem_ann else None,
                     entity_type=sem_ann.entity_type if sem_ann else None,
                     business_concept=sem_ann.business_concept if sem_ann else None,
+                    temporal_behavior=sem_ann.temporal_behavior if sem_ann else None,
                     null_ratio=null_ratio,
                     cardinality_ratio=cardinality_ratio,
                     outlier_ratio=outlier_ratio,
@@ -1150,7 +1152,8 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
         for col in table.columns:
             role = f" [{col.semantic_role}]" if col.semantic_role else ""
             dtype = f" ({col.data_type})" if col.data_type else ""
-            concept = f" → {col.business_concept}" if col.business_concept else ""
+            temporal = f" ({col.temporal_behavior})" if col.temporal_behavior else ""
+            concept = f" → {col.business_concept}{temporal}" if col.business_concept else ""
             grade = f" [Grade: {col.quality_grade}]" if col.quality_grade else ""
             derived = f" (derived: {col.derived_formula})" if col.is_derived else ""
             flags_str = f" - FLAGS: {', '.join(col.flags)}" if col.flags else ""

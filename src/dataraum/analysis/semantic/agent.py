@@ -220,7 +220,7 @@ class SemanticAgent(LLMFeature):
 
         try:
             # Parse tool output into our internal models
-            return self._parse_tool_output(tool_output, model_name)
+            return self._parse_tool_output(tool_output, model_name, ontology_def=ontology_def)
         except Exception as e:
             return Result.fail(f"Failed to parse semantic response: {e}")
 
@@ -680,7 +680,10 @@ class SemanticAgent(LLMFeature):
         return Result.ok((tool_call.input, response.model))
 
     def _parse_tool_output(
-        self, tool_output: dict[str, Any], model_name: str
+        self,
+        tool_output: dict[str, Any],
+        model_name: str,
+        ontology_def: Any = None,
     ) -> Result[SemanticEnrichmentResult]:
         """Parse tool output into SemanticEnrichmentResult.
 
@@ -749,6 +752,15 @@ class SemanticAgent(LLMFeature):
                             and annotation.unit_source_column is None
                         ):
                             annotation.unit_source_column = unit_rel.unit_column
+
+            # Backfill temporal_behavior from ontology concepts
+            if ontology_def:
+                concept_map = {c.name: c.temporal_behavior for c in ontology_def.concepts}
+                for annotation in annotations:
+                    if annotation.business_concept:
+                        annotation.temporal_behavior = concept_map.get(
+                            annotation.business_concept
+                        )
 
             # Parse relationships (cardinality is computed post-hoc from actual data)
             for rel in analysis.relationships:

@@ -87,6 +87,16 @@ class GraphLoader:
         self.graphs: dict[str, TransformationGraph] = {}
         self._load_errors: list[GraphLoadError] = []
 
+        # Auto-detect system filters only in vertical mode
+        self._system_filters_dir: Path | None = None
+        if vertical is not None:
+            from dataraum.core.config import get_config_dir
+
+            try:
+                self._system_filters_dir = get_config_dir("filters")
+            except FileNotFoundError:
+                pass
+
     def load_all(self) -> dict[str, TransformationGraph]:
         """Load all transformation graphs from the directory.
 
@@ -99,7 +109,11 @@ class GraphLoader:
         if not self.graphs_dir.exists():
             return {}
 
-        # Load filters
+        # System-level filters first (vertical filters can override by graph_id)
+        if self._system_filters_dir and self._system_filters_dir.exists():
+            self._load_directory(self._system_filters_dir, GraphType.FILTER)
+
+        # Vertical-specific filters
         filters_dir = self.graphs_dir / "filters"
         if filters_dir.exists():
             self._load_directory(filters_dir, GraphType.FILTER)

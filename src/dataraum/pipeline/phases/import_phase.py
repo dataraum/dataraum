@@ -12,15 +12,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from dataraum.pipeline.base import PhaseContext, PhaseResult
+from dataraum.core.config import load_pipeline_config
+from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.sources.csv import CSVLoader
 from dataraum.sources.csv.null_values import load_null_value_config
 from dataraum.sources.parquet import ParquetLoader
-from dataraum.storage import Source, Table
+from dataraum.storage import Column, Source, Table
 
 _CSV_EXTENSIONS = {".csv", ".tsv"}
 _PARQUET_EXTENSIONS = {".parquet", ".pq"}
@@ -85,9 +86,31 @@ class ImportPhase(BasePhase):
             PhaseResult with raw_tables output
         """
         source_path = ctx.config.get("source_path")
-        if not source_path:
-            return PhaseResult.failed("source_path not provided in config")
+        registered_sources = ctx.config.get("registered_sources")
 
+        if not source_path and not registered_sources:
+            return PhaseResult.failed(
+                "No source_path or registered_sources provided in config"
+            )
+
+        if registered_sources and not source_path:
+            result = self._load_registered_sources(ctx, registered_sources)
+        else:
+            assert isinstance(source_path, str)
+            result = self._load_from_path(ctx, source_path)
+
+        if result.status != PhaseStatus.COMPLETED:
+            return result
+
+        # Enforce column limit
+        limit_error = self._check_column_limit(ctx)
+        if limit_error:
+            return PhaseResult.failed(limit_error)
+
+        return result
+
+    def _load_from_path(self, ctx: PhaseContext, source_path: str) -> PhaseResult:
+        """Load data from a file path (legacy single-source mode)."""
         path = Path(source_path)
         if not path.exists():
             return PhaseResult.failed(f"Source path not found: {path}")
@@ -342,3 +365,331 @@ class ImportPhase(BasePhase):
                 duration=duration,
                 warnings=result.warnings,
             )
+
+    def _check_column_limit(self, ctx: PhaseContext) -> str | None:
+        """Check if total column count exceeds the configured limit.
+
+        Returns:
+            Error message if limit exceeded, None otherwise.
+        """
+        pipeline_config = load_pipeline_config()
+        max_columns = pipeline_config.get("limits", {}).get("max_columns", 500)
+
+        count = ctx.session.execute(
+            select(func.count(Column.column_id))
+            .join(Table)
+            .where(Table.source_id == ctx.source_id, Table.layer == "raw")
+        ).scalar_one()
+
+        if count > max_columns:
+            return (
+                f"Column limit exceeded: {count} > {max_columns}. "
+                f"Reduce tables or increase limits.max_columns in pipeline.yaml."
+            )
+        return None
+
+    def _load_registered_sources(
+        self,
+        ctx: PhaseContext,
+        registered_sources: list[dict[str, Any]],
+    ) -> PhaseResult:
+        """Load tables from all registered sources.
+
+        Each source's tables are prefixed with the source name to avoid collisions:
+        {source_name}__{table_name}.
+
+        Args:
+            ctx: Phase context
+            registered_sources: List of source dicts with name, source_type, path, backend
+
+        Returns:
+            PhaseResult with all loaded table IDs
+        """
+        start_time = time.time()
+        warnings: list[str] = []
+        table_ids: list[str] = []
+        total_rows = 0
+
+        # Get or create the pipeline source record
+        source = ctx.session.get(Source, ctx.source_id)
+        if source is None:
+            source = Source(
+                source_id=ctx.source_id,
+                name="multi_source",
+                source_type="multi_source",
+                connection_config={"sources": [s["name"] for s in registered_sources]},
+            )
+            ctx.session.add(source)
+
+        for src in registered_sources:
+            src_name = src["name"]
+            src_type = src["source_type"]
+            src_path = src.get("path")
+
+            if src_type in ("csv", "parquet", "file") and src_path:
+                result = self._load_file_source(
+                    ctx, source, src_name, Path(src_path), src_type
+                )
+            elif src.get("backend"):
+                result = self._load_database_source(
+                    ctx, source, src_name, src
+                )
+            else:
+                warnings.append(f"Skipping source '{src_name}': unsupported type '{src_type}'")
+                continue
+
+            if result.status != PhaseStatus.COMPLETED:
+                warnings.append(f"Failed to load source '{src_name}': {result.error}")
+                continue
+
+            if result.outputs:
+                table_ids.extend(result.outputs.get("raw_tables", []))
+            total_rows += result.records_processed
+
+        if not table_ids:
+            return PhaseResult.failed("No tables were loaded from any registered source")
+
+        duration = time.time() - start_time
+        return PhaseResult.success(
+            outputs={"raw_tables": table_ids},
+            records_processed=total_rows,
+            records_created=len(table_ids),
+            duration=duration,
+            warnings=warnings,
+        )
+
+    def _load_file_source(
+        self,
+        ctx: PhaseContext,
+        source: Source,
+        source_name: str,
+        path: Path,
+        source_type: str,
+    ) -> PhaseResult:
+        """Load a file source with table name prefixing."""
+        if not path.exists():
+            return PhaseResult.failed(f"Source path not found: {path}")
+
+        null_config = load_null_value_config()
+        junk_columns = ctx.config.get("junk_columns", [])
+        table_ids: list[str] = []
+        total_rows = 0
+        warnings: list[str] = []
+
+        if path.is_dir():
+            # Determine file type pattern
+            if source_type == "parquet":
+                patterns = ["*.parquet", "*.pq"]
+            else:
+                patterns = ["*.csv"]
+
+            files: list[Path] = []
+            for pat in patterns:
+                files.extend(sorted(path.glob(pat)))
+
+            if not files:
+                return PhaseResult.failed(f"No data files found in {path}")
+
+            for file_path in files:
+                result = self._load_single_file_with_prefix(
+                    ctx, source, source_name, file_path, null_config, junk_columns
+                )
+                if result.status == PhaseStatus.COMPLETED and result.outputs:
+                    table_ids.extend(result.outputs.get("raw_tables", []))
+                    total_rows += result.records_processed
+                elif result.status != PhaseStatus.COMPLETED:
+                    warnings.append(f"Failed to load {file_path.name}: {result.error}")
+        else:
+            result = self._load_single_file_with_prefix(
+                ctx, source, source_name, path, null_config, junk_columns
+            )
+            if result.status == PhaseStatus.COMPLETED and result.outputs:
+                table_ids.extend(result.outputs.get("raw_tables", []))
+                total_rows += result.records_processed
+            elif result.status != PhaseStatus.COMPLETED:
+                return result
+
+        if not table_ids:
+            return PhaseResult.failed(f"No files loaded from source '{source_name}'")
+
+        return PhaseResult.success(
+            outputs={"raw_tables": table_ids},
+            records_processed=total_rows,
+            records_created=len(table_ids),
+            warnings=warnings,
+        )
+
+    def _load_single_file_with_prefix(
+        self,
+        ctx: PhaseContext,
+        source: Source,
+        source_name: str,
+        file_path: Path,
+        null_config: Any,
+        junk_columns: list[str],
+    ) -> PhaseResult:
+        """Load a single file, prefixing the table name with source_name__."""
+        suffix = file_path.suffix.lower()
+
+        if suffix in _PARQUET_EXTENSIONS:
+            pq_loader = ParquetLoader()
+            result = pq_loader._load_single_file(
+                file_path=file_path,
+                source_id=source.source_id,
+                duckdb_conn=ctx.duckdb_conn,
+                session=ctx.session,
+            )
+        else:
+            csv_loader = CSVLoader()
+            result = csv_loader._load_single_file(
+                file_path=file_path,
+                source_id=source.source_id,
+                duckdb_conn=ctx.duckdb_conn,
+                session=ctx.session,
+                null_config=null_config,
+                junk_columns=junk_columns,
+            )
+
+        if not result.success:
+            return PhaseResult.failed(result.error or f"Failed to load {file_path}")
+
+        staged_table = result.unwrap()
+
+        # Rename the table in DuckDB and update SQLAlchemy Table record.
+        # The loader creates the DuckDB table as raw_table_name (e.g. "raw_orders")
+        # and the SQLAlchemy Table record as table_name (e.g. "orders").
+        # We rename both to the prefixed form.
+        prefixed_name = f"{source_name}__{staged_table.table_name}"
+        duckdb_name = staged_table.raw_table_name
+
+        try:
+            ctx.duckdb_conn.execute(
+                f'ALTER TABLE "{duckdb_name}" RENAME TO "{prefixed_name}"'
+            )
+        except Exception:
+            pass
+
+        # Update the SQLAlchemy Table record
+        table_record = ctx.session.execute(
+            select(Table).where(Table.table_id == staged_table.table_id)
+        ).scalar_one_or_none()
+        if table_record:
+            table_record.table_name = prefixed_name
+            table_record.duckdb_path = prefixed_name
+
+        return PhaseResult.success(
+            outputs={"raw_tables": [str(staged_table.table_id)]},
+            records_processed=staged_table.row_count,
+            records_created=1,
+            warnings=result.warnings,
+        )
+
+    def _load_database_source(
+        self,
+        ctx: PhaseContext,
+        source: Source,
+        source_name: str,
+        src: dict[str, Any],
+    ) -> PhaseResult:
+        """Load tables from a database source via DuckDB ATTACH."""
+        from dataraum.core.credentials import CredentialChain
+
+        backend = src["backend"]
+        credential_ref = src.get("credential_ref", source_name)
+
+        chain = CredentialChain()
+        credential = chain.resolve(credential_ref)
+        if credential is None:
+            return PhaseResult.failed(
+                f"No credentials found for database source '{source_name}' "
+                f"(credential_ref: {credential_ref})"
+            )
+
+        tables_filter = src.get("tables", [])
+        table_ids: list[str] = []
+        total_rows = 0
+        warnings: list[str] = []
+
+        try:
+            # Attach the database
+            attach_alias = f"_src_{source_name}"
+            ctx.duckdb_conn.execute(
+                f"ATTACH '{credential.url}' AS \"{attach_alias}\" "
+                f"(TYPE {backend}, READ_ONLY)"
+            )
+
+            # Discover tables if not specified
+            if not tables_filter:
+                rows = ctx.duckdb_conn.execute(
+                    f"SELECT table_name FROM information_schema.tables "
+                    f"WHERE table_schema = 'main' AND table_catalog = '{attach_alias}'"
+                ).fetchall()
+                tables_filter = [r[0] for r in rows]
+
+            for table_name in tables_filter:
+                prefixed = f"{source_name}__{table_name}"
+                try:
+                    ctx.duckdb_conn.execute(
+                        f'CREATE TABLE "{prefixed}" AS '
+                        f'SELECT * FROM "{attach_alias}"."{table_name}"'
+                    )
+
+                    # Get row count and column info
+                    row_count_result = ctx.duckdb_conn.execute(
+                        f'SELECT count(*) FROM "{prefixed}"'
+                    ).fetchone()
+                    row_count = row_count_result[0] if row_count_result else 0
+
+                    col_info = ctx.duckdb_conn.execute(
+                        f"SELECT column_name, data_type FROM information_schema.columns "
+                        f"WHERE table_name = '{prefixed}'"
+                    ).fetchall()
+
+                    # Create Table + Column records
+                    from uuid import uuid4
+
+                    table_id = str(uuid4())
+                    table_record = Table(
+                        table_id=table_id,
+                        source_id=source.source_id,
+                        table_name=prefixed,
+                        layer="raw",
+                        duckdb_path=prefixed,
+                        row_count=row_count,
+                    )
+                    ctx.session.add(table_record)
+
+                    for pos, (col_name, col_type) in enumerate(col_info):
+                        col_record = Column(
+                            table_id=table_id,
+                            column_name=col_name,
+                            column_position=pos,
+                            raw_type=col_type,
+                        )
+                        ctx.session.add(col_record)
+
+                    table_ids.append(table_id)
+                    total_rows += row_count
+
+                except Exception as e:
+                    warnings.append(f"Failed to import {table_name}: {e}")
+
+            # Detach after import
+            ctx.duckdb_conn.execute(f'DETACH "{attach_alias}"')
+
+        except Exception as e:
+            return PhaseResult.failed(
+                f"Failed to connect to database source '{source_name}': {e}"
+            )
+
+        if not table_ids:
+            return PhaseResult.failed(
+                f"No tables loaded from database source '{source_name}'"
+            )
+
+        return PhaseResult.success(
+            outputs={"raw_tables": table_ids},
+            records_processed=total_rows,
+            records_created=len(table_ids),
+            warnings=warnings,
+        )

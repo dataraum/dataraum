@@ -12,15 +12,11 @@ from dataraum.cli.common import console, setup_logging
 
 def run(
     source: Annotated[
-        Path,
+        Path | None,
         typer.Argument(
-            help="Path to CSV file or directory containing CSV files",
-            exists=True,
-            file_okay=True,
-            dir_okay=True,
-            resolve_path=True,
+            help="Path to CSV file or directory. When omitted, uses registered sources.",
         ),
-    ],
+    ] = None,
     output: Annotated[
         Path,
         typer.Option(
@@ -78,6 +74,8 @@ def run(
 
         dataraum run /path/to/file.csv --output ./my_output
 
+        dataraum run --output ./output  # Uses registered sources
+
         dataraum run /path/to/data --phase semantic  # Run up to semantic phase
 
         dataraum run /path/to/data -v         # Show INFO level logs
@@ -91,8 +89,17 @@ def run(
     from dataraum.pipeline.runner import RunConfig
     from dataraum.pipeline.runner import run as run_pipeline
 
+    # Validate source path if provided
+    source_path: Path | None = None
+    if source is not None:
+        resolved = source.resolve()
+        if not resolved.exists():
+            console.print(f"[red]Error: Source path does not exist: {source}[/red]")
+            raise typer.Exit(1)
+        source_path = resolved
+
     config = RunConfig(
-        source_path=source,
+        source_path=source_path,
         output_dir=output,
         source_name=name,
         target_phase=phase,
@@ -106,7 +113,7 @@ def run(
     if not quiet:
         console.print("\n[bold]Pipeline Run[/bold]")
         console.print("=" * 60)
-        console.print(f"Source: {config.source_path}")
+        console.print(f"Source: {config.source_path or '(registered sources)'}")
         console.print(f"Output: {config.output_dir}")
         console.print(f"Source ID: {run_result.source_id}")
 

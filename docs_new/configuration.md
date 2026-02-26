@@ -31,10 +31,11 @@ config/
 │   ├── thresholds.yaml        # Per-dimension entropy thresholds
 │   └── network.yaml           # Bayesian network configuration
 │
-├── quality_metrics/
-│   ├── data_completeness.yaml
-│   ├── data_freshness.yaml
-│   └── anomaly_rate.yaml
+├── filters/                   # System-level quality filters (shared by all verticals)
+│   ├── role_based.yaml        # Filters by semantic role (key, measure, timestamp)
+│   ├── type_based.yaml        # Filters by data type (DOUBLE, DATE, VARCHAR)
+│   ├── pattern_based.yaml     # Filters by column name patterns (email, URL, phone)
+│   └── consistency.yaml       # Cross-column checks (date ordering, statistical quality)
 │
 ├── llm/
 │   ├── config.yaml            # Provider, model tiers, privacy settings
@@ -55,11 +56,8 @@ config/
     └── finance/
         ├── ontology.yaml      # Concepts, indicators, temporal behavior
         ├── cycles.yaml        # Business process definitions
-        ├── filters/           # Data quality filters by type/role/pattern
-        │   ├── role_based.yaml
-        │   ├── type_based.yaml
-        │   ├── pattern_based.yaml
-        │   └── consistency.yaml
+        ├── filters/           # Domain-specific filters only
+        │   └── consistency.yaml  # Debit/credit consistency check
         ├── metrics/           # Computable business metrics
         │   ├── working_capital/
         │   │   ├── dso.yaml
@@ -190,12 +188,18 @@ The graph execution phase uses these definitions to compute metrics via LLM-gene
 
 ### Filters
 
-Quality filters applied during graph execution, organized by type:
+Quality filters are split into two levels:
 
+**System filters** (`config/filters/`) apply to all verticals automatically:
 - **role_based.yaml** — Filters by semantic role (measure, dimension, key)
 - **type_based.yaml** — Filters by data type (numeric, date, string)
-- **pattern_based.yaml** — Filters by column name patterns
-- **consistency.yaml** — Cross-column consistency checks
+- **pattern_based.yaml** — Filters by column name patterns (email, URL, phone)
+- **consistency.yaml** — Cross-column checks (date ordering, statistical quality)
+
+**Vertical filters** (`config/verticals/<name>/filters/`) contain domain-specific checks only:
+- **consistency.yaml** — Finance-specific debit/credit consistency
+
+When loading via `GraphLoader(vertical="finance")`, system filters load first, then vertical filters. Vertical filters can override system filters by using the same `graph_id`.
 
 ### Validations
 
@@ -251,7 +255,7 @@ To add domain knowledge for a new industry:
 1. Create `config/verticals/{name}/ontology.yaml` with concepts and indicators
 2. Add cycle definitions in `cycles.yaml` for business process detection
 3. Add metric graphs in `metrics/` for computable KPIs
-4. Add filter definitions in `filters/` for quality checks
+4. Add domain-specific filter definitions in `filters/` (system filters from `config/filters/` are inherited automatically)
 5. Add validation specs in `validations/` for domain rules
 
-The pipeline automatically discovers and applies vertical configuration based on semantic analysis results.
+The pipeline automatically discovers and applies vertical configuration based on semantic analysis results. System-level filters (role, type, pattern, and generic consistency checks) apply to all verticals without any per-vertical configuration.

@@ -97,7 +97,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                             "description": "Optional: name for the data source",
                         },
                     },
-                    "required": ["path"],
+                    "required": [],
                 },
                 execution=ToolExecution(taskSupport="optional"),
             ),
@@ -275,14 +275,16 @@ def create_server(output_dir: Path | None = None) -> Server:
     ) -> list[TextContent] | CallToolResult | CreateTaskResult:
         """Execute a tool and return results."""
         if name == "analyze":
-            path = arguments["path"]
+            path = arguments.get("path")
             source_name = arguments.get("name")
 
-            # Validate path before doing anything
-            source_path = Path(path)
-            if not source_path.exists():
-                return [TextContent(type="text", text=f"Error: Path not found: {path}")]
+            # Validate path if provided
+            if path:
+                source_path = Path(path)
+                if not source_path.exists():
+                    return [TextContent(type="text", text=f"Error: Path not found: {path}")]
 
+            display_label = path or "(registered sources)"
             ctx = server.request_context
             experimental: Experimental = ctx.experimental
             if experimental and experimental.is_task:
@@ -301,7 +303,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                 return await experimental.run_task(
                     _work,
                     model_immediate_response=(
-                        f"Pipeline started for: {path}. "
+                        f"Pipeline started for: {display_label}. "
                         f"This typically takes 3–7 minutes depending on file size. "
                         f"Running in the background — status updates will follow."
                     ),
@@ -314,7 +316,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                 _background_tasks.add(bg)
                 bg.add_done_callback(_background_tasks.discard)
                 result = (
-                    f"Pipeline started for: {path}. "
+                    f"Pipeline started for: {display_label}. "
                     f"This typically takes 3–7 minutes depending on file size. "
                     f"Call `get_context` every ~2 minutes to check progress."
                 )
@@ -389,14 +391,14 @@ _PHASE_LABELS: dict[str, str] = {
 
 async def _run_analyze_background(
     output_dir: Path,
-    path: str,
+    path: str | None,
     source_name: str | None,
 ) -> None:
     """Run _analyze in a background thread, logging errors."""
     try:
         await asyncio.to_thread(_analyze, output_dir, path, source_name, None)
     except Exception:
-        _log.exception("Background pipeline failed for %s", path)
+        _log.exception("Background pipeline failed for %s", path or "(registered sources)")
 
 
 def _get_pipeline_progress(manager: Any) -> str | None:
@@ -474,7 +476,7 @@ def _get_pipeline_progress(manager: Any) -> str | None:
 
 def _analyze(
     output_dir: Path,
-    path: str,
+    path: str | None = None,
     name: str | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> str:
@@ -482,7 +484,7 @@ def _analyze(
 
     Args:
         output_dir: Pipeline output directory
-        path: Path to CSV/Parquet file or directory
+        path: Path to CSV/Parquet file or directory. When None, uses registered sources.
         name: Optional source name
         progress_callback: Optional callback for progress notifications
 
@@ -491,9 +493,11 @@ def _analyze(
     """
     from dataraum.pipeline.runner import RunConfig, run
 
-    source_path = Path(path)
-    if not source_path.exists():
-        return f"Error: Path not found: {path}"
+    source_path: Path | None = None
+    if path:
+        source_path = Path(path)
+        if not source_path.exists():
+            return f"Error: Path not found: {path}"
 
     config = RunConfig(
         source_path=source_path,

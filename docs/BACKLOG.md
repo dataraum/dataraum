@@ -10,47 +10,37 @@ Prioritized backlog for the dataraum-context project.
 
 ---
 
-## Current Focus: Agent Refactoring (graphs/ + query/)
+## Current Focus
+
+### Next Up
+- [ ] Verify TUI screens with cleaned models
+- [ ] Verify MCP tools with cleaned context assembly
+- [ ] Dependency audit (pandas vs pyarrow, ruptures, networkx)
+- [ ] Docs cleanup: triage `docs/projects/`, swap `docs_new/` → `docs/`, update README + CLAUDE.md cross-refs
+- [ ] Align ontology concepts ↔ standard_field vocabulary (audit)
+
+### Completed: Agent Refactoring ✅
 
 > See [plans/agent-refactoring-plan.md](./plans/agent-refactoring-plan.md) for master plan.
 
-Streamline the four LLM agents around vertical configuration, fix context loading,
-extract shared SQL infrastructure (graph + query agents stay separate).
+All phases complete. Agents streamlined around vertical configuration, context loading fixed,
+shared SQL infrastructure extracted (graph + query agents stay separate).
 
-| Phase | Step | Description | Strategy | Status |
-|-------|------|-------------|----------|--------|
-| A | A0 | Audit + deep metadata evaluation | Research | ✅ Done |
-| A | A1a | New cycle context builder (all pipeline metadata) | Rewrite | ✅ Done |
-| A | A1b | New cycle agent (single-call, no tools) | Rewrite | ✅ Done |
-| A | A2a | Enrich validation resolver | In-place | ✅ Done |
-| A | A2b | Fix validation execution | In-place | ✅ Done |
-| B | B1 | Create VerticalConfig abstraction | New code | ✅ Done |
-| B | B2 | Extract quality metrics to entropy system | Move | ✅ Done |
-| 0.6 | — | E2E validation tests (testdata → pipeline → verify) | New tests | **Current** |
-| — | — | temporal_behavior on SemanticAnnotation | Semantic fix | Next |
-| C | C1 | Surface validation results in GraphExecutionContext | Additive | Pending |
-| C | C2 | Forward full cycle data to context | Additive | Pending |
-| C | C3 | Align ontology concepts ↔ standard_field vocabulary | Audit | Pending |
-| D | D1 | Extract shared SQL execution base | Refactor | Pending |
-| D | D2 | Refactor both agents to use shared base | Refactor | Pending |
-| D | D3 | Cleanup dead code, update imports | Delete | Pending |
-
-**Revised decisions (2026-02-25):**
-- Phase D changed from "merge into DataAgent" → "extract shared infrastructure, keep agents separate"
-- temporal_behavior gap identified: ontology defines additive/point_in_time but never reaches SQL prompt
-- Phase 0.6 (E2E tests) prioritized before C/D to close the feedback loop
+| Phase | Description | Status |
+|-------|-------------|--------|
+| A | Cycle agent rewrite + validation resolver enrichment | ✅ Done |
+| B | VerticalConfig abstraction + quality metrics → entropy | ✅ Done |
+| C | Validation results + full cycle data in GraphExecutionContext | ✅ Done |
+| D | Shared SQL execution base, both agents refactored | ✅ Done |
+| 0.6 | E2E validation tests (testdata → pipeline → verify) | ✅ Done |
+| — | temporal_behavior propagated end-to-end (ontology → SQL prompt) | ✅ Done |
+| — | Entropy detector calibration (temporal_drift, benford, outlier_rate) | ✅ Done |
 
 ### Previous: Module-by-Module Streamlining ✅
 
 > See [plans/restructuring-plan.md](./plans/restructuring-plan.md) for full plan.
 
-All 18 modules complete. `graphs/` + `query/` were out of scope — now addressed above.
-
-### After Agent Refactoring (Part 4)
-- [ ] Verify TUI screens with cleaned models
-- [ ] Verify MCP tools with cleaned context assembly
-- [ ] Dependency audit (pandas vs pyarrow, ruptures, networkx)
-- [ ] Retire stale docs, move completed specs to `docs/archive/`
+All 18 modules complete.
 
 ---
 

@@ -145,7 +145,7 @@ class TestImportPhase:
         result = phase.run(ctx)
 
         assert result.status == PhaseStatus.FAILED
-        assert "source_path not provided" in (result.error or "")
+        assert "source_path" in (result.error or "").lower()
 
     def test_import_nonexistent_path(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

@@ -6,7 +6,7 @@ and stabilization metrics.
 Discovery strategies (used differently by each agent):
 1. Exact key match - Graph agent for extract/constant steps (O(1) with index)
 2. Expression pattern match - Graph agent for formula steps (O(N), N < 100)
-3. Term-based graph discovery - Query agent for NL questions (vocabulary matching)
+3. Key-based graph discovery - Query agent for NL questions (direct field lookup)
 4. Full graph injection - Query agent when corpus is small (< 200 snippets)
 
 Snippet Graphs:
@@ -26,10 +26,11 @@ Usage:
         schema_mapping_id="schema_abc",
     )
 
-    # Query agent: term-based graph search
-    graphs = library.find_graphs_by_terms(
-        question="What is our DSO?",
+    # Query agent: key-based graph search
+    graphs = library.find_graphs_by_keys(
         schema_mapping_id="schema_abc",
+        standard_fields=["accounts_receivable", "revenue"],
+        graph_ids=["dso"],
     )
 
     # Query agent: full injection (small corpus)
@@ -50,7 +51,6 @@ Usage:
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -365,85 +365,60 @@ class SnippetLibrary:
             "graph_ids": graph_ids,
         }
 
-    def find_graphs_by_terms(
+    def find_graphs_by_keys(
         self,
-        question: str,
         schema_mapping_id: str,
-        vocabulary: dict[str, list[str]] | None = None,
         *,
+        standard_fields: list[str] | None = None,
+        statements: list[str] | None = None,
+        aggregations: list[str] | None = None,
+        graph_ids: list[str] | None = None,
         limit: int = 50,
     ) -> list[SnippetGraph]:
-        """Find snippet graphs by matching question terms against vocabulary.
+        """Find snippet graphs by direct key lookup on indexed fields.
 
-        Matching strategy:
-        1. Tokenize question (lowercase, split on whitespace/punctuation)
-        2. Match tokens against curated vocabulary (standard_fields, graph_ids,
-           statements) using case-insensitive substring matching
-        3. Find snippets whose standard_field, statement, or source matches
-        4. Expand matched snippets to full source graphs
-        5. Return complete graphs up to limit
+        The LLM selects keys from the vocabulary (standard_fields, statements,
+        aggregations, graph_ids). This method does exact SQL matching on those
+        fields — no tokenization or fuzzy matching needed.
 
         Args:
-            question: Natural language question
             schema_mapping_id: Schema mapping identifier
-            vocabulary: Pre-fetched vocabulary (from get_search_vocabulary).
-                If None, fetched automatically.
+            standard_fields: Business concepts (e.g., ["revenue", "accounts_receivable"])
+            statements: Financial statement types (e.g., ["income_statement"])
+            aggregations: Aggregation methods (e.g., ["sum", "end_of_period"])
+            graph_ids: Specific graph IDs (e.g., ["dso", "cash_conversion_cycle"])
             limit: Maximum number of snippet graphs to return
 
         Returns:
-            List of SnippetGraph ordered by match relevance
+            List of SnippetGraph, each containing all snippets in the graph
         """
-        if vocabulary is None:
-            vocabulary = self.get_search_vocabulary(schema_mapping_id)
-
-        question_lower = question.lower()
-        tokens = set(re.findall(r"[a-z][a-z0-9_]*", question_lower))
-
         matched_sources: set[str] = set()
 
-        # Match against graph_ids (highest signal)
-        for gid in vocabulary.get("graph_ids", []):
-            gid_lower = gid.lower()
-            if gid_lower in tokens or gid_lower in question_lower:
-                matched_sources.add(f"graph:{gid}")
+        # Direct source lookup for graph_ids
+        if graph_ids:
+            matched_sources.update(f"graph:{gid}" for gid in graph_ids)
 
-        # Match against standard_fields
-        matched_fields: list[str] = []
-        for sf in vocabulary.get("standard_fields", []):
-            sf_lower = sf.lower()
-            parts = sf_lower.split("_")
-            if sf_lower in tokens or sf_lower in question_lower:
-                matched_fields.append(sf)
-            elif any(part in tokens for part in parts if len(part) > 3):
-                matched_fields.append(sf)
+        # Find sources by field conditions (OR across categories)
+        conditions = []
+        if standard_fields:
+            conditions.append(
+                SQLSnippetRecord.standard_field.in_(standard_fields)
+            )
+        if statements:
+            conditions.append(
+                SQLSnippetRecord.statement.in_(statements)
+            )
+        if aggregations:
+            conditions.append(
+                SQLSnippetRecord.aggregation.in_(aggregations)
+            )
 
-        # Match against statements
-        matched_statements: list[str] = []
-        for st in vocabulary.get("statements", []):
-            st_lower = st.lower()
-            parts = st_lower.split("_")
-            if st_lower in tokens or st_lower in question_lower:
-                matched_statements.append(st)
-            elif any(part in tokens for part in parts if len(part) > 3):
-                matched_statements.append(st)
-
-        # Find snippets matching fields/statements, collect their sources
-        if matched_fields or matched_statements:
+        if conditions:
             from sqlalchemy import distinct, or_
-
-            field_conditions = []
-            if matched_fields:
-                field_conditions.append(
-                    SQLSnippetRecord.standard_field.in_(matched_fields)
-                )
-            if matched_statements:
-                field_conditions.append(
-                    SQLSnippetRecord.statement.in_(matched_statements)
-                )
 
             stmt = select(distinct(SQLSnippetRecord.source)).where(
                 SQLSnippetRecord.schema_mapping_id == schema_mapping_id,
-                or_(*field_conditions),
+                or_(*conditions),
             )
             for row in self.session.execute(stmt).all():
                 matched_sources.add(row[0])

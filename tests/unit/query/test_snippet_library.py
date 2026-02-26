@@ -682,8 +682,8 @@ class TestSnippetGraphs:
         assert "end_of_period" in vocab["aggregations"]
         assert "dso" in vocab["graph_ids"]
 
-    def test_find_graphs_by_terms_match_standard_field(self, session):
-        """Term matching on standard_field returns full graph."""
+    def test_find_graphs_by_keys_standard_field(self, session):
+        """Search by standard_field returns correct graphs."""
         library = SnippetLibrary(session)
 
         library.save_snippet(
@@ -698,17 +698,41 @@ class TestSnippetGraphs:
         )
         session.flush()
 
-        graphs = library.find_graphs_by_terms(
-            question="What is our accounts receivable?",
+        graphs = library.find_graphs_by_keys(
             schema_mapping_id="s1",
+            standard_fields=["accounts_receivable"],
         )
 
         assert len(graphs) == 1
         assert graphs[0].graph_id == "dso"
         assert len(graphs[0].snippets) == 2  # Full graph returned
 
-    def test_find_graphs_by_terms_match_graph_id(self, session):
-        """Term matching on graph_id returns full graph."""
+    def test_find_graphs_by_keys_statement(self, session):
+        """Search by statement returns correct graphs."""
+        library = SnippetLibrary(session)
+
+        library.save_snippet(
+            snippet_type="extract", sql="SELECT SUM(rev) AS value FROM t",
+            description="Revenue", schema_mapping_id="s1", source="graph:revenue",
+            standard_field="revenue", statement="income_statement",
+        )
+        library.save_snippet(
+            snippet_type="extract", sql="SELECT SUM(ar) AS value FROM t",
+            description="AR", schema_mapping_id="s1", source="graph:dso",
+            standard_field="accounts_receivable", statement="balance_sheet",
+        )
+        session.flush()
+
+        graphs = library.find_graphs_by_keys(
+            schema_mapping_id="s1",
+            statements=["balance_sheet"],
+        )
+
+        assert len(graphs) == 1
+        assert graphs[0].graph_id == "dso"
+
+    def test_find_graphs_by_keys_graph_id(self, session):
+        """Search by graph_id returns correct graph."""
         library = SnippetLibrary(session)
 
         library.save_snippet(
@@ -721,22 +745,53 @@ class TestSnippetGraphs:
             schema_mapping_id="s1", source="graph:dso",
             standard_field="days_in_period",
         )
+        library.save_snippet(
+            snippet_type="extract", sql="SELECT 2", description="cost",
+            schema_mapping_id="s1", source="graph:margin",
+            standard_field="cost",
+        )
         session.flush()
 
-        graphs = library.find_graphs_by_terms(
-            question="What is our DSO?",
+        graphs = library.find_graphs_by_keys(
             schema_mapping_id="s1",
+            graph_ids=["dso"],
         )
 
         assert len(graphs) == 1
         assert graphs[0].graph_id == "dso"
         assert len(graphs[0].snippets) == 2
 
-    def test_find_graphs_by_terms_expands_to_full_graph(self, session):
-        """One term match returns all snippets in the graph."""
+    def test_find_graphs_by_keys_multi_category(self, session):
+        """Search by concept + statement returns union of matches."""
         library = SnippetLibrary(session)
 
-        # 3 snippets in the same graph
+        library.save_snippet(
+            snippet_type="extract", sql="SELECT SUM(rev)", description="Rev",
+            schema_mapping_id="s1", source="graph:revenue",
+            standard_field="revenue", statement="income_statement",
+        )
+        library.save_snippet(
+            snippet_type="extract", sql="SELECT SUM(ar)", description="AR",
+            schema_mapping_id="s1", source="graph:dso",
+            standard_field="accounts_receivable", statement="balance_sheet",
+        )
+        session.flush()
+
+        # Search by concept (revenue) + statement (balance_sheet) — hits both graphs
+        graphs = library.find_graphs_by_keys(
+            schema_mapping_id="s1",
+            standard_fields=["revenue"],
+            statements=["balance_sheet"],
+        )
+
+        assert len(graphs) == 2
+        graph_ids = {g.graph_id for g in graphs}
+        assert graph_ids == {"dso", "revenue"}
+
+    def test_find_graphs_by_keys_expands_full_graph(self, session):
+        """One matching snippet expands to full graph."""
+        library = SnippetLibrary(session)
+
         library.save_snippet(
             snippet_type="extract", sql="SELECT SUM(ar)", description="AR",
             schema_mapping_id="s1", source="graph:dso",
@@ -755,16 +810,16 @@ class TestSnippetGraphs:
         session.flush()
 
         # Only "revenue" matches, but entire graph returned
-        graphs = library.find_graphs_by_terms(
-            question="show me revenue",
+        graphs = library.find_graphs_by_keys(
             schema_mapping_id="s1",
+            standard_fields=["revenue"],
         )
 
         assert len(graphs) == 1
         assert len(graphs[0].snippets) == 3
 
-    def test_find_graphs_by_terms_no_match(self, session):
-        """No matching terms returns empty."""
+    def test_find_graphs_by_keys_no_match(self, session):
+        """No matching keys returns empty."""
         library = SnippetLibrary(session)
 
         library.save_snippet(
@@ -774,26 +829,30 @@ class TestSnippetGraphs:
         )
         session.flush()
 
-        graphs = library.find_graphs_by_terms(
-            question="how is the weather?",
+        graphs = library.find_graphs_by_keys(
             schema_mapping_id="s1",
+            standard_fields=["nonexistent_field"],
         )
         assert graphs == []
 
-    def test_find_graphs_by_terms_partial_word_match(self, session):
-        """Underscore-separated fields match on parts > 3 chars."""
+    def test_find_graphs_by_keys_limit(self, session):
+        """Respects limit parameter."""
         library = SnippetLibrary(session)
 
-        library.save_snippet(
-            snippet_type="extract", sql="SELECT 1", description="test",
-            schema_mapping_id="s1", source="graph:test",
-            standard_field="accounts_receivable",
-        )
+        # Create 3 separate graphs
+        for name in ["alpha", "beta", "gamma"]:
+            library.save_snippet(
+                snippet_type="extract", sql=f"SELECT {name}",
+                description=name, schema_mapping_id="s1",
+                source=f"graph:{name}", standard_field=name,
+                statement="income_statement",
+            )
         session.flush()
 
-        # "accounts" (8 chars) should match "accounts_receivable"
-        graphs = library.find_graphs_by_terms(
-            question="show accounts",
+        graphs = library.find_graphs_by_keys(
             schema_mapping_id="s1",
+            statements=["income_statement"],
+            limit=2,
         )
-        assert len(graphs) == 1
+
+        assert len(graphs) == 2

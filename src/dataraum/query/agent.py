@@ -69,7 +69,7 @@ class DiscoveryResult:
     """Result of snippet discovery — determines LLM mode."""
 
     snippets: list[dict[str, Any]]  # Pre-fetched snippets (Mode 1) or empty (Mode 2)
-    vocabulary: dict[str, list[str]] | None = None  # Set when Mode 2 (tool search)
+    vocabulary: dict[str, Any] | None = None  # Set when Mode 2 (tool search)
     mode: str = "full"  # "full" or "tool_search"
 
 
@@ -443,7 +443,7 @@ class QueryAgent(LLMFeature):
     @staticmethod
     def _build_snippet_context(
         discovered_snippets: list[dict[str, Any]] | None,
-        search_vocabulary: dict[str, list[str]] | None,
+        search_vocabulary: dict[str, Any] | None,
     ) -> str:
         """Build the snippet context section for the prompt.
 
@@ -485,17 +485,24 @@ class QueryAgent(LLMFeature):
             )
 
         if search_vocabulary:
-            vocab_json = json.dumps(search_vocabulary, indent=2)
+            # Format vocabulary with labels matching the tool's property names
+            formatted_vocab = {
+                "concepts (→ search_snippets.concepts)": search_vocabulary.get("standard_fields", []),
+                "statements (→ search_snippets.statements)": search_vocabulary.get("statements", []),
+                "aggregations (→ search_snippets.concepts)": search_vocabulary.get("aggregations", []),
+                "graph_ids (→ search_snippets.graph_ids)": search_vocabulary.get("graph_ids", []),
+            }
+            vocab_json = json.dumps(formatted_vocab, indent=2)
             return (
-                "<available_search_terms>\n"
+                "<available_search_keys>\n"
                 f"{vocab_json}\n"
-                "</available_search_terms>\n\n"
+                "</available_search_keys>\n\n"
                 "SQL KNOWLEDGE BASE (search mode):\n"
                 "The knowledge base contains validated SQL building blocks but is too large "
                 "to inject directly.\n"
                 "Use the search_snippets tool FIRST to find relevant SQL building blocks.\n"
-                "Select terms from the <available_search_terms> vocabulary that relate to "
-                "your question.\n"
+                "Select keys from <available_search_keys> and pass them in the matching "
+                "search_snippets field (concepts, statements, graph_ids).\n"
                 "The tool returns complete calculation graphs — all connected SQL steps.\n"
                 "After receiving search results, proceed with the analyze_query tool."
             )
@@ -668,40 +675,32 @@ class QueryAgent(LLMFeature):
 
     def _handle_snippet_search(
         self,
-        search_terms: list[str],
-        vocabulary: dict[str, list[str]],
+        tool_input: dict[str, Any],
         schema_mapping_id: str,
         session: Session,
     ) -> str:
         """Handle search_snippets tool call from LLM.
 
-        Validates >= 85% of terms match curated vocabulary.
+        Extracts categorized keys from the tool input and performs
+        direct key lookup via find_graphs_by_keys.
+
         Returns matching snippet graphs as JSON.
         """
         from dataraum.query.snippet_library import SnippetLibrary
 
-        # Flatten all vocabulary terms for validation
-        all_vocab_terms: set[str] = set()
-        for terms in vocabulary.values():
-            all_vocab_terms.update(t.lower() for t in terms)
+        concepts = tool_input.get("concepts") or []
+        statements = tool_input.get("statements") or []
+        graph_ids = tool_input.get("graph_ids") or []
 
-        if not search_terms:
-            return json.dumps({"error": "No search terms provided"})
-
-        matched = sum(1 for t in search_terms if t.lower() in all_vocab_terms)
-        match_ratio = matched / len(search_terms)
-
-        if match_ratio < 0.85:
-            return json.dumps({
-                "error": f"Only {match_ratio:.0%} of terms match vocabulary (need >= 85%)",
-                "hint": "Use terms from the <available_search_terms> list",
-            })
+        if not concepts and not statements and not graph_ids:
+            return json.dumps({"error": "No search keys provided. Use concepts, statements, or graph_ids."})
 
         library = SnippetLibrary(session)
-        graphs = library.find_graphs_by_terms(
-            question=" ".join(search_terms),
+        graphs = library.find_graphs_by_keys(
             schema_mapping_id=schema_mapping_id,
-            vocabulary=vocabulary,
+            standard_fields=concepts or None,
+            statements=statements or None,
+            graph_ids=graph_ids or None,
             limit=50,
         )
 
@@ -732,7 +731,7 @@ class QueryAgent(LLMFeature):
         execution_context: GraphExecutionContext,
         discovered_snippets: list[dict[str, Any]] | None = None,
         *,
-        search_vocabulary: dict[str, list[str]] | None = None,
+        search_vocabulary: dict[str, Any] | None = None,
         schema_mapping_id: str = "default",
         session: Session | None = None,
     ) -> Result[QueryAnalysisOutput]:
@@ -806,22 +805,37 @@ class QueryAgent(LLMFeature):
                 name="search_snippets",
                 description=(
                     "Search the SQL Knowledge Base for validated snippet graphs. "
-                    "Select search terms from the <available_search_terms> list. "
-                    "Returns complete calculation graphs matching your terms."
+                    "Select keys from <available_search_keys> and pass them in the "
+                    "matching field. Returns complete calculation graphs."
                 ),
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "search_terms": {
+                        "concepts": {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": (
-                                "Terms from the available_search_terms vocabulary. "
-                                "At least 85% must match the curated list."
+                                "Business concepts from the vocabulary "
+                                "(e.g., 'revenue', 'accounts_receivable')"
+                            ),
+                        },
+                        "statements": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Financial statement types "
+                                "(e.g., 'income_statement', 'balance_sheet')"
+                            ),
+                        },
+                        "graph_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Specific calculation graph IDs "
+                                "(e.g., 'dso', 'cash_conversion_cycle')"
                             ),
                         },
                     },
-                    "required": ["search_terms"],
                 },
             )
             tools.append(search_tool)
@@ -868,8 +882,7 @@ class QueryAgent(LLMFeature):
             if tool_call.name == "search_snippets":
                 assert session is not None and search_vocabulary is not None
                 search_result = self._handle_snippet_search(
-                    search_terms=tool_call.input.get("search_terms", []),
-                    vocabulary=search_vocabulary,
+                    tool_input=tool_call.input,
                     schema_mapping_id=schema_mapping_id,
                     session=session,
                 )
@@ -878,7 +891,7 @@ class QueryAgent(LLMFeature):
                     role="assistant", content="", tool_calls=[tool_call],
                 ))
                 messages.append(Message(
-                    role="tool_result",
+                    role="user",
                     content=[ToolResult(
                         tool_use_id=tool_call.id, content=search_result,
                     )],

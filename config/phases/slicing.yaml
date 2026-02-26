@@ -3,4 +3,4 @@
 max_cardinality: 15
 
 # Maximum number of slice dimension recommendations per table
-max_recommendations: 4
+max_recommendations: 8

@@ -503,9 +503,16 @@ class EntropyPhase(BasePhase):
         critical_entropy_count = network_ctx.columns_blocked
         overall_readiness = network_ctx.overall_readiness
 
-        # Average entropy score from ALL in-memory domain objects
-        all_scores = [obj.score for obj in all_domain_objects]
-        avg_entropy = sum(all_scores) / len(all_scores) if all_scores else 0.0
+        # Average entropy score: per-target max, then mean across targets.
+        # This prevents table-level dimensional entropy object counts from
+        # dominating the average (each target contributes its worst score).
+        target_max: dict[str, float] = {}
+        for obj in all_domain_objects:
+            if obj.target not in target_max or obj.score > target_max[obj.target]:
+                target_max[obj.target] = obj.score
+        avg_entropy = (
+            sum(target_max.values()) / len(target_max) if target_max else 0.0
+        )
 
         # Serialize Bayesian network state for downstream consumers
         snapshot_data: dict[str, Any] = {

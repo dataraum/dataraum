@@ -60,8 +60,7 @@ detectors:
     # CV attenuation: cap score when coefficient of variation is high.
     # High-CV columns (e.g., FX rates spanning 0.7–150) have naturally wide
     # ranges — IQR "outliers" are legitimate values, not quality issues.
-    cv_attenuation_threshold: 2.0  # CV above which to attenuate outlier score
-    cv_attenuated_max_score: 0.4   # Maximum score for high-CV columns
+    cv_attenuation_threshold: 2.0  # CV above which to attenuate outlier score (proportional dampening)
     # Resolution thresholds (based on score)
     suggest_winsorize_threshold: 0.2 # Score above which to suggest winsorization
     suggest_exclude_threshold: 0.5 # Score above which to suggest exclusion
@@ -152,6 +151,8 @@ detectors:
   benford:
     score_compliant: 0.1       # Benford-compliant = low entropy
     score_non_compliant: 0.7   # Non-compliant = high entropy
+    chi_sq_escalation_threshold: 0.01  # p-value below this → use chi-sq severity
+    chi_sq_log_max: 3.0        # log10(chi_sq) at which score reaches 1.0 (chi_sq=1000)
     reduction_investigate: 0.5
 
   # --------------------------------------------------------------------------

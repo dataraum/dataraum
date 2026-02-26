@@ -187,6 +187,86 @@ def create_server(output_dir: Path | None = None) -> Server:
                     },
                 },
             ),
+            # --- Source management tools ---
+            Tool(
+                name="discover_sources",
+                description=(
+                    "Scan the workspace for data files (CSV, Parquet, JSON, XLSX) "
+                    "and list existing registered sources. Returns file previews "
+                    "with column names and row counts."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Root directory to scan. Defaults to current working directory.",
+                        },
+                        "recursive": {
+                            "type": "boolean",
+                            "description": "Scan subdirectories. Default: true.",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="add_source",
+                description=(
+                    "Register a new data source. For files, provide a path. "
+                    "For databases, provide a backend type (postgres, mysql, sqlite). "
+                    "Database sources validate the connection if credentials are available, "
+                    "or return setup instructions if not."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Source name (lowercase, a-z/0-9/_, 2-49 chars).",
+                            "pattern": "^[a-z][a-z0-9_]{1,48}$",
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "File path. Mutually exclusive with 'backend'.",
+                        },
+                        "backend": {
+                            "type": "string",
+                            "enum": ["postgres", "mysql", "sqlite"],
+                            "description": "Database backend. Mutually exclusive with 'path'.",
+                        },
+                        "tables": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional table filter for database sources.",
+                        },
+                        "credential_ref": {
+                            "type": "string",
+                            "description": "Credential lookup key. Defaults to source name.",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="remove_source",
+                description=(
+                    "Archive a data source. Does not delete analysis history by default."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Source name to remove.",
+                        },
+                        "purge_results": {
+                            "type": "boolean",
+                            "description": "Also delete stored analysis results. Default: false.",
+                        },
+                    },
+                },
+            ),
         ]
 
     @server.call_tool()  # type: ignore[no-untyped-call, untyped-decorator]
@@ -254,6 +334,16 @@ def create_server(output_dir: Path | None = None) -> Server:
             priority = arguments.get("priority")
             table_name = arguments.get("table_name")
             result = _get_actions(output_dir, priority, table_name)
+        elif name == "discover_sources":
+            scan_path = arguments.get("path", ".")
+            recursive = arguments.get("recursive", True)
+            result = _discover_sources(output_dir, scan_path, recursive)
+        elif name == "add_source":
+            result = _add_source(output_dir, arguments)
+        elif name == "remove_source":
+            source_name = arguments["name"]
+            purge = arguments.get("purge_results", False)
+            result = _remove_source(output_dir, source_name, purge)
         else:
             result = f"Unknown tool: {name}"
 
@@ -828,6 +918,182 @@ def _get_actions(
                 ]
 
             return format_actions_report(source.name, actions, priority, table_name)
+    finally:
+        manager.close()
+
+
+def _get_or_create_manager(output_dir: Path) -> Any:
+    """Get a ConnectionManager, creating the database if it doesn't exist yet."""
+    from dataraum.core.connections import ConnectionConfig, ConnectionManager
+
+    config = ConnectionConfig.for_directory(output_dir)
+    config.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    manager = ConnectionManager(config)
+    manager.initialize()
+    return manager
+
+
+def _discover_sources(output_dir: Path, scan_path: str, recursive: bool) -> str:
+    """Scan workspace for data files and list existing registered sources."""
+    import json
+
+    from dataraum.sources.discovery import discover_sources
+
+    root = Path(scan_path).resolve()
+    if not root.is_dir():
+        return f"Error: Directory not found: {scan_path}"
+
+    # Get existing source names from the database if available
+    existing_names: list[str] = []
+    try:
+        from sqlalchemy import select
+
+        from dataraum.core.connections import get_manager_for_directory
+        from dataraum.storage.models import Source
+
+        manager = get_manager_for_directory(output_dir)
+        try:
+            with manager.session_scope() as session:
+                sources = session.execute(
+                    select(Source.name).where(Source.archived_at.is_(None))
+                ).scalars().all()
+                existing_names = list(sources)
+        finally:
+            manager.close()
+    except FileNotFoundError:
+        pass  # No database yet — that's fine for discovery
+
+    result = discover_sources(root, recursive=recursive, existing_sources=existing_names)
+
+    # Format as structured output for LLM
+    output: dict[str, Any] = {
+        "scan_root": result.scan_root,
+        "files": [
+            {
+                "path": f.path,
+                "format": f.format,
+                "size_bytes": f.size_bytes,
+                "columns": f.columns,
+                "row_count_estimate": f.row_count_estimate,
+            }
+            for f in result.files
+        ],
+        "existing_sources": result.existing_sources,
+    }
+
+    if not result.files and not result.existing_sources:
+        return f"No data files found in {scan_path}. Try a different directory or add files."
+
+    return json.dumps(output, indent=2)
+
+
+def _add_source(output_dir: Path, arguments: dict[str, Any]) -> str:
+    """Register a new data source."""
+    import json
+
+    from dataraum.core.credentials import CredentialChain
+    from dataraum.sources.manager import SourceManager
+
+    name = arguments["name"]
+    path = arguments.get("path")
+    backend = arguments.get("backend")
+
+    if not path and not backend:
+        return "Error: Provide either 'path' (for files) or 'backend' (for databases)."
+    if path and backend:
+        return "Error: Provide 'path' or 'backend', not both."
+
+    try:
+        manager = _get_or_create_manager(output_dir)
+    except Exception as e:
+        return f"Error initializing database: {e}"
+
+    try:
+        credential_chain = CredentialChain()
+
+        with manager.session_scope() as session:
+            if backend:
+                with manager.duckdb_cursor() as cursor:
+                    src_mgr = SourceManager(
+                        session=session,
+                        credential_chain=credential_chain,
+                        duckdb_conn=cursor,
+                    )
+                    tables_arg = arguments.get("tables")
+                    credential_ref = arguments.get("credential_ref")
+                    result = src_mgr.add_database_source(
+                        name, backend, tables=tables_arg, credential_ref=credential_ref
+                    )
+            else:
+                src_mgr = SourceManager(
+                    session=session,
+                    credential_chain=credential_chain,
+                )
+                assert path is not None  # guarded by validation above
+                result = src_mgr.add_file_source(name, path)
+
+            if not result.success:
+                return f"Error: {result.error}"
+
+            session.commit()
+
+            info = result.unwrap()
+            output: dict[str, Any] = {
+                "source": {
+                    "name": info.name,
+                    "type": info.source_type,
+                    "status": info.status,
+                }
+            }
+            if info.path:
+                output["source"]["path"] = info.path
+            if info.columns:
+                output["source"]["preview"] = {
+                    "columns": info.columns,
+                    "row_count_estimate": info.row_count_estimate,
+                }
+            if info.credential_source:
+                output["source"]["credential_source"] = info.credential_source
+            if info.discovered_schema:
+                output["source"]["schema_discovered"] = info.discovered_schema
+            if info.credential_instructions:
+                output["credential_instructions"] = info.credential_instructions
+
+            return json.dumps(output, indent=2)
+    finally:
+        manager.close()
+
+
+def _remove_source(output_dir: Path, name: str, purge: bool) -> str:
+    """Archive or delete a source."""
+    import json
+
+    from dataraum.core.connections import get_manager_for_directory
+    from dataraum.core.credentials import CredentialChain
+    from dataraum.sources.manager import SourceManager
+
+    try:
+        manager = get_manager_for_directory(output_dir)
+    except FileNotFoundError:
+        return _NO_DATA_MSG.format(path=output_dir)
+
+    try:
+        credential_chain = CredentialChain()
+
+        with manager.session_scope() as session:
+            src_mgr = SourceManager(session=session, credential_chain=credential_chain)
+            result = src_mgr.remove_source(name, purge=purge)
+
+            if not result.success:
+                return f"Error: {result.error}"
+
+            session.commit()
+
+            return json.dumps({
+                "removed": name,
+                "analysis_preserved": not purge,
+                "message": result.unwrap(),
+            }, indent=2)
     finally:
         manager.close()
 

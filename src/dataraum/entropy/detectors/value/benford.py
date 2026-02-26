@@ -7,6 +7,8 @@ issues, fabrication, or systematic rounding.
 Source: statistics/quality.benford_analysis (via quality_data JSON)
 """
 
+import math
+
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
@@ -61,6 +63,8 @@ class BenfordDetector(EntropyDetector):
 
         score_compliant = detector_config.get("score_compliant", 0.1)
         score_non_compliant = detector_config.get("score_non_compliant", 0.7)
+        chi_sq_escalation_threshold = detector_config.get("chi_sq_escalation_threshold", 0.01)
+        chi_sq_log_max = detector_config.get("chi_sq_log_max", 3.0)
         stats = context.get_analysis("statistics", {})
         quality = stats.get("quality", stats)
 
@@ -93,11 +97,19 @@ class BenfordDetector(EntropyDetector):
         # Calculate score: use p-value gradient when available,
         # fall back to binary compliant/non-compliant.
         if p_value is not None and isinstance(p_value, (int, float)):
-            # Gradient: high p-value (compliant) → low score,
-            # low p-value (non-compliant) → high score.
-            # Linear interpolation: score = compliant + (non_compliant - compliant) * (1 - p_value)
-            score = score_compliant + (score_non_compliant - score_compliant) * (1.0 - p_value)
-            score = max(score_compliant, min(score_non_compliant, score))
+            if p_value > chi_sq_escalation_threshold:
+                # Mild: p-value gradient maps to [score_compliant, score_non_compliant]
+                score = score_compliant + (score_non_compliant - score_compliant) * (1.0 - p_value)
+                score = max(score_compliant, min(score_non_compliant, score))
+            else:
+                # Severe: chi-square severity gradient into [score_non_compliant, 1.0]
+                # log10(chi_sq): ~1.5 (borderline) → chi_sq_log_max (extreme)
+                if chi_square and chi_square > 0:
+                    severity = min(1.0, math.log10(chi_square) / chi_sq_log_max)
+                    score = score_non_compliant + (1.0 - score_non_compliant) * severity
+                else:
+                    score = score_non_compliant
+                score = max(score_compliant, min(1.0, score))
         elif is_compliant:
             score = score_compliant
         else:

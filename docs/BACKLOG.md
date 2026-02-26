@@ -97,6 +97,9 @@ Data source integration via connectors: in Phase B, the `analyze` tool can accep
 Items identified during development but deferred to keep focus.
 
 ### Entropy Enhancements
+- [ ] **Unit entropy: data consistency check** — Current detector only checks metadata (is unit declared?). Should also detect mixed unit data (e.g., amounts in mixed currencies). The `mix_units` injection changes values but detector only reads `unit_source_column`. Needs: analyze measure values grouped by unit source column, detect inconsistent distributions. *Medium effort.*
+- [ ] **Dimensional entropy: mutual exclusivity** — Accounting data has structural constraints (debit XOR credit). Breaking mutual exclusivity is real data corruption. Needs: quality summary to identify exclusivity patterns, dimensional_entropy detector to consume them. *Medium effort.*
+- [ ] **Derived value detection after enriched_views** — Currently runs before semantic phase, per-table only. Running after enriched_views (which have cross-table joins) would find more derived column relationships. *Large effort.*
 - [ ] **Unit entropy currency not working in practice** — Architecture is wired (semantic prompt → `unit_source_column` → detector), but LLM never populates `unit_source_column`. All unit_entropy scores = 0.8 (missing). Needs: investigate semantic prompt or add explicit currency detection heuristic. *Medium effort, high value.*
 - [ ] **Table-level interpretation** — Schema exists (`TableInterpretation`), but interpretation phase only processes columns. Needs `TableInterpretationInput`, prompt template, and phase changes. ~400-500 lines. *Medium effort, medium value.*
 - [ ] **Contract violation text not business-focused** — Technical jargon instead of business language. Purely cosmetic prompt tuning. *Low effort, low priority. Batch with interpretation work.*

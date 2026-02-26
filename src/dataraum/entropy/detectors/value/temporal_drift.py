@@ -25,8 +25,12 @@ class TemporalDriftDetector(EntropyDetector):
     layer = "value"
     dimension = "temporal"
     sub_dimension = "temporal_drift"
-    required_analyses = ["drift_summaries"]
+    required_analyses = ["drift_summaries", "semantic"]
     description = "Measures uncertainty from distribution drift over time"
+
+    # Semantic roles where drift detection is meaningless —
+    # IDs naturally differ across periods (JS divergence = ln(2) guaranteed).
+    _SKIP_ROLES = frozenset({"key", "foreign_key", "identifier"})
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect temporal drift entropy for a column.
@@ -37,6 +41,15 @@ class TemporalDriftDetector(EntropyDetector):
         Returns:
             List with single EntropyObject for drift score, or empty if no data
         """
+        # Skip identifier columns — IDs naturally differ across periods
+        semantic = context.get_analysis("semantic", {})
+        if hasattr(semantic, "semantic_role"):
+            role = semantic.semantic_role
+        else:
+            role = semantic.get("semantic_role")
+        if role in self._SKIP_ROLES:
+            return []
+
         drift_summaries = context.get_analysis("drift_summaries", [])
         if not drift_summaries:
             return []

@@ -13,11 +13,27 @@ Prioritized backlog for the dataraum-context project.
 ## Current Focus
 
 ### Next Up
+- [ ] Run e2e tests to verify cycle health scoring (`tests/e2e/test_cycle_health.py`)
 - [ ] Verify TUI screens with cleaned models
 - [ ] Verify MCP tools with cleaned context assembly
 - [ ] Dependency audit (pandas vs pyarrow, ruptures, networkx)
 - [ ] Docs cleanup: triage `docs/projects/`, swap `docs_new/` → `docs/`, update README + CLAUDE.md cross-refs
 - [ ] Align ontology concepts ↔ standard_field vocabulary (audit)
+
+### Completed: Cycle-Scoped Validations + Cycle Health Score ✅
+
+Additive feature — no existing signatures changed.
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 1 | `relevant_cycles` field on `ValidationSpec` | ✅ Done |
+| 2 | `relevant_cycles` added to all 7 finance validation YAMLs | ✅ Done |
+| 3 | `get_validation_specs_for_cycles()` filter in validation config | ✅ Done |
+| 4 | `cycles/health.py` — `compute_cycle_health()` composite scoring | ✅ Done |
+| 5 | Unit tests (4 config filter + 4 health scoring) | ✅ Done |
+| 6 | E2E test (`tests/e2e/test_cycle_health.py`) | ✅ Written, not yet run |
+
+Exported from `dataraum.analysis.cycles`. Pure query function — no LLM calls, no DB writes, no pipeline phase. Available for CLI/dashboard integration later.
 
 ### Completed: Agent Refactoring ✅
 

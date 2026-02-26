@@ -8,6 +8,11 @@ from dataraum.analysis.cycles.agent import BusinessCycleAgent
 from dataraum.analysis.cycles.db_models import (
     DetectedBusinessCycle,
 )
+from dataraum.analysis.cycles.health import (
+    CycleHealthScore,
+    HealthReport,
+    compute_cycle_health,
+)
 from dataraum.analysis.cycles.models import (
     BusinessCycleAnalysis,
     CycleStage,
@@ -25,4 +30,8 @@ __all__ = [
     "EntityFlow",
     # DB models
     "DetectedBusinessCycle",
+    # Health scoring
+    "CycleHealthScore",
+    "HealthReport",
+    "compute_cycle_health",
 ]

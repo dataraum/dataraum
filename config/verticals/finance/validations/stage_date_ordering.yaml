@@ -20,6 +20,8 @@ tags:
   - ordering
   - process-integrity
 
+relevant_cycles: []
+
 check_type: constraint
 
 parameters:

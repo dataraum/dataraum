@@ -18,6 +18,8 @@ tags:
   - cutoff
   - completeness
 
+relevant_cycles: []
+
 check_type: aggregate
 
 parameters:

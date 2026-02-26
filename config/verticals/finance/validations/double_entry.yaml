@@ -18,6 +18,9 @@ tags:
   - balance
   - critical
 
+relevant_cycles:
+  - journal_entry_cycle
+
 check_type: balance
 
 parameters:

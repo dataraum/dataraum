@@ -21,6 +21,10 @@ tags:
   - accounts-payable
   - internal-control
 
+relevant_cycles:
+  - procure_to_pay
+  - accounts_payable
+
 check_type: comparison
 
 parameters:

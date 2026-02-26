@@ -58,6 +58,7 @@ class ValidationSpec(BaseModel):
 
     # Metadata
     tags: list[str] = Field(default_factory=list)
+    relevant_cycles: list[str] = Field(default_factory=list)  # cycle types this applies to; empty = universal
     version: str = "1.0"
     source: str = "config"
 

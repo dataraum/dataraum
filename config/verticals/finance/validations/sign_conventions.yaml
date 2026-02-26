@@ -18,6 +18,9 @@ tags:
   - sign-convention
   - data-quality
 
+relevant_cycles:
+  - journal_entry_cycle
+
 check_type: constraint
 
 parameters:

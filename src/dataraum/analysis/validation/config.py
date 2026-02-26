@@ -82,6 +82,31 @@ def get_validation_specs_by_tags(tags: list[str], vertical: str) -> list[Validat
     return [spec for spec in all_specs.values() if set(spec.tags) & tag_set]
 
 
+def get_validation_specs_for_cycles(
+    cycle_types: list[str], vertical: str
+) -> list[ValidationSpec]:
+    """Get validation specs relevant to detected cycle types.
+
+    Returns specs that either:
+    - Have relevant_cycles overlapping with cycle_types, or
+    - Have empty relevant_cycles (universal applicability)
+
+    Args:
+        cycle_types: Detected cycle canonical types (e.g. ['journal_entry_cycle'])
+        vertical: Vertical name (e.g. 'finance')
+
+    Returns:
+        List of matching ValidationSpecs
+    """
+    all_specs = load_all_validation_specs(vertical)
+    cycle_set = set(cycle_types)
+    return [
+        spec
+        for spec in all_specs.values()
+        if not spec.relevant_cycles or set(spec.relevant_cycles) & cycle_set
+    ]
+
+
 def get_validation_spec(validation_id: str, vertical: str) -> ValidationSpec | None:
     """Get a specific validation spec by ID.
 
@@ -100,5 +125,6 @@ __all__ = [
     "load_all_validation_specs",
     "get_validation_specs_by_category",
     "get_validation_specs_by_tags",
+    "get_validation_specs_for_cycles",
     "get_validation_spec",
 ]

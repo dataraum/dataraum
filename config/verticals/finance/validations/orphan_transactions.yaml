@@ -21,6 +21,8 @@ tags:
   - entity-flow
   - data-quality
 
+relevant_cycles: []
+
 check_type: aggregate
 
 parameters:

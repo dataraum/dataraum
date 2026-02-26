@@ -6,6 +6,7 @@ from dataraum.analysis.validation.config import (
     get_validation_spec,
     get_validation_specs_by_category,
     get_validation_specs_by_tags,
+    get_validation_specs_for_cycles,
     load_all_validation_specs,
 )
 
@@ -95,3 +96,46 @@ class TestGetValidationSpec:
         spec = get_validation_spec("nonexistent_spec_id", VERTICAL)
 
         assert spec is None
+
+
+# IDs of universal specs (relevant_cycles = [])
+UNIVERSAL_IDS = {"fiscal_period_integrity", "stage_date_ordering", "orphan_transactions"}
+
+
+class TestGetValidationSpecsForCycles:
+    """Tests for filtering specs by detected cycle types."""
+
+    def test_returns_gl_specs_for_journal_entry_cycle(self):
+        """journal_entry_cycle should include double_entry, trial_balance, sign_conventions + universals."""
+        specs = get_validation_specs_for_cycles(["journal_entry_cycle"], VERTICAL)
+        ids = {s.validation_id for s in specs}
+
+        assert "double_entry_balance" in ids
+        assert "trial_balance" in ids
+        assert "sign_conventions" in ids
+        assert UNIVERSAL_IDS <= ids
+
+    def test_returns_p2p_specs_for_procure_to_pay(self):
+        """procure_to_pay should include three_way_match + universals."""
+        specs = get_validation_specs_for_cycles(["procure_to_pay"], VERTICAL)
+        ids = {s.validation_id for s in specs}
+
+        assert "three_way_match" in ids
+        assert UNIVERSAL_IDS <= ids
+        # GL-specific specs should not appear
+        assert "double_entry_balance" not in ids
+        assert "sign_conventions" not in ids
+
+    def test_universal_specs_always_included(self):
+        """Universal specs appear regardless of cycle type."""
+        specs = get_validation_specs_for_cycles(["some_unknown_cycle"], VERTICAL)
+        ids = {s.validation_id for s in specs}
+
+        assert UNIVERSAL_IDS <= ids
+
+    def test_empty_cycle_list_returns_only_universal(self):
+        """No cycle types → only universal specs (empty relevant_cycles)."""
+        specs = get_validation_specs_for_cycles([], VERTICAL)
+        ids = {s.validation_id for s in specs}
+
+        assert ids == UNIVERSAL_IDS

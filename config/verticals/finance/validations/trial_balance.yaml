@@ -17,6 +17,11 @@ tags:
   - balance-sheet
   - equation
 
+relevant_cycles:
+  - journal_entry_cycle
+  - accounts_receivable
+  - accounts_payable
+
 check_type: comparison
 
 parameters:

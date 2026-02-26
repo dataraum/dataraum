@@ -1,0 +1,51 @@
+# Orphan Transaction Validation
+# Checks for transactions without matching dimension records
+
+validation_id: orphan_transactions
+name: Orphan Transactions
+description: >
+  Validates referential integrity between fact (transaction) tables and
+  their dimension tables. Orphan transactions — rows in a fact table
+  whose foreign key has no matching record in the dimension table —
+  indicate broken data pipelines, missing master data loads, or
+  premature deletion of dimension records. High orphan rates undermine
+  cycle detection because entity flows cannot be traced end-to-end.
+
+category: financial
+severity: warning
+version: "1.0"
+
+tags:
+  - cycle
+  - referential-integrity
+  - entity-flow
+  - data-quality
+
+check_type: aggregate
+
+parameters:
+  # Maximum acceptable orphan rate per relationship
+  max_orphan_rate: 0.02
+
+sql_hints: >
+  Use the confirmed relationships provided in the schema context to
+  identify foreign key links between fact and dimension tables. For each
+  relationship, count how many rows in the fact table have a foreign key
+  value that does not appear in the dimension table's primary key column.
+
+  Only check relationships where both tables are available. Exclude NULL
+  foreign keys (those are missing data, not orphans).
+
+  Generate SQL that returns one row per relationship checked:
+  - from_table (VARCHAR): fact table name
+  - from_column (VARCHAR): foreign key column
+  - to_table (VARCHAR): dimension table name
+  - to_column (VARCHAR): primary key column
+  - total_rows (INTEGER): non-NULL FK rows in fact table
+  - orphan_count (INTEGER): FK values with no match in dimension
+  - orphan_rate (DOUBLE): orphan_count / total_rows
+
+expected_outcome: >
+  Orphan rate should be below the max_orphan_rate threshold (2%) for
+  each relationship. Zero orphans is ideal. Any orphans should be
+  investigated for missing dimension loads or stale references.

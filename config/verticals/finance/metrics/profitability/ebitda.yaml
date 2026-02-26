@@ -1,0 +1,89 @@
+graph_id: "ebitda"
+graph_type: "metric"
+version: "1.0"
+
+metadata:
+  name: "EBITDA"
+  description: "Earnings before interest, taxes, depreciation, and amortization"
+  category: "profitability"
+  source: "system"
+  tags: ["profitability", "income-statement", "p&l", "ebitda"]
+
+output:
+  type: "scalar"
+  metric_id: "ebitda"
+  unit: "currency"
+  decimal_places: 0
+
+requires_filters:
+  - graph_id: "technical_quality"
+    required: true
+    required_classification: "clean"
+
+dependencies:
+  # Level 1: Extract base data
+  revenue:
+    level: 1
+    type: "extract"
+    source:
+      standard_field: "revenue"
+      statement: "income_statement"
+    aggregation: "sum"
+    validation:
+      - condition: "value > 0"
+        severity: "error"
+        message: "Revenue must be positive"
+
+  cost_of_goods_sold:
+    level: 1
+    type: "extract"
+    source:
+      standard_field: "cost_of_goods_sold"
+      statement: "income_statement"
+    aggregation: "sum"
+
+  operating_expense:
+    level: 1
+    type: "extract"
+    source:
+      standard_field: "operating_expense"
+      statement: "income_statement"
+    aggregation: "sum"
+
+  depreciation:
+    level: 1
+    type: "extract"
+    source:
+      standard_field: "depreciation"
+      statement: "income_statement"
+    aggregation: "sum"
+
+  # Level 2: Intermediate - operating income
+  operating_income:
+    level: 2
+    type: "formula"
+    expression: "revenue - cost_of_goods_sold - operating_expense"
+    depends_on: ["revenue", "cost_of_goods_sold", "operating_expense"]
+
+  # Level 3: EBITDA
+  ebitda:
+    level: 3
+    type: "formula"
+    expression: "operating_income + depreciation"
+    depends_on: ["operating_income", "depreciation"]
+    output_step: true
+
+interpretation:
+  ranges:
+    - min: -999999999
+      max: -1
+      label: "NEGATIVE"
+      description: "Negative EBITDA - core cash generation failing"
+    - min: 0
+      max: 0
+      label: "BREAKEVEN"
+      description: "No cash earnings from operations"
+    - min: 1
+      max: 999999999
+      label: "POSITIVE"
+      description: "Positive cash earnings from operations"

@@ -42,7 +42,6 @@ def build_cycle_detection_context(
     duckdb_conn: duckdb.DuckDBPyConnection,
     table_ids: list[str],
     *,
-    domain: str | None = None,
     vertical: str,
 ) -> dict[str, Any]:
     """Build context for the business cycle detection agent.
@@ -55,7 +54,6 @@ def build_cycle_detection_context(
         session: SQLAlchemy session
         duckdb_conn: DuckDB connection for row counts
         table_ids: Tables to analyze
-        domain: Optional domain name for domain-specific vocabulary
         vertical: Vertical name (e.g. 'finance')
 
     Returns:
@@ -294,7 +292,7 @@ def build_cycle_detection_context(
     }
 
     # 10. Domain vocabulary
-    vocabulary = format_cycle_vocabulary_for_context(domain, vertical=vertical)
+    vocabulary = format_cycle_vocabulary_for_context(vertical=vertical)
     context["domain_vocabulary"] = vocabulary
 
     return context

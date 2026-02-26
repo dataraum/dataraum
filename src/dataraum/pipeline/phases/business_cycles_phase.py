@@ -121,8 +121,6 @@ class BusinessCyclesPhase(BasePhase):
             prompt_renderer=renderer,
         )
 
-        # Get optional domain from config (e.g., "financial", "retail", "manufacturing")
-        domain = ctx.config.get("domain")
         vertical = ctx.config.get("vertical")
         if not vertical:
             return PhaseResult.failed(
@@ -135,7 +133,6 @@ class BusinessCyclesPhase(BasePhase):
             duckdb_conn=ctx.duckdb_conn,
             table_ids=table_ids,
             source_id=ctx.source_id,
-            domain=domain,
             vertical=vertical,
         )
 

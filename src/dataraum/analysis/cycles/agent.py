@@ -62,7 +62,6 @@ class BusinessCycleAgent(LLMFeature):
         table_ids: list[str],
         *,
         source_id: str,
-        domain: str | None = None,
         vertical: str,
     ) -> Result[BusinessCycleAnalysis]:
         """Analyze tables for business cycles.
@@ -72,7 +71,6 @@ class BusinessCycleAgent(LLMFeature):
             duckdb_conn: DuckDB connection
             table_ids: Tables to analyze
             source_id: Source ID for persisting results
-            domain: Optional domain for enhanced vocabulary
             vertical: Vertical name (e.g. 'finance')
 
         Returns:
@@ -88,7 +86,7 @@ class BusinessCycleAgent(LLMFeature):
         try:
             # 1. Build rich context from all pipeline metadata
             context = build_cycle_detection_context(
-                session, duckdb_conn, table_ids, domain=domain, vertical=vertical,
+                session, duckdb_conn, table_ids, vertical=vertical,
             )
             context_str = format_context_for_prompt(context)
 

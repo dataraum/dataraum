@@ -75,9 +75,6 @@ concepts:
     indicators:
       - test
       - example
-metrics: []
-quality_rules: []
-semantic_hints: []
 """)
 
         loader = OntologyLoader(verticals_dir=tmp_path)

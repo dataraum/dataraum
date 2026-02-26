@@ -25,9 +25,6 @@ from dataraum.analysis.semantic.ontology import (
     OntologyConcept,
     OntologyDefinition,
     OntologyLoader,
-    OntologyMetric,
-    OntologyRule,
-    SemanticHint,
 )
 from dataraum.analysis.semantic.processor import enrich_semantic
 
@@ -40,9 +37,6 @@ __all__ = [
     "OntologyLoader",
     "OntologyDefinition",
     "OntologyConcept",
-    "OntologyMetric",
-    "OntologyRule",
-    "SemanticHint",
     # Models
     "SemanticAnnotation",
     "EntityDetection",

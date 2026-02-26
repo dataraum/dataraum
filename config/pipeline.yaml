@@ -29,6 +29,10 @@ phases:
   # De-configured phases (uncomment to enable):
   # - cross_table_quality
 
+# Limits
+limits:
+  max_columns: 500  # Overall across all tables in a pipeline run
+
 # Pipeline orchestrator settings
 pipeline:
   # Maximum phases to run in parallel (ThreadPoolExecutor workers)

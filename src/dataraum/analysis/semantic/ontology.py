@@ -5,7 +5,6 @@ Follows the same pattern as PromptRenderer for YAML config loading.
 """
 
 from pathlib import Path
-from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
@@ -27,38 +26,6 @@ class OntologyConcept(BaseModel):
     is_unit_dimension: bool = False  # Whether this concept defines units for measures
 
 
-class OntologyMetric(BaseModel):
-    """A computable metric within an ontology."""
-
-    name: str
-    formula: str
-    description: str | None = None
-    required_concepts: list[str] = Field(default_factory=list)
-    output_type: str | None = None
-    typical_range: list[float] | None = None
-    aliases: list[str] = Field(default_factory=list)
-
-
-class OntologyRule(BaseModel):
-    """A quality rule within an ontology."""
-
-    name: str
-    description: str | None = None
-    applies_to: str | None = None
-    rule_type: str
-    expression: str | None = None
-    severity: str = "warning"
-
-
-class SemanticHint(BaseModel):
-    """A semantic hint for column patterns."""
-
-    pattern: str
-    likely_type: str | None = None
-    likely_role: str | None = None
-    likely_concept: str | None = None
-
-
 class OntologyDefinition(BaseModel):
     """A complete ontology definition from YAML."""
 
@@ -66,10 +33,6 @@ class OntologyDefinition(BaseModel):
     version: str = "1.0.0"
     description: str | None = None
     concepts: list[OntologyConcept] = Field(default_factory=list)
-    metrics: list[OntologyMetric] = Field(default_factory=list)
-    quality_rules: list[OntologyRule] = Field(default_factory=list)
-    semantic_hints: list[SemanticHint] = Field(default_factory=list)
-    suggested_queries: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class OntologyLoader:
@@ -154,9 +117,6 @@ class OntologyLoader:
 
 __all__ = [
     "OntologyConcept",
-    "OntologyMetric",
-    "OntologyRule",
-    "SemanticHint",
     "OntologyDefinition",
     "OntologyLoader",
 ]

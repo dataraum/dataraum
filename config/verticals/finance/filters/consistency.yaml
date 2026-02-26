@@ -1,46 +1,7 @@
-# Consistency Rules (Cross-Column)
+# Finance-Specific Consistency Rules (Cross-Column)
 #
-# These filter graphs check relationships between multiple columns.
-# They require column pair detection based on naming patterns.
-
----
-# Date ordering checks
-graph_id: "consistency_date_order"
-graph_type: "filter"
-version: "1.0"
-
-metadata:
-  name: "Date Order Consistency"
-  description: "Start dates should be before end dates"
-  category: "quality"
-  source: "system"
-  tags: ["consistency", "temporal", "cross-column"]
-  applies_to:
-    column_pairs:
-      start_pattern: ".*_start.*|^start_.*|.*_from.*|^from_.*|.*_begin.*"
-      end_pattern: ".*_end.*|^end_.*|.*_to.*|^to_.*|.*_until.*"
-
-output:
-  type: "classification"
-  categories:
-    clean: "Date ordering is correct"
-    quarantine: "Date ordering is invalid"
-
-dependencies:
-  date_order_valid:
-    level: 1
-    type: "predicate"
-    condition: "{start_column} <= {end_column} OR {start_column} IS NULL OR {end_column} IS NULL"
-    on_false: "quarantine"
-    reason: "Start date should be before or equal to end date"
-    severity: "critical"
-
-  date_order_clean:
-    level: 2
-    type: "composite"
-    logic: "date_order_valid"
-    depends_on: ["date_order_valid"]
-    output_step: true
+# Domain-specific consistency checks for financial data.
+# Generic consistency rules (date ordering, statistical quality) are in config/filters/.
 
 ---
 # Debit/Credit consistency checks
@@ -79,65 +40,4 @@ dependencies:
     type: "composite"
     logic: "not_both_positive"
     depends_on: ["not_both_positive"]
-    output_step: true
-
----
-# Statistical rules (from profiling results)
-graph_id: "statistical_quality"
-graph_type: "filter"
-version: "1.0"
-
-metadata:
-  name: "Statistical Quality Checks"
-  description: "Statistical anomaly detection based on profiling"
-  category: "quality"
-  source: "system"
-  tags: ["statistical", "profiling", "anomaly"]
-  applies_to:
-    has_profile: true
-
-parameters:
-  - name: "zscore_threshold"
-    param_type: "float"
-    default: 3.0
-    description: "Z-score threshold for outlier detection"
-  - name: "null_warning_threshold"
-    param_type: "float"
-    default: 0.1
-    description: "Null ratio above which to warn"
-  - name: "null_error_threshold"
-    param_type: "float"
-    default: 0.5
-    description: "Null ratio above which to flag error"
-
-output:
-  type: "classification"
-  categories:
-    clean: "Column passes statistical checks"
-    flag: "Column has statistical anomalies"
-
-dependencies:
-  null_rate_acceptable:
-    level: 1
-    type: "predicate"
-    # Note: This check uses profiling metadata, not row-level SQL
-    condition: "{profile.null_ratio} <= {null_warning_threshold}"
-    on_false: "flag"
-    reason: "Column has high null rate"
-    severity: "medium"
-
-  outlier_rate_acceptable:
-    level: 1
-    type: "predicate"
-    # Note: Outliers flagged during profiling
-    condition: "{profile.outlier_count} / NULLIF({profile.total_count}, 0) <= 0.05"
-    on_false: "flag"
-    reason: "Column has many outliers"
-    severity: "low"
-
-  statistical_clean:
-    level: 2
-    type: "composite"
-    logic: "null_rate_acceptable AND outlier_rate_acceptable"
-    depends_on: ["null_rate_acceptable", "outlier_rate_acceptable"]
     output_step: true

@@ -23,6 +23,8 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 import time
 from dataclasses import dataclass, field
@@ -37,7 +39,7 @@ from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.pipeline.base import PhaseStatus
-from dataraum.pipeline.db_models import PhaseCheckpoint
+from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
 from dataraum.pipeline.orchestrator import Pipeline, PipelineConfig, ProgressCallback, get_pipeline
 from dataraum.storage import Source
 
@@ -46,9 +48,14 @@ logger = get_logger(__name__)
 
 @dataclass
 class RunConfig:
-    """Configuration for a pipeline run."""
+    """Configuration for a pipeline run.
 
-    source_path: Path
+    Either source_path or registered sources (resolved from the output DB)
+    must be available. When source_path is None, the runner queries
+    registered sources from the output database.
+    """
+
+    source_path: Path | None = None
     output_dir: Path = field(default_factory=lambda: Path("./pipeline_output"))
     source_name: str | None = None
     target_phase: str | None = None
@@ -172,6 +179,107 @@ def create_pipeline(config: RunConfig, pipeline_yaml: dict[str, Any] | None = No
     return pipeline
 
 
+def _compute_source_set_fingerprint(sources: list[dict[str, Any]]) -> str:
+    """Compute a SHA-256 fingerprint of the registered source set.
+
+    Changes in source configuration (name, type, path, backend) will
+    produce a different fingerprint, triggering a full pipeline re-run.
+    """
+    # Sort by name for deterministic ordering
+    normalized = sorted(
+        (s["name"], s["source_type"], json.dumps(s.get("connection_config", {}), sort_keys=True))
+        for s in sources
+    )
+    return hashlib.sha256(json.dumps(normalized).encode()).hexdigest()[:16]
+
+
+def _resolve_registered_sources(manager: ConnectionManager) -> list[dict[str, Any]] | None:
+    """Query registered sources from the output database.
+
+    Returns:
+        List of source dicts suitable for the import phase, or None if no sources registered.
+    """
+    with manager.session_scope() as session:
+        stmt = (
+            select(Source)
+            .where(
+                Source.status.in_(["configured", "validated"]),
+                Source.archived_at.is_(None),
+            )
+            .order_by(Source.name)
+        )
+        sources = session.execute(stmt).scalars().all()
+
+        if not sources:
+            return None
+
+        result = []
+        for s in sources:
+            entry: dict[str, Any] = {
+                "name": s.name,
+                "source_type": s.source_type,
+                "connection_config": s.connection_config or {},
+            }
+            # File sources have path in connection_config
+            if s.connection_config and "path" in s.connection_config:
+                entry["path"] = s.connection_config["path"]
+            # Database sources have backend
+            if s.backend:
+                entry["backend"] = s.backend
+            if s.credential_ref:
+                entry["credential_ref"] = s.credential_ref
+            # Include table filter if present
+            if s.connection_config and "tables" in s.connection_config:
+                entry["tables"] = s.connection_config["tables"]
+
+            result.append(entry)
+
+        return result
+
+
+def _check_fingerprint_and_invalidate(
+    manager: ConnectionManager,
+    source_id: str,
+    new_fingerprint: str,
+) -> bool:
+    """Check if the source set fingerprint changed. If so, delete checkpoints.
+
+    Returns:
+        True if fingerprint changed (full re-run needed), False otherwise.
+    """
+    with manager.session_scope() as session:
+        # Find the most recent pipeline run for this source_id
+        stmt = (
+            select(PipelineRun)
+            .where(PipelineRun.source_id == source_id)
+            .order_by(PipelineRun.started_at.desc())
+            .limit(1)
+        )
+        last_run = session.execute(stmt).scalar_one_or_none()
+
+        if last_run is None:
+            return True  # No previous run, will do full run
+
+        old_fingerprint = (last_run.config or {}).get("source_set_fingerprint")
+        if old_fingerprint == new_fingerprint:
+            return False  # Same sources, skip_completed can work
+
+        # Fingerprint changed — delete all checkpoints for this source_id
+        logger.info(
+            "source_set_changed",
+            source_id=source_id,
+            old_fingerprint=old_fingerprint,
+            new_fingerprint=new_fingerprint,
+        )
+        checkpoints = session.execute(
+            select(PhaseCheckpoint).where(PhaseCheckpoint.source_id == source_id)
+        ).scalars().all()
+        for cp in checkpoints:
+            session.delete(cp)
+
+        return True
+
+
 def run(config: RunConfig) -> Result[RunResult]:
     """Run the pipeline with the given configuration.
 
@@ -185,6 +293,7 @@ def run(config: RunConfig) -> Result[RunResult]:
     """
     start_time = time.time()
     warnings: list[str] = []
+    source_id = ""
 
     try:
         # Setup connection manager
@@ -193,31 +302,75 @@ def run(config: RunConfig) -> Result[RunResult]:
         manager = ConnectionManager(conn_config)
         manager.initialize()
 
-        # Check for existing source with same name
-        source_name = config.source_name or config.source_path.stem
-        with manager.session_scope() as session:
-            existing_source = session.execute(
-                select(Source).where(Source.name == source_name)
-            ).scalar_one_or_none()
+        # Determine mode: single-path (legacy) or multi-source
+        multi_source_mode = config.source_path is None
+        registered_sources: list[dict[str, Any]] | None = None
 
-            if existing_source:
-                source_id = existing_source.source_id
-                logger.info(
-                    "using_existing_source",
-                    source_name=source_name,
-                    source_id=source_id,
+        if multi_source_mode:
+            registered_sources = _resolve_registered_sources(manager)
+            if not registered_sources:
+                return Result.ok(
+                    RunResult(
+                        success=False,
+                        source_id="",
+                        duration_seconds=time.time() - start_time,
+                        error="No registered sources found. Use add_source first.",
+                    ),
+                    warnings=["No registered sources found"],
                 )
-            else:
-                source_id = str(uuid4())
-                logger.info(
-                    "creating_new_source",
-                    source_name=source_name,
-                    source_id=source_id,
-                )
+
+        # Resolve source_id
+        if multi_source_mode:
+            # Deterministic source_id from output directory name
+            source_id = str(
+                uuid4()
+                if not config.output_dir.name
+                else hashlib.md5(
+                    str(config.output_dir.resolve()).encode()
+                ).hexdigest()[:32]
+            )
+            # Check if we already have a source with this approach
+            with manager.session_scope() as session:
+                existing = session.execute(
+                    select(Source).where(Source.name == "multi_source")
+                ).scalar_one_or_none()
+                if existing:
+                    source_id = existing.source_id
+        else:
+            assert config.source_path is not None
+            source_name = config.source_name or config.source_path.stem
+            with manager.session_scope() as session:
+                existing_source = session.execute(
+                    select(Source).where(Source.name == source_name)
+                ).scalar_one_or_none()
+
+                if existing_source:
+                    source_id = existing_source.source_id
+                    logger.info(
+                        "using_existing_source",
+                        source_name=source_name,
+                        source_id=source_id,
+                    )
+                else:
+                    source_id = str(uuid4())
+                    logger.info(
+                        "creating_new_source",
+                        source_name=source_name,
+                        source_id=source_id,
+                    )
+
+        # Fingerprint check for multi-source mode
+        if multi_source_mode and registered_sources:
+            fingerprint = _compute_source_set_fingerprint(registered_sources)
+            changed = _check_fingerprint_and_invalidate(manager, source_id, fingerprint)
+            if changed:
+                logger.info("source_set_fingerprint_changed", fingerprint=fingerprint)
+        else:
+            fingerprint = None
 
         logger.info(
             "pipeline_run_started",
-            source_path=str(config.source_path),
+            source_path=str(config.source_path) if config.source_path else "(registered sources)",
             output_dir=str(config.output_dir),
             source_id=source_id,
             target_phase=config.target_phase,
@@ -234,10 +387,18 @@ def run(config: RunConfig) -> Result[RunResult]:
         phase_configs = {name: load_phase_config(name) for name in active_phases}
 
         # Runtime config passed to every phase
-        runtime_config = {
-            "source_path": str(config.source_path),
-            "source_name": config.source_name or config.source_path.stem,
-        }
+        if multi_source_mode and registered_sources:
+            runtime_config: dict[str, Any] = {
+                "source_name": "multi_source",
+                "registered_sources": registered_sources,
+                "source_set_fingerprint": fingerprint,
+            }
+        else:
+            assert config.source_path is not None
+            runtime_config = {
+                "source_path": str(config.source_path),
+                "source_name": config.source_name or config.source_path.stem,
+            }
 
         # Execute pipeline
         results = pipeline.run(
@@ -356,7 +517,7 @@ def _print_run_result(run_result: RunResult, config: RunConfig, warnings: list[s
     print()
     print("Pipeline Run")
     print("=" * 60)
-    print(f"Source: {config.source_path}")
+    print(f"Source: {config.source_path or '(registered sources)'}")
     print(f"Output: {config.output_dir}")
     print(f"Source ID: {run_result.source_id}")
 
@@ -424,7 +585,10 @@ Examples:
     parser.add_argument(
         "source",
         type=Path,
-        help="Path to CSV file or directory containing CSV files",
+        nargs="?",
+        default=None,
+        help="Path to CSV file or directory containing CSV files. "
+        "When omitted, uses registered sources from the output database.",
     )
     parser.add_argument(
         "--output",
@@ -456,8 +620,8 @@ Examples:
 
     args = parser.parse_args()
 
-    # Validate source path
-    if not args.source.exists():
+    # Validate source path if provided
+    if args.source is not None and not args.source.exists():
         logger.error("source_path_not_found", path=str(args.source))
         print(f"Error: Source path does not exist: {args.source}")
         return 1

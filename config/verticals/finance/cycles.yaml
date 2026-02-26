@@ -13,6 +13,7 @@
 #   - participating_entities: Entity types that flow through this cycle
 #   - completion_indicators: Column values that indicate cycle completion
 #   - related_tables: Table name patterns (for context, not matching)
+#   - feeds_into: Downstream cycles that depend on this cycle's output
 
 cycle_types:
   # Revenue/Sales Cycles
@@ -58,6 +59,9 @@ cycle_types:
       - invoice
       - payment
       - receipt
+    feeds_into:
+      - accounts_receivable
+      - journal_entry_cycle
 
   accounts_receivable:
     description: "AR collection cycle: Invoice creation through payment collection"
@@ -95,6 +99,8 @@ cycle_types:
       - receivable
       - payment
       - collection
+    feeds_into:
+      - journal_entry_cycle
 
   # Expense/Procurement Cycles
   procure_to_pay:
@@ -139,6 +145,9 @@ cycle_types:
       - invoice
       - payment
       - disbursement
+    feeds_into:
+      - accounts_payable
+      - inventory_cycle
 
   accounts_payable:
     description: "AP payment cycle: Vendor invoice through payment disbursement"
@@ -176,6 +185,8 @@ cycle_types:
       - invoice
       - payment
       - check
+    feeds_into:
+      - journal_entry_cycle
 
   # Inventory Cycles
   inventory_cycle:
@@ -214,6 +225,8 @@ cycle_types:
       - stock
       - warehouse
       - movement
+    feeds_into:
+      - order_to_cash
 
   # HR/Payroll Cycles
   hire_to_retire:
@@ -246,6 +259,8 @@ cycle_types:
       - staff
       - personnel
       - hr
+    feeds_into:
+      - payroll_cycle
 
   payroll_cycle:
     description: "Payroll processing from time entry through payment"
@@ -280,6 +295,8 @@ cycle_types:
       - payroll
       - salary
       - compensation
+    feeds_into:
+      - journal_entry_cycle
 
   # Asset Cycles
   asset_lifecycle:
@@ -316,170 +333,73 @@ cycle_types:
       - property
       - depreciation
       - fixed_asset
+    feeds_into:
+      - journal_entry_cycle
 
-# =============================================================================
-# COMPLETION INDICATOR PATTERNS
-# =============================================================================
-# Common values that indicate cycle completion across domains.
-# Agent uses these as hints, not exact matches.
-
-completion_indicators:
-  payment_complete:
-    - "paid"
-    - "collected"
-    - "settled"
-    - "cleared"
-    - "disbursed"
-    - "deposited"
-
-  order_complete:
-    - "completed"
-    - "fulfilled"
-    - "delivered"
-    - "shipped"
-    - "closed"
-
-  approval_complete:
-    - "approved"
-    - "accepted"
-    - "verified"
-    - "confirmed"
-
-  lifecycle_complete:
-    - "terminated"
-    - "retired"
-    - "disposed"
-    - "inactive"
-    - "closed"
-    - "archived"
-
-# =============================================================================
-# ENTITY ROLE MAPPINGS
-# =============================================================================
-# Maps semantic entity types to their typical role in cycles.
-
-entity_roles:
-  # Dimension entities (master data)
-  dimensions:
-    - customer
-    - client
-    - account
-    - vendor
-    - supplier
-    - employee
-    - product
-    - item
-    - sku
-    - asset
-    - department
-    - cost_center
-
-  # Transaction entities (events/facts)
-  transactions:
-    - order
-    - invoice
-    - payment
-    - receipt
-    - shipment
-    - journal_entry
-    - transaction
-
-  # Status/state entities (cycle tracking)
-  status_indicators:
-    - status
-    - state
-    - stage
-    - phase
-    - flag
-
-# =============================================================================
-# DOMAIN-SPECIFIC EXTENSIONS
-# =============================================================================
-# Additional context for specific domains.
-
-domains:
-  financial:
-    expected_cycles:
-      - order_to_cash
-      - procure_to_pay
-      - accounts_receivable
-      - accounts_payable
-
-    key_entities:
-      - customer
-      - vendor
-      - account
-      - invoice
-      - payment
+  # GL Cycles
+  journal_entry_cycle:
+    description: "GL journal entry from creation through posting"
+    business_value: high
+    aliases:
+      - je_cycle
+      - gl_entry_cycle
+    typical_stages:
+      - name: "Created"
+        order: 1
+        indicators: ["created", "drafted", "new"]
+      - name: "Reviewed"
+        order: 2
+        indicators: ["reviewed", "verified"]
+      - name: "Approved"
+        order: 3
+        indicators: ["approved"]
+      - name: "Posted"
+        order: 4
+        indicators: ["posted", "final", "closed"]
+    participating_entities:
       - journal_entry
+      - account
+      - ledger
+    completion_indicators:
+      - "posted"
+      - "final"
+      - "closed"
+    related_tables:
+      - journal
+      - journal_entry
+      - gl_entry
+      - ledger
+    feeds_into:
+      - intercompany_cycle
 
-    # GL-specific cycle patterns
-    additional_cycles:
-      journal_entry_cycle:
-        description: "GL journal entry from creation through posting"
-        business_value: high
-        typical_stages:
-          - name: "Created"
-            order: 1
-            indicators: ["created", "drafted", "new"]
-          - name: "Reviewed"
-            order: 2
-            indicators: ["reviewed", "verified"]
-          - name: "Approved"
-            order: 3
-            indicators: ["approved"]
-          - name: "Posted"
-            order: 4
-            indicators: ["posted", "final", "closed"]
-        completion_indicators:
-          - "posted"
-          - "final"
-          - "closed"
-
-      intercompany_cycle:
-        description: "Intercompany transaction settlement"
-        business_value: high
-        typical_stages:
-          - name: "Transaction Created"
-            order: 1
-            indicators: ["created", "initiated"]
-          - name: "Matched"
-            order: 2
-            indicators: ["matched", "reconciled"]
-          - name: "Eliminated"
-            order: 3
-            indicators: ["eliminated", "settled", "cleared"]
-        participating_entities:
-          - entity
-          - subsidiary
-          - company
-        completion_indicators:
-          - "eliminated"
-          - "settled"
-          - "cleared"
-
-  retail:
-    expected_cycles:
-      - order_to_cash
-      - inventory_cycle
-
-    key_entities:
-      - customer
-      - product
-      - store
-      - order
-      - transaction
-
-  manufacturing:
-    expected_cycles:
-      - procure_to_pay
-      - inventory_cycle
-
-    key_entities:
-      - vendor
-      - product
-      - work_order
-      - bom
+  intercompany_cycle:
+    description: "Intercompany transaction settlement"
+    business_value: high
+    aliases:
+      - ic_cycle
+      - interco_cycle
+    typical_stages:
+      - name: "Transaction Created"
+        order: 1
+        indicators: ["created", "initiated"]
+      - name: "Matched"
+        order: 2
+        indicators: ["matched", "reconciled"]
+      - name: "Eliminated"
+        order: 3
+        indicators: ["eliminated", "settled", "cleared"]
+    participating_entities:
+      - entity
+      - subsidiary
+      - company
+    completion_indicators:
+      - "eliminated"
+      - "settled"
+      - "cleared"
+    related_tables:
+      - intercompany
+      - elimination
+      - subsidiary
 
 # =============================================================================
 # ANALYSIS HINTS

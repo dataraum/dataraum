@@ -41,21 +41,6 @@ def get_cycle_types(vertical: str) -> dict[str, Any]:
     return result
 
 
-def get_domain_config(domain: str, vertical: str) -> dict[str, Any]:
-    """Get domain-specific configuration.
-
-    Args:
-        domain: Domain name (financial, retail, manufacturing)
-        vertical: Vertical name (e.g. 'finance')
-
-    Returns:
-        Domain-specific configuration, or empty dict if not found
-    """
-    config = get_cycles_config(vertical)
-    domains: dict[str, Any] = config.get("domains", {})
-    result: dict[str, Any] = domains.get(domain, {})
-    return result
-
 
 def map_to_canonical_type(
     cycle_type: str, vertical: str
@@ -96,13 +81,10 @@ def map_to_canonical_type(
     return None, False
 
 
-def format_cycle_vocabulary_for_context(
-    domain: str | None = None, *, vertical: str
-) -> str:
+def format_cycle_vocabulary_for_context(*, vertical: str) -> str:
     """Format cycle vocabulary as readable context for the LLM.
 
     Args:
-        domain: Optional domain to include domain-specific cycles
         vertical: Vertical name (e.g. 'finance')
 
     Returns:
@@ -146,25 +128,10 @@ def format_cycle_vocabulary_for_context(
             if completion:
                 lines.append(f"Completion indicators: {', '.join(completion)}")
 
-            lines.append("")
-
-    # Domain-specific cycles
-    if domain:
-        domain_config = get_domain_config(domain, vertical)
-        if domain_config:
-            lines.append(f"## {domain.upper()} DOMAIN SPECIFICS")
-
-            expected = domain_config.get("expected_cycles", [])
-            if expected:
-                lines.append(f"Expected cycles: {', '.join(expected)}")
-
-            additional = domain_config.get("additional_cycles", {})
-            if additional:
-                lines.append("")
-                lines.append("Additional domain cycles:")
-                for cycle_name, cycle_def in additional.items():
-                    description = cycle_def.get("description", "")
-                    lines.append(f"  - {cycle_name}: {description}")
+            # Downstream cycles
+            feeds_into = cycle_def.get("feeds_into", [])
+            if feeds_into:
+                lines.append(f"Feeds into: {', '.join(feeds_into)}")
 
             lines.append("")
 

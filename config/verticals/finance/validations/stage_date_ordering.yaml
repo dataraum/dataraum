@@ -1,0 +1,51 @@
+# Stage Date Ordering Validation
+# Checks that dates follow the expected cycle stage sequence
+
+validation_id: stage_date_ordering
+name: Stage Date Ordering
+description: >
+  Validates that date columns follow a logical chronological order
+  consistent with business cycle stages. For example, order_date should
+  precede ship_date, which should precede invoice_date, which should
+  precede payment_date. Violations indicate data entry errors,
+  backdating, or broken process flows.
+
+category: financial
+severity: warning
+version: "1.0"
+
+tags:
+  - cycle
+  - temporal
+  - ordering
+  - process-integrity
+
+check_type: constraint
+
+parameters:
+  # Maximum acceptable percentage of rows with ordering violations
+  max_violation_rate: 0.05
+
+sql_hints: >
+  Look for date columns within the same table that represent different
+  stages of a business process. Use semantic annotations (temporal_behavior,
+  business_concept) and column names to identify date pairs that should
+  be chronologically ordered. Common patterns:
+
+  - order_date <= ship_date <= invoice_date <= payment_date
+  - created_date <= approved_date <= posted_date
+  - start_date <= end_date
+  - invoice_date <= due_date <= payment_date
+  - received_date <= matched_date <= paid_date
+
+  Generate SQL that counts rows where a later-stage date precedes an
+  earlier-stage date. Only compare non-NULL date pairs. Return columns:
+  - date_pair (VARCHAR): which dates were compared (e.g., 'order_date > ship_date')
+  - violation_count (INTEGER): rows where ordering is violated
+  - total_rows (INTEGER): rows where both dates are non-NULL
+  - violation_rate (DOUBLE): violation_count / total_rows
+
+expected_outcome: >
+  Violation rate should be below the max_violation_rate threshold (5%).
+  A small number of violations may be acceptable (corrections, returns),
+  but systematic violations indicate a process or data quality issue.

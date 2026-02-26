@@ -63,8 +63,17 @@ config/
         │   │   ├── dso.yaml
         │   │   ├── dpo.yaml
         │   │   └── cash_conversion_cycle.yaml
-        │   └── liquidity/
-        │       └── current_ratio.yaml
+        │   ├── liquidity/
+        │   │   └── current_ratio.yaml
+        │   └── profitability/
+        │       ├── gross_profit.yaml
+        │       ├── operating_income.yaml
+        │       ├── ebitda.yaml
+        │       ├── net_income.yaml
+        │       ├── gross_margin.yaml
+        │       ├── operating_margin.yaml
+        │       ├── ebitda_margin.yaml
+        │       └── net_margin.yaml
         └── validations/       # Domain validation rules
             ├── double_entry.yaml
             ├── trial_balance.yaml

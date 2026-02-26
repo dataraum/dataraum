@@ -241,3 +241,17 @@ concepts:
     temporal_behavior: additive
     typical_role: measure
     unit_from_concept: currency
+
+  - name: equity
+    description: Owner's equity or shareholders' equity
+    indicators:
+      - equity
+      - shareholders_equity
+      - stockholders_equity
+      - owners_equity
+      - capital
+      - retained_earnings
+      - net_assets
+    temporal_behavior: point_in_time
+    typical_role: measure
+    unit_from_concept: currency

@@ -1,0 +1,81 @@
+graph_id: "operating_income"
+graph_type: "metric"
+version: "1.0"
+
+metadata:
+  name: "Operating Income"
+  description: "Profit from core operations before interest and taxes"
+  category: "profitability"
+  source: "system"
+  tags: ["profitability", "income-statement", "p&l"]
+
+output:
+  type: "scalar"
+  metric_id: "operating_income"
+  unit: "currency"
+  decimal_places: 0
+
+requires_filters:
+  - graph_id: "technical_quality"
+    required: true
+    required_classification: "clean"
+
+dependencies:
+  # Level 1: Extract base data
+  revenue:
+    level: 1
+    type: "extract"
+    source:
+      standard_field: "revenue"
+      statement: "income_statement"
+    aggregation: "sum"
+    validation:
+      - condition: "value > 0"
+        severity: "error"
+        message: "Revenue must be positive"
+
+  cost_of_goods_sold:
+    level: 1
+    type: "extract"
+    source:
+      standard_field: "cost_of_goods_sold"
+      statement: "income_statement"
+    aggregation: "sum"
+
+  operating_expense:
+    level: 1
+    type: "extract"
+    source:
+      standard_field: "operating_expense"
+      statement: "income_statement"
+    aggregation: "sum"
+
+  # Level 2: Intermediate - gross profit
+  gross_profit:
+    level: 2
+    type: "formula"
+    expression: "revenue - cost_of_goods_sold"
+    depends_on: ["revenue", "cost_of_goods_sold"]
+
+  # Level 3: Operating income
+  operating_income:
+    level: 3
+    type: "formula"
+    expression: "gross_profit - operating_expense"
+    depends_on: ["gross_profit", "operating_expense"]
+    output_step: true
+
+interpretation:
+  ranges:
+    - min: -999999999
+      max: -1
+      label: "LOSS"
+      description: "Operating loss - core business unprofitable"
+    - min: 0
+      max: 0
+      label: "BREAKEVEN"
+      description: "No operating profit or loss"
+    - min: 1
+      max: 999999999
+      label: "PROFITABLE"
+      description: "Positive operating income"

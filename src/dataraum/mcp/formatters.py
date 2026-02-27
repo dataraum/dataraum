@@ -184,8 +184,29 @@ def format_query_result(result: QueryResult) -> str:
                 lines.append("| " + " | ".join(values) + " |")
         lines.append("")
 
-    # SQL
-    if result.sql:
+    # Execution graph (steps + final SQL)
+    if result.execution_steps:
+        lines.append("## Execution Graph")
+        for i, step in enumerate(result.execution_steps, 1):
+            source = " (from snippet knowledge base)" if step.snippet_id else ""
+            lines.append(f"### Step {i}: {step.step_id}")
+            lines.append(f"{step.description}{source}")
+            lines.append("```sql")
+            lines.append(step.sql)
+            lines.append("```")
+            lines.append("")
+        if result.sql:
+            lines.append("### Final SQL")
+            lines.append(
+                "Combines "
+                + ", ".join(f"`{s.step_id}`" for s in result.execution_steps)
+                + " into the result."
+            )
+            lines.append("```sql")
+            lines.append(result.sql)
+            lines.append("```")
+            lines.append("")
+    elif result.sql:
         lines.append("## Generated SQL")
         lines.append("```sql")
         lines.append(result.sql)

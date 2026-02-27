@@ -43,6 +43,7 @@ from dataraum.llm.providers.base import ConversationRequest, Message, ToolDefini
 from dataraum.storage import Table
 
 from .models import (
+    ExecutionStep,
     QueryAnalysisOutput,
     QueryResult,
     SQLStepOutput,
@@ -352,6 +353,17 @@ class QueryAgent(LLMFeature):
                 contract=contract,
             )
 
+        # Build execution steps from LLM output
+        execution_steps = [
+            ExecutionStep(
+                step_id=s.step_id,
+                sql=s.sql,
+                description=s.description,
+                snippet_id=s.snippet_id,
+            )
+            for s in analysis_output.steps
+        ]
+
         return Result.ok(
             QueryResult(
                 execution_id=execution_id,
@@ -359,6 +371,7 @@ class QueryAgent(LLMFeature):
                 executed_at=datetime.now(UTC),
                 answer=answer,
                 sql=analysis_output.final_sql,
+                execution_steps=execution_steps,
                 data=data,
                 columns=columns,
                 confidence_level=confidence_level,

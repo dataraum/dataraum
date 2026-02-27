@@ -12,9 +12,9 @@ from dataraum.analysis.cycles.config import (
 
 
 class TestGetCycleTypes:
-    def test_returns_all_10_cycle_types(self) -> None:
+    def test_returns_all_11_cycle_types(self) -> None:
         types = get_cycle_types("finance")
-        assert len(types) == 10
+        assert len(types) == 11
 
     def test_contains_original_8_types(self) -> None:
         types = get_cycle_types("finance")
@@ -34,6 +34,7 @@ class TestGetCycleTypes:
         types = get_cycle_types("finance")
         assert "journal_entry_cycle" in types
         assert "intercompany_cycle" in types
+        assert "period_close" in types
 
     def test_gl_cycles_have_stages(self) -> None:
         types = get_cycle_types("finance")
@@ -110,6 +111,21 @@ class TestMapToCanonicalType:
         assert canonical == "intercompany_cycle"
         assert is_known is True
 
+    def test_period_close_direct(self) -> None:
+        canonical, is_known = map_to_canonical_type("period_close", "finance")
+        assert canonical == "period_close"
+        assert is_known is True
+
+    def test_period_close_alias_financial_reporting(self) -> None:
+        canonical, is_known = map_to_canonical_type("financial_reporting", "finance")
+        assert canonical == "period_close"
+        assert is_known is True
+
+    def test_period_close_alias_trial_balance(self) -> None:
+        canonical, is_known = map_to_canonical_type("trial_balance_reporting", "finance")
+        assert canonical == "period_close"
+        assert is_known is True
+
 
 class TestFormatCycleVocabulary:
     def test_includes_all_cycle_types(self) -> None:
@@ -118,6 +134,7 @@ class TestFormatCycleVocabulary:
         assert "accounts_receivable" in output
         assert "journal_entry_cycle" in output
         assert "intercompany_cycle" in output
+        assert "period_close" in output
 
     def test_includes_analysis_hints(self) -> None:
         output = format_cycle_vocabulary_for_context(vertical="finance")

@@ -174,7 +174,14 @@ class DetectedCycleOutput(BaseModel):
     total_records: int | None = Field(default=None, description="Total records in cycle")
     completed_cycles: int | None = Field(default=None, description="Number of completed cycles")
     completion_rate: float | None = Field(
-        default=None, description="Completion rate as decimal (0.0-1.0)"
+        default=None,
+        description=(
+            "Completion rate as decimal (0.0-1.0). REQUIRED for every cycle. "
+            "For transactional cycles, compute from status column value counts "
+            "(e.g., paid/total). For non-transactional cycles (reporting, "
+            "reconciliation), derive from the closest available signal: "
+            "posting ratio, balance ratio, period coverage, or similar metric."
+        ),
     )
 
     # Confidence

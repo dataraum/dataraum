@@ -113,14 +113,21 @@ def compute_cycle_health(
         if validations_run > 0:
             validation_pass_rate = validations_passed / validations_run
 
-        composite = _compute_composite(cycle.completion_rate, validation_pass_rate)
+        # Use LLM-provided completion_rate, or fall back to confidence
+        # for cycles without transactional completion signals (e.g., reporting
+        # cycles where the LLM couldn't derive a completion metric).
+        effective_completion = cycle.completion_rate
+        if effective_completion is None and validation_pass_rate is None:
+            effective_completion = cycle.confidence
+
+        composite = _compute_composite(effective_completion, validation_pass_rate)
 
         scores.append(
             CycleHealthScore(
                 cycle_id=cycle.cycle_id,
                 cycle_name=cycle.cycle_name,
                 canonical_type=canonical,
-                completion_rate=cycle.completion_rate,
+                completion_rate=effective_completion,
                 validation_pass_rate=validation_pass_rate,
                 validations_run=validations_run,
                 validations_passed=validations_passed,
@@ -147,6 +154,10 @@ def _compute_composite(
 
     Weights: 0.6 completion, 0.4 validation. Falls back to whichever
     signal is available, or None if neither.
+
+    Note: the caller (compute_cycle_health) ensures at least one signal
+    is present by falling back to detection confidence for completion_rate
+    when both signals would otherwise be None.
     """
     if completion_rate is not None and validation_pass_rate is not None:
         return 0.6 * completion_rate + 0.4 * validation_pass_rate

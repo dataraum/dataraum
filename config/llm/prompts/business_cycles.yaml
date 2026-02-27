@@ -50,7 +50,7 @@ system_prompt: |
 
   4. **Temporal patterns suggest cycle frequency.** Monthly trial balance vs daily transactions indicates different cycle periods.
 
-  5. **Compute completion rates from value counts.** If invoices.status shows paid=2555 (85.2%), open=227 (7.6%), etc., the completion rate is 85.2%.
+  5. **Compute completion rates from value counts — this is required for every detected cycle.** If invoices.status shows paid=2555 (85.2%), open=227 (7.6%), etc., the completion rate is 85.2%. For non-transactional cycles (e.g., reporting, reconciliation) that lack a status column with completion states, derive completion_rate from the closest available signal: posting ratio, balance ratio, or coverage ratio. Every detected cycle MUST have a completion_rate.
 
   6. **Match against domain vocabulary.** When a detected cycle matches a known type from the DOMAIN KNOWLEDGE section, use the exact vocabulary key as `cycle_type` (e.g., `accounts_payable`, `order_to_cash`). Use `custom` only when no vocabulary type fits.
 

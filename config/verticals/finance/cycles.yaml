@@ -371,6 +371,47 @@ cycle_types:
       - ledger
     feeds_into:
       - intercompany_cycle
+      - period_close
+
+  period_close:
+    description: "Period close and financial reporting cycle"
+    business_value: high
+    aliases:
+      - financial_reporting
+      - trial_balance_reporting
+      - reporting_cycle
+      - month_end_close
+    typical_stages:
+      - name: "Period Open"
+        order: 1
+        indicators: ["open", "active", "in_progress"]
+      - name: "Trial Balance Generated"
+        order: 2
+        indicators: ["generated", "draft", "preliminary"]
+      - name: "Adjustments Made"
+        order: 3
+        indicators: ["adjusted", "revised"]
+      - name: "Period Closed"
+        order: 4
+        indicators: ["closed", "final", "locked", "published"]
+    participating_entities:
+      - period
+      - account
+      - trial_balance
+      - ledger
+    completion_indicators:
+      - "closed"
+      - "final"
+      - "locked"
+      - "published"
+      - "balanced"
+    related_tables:
+      - trial_balance
+      - period
+      - fiscal_period
+      - reporting
+      - close
+    feeds_into: []
 
   intercompany_cycle:
     description: "Intercompany transaction settlement"

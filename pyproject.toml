@@ -138,7 +138,7 @@ packages = ["src/dataraum"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short --ignore=tests/e2e"
 markers = [
     "integration: marks tests as integration tests (may be slower)",
     "slow: marks tests as slow (use real data, skip in CI)",

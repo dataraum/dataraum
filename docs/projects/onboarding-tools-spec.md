@@ -590,16 +590,22 @@ User: "connect to my postgres database"
 
 ---
 
-## Open Decisions
+## Resolved Decisions
 
-### Validate on add vs. defer
+### Validate on add vs. defer → **Validate on add** ✅
+Implemented. Connections validated immediately if credentials available. Sub-second latency for databases.
 
-**Recommendation: validate on add.** The latency of a connection check is sub-second for databases. The user gets immediate feedback, and Claude can present the discovered schema in the same conversational turn. The only exception: S3 bucket listing can be slow for large prefixes — consider a timeout and async fallback.
+### Table auto-discovery vs. user picks → **Discover all, filter via `tables` param** ✅
+Implemented. `add_source` discovers all tables; `tables` parameter allows filtering.
 
-### Table auto-discovery vs. user picks
+### Credential file permissions → **0700 on config dir** ✅
+Implemented. `CredentialChain._ensure_config_dir()` creates `~/.dataraum/` with 0700 permissions. `FileProvider._check_permissions()` warns on broad permissions.
 
-**Recommendation: discover all, present curated.** Return the full table list but have Claude categorize and suggest. Example: "I found 47 tables. The ones that look like core business data are X, Y, Z based on their names and column profiles. Want to start there?" The `tables` filter on `add_source` lets the user narrow it down without re-registering.
+### Tool consolidation → **`list_sources` merged into `discover_sources`** ✅
+No separate `list_sources` tool. `discover_sources` returns both workspace files and registered sources. Simpler tool surface.
 
-### Credential file permissions
+### Validate source → **Internal only** ✅
+No client-facing `validate_source` tool. Validation runs internally during `add_source`. Users don't need to re-validate manually.
 
-The `~/.dataraum/credentials.toml` file should be created with `0600` permissions (owner-only read/write). The server should warn if the file has broader permissions, similar to how SSH warns about key file permissions.
+### Credential format → **Connection URL strings** ✅
+Simpler than the spec's key-value dict approach. Single `url` field per source via env var (`DATARAUM_{SOURCE}_URL`) or credentials file (`~/.dataraum/credentials.yaml`). YAML format, not TOML as in the original sketch.

@@ -113,27 +113,51 @@ Users should be able to add new sources at any time, not just during onboarding:
 
 ---
 
-## New MCP Tools
+## Implementation Status
 
-| Tool | Purpose |
+### MCP Tools — Done
+
+| Tool | Purpose | Status |
+|---|---|---|
+| `discover_sources` | Scan workspace for files + list registered sources (merged list_sources) | Done |
+| `add_source` | Register file or database source, validates connection on add | Done |
+| `remove_source` | Archive a source (soft-delete) | Done |
+
+No separate `list_sources` — merged into `discover_sources` which returns both found files and existing sources.
+No separate `validate_source` — validation runs internally during `add_source`.
+
+### Plugin Skills — Done
+
+| Skill | Status |
 |---|---|
-| `list_sources` | Return configured sources with status |
-| `add_source` | Register a new source — file path, glob pattern, or database connection |
-| `remove_source` | Archive a source |
+| `discover_sources` | Done — guides user to register + analyze |
+| `add_source` | Done — file and database registration |
+| `remove_source` | Done — archive flow |
+| `analyze` | Done — checks for existing data, registered sources mode, path translation |
 
-## Updated Skills
+First-run flow: `analyze` skill checks `get_context` first → detects no data → guides through discovery and registration.
 
-| Skill | Change |
+### Backend Infrastructure — Done
+
+| Component | Status |
 |---|---|
-| `analyze` | Auto-detect files in workspace, handle multi-source, support backends |
+| `SourceManager` (add/remove/list) | Done |
+| `discovery.py` (workspace scan + previews) | Done |
+| `backends.py` (postgres, mysql, sqlite via DuckDB) | Done |
+| `CredentialChain` (env vars → credentials.yaml) | Done |
+| `Source` model (status lifecycle, connection_config, credential_ref) | Done |
 
-## Dependencies
+### Remaining Work
 
-- Pipeline import phase needs a backend-aware loader (DuckDB `ATTACH` + `CREATE TABLE ... AS SELECT`)
-- `Source` model may need a `connection_spec` JSON field for backend metadata
+| Item | Notes |
+|---|---|
+| Staleness detection | Status field exists, no logic to detect file changes since last analysis |
+| S3/MotherDuck backends | Spec'd but not in `SUPPORTED_BACKENDS` |
+| `add_source` connection params | Cannot expose host/port/database through LLM — needs secrets management. Current design: credentials via env vars or `~/.dataraum/credentials.yaml` |
+| Keychain credential provider | Deferred (env + file sufficient) |
 
-## Open Questions
+### Resolved Design Decisions
 
-- Should `add_source` validate the connection immediately (try to connect and list tables) or defer to `analyze`?
-- For database backends with many tables, should we auto-discover all tables or require the user to pick?
-- How do we handle credentials? DuckDB supports environment variables and config files — we should not store passwords in the SQLite DB
+- **Validate on add**: Yes — connections are validated immediately if credentials available
+- **Table auto-discovery**: Discover all, user filters via `tables` parameter on `add_source`
+- **Credentials**: Never pass through LLM. Env vars (`DATARAUM_{SOURCE}_URL`) or credentials file (`~/.dataraum/credentials.yaml`). Credential chain resolves at connection time.

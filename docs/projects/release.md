@@ -8,21 +8,22 @@
 
 The codebase works but isn't shippable. There's no CI, no release process, no published package, no public docs, and no way for someone outside the project to install and use it. The MCP server and plugin exist but live inside the source tree with no distribution path.
 
-### Current state (from audit)
+### Current state (updated 2026-02-27)
 
 | Item | Status |
 |---|---|
-| CI/CD | None — no `.github/workflows/` |
+| CI/CD | **Done** — `.github/workflows/ci.yml` (ruff check + format + pytest on push/PR to main) |
 | PyPI package | Not published. `pyproject.toml` defines `dataraum` v0.1.0 but no build/publish pipeline |
-| MCP server | Works locally via `dataraum-mcp` console script. Not listed in any registry |
-| Plugin | Lives inside `src/dataraum/plugin/`, no separate distribution |
-| Documentation | Hand-written Markdown in `docs/`. No generated site |
-| README | Stale — wrong package name, wrong CLI commands, references removed tech |
+| MCP server | Works locally via `dataraum-mcp` console script. 9 tools (6 core + 3 source mgmt). Not listed in any registry |
+| Plugin | **Done** — Separate repo `dataraum/dataraum-plugin` with 9 skills, `.mcp.json`, `plugin.json` |
+| Onboarding | **Done** — Source discovery, add/remove, credential chain, database backends (postgres/mysql/sqlite) |
+| Documentation | Hand-written Markdown in `docs/` + `docs_new/` (rewrite in progress). No generated site |
+| README | Needs update — header is correct but content may be stale |
 | LICENSE | Apache 2.0 text present, but copyright placeholders not filled in |
-| Version management | Hardcoded `"0.1.0"` in pyproject.toml, `"0.2.0"` in plugin.json — out of sync |
+| Version management | `"0.1.0"` in pyproject.toml and plugin.json — synced but not tag-driven |
 | Branch protection | None — direct push to main |
 | Dependencies | `anthropic` and `sentence-transformers` (pulls PyTorch) in core deps, not optional |
-| Pre-commit | Listed in dev deps but no `.pre-commit-config.yaml` exists |
+| Pre-commit | **Done** — `.pre-commit-config.yaml` exists |
 
 ---
 
@@ -272,27 +273,37 @@ Anthropic curates tools shown in Claude Desktop. Submission requires:
 
 ---
 
-## Sequencing
+## Sequencing & Status
 
 ```
 1. Fix basics (README, LICENSE, deps)     ─┐
-2. GitHub Actions CI                       ─┤── Foundation (do together)
+2. GitHub Actions CI                ✅     ─┤── Foundation
 3. Lock main, feature branches             ─┘
         │
         ▼
 4. Release MCP server to PyPI             ─┐
-5. Separate plugin repo                    ─┤── Distribution
+5. Separate plugin repo             ✅     ─┤── Distribution
 6. List in MCP registries                  ─┘
         │
         ▼
-7. Zensical docs site                     ─┐
-8. Migrate roadmap to GitHub Issues        ─┤── Public presence
+7. Docs site                              ─┐
+8. Migrate roadmap to GitHub/Linear ✅     ─┤── Public presence
 9. Apply to Claude Desktop directory       ─┘
 ```
 
-Steps 1–3 are independent of product work and should happen now.
-Steps 4–6 make the product installable and discoverable.
-Steps 7–9 make the product presentable and official.
+**Done:**
+- CI workflow (ruff + pytest on push/PR to main)
+- Plugin separated to `dataraum/dataraum-plugin` repo
+- Roadmap tracked in Linear (private) + GitHub Issues (public)
+- Pre-commit config exists
+- Onboarding tools (discover_sources, add_source, remove_source, credential chain, database backends)
+
+**Next:**
+- Fix basics (README, LICENSE, version sync, dependency cleanup)
+- Branch protection on main
+- PyPI release pipeline + first publish
+- MCP registry listings
+- Docs site
 
 ## Open Questions
 

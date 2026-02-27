@@ -953,7 +953,7 @@ def _discover_sources(output_dir: Path, scan_path: str, recursive: bool) -> str:
         from sqlalchemy import select
 
         from dataraum.core.connections import get_manager_for_directory
-        from dataraum.storage.models import Source
+        from dataraum.storage import Source
 
         manager = get_manager_for_directory(output_dir)
         try:

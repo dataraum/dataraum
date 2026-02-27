@@ -72,11 +72,11 @@ Before starting any work item, classify it:
 |------|-----------|----------|
 | **S** | 1-3 files, <50 lines changed | Direct implementation, no plan needed |
 | **M** | 3-8 files, <200 lines changed | Use Plan Mode, single session |
-| **L** | 8+ files or 200+ lines | Written plan in `docs/plans/`, phased execution |
+| **L** | 8+ files or 200+ lines | Linear document linked to issue, phased execution |
 | **XL** | Spans multiple modules or repos | Plan approval required, integration branch, phased PRs |
 
 ### For M/L/XL tasks: mandatory plan structure
-Plans live in `docs/plans/{task-name}.md` and must include:
+Plans live as Linear documents (linked to the relevant Linear issue) and must include:
 1. **Scope**: What changes. What explicitly does NOT change.
 2. **Files affected**: List every file. Mark read-only/do-not-touch files.
 3. **Dependency order**: Which steps block which (e.g., A1a → A1b).
@@ -221,7 +221,7 @@ These are enforced mechanically — you don't need to remember them, but know th
 | `docs/BACKLOG.md` | Task tracker — what's done, what's next |
 | `docs/PROGRESS.md` | Session log — recent work history |
 
-Check `docs/plans/` for any active plan related to the current task.
+Check Linear for any active plan linked to the current task (Linear MCP is available).
 
 ## Project Reference
 

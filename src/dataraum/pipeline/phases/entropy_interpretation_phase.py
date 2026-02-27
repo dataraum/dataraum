@@ -567,9 +567,13 @@ class EntropyInterpretationPhase(BasePhase):
         table_interp_count = 0
         table_interp_errors: list[str] = []
 
-        # Build compact column interpretation summaries from column-level results
+        # Build compact column interpretation summaries from column-level results.
+        # Skip baseline columns (model_used="static") — they have no assumptions
+        # or actions and just add noise to the table-level prompt.
         col_interp_by_table: dict[str, list[dict[str, Any]]] = {}
         for _key, interp in all_interpretations.items():
+            if not interp.assumptions and not interp.resolution_actions:
+                continue
             tbl = interp.table_name
             col_interp_by_table.setdefault(tbl, []).append(
                 {

@@ -48,7 +48,9 @@ def map_to_canonical_type(
     """Map an LLM-returned cycle_type to a canonical vocabulary type.
 
     Handles aliases (e.g., "ar_cycle" -> "accounts_receivable") and
-    case-insensitive matching.
+    case-insensitive matching. For unknown types, preserves the LLM's
+    type as the canonical type so it can still participate in health
+    scoring with universal validations.
 
     Args:
         cycle_type: The cycle type string from LLM output
@@ -56,7 +58,8 @@ def map_to_canonical_type(
 
     Returns:
         Tuple of (canonical_type, is_known_type):
-        - canonical_type: The vocabulary key if matched, None otherwise
+        - canonical_type: The vocabulary key if matched, or the normalized
+          LLM type if not. None only if cycle_type is empty.
         - is_known_type: True if the type matches vocabulary
     """
     if not cycle_type:
@@ -77,8 +80,9 @@ def map_to_canonical_type(
             if cycle_type_lower == alias.lower():
                 return canonical, True
 
-    # No match found
-    return None, False
+    # No vocabulary match — preserve the LLM's type as canonical so the cycle
+    # can still be health-scored using universal validations.
+    return cycle_type_lower, False
 
 
 def format_cycle_vocabulary_for_context(*, vertical: str) -> str:

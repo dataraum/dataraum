@@ -335,9 +335,9 @@ class TestOutlierRateDetector:
         )
         results = detector.detect(context)
         assert len(results) == 1
-        # Raw score at 10% = 0.65. CV=6.5, threshold=2.0 → dampen = 2.0/6.5 = 0.308
-        # Attenuated = 0.65 * 0.308 = 0.200
-        assert results[0].score == pytest.approx(0.200, abs=0.01)
+        # Raw score at 10% = 0.65. CV=6.5, threshold=2.0 → dampen = max(0.4, 2.0/6.5) = 0.4
+        # Attenuated = 0.65 * 0.4 = 0.260
+        assert results[0].score == pytest.approx(0.260, abs=0.01)
         assert results[0].evidence[0]["cv_attenuated"] is True
 
     def test_cv_attenuation_preserves_ordering(self, detector: OutlierRateDetector):

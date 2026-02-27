@@ -136,14 +136,16 @@ class OutlierRateDetector(EntropyDetector):
         # Columns with high coefficient of variation (e.g., FX rates spanning 0.7 to 150)
         # naturally have wide ranges — IQR "outliers" are legitimate values, not quality issues.
         # Proportional dampening: higher CV → more attenuation, but preserves relative ordering.
+        # Floor of 0.4 prevents self-defeating attenuation when injected outliers inflate CV.
         cv_attenuated = False
+        cv_dampen_floor = detector_config.get("cv_dampen_floor", 0.4)
         profile_data = stats.get("profile_data", {})
         if isinstance(profile_data, dict):
             numeric_stats = profile_data.get("numeric_stats", {})
             if isinstance(numeric_stats, dict):
                 cv = numeric_stats.get("cv")
                 if cv is not None and cv > cv_attenuation_threshold:
-                    dampen = cv_attenuation_threshold / cv
+                    dampen = max(cv_dampen_floor, cv_attenuation_threshold / cv)
                     score = score * dampen
                     cv_attenuated = True
 

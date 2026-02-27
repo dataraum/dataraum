@@ -90,7 +90,9 @@ def compute_cycle_health(
         cycle_table_ids = set(cycle.tables_involved or [])
         canonical = cycle.canonical_type
 
-        # Find relevant validation spec IDs for this cycle type
+        # Find relevant validation spec IDs for this cycle type.
+        # For known types, matches type-specific + universal validations.
+        # For LLM-detected types not in vocabulary, matches universal validations only.
         relevant_spec_ids: set[str] = set()
         if canonical:
             relevant_specs = get_validation_specs_for_cycles([canonical], vertical)

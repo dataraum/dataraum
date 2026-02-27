@@ -138,9 +138,11 @@ class DetectedCycleOutput(BaseModel):
     cycle_name: str = Field(description="Descriptive name, e.g., 'Accounts Receivable Cycle'")
     cycle_type: str = Field(
         description=(
-            "Type identifier matching the domain vocabulary key. "
-            "Use: order_to_cash, accounts_receivable, procure_to_pay, accounts_payable, "
-            "inventory_cycle, hire_to_retire, payroll_cycle, asset_lifecycle, or custom"
+            "Type identifier in snake_case. Use a key from the KNOWN BUSINESS CYCLE TYPES "
+            "vocabulary (provided in context) when the cycle matches a known type. "
+            "For cycles not in the vocabulary, use a descriptive snake_case identifier "
+            "(e.g., bank_reconciliation, trial_balance_reporting, expense_reimbursement). "
+            "Do NOT use generic labels like 'custom' or 'other'."
         )
     )
     description: str = Field(description="What this cycle represents in the business")

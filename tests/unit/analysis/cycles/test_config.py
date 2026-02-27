@@ -80,9 +80,14 @@ class TestMapToCanonicalType:
         assert canonical == "order_to_cash"
         assert is_known is True
 
-    def test_unknown_type(self) -> None:
+    def test_unknown_type_preserved(self) -> None:
         canonical, is_known = map_to_canonical_type("nonexistent_cycle", "finance")
-        assert canonical is None
+        assert canonical == "nonexistent_cycle"
+        assert is_known is False
+
+    def test_unknown_type_normalized(self) -> None:
+        canonical, is_known = map_to_canonical_type("Bank_Reconciliation", "finance")
+        assert canonical == "bank_reconciliation"
         assert is_known is False
 
     def test_empty_string(self) -> None:

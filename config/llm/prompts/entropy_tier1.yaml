@@ -58,31 +58,44 @@ system_prompt: |
   - Focus on high_impact_nodes — these are the actions that matter most
   - Be specific about what metadata needs to be added
   - Consider cascade effects (fixing one thing may help others)
-  - For each action, include a 'parameters' dict with specific values needed to execute it (e.g., column_name, threshold, strategy, target_table)
 
-  ACTION NAMING CONVENTION - all actions MUST use one of these prefixes:
+  ACTION NAMING CONVENTION - PREFER standard names over contextual variants:
 
   document_* (User provides knowledge/decisions):
     Standard: document_null_semantics, document_unit, document_formula,
               document_type_override, document_relationship, document_join_path,
               document_timestamp_role, document_business_name, document_description,
               document_entity_type, document_business_rule
-    Contextual: document_{{domain_specific}} (e.g., document_account_structure)
+    Contextual: document_{{domain_specific}} — ONLY when no standard name fits
 
   investigate_* (Agent analyzes, user reviews findings):
     Standard: investigate_outliers, investigate_formula_mismatches,
               investigate_quality_issues
-    Contextual: investigate_{{domain_specific}} (e.g., investigate_tax_discrepancies)
+    NOTE: Benford's law anomalies, distribution anomalies, and statistical outliers
+    all use investigate_outliers with method specified in parameters.
+    Contextual: investigate_{{domain_specific}} — ONLY when no standard name fits
 
   transform_* (Agent applies data transformation):
     Standard: transform_filter_nulls, transform_impute_values, transform_winsorize,
               transform_exclude_outliers, transform_quarantine_values,
               transform_fix_referential_integrity, transform_resolve_temporal_mismatch
-    Contextual: transform_{{domain_specific}} (e.g., transform_normalize_currency)
+    Contextual: transform_{{domain_specific}} — ONLY when no standard name fits
 
   create_* (User creates artifacts):
     Standard: create_constraint
-    Contextual: create_{{domain_specific}} (e.g., create_validation_rule)
+    Contextual: create_{{domain_specific}} — ONLY when no standard name fits
+
+  PARAMETERS:
+  - Include column_name and table_name always
+  - Include method, strategy, or target when relevant (e.g., method: "benford")
+  - NEVER guess values not present in the input data (e.g., do not invent units,
+    thresholds, or domain values — use descriptive placeholders like "<to_be_determined>")
+
+  EXPECTED_IMPACT format — use this structure consistently:
+    "Reduces <dimension> entropy (impact_delta: <value>)" or
+    "Resolves <dimension> (<current_readiness> → ready)"
+  Example: "Reduces semantic.units entropy (impact_delta: 0.25)"
+  Reference the specific dimension path and the impact_delta from network analysis.
 
   QUALITY EMPHASIS: Generate only high-value actions. Each action should address a
   concrete problem identified by the network analysis. Do not suggest generic
@@ -106,7 +119,9 @@ user_prompt: |
   <output_requirements>
   For each column, provide:
   - assumptions: List of assumptions with dimension, text, confidence, and impact
-  - resolution_actions: List of actions with action ID, description, effort, expected impact, and parameters
+  - resolution_actions: List of actions using standard action names where possible,
+    with description, effort, expected_impact (referencing dimension + impact_delta),
+    and parameters (column_name + table_name always; never guess unknown values)
 
   Key the response by "table_name.column_name" for each column.
   Do NOT generate explanations — only structured assumptions and actions.

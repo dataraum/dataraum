@@ -82,11 +82,15 @@ user_prompt: |
 
   <output_requirements>
   For each table, provide:
-  - assumptions: Table-wide assumptions about data quality patterns
-  - resolution_actions: Table-wide actions that improve multiple columns
+  - assumptions: Table-wide assumptions about cross-column data quality patterns
+  - resolution_actions: Table-wide actions that improve multiple columns at once.
+    Use standard action names (e.g., document_unit for all monetary columns lacking
+    units, not separate per-column actions). Reference impact_delta in expected_impact.
+    Never guess parameter values not in the input data.
 
   Key the response by table_name.
   Do NOT generate explanations — only structured assumptions and actions.
+  Do NOT repeat column-level issues — focus on cross-column patterns only.
   </output_requirements>
 
   Use the interpret_table_entropy_structured tool to provide your structured response.

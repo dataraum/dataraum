@@ -188,7 +188,9 @@ class ResolutionActionOutput(BaseModel):
     )
     description: str = Field(description="Human-readable description of the action")
     effort: Literal["low", "medium", "high"] = Field(description="Effort required to implement")
-    expected_impact: str = Field(description="What entropy dimensions this will improve")
+    expected_impact: str = Field(
+        description="Format: 'Reduces {dimension} entropy (impact_delta: {value})' — reference specific dimension path and network impact_delta"
+    )
     parameters: dict[str, str] = Field(
         default_factory=dict,
         description="Actionable parameters (e.g., column_name, threshold, strategy, target_table)",

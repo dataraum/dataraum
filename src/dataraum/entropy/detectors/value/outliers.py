@@ -138,20 +138,15 @@ class OutlierRateDetector(EntropyDetector):
         # Attenuate score for high-CV columns where IQR outlier detection is unreliable.
         # Columns with high coefficient of variation (e.g., FX rates spanning 0.7 to 150)
         # naturally have wide ranges — IQR "outliers" are legitimate values, not quality issues.
-        # Uses robust_cv (MAD/|median|) which is not inflated by the outliers being detected,
-        # avoiding the self-defeating attenuation loop that stddev-based CV caused.
-        # Falls back to classical cv for profiles computed before robust_cv was added.
+        # Attenuate using robust_cv (MAD/|median|) which is not inflated by the outliers
+        # being detected, avoiding the self-defeating attenuation loop that stddev-based CV caused.
+        # No fallback to classical cv — if robust_cv is absent, skip attenuation entirely.
         cv_attenuated = False
-        cv_type: str | None = None
         profile_data = stats.get("profile_data", {})
         if isinstance(profile_data, dict):
             numeric_stats = profile_data.get("numeric_stats", {})
             if isinstance(numeric_stats, dict):
                 cv = numeric_stats.get("robust_cv")
-                cv_type = "robust_cv"
-                if cv is None:
-                    cv = numeric_stats.get("cv")
-                    cv_type = "cv"
                 if cv is not None and cv > cv_attenuation_threshold:
                     dampen = cv_attenuation_threshold / cv
                     score = score * dampen
@@ -179,8 +174,7 @@ class OutlierRateDetector(EntropyDetector):
         }
         if cv_attenuated:
             evidence_dict["cv_attenuated"] = True
-            evidence_dict["cv"] = cv  # type: ignore[possibly-undefined]
-            evidence_dict["cv_type"] = cv_type
+            evidence_dict["robust_cv"] = cv  # type: ignore[possibly-undefined]
 
         # Add Z-score cross-method evidence
         if zscore_ratio > 0:

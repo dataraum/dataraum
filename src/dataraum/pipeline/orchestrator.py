@@ -135,10 +135,37 @@ class Pipeline:
     _skipped: set[str] = field(default_factory=set)
     _outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
     _logged_waiting: set[str] = field(default_factory=set)  # Track phases we've logged waiting for
+    _phase_priority: dict[str, int] = field(default_factory=dict)  # Transitive dependent count
 
     def register(self, phase: Phase) -> None:
         """Register a phase implementation."""
         self.phases[phase.name] = phase
+
+    def _compute_phase_priority(self) -> None:
+        """Compute priority for each phase based on transitive dependent count.
+
+        Phases that unblock more downstream work get higher priority.
+        This ensures critical-path phases get worker slots first when
+        multiple phases are ready simultaneously.
+        """
+        # Build reverse dependency graph: phase -> set of phases that depend on it
+        reverse_deps: dict[str, set[str]] = {name: set() for name in self.phases}
+        for name, phase in self.phases.items():
+            for dep in phase.dependencies:
+                if dep in reverse_deps:
+                    reverse_deps[dep].add(name)
+
+        # Count transitive dependents for each phase via BFS
+        for name in self.phases:
+            visited: set[str] = set()
+            queue = list(reverse_deps.get(name, set()))
+            while queue:
+                current = queue.pop()
+                if current in visited:
+                    continue
+                visited.add(current)
+                queue.extend(reverse_deps.get(current, set()) - visited)
+            self._phase_priority[name] = len(visited)
 
     @staticmethod
     def _notify_progress(
@@ -183,6 +210,7 @@ class Pipeline:
         runtime_config: dict[str, Any] | None = None,
         run_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
+        force_phase: bool = False,
     ) -> dict[str, PhaseResult]:
         """Run the pipeline.
 
@@ -202,6 +230,8 @@ class Pipeline:
             run_id: Optional run ID (generated if not provided)
             progress_callback: Optional callback for progress notifications.
                 Called with (current_step, total_steps, message).
+            force_phase: If True, force re-run of target_phase by cleaning
+                up its previous output and bypassing skip logic.
 
         Returns:
             Dict mapping phase names to their results
@@ -209,6 +239,7 @@ class Pipeline:
         # Store phase configs for use in _execute_phase
         self._phase_configs = phase_configs or {}
         self._runtime_config = runtime_config or {}
+        self._force_target = target_phase if force_phase else None
 
         # Reset state
         self._completed = set()
@@ -240,11 +271,20 @@ class Pipeline:
             if self.config.skip_completed:
                 self._load_completed_checkpoints(session, source_id)
 
+            # If forcing a phase, remove it from completed so it re-runs
+            if self._force_target and self._force_target in self._completed:
+                self._completed.discard(self._force_target)
+                self._outputs.pop(self._force_target, None)
+                logger.info(f"Force re-run: removed {self._force_target} from completed set")
+
         # Get phases to run
         phases_to_run = self.get_phases_to_run(target_phase)
         results: dict[str, PhaseResult] = {}
         total_phases = len(phases_to_run)
         completed_step = 0  # Counter for progress notifications
+
+        # Compute priority so ready phases are scheduled in critical-path order
+        self._compute_phase_priority()
 
         start_time = time.time()
 
@@ -261,7 +301,7 @@ class Pipeline:
                     available_slots = self.config.max_parallel - len(active_futures)
                     if available_slots > 0:
                         ready = self._get_ready_phases(phases_to_run)
-                        batch = list(ready)[:available_slots]
+                        batch = ready[:available_slots]
 
                         for name in batch:
                             self._running.add(name)
@@ -545,8 +585,16 @@ class Pipeline:
                         manager=manager,
                     )
 
-                    # Check if should skip
-                    skip_reason = phase.should_skip(ctx)
+                    # Force cleanup and bypass skip for forced phase
+                    if phase_name == self._force_target:
+                        from dataraum.pipeline.cleanup import cleanup_phase
+
+                        deleted = cleanup_phase(phase_name, source_id, session, cursor)
+                        logger.info(f"Force cleanup: deleted {deleted} records for {phase_name}")
+                        skip_reason = None  # Force re-run
+                    else:
+                        skip_reason = phase.should_skip(ctx)
+
                     if skip_reason:
                         result = PhaseResult.skipped(skip_reason)
                     else:
@@ -640,9 +688,13 @@ class Pipeline:
         done = self._completed | self._failed | self._skipped
         return all(p in done for p in phases_to_run)
 
-    def _get_ready_phases(self, phases_to_run: list[str]) -> set[str]:
-        """Get phases whose dependencies are satisfied."""
-        ready = set()
+    def _get_ready_phases(self, phases_to_run: list[str]) -> list[str]:
+        """Get phases whose dependencies are satisfied, sorted by priority.
+
+        Returns phases in descending priority order so that phases unblocking
+        the most downstream work get worker slots first.
+        """
+        ready: list[str] = []
         done = self._completed | self._skipped
 
         for name in phases_to_run:
@@ -672,7 +724,7 @@ class Pipeline:
             deps_met = all(d in done for d in deps)
 
             if deps_met:
-                ready.add(name)
+                ready.append(name)
                 # Clear from logged set if it was waiting before
                 self._logged_waiting.discard(name)
             else:
@@ -682,6 +734,8 @@ class Pipeline:
                     logger.debug(f"Phase {name} waiting for dependencies: {pending_deps}")
                     self._logged_waiting.add(name)
 
+        # Sort by priority descending: phases that unblock more work go first
+        ready.sort(key=lambda n: self._phase_priority.get(n, 0), reverse=True)
         return ready
 
 
@@ -724,6 +778,7 @@ def run_pipeline(
     runtime_config: dict[str, Any] | None = None,
     run_id: str | None = None,
     progress_callback: ProgressCallback | None = None,
+    force_phase: bool = False,
 ) -> dict[str, PhaseResult]:
     """Run the pipeline.
 
@@ -739,6 +794,7 @@ def run_pipeline(
         runtime_config: Runtime overrides merged into every phase's config
         run_id: Optional run ID (generated if not provided)
         progress_callback: Optional callback for progress notifications.
+        force_phase: If True, force re-run of target_phase.
 
     Returns:
         Dict mapping phase names to their results
@@ -756,4 +812,5 @@ def run_pipeline(
         runtime_config=runtime_config,
         run_id=run_id,
         progress_callback=progress_callback,
+        force_phase=force_phase,
     )

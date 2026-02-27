@@ -126,7 +126,7 @@ class TypingPhase(BasePhase):
 
         # Create typed table as direct copy (types already correct)
         ctx.duckdb_conn.execute(
-            f'CREATE TABLE "{typed_table_name}" AS SELECT * FROM "{raw_table_name}"'
+            f'CREATE OR REPLACE TABLE "{typed_table_name}" AS SELECT * FROM "{raw_table_name}"'
         )
 
         # Get row count

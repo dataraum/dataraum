@@ -17,12 +17,12 @@ The codebase works but isn't shippable. There's no CI, no release process, no pu
 | MCP server | Works locally via `dataraum-mcp` console script. 9 tools (6 core + 3 source mgmt). Not listed in any registry |
 | Plugin | **Done** — Separate repo `dataraum/dataraum-plugin` with 9 skills, `.mcp.json`, `plugin.json` |
 | Onboarding | **Done** — Source discovery, add/remove, credential chain, database backends (postgres/mysql/sqlite) |
-| Documentation | Hand-written Markdown in `docs/` + `docs_new/` (rewrite in progress). No generated site |
-| README | Needs update — header is correct but content may be stale |
-| LICENSE | Apache 2.0 text present, but copyright placeholders not filled in |
+| Documentation | Hand-written Markdown in `docs_new/` (rewrite complete, swap to `docs/` pending). No generated site |
+| README | **Done** — Rewritten to match actual state |
+| LICENSE | **Done** — Apache 2.0 with `Copyright 2026 dataraum.com` |
 | Version management | `"0.1.0"` in pyproject.toml and plugin.json — synced but not tag-driven |
-| Branch protection | None — direct push to main |
-| Dependencies | `anthropic` and `sentence-transformers` (pulls PyTorch) in core deps, not optional |
+| Branch protection | **Done** — PR required, CI checks required |
+| Dependencies | **Cleaned up** — No optional extras. `anthropic` in core deps (required for semantic analysis). Removed unused: pyarrow, aiosqlite, asyncpg, sentence-transformers |
 | Pre-commit | **Done** — `.pre-commit-config.yaml` exists |
 
 ---
@@ -33,21 +33,21 @@ The codebase works but isn't shippable. There's no CI, no release process, no pu
 
 Before anything public-facing, clean up what's broken.
 
-**README.md:**
-- Rewrite to match actual state: package name is `dataraum`, CLI is `dataraum` and `dataraum-mcp`
-- Quick start for MCP server setup (the most common entry point)
-- Remove references to FastAPI, Apache Hamilton, `dataraum-context` name
+**README.md:** ✅ Done
+- Rewritten to match actual state: package name, CLI commands, MCP setup, all 9 tools documented
 
-**LICENSE:**
-- Fill in copyright year and holder
+**LICENSE:** ✅ Done
+- `Copyright 2026 dataraum.com`
 
 **Version sync:**
 - Single source of truth for version. Use `hatch-vcs` (git tag → version) or keep hardcoded but sync `pyproject.toml` and `plugin.json`
 
-**Dependency cleanup:**
-- Keep `anthropic` and `sentence-transformers` in core — the product requires an LLM, and vector search is a core capability
-- Review remaining optional extras for redundancy (several duplicate core deps)
-- Keep `typer`, `rich`, `textual` in core (CLI is the primary interface)
+**Dependency cleanup:** ✅ Done
+- Removed all optional extras — single install target
+- Removed unused deps: pyarrow (~100MB), aiosqlite, asyncpg
+- Removed dead mypy overrides (hamilton, openai, pyarrow)
+- `anthropic` in core deps (required for semantic analysis)
+- `typer`, `rich`, `textual` in core (CLI is the primary interface)
 
 **Effort:** Low. Do first.
 
@@ -127,8 +127,6 @@ The MCP server is the primary distribution target — it's how users interact wi
 Once CI and release workflows exist, tag `v0.2.0` → publish. Users install with:
 ```bash
 pip install dataraum
-# or for full LLM support
-pip install dataraum[llm]
 ```
 
 The `dataraum-mcp` console script is the entry point. Claude Desktop config:
@@ -276,34 +274,35 @@ Anthropic curates tools shown in Claude Desktop. Submission requires:
 ## Sequencing & Status
 
 ```
-1. Fix basics (README, LICENSE, deps)     ─┐
-2. GitHub Actions CI                ✅     ─┤── Foundation
-3. Lock main, feature branches             ─┘
+1. Fix basics (README, LICENSE, deps)  ✅  ─┐
+2. GitHub Actions CI                   ✅  ─┤── Foundation
+3. Lock main, feature branches         ✅  ─┘
         │
         ▼
-4. Release MCP server to PyPI             ─┐
-5. Separate plugin repo             ✅     ─┤── Distribution
+4. Release MCP server to PyPI              ─┐
+5. Separate plugin repo               ✅  ─┤── Distribution
 6. List in MCP registries                  ─┘
         │
         ▼
-7. Docs site                              ─┐
-8. Migrate roadmap to GitHub/Linear ✅     ─┤── Public presence
+7. Docs site                               ─┐
+8. Migrate roadmap to GitHub/Linear    ✅  ─┤── Public presence
 9. Apply to Claude Desktop directory       ─┘
 ```
 
 **Done:**
+- Fix basics: README rewritten, LICENSE filled in, dependency cleanup complete
 - CI workflow (ruff + pytest on push/PR to main)
+- Branch protection on main (PR required, CI checks required)
 - Plugin separated to `dataraum/dataraum-plugin` repo
 - Roadmap tracked in Linear (private) + GitHub Issues (public)
 - Pre-commit config exists
 - Onboarding tools (discover_sources, add_source, remove_source, credential chain, database backends)
 
 **Next:**
-- Fix basics (README, LICENSE, version sync, dependency cleanup)
-- Branch protection on main
+- Version sync strategy (tag-driven vs hardcoded)
 - PyPI release pipeline + first publish
 - MCP registry listings
-- Docs site
+- Docs site (swap `docs_new/` → `docs/`, then Zensical or similar)
 
 ## Open Questions
 

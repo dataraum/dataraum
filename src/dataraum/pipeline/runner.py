@@ -59,6 +59,7 @@ class RunConfig:
     output_dir: Path = field(default_factory=lambda: Path("./pipeline_output"))
     source_name: str | None = None
     target_phase: str | None = None
+    force_phase: bool = False
     progress_callback: ProgressCallback | None = None
 
 
@@ -408,6 +409,7 @@ def run(config: RunConfig) -> Result[RunResult]:
             phase_configs=phase_configs,
             runtime_config=runtime_config,
             progress_callback=config.progress_callback,
+            force_phase=config.force_phase,
         )
 
         duration = time.time() - start_time

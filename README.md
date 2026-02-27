@@ -34,7 +34,7 @@ Then in Claude Desktop, point the `analyze` tool at your data:
 
 > Analyze the CSV files in /path/to/my/data
 
-The server runs a full 18-phase analysis pipeline and makes 6 tools available:
+The server runs a 19-phase analysis pipeline and makes 9 tools available:
 
 | Tool | Description |
 |------|-------------|
@@ -44,6 +44,9 @@ The server runs a full 18-phase analysis pipeline and makes 6 tools available:
 | `evaluate_contract` | Evaluate data quality against a contract |
 | `query` | Natural language query against the data |
 | `get_actions` | Get prioritized actions to improve data quality |
+| `discover_sources` | Scan workspace for data files |
+| `add_source` | Register a new data source (file or database) |
+| `remove_source` | Archive a data source |
 
 ## Quick Start — CLI
 
@@ -63,9 +66,10 @@ dataraum contracts ./output
 from dataraum import Context
 
 ctx = Context("./pipeline_output")
-ctx.tables
-ctx.entropy.summary()
-result = ctx.query("What is the total revenue?")
+ctx.tables                    # List of tables
+ctx.entropy.summary()         # DataFrame with entropy scores
+ctx.contracts.evaluate("aggregation_safe")
+result = ctx.query("What's the total revenue?")
 ```
 
 ## What It Produces
@@ -80,38 +84,15 @@ DataRaum analyzes your data and generates:
 - **Entropy scores** — uncertainty quantification across all dimensions
 - **Ontological context** — domain-specific interpretation (financial, marketing, etc.)
 
-## Installation Options
-
-```bash
-# Core (includes MCP server, CLI, TUI)
-pip install dataraum
-
-# With specific LLM provider
-pip install "dataraum[anthropic]"   # Claude
-pip install "dataraum[openai]"      # OpenAI
-pip install "dataraum[llm]"         # Both
-
-# With PostgreSQL backend
-pip install "dataraum[postgres]"
-
-# With privacy features (synthetic data via SDV — pulls PyTorch)
-pip install "dataraum[privacy]"
-
-# Everything
-pip install "dataraum[all]"
-```
-
 ## LLM Configuration
 
-Semantic analysis requires an LLM. Set your API key:
+Semantic analysis requires an Anthropic API key:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-..."
-# or
-export OPENAI_API_KEY="sk-..."
 ```
 
-Configure in `config/llm.yaml` or use `config/semantic_overrides.yaml` for manual definitions without an LLM.
+Configure the LLM provider in `config/llm.yaml` or use `config/semantic_overrides.yaml` for manual definitions without an LLM.
 
 ## Development
 
@@ -120,7 +101,7 @@ git clone https://github.com/dataraum/dataraum-context
 cd dataraum-context
 
 # Install with dev dependencies (using uv)
-uv sync --extra dev
+uv sync --group dev
 
 # Run tests
 uv run pytest --testmon tests/unit -q
@@ -135,10 +116,14 @@ uv run ruff format --check src/
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — system design and pipeline overview
-- [Data Model](docs/DATA_MODEL.md) — metadata schema
-- [CLI Reference](docs/CLI.md) — command-line interface
-- [MCP Setup](docs/MCP_SETUP.md) — MCP server configuration
+- [Architecture](docs_new/architecture.md) — system design and pipeline overview
+- [Pipeline](docs_new/pipeline.md) — 19-phase pipeline reference
+- [Entropy](docs_new/entropy.md) — uncertainty quantification system
+- [Data Model](docs_new/data-model.md) — metadata schema
+- [CLI Reference](docs_new/cli.md) — command-line interface
+- [MCP Setup](docs_new/mcp-setup.md) — MCP server configuration
+- [Configuration](docs_new/configuration.md) — config directory reference
+- [Contributing](docs_new/contributing.md) — development setup and patterns
 
 ## License
 

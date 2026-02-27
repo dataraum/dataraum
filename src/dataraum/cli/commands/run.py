@@ -41,6 +41,14 @@ def run(
             help="Run only this phase and its dependencies",
         ),
     ] = None,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            "-f",
+            help="Force re-run of target phase, deleting previous results",
+        ),
+    ] = False,
     quiet: Annotated[
         bool,
         typer.Option(
@@ -89,6 +97,14 @@ def run(
     from dataraum.pipeline.runner import RunConfig
     from dataraum.pipeline.runner import run as run_pipeline
 
+    # Validate --force flag
+    if force and not phase:
+        console.print("[red]Error: --force requires --phase[/red]")
+        raise typer.Exit(1)
+    if force and phase == "import":
+        console.print("[red]Error: --force is not supported for the import phase[/red]")
+        raise typer.Exit(1)
+
     # Validate source path if provided
     source_path: Path | None = None
     if source is not None:
@@ -103,6 +119,7 @@ def run(
         output_dir=output,
         source_name=name,
         target_phase=phase,
+        force_phase=force,
     )
 
     # Run pipeline - always returns Result.ok with RunResult

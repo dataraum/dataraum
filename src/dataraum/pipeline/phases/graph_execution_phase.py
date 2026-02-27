@@ -58,6 +58,8 @@ class GraphExecutionPhase(BasePhase):
             "slicing",  # slice definitions
             "quality_summary",  # quality reports
             "entropy_interpretation",  # entropy data
+            "validation",  # data validation results
+            "business_cycles",  # business cycle detection
         ]
 
     @property

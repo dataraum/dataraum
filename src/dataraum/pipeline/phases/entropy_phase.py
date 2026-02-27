@@ -266,6 +266,7 @@ class EntropyPhase(BasePhase):
         total_entropy_objects = 0
         tables_processed = 0
         all_domain_objects: list[Any] = []  # Collect EntropyObject for network inference
+        all_records: list[EntropyObjectRecord] = []  # Batch for session.add_all()
 
         for table in typed_tables:
             table_columns = columns_by_table.get(table.table_id, [])
@@ -424,7 +425,7 @@ class EntropyPhase(BasePhase):
                         resolution_options=resolution_dicts if resolution_dicts else None,
                         detector_id=entropy_obj.detector_id,
                     )
-                    ctx.session.add(record)
+                    all_records.append(record)
                     total_entropy_objects += 1
 
             tables_processed += 1
@@ -481,7 +482,7 @@ class EntropyPhase(BasePhase):
                 resolution_options=resolution_dicts if resolution_dicts else None,
                 detector_id=entropy_obj.detector_id,
             )
-            ctx.session.add(record)
+            all_records.append(record)
             total_entropy_objects += 1
             logger.debug(
                 "dimensional_entropy_object_saved",
@@ -489,6 +490,9 @@ class EntropyPhase(BasePhase):
                 target=entropy_obj.target,
                 score=entropy_obj.score,
             )
+
+        # Batch insert all entropy records at once
+        ctx.session.add_all(all_records)
 
         # Compute summary statistics from in-memory domain objects.
         # No DB round-trip needed — the session hasn't committed yet and

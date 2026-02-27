@@ -16,9 +16,11 @@ Prioritized backlog for the dataraum-context project.
 ## Current Focus
 
 ### Next Up
-- [ ] Run e2e tests to verify cycle health scoring (`tests/e2e/test_cycle_health.py`)
-- [ ] Dependency audit (pandas vs pyarrow, ruptures, networkx)
-- [ ] Docs cleanup: triage `docs/projects/`, swap `docs_new/` → `docs/`, update README + CLAUDE.md cross-refs
+- [x] Run e2e tests to verify cycle health scoring — all green
+- [x] Dependency audit — removed pyarrow, aiosqlite, asyncpg, all extras, dead mypy overrides
+- [x] Fix basics: README rewritten, LICENSE verified, branch protection on main
+- [ ] Version sync strategy (tag-driven vs hardcoded)
+- [ ] Docs cleanup: swap `docs_new/` → `docs/`, update CLAUDE.md cross-refs
 
 ### Active Linear Issues (Phase 1)
 - DAT-35: Entropy bugs follow-up

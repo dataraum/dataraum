@@ -57,7 +57,7 @@ class GraphExecutionPhase(BasePhase):
             "correlations",  # derived columns
             "slicing",  # slice definitions
             "quality_summary",  # quality reports
-            "entropy_interpretation",  # entropy data
+            "entropy",  # entropy scores and network (interpretation not needed)
             "validation",  # data validation results
             "business_cycles",  # business cycle detection
         ]

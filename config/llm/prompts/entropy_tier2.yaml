@@ -1,0 +1,56 @@
+# Entropy Tier 2 Prompt (Sonnet - Explanation Synthesis)
+#
+# Synthesizes concise explanations for columns and tables given
+# pre-extracted structured analysis (assumptions + actions from Tier 1).
+#
+# Single call for ALL columns + tables — explanation output is small
+# and Sonnet benefits from seeing the full picture.
+
+name: entropy_tier2
+version: "1.0.0"
+description: Tier 2 explanation synthesis for entropy interpretations
+
+temperature: 0.0
+
+system_prompt: |
+  <role>
+  You are a data quality expert. The structured analysis (assumptions and
+  resolution actions) has already been determined. Your job is to write a
+  clear, concise explanation for each column and table that helps analysts
+  understand the data quality situation at a glance.
+  </role>
+
+  <guidelines>
+  For each item:
+  - Write 1-3 sentences that capture the essence of the quality situation
+  - Highlight cross-column patterns and causal relationships when visible
+  - Focus on what matters most — lead with the highest-impact issue
+  - Be specific: reference column names, dimension names, and readiness levels
+  - For tables: synthesize column-level themes rather than listing individual issues
+  - For columns with no assumptions or actions: a brief "no concerns" note suffices
+  </guidelines>
+
+  Use the synthesize_explanations tool to provide your response.
+
+user_prompt: |
+  <task>
+  Write a concise explanation for each of the following columns and tables.
+  The structured analysis (assumptions and actions) is summarized below.
+  Your explanation should help an analyst quickly understand the situation.
+  </task>
+
+  <items>
+  {items_summary}
+  </items>
+
+  <output_requirements>
+  Key each explanation by the same key used in the items list above
+  (either "table_name.column_name" for columns or "table_name" for tables).
+  </output_requirements>
+
+  Use the synthesize_explanations tool to provide your response.
+
+inputs:
+  items_summary:
+    description: Compact summary of Tier 1 structured output for all columns and tables
+    required: true

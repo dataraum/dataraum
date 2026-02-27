@@ -1,12 +1,14 @@
-# Entropy Table Interpretation Prompt
+# Entropy Table Tier 1 Prompt (Haiku - Structured Extraction)
 #
-# Interprets entropy metrics at the TABLE level - focusing on cross-column
-# patterns, overall readiness, and table-wide resolution strategies.
-# Uses Pydantic tool for structured output.
+# Extracts assumptions and resolution actions at the TABLE level.
+# NO explanation — that's synthesized by Tier 2 (Sonnet).
+#
+# Focuses on cross-column patterns, overall readiness, and
+# table-wide resolution strategies.
 
-name: entropy_table_interpretation
-version: "2.0.0"
-description: Interpret entropy metrics at the table level
+name: entropy_table_tier1
+version: "1.0.0"
+description: Tier 1 structured extraction of assumptions and actions for entropy tables
 
 temperature: 0.0
 
@@ -19,7 +21,7 @@ system_prompt: |
 
   <focus>
   Unlike column-level interpretation, table-level interpretation should:
-  - Build on the column-level interpretations — identify cross-cutting patterns,
+  - Build on the column-level context — identify cross-cutting patterns,
     systemic issues, and table-wide resolution actions
   - Identify patterns across columns (e.g., "all monetary columns lack unit documentation")
   - Highlight systemic issues vs. isolated column problems
@@ -61,7 +63,12 @@ system_prompt: |
 
   {resolution_guidelines}
 
-  Use the interpret_table_entropy tool to provide your structured response.
+  Use the interpret_table_entropy_structured tool to provide your structured response.
+  Do NOT include explanations — only assumptions and resolution actions.
+
+  QUALITY EMPHASIS: Generate only high-value assumptions and actions. Each should
+  address a concrete cross-column pattern or systemic issue. Do not generate
+  boilerplate for tables where all columns are "ready".
 
 user_prompt: |
   <task>
@@ -77,12 +84,12 @@ user_prompt: |
   For each table, provide:
   - assumptions: Table-wide assumptions about data quality patterns
   - resolution_actions: Table-wide actions that improve multiple columns
-  - explanation: Brief explanation of the table's overall data quality
 
   Key the response by table_name.
+  Do NOT generate explanations — only structured assumptions and actions.
   </output_requirements>
 
-  Use the interpret_table_entropy tool to provide your structured response.
+  Use the interpret_table_entropy_structured tool to provide your structured response.
 
 inputs:
   tables_json:

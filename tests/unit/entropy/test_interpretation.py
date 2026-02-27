@@ -10,9 +10,12 @@ from pydantic import ValidationError
 
 from dataraum.entropy.interpretation import (
     EntropyInterpretation,
-    EntropyInterpretationOutput,
     ResolutionActionOutput,
-    TableEntropyInterpretationOutput,
+    Tier1ColumnOutput,
+    Tier1InterpretationOutput,
+    Tier1TableInterpretationOutput,
+    Tier2ExplanationOutput,
+    Tier2InterpretationsOutput,
 )
 
 
@@ -98,35 +101,143 @@ class TestValidateOutput:
         data = {
             "columns": {
                 "orders.amount": {
-                    "explanation": "The amount column has moderate uncertainty.",
                     "assumptions": [],
                     "resolution_actions": [],
                 }
             }
         }
-        output = EntropyInterpretationOutput.model_validate(data)
+        output = Tier1InterpretationOutput.model_validate(data)
         assert "orders.amount" in output.columns
 
     def test_rejects_missing_columns_key(self):
         """When 'columns' key is missing, validation should fail."""
         data = {
             "orders.amount": {
-                "explanation": "The amount column has moderate uncertainty.",
                 "assumptions": [],
                 "resolution_actions": [],
             }
         }
         with pytest.raises(ValidationError):
-            EntropyInterpretationOutput.model_validate(data)
+            Tier1InterpretationOutput.model_validate(data)
 
     def test_rejects_missing_tables_key(self):
         """When 'tables' key is missing, validation should fail."""
         data = {
             "orders": {
-                "explanation": "Table has moderate uncertainty.",
                 "assumptions": [],
                 "resolution_actions": [],
             }
         }
         with pytest.raises(ValidationError):
-            TableEntropyInterpretationOutput.model_validate(data)
+            Tier1TableInterpretationOutput.model_validate(data)
+
+
+class TestTier1Models:
+    """Tests for Tier 1 (structured extraction) Pydantic models."""
+
+    def test_tier1_column_output_has_no_explanation(self):
+        """Tier1ColumnOutput should not have an explanation field."""
+        assert "explanation" not in Tier1ColumnOutput.model_fields
+
+    def test_tier1_column_output_accepts_valid(self):
+        """Tier1ColumnOutput accepts assumptions and actions."""
+        output = Tier1ColumnOutput(
+            assumptions=[
+                {
+                    "dimension": "semantic.units",
+                    "assumption_text": "Amount is in EUR",
+                    "confidence": "high",
+                    "impact": "Aggregation will be wrong if not EUR",
+                }
+            ],
+            resolution_actions=[
+                {
+                    "action": "document_unit",
+                    "description": "Declare unit",
+                    "effort": "low",
+                    "expected_impact": "Reduces semantic.units entropy",
+                }
+            ],
+        )
+        assert len(output.assumptions) == 1
+        assert len(output.resolution_actions) == 1
+
+    def test_tier1_column_output_defaults_empty(self):
+        """Tier1ColumnOutput defaults to empty lists."""
+        output = Tier1ColumnOutput()
+        assert output.assumptions == []
+        assert output.resolution_actions == []
+
+    def test_tier1_interpretation_output_accepts_valid(self):
+        """Tier1InterpretationOutput wraps columns dict."""
+        data = {
+            "columns": {
+                "orders.amount": {"assumptions": [], "resolution_actions": []},
+                "orders.date": {"assumptions": [], "resolution_actions": []},
+            }
+        }
+        output = Tier1InterpretationOutput.model_validate(data)
+        assert len(output.columns) == 2
+        assert "orders.amount" in output.columns
+
+    def test_tier1_interpretation_output_rejects_missing_columns(self):
+        """Tier1InterpretationOutput rejects data without 'columns' key."""
+        with pytest.raises(ValidationError):
+            Tier1InterpretationOutput.model_validate(
+                {"orders.amount": {"assumptions": [], "resolution_actions": []}}
+            )
+
+    def test_tier1_table_output_has_no_explanation(self):
+        """Tier1TableOutput should not have an explanation field."""
+        assert "explanation" not in Tier1ColumnOutput.model_fields
+
+    def test_tier1_table_interpretation_output_accepts_valid(self):
+        """Tier1TableInterpretationOutput wraps tables dict."""
+        data = {
+            "tables": {
+                "orders": {"assumptions": [], "resolution_actions": []},
+            }
+        }
+        output = Tier1TableInterpretationOutput.model_validate(data)
+        assert "orders" in output.tables
+
+    def test_tier1_table_interpretation_output_rejects_missing_tables(self):
+        """Tier1TableInterpretationOutput rejects data without 'tables' key."""
+        with pytest.raises(ValidationError):
+            Tier1TableInterpretationOutput.model_validate(
+                {"orders": {"assumptions": [], "resolution_actions": []}}
+            )
+
+
+class TestTier2Models:
+    """Tests for Tier 2 (explanation synthesis) Pydantic models."""
+
+    def test_tier2_explanation_output_requires_explanation(self):
+        """Tier2ExplanationOutput requires an explanation string."""
+        output = Tier2ExplanationOutput(explanation="Clear quality issue.")
+        assert output.explanation == "Clear quality issue."
+
+    def test_tier2_explanation_output_rejects_missing_explanation(self):
+        """Tier2ExplanationOutput rejects missing explanation."""
+        with pytest.raises(ValidationError):
+            Tier2ExplanationOutput.model_validate({})
+
+    def test_tier2_interpretations_output_accepts_valid(self):
+        """Tier2InterpretationsOutput wraps items dict."""
+        data = {
+            "items": {
+                "orders.amount": {"explanation": "Amount lacks unit documentation."},
+                "orders": {"explanation": "Table has systemic unit issues."},
+            }
+        }
+        output = Tier2InterpretationsOutput.model_validate(data)
+        assert len(output.items) == 2
+        assert "orders.amount" in output.items
+        assert "orders" in output.items
+
+    def test_tier2_interpretations_output_rejects_missing_items(self):
+        """Tier2InterpretationsOutput rejects data without 'items' key."""
+        with pytest.raises(ValidationError):
+            Tier2InterpretationsOutput.model_validate(
+                {"orders.amount": {"explanation": "test"}}
+            )

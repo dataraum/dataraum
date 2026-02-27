@@ -43,10 +43,14 @@ features:
     enabled: true
     model_tier: balanced
 
+  entropy_interpretation_structured:
+    enabled: true
+    model_tier: fast
+    batch_size: 8
+
   entropy_interpretation:
     enabled: true
     model_tier: balanced
-    batch_size: 8
     baseline_filter:
       enabled: true
       p_high_threshold: 0.35

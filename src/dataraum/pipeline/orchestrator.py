@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError, as_completed
 from dataclasses import dataclass, field
@@ -134,7 +135,6 @@ class Pipeline:
     _failed: set[str] = field(default_factory=set)
     _skipped: set[str] = field(default_factory=set)
     _outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
-    _logged_waiting: set[str] = field(default_factory=set)  # Track phases we've logged waiting for
     _phase_priority: dict[str, int] = field(default_factory=dict)  # Transitive dependent count
 
     def register(self, phase: Phase) -> None:
@@ -293,17 +293,53 @@ class Pipeline:
 
         try:
             with ThreadPoolExecutor(max_workers=self.config.max_parallel) as pool:
-                # Track all active futures
                 active_futures: dict[Future[PhaseResult], str] = {}
 
-                while not self._is_complete(phases_to_run):
-                    # Fill available slots with ready phases
-                    available_slots = self.config.max_parallel - len(active_futures)
-                    if available_slots > 0:
-                        ready = self._get_ready_phases(phases_to_run)
-                        batch = ready[:available_slots]
+                # Work queue: phases sorted by priority (highest first).
+                # Pop from front, submit if ready, push to back if blocked.
+                work_queue: deque[str] = deque(
+                    sorted(
+                        phases_to_run,
+                        key=lambda n: self._phase_priority.get(n, 0),
+                        reverse=True,
+                    )
+                )
 
-                        for name in batch:
+                while work_queue or active_futures:
+                    # Pop phases from front of queue, submit ready ones,
+                    # collect blocked ones to re-queue at the back.
+                    not_ready: list[str] = []
+                    queue_len = len(work_queue)
+                    scanned = 0
+
+                    while work_queue and len(active_futures) < self.config.max_parallel:
+                        name = work_queue.popleft()
+                        scanned += 1
+
+                        # Skip already-handled phases
+                        if name in self._completed or name in self._failed or name in self._skipped:
+                            continue
+                        if name in self._running:
+                            continue
+
+                        phase = self.phases.get(name)
+                        if not phase:
+                            logger.info(f"Phase {name} skipped: no implementation registered")
+                            self._skipped.add(name)
+                            continue
+
+                        deps = phase.dependencies
+                        failed_deps = [d for d in deps if d in self._failed]
+                        if failed_deps:
+                            logger.warning(
+                                f"Phase {name} blocked: dependencies failed: {failed_deps}"
+                            )
+                            self._skipped.add(name)
+                            continue
+
+                        done = self._completed | self._skipped
+                        if all(d in done for d in deps):
+                            # Ready — submit to executor immediately
                             self._running.add(name)
                             self._notify_progress(
                                 progress_callback,
@@ -322,23 +358,30 @@ class Pipeline:
                             )
                             active_futures[future] = name
                             logger.info(f"Started phase: {name} (running: {len(active_futures)})")
+                        else:
+                            # Not ready — re-queue at back
+                            not_ready.append(name)
+
+                        # If we've scanned the entire original queue, stop
+                        if scanned >= queue_len:
+                            break
+
+                    # Push blocked phases back to the end of the queue
+                    work_queue.extend(not_ready)
 
                     if not active_futures:
-                        # No phases running and none ready - deadlock or done
+                        # Nothing running, nothing could be submitted — done or deadlock
                         break
 
-                    # Wait for at least one future to complete (with timeout for responsiveness)
+                    # Wait for at least one future to complete
                     done_futures: set[Future[PhaseResult]] = set()
                     try:
                         for future in as_completed(active_futures.keys(), timeout=0.5):
                             done_futures.add(future)
-                            # Process one at a time so we can fill slots quickly
                             break
                     except TimeoutError:
-                        # No futures completed yet, loop back to check for new ready phases
                         continue
 
-                    # Process completed futures
                     for future in done_futures:
                         name = active_futures.pop(future)
                         self._running.discard(name)
@@ -363,12 +406,9 @@ class Pipeline:
                             logger.info(
                                 f"Phase {name} completed in {phase_result.duration_seconds:.1f}s"
                             )
-                            # Log any warnings from completed phase
                             if phase_result.warnings:
                                 for warning in phase_result.warnings:
                                     logger.warning(f"Phase {name}: {warning}")
-                            # Clear logged_waiting so pending phases log their deps again
-                            self._logged_waiting.clear()
                         elif phase_result.status == PhaseStatus.SKIPPED:
                             self._skipped.add(name)
                             completed_step += 1
@@ -389,15 +429,14 @@ class Pipeline:
                                 f"Failed {name}: {phase_result.error}",
                             )
                             logger.error(f"Phase {name} failed: {phase_result.error}")
-                            # Log any warnings from failed phase
                             if phase_result.warnings:
                                 for warning in phase_result.warnings:
                                     logger.warning(f"Phase {name}: {warning}")
                             if self.config.fail_fast:
-                                # Cancel remaining futures
                                 for f in active_futures:
                                     f.cancel()
                                 active_futures.clear()
+                                work_queue.clear()
                                 break
 
                     if self.config.fail_fast and self._failed:
@@ -683,60 +722,6 @@ class Pipeline:
             self._completed.add(cp.phase_name)
             self._outputs[cp.phase_name] = cp.outputs or {}
 
-    def _is_complete(self, phases_to_run: list[str]) -> bool:
-        """Check if all phases are done."""
-        done = self._completed | self._failed | self._skipped
-        return all(p in done for p in phases_to_run)
-
-    def _get_ready_phases(self, phases_to_run: list[str]) -> list[str]:
-        """Get phases whose dependencies are satisfied, sorted by priority.
-
-        Returns phases in descending priority order so that phases unblocking
-        the most downstream work get worker slots first.
-        """
-        ready: list[str] = []
-        done = self._completed | self._skipped
-
-        for name in phases_to_run:
-            if name in self._completed or name in self._running or name in self._failed:
-                continue
-            if name in self._skipped:
-                continue
-
-            # Get phase implementation (must be registered)
-            phase = self.phases.get(name)
-            if not phase:
-                logger.info(f"Phase {name} skipped: no implementation registered")
-                self._skipped.add(name)
-                continue
-
-            # Check dependencies using the phase instance properties
-            deps = phase.dependencies
-
-            # Check if any dependency failed (can't run this phase)
-            failed_deps = [d for d in deps if d in self._failed]
-            if failed_deps:
-                logger.warning(f"Phase {name} blocked: dependencies failed: {failed_deps}")
-                self._skipped.add(name)
-                continue
-
-            # Check dependencies
-            deps_met = all(d in done for d in deps)
-
-            if deps_met:
-                ready.append(name)
-                # Clear from logged set if it was waiting before
-                self._logged_waiting.discard(name)
-            else:
-                # Only log once per phase when it starts waiting
-                if name not in self._logged_waiting:
-                    pending_deps = [d for d in deps if d not in done]
-                    logger.debug(f"Phase {name} waiting for dependencies: {pending_deps}")
-                    self._logged_waiting.add(name)
-
-        # Sort by priority descending: phases that unblock more work go first
-        ready.sort(key=lambda n: self._phase_priority.get(n, 0), reverse=True)
-        return ready
 
 
 # Global pipeline instance

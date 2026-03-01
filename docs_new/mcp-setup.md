@@ -190,7 +190,7 @@ Executes a fix action to improve data quality. Returns JSON with success status,
 > Apply the override_type fix to column:orders.amount with target_type DECIMAL(10,2)
 ```
 
-Available action types: `override_type`, `declare_unit`, `add_business_name`, `declare_null_meaning`, `confirm_relationship`, `create_filtered_view`. See [Entropy: Fix Execution](entropy.md#fix-execution) for details.
+Built-in action types: `override_type`, `declare_unit`, `add_business_name`, `declare_null_meaning`, `confirm_relationship`, `create_filtered_view`. See [Entropy: Fix Execution](entropy.md#fix-execution) for details.
 
 ### Contract names
 

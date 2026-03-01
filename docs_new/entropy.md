@@ -48,6 +48,17 @@ Can you safely compute on this data?
 |----------|-----------|-----------------|
 | DerivedValueDetector | `derived_values > formula_match` | Whether calculated columns match their source formula |
 
+## Detector Trust
+
+Each detector has a **trust level** that determines whether it can gate the pipeline:
+
+| Trust | Detectors | Meaning |
+|-------|-----------|---------|
+| **HARD** | type_fidelity, join_path_determinism, relationship_entropy, null_ratio, outlier_rate, benford, temporal_drift, derived_value | Machine-verifiable. Can block pipeline phases via gates. |
+| **SOFT** | business_meaning, unit_entropy, temporal_entropy | LLM/heuristic-derived. Inform actions but don't block phases. |
+
+Hard detectors produce scores that are objectively measurable — you can re-run them and get the same result. Soft detectors depend on LLM interpretation and are inherently less deterministic.
+
 ## Score Interpretation
 
 | Score Range | State | Meaning |
@@ -139,6 +150,33 @@ Actions are scored based on:
 - **Impact**: How many columns benefit, plus causal network impact
 - **Effort**: Low, medium, or high (estimated remediation work)
 - **Priority score**: `impact / effort_factor` — higher means better ROI
+
+### Fix Execution
+
+When an action is applied (at a gate or via MCP), the `FixExecutor` runs it through a verified flow:
+
+1. Execute the action (e.g., override a column type, declare a unit)
+2. Create an immutable `Decision` record with evidence
+3. Persist a `DecisionRecord` to the database for audit
+4. Return a `FixResult` with `success`, `improved`, and score deltas
+
+Available seed actions:
+
+| Action | Category | What It Does | Hard-Verifiable? |
+|--------|----------|-------------|-----------------|
+| `override_type` | Transform | Change column type in TypeDecision | Yes |
+| `declare_unit` | Annotate | Write unit to TypeCandidate | No |
+| `add_business_name` | Annotate | Update SemanticAnnotation | No |
+| `declare_null_meaning` | Annotate | Document null semantics in business_description | No |
+| `confirm_relationship` | Annotate | Confirm FK relationship | Partial |
+| `create_filtered_view` | Transform | Create DuckDB view excluding problematic rows | Yes |
+
+Via MCP:
+```
+> Apply the override_type fix to orders.amount with target_type DECIMAL(10,2)
+```
+
+Every fix is recorded in the **decision ledger** — an append-only audit trail of who (user, auto_fix, mcp_agent) did what, when, and with what evidence.
 
 ## Viewing Entropy
 

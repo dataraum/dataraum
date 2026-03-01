@@ -94,7 +94,7 @@ Add this to the file (create it if it doesn't exist):
 
 **Important:** Claude Desktop doesn't inherit your shell's working directory, so use absolute paths for both `--project` and `DATARAUM_OUTPUT_DIR`.
 
-Restart Claude Desktop after editing. The hammer icon in the text input should show 6 DataRaum tools.
+Restart Claude Desktop after editing. The hammer icon in the text input should show 7 DataRaum tools.
 
 ---
 
@@ -156,7 +156,7 @@ The full configuration with all required environment variables:
 
 ### Plugin skills
 
-The plugin provides 6 skills that map to the MCP tools:
+The plugin provides 7 skills that map to the MCP tools:
 
 | Skill | Trigger examples |
 |-------|-----------------|
@@ -166,6 +166,7 @@ The plugin provides 6 skills that map to the MCP tools:
 | Contracts | "aggregation safe", "contract compliance" |
 | Query | "how many", "total revenue" |
 | Actions | "what should I fix", "quality issues" |
+| Fix | "apply fix", "override type", "fix orders.amount" |
 
 ---
 
@@ -179,10 +180,21 @@ The plugin provides 6 skills that map to the MCP tools:
 | `evaluate_contract` | `contract_name` | Quality evaluation against a contract |
 | `query` | `question`, `contract_name?` | Natural language query with confidence level |
 | `get_actions` | `priority?`, `table_name?` | Prioritized resolution actions |
+| `apply_fix` | `action_type`, `target`, `parameters?` | Execute a fix action with verification and decision recording |
+
+### apply_fix
+
+Executes a fix action to improve data quality. Returns JSON with success status, before/after verification, and a decision record for audit.
+
+```
+> Apply the override_type fix to column:orders.amount with target_type DECIMAL(10,2)
+```
+
+Available action types: `override_type`, `declare_unit`, `add_business_name`, `declare_null_meaning`, `confirm_relationship`, `create_filtered_view`. See [Entropy: Fix Execution](entropy.md#fix-execution) for details.
 
 ### Contract names
 
-`aggregation_safe`, `executive_dashboard`, `ml_training`, `regulatory_reporting`
+`exploratory_analysis`, `data_science`, `operational_analytics`, `aggregation_safe`, `executive_dashboard`, `regulatory_reporting`
 
 ---
 

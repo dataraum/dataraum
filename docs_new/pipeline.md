@@ -16,6 +16,15 @@ dataraum run /path/to/data --skip-llm
 
 # Run up to a specific phase (includes dependencies)
 dataraum run /path/to/data --phase statistics
+
+# Run with interactive gate handling (pause at entropy violations)
+dataraum run /path/to/data --gate-mode pause
+
+# Run with a target contract
+dataraum run /path/to/data --gate-mode pause --contract aggregation_safe
+
+# Auto-fix mode (skip gates, fix via MCP after)
+dataraum run /path/to/data --gate-mode auto_fix
 ```
 
 Via MCP (Claude Code, Claude Desktop):
@@ -33,28 +42,28 @@ ctx = Context("./pipeline_output")
 
 ## Phase Overview
 
-| # | Phase | Purpose | LLM | Dependencies |
-|---|-------|---------|-----|--------------|
+| # | Phase | Purpose | LLM | Gate Preconditions |
+|---|-------|---------|-----|--------------------|
 | 1 | **import** | Load files into raw VARCHAR tables | — | — |
-| 2 | **typing** | Type inference and resolution with quarantine | — | import |
+| 2 | **typing** | Type inference and resolution with quarantine | — | — |
 | 3 | **temporal** | Temporal pattern and trend analysis | — | — |
-| 4 | **statistics** | Statistical profiling of typed columns | — | typing |
-| 5 | **column_eligibility** | Determine which columns qualify for analysis | — | statistics |
-| 6 | **correlations** | Within-table correlation analysis | — | column_eligibility |
-| 7 | **relationships** | Cross-table join detection (FK candidates) | — | column_eligibility |
-| 8 | **statistical_quality** | Benford's Law compliance, outlier detection | — | column_eligibility |
-| 9 | **semantic** | Business meaning, roles, entity types (dual-tier) | Yes | relationships, correlations |
-| — | ~~cross_table_quality~~ | Cross-table correlation analysis (de-configured) | — | semantic |
-| 10 | **enriched_views** | Fact + dimension joined views | — | semantic |
-| 11 | **slicing** | Identify slice dimensions for analysis | Yes | enriched_views |
-| 12 | **slice_analysis** | Execute slicing SQL, build slice tables | — | slicing |
-| 13 | **temporal_slice_analysis** | Distribution drift across slices over time | — | slice_analysis, temporal |
-| 14 | **quality_summary** | Synthesize quality report per table | Yes | slice_analysis, temporal_slice_analysis |
-| 15 | **entropy** | Measure uncertainty across 4 dimensions | — | typing, column_eligibility, semantic, relationships, correlations, quality_summary, temporal_slice_analysis |
-| 16 | **entropy_interpretation** | LLM interpretation of entropy scores | Yes | entropy |
+| 4 | **statistics** | Statistical profiling of typed columns | — | type_fidelity ≤ 0.5 |
+| 5 | **column_eligibility** | Determine which columns qualify for analysis | — | — |
+| 6 | **correlations** | Within-table correlation analysis | — | — |
+| 7 | **relationships** | Cross-table join detection (FK candidates) | — | — |
+| 8 | **statistical_quality** | Benford's Law compliance, outlier detection | — | — |
+| 9 | **semantic** | Business meaning, roles, entity types (dual-tier) | Yes | type_fidelity ≤ 0.3, join_path_determinism ≤ 0.5 |
+| — | ~~cross_table_quality~~ | Cross-table correlation analysis (de-configured) | — | — |
+| 10 | **enriched_views** | Fact + dimension joined views | — | — |
+| 11 | **slicing** | Identify slice dimensions for analysis | Yes | — |
+| 12 | **slice_analysis** | Execute slicing SQL, build slice tables | — | — |
+| 13 | **temporal_slice_analysis** | Distribution drift across slices over time | — | — |
+| 14 | **quality_summary** | Synthesize quality report per table | Yes | — |
+| 15 | **entropy** | Measure uncertainty across 4 dimensions | — | — |
+| 16 | **entropy_interpretation** | LLM interpretation of entropy scores | Yes | — |
 | 17 | **business_cycles** | Detect business processes across tables | Yes | — |
-| 18 | **validation** | Domain-specific validation checks | Yes | semantic, relationships, enriched_views, slicing |
-| 19 | **graph_execution** | Execute metric calculation graphs | Yes | — |
+| 18 | **validation** | Domain-specific validation checks | Yes | — |
+| 19 | **graph_execution** | Execute metric calculation graphs | Yes | type_fidelity ≤ 0.3, naming_clarity ≤ 0.4 |
 
 7 of 19 active phases require an LLM. Use `--skip-llm` to run only the 12 non-LLM phases.
 
@@ -74,6 +83,27 @@ Quality summaries synthesize per-table reports. Entropy detection measures uncer
 
 ### Domain Layer (Phases 18–20)
 Business cycle detection finds multi-table processes (e.g., order-to-cash). Validation runs domain-specific checks (e.g., debits = credits). Graph execution computes configured metrics.
+
+## Entropy Gates
+
+Gates are checkpoints between pipeline phases where **entropy preconditions** are verified. When a phase's preconditions are not met (entropy is too high), the gate fires and the pipeline's behavior depends on the `--gate-mode`:
+
+| Mode | Behavior |
+|------|----------|
+| `skip` (default) | Log warning, continue anyway |
+| `pause` | Block the phase, present violations and fix options interactively |
+| `fail` | Treat as pipeline failure |
+| `auto_fix` | Skip gates, allow LLM to fix issues via MCP after |
+
+Gates use only **hard detectors** — machine-verifiable scores that can objectively gate the pipeline. Soft detectors (LLM-derived, like business meaning) inform actions but don't block phases. See [Entropy: Detector Trust](entropy.md#detector-trust) for the classification.
+
+When a gate fires in `pause` mode, the user sees:
+- Which dimensions are blocking (e.g., `type_fidelity: 0.62 > threshold 0.5`)
+- Suggested fix actions with confidence levels
+- A skip option to continue anyway
+- A free-text escape hatch for LLM-powered questions about the gate
+
+Fix actions execute through the `FixExecutor`, which records every decision in an immutable **decision ledger** for audit and reproducibility.
 
 ## Dependency Graph
 

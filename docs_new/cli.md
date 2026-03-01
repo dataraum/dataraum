@@ -28,6 +28,8 @@ dataraum run SOURCE [OPTIONS]
 - `-n, --name TEXT` - Name for the data source (default: derived from path)
 - `-p, --phase TEXT` - Run only this phase and its dependencies
 - `-f, --force` - Force re-run of target phase, deleting previous results (requires `--phase`)
+- `-g, --gate-mode {skip|pause|fail|auto_fix}` - How to handle entropy gates (default: `skip`)
+- `--contract TEXT` - Target contract name for gate evaluation
 - `--skip-llm` - Skip phases that require LLM
 - `-q, --quiet` - Suppress progress output
 
@@ -45,6 +47,15 @@ dataraum run /path/to/data --phase statistics
 
 # Run without LLM phases (faster, no API calls)
 dataraum run /path/to/data --skip-llm
+
+# Interactive gate handling — pause at entropy violations
+dataraum run /path/to/data --gate-mode pause
+
+# Gate with contract evaluation
+dataraum run /path/to/data --gate-mode pause --contract aggregation_safe
+
+# Auto-fix mode for MCP-driven pipelines
+dataraum run /path/to/data --gate-mode auto_fix
 ```
 
 ### Re-running a Single Phase

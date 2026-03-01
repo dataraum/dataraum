@@ -12,7 +12,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           CONSUMERS                                         │
 │                                                                             │
-│   Claude Code ──── MCP Server (6 tools)                                     │
+│   Claude Code ──── MCP Server (7 tools)                                     │
 │   Claude Desktop ─┘                       ContextDocument (pre-assembled)   │
 │   Python ──────── Context API                                               │
 │   Terminal ────── CLI + TUI (8 commands)                                     │
@@ -21,9 +21,10 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           ENTROPY LAYER                                     │
 │                                                                             │
-│   12 Detectors (4 layers)  ──▶  Contracts (6 built-in)                      │
-│   Bayesian Network         ──▶  Actions (prioritized fixes)                 │
-│   LLM Interpretation       ──▶  Confidence Levels (traffic light)           │
+│   12 Detectors (8 hard, 3 soft) ──▶  Contracts (6 built-in)                 │
+│   Bayesian Network              ──▶  Actions (prioritized fixes)            │
+│   Gates (entropy preconditions) ──▶  Fix Executor + Decision Ledger        │
+│   LLM Interpretation            ──▶  Confidence Levels (traffic light)      │
 └─────────────────────────────────────────────────────────────────────────────┘
                                        ↑
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -66,6 +67,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 │                           PIPELINE ORCHESTRATOR                             │
 │                                                                             │
 │   19 phases with dependency-based execution                                 │
+│   Entropy gates between phases (hard detector preconditions)                │
 │   ThreadPoolExecutor (true parallelism via Python 3.14 free-threading)      │
 │   Idempotent phases, checkpoint-based resumption                            │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -83,6 +85,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 │   │ quality_reports,     │                                                  │
 │   │ entropy_snapshots,   │                                                  │
 │   │ entropy_records,     │                                                  │
+│   │ decisions,           │                                                  │
 │   │ slice_definitions,   │                                                  │
 │   │ validation_results,  │                                                  │
 │   │ ...                  │                                                  │
@@ -94,7 +97,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 
 | Layer | Technology | Purpose |
 |-------|------------|---------|
-| **AI Interface** | MCP Server | 6 tools for AI agents (Claude Code, Claude Desktop) |
+| **AI Interface** | MCP Server | 7 tools for AI agents (Claude Code, Claude Desktop) |
 | **CLI** | Typer + Rich | 8 commands for terminal use |
 | **TUI** | Textual | Interactive terminal dashboards |
 | **Python API** | `Context` class | Programmatic access for notebooks and scripts |
@@ -119,7 +122,7 @@ AI doesn't discover metadata at runtime via tools. It receives a pre-assembled c
 
 ### Minimal Tool Surface
 
-Only 6 MCP tools: `analyze`, `get_context`, `get_entropy`, `evaluate_contract`, `query`, `get_actions`. Rich context upfront instead of many discovery tools.
+Only 7 MCP tools: `analyze`, `get_context`, `get_entropy`, `evaluate_contract`, `query`, `get_actions`, `apply_fix`. Rich context upfront instead of many discovery tools.
 
 ### Entropy Over Binary Quality
 
@@ -153,32 +156,39 @@ src/dataraum/
 │   ├── validation/        # Domain validation rules
 │   └── quality_summary/   # Quality report synthesis
 ├── entropy/               # Uncertainty quantification
-│   ├── detectors/         # 12 detectors across 4 layers
+│   ├── detectors/         # 12 detectors across 4 layers (8 hard, 3 soft)
 │   │   ├── structural/    # Type fidelity, join paths, relationship quality
 │   │   ├── semantic/      # Business meaning, units, temporal, dimensional
 │   │   ├── value/         # Nulls, outliers, drift, Benford
 │   │   └── computational/ # Derived values, aggregation safety
 │   ├── contracts/         # Use-case threshold evaluation
 │   ├── network/           # Bayesian causal network
+│   ├── decisions.py       # Decision dataclass + DecisionRecord DB model
+│   ├── fix_executor.py    # ActionRegistry, FixExecutor, FixRequest/FixResult
+│   ├── action_executors.py # 6 seed action executors
 │   ├── context.py         # Entropy context builder
 │   └── interpretation.py  # LLM entropy interpretation
 ├── graphs/                # Metric calculation graphs
 ├── query/                 # Natural language query execution
 ├── pipeline/              # Pipeline orchestrator
 │   ├── registry.py        # Phase auto-discovery
-│   ├── runner.py          # Execution engine
-│   └── phases/            # 20 phase implementations
+│   ├── runner.py          # Execution engine + GateMode
+│   ├── gates.py           # Gate model, GateHandler protocol
+│   ├── entropy_state.py   # Runtime hard score tracking
+│   └── phases/            # 20 phase implementations (with entropy_preconditions)
 ├── sources/               # Data source loaders (CSV, Parquet)
 ├── storage/               # SQLAlchemy base, migrations
 ├── llm/                   # LLM provider abstraction, prompt management
 ├── core/                  # Config, connections, utilities, models
 ├── cli/                   # Typer commands + Textual TUI
 │   ├── main.py            # CLI entry point (8 commands)
+│   ├── gate_handler.py    # Interactive CLI gate handler (Rich prompts)
 │   ├── app.py             # Textual application
-│   ├── screens/           # TUI screens
+│   ├── screens/           # TUI screens (home with gate status)
 │   └── widgets/           # TUI widgets
 └── mcp/                   # MCP server
-    ├── server.py          # 6 tool definitions
+    ├── server.py          # 7 tool definitions
+    ├── gate_handler.py    # MCPGateHandler for AI agent gate resolution
     └── formatters.py      # LLM-optimized markdown output
 ```
 
@@ -193,7 +203,11 @@ Source (CSV/Parquet)
     ↓
 [typing] Type inference + cast testing → typed_{table}, quarantine_{table}
     ↓
+ ⊘ GATE: type_fidelity ≤ 0.5
+    ↓
 [statistics, temporal, correlations, relationships] Statistical metadata
+    ↓
+ ⊘ GATE: type_fidelity ≤ 0.3, join_path_determinism ≤ 0.5
     ↓
 [semantic] LLM analysis → roles, entities, business terms
     ↓
@@ -205,14 +219,18 @@ Source (CSV/Parquet)
     ↓
 [entropy_interpretation] LLM → human-readable explanations + actions
     ↓
+ ⊘ GATE: type_fidelity ≤ 0.3, naming_clarity ≤ 0.4
+    ↓
 [business_cycles, validation, graph_execution] Domain-specific analysis
     ↓
 Context document → MCP / CLI / Python API → AI consumer
 ```
 
+At each gate (⊘), the pipeline checks hard detector scores against thresholds. Gate behavior depends on `--gate-mode` (skip, pause, fail, auto_fix). Fixes applied at gates are recorded in the decision ledger.
+
 ## Interfaces
 
-### MCP Server (6 tools)
+### MCP Server (7 tools)
 
 Primary interface for AI agents. Tools return markdown formatted for LLM consumption.
 
@@ -224,6 +242,7 @@ Primary interface for AI agents. Tools return markdown formatted for LLM consump
 | `evaluate_contract` | Contract compliance check |
 | `query` | Natural language data queries |
 | `get_actions` | Prioritized quality fixes |
+| `apply_fix` | Execute a fix action with verification |
 
 ### CLI (8 commands)
 

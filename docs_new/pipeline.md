@@ -11,9 +11,6 @@ dataraum run /path/to/data
 # Single file with custom output directory
 dataraum run /path/to/file.csv --output ./my_output
 
-# Skip LLM phases (faster, no API calls)
-dataraum run /path/to/data --skip-llm
-
 # Run up to a specific phase (includes dependencies)
 dataraum run /path/to/data --phase statistics
 
@@ -22,9 +19,6 @@ dataraum run /path/to/data --gate-mode pause
 
 # Run with a target contract
 dataraum run /path/to/data --gate-mode pause --contract aggregation_safe
-
-# Auto-fix mode (skip gates, fix via MCP after)
-dataraum run /path/to/data --gate-mode auto_fix
 ```
 
 Via MCP (Claude Code, Claude Desktop):
@@ -65,7 +59,7 @@ ctx = Context("./pipeline_output")
 | 18 | **validation** | Domain-specific validation checks | Yes | — |
 | 19 | **graph_execution** | Execute metric calculation graphs | Yes | type_fidelity ≤ 0.3, naming_clarity ≤ 0.4 |
 
-7 of 19 active phases require an LLM. Use `--skip-llm` to run only the 12 non-LLM phases.
+7 of 19 active phases require an LLM.
 
 ## Phase Categories
 
@@ -90,10 +84,10 @@ Gates are checkpoints between pipeline phases where **entropy preconditions** ar
 
 | Mode | Behavior |
 |------|----------|
-| `skip` (default) | Log warning, continue anyway |
-| `pause` | Block the phase, present violations and fix options interactively |
+| `skip` (default for non-TTY) | Log warning, continue anyway |
+| `pause` (default for interactive TTY) | Block the phase, present violations and fix options interactively |
 | `fail` | Treat as pipeline failure |
-| `auto_fix` | Skip gates, allow LLM to fix issues via MCP after |
+| `auto_fix` | Attempt automatic fix via FixExecutor, skip if fix fails |
 
 Gates use only **hard detectors** — machine-verifiable scores that can objectively gate the pipeline. Soft detectors (LLM-derived, like business meaning) inform actions but don't block phases. See [Entropy: Detector Trust](entropy.md#detector-trust) for the classification.
 
@@ -103,7 +97,18 @@ When a gate fires in `pause` mode, the user sees:
 - A skip option to continue anyway
 - A free-text escape hatch for LLM-powered questions about the gate
 
-Fix actions execute through the `FixExecutor`, which records every decision in an immutable **decision ledger** for audit and reproducibility.
+Fix actions execute through the `FixExecutor`, which takes before/after hard snapshots to verify improvement. Every decision is recorded in an immutable **decision ledger** for audit and reproducibility.
+
+### Post-Verification
+
+After each phase completes, the orchestrator runs **post-verification** — re-measuring the hard detector scores for dimensions that the phase's output affects. For example:
+
+- After `typing`: measures `type_fidelity`
+- After `statistics`: measures `null_ratio`, `outlier_rate`
+- After `relationships`: measures `join_path_determinism`, `relationship_quality`
+- After `semantic`: measures `naming_clarity`, `unit_declaration`
+
+This populates the `PipelineEntropyState` so that subsequent gates can fire on the first pipeline run (without requiring a prior entropy phase to have run).
 
 ## Dependency Graph
 
@@ -157,19 +162,15 @@ The pipeline writes to the output directory (default: `./pipeline_output`):
 ```bash
 # Show phase execution history, table counts, timing
 dataraum status ./pipeline_output
-
-# List all phases with dependencies and LLM requirements
-dataraum phases
 ```
 
-## Rerunning and Resetting
+## Rerunning Phases
 
 Phases are idempotent. Rerunning the pipeline skips already-completed phases unless source data has changed.
 
 ```bash
-# Delete databases and start fresh
-dataraum reset ./pipeline_output
-
-# Force reset without confirmation
-dataraum reset ./pipeline_output --force
+# Force re-run of a specific phase
+dataraum run /path/to/data --phase statistics --force
 ```
+
+To start completely fresh, delete the output directory and re-run.

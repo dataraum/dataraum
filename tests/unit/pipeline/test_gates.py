@@ -149,3 +149,95 @@ class TestBuildGate:
             entropy_state=state,
         )
         assert gate.entropy_state == state
+
+    def test_fix_actions_for_type_fidelity(self):
+        gate = build_gate(
+            blocked_phase="statistics",
+            violations={"type_fidelity": (0.6, 0.5)},
+            entropy_state={"type_fidelity": 0.6},
+        )
+        fix_actions = [a for a in gate.suggested_actions if a.action_type == GateActionType.FIX]
+        assert len(fix_actions) == 1
+        assert fix_actions[0].parameters["action_type"] == "override_type"
+        # Skip should still be last
+        assert gate.suggested_actions[-1].action_type == GateActionType.SKIP
+
+    def test_fix_actions_for_null_ratio(self):
+        gate = build_gate(
+            blocked_phase="test",
+            violations={"null_ratio": (0.8, 0.3)},
+            entropy_state={"null_ratio": 0.8},
+        )
+        fix_actions = [a for a in gate.suggested_actions if a.action_type == GateActionType.FIX]
+        action_types = {a.parameters["action_type"] for a in fix_actions}
+        assert "declare_null_meaning" in action_types
+        assert "create_filtered_view" in action_types
+
+    def test_fix_actions_for_naming_clarity(self):
+        gate = build_gate(
+            blocked_phase="test",
+            violations={"naming_clarity": (0.7, 0.4)},
+            entropy_state={"naming_clarity": 0.7},
+        )
+        fix_actions = [a for a in gate.suggested_actions if a.action_type == GateActionType.FIX]
+        assert len(fix_actions) == 1
+        assert fix_actions[0].parameters["action_type"] == "add_business_name"
+
+    def test_fix_actions_deduplicated(self):
+        """Multiple dimensions mapping to the same action type should not duplicate."""
+        gate = build_gate(
+            blocked_phase="test",
+            violations={
+                "join_path_determinism": (0.8, 0.5),
+                "relationship_quality": (0.7, 0.4),
+            },
+            entropy_state={},
+        )
+        fix_actions = [a for a in gate.suggested_actions if a.action_type == GateActionType.FIX]
+        # confirm_relationship appears once despite two dimensions mapping to it
+        assert len(fix_actions) == 1
+        assert fix_actions[0].parameters["action_type"] == "confirm_relationship"
+
+    def test_fix_action_indices_sequential(self):
+        gate = build_gate(
+            blocked_phase="test",
+            violations={"type_fidelity": (0.6, 0.5), "null_ratio": (0.8, 0.3)},
+            entropy_state={},
+        )
+        indices = [a.index for a in gate.suggested_actions]
+        assert indices == list(range(1, len(indices) + 1))
+
+    def test_fix_all_when_multiple_fixes(self):
+        """FIX_ALL action should appear when there are 2+ fix actions."""
+        gate = build_gate(
+            blocked_phase="test",
+            violations={"null_ratio": (0.8, 0.3)},
+            entropy_state={},
+        )
+        fix_actions = [a for a in gate.suggested_actions if a.action_type == GateActionType.FIX]
+        fix_all_actions = [a for a in gate.suggested_actions if a.action_type == GateActionType.FIX_ALL]
+        assert len(fix_actions) == 2  # declare_null_meaning + create_filtered_view
+        assert len(fix_all_actions) == 1
+        # Skip is still last
+        assert gate.suggested_actions[-1].action_type == GateActionType.SKIP
+
+    def test_no_fix_all_with_single_fix(self):
+        """FIX_ALL should not appear when there's only one fix action."""
+        gate = build_gate(
+            blocked_phase="test",
+            violations={"type_fidelity": (0.6, 0.5)},
+            entropy_state={},
+        )
+        fix_all = [a for a in gate.suggested_actions if a.action_type == GateActionType.FIX_ALL]
+        assert len(fix_all) == 0
+
+    def test_unknown_dimension_no_fix_actions(self):
+        gate = build_gate(
+            blocked_phase="test",
+            violations={"temporal_drift": (0.9, 0.5)},
+            entropy_state={"temporal_drift": 0.9},
+        )
+        fix_actions = [a for a in gate.suggested_actions if a.action_type == GateActionType.FIX]
+        assert len(fix_actions) == 0
+        # Still has skip
+        assert gate.suggested_actions[-1].action_type == GateActionType.SKIP

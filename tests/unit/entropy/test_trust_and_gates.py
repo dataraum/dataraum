@@ -27,6 +27,7 @@ EXPECTED_SOFT = {
     "business_meaning",
     "unit_entropy",
     "temporal_entropy",
+    "dimensional_entropy",
 }
 
 

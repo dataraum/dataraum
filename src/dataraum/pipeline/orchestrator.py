@@ -39,6 +39,7 @@ from dataraum.pipeline.base import (
 )
 from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
 from dataraum.pipeline.entropy_state import PipelineEntropyState
+from dataraum.pipeline.gates import GateActionType
 from dataraum.pipeline.registry import get_all_dependencies, get_registry
 
 logger = get_logger(__name__)
@@ -115,6 +116,9 @@ class PipelineConfig:
     max_retries: int = 2
     backoff_base: float = 2.0
     gate_mode: str = "skip"  # "skip", "pause", "fail"
+    contract: str | None = None  # Target contract name
+    gate_handler: Any | None = None  # GateHandler implementation
+    max_fix_attempts: int = 3  # Max gate resolution attempts per phase
 
 
 @dataclass
@@ -137,6 +141,7 @@ class Pipeline:
     _failed: set[str] = field(default_factory=set)
     _skipped: set[str] = field(default_factory=set)
     _gate_blocked: set[str] = field(default_factory=set)
+    _gate_attempts: dict[str, int] = field(default_factory=dict)  # Per-phase gate attempt count
     _outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
     _phase_priority: dict[str, int] = field(default_factory=dict)  # Transitive dependent count
     _entropy_state: PipelineEntropyState = field(default_factory=PipelineEntropyState)
@@ -251,6 +256,7 @@ class Pipeline:
         self._failed = set()
         self._skipped = set()
         self._gate_blocked = set()
+        self._gate_attempts = {}
         self._outputs = {}
         self._entropy_state = PipelineEntropyState()
 
@@ -270,6 +276,8 @@ class Pipeline:
                 source_id=source_id,
                 target_phase=target_phase,
                 config=stored_config,
+                contract_name=self.config.contract,
+                gate_mode=self.config.gate_mode,
             )
             session.add(run)
 
@@ -400,7 +408,64 @@ class Pipeline:
                     work_queue.extend(not_ready)
 
                     if not active_futures:
-                        # Nothing running, nothing could be submitted — done or deadlock
+                        # Nothing running — check for gate-blocked phases that can
+                        # be resolved via handler before declaring deadlock.
+                        gate_blocked_in_queue = [
+                            n for n in work_queue if n in self._gate_blocked
+                        ]
+                        if gate_blocked_in_queue and self.config.gate_handler:
+                            from dataraum.pipeline.gates import build_gate
+
+                            # Pick highest-priority blocked phase
+                            target = max(
+                                gate_blocked_in_queue,
+                                key=lambda n: self._phase_priority.get(n, 0),
+                            )
+                            gate_passed, gate_reason = self._check_gate(target)
+                            if not gate_passed:
+                                violations = self._entropy_state.check_preconditions(
+                                    self.phases[target].entropy_preconditions
+                                )
+                                gate = build_gate(
+                                    blocked_phase=target,
+                                    violations=violations,
+                                    entropy_state=self._entropy_state.to_dict(),
+                                )
+                                resolution = self.config.gate_handler.resolve(gate)
+
+                                if resolution.action_taken == GateActionType.SKIP:
+                                    self._gate_blocked.discard(target)
+                                    # Remove the GATE_BLOCKED result so it can be re-submitted
+                                    results.pop(target, None)
+                                elif resolution.action_taken in (
+                                    GateActionType.FIX,
+                                    GateActionType.FIX_ALL,
+                                ):
+                                    # After fix, re-check all gates — some may now pass
+                                    for name in list(self._gate_blocked):
+                                        passed, _ = self._check_gate(name)
+                                        if passed:
+                                            self._gate_blocked.discard(name)
+                                            results.pop(name, None)
+
+                                # Track attempts, enforce max
+                                self._gate_attempts[target] = (
+                                    self._gate_attempts.get(target, 0) + 1
+                                )
+                                if (
+                                    self._gate_attempts.get(target, 0)
+                                    >= self.config.max_fix_attempts
+                                ):
+                                    results[target] = PhaseResult(
+                                        status=PhaseStatus.GATE_BLOCKED,
+                                        error="Max fix attempts exceeded",
+                                    )
+                                    self._gate_blocked.discard(target)
+                                    work_queue = deque(
+                                        n for n in work_queue if n != target
+                                    )
+
+                                continue  # Re-loop to try submitting unblocked phases
                         break
 
                     # Wait for at least one future to complete
@@ -435,6 +500,16 @@ class Pipeline:
                             if hard_scores and isinstance(hard_scores, dict):
                                 for dim, score in hard_scores.items():
                                     self._entropy_state.update_score(dim, score)
+
+                            # Post-verification: run hard detectors for declared dimensions
+                            phase = self.phases.get(name)
+                            if phase and phase.post_verification:
+                                post_scores = self._run_post_verification(
+                                    phase, manager, source_id, table_ids or []
+                                )
+                                for dim, score in post_scores.items():
+                                    self._entropy_state.update_score(dim, score)
+
                             self._notify_progress(
                                 progress_callback,
                                 completed_step,
@@ -688,6 +763,19 @@ class Pipeline:
                 # End phase metrics collection and get the data
                 collected_metrics = end_phase_metrics()
 
+                # Determine gate status for this phase
+                phase_obj = self.phases.get(phase_name)
+                gate_status_val: str | None = None
+                gate_reason_val: str | None = None
+                if phase_obj and phase_obj.entropy_preconditions:
+                    gate_passed, gate_reason_str = self._check_gate(phase_name)
+                    if gate_passed:
+                        gate_status_val = "passed"
+                    else:
+                        # Phase ran despite gate (skip mode)
+                        gate_status_val = "skipped"
+                        gate_reason_val = gate_reason_str
+
                 # Save checkpoint with detailed metrics (outside cursor context, inside session)
                 checkpoint = PhaseCheckpoint(
                     run_id=run_id,
@@ -713,6 +801,10 @@ class Pipeline:
                     ),
                     error=result.error,
                     warnings=result.warnings,
+                    # Gate tracking
+                    entropy_hard_scores=self._entropy_state.to_dict() or None,
+                    gate_status=gate_status_val,
+                    gate_reason=gate_reason_val,
                 )
                 session.add(checkpoint)
                 # session.commit() happens automatically in session_scope()
@@ -752,6 +844,103 @@ class Pipeline:
                 pass  # Don't mask the original error
 
         return result
+
+    def _run_post_verification(
+        self,
+        phase: Phase,
+        manager: ConnectionManager,
+        source_id: str,
+        table_ids: list[str],
+    ) -> dict[str, float]:
+        """Run hard detectors for a phase's declared post_verification dimensions.
+
+        Called on the main thread after a phase completes. Uses a fresh session
+        since the phase's thread-local session is closed.
+
+        Args:
+            phase: The completed phase with post_verification declarations
+            manager: Connection manager for DB access
+            source_id: Source identifier
+            table_ids: Table IDs to measure
+
+        Returns:
+            Dict of sub_dimension -> aggregated score
+        """
+        from dataraum.entropy.hard_snapshot import take_hard_snapshot
+        from dataraum.storage import Column, Table
+
+        dimensions = phase.post_verification
+        if not dimensions:
+            return {}
+
+        try:
+            with manager.session_scope() as session:
+                # Get typed tables and their columns
+                if table_ids:
+                    tables = (
+                        session.execute(
+                            select(Table).where(
+                                Table.table_id.in_(table_ids),
+                                Table.layer == "typed",
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                else:
+                    tables = (
+                        session.execute(
+                            select(Table).where(
+                                Table.source_id == source_id,
+                                Table.layer == "typed",
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+
+                if not tables:
+                    return {}
+
+                # Collect scores across all columns
+                all_scores: dict[str, list[float]] = {}
+
+                for table in tables:
+                    columns = (
+                        session.execute(
+                            select(Column).where(Column.table_id == table.table_id)
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    for col in columns:
+                        target = f"column:{table.table_name}.{col.column_name}"
+                        snapshot = take_hard_snapshot(
+                            target=target,
+                            session=session,
+                            dimensions=dimensions,
+                        )
+                        for dim, score in snapshot.scores.items():
+                            all_scores.setdefault(dim, []).append(score)
+
+                # Aggregate: mean score per dimension
+                aggregated: dict[str, float] = {}
+                for dim, scores in all_scores.items():
+                    if scores:
+                        aggregated[dim] = sum(scores) / len(scores)
+
+                logger.info(
+                    f"Post-verification for {phase.name}: "
+                    f"{', '.join(f'{d}={s:.3f}' for d, s in aggregated.items())}"
+                )
+                return aggregated
+
+        except Exception:
+            logger.warning(
+                f"Post-verification failed for {phase.name}",
+                exc_info=True,
+            )
+            return {}
 
     def _check_gate(self, phase_name: str) -> tuple[bool, str]:
         """Check if a phase's entropy preconditions are met.

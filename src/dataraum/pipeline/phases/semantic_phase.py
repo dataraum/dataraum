@@ -64,6 +64,10 @@ class SemanticPhase(BasePhase):
         return {"type_fidelity": 0.3, "join_path_determinism": 0.5}
 
     @property
+    def post_verification(self) -> list[str]:
+        return ["naming_clarity", "unit_declaration"]
+
+    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.semantic import db_models
 

@@ -52,6 +52,10 @@ class StatisticsPhase(BasePhase):
         return {"type_fidelity": 0.5}
 
     @property
+    def post_verification(self) -> list[str]:
+        return ["null_ratio", "outlier_rate"]
+
+    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.statistics import db_models
 

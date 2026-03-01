@@ -42,7 +42,7 @@ class MCPGateHandler:
         """Whether there is a gate waiting for resolution."""
         return self._current_gate is not None and self._resolution is None
 
-    async def resolve(self, gate: Gate) -> GateResolution:
+    def resolve(self, gate: Gate) -> GateResolution:
         """Store gate for external resolution and return skip.
 
         In the MCP flow, gates are not resolved interactively.
@@ -61,7 +61,7 @@ class MCPGateHandler:
         # Auto-skip in MCP mode — the LLM sees gate info via get_actions
         return GateResolution(action_taken=GateActionType.SKIP)
 
-    async def notify(self, message: str) -> None:
+    def notify(self, message: str) -> None:
         """Record notification for later retrieval."""
         self._notifications.append(message)
         _log.info("Gate notification: %s", message)

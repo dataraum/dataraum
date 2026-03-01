@@ -76,6 +76,7 @@ class RunConfig:
     gate_mode: GateMode = GateMode.SKIP
     contract: str | None = None  # Target contract name
     max_fix_attempts: int = 3
+    gate_handler: Any | None = None  # GateHandler implementation
 
 
 @dataclass
@@ -186,6 +187,9 @@ def create_pipeline(config: RunConfig, pipeline_yaml: dict[str, Any] | None = No
         max_retries=retry_cfg.get("max_retries", 2),
         backoff_base=retry_cfg.get("backoff_base", 2.0),
         gate_mode=config.gate_mode.value,
+        contract=config.contract,
+        gate_handler=config.gate_handler,
+        max_fix_attempts=config.max_fix_attempts,
     )
 
     # Active phases from YAML config (or all registered if not specified)
@@ -384,6 +388,10 @@ def run(config: RunConfig) -> Result[RunResult]:
                 logger.info("source_set_fingerprint_changed", fingerprint=fingerprint)
         else:
             fingerprint = None
+
+        # Inject pipeline context into gate handler (for fix execution)
+        if config.gate_handler and hasattr(config.gate_handler, "set_context"):
+            config.gate_handler.set_context(manager, source_id)
 
         logger.info(
             "pipeline_run_started",

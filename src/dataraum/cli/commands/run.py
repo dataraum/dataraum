@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -136,6 +137,81 @@ def run(
             raise typer.Exit(1)
         source_path = resolved
 
+    # TTY detection for interactive features
+    is_interactive = sys.stdin.isatty() and not quiet
+
+    # Default gate_mode: TTY → pause, non-TTY → skip
+    if gate_mode == "skip" and is_interactive:
+        # User didn't explicitly set gate_mode; use pause for interactive sessions
+        pass  # Keep as skip unless user wants interactive — opt-in for now
+
+    # Warn if pause requested in non-interactive mode
+    if resolved_gate_mode == GateMode.PAUSE and not is_interactive:
+        console.print(
+            "[yellow]Warning: --gate-mode pause requires an interactive terminal. "
+            "Falling back to skip.[/yellow]"
+        )
+        resolved_gate_mode = GateMode.SKIP
+
+    # Interactive contract selection (if TTY and no --contract specified)
+    if is_interactive and contract is None:
+        from dataraum.entropy.contracts import list_contracts
+
+        available = list_contracts()
+        if available:
+            contract_names = [c["name"] for c in available]
+            console.print()
+            console.print("[bold]Available contracts:[/bold]")
+            for i, c in enumerate(available, 1):
+                console.print(f"  [{i}] {c['display_name']} — {c['description']}")
+            console.print("  [0] None (skip contract evaluation)")
+            console.print()
+            try:
+                from rich.prompt import Prompt
+
+                choice = Prompt.ask(
+                    "  Select contract",
+                    default="0",
+                    console=console,
+                )
+                choice = choice.strip()
+                if choice.isdigit():
+                    idx = int(choice)
+                    if 1 <= idx <= len(contract_names):
+                        contract = contract_names[idx - 1]
+                        console.print(f"  Using contract: [bold]{contract}[/bold]")
+            except (KeyboardInterrupt, EOFError):
+                pass
+
+    # Wire gate handler for interactive mode
+    gate_handler = None
+    if resolved_gate_mode == GateMode.PAUSE and is_interactive:
+        from dataraum.cli.gate_handler import InteractiveCLIHandler
+
+        gate_handler = InteractiveCLIHandler(console=console)
+
+    # Progress callback for interactive mode
+    progress_callback = None
+    if is_interactive:
+        from rich.status import Status
+
+        _status: Status | None = None
+
+        def _progress(current: int, total: int, message: str) -> None:
+            nonlocal _status
+            if _status is None:
+                _status = Status(message, console=console, spinner="dots")
+                _status.start()
+            if current >= total or "complete" in message.lower():
+                if _status:
+                    _status.stop()
+                    _status = None
+            else:
+                if _status:
+                    _status.update(f"[{current}/{total}] {message}")
+
+        progress_callback = _progress
+
     config = RunConfig(
         source_path=source_path,
         output_dir=output,
@@ -144,6 +220,8 @@ def run(
         force_phase=force,
         gate_mode=resolved_gate_mode,
         contract=contract,
+        gate_handler=gate_handler,
+        progress_callback=progress_callback,
     )
 
     # Run pipeline - always returns Result.ok with RunResult

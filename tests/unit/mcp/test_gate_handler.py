@@ -1,7 +1,5 @@
 """Tests for MCP gate handler."""
 
-import pytest
-
 from dataraum.mcp.gate_handler import MCPGateHandler
 from dataraum.pipeline.gates import (
     Gate,
@@ -33,46 +31,39 @@ def _make_gate(**kwargs):
 
 
 class TestMCPGateHandler:
-    @pytest.mark.asyncio
-    async def test_resolve_returns_skip(self):
+    def test_resolve_returns_skip(self):
         handler = MCPGateHandler()
         gate = _make_gate()
-        resolution = await handler.resolve(gate)
+        resolution = handler.resolve(gate)
         assert resolution.action_taken == GateActionType.SKIP
 
-    @pytest.mark.asyncio
-    async def test_resolve_stores_current_gate(self):
+    def test_resolve_stores_current_gate(self):
         handler = MCPGateHandler()
         gate = _make_gate()
-        await handler.resolve(gate)
+        handler.resolve(gate)
         assert handler.current_gate is gate
 
-    @pytest.mark.asyncio
-    async def test_has_pending_gate_after_resolve(self):
+    def test_has_pending_gate_after_resolve(self):
         handler = MCPGateHandler()
         assert not handler.has_pending_gate
         gate = _make_gate()
-        await handler.resolve(gate)
-        # After resolve returns skip, the gate is stored but resolved
-        # has_pending_gate checks _resolution is None
+        handler.resolve(gate)
         assert handler.has_pending_gate
 
-    @pytest.mark.asyncio
-    async def test_notify_stores_messages(self):
+    def test_notify_stores_messages(self):
         handler = MCPGateHandler()
-        await handler.notify("Gate cleared: type_fidelity improved")
-        await handler.notify("Pipeline continuing")
+        handler.notify("Gate cleared: type_fidelity improved")
+        handler.notify("Pipeline continuing")
         assert len(handler._notifications) == 2
 
     def test_format_gate_status_none(self):
         handler = MCPGateHandler()
         assert handler.format_gate_status() is None
 
-    @pytest.mark.asyncio
-    async def test_format_gate_status(self):
+    def test_format_gate_status(self):
         handler = MCPGateHandler()
         gate = _make_gate()
-        await handler.resolve(gate)
+        handler.resolve(gate)
 
         status = handler.format_gate_status()
         assert status is not None
@@ -84,12 +75,11 @@ class TestMCPGateHandler:
         assert status["violations"][0]["score"] == 0.6
         assert len(status["suggested_actions"]) == 1
 
-    @pytest.mark.asyncio
-    async def test_clear(self):
+    def test_clear(self):
         handler = MCPGateHandler()
         gate = _make_gate()
-        await handler.resolve(gate)
-        await handler.notify("test")
+        handler.resolve(gate)
+        handler.notify("test")
 
         handler.clear()
         assert handler.current_gate is None

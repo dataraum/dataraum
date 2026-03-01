@@ -50,6 +50,10 @@ class RelationshipsPhase(BasePhase):
         return ["relationship_candidates"]
 
     @property
+    def post_verification(self) -> list[str]:
+        return ["join_path_determinism", "relationship_quality"]
+
+    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.relationships import db_models
 

@@ -25,6 +25,7 @@ class PhaseStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    GATE_BLOCKED = "gate_blocked"
 
 
 @dataclass
@@ -145,6 +146,16 @@ class Phase(Protocol):
         Returns:
             PhaseResult with status and outputs
         """
+        ...
+
+    @property
+    def entropy_preconditions(self) -> dict[str, float]:
+        """Hard entropy dimensions that must be below thresholds before this phase runs."""
+        ...
+
+    @property
+    def post_verification(self) -> list[str]:
+        """Hard detector sub_dimensions to re-measure after this phase completes."""
         ...
 
     def should_skip(self, ctx: PhaseContext) -> str | None:

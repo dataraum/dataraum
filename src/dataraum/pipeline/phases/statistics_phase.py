@@ -48,6 +48,10 @@ class StatisticsPhase(BasePhase):
         return ["statistical_profiles"]
 
     @property
+    def entropy_preconditions(self) -> dict[str, float]:
+        return {"type_fidelity": 0.5}
+
+    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.statistics import db_models
 

@@ -7,7 +7,7 @@ High outlier rate indicates data quality issues that affect aggregations.
 from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -28,6 +28,7 @@ class OutlierRateDetector(EntropyDetector):
     detector_id = "outlier_rate"
     layer = "value"
     dimension = "outliers"
+    trust_level = DetectorTrust.HARD
     sub_dimension = "outlier_rate"
     required_analyses = ["statistics", "semantic"]
     description = "Measures uncertainty from outlier values"

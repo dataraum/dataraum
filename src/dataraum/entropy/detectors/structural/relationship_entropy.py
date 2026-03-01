@@ -11,7 +11,7 @@ Source: relationships.Relationship.evidence (contains JoinCandidate metrics)
 from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -36,6 +36,7 @@ class RelationshipEntropyDetector(EntropyDetector):
     layer = "structural"
     dimension = "relations"
     sub_dimension = "relationship_quality"
+    trust_level = DetectorTrust.HARD
     required_analyses = ["relationships"]
     description = "Measures relationship quality from evaluation metrics"
 

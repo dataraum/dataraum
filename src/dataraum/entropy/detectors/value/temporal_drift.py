@@ -4,7 +4,7 @@ Measures uncertainty from distribution drift over time.
 Uses max Jensen-Shannon divergence from ColumnDriftSummary records.
 """
 
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -25,6 +25,7 @@ class TemporalDriftDetector(EntropyDetector):
     layer = "value"
     dimension = "temporal"
     sub_dimension = "temporal_drift"
+    trust_level = DetectorTrust.HARD
     required_analyses = ["drift_summaries", "semantic"]
     description = "Measures uncertainty from distribution drift over time"
 

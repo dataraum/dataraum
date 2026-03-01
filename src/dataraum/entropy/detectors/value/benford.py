@@ -10,7 +10,7 @@ Source: statistics/quality.benford_analysis (via quality_data JSON)
 import math
 
 from dataraum.entropy.config import get_entropy_config
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -28,6 +28,7 @@ class BenfordDetector(EntropyDetector):
     detector_id = "benford"
     layer = "value"
     dimension = "distribution"
+    trust_level = DetectorTrust.HARD
     sub_dimension = "benford_compliance"
     required_analyses = ["statistics", "semantic"]
     description = "Measures deviation from Benford's Law for numeric columns"

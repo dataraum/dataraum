@@ -38,6 +38,7 @@ from dataraum.pipeline.base import (
     PhaseStatus,
 )
 from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
+from dataraum.pipeline.entropy_state import PipelineEntropyState
 from dataraum.pipeline.registry import get_all_dependencies, get_registry
 
 logger = get_logger(__name__)
@@ -113,6 +114,7 @@ class PipelineConfig:
     skip_completed: bool = True
     max_retries: int = 2
     backoff_base: float = 2.0
+    gate_mode: str = "skip"  # "skip", "pause", "fail"
 
 
 @dataclass
@@ -134,8 +136,10 @@ class Pipeline:
     _running: set[str] = field(default_factory=set)
     _failed: set[str] = field(default_factory=set)
     _skipped: set[str] = field(default_factory=set)
+    _gate_blocked: set[str] = field(default_factory=set)
     _outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
     _phase_priority: dict[str, int] = field(default_factory=dict)  # Transitive dependent count
+    _entropy_state: PipelineEntropyState = field(default_factory=PipelineEntropyState)
 
     def register(self, phase: Phase) -> None:
         """Register a phase implementation."""
@@ -246,7 +250,9 @@ class Pipeline:
         self._running = set()
         self._failed = set()
         self._skipped = set()
+        self._gate_blocked = set()
         self._outputs = {}
+        self._entropy_state = PipelineEntropyState()
 
         # Build a serializable record of the full config for the DB
         stored_config = {
@@ -317,7 +323,12 @@ class Pipeline:
                         scanned += 1
 
                         # Skip already-handled phases
-                        if name in self._completed or name in self._failed or name in self._skipped:
+                        if (
+                            name in self._completed
+                            or name in self._failed
+                            or name in self._skipped
+                            or name in self._gate_blocked
+                        ):
                             continue
                         if name in self._running:
                             continue
@@ -339,6 +350,25 @@ class Pipeline:
 
                         done = self._completed | self._skipped
                         if all(d in done for d in deps):
+                            # Check entropy gate preconditions
+                            gate_passed, gate_reason = self._check_gate(name)
+                            if not gate_passed:
+                                if self.config.gate_mode in ("skip", "auto_fix"):
+                                    logger.warning(f"Phase {name}: {gate_reason} (skipping gate)")
+                                elif self.config.gate_mode == "fail":
+                                    logger.error(f"Phase {name}: {gate_reason}")
+                                    self._failed.add(name)
+                                    results[name] = PhaseResult.failed(gate_reason)
+                                    continue
+                                else:  # pause
+                                    logger.warning(f"Phase {name}: {gate_reason} (paused)")
+                                    self._gate_blocked.add(name)
+                                    results[name] = PhaseResult(
+                                        status=PhaseStatus.GATE_BLOCKED,
+                                        error=gate_reason,
+                                    )
+                                    continue
+
                             # Ready — submit to executor immediately
                             self._running.add(name)
                             self._notify_progress(
@@ -397,6 +427,14 @@ class Pipeline:
                             self._completed.add(name)
                             self._outputs[name] = phase_result.outputs
                             completed_step += 1
+
+                            # Update entropy state from phase outputs
+                            hard_scores = phase_result.outputs.get(
+                                "entropy_hard_scores"
+                            )
+                            if hard_scores and isinstance(hard_scores, dict):
+                                for dim, score in hard_scores.items():
+                                    self._entropy_state.update_score(dim, score)
                             self._notify_progress(
                                 progress_callback,
                                 completed_step,
@@ -455,7 +493,12 @@ class Pipeline:
 
             # Update run record with final status and aggregate metrics
             with manager.session_scope() as session:
-                status = "completed" if not self._failed else "failed"
+                if self._failed:
+                    status = "failed"
+                elif self._gate_blocked:
+                    status = "gate_blocked"
+                else:
+                    status = "completed"
                 phases_completed = sum(
                     1 for r in results.values() if r.status == PhaseStatus.COMPLETED
                 )
@@ -489,6 +532,7 @@ class Pipeline:
                         total_tables_processed=total_tables_processed,
                         total_rows_processed=total_rows_processed,
                         error=error_msg,
+                        final_entropy_state=self._entropy_state.to_dict() or None,
                     )
                 )
                 session.execute(stmt)
@@ -708,6 +752,35 @@ class Pipeline:
                 pass  # Don't mask the original error
 
         return result
+
+    def _check_gate(self, phase_name: str) -> tuple[bool, str]:
+        """Check if a phase's entropy preconditions are met.
+
+        Args:
+            phase_name: Name of the phase to check
+
+        Returns:
+            (passed, reason): passed=True if phase can run,
+            reason describes violations if blocked.
+        """
+        phase = self.phases.get(phase_name)
+        if not phase:
+            return True, ""
+
+        preconditions = phase.entropy_preconditions
+        if not preconditions:
+            return True, ""
+
+        violations = self._entropy_state.check_preconditions(preconditions)
+        if not violations:
+            return True, ""
+
+        # Format violation message
+        parts = []
+        for dim, (current, threshold) in violations.items():
+            parts.append(f"{dim}: {current:.2f} > {threshold:.2f}")
+        reason = f"Gate blocked: {', '.join(parts)}"
+        return False, reason
 
     def _load_completed_checkpoints(self, session: Session, source_id: str) -> None:
         """Load previously completed checkpoints."""

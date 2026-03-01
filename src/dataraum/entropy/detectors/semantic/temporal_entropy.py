@@ -9,7 +9,7 @@ Source: semantic.semantic_role, typing.data_type
 """
 
 from dataraum.entropy.config import get_entropy_config
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -30,6 +30,7 @@ class TemporalEntropyDetector(EntropyDetector):
     layer = "semantic"
     dimension = "temporal"
     sub_dimension = "time_role"
+    trust_level = DetectorTrust.SOFT
     required_analyses = ["typing", "semantic"]
     description = "Measures whether temporal columns are properly identified"
 

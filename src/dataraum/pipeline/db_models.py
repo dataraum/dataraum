@@ -53,6 +53,11 @@ class PipelineRun(Base):
     # Error info
     error: Mapped[str | None] = mapped_column(String)
 
+    # Gate configuration
+    contract_name: Mapped[str | None] = mapped_column(String)
+    gate_mode: Mapped[str | None] = mapped_column(String)  # skip, pause, fail
+    final_entropy_state: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
     # Relationships
     checkpoints: Mapped[list[PhaseCheckpoint]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
@@ -107,6 +112,11 @@ class PhaseCheckpoint(Base):
     # Error/warning info
     error: Mapped[str | None] = mapped_column(String)
     warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    # Gate state
+    entropy_hard_scores: Mapped[dict[str, float] | None] = mapped_column(JSON)
+    gate_status: Mapped[str | None] = mapped_column(String)  # passed, blocked, skipped
+    gate_reason: Mapped[str | None] = mapped_column(String)
 
     # Relationship
     run: Mapped[PipelineRun] = relationship(back_populates="checkpoints")

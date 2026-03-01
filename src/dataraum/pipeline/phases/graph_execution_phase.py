@@ -67,6 +67,10 @@ class GraphExecutionPhase(BasePhase):
         return ["metrics_calculated", "metrics_skipped", "execution_context"]
 
     @property
+    def entropy_preconditions(self) -> dict[str, float]:
+        return {"type_fidelity": 0.3, "naming_clarity": 0.4}
+
+    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.graphs import db_models
 

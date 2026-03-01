@@ -1,5 +1,7 @@
 """Tests for pipeline base types and phase registry."""
 
+from dataraum.pipeline.base import PhaseContext, PhaseResult
+from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import get_all_dependencies, get_phase_class, get_registry
 
 
@@ -44,6 +46,38 @@ class TestPhaseRegistry:
     def test_graph_execution_phase_exists(self):
         cls = get_phase_class("graph_execution")
         assert cls is not None
+
+
+class TestBasePhaseEntropyProperties:
+    """Tests for entropy_preconditions and post_verification defaults."""
+
+    def test_default_entropy_preconditions_empty(self):
+        """BasePhase subclasses default to no entropy preconditions."""
+
+        class DummyPhase(BasePhase):
+            name = "dummy"
+            description = "test"
+            dependencies: list[str] = []
+            outputs: list[str] = []
+
+            def _run(self, ctx: PhaseContext) -> PhaseResult:
+                return PhaseResult.success()
+
+        phase = DummyPhase()
+        assert phase.entropy_preconditions == {}
+
+    def test_default_post_verification_empty(self):
+        class DummyPhase(BasePhase):
+            name = "dummy"
+            description = "test"
+            dependencies: list[str] = []
+            outputs: list[str] = []
+
+            def _run(self, ctx: PhaseContext) -> PhaseResult:
+                return PhaseResult.success()
+
+        phase = DummyPhase()
+        assert phase.post_verification == []
 
 
 class TestDependencyResolution:

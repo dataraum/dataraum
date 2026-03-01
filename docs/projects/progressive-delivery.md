@@ -44,6 +44,120 @@ The pipeline already persists results to SQLite immediately after each phase com
 
 ---
 
+## The Answer: SEP-1686 (Tasks)
+
+[SEP-1686](https://modelcontextprotocol.io/community/seps/1686-tasks) is the accepted
+MCP standard for background task execution. Status: **Final** (standards track).
+It solves our problem exactly.
+
+### How It Works
+
+SEP-1686 shifts polling from the LLM to the **host application**. The host is a
+deterministic program — it can reliably poll every N seconds without prompt engineering.
+
+```
+1. LLM calls analyze
+2. Host sends tools/call with _meta: {"modelcontextprotocol.io/task": {taskId: "..."}}
+3. Server returns immediately, sends notifications/tasks/created
+4. HOST APPLICATION polls tasks/get on a timer (guided by pollFrequency)
+5. Host informs LLM when status changes
+6. Host fetches tasks/result when completed, gives to LLM
+```
+
+Key architectural properties:
+- **No capability negotiation needed.** Client optimistically sends task metadata.
+  Server either handles it (creates a task) or ignores it (processes normally).
+- **No push/injection risk.** The host pulls on its own schedule. The server only
+  responds to requests — no unsolicited content into the LLM's context.
+- **Non-blocking.** The LLM continues the conversation while the pipeline runs.
+  Other tools (get_actions, get_entropy) can be called mid-pipeline.
+
+### Wire Protocol
+
+```
+Client → Server:  tools/call {name: "analyze", _meta: {"modelcontextprotocol.io/task": {taskId: "abc-123"}}}
+Server → Client:  notifications/tasks/created {_meta: {related-task: {taskId: "abc-123"}}}
+
+[Host polls every pollFrequency ms]
+Client → Server:  tasks/get {taskId: "abc-123"}
+Server → Client:  {taskId: "abc-123", status: "working", pollFrequency: 5000}
+
+[...pipeline completes...]
+Client → Server:  tasks/get {taskId: "abc-123"}
+Server → Client:  {taskId: "abc-123", status: "completed", keepAlive: 60000}
+
+Client → Server:  tasks/result {taskId: "abc-123"}
+Server → Client:  {content: [...full pipeline results...]}
+```
+
+### Implementation Status
+
+| Layer | Status | Notes |
+|---|---|---|
+| SEP-1686 spec | **Final** | Accepted MCP standard |
+| MCP Python SDK (types) | **Stable** | `tasks/get`, `tasks/result`, `TaskStatus` in `mcp/types.py` |
+| MCP Python SDK (server) | **Experimental** | `server.experimental.enable_tasks()`, full implementation under `experimental/` |
+| FastMCP (gofastmcp.com) | **Stable** | `@mcp.tool(task=True)` + `Progress` dependency |
+| DataRaum server | **Implemented** | Uses experimental API: `run_task()`, `update_status()` |
+| Claude Code client | **Not implemented** | [Issue #18617](https://github.com/anthropics/claude-code/issues/18617) — open, stale |
+| Claude Desktop client | **Not implemented** | No `_meta` sent, `tasks: None` in capabilities |
+
+**The blocker is purely client-side.** The spec is done, the SDK supports it,
+our server supports it. Claude Code and Claude Desktop haven't implemented the
+client side yet.
+
+### DataRaum's Current Server Implementation
+
+Already in `server.py`:
+
+```python
+server.experimental.enable_tasks()
+
+# Tool declaration
+Tool(name="analyze", ..., execution=ToolExecution(taskSupport="optional"))
+
+# Handler
+if experimental and experimental.is_task:
+    # Task-augmented path: return immediately, run in background
+    return await experimental.run_task(
+        _work,
+        model_immediate_response="Pipeline started..."
+    )
+# else: blocking fallback
+```
+
+Progress updates bridge the sync pipeline thread to async MCP notifications:
+
+```python
+def _make_task_progress_callback(task, loop):
+    def _callback(current, total, message):
+        label = _PHASE_LABELS.get(message, message)
+        asyncio.run_coroutine_threadsafe(
+            task.update_status(f"Phase {current}/{total}: {label}"),
+            loop,
+        )
+    return _callback
+```
+
+### What's Missing for Full Progressive Delivery
+
+SEP-1686 as accepted provides:
+- Non-blocking execution (`tasks/get` polling)
+- Simple status (`working` / `completed` / `failed`)
+- Final result retrieval (`tasks/result`)
+
+SEP-1686 **Future Work** (not yet standardized) lists exactly our needs:
+- **Intermediate Results**: "Streaming analysis results as they become available.
+  Reporting completed phases of multi-step operations. Providing preview data
+  while full processing continues."
+- **Push Notifications**: Server-initiated status change notifications for
+  long-running tasks.
+
+Until intermediate results are standardized, our enriched polling approach
+(Phase 2 below) is the bridge.
+
+---
+
 ## Design Principles
 
 ### 1. Don't optimize backend, optimize perceived progress
@@ -65,31 +179,6 @@ Each MCP function should work with whatever data exists, returning the best resu
 ---
 
 ## Architecture
-
-### Pipeline Event System
-
-```
-Pipeline Orchestrator
-    │
-    ├── phase completes ──▶ PipelineEvent
-    │                          ├── phase_name
-    │                          ├── status (completed/failed/skipped)
-    │                          ├── duration
-    │                          ├── outputs (phase-specific summary)
-    │                          └── capabilities (HATEOAS)
-    │                                ├── tools_ready: [{name, status, summary}]
-    │                                ├── tools_partial: [{name, waiting_for, available_data}]
-    │                                └── tools_blocked: [{name, waiting_for}]
-    │
-    ├── EventBus / callback
-    │       │
-    │       ├──▶ MCP Server (notify connected client)
-    │       ├──▶ CLI (update progress display)
-    │       ├──▶ Webhook (external integrations)
-    │       └──▶ Log (structured event log for replay)
-    │
-    └── (phases continue running in parallel)
-```
 
 ### MCP Tool Readiness Model
 
@@ -119,7 +208,7 @@ TOOL_READINESS = {
     ),
     "get_entropy": ToolReadiness(
         hard_blocks=["entropy", "entropy_interpretation"],
-        soft_blocks=[],  # Fully ready once hard blocks complete
+        soft_blocks=[],
     ),
     "evaluate_contract": ToolReadiness(
         hard_blocks=["entropy"],
@@ -140,113 +229,37 @@ TOOL_READINESS = {
 }
 ```
 
-### Event Examples
+### Interaction Model: Agent Collaboration
 
-After `entropy_interpretation` completes (~458s):
+The end goal is a workflow like this:
 
-```json
-{
-  "event": "phase_completed",
-  "phase": "entropy_interpretation",
-  "duration_s": 158.9,
-  "outputs": {
-    "columns_interpreted": 47,
-    "tables_interpreted": 8,
-    "actions_generated": 38
-  },
-  "capabilities": {
-    "ready": [
-      {
-        "tool": "get_entropy",
-        "description": "Full entropy analysis with interpretations",
-        "summary": "47 columns analyzed, 8 tables, 12 dimensions"
-      },
-      {
-        "tool": "get_actions",
-        "description": "Resolution actions ready for review",
-        "summary": {"high_priority": 5, "medium": 12, "low": 21}
-      },
-      {
-        "tool": "evaluate_contract",
-        "description": "Data quality contracts can be evaluated"
-      }
-    ],
-    "partial": [
-      {
-        "tool": "query",
-        "status": "partial",
-        "available": "SQL queries against typed tables with semantic context",
-        "waiting_for": ["graph_execution"],
-        "missing": "Calculated metrics not yet available"
-      }
-    ],
-    "blocked": []
-  }
-}
+```
+User: "Analyze my financial data"
+
+[Pipeline starts, returns immediately via SEP-1686 task]
+
+Agent (at ~90s): "I've imported and annotated 8 tables with 47 columns.
+  Schema and relationships are ready — I can answer questions about
+  your data structure while the quality analysis continues."
+
+Agent (at ~460s): "Entropy analysis complete. I found 5 high-priority
+  data quality issues:
+  1. bank_transactions.amount lacks unit documentation (EUR? USD?)
+  2. invoices show temporal drift in 6 periods
+  3. journal_entries.description has quality grade D
+  ...
+  Should I start working on these while metrics calculations finish?"
+
+User: "Yes, start with the currency issue"
+
+Agent: [calls get_actions, starts document_unit workflow]
+
+Agent (at ~610s): "Pipeline complete. Calculated metrics are now
+  available for queries. Meanwhile, I've documented the currency
+  unit for bank_transactions.amount — ready for your review."
 ```
 
-After `graph_execution` completes (~610s):
-
-```json
-{
-  "event": "pipeline_completed",
-  "total_duration_s": 610.2,
-  "capabilities": {
-    "ready": [
-      {"tool": "query", "description": "Full query capability with calculated metrics"}
-    ]
-  }
-}
-```
-
-### MCP Integration: Progress Notifications
-
-The MCP spec (2025-06-18) has built-in progress tracking via `notifications/progress`.
-This works over **stdio** — no transport change needed.
-
-**How it works:**
-1. Client sends `analyze` request with `_meta.progressToken`
-2. Server sends `notifications/progress` as phases complete
-3. Client receives updates, can show progress or act on them
-4. Server sends final response when pipeline completes
-
-```json
-// Client request
-{
-  "jsonrpc": "2.0", "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "analyze",
-    "arguments": {"path": "/data"},
-    "_meta": {"progressToken": "run-abc123"}
-  }
-}
-
-// Server notification after entropy_interpretation completes
-{
-  "jsonrpc": "2.0",
-  "method": "notifications/progress",
-  "params": {
-    "progressToken": "run-abc123",
-    "progress": 18,
-    "total": 19,
-    "message": "entropy_interpretation complete. get_entropy, get_actions now available (38 actions across 8 tables). Waiting for: graph_execution"
-  }
-}
-```
-
-The `message` field carries HATEOAS-like capability information as human-readable
-text. The LLM client (Claude Desktop, Cursor) can parse this to decide whether to
-call `get_actions` immediately or wait.
-
-**Richer capability data:** The `message` is a string, but we could encode structured
-capability metadata as JSON in the message, or use a custom notification method
-alongside the standard progress notification. The spec allows server-initiated
-JSON-RPC notifications over stdio at any time.
-
-**Key constraint:** Progress notifications only flow while the `analyze` tool call
-is active. Once the response is sent, no more notifications. This is fine — the
-pipeline is the long-running operation, and all notifications happen during it.
+The key insight: agents should be able to start working on actions *before the pipeline finishes*. This turns 610s of dead wait into 150s of collaborative work.
 
 ---
 
@@ -277,74 +290,94 @@ This is the single highest-impact change: zero code complexity, ~25% total pipel
 
 ---
 
-## Interaction Model: Agent Collaboration
+## Implementation Phases
 
-The end goal is a workflow like this:
+### Phase 1: Dependency fix (S-sized) — DONE
+- Changed `graph_execution` dependency from `entropy_interpretation` to `entropy`
+- `entropy_interpretation` and `graph_execution` now run in parallel
+- ~152s wall time savings
 
-```
-User: "Analyze my financial data"
+### Phase 2: Enriched progress callback (S-sized, next)
+- Change `_make_task_progress_callback` to include capability info in status message
+- Add `ToolReadiness` declarations (dict mapping tool name → required phases)
+- Compute which tools became available after each phase completes
+- Status message: `"Phase 15/19: Entropy complete. get_entropy, get_actions now available."`
+- Update `analyze/skill.md` to instruct LLM to act on capability-enriched status
 
-[Pipeline starts, phases run...]
+### Phase 3: Tool readiness metadata on responses (M-sized)
+- Each MCP tool response includes `pipeline_status` section when pipeline is running
+- Shows: which tools are ready, which are waiting, what's in progress
+- `get_actions` called mid-pipeline returns available actions + note about pending phases
+- Enables "call early, get partial results" pattern
 
-Agent (at ~90s): "I've imported and annotated 8 tables with 47 columns.
-  Schema and relationships are ready — I can answer questions about
-  your data structure while the quality analysis continues."
+### Phase 4: Plugin skill update (S-sized)
+- Update `analyze/skill.md` to teach the LLM about progressive delivery
+- Instead of "poll get_context every 2 min", instruct: "watch status messages,
+  call get_actions as soon as entropy_interpretation is complete"
+- Update phase table with HATEOAS-like "what you can do now" guidance
 
-Agent (at ~460s): "Entropy analysis complete. I found 5 high-priority
-  data quality issues:
-  1. bank_transactions.amount lacks unit documentation (EUR? USD?)
-  2. invoices show temporal drift in 6 periods
-  3. journal_entries.description has quality grade D
-  ...
-  Should I start working on these while metrics calculations finish?"
-
-User: "Yes, start with the currency issue"
-
-Agent: [calls get_actions, starts document_unit workflow]
-
-Agent (at ~610s): "Pipeline complete. Calculated metrics are now
-  available for queries. Meanwhile, I've documented the currency
-  unit for bank_transactions.amount — ready for your review."
-```
-
-The key insight: agents should be able to start working on actions *before the pipeline finishes*. This turns 610s of dead wait into 150s of collaborative work.
+### Phase 5: Event bus for non-MCP consumers (M-sized, optional)
+- Pipeline orchestrator emits structured events (for CLI, TUI, webhooks)
+- CLI shows progressive results during pipeline run
+- Foundation for `dataraum-ui` real-time updates
 
 ---
 
-## Implementation Phases
+## Alternative Channels Investigated (Dead Ends)
 
-### Phase 1: Dependency fix (S-sized, immediate win)
-- Remove `entropy_interpretation` from `graph_execution` dependencies
-- Replace with `entropy`
-- Verify with tests that graph execution still works
-- ~152s wall time savings, zero risk
+Exhaustive testing of push alternatives (2026-02-28) confirmed that SEP-1686 is
+the only viable path. All other channels were tested via
+[`mcp-client-probe`](/mcp-client-probe/) and found non-functional in Claude clients.
 
-### Phase 2: Tool readiness model (M-sized)
-- Add `ToolReadiness` declarations to MCP tools
-- MCP tools return readiness metadata (what's available, what's pending)
-- `get_actions` / `get_entropy` responses include `pipeline_status` field
-- No event system yet — just metadata on responses
+### What Was Tested
 
-### Phase 3: Pipeline event system (M-sized)
-- Add event callback to pipeline orchestrator
-- Events emitted on phase completion with capability summaries
-- Event bus supports multiple listeners (log, callback, MCP)
-- CLI shows progressive results during pipeline run
+| Channel | How tested | Claude Desktop | Claude Code |
+|---|---|---|---|
+| `notifications/tasks/status` | `task.update_status()` during tool call | Not surfaced (`tasks: None`) | Not surfaced |
+| `notifications/progress` | `send_progress_notification()` with fabricated token | Not surfaced (no `progressToken` sent) | Not surfaced |
+| `notifications/message` | `send_log_message()` during tool call | Sent over wire, not shown in UI | Not shown |
+| MCP Apps (`ui://`) | Resource with `text/html;profile=mcp-app` | Fetched but rendering broken | No rendering (CLI) |
+| Custom connectors | HTTPS endpoint as connector URL | Impossible: connection from Anthropic servers, not localhost. Self-signed certs rejected. | N/A |
 
-### Phase 4: MCP streaming (L-sized)
-- MCP `analyze` tool sends progress notifications
-- Connected client receives capability events
-- Agent can call tools as they become ready
-- Full progressive delivery loop
+### Why Push Is Blocked
+
+All server-initiated push channels are blocked in Claude clients — likely by
+design. Allowing MCP servers to push content into the LLM's context
+mid-conversation would be a **prompt injection vector**: any server could inject
+instructions the LLM acts on without user or LLM consent.
+
+SEP-1686 solves this architecturally: the **host application** polls `tasks/get`
+on its own schedule, decides what to surface to the LLM, and maintains control.
+No unsolicited server→LLM content.
+
+See also [MCP #117](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/117)
+for the open discussion on streaming tool results (future spec work).
+
+### Probe Details
+
+Claude Desktop (`claude-ai v0.1.0`, protocol `2025-11-25`) over stdio:
+- Declares `extensions: {io.modelcontextprotocol/ui: {mimeTypes: [text/html;profile=mcp-app]}}`
+- Declares NO tasks, sampling, elicitation, roots, or progress capabilities
+- Sends NO `_meta` with `modelcontextprotocol.io/task` on tool calls
+- `experimental.is_task` always `false` despite server enabling tasks
+- No `progressToken` sent
+
+Claude Code (`claude-code v2.1.62`, protocol `2025-11-25`) over stdio:
+- Same: no tasks, no progress, no `_meta`
+- [Issue #18617](https://github.com/anthropics/claude-code/issues/18617) tracks
+  SEP-1686 client support (open, stale)
+
+Custom connectors: connection originates from **Anthropic's servers** (published
+static IPs), not the user's machine. `localhost` unreachable, self-signed certs
+rejected. Designed for cloud SaaS, not local tools.
 
 ---
 
 ## Open Questions
 
-1. ~~**MCP protocol support for streaming**~~ **ANSWERED**: Yes. MCP spec (2025-06-18)
-   has `notifications/progress` with `progressToken`. Works over stdio. Server sends
-   progress notifications during a tool call. Client receives them as JSON-RPC
-   notifications on stdout. No transport change needed.
+1. ~~**MCP protocol support for streaming**~~ **ANSWERED**: SEP-1686 is the
+   accepted standard. Intermediate results and push notifications are listed as
+   future work in the SEP. No client implements it yet.
 
 2. **Concurrent tool calls during pipeline**: If `get_actions` is called while
    `graph_execution` is still running, are there SQLite contention issues?
@@ -358,15 +391,27 @@ The key insight: agents should be able to start working on actions *before the p
    busy_timeout, but semantic conflicts (e.g., phase overwrites user-provided
    metadata) need careful thought.
 
-4. **Event granularity**: Should we emit events per-phase, per-batch (within
-   entropy_interpretation), or per-action? Per-phase is the natural boundary
-   since that's when data becomes available and capabilities change.
+4. ~~**Event granularity**~~ **ANSWERED**: Per-phase. That's when capabilities
+   change and new tools become available. Sub-phase granularity adds complexity
+   without changing what the consumer can do.
 
 5. **UI integration**: How does `dataraum-ui` consume events? WebSocket? SSE?
    Or does it poll the DB? For Streamable HTTP transport (if we add it later),
    SSE is built into the MCP spec.
 
-6. **Client behavior on progress**: Do Claude Desktop and Cursor actually surface
-   `notifications/progress` messages to the LLM? Or do they only show them in a
-   UI progress bar? This determines whether the agent can autonomously act on
-   capability changes, or if we need a different mechanism.
+6. ~~**Client behavior on progress**~~ **ANSWERED (2026-02-28)**: No Claude client
+   surfaces any push notification. SEP-1686 is the accepted solution, but no
+   client implements the client side yet.
+
+7. ~~**MCP Apps as alternative UI**~~ **ANSWERED (2026-02-28)**: Tested via
+   `mcp-client-probe`. Claude Desktop fetches `ui://` resources but doesn't
+   render them properly. Not viable for local MCP servers today.
+
+8. ~~**Custom connectors for push**~~ **ANSWERED (2026-02-28)**: Connection
+   originates from Anthropic's servers. localhost unreachable, self-signed certs
+   rejected. Dead end for local tools.
+
+9. **When will clients implement SEP-1686?** Unknown. Claude Code
+   [#18617](https://github.com/anthropics/claude-code/issues/18617) is open but
+   stale. FastMCP server-side is ready. The spec is Final. We should be ready
+   when clients catch up.

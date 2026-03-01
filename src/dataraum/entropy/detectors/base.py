@@ -11,12 +11,27 @@ produces EntropyObject instances with scores, evidence, and resolution options.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from dataraum.entropy.models import (
     EntropyObject,
     ResolutionOption,
 )
+
+
+class DetectorTrust(str, Enum):
+    """Trust level for entropy detectors.
+
+    HARD detectors produce machine-verifiable scores (e.g., type parsing,
+    null ratio, statistical tests). These can gate pipeline progression.
+
+    SOFT detectors rely on LLM judgment or heuristics (e.g., business meaning,
+    unit inference). These inform but don't block.
+    """
+
+    HARD = "hard"
+    SOFT = "soft"
 
 
 @dataclass
@@ -76,6 +91,9 @@ class EntropyDetector(ABC):
     layer: str = ""  # structural, semantic, value, computational
     dimension: str = ""  # types, relations, units, etc.
     sub_dimension: str = ""  # type_fidelity, naming_clarity, etc.
+
+    # Trust level: HARD = machine-verifiable, SOFT = LLM/heuristic
+    trust_level: DetectorTrust = DetectorTrust.SOFT
 
     # What analysis modules this detector requires
     required_analyses: list[str] = []
@@ -156,6 +174,11 @@ class EntropyDetector(ABC):
         )
 
     @property
+    def is_verifier(self) -> bool:
+        """Whether this detector can be used for hard verification at gates."""
+        return self.trust_level == DetectorTrust.HARD
+
+    @property
     def dimension_path(self) -> str:
         """Get full dimension path."""
         return f"{self.layer}.{self.dimension}.{self.sub_dimension}"
@@ -231,6 +254,14 @@ class DetectorRegistry:
             List of detectors for that dimension
         """
         return [d for d in self.detectors.values() if d.layer == layer and d.dimension == dimension]
+
+    def get_hard_detectors(self) -> list[EntropyDetector]:
+        """Get all detectors with HARD trust level (machine-verifiable)."""
+        return [d for d in self.detectors.values() if d.trust_level == DetectorTrust.HARD]
+
+    def get_soft_detectors(self) -> list[EntropyDetector]:
+        """Get all detectors with SOFT trust level (LLM/heuristic)."""
+        return [d for d in self.detectors.values() if d.trust_level == DetectorTrust.SOFT]
 
     def get_runnable_detectors(self, context: DetectorContext) -> list[EntropyDetector]:
         """Get all detectors that can run with the given context.

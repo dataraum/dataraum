@@ -28,6 +28,7 @@ Usage:
 from dataraum.entropy.detectors.base import (
     DetectorContext,
     DetectorRegistry,
+    DetectorTrust,
     EntropyDetector,
     get_default_registry,
 )
@@ -101,6 +102,7 @@ __all__ = [
     "EntropyDetector",
     "DetectorContext",
     "DetectorRegistry",
+    "DetectorTrust",
     "get_default_registry",
     # Registration
     "BUILTIN_DETECTORS",

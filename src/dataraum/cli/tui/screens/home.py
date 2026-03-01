@@ -46,6 +46,12 @@ class HomeScreen(Screen[None]):
                     DataTable(id="pipeline-table"),
                     classes="pipeline-section",
                 ),
+                # Gate status
+                Container(
+                    Static("Gate Status", classes="section-title"),
+                    Static("No active gates", id="gate-status"),
+                    classes="gate-section",
+                ),
                 classes="main-content",
             ),
             classes="screen-container",
@@ -96,6 +102,7 @@ class HomeScreen(Screen[None]):
                 self._update_status(source, tables)
                 self._update_tables_table(session, tables)
                 self._update_pipeline_status(session, source)
+                self._update_gate_status(session, source)
 
                 self._data_loaded = True
         finally:
@@ -175,6 +182,7 @@ class HomeScreen(Screen[None]):
             "running": "[yellow]Running[/yellow]",
             "failed": "[red]Failed[/red]",
             "pending": "[dim]Pending[/dim]",
+            "gate_blocked": "[yellow]Gate Blocked[/yellow]",
         }
 
         for state in states:
@@ -187,3 +195,31 @@ class HomeScreen(Screen[None]):
                 duration_str = "-"
 
             table_widget.add_row(state.phase_name, status, duration_str)
+
+    def _update_gate_status(self, session: Any, source: Any) -> None:
+        """Update the gate status section."""
+        from sqlalchemy import select
+
+        from dataraum.pipeline.db_models import PhaseCheckpoint
+
+        gate_widget = self.query_one("#gate-status", Static)
+
+        # Find gate-blocked phases
+        blocked_result = session.execute(
+            select(PhaseCheckpoint).where(
+                PhaseCheckpoint.source_id == source.source_id,
+                PhaseCheckpoint.gate_status == "blocked",
+            )
+        )
+        blocked = blocked_result.scalars().all()
+
+        if not blocked:
+            gate_widget.update("[green]No active gates[/green]")
+            return
+
+        lines = []
+        for cp in blocked:
+            reason = cp.gate_reason or "entropy preconditions not met"
+            lines.append(f"[yellow]Phase {cp.phase_name}:[/yellow] {reason}")
+
+        gate_widget.update("\n".join(lines))

@@ -28,6 +28,7 @@ import json
 import sys
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -46,6 +47,15 @@ from dataraum.storage import Source
 logger = get_logger(__name__)
 
 
+class GateMode(str, Enum):
+    """How the pipeline handles entropy gates."""
+
+    SKIP = "skip"  # Log warning, continue (backward compatible)
+    PAUSE = "pause"  # Return GateBlockedResult, pipeline state saved
+    FAIL = "fail"  # Treat as pipeline failure
+    AUTO_FIX = "auto_fix"  # Attempt automatic fix, fall back to skip
+
+
 @dataclass
 class RunConfig:
     """Configuration for a pipeline run.
@@ -61,6 +71,11 @@ class RunConfig:
     target_phase: str | None = None
     force_phase: bool = False
     progress_callback: ProgressCallback | None = None
+
+    # Gate configuration
+    gate_mode: GateMode = GateMode.SKIP
+    contract: str | None = None  # Target contract name
+    max_fix_attempts: int = 3
 
 
 @dataclass
@@ -170,6 +185,7 @@ def create_pipeline(config: RunConfig, pipeline_yaml: dict[str, Any] | None = No
         max_parallel=pcfg.get("max_parallel", 4),
         max_retries=retry_cfg.get("max_retries", 2),
         backoff_base=retry_cfg.get("backoff_base", 2.0),
+        gate_mode=config.gate_mode.value,
     )
 
     # Active phases from YAML config (or all registered if not specified)

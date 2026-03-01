@@ -267,6 +267,36 @@ def create_server(output_dir: Path | None = None) -> Server:
                     },
                 },
             ),
+            Tool(
+                name="apply_fix",
+                description=(
+                    "Execute a fix action to improve data quality. "
+                    "Returns the fix result with before/after verification and a decision record. "
+                    "Use get_actions to see available fixes first."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "required": ["action_type", "target"],
+                    "properties": {
+                        "action_type": {
+                            "type": "string",
+                            "description": (
+                                "The fix action to execute. Available: "
+                                "override_type, declare_unit, add_business_name, "
+                                "declare_null_meaning, confirm_relationship, create_filtered_view"
+                            ),
+                        },
+                        "target": {
+                            "type": "string",
+                            "description": "Target in format 'column:table_name.column_name'",
+                        },
+                        "parameters": {
+                            "type": "object",
+                            "description": "Action-specific parameters (e.g., {target_type: 'DECIMAL(10,2)'} for override_type)",
+                        },
+                    },
+                },
+            ),
         ]
 
     @server.call_tool()  # type: ignore[no-untyped-call, untyped-decorator]
@@ -346,6 +376,11 @@ def create_server(output_dir: Path | None = None) -> Server:
             source_name = arguments["name"]
             purge = arguments.get("purge_results", False)
             result = _remove_source(output_dir, source_name, purge)
+        elif name == "apply_fix":
+            action_type = arguments["action_type"]
+            target = arguments["target"]
+            parameters = arguments.get("parameters", {})
+            result = _apply_fix(output_dir, action_type, target, parameters)
         else:
             result = f"Unknown tool: {name}"
 
@@ -922,6 +957,75 @@ def _get_actions(
                 ]
 
             return format_actions_report(source.name, actions, priority, table_name)
+    finally:
+        manager.close()
+
+
+def _apply_fix(
+    output_dir: Path,
+    action_type: str,
+    target: str,
+    parameters: dict[str, Any],
+) -> str:
+    """Execute a fix action with verification.
+
+    Args:
+        output_dir: Pipeline output directory
+        action_type: The fix action to execute
+        target: Target in format 'column:table.column'
+        parameters: Action-specific parameters
+
+    Returns:
+        JSON result with fix outcome and decision record
+    """
+    import json
+
+    from dataraum.core.connections import get_manager_for_directory
+    from dataraum.entropy.fix_executor import FixExecutor, FixRequest, get_default_action_registry
+
+    try:
+        manager = get_manager_for_directory(output_dir)
+    except FileNotFoundError:
+        return _NO_DATA_MSG.format(path=output_dir)
+
+    try:
+        registry = get_default_action_registry()
+        executor = FixExecutor(registry)
+
+        with manager.session_scope() as session:
+            request = FixRequest(
+                action_type=action_type,
+                target=target,
+                parameters=parameters,
+                actor="mcp_agent",
+            )
+
+            result = executor.execute(request, session=session)
+
+            if result.success:
+                session.commit()
+
+            output: dict[str, Any] = {
+                "success": result.success,
+                "improved": result.improved,
+                "action_type": action_type,
+                "target": target,
+            }
+
+            if result.error:
+                output["error"] = result.error
+
+            if result.decision:
+                output["decision"] = {
+                    "decision_id": result.decision.decision_id,
+                    "evidence": result.decision.evidence_summary,
+                    "actor": result.decision.actor,
+                }
+
+            if result.before_scores or result.after_scores:
+                output["score_deltas"] = result.score_deltas
+
+            return json.dumps(output, indent=2)
     finally:
         manager.close()
 

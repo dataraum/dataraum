@@ -27,7 +27,7 @@ from dataraum.entropy.db_models import (
     EntropyObjectRecord,
     EntropySnapshotRecord,
 )
-from dataraum.entropy.detectors.base import DetectorContext
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust
 from dataraum.entropy.detectors.semantic import (
     DimensionalEntropyDetector,
 )
@@ -551,6 +551,21 @@ class EntropyPhase(BasePhase):
 
         # Note: commit handled by session_scope() in orchestrator
 
+        # Compute aggregated hard detector scores for gate checking.
+        # For each hard sub_dimension, compute the mean score across all targets.
+        registry = get_default_registry()
+        hard_sub_dims = {
+            d.sub_dimension for d in registry.get_all_detectors() if d.trust_level == DetectorTrust.HARD
+        }
+        hard_scores_by_dim: dict[str, list[float]] = {}
+        for obj in all_domain_objects:
+            if obj.sub_dimension in hard_sub_dims:
+                hard_scores_by_dim.setdefault(obj.sub_dimension, []).append(obj.score)
+
+        entropy_hard_scores = {
+            dim: sum(scores) / len(scores) for dim, scores in hard_scores_by_dim.items() if scores
+        }
+
         return PhaseResult.success(
             outputs={
                 "entropy_profiles": tables_processed,
@@ -558,6 +573,7 @@ class EntropyPhase(BasePhase):
                 "overall_readiness": overall_readiness,
                 "high_entropy_columns": high_entropy_count,
                 "critical_entropy_columns": critical_entropy_count,
+                "entropy_hard_scores": entropy_hard_scores,
             },
             records_processed=len(all_columns),
             records_created=total_entropy_objects + 1,

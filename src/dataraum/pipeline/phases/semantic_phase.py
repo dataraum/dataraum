@@ -60,6 +60,10 @@ class SemanticPhase(BasePhase):
         return ["annotations", "entities", "confirmed_relationships"]
 
     @property
+    def entropy_preconditions(self) -> dict[str, float]:
+        return {"type_fidelity": 0.3, "join_path_determinism": 0.5}
+
+    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.semantic import db_models
 

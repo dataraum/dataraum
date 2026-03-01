@@ -9,7 +9,7 @@ from collections import defaultdict
 from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -28,6 +28,7 @@ class JoinPathDeterminismDetector(EntropyDetector):
 
     detector_id = "join_path_determinism"
     layer = "structural"
+    trust_level = DetectorTrust.HARD
     dimension = "relations"
     sub_dimension = "join_path_determinism"
     required_analyses = ["relationships"]

@@ -41,6 +41,21 @@ def run(
             help="Run only this phase and its dependencies",
         ),
     ] = None,
+    gate_mode: Annotated[
+        str,
+        typer.Option(
+            "--gate-mode",
+            "-g",
+            help="How to handle entropy gates: skip (default), pause (interactive), fail, auto_fix",
+        ),
+    ] = "skip",
+    contract: Annotated[
+        str | None,
+        typer.Option(
+            "--contract",
+            help="Target contract name for gate evaluation",
+        ),
+    ] = None,
     force: Annotated[
         bool,
         typer.Option(
@@ -94,8 +109,15 @@ def run(
     """
     setup_logging(verbosity=verbose, log_format=log_format)
 
-    from dataraum.pipeline.runner import RunConfig
+    from dataraum.pipeline.runner import GateMode, RunConfig
     from dataraum.pipeline.runner import run as run_pipeline
+
+    # Validate --gate-mode
+    try:
+        resolved_gate_mode = GateMode(gate_mode)
+    except ValueError:
+        console.print(f"[red]Error: Invalid gate mode: {gate_mode}. Use: skip, pause, fail, auto_fix[/red]")
+        raise typer.Exit(1) from None
 
     # Validate --force flag
     if force and not phase:
@@ -120,6 +142,8 @@ def run(
         source_name=name,
         target_phase=phase,
         force_phase=force,
+        gate_mode=resolved_gate_mode,
+        contract=contract,
     )
 
     # Run pipeline - always returns Result.ok with RunResult
@@ -147,6 +171,7 @@ def run(
                     "completed": "[green]✓[/green]",
                     "failed": "[red]✗[/red]",
                     "skipped": "[yellow]○[/yellow]",
+                    "gate_blocked": "[yellow]⊘[/yellow]",
                 }.get(phase_result.status, "?")
                 duration_str = (
                     f" ({phase_result.duration_seconds:.1f}s)"

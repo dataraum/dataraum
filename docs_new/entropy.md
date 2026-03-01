@@ -55,7 +55,7 @@ Each detector has a **trust level** that determines whether it can gate the pipe
 | Trust | Detectors | Meaning |
 |-------|-----------|---------|
 | **HARD** | type_fidelity, join_path_determinism, relationship_entropy, null_ratio, outlier_rate, benford, temporal_drift, derived_value | Machine-verifiable. Can block pipeline phases via gates. |
-| **SOFT** | business_meaning, unit_entropy, temporal_entropy | LLM/heuristic-derived. Inform actions but don't block phases. |
+| **SOFT** | business_meaning, unit_entropy, temporal_entropy, dimensional_entropy | LLM/heuristic-derived. Inform actions but don't block phases. |
 
 Hard detectors produce scores that are objectively measurable — you can re-run them and get the same result. Soft detectors depend on LLM interpretation and are inherently less deterministic.
 
@@ -97,11 +97,6 @@ Contract evaluation produces a traffic-light confidence level:
 
 ### Evaluating Contracts
 
-```bash
-# CLI
-dataraum contracts ./pipeline_output
-```
-
 ```python
 # Python
 from dataraum import Context
@@ -118,14 +113,14 @@ Via MCP:
 > Evaluate the executive_dashboard contract
 ```
 
+Via CLI (contract can be evaluated during a pipeline run):
+```bash
+dataraum run /path/to/data --gate-mode pause --contract aggregation_safe
+```
+
 ## Actions
 
 When entropy is too high, DataRaum generates prioritized **actions** — concrete steps to improve data quality. Actions are ranked by impact-to-effort ratio and traced to their source (LLM interpretation or Bayesian network analysis).
-
-```bash
-# CLI — not yet available as standalone command
-# Use MCP or Python API
-```
 
 ```python
 from dataraum import Context
@@ -155,10 +150,14 @@ Actions are scored based on:
 
 When an action is applied (at a gate or via MCP), the `FixExecutor` runs it through a verified flow:
 
-1. Execute the action (e.g., override a column type, declare a unit)
-2. Create an immutable `Decision` record with evidence
-3. Persist a `DecisionRecord` to the database for audit
-4. Return a `FixResult` with `success`, `improved`, and score deltas
+1. Take a **before snapshot** — run hard detectors on the target to measure current scores
+2. Execute the action (e.g., override a column type, declare a unit)
+3. Take an **after snapshot** — re-run hard detectors to measure improvement
+4. Create an immutable `Decision` record with before/after scores and evidence
+5. Persist a `DecisionRecord` to the database for audit
+6. Return a `FixResult` with `success`, `improved`, and score deltas
+
+The before/after `HardSnapshot` mechanism ensures every fix is measurably verified — not just "did it run" but "did it actually reduce entropy."
 
 Available seed actions:
 
@@ -179,14 +178,6 @@ Via MCP:
 Every fix is recorded in the **decision ledger** — an append-only audit trail of who (user, auto_fix, mcp_agent) did what, when, and with what evidence.
 
 ## Viewing Entropy
-
-```bash
-# CLI — interactive TUI explorer
-dataraum entropy ./pipeline_output
-
-# Filter to a specific table
-dataraum entropy ./pipeline_output --table orders
-```
 
 ```python
 from dataraum import Context

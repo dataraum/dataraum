@@ -63,6 +63,10 @@ class TypingPhase(BasePhase):
         return ["typed_tables", "type_decisions"]
 
     @property
+    def post_verification(self) -> list[str]:
+        return ["type_fidelity"]
+
+    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.typing import db_models
 

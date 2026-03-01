@@ -144,6 +144,18 @@ class FixExecutor:
             )
 
         try:
+            from dataraum.entropy.hard_snapshot import take_hard_snapshot
+
+            # Before snapshot (if action is hard-verifiable)
+            before_scores: dict[str, float] = {}
+            if definition.hard_verifiable:
+                before = take_hard_snapshot(
+                    target=request.target,
+                    session=session,
+                    duckdb_conn=duckdb_conn,
+                )
+                before_scores = before.scores
+
             # Execute the action
             action_result = definition.executor(
                 session=session,
@@ -151,6 +163,28 @@ class FixExecutor:
                 target=request.target,
                 parameters=request.parameters,
             )
+
+            # After snapshot (if action is hard-verifiable)
+            after_scores: dict[str, float] = {}
+            if definition.hard_verifiable:
+                # Flush so the snapshot sees the action's writes
+                session.flush()
+                after = take_hard_snapshot(
+                    target=request.target,
+                    session=session,
+                    duckdb_conn=duckdb_conn,
+                )
+                after_scores = after.scores
+
+            # Determine improvement from hard scores (if available),
+            # otherwise fall back to action_result
+            if before_scores and after_scores:
+                improved = any(
+                    after_scores.get(d, 1.0) < before_scores.get(d, 1.0)
+                    for d in before_scores
+                )
+            else:
+                improved = action_result.get("improved", False)
 
             # Create decision record
             decision = Decision(
@@ -161,9 +195,9 @@ class FixExecutor:
                 target=request.target,
                 parameters=request.parameters,
                 actor=request.actor,
-                before_scores={},
-                after_scores={},
-                improved=action_result.get("improved", False),
+                before_scores=before_scores,
+                after_scores=after_scores,
+                improved=improved,
                 evidence_summary=action_result.get("evidence", ""),
                 decided_at=datetime.now(UTC),
             )

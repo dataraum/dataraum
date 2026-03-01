@@ -351,12 +351,14 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
 
     # Semantic layer detectors
     from dataraum.entropy.detectors.semantic.business_meaning import BusinessMeaningDetector
+    from dataraum.entropy.detectors.semantic.dimensional_entropy import DimensionalEntropyDetector
     from dataraum.entropy.detectors.semantic.temporal_entropy import TemporalEntropyDetector
     from dataraum.entropy.detectors.semantic.unit_entropy import UnitEntropyDetector
 
     registry.register(BusinessMeaningDetector())
     registry.register(UnitEntropyDetector())
     registry.register(TemporalEntropyDetector())
+    registry.register(DimensionalEntropyDetector())
 
     # Computational layer detectors
     from dataraum.entropy.detectors.computational.derived_values import (

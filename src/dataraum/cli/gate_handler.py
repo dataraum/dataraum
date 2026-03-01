@@ -6,6 +6,8 @@ and an escape hatch for free-text LLM questions.
 
 from __future__ import annotations
 
+from typing import Any
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
@@ -23,18 +25,34 @@ class InteractiveCLIHandler:
     """Gate handler for interactive CLI sessions.
 
     Renders gates as Rich panels with numbered options.
+    When a FIX action is selected and pipeline context is available,
+    executes the fix via FixExecutor and displays before/after scores.
     Free-text input is forwarded to an LLM for gate-contextual answers.
     """
 
     def __init__(self, console: Console | None = None):
         self.console = console or Console()
+        self._manager: Any | None = None
+        self._source_id: str = ""
 
-    async def resolve(self, gate: Gate) -> GateResolution:
+    def set_context(self, manager: Any, source_id: str) -> None:
+        """Inject pipeline context for fix execution.
+
+        Called by the runner after the ConnectionManager is created.
+        """
+        self._manager = manager
+        self._source_id = source_id
+
+    def resolve(self, gate: Gate) -> GateResolution:
         """Present gate to user and collect their choice."""
-        self._render_gate(gate)
-        return self._prompt_user(gate)
+        try:
+            self._render_gate(gate)
+            return self._prompt_user(gate)
+        except (KeyboardInterrupt, EOFError):
+            self.console.print("\n  [dim]Interrupted — skipping gate[/dim]")
+            return GateResolution(action_taken=GateActionType.SKIP)
 
-    async def notify(self, message: str) -> None:
+    def notify(self, message: str) -> None:
         """Display a notification message."""
         self.console.print(f"  [dim]{message}[/dim]")
 
@@ -102,6 +120,23 @@ class InteractiveCLIHandler:
             if choice in valid_indices:
                 idx = int(choice)
                 action = next(a for a in gate.suggested_actions if a.index == idx)
+
+                if action.action_type == GateActionType.SKIP:
+                    return GateResolution(
+                        action_taken=GateActionType.SKIP,
+                        action_index=idx,
+                    )
+
+                if action.action_type == GateActionType.FIX:
+                    fix_result = self._execute_fix(action, gate)
+                    if fix_result is not None:
+                        self._display_fix_result(fix_result)
+                    return GateResolution(
+                        action_taken=GateActionType.FIX,
+                        action_index=idx,
+                        parameters=action.parameters,
+                    )
+
                 return GateResolution(
                     action_taken=action.action_type,
                     action_index=idx,
@@ -113,3 +148,85 @@ class InteractiveCLIHandler:
                 action_taken=GateActionType.QUESTION,
                 user_input=choice,
             )
+
+    def _execute_fix(self, action: Any, gate: Gate) -> Any:
+        """Execute a fix action via FixExecutor.
+
+        Returns FixResult on success, None if context not available.
+        """
+        if not self._manager:
+            self.console.print("  [yellow]Cannot execute fix: no pipeline context available[/yellow]")
+            return None
+
+        from dataraum.entropy.fix_executor import (
+            FixExecutor,
+            FixRequest,
+            get_default_action_registry,
+        )
+
+        action_type = action.parameters.get("action_type", "")
+        target = action.parameters.get("target", "")
+
+        registry = get_default_action_registry()
+        definition = registry.get(action_type)
+        if not definition:
+            self.console.print(f"  [red]Unknown action: {action_type}[/red]")
+            return None
+
+        # Prompt for any required parameters not already in action.parameters
+        params = dict(action.parameters)
+        for param_name, param_desc in definition.parameters_schema.items():
+            if param_name not in params or not params[param_name]:
+                value = Prompt.ask(f"  {param_desc}", console=self.console)
+                params[param_name] = value
+
+        request = FixRequest(
+            action_type=action_type,
+            target=target,
+            parameters=params,
+            actor="user",
+            gate_type=gate.gate_type,
+            blocked_phase=gate.blocked_phase,
+            source_id=self._source_id,
+        )
+
+        executor = FixExecutor(registry)
+        try:
+            with self._manager.session_scope() as session:
+                return executor.execute(request, session)
+        except Exception as e:
+            self.console.print(f"  [red]Fix execution error: {e}[/red]")
+            return None
+
+    def _display_fix_result(self, result: Any) -> None:
+        """Display fix execution result with before/after scores."""
+        if result.success:
+            self.console.print("  [green]Fix applied successfully[/green]")
+
+            # Show before/after scores
+            if result.before_scores and result.after_scores:
+                self.console.print()
+                for dim in sorted(result.before_scores):
+                    before = result.before_scores[dim]
+                    after = result.after_scores.get(dim, before)
+                    delta = after - before
+                    if delta < 0:
+                        style = "green"
+                        arrow = "improved"
+                    elif delta > 0:
+                        style = "red"
+                        arrow = "worsened"
+                    else:
+                        style = "dim"
+                        arrow = "unchanged"
+                    self.console.print(
+                        f"    {dim}: {before:.3f} -> {after:.3f} ({arrow})",
+                        style=style,
+                    )
+
+            if result.improved:
+                self.console.print("  [green]Overall improvement detected[/green]")
+            else:
+                self.console.print("  [yellow]No improvement detected[/yellow]")
+        else:
+            self.console.print(f"  [red]Fix failed: {result.error}[/red]")

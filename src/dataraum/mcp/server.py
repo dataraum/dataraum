@@ -96,6 +96,11 @@ def create_server(output_dir: Path | None = None) -> Server:
                             "type": "string",
                             "description": "Optional: name for the data source",
                         },
+                        "gate_mode": {
+                            "type": "string",
+                            "description": "How to handle entropy gates: skip (default), pause, fail",
+                            "enum": ["skip", "pause", "fail"],
+                        },
                     },
                     "required": [],
                 },
@@ -307,6 +312,7 @@ def create_server(output_dir: Path | None = None) -> Server:
         if name == "analyze":
             path = arguments.get("path")
             source_name = arguments.get("name")
+            gate_mode_arg = arguments.get("gate_mode")
 
             # Validate path if provided
             if path:
@@ -324,7 +330,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                 async def _work(task: ServerTaskContext) -> CallToolResult:
                     callback = _make_task_progress_callback(task, loop)
                     text = await asyncio.to_thread(
-                        _analyze, output_dir, path, source_name, callback
+                        _analyze, output_dir, path, source_name, callback, gate_mode_arg
                     )
                     return CallToolResult(
                         content=[TextContent(type="text", text=text)]
@@ -341,7 +347,7 @@ def create_server(output_dir: Path | None = None) -> Server:
             else:
                 # No task API: fire-and-forget, client polls get_context
                 bg = asyncio.create_task(
-                    _run_analyze_background(output_dir, path, source_name)
+                    _run_analyze_background(output_dir, path, source_name, gate_mode_arg)
                 )
                 _background_tasks.add(bg)
                 bg.add_done_callback(_background_tasks.discard)
@@ -428,10 +434,11 @@ async def _run_analyze_background(
     output_dir: Path,
     path: str | None,
     source_name: str | None,
+    gate_mode: str | None = None,
 ) -> None:
     """Run _analyze in a background thread, logging errors."""
     try:
-        await asyncio.to_thread(_analyze, output_dir, path, source_name, None)
+        await asyncio.to_thread(_analyze, output_dir, path, source_name, None, gate_mode)
     except Exception:
         _log.exception("Background pipeline failed for %s", path or "(registered sources)")
 
@@ -514,6 +521,7 @@ def _analyze(
     path: str | None = None,
     name: str | None = None,
     progress_callback: ProgressCallback | None = None,
+    gate_mode: str | None = None,
 ) -> str:
     """Run the pipeline on a data source.
 
@@ -522,11 +530,12 @@ def _analyze(
         path: Path to CSV/Parquet file or directory. When None, uses registered sources.
         name: Optional source name
         progress_callback: Optional callback for progress notifications
+        gate_mode: How to handle entropy gates (skip, pause, fail)
 
     Returns:
         Formatted pipeline result summary
     """
-    from dataraum.pipeline.runner import RunConfig, run
+    from dataraum.pipeline.runner import GateMode, RunConfig, run
 
     source_path: Path | None = None
     if path:
@@ -534,11 +543,26 @@ def _analyze(
         if not source_path.exists():
             return f"Error: Path not found: {path}"
 
+    # Resolve gate mode
+    resolved_gate_mode = GateMode.SKIP
+    gate_handler = None
+    if gate_mode:
+        try:
+            resolved_gate_mode = GateMode(gate_mode)
+        except ValueError:
+            pass  # Fall back to skip
+    if resolved_gate_mode == GateMode.PAUSE:
+        from dataraum.mcp.gate_handler import MCPGateHandler
+
+        gate_handler = MCPGateHandler()
+
     config = RunConfig(
         source_path=source_path,
         output_dir=output_dir,
         source_name=name,
         progress_callback=progress_callback,
+        gate_mode=resolved_gate_mode,
+        gate_handler=gate_handler,
     )
 
     result = run(config)

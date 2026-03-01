@@ -1,5 +1,7 @@
 """Tests for fix executor and action registry."""
 
+from unittest.mock import patch
+
 from dataraum.entropy.action_executors import get_seed_actions
 from dataraum.entropy.fix_executor import (
     ActionCategory,
@@ -169,6 +171,132 @@ class TestFixExecutor:
         assert result.decision.target == "column:orders.amount"
         assert result.decision.actor == "user"
         assert len(calls) == 1
+
+        session.close()
+        engine.dispose()
+
+    def test_hard_verifiable_action_takes_snapshots(self, tmp_path):
+        """Hard-verifiable actions should have before/after scores populated."""
+        from dataraum.entropy.hard_snapshot import HardSnapshot
+
+        calls: list[dict[str, str]] = []
+
+        def mock_executor(
+            session: object,
+            duckdb_conn: object,
+            target: str,
+            parameters: dict,
+        ) -> dict:
+            calls.append({"target": target})
+            return {"improved": True, "evidence": "Type overridden"}
+
+        registry = ActionRegistry()
+        registry.register(
+            ActionDefinition(
+                action_type="hard_fix",
+                category="transform",
+                description="Hard fix",
+                hard_verifiable=True,
+                executor=mock_executor,
+            )
+        )
+        executor = FixExecutor(registry)
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from dataraum.storage.base import init_database
+
+        engine = create_engine("sqlite:///:memory:")
+        init_database(engine)
+        Session = sessionmaker(bind=engine)
+        session = Session()
+
+        before_snap = HardSnapshot(
+            scores={"type_fidelity": 0.6},
+            detectors_run=["type_fidelity"],
+        )
+        after_snap = HardSnapshot(
+            scores={"type_fidelity": 0.1},
+            detectors_run=["type_fidelity"],
+        )
+
+        with patch(
+            "dataraum.entropy.hard_snapshot.take_hard_snapshot",
+            side_effect=[before_snap, after_snap],
+        ):
+            result = executor.execute(
+                FixRequest(
+                    action_type="hard_fix",
+                    target="column:orders.amount",
+                    actor="user",
+                ),
+                session=session,
+            )
+
+        assert result.success
+        assert result.improved
+        assert result.before_scores == {"type_fidelity": 0.6}
+        assert result.after_scores == {"type_fidelity": 0.1}
+        assert result.decision is not None
+        assert result.decision.before_scores == {"type_fidelity": 0.6}
+        assert result.decision.after_scores == {"type_fidelity": 0.1}
+        # Score delta should be negative (improvement)
+        assert result.score_deltas["type_fidelity"] < 0
+
+        session.close()
+        engine.dispose()
+
+    def test_non_hard_verifiable_skips_snapshots(self, tmp_path):
+        """Non-hard-verifiable actions should not take snapshots."""
+
+        def mock_executor(
+            session: object,
+            duckdb_conn: object,
+            target: str,
+            parameters: dict,
+        ) -> dict:
+            return {"improved": False, "evidence": "Annotation added"}
+
+        registry = ActionRegistry()
+        registry.register(
+            ActionDefinition(
+                action_type="soft_fix",
+                category="annotate",
+                description="Soft fix",
+                hard_verifiable=False,
+                executor=mock_executor,
+            )
+        )
+        executor = FixExecutor(registry)
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from dataraum.storage.base import init_database
+
+        engine = create_engine("sqlite:///:memory:")
+        init_database(engine)
+        Session = sessionmaker(bind=engine)
+        session = Session()
+
+        # Should NOT call take_hard_snapshot at all
+        with patch(
+            "dataraum.entropy.hard_snapshot.take_hard_snapshot",
+            side_effect=AssertionError("Should not be called"),
+        ):
+            result = executor.execute(
+                FixRequest(
+                    action_type="soft_fix",
+                    target="column:orders.amount",
+                ),
+                session=session,
+            )
+
+        assert result.success
+        assert not result.improved
+        assert result.before_scores == {}
+        assert result.after_scores == {}
 
         session.close()
         engine.dispose()

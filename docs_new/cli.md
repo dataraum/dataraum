@@ -1,6 +1,6 @@
 # CLI Reference
 
-The `dataraum` command provides a command-line interface for running and inspecting the metadata extraction pipeline.
+The `dataraum` command provides 3 commands for running and inspecting the metadata extraction pipeline.
 
 ## Installation
 
@@ -28,9 +28,8 @@ dataraum run SOURCE [OPTIONS]
 - `-n, --name TEXT` - Name for the data source (default: derived from path)
 - `-p, --phase TEXT` - Run only this phase and its dependencies
 - `-f, --force` - Force re-run of target phase, deleting previous results (requires `--phase`)
-- `-g, --gate-mode {skip|pause|fail|auto_fix}` - How to handle entropy gates (default: `skip`)
+- `-g, --gate-mode {skip|pause|fail|auto_fix}` - How to handle entropy gates (default: `skip` for non-TTY, `pause` for interactive)
 - `--contract TEXT` - Target contract name for gate evaluation
-- `--skip-llm` - Skip phases that require LLM
 - `-q, --quiet` - Suppress progress output
 
 **Examples:**
@@ -44,9 +43,6 @@ dataraum run /path/to/file.csv --output ./my_output
 
 # Run only up to the statistics phase
 dataraum run /path/to/data --phase statistics
-
-# Run without LLM phases (faster, no API calls)
-dataraum run /path/to/data --skip-llm
 
 # Interactive gate handling — pause at entropy violations
 dataraum run /path/to/data --gate-mode pause
@@ -72,7 +68,6 @@ dataraum run /path/to/data --phase semantic -f
 
 **Notes:**
 - `--force` requires `--phase` — it only applies to the target phase, not its dependencies.
-- The import phase cannot be forced — use `dataraum reset` for a full re-import.
 - Only the target phase's output is deleted; dependency phases keep their results.
 
 ### `status` - Show Pipeline Status
@@ -98,67 +93,29 @@ dataraum status [OUTPUT_DIR]
 dataraum status ./pipeline_output
 ```
 
-### `inspect` - Inspect Graphs and Context
+### `query` - Natural Language Data Query
 
-Show loaded graph definitions, filter coverage, and execution context for a dataset.
+Ask questions about your data in natural language. The query engine generates SQL, executes it, and returns an answer with confidence levels.
 
 ```bash
-dataraum inspect [OUTPUT_DIR]
+dataraum query OUTPUT_DIR QUESTION
 ```
 
 **Arguments:**
-- `OUTPUT_DIR` - Output directory containing pipeline databases (default: `./pipeline_output`)
-
-**Output includes:**
-- Loaded filter graphs (quality checks by role, type, or pattern)
-- Loaded metric graphs (business metrics like DSO, DPO, etc.)
-- Dataset filter coverage statistics
-- Columns with applicable filters
-- Execution context sample (what the graph agent would receive)
+- `OUTPUT_DIR` - Output directory containing pipeline databases (required)
+- `QUESTION` - Natural language question about the data (required)
 
 **Example:**
 
 ```bash
-dataraum inspect ./pipeline_output
-```
-
-### `reset` - Reset Pipeline Output
-
-Delete database files to start fresh.
-
-```bash
-dataraum reset [OUTPUT_DIR] [OPTIONS]
-```
-
-**Arguments:**
-- `OUTPUT_DIR` - Output directory to reset (default: `./pipeline_output`)
-
-**Options:**
-- `-f, --force` - Skip confirmation prompt
-
-**Example:**
-
-```bash
-# Interactive reset (asks for confirmation)
-dataraum reset ./pipeline_output
-
-# Force reset without confirmation
-dataraum reset ./pipeline_output --force
-```
-
-### `phases` - List Pipeline Phases
-
-Display all available pipeline phases with their dependencies and LLM requirements.
-
-```bash
-dataraum phases
+dataraum query ./pipeline_output "What is the total revenue by month?"
 ```
 
 **Output includes:**
-- Phase name
-- Description
-- Dependencies (phases that must run first)
-- Whether the phase requires LLM
+- Natural language answer
+- Generated SQL
+- Result data
+- Confidence level
 
 ## Output Files
 
@@ -177,5 +134,3 @@ The command name can be changed in `pyproject.toml`:
 [project.scripts]
 dataraum = "dataraum_context.cli:app"
 ```
-
-Change `dataraum` to your preferred command name (e.g., `dataraum`).

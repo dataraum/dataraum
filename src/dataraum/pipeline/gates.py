@@ -78,15 +78,30 @@ class GateHandler(Protocol):
     - InteractiveCLIHandler: Rich prompts in terminal
     - MCPGateHandler: Resolve via MCP tool calls
     - AutoFixHandler: Automatic resolution (future)
+
+    All methods are sync — handlers do zero async work.
     """
 
-    async def resolve(self, gate: Gate) -> GateResolution:
+    def resolve(self, gate: Gate) -> GateResolution:
         """Present a gate to the user/agent and return their resolution."""
         ...
 
-    async def notify(self, message: str) -> None:
+    def notify(self, message: str) -> None:
         """Send a non-blocking notification about gate status."""
         ...
+
+
+# Mapping from entropy sub-dimensions to relevant fix action types.
+# Used by build_gate() to suggest actions based on violated dimensions.
+_DIMENSION_TO_ACTIONS: dict[str, list[str]] = {
+    "type_fidelity": ["override_type"],
+    "null_ratio": ["declare_null_meaning", "create_filtered_view"],
+    "outlier_rate": ["create_filtered_view"],
+    "naming_clarity": ["add_business_name"],
+    "unit_declaration": ["declare_unit"],
+    "join_path_determinism": ["confirm_relationship"],
+    "relationship_quality": ["confirm_relationship"],
+}
 
 
 def build_gate(
@@ -102,7 +117,7 @@ def build_gate(
         entropy_state: Full current hard scores dict
 
     Returns:
-        Gate with violations and basic actions (skip always available)
+        Gate with violations, fix suggestions, and skip action
     """
     gate_violations = [
         GateViolation(
@@ -128,15 +143,48 @@ def build_gate(
     else:
         gate_type = "general"
 
-    # Always include skip action
-    actions = [
+    # Build fix actions from violated dimensions
+    actions: list[GateAction] = []
+    action_index = 1
+    seen_action_types: set[str] = set()
+
+    for dim in violations:
+        for action_type in _DIMENSION_TO_ACTIONS.get(dim, []):
+            if action_type not in seen_action_types:
+                seen_action_types.add(action_type)
+                actions.append(
+                    GateAction(
+                        index=action_index,
+                        action_type=GateActionType.FIX,
+                        label=f"fix: {action_type.replace('_', ' ')}",
+                        description=f"Apply {action_type} to resolve {dim} violation",
+                        parameters={"action_type": action_type},
+                    )
+                )
+                action_index += 1
+
+    # Add "fix all" when there are multiple fix actions
+    fix_count = sum(1 for a in actions if a.action_type == GateActionType.FIX)
+    if fix_count > 1:
+        actions.append(
+            GateAction(
+                index=action_index,
+                action_type=GateActionType.FIX_ALL,
+                label="fix all: apply all suggested fixes",
+                description="Execute all fix actions listed above",
+            ),
+        )
+        action_index += 1
+
+    # Always include skip action last
+    actions.append(
         GateAction(
-            index=1,
+            index=action_index,
             action_type=GateActionType.SKIP,
             label="skip: continue with warnings",
             description="Accept current entropy levels and continue the pipeline",
         ),
-    ]
+    )
 
     return Gate(
         gate_id=f"gate_{blocked_phase}",

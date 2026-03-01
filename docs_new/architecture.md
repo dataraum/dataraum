@@ -15,13 +15,13 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 │   Claude Code ──── MCP Server (7 tools)                                     │
 │   Claude Desktop ─┘                       ContextDocument (pre-assembled)   │
 │   Python ──────── Context API                                               │
-│   Terminal ────── CLI + TUI (8 commands)                                     │
+│   Terminal ────── CLI + TUI (3 commands)                                     │
 └─────────────────────────────────────────────────────────────────────────────┘
                                        ↑
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           ENTROPY LAYER                                     │
 │                                                                             │
-│   12 Detectors (8 hard, 3 soft) ──▶  Contracts (6 built-in)                 │
+│   12 Detectors (8 hard, 4 soft) ──▶  Contracts (6 built-in)                 │
 │   Bayesian Network              ──▶  Actions (prioritized fixes)            │
 │   Gates (entropy preconditions) ──▶  Fix Executor + Decision Ledger        │
 │   LLM Interpretation            ──▶  Confidence Levels (traffic light)      │
@@ -98,7 +98,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 | Layer | Technology | Purpose |
 |-------|------------|---------|
 | **AI Interface** | MCP Server | 7 tools for AI agents (Claude Code, Claude Desktop) |
-| **CLI** | Typer + Rich | 8 commands for terminal use |
+| **CLI** | Typer + Rich | 3 commands for terminal use |
 | **TUI** | Textual | Interactive terminal dashboards |
 | **Python API** | `Context` class | Programmatic access for notebooks and scripts |
 | **Pipeline** | ThreadPoolExecutor | Parallel phase execution (free-threaded Python 3.14) |
@@ -156,13 +156,14 @@ src/dataraum/
 │   ├── validation/        # Domain validation rules
 │   └── quality_summary/   # Quality report synthesis
 ├── entropy/               # Uncertainty quantification
-│   ├── detectors/         # 12 detectors across 4 layers (8 hard, 3 soft)
+│   ├── detectors/         # 12 detectors across 4 layers (8 hard, 4 soft)
 │   │   ├── structural/    # Type fidelity, join paths, relationship quality
 │   │   ├── semantic/      # Business meaning, units, temporal, dimensional
 │   │   ├── value/         # Nulls, outliers, drift, Benford
 │   │   └── computational/ # Derived values, aggregation safety
 │   ├── contracts/         # Use-case threshold evaluation
 │   ├── network/           # Bayesian causal network
+│   ├── hard_snapshot.py   # HardSnapshot: run hard detectors, before/after measurement
 │   ├── decisions.py       # Decision dataclass + DecisionRecord DB model
 │   ├── fix_executor.py    # ActionRegistry, FixExecutor, FixRequest/FixResult
 │   ├── action_executors.py # 6 seed action executors
@@ -172,16 +173,16 @@ src/dataraum/
 ├── query/                 # Natural language query execution
 ├── pipeline/              # Pipeline orchestrator
 │   ├── registry.py        # Phase auto-discovery
-│   ├── runner.py          # Execution engine + GateMode
-│   ├── gates.py           # Gate model, GateHandler protocol
-│   ├── entropy_state.py   # Runtime hard score tracking
+│   ├── runner.py          # Execution engine + GateMode + RunConfig
+│   ├── gates.py           # Gate model, GateHandler protocol, build_gate()
+│   ├── entropy_state.py   # PipelineEntropyState: runtime hard score tracking
 │   └── phases/            # 20 phase implementations (with entropy_preconditions)
 ├── sources/               # Data source loaders (CSV, Parquet)
 ├── storage/               # SQLAlchemy base, migrations
 ├── llm/                   # LLM provider abstraction, prompt management
 ├── core/                  # Config, connections, utilities, models
 ├── cli/                   # Typer commands + Textual TUI
-│   ├── main.py            # CLI entry point (8 commands)
+│   ├── main.py            # CLI entry point (3 commands: run, status, query)
 │   ├── gate_handler.py    # Interactive CLI gate handler (Rich prompts)
 │   ├── app.py             # Textual application
 │   ├── screens/           # TUI screens (home with gate status)
@@ -244,18 +245,13 @@ Primary interface for AI agents. Tools return markdown formatted for LLM consump
 | `get_actions` | Prioritized quality fixes |
 | `apply_fix` | Execute a fix action with verification |
 
-### CLI (8 commands)
+### CLI (3 commands)
 
 | Command | Purpose |
 |---------|---------|
-| `dataraum run` | Execute pipeline |
-| `dataraum status` | Pipeline run status (TUI) |
-| `dataraum phases` | List phases and dependencies |
-| `dataraum inspect` | Graph definitions and context |
-| `dataraum reset` | Delete databases |
-| `dataraum entropy` | Entropy explorer (TUI) |
-| `dataraum contracts` | Contract evaluation |
-| `dataraum query` | Natural language query |
+| `dataraum run` | Execute pipeline (with interactive gate handling) |
+| `dataraum status` | Pipeline run status |
+| `dataraum query` | Natural language data query |
 
 ### Python API
 
@@ -288,7 +284,7 @@ with Context("./pipeline_output") as ctx:
 
 ## LLM Integration
 
-7 of 19 pipeline phases use LLM. All LLM features can be skipped (`--skip-llm`).
+7 of 19 pipeline phases use LLM.
 
 | Feature | Model Tier | Purpose |
 |---------|------------|---------|

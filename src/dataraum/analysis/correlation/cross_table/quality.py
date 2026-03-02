@@ -13,6 +13,7 @@ VDP multicollinearity is expensive and optional (controlled by compute_vdp flag)
 
 from __future__ import annotations
 
+import warnings
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
@@ -175,7 +176,8 @@ def analyze_relationship_quality(
             valid_labels = [col_labels[i] for i in valid_indices]
 
             if data_valid.shape[1] >= 2:
-                with np.errstate(invalid="ignore"):
+                with np.errstate(invalid="ignore"), warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
                     corr_matrix = np.corrcoef(data_valid, rowvar=False)
                 corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)
 

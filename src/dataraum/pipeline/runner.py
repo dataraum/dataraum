@@ -41,6 +41,7 @@ from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
+from dataraum.pipeline.events import EventCallback, EventType  # noqa: F401
 from dataraum.pipeline.orchestrator import Pipeline, PipelineConfig, ProgressCallback, get_pipeline
 from dataraum.storage import Source
 
@@ -71,6 +72,7 @@ class RunConfig:
     target_phase: str | None = None
     force_phase: bool = False
     progress_callback: ProgressCallback | None = None
+    event_callback: EventCallback | None = None
 
     # Gate configuration
     gate_mode: GateMode = GateMode.SKIP
@@ -98,6 +100,10 @@ class PhaseRunResult:
     db_writes: int = 0
     timings: dict[str, float] = field(default_factory=dict)
 
+    # Entropy / gate info
+    post_verification_scores: dict[str, float] = field(default_factory=dict)
+    gate_status: str = ""  # "passed" | "blocked" | "skipped" | ""
+
 
 @dataclass
 class RunResult:
@@ -116,6 +122,10 @@ class RunResult:
     phases: list[PhaseRunResult] = field(default_factory=list)
     output_dir: Path | None = None
     error: str | None = None  # Overall error (exception during setup, etc.)
+
+    # Entropy / gate summary
+    final_entropy_scores: dict[str, float] = field(default_factory=dict)
+    gate_events: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def phases_completed(self) -> int:
@@ -434,6 +444,7 @@ def run(config: RunConfig) -> Result[RunResult]:
             runtime_config=runtime_config,
             progress_callback=config.progress_callback,
             force_phase=config.force_phase,
+            event_callback=config.event_callback,
         )
 
         duration = time.time() - start_time
@@ -464,8 +475,33 @@ def run(config: RunConfig) -> Result[RunResult]:
                     db_queries=checkpoint.db_queries if checkpoint else 0,
                     db_writes=checkpoint.db_writes if checkpoint else 0,
                     timings=checkpoint.timings if checkpoint else {},
+                    # Entropy / gate info from checkpoint
+                    post_verification_scores=(
+                        checkpoint.entropy_hard_scores if checkpoint and checkpoint.entropy_hard_scores else {}
+                    ),
+                    gate_status=checkpoint.gate_status or "" if checkpoint else "",
                 )
             )
+
+        # Extract entropy and gate data from pipeline
+        final_entropy_scores = pipeline._entropy_state.to_dict()
+        gate_events_list: list[dict[str, Any]] = []
+        for evt in pipeline._collected_events:
+            if evt.event_type in (
+                EventType.GATE_EVALUATED,
+                EventType.GATE_BLOCKED,
+                EventType.GATE_RESOLVED,
+            ):
+                gate_events_list.append({
+                    "event_type": evt.event_type.value,
+                    "phase": evt.phase,
+                    "gate_status": evt.gate_status,
+                    "violations": {
+                        k: {"current": v[0], "threshold": v[1]}
+                        for k, v in evt.violations.items()
+                    },
+                    "message": evt.message,
+                })
 
         # Close connections
         manager.close()
@@ -510,6 +546,8 @@ def run(config: RunConfig) -> Result[RunResult]:
             duration_seconds=duration,
             phases=phase_results,
             output_dir=config.output_dir,
+            final_entropy_scores=final_entropy_scores,
+            gate_events=gate_events_list,
         )
 
         return Result.ok(run_result, warnings=warnings if warnings else None)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -190,27 +190,78 @@ def run(
 
         gate_handler = InteractiveCLIHandler(console=console)
 
-    # Progress callback for interactive mode
-    progress_callback = None
+    # Event-driven live display for interactive mode
+    event_callback = None
+    _live_ctx = None
     if is_interactive:
-        from rich.status import Status
+        from rich.live import Live
+        from rich.text import Text
 
-        _status: Status | None = None
+        from dataraum.pipeline.events import EventType, PipelineEvent
 
-        def _progress(current: int, total: int, message: str) -> None:
-            nonlocal _status
-            if _status is None:
-                _status = Status(message, console=console, spinner="dots")
-                _status.start()
-            if current >= total or "complete" in message.lower():
-                if _status:
-                    _status.stop()
-                    _status = None
-            else:
-                if _status:
-                    _status.update(f"[{current}/{total}] {message}")
+        # Mutable live state
+        _live_state: dict[str, Any] = {
+            "step": 0,
+            "total": 0,
+            "running": [],
+            "latest_scores": {},
+            "latest_gate": "",
+        }
 
-        progress_callback = _progress
+        def _render_live() -> Text:
+            s = _live_state
+            step = s["step"]
+            total = s["total"]
+            running = s["running"]
+            lines = []
+
+            # Main status line
+            running_str = ", ".join(running) if running else "waiting..."
+            lines.append(f"Pipeline [{step}/{total}]  Running: {running_str}")
+
+            # Latest entropy scores
+            if s["latest_scores"]:
+                scores_str = ", ".join(
+                    f"{d}={v:.3f}" for d, v in s["latest_scores"].items()
+                )
+                lines.append(f"  entropy: {scores_str}")
+
+            # Latest gate info
+            if s["latest_gate"]:
+                lines.append(f"  gate: {s['latest_gate']}")
+
+            return Text("\n".join(lines))
+
+        def _event_handler(event: PipelineEvent) -> None:
+            s = _live_state
+            s["step"] = event.step
+            s["total"] = event.total
+
+            if event.event_type == EventType.PHASE_STARTED:
+                s["running"] = event.parallel_phases
+            elif event.event_type == EventType.PHASE_COMPLETED:
+                # Remove completed phase from running list
+                if event.phase in s["running"]:
+                    s["running"] = [p for p in s["running"] if p != event.phase]
+            elif event.event_type == EventType.POST_VERIFICATION:
+                s["latest_scores"] = event.scores
+            elif event.event_type == EventType.GATE_EVALUATED:
+                if event.gate_status == "passed":
+                    s["latest_gate"] = f"{event.phase} — passed"
+                elif event.gate_status == "skipped":
+                    s["latest_gate"] = f"{event.phase} — skipped (violations)"
+            elif event.event_type == EventType.GATE_BLOCKED:
+                s["latest_gate"] = f"{event.phase} — BLOCKED"
+            elif event.event_type == EventType.PIPELINE_COMPLETED:
+                s["running"] = []
+
+            if _live_ctx is not None:
+                try:
+                    _live_ctx.update(_render_live())
+                except Exception:
+                    pass
+
+        event_callback = _event_handler
 
     config = RunConfig(
         source_path=source_path,
@@ -221,11 +272,19 @@ def run(
         gate_mode=resolved_gate_mode,
         contract=contract,
         gate_handler=gate_handler,
-        progress_callback=progress_callback,
+        event_callback=event_callback,
     )
 
-    # Run pipeline - always returns Result.ok with RunResult
-    result = run_pipeline(config)
+    # Run pipeline — with live display if interactive
+    if is_interactive and event_callback is not None:
+        from rich.live import Live
+
+        with Live(console=console, refresh_per_second=4) as live:
+            _live_ctx = live
+            result = run_pipeline(config)
+            _live_ctx = None
+    else:
+        result = run_pipeline(config)
     run_result = result.unwrap()
 
     # Print user-facing output
@@ -238,6 +297,13 @@ def run(
 
         if config.target_phase:
             console.print(f"Target Phase: {config.target_phase}")
+
+        # Build gate info lookup from gate_events
+        gate_info: dict[str, dict[str, Any]] = {}
+        for ge in run_result.gate_events:
+            phase_name_ge = ge.get("phase", "")
+            if phase_name_ge:
+                gate_info[phase_name_ge] = ge
 
         # Show per-phase results
         if run_result.phases:
@@ -262,6 +328,70 @@ def run(
                 )
                 if phase_result.error:
                     console.print(f"      [red]Error: {phase_result.error}[/red]")
+
+                # Show gate info for this phase
+                gi = gate_info.get(phase_result.phase_name)
+                if gi:
+                    gs = gi.get("gate_status", "")
+                    violations = gi.get("violations", {})
+                    if gs == "passed":
+                        console.print("      [dim]gate: passed[/dim]")
+                    elif gs in ("blocked", "skipped"):
+                        parts = []
+                        for dim, v in violations.items():
+                            cur = v.get("current", 0)
+                            thr = v.get("threshold", 0)
+                            if cur < 0:
+                                parts.append(f"{dim} [red]✗[/red] (not yet measured, needs {thr:.2f})")
+                            else:
+                                parts.append(f"{dim} [red]✗[/red] ({cur:.2f} > {thr:.2f})")
+                        if parts:
+                            console.print(f"      [yellow]gate: {', '.join(parts)}[/yellow]")
+
+                # Show entropy scores produced by this phase
+                if phase_result.post_verification_scores:
+                    scores_str = ", ".join(
+                        f"{d}={s:.3f}" for d, s in phase_result.post_verification_scores.items()
+                    )
+                    console.print(f"      [dim]entropy: {scores_str}[/dim]")
+
+        # Entropy State
+        if run_result.final_entropy_scores:
+            console.print()
+            console.print("[bold]Entropy State[/bold]")
+            console.print("-" * 60)
+            for dim, score in sorted(run_result.final_entropy_scores.items()):
+                # Truncate/pad dimension name for alignment
+                label = dim[:22].ljust(22)
+                # Build bar: 10 chars, filled proportionally
+                filled = round(score * 10)
+                bar = "\u2588" * filled + "\u2591" * (10 - filled)
+                # Color based on severity
+                if score < 0.2:
+                    color = "green"
+                elif score < 0.5:
+                    color = "yellow"
+                else:
+                    color = "red"
+                console.print(f"  {label} [{color}]{score:.3f}[/{color}]  {bar}")
+
+        # Gate Summary
+        if run_result.gate_events:
+            total_gates = sum(1 for g in run_result.gate_events if g.get("event_type") == "gate_evaluated")
+            passed_gates = sum(
+                1 for g in run_result.gate_events
+                if g.get("event_type") == "gate_evaluated" and g.get("gate_status") == "passed"
+            )
+            blocked_gates = sum(
+                1 for g in run_result.gate_events
+                if g.get("event_type") in ("gate_evaluated", "gate_blocked")
+                and g.get("gate_status") in ("blocked", "skipped")
+            )
+            console.print()
+            console.print(
+                f"[bold]Gate Summary:[/bold] {total_gates + blocked_gates} evaluated, "
+                f"{passed_gates} passed, {blocked_gates} blocked/skipped"
+            )
 
         # Summary
         console.print()

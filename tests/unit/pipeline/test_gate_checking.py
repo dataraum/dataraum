@@ -77,6 +77,7 @@ class TestCheckGate:
         phase = StubPhase("test")
         pipeline.register(phase)
         pipeline._entropy_state = PipelineEntropyState()
+        pipeline._producible_dimensions = set()
         passed, reason = pipeline._check_gate("test")
         assert passed is True
         assert reason == ""
@@ -86,6 +87,7 @@ class TestCheckGate:
         phase = StubPhase("test", preconditions={"type_fidelity": 0.5})
         pipeline.register(phase)
         pipeline._entropy_state = PipelineEntropyState()
+        pipeline._producible_dimensions = set()
         pipeline._entropy_state.update_score("type_fidelity", 0.3)
         passed, reason = pipeline._check_gate("test")
         assert passed is True
@@ -95,6 +97,7 @@ class TestCheckGate:
         phase = StubPhase("test", preconditions={"type_fidelity": 0.5})
         pipeline.register(phase)
         pipeline._entropy_state = PipelineEntropyState()
+        pipeline._producible_dimensions = set()
         pipeline._entropy_state.update_score("type_fidelity", 0.7)
         passed, reason = pipeline._check_gate("test")
         assert passed is False
@@ -102,19 +105,46 @@ class TestCheckGate:
         assert "0.70" in reason
         assert "0.50" in reason
 
-    def test_unmeasured_dimension_passes(self):
-        """Dimensions not yet measured should not block."""
+    def test_unmeasured_dimension_no_producer_passes(self):
+        """Dimensions not yet measured pass when no phase produces them."""
         pipeline = Pipeline()
         phase = StubPhase("test", preconditions={"type_fidelity": 0.5})
         pipeline.register(phase)
         pipeline._entropy_state = PipelineEntropyState()
+        pipeline._producible_dimensions = set()  # No producer
         # No score set for type_fidelity
         passed, reason = pipeline._check_gate("test")
         assert passed is True
 
+    def test_unmeasured_dimension_with_producer_blocks(self):
+        """Dimensions not yet measured block when a phase will produce them."""
+        pipeline = Pipeline()
+        phase = StubPhase("test", preconditions={"type_fidelity": 0.5})
+        pipeline.register(phase)
+        pipeline._entropy_state = PipelineEntropyState()
+        pipeline._producible_dimensions = {"type_fidelity"}  # A phase will produce it
+        # No score set for type_fidelity
+        passed, reason = pipeline._check_gate("test")
+        assert passed is False
+        assert "type_fidelity" in reason
+        assert "not yet measured" in reason
+
+    def test_unmeasured_sentinel_value(self):
+        """Unmeasured + producible dimension uses -1.0 sentinel in violations."""
+        state = PipelineEntropyState()
+        violations = state.check_preconditions(
+            {"type_fidelity": 0.5},
+            producible_dimensions={"type_fidelity"},
+        )
+        assert "type_fidelity" in violations
+        current, threshold = violations["type_fidelity"]
+        assert current == -1.0
+        assert threshold == 0.5
+
     def test_unknown_phase_passes(self):
         pipeline = Pipeline()
         pipeline._entropy_state = PipelineEntropyState()
+        pipeline._producible_dimensions = set()
         passed, reason = pipeline._check_gate("nonexistent")
         assert passed is True
 

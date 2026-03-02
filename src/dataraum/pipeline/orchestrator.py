@@ -39,6 +39,7 @@ from dataraum.pipeline.base import (
 )
 from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
 from dataraum.pipeline.entropy_state import PipelineEntropyState
+from dataraum.pipeline.events import EventCallback, EventType, PipelineEvent
 from dataraum.pipeline.gates import GateActionType
 from dataraum.pipeline.registry import get_all_dependencies, get_registry
 
@@ -145,6 +146,9 @@ class Pipeline:
     _outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
     _phase_priority: dict[str, int] = field(default_factory=dict)  # Transitive dependent count
     _entropy_state: PipelineEntropyState = field(default_factory=PipelineEntropyState)
+    _producible_dimensions: set[str] = field(default_factory=set)
+    _collected_events: list[PipelineEvent] = field(default_factory=list)
+    _event_callback: EventCallback | None = field(default=None, repr=False)
 
     def register(self, phase: Phase) -> None:
         """Register a phase implementation."""
@@ -191,6 +195,15 @@ class Pipeline:
         except Exception:
             pass  # Never let progress reporting crash the pipeline
 
+    def _emit_event(self, event: PipelineEvent) -> None:
+        """Emit a structured pipeline event, swallowing any callback errors."""
+        self._collected_events.append(event)
+        if self._event_callback is not None:
+            try:
+                self._event_callback(event)
+            except Exception:
+                pass  # Never let event reporting crash the pipeline
+
     def get_phases_to_run(self, target_phase: str | None = None) -> list[str]:
         """Get phases to run based on registered phases.
 
@@ -220,6 +233,7 @@ class Pipeline:
         run_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
         force_phase: bool = False,
+        event_callback: EventCallback | None = None,
     ) -> dict[str, PhaseResult]:
         """Run the pipeline.
 
@@ -259,6 +273,9 @@ class Pipeline:
         self._gate_attempts = {}
         self._outputs = {}
         self._entropy_state = PipelineEntropyState()
+        self._producible_dimensions: set[str] = set()
+        self._collected_events = []
+        self._event_callback = event_callback
 
         # Build a serializable record of the full config for the DB
         stored_config = {
@@ -296,6 +313,14 @@ class Pipeline:
         results: dict[str, PhaseResult] = {}
         total_phases = len(phases_to_run)
         completed_step = 0  # Counter for progress notifications
+
+        # Collect all dimensions that active phases can produce via post_verification.
+        # Used by gate checking to block on not-yet-measured dimensions.
+        self._producible_dimensions = set()
+        for pname in phases_to_run:
+            p = self.phases.get(pname)
+            if p and p.post_verification:
+                self._producible_dimensions.update(p.post_verification)
 
         # Compute priority so ready phases are scheduled in critical-path order
         self._compute_phase_priority()
@@ -361,21 +386,63 @@ class Pipeline:
                             # Check entropy gate preconditions
                             gate_passed, gate_reason = self._check_gate(name)
                             if not gate_passed:
+                                # Get violations for event
+                                gate_violations = self._entropy_state.check_preconditions(
+                                    phase.entropy_preconditions,
+                                    producible_dimensions=self._producible_dimensions,
+                                )
                                 if self.config.gate_mode in ("skip", "auto_fix"):
-                                    logger.warning(f"Phase {name}: {gate_reason} (skipping gate)")
+                                    logger.debug(f"Phase {name}: {gate_reason} (skipping gate)")
+                                    self._emit_event(PipelineEvent(
+                                        event_type=EventType.GATE_EVALUATED,
+                                        phase=name,
+                                        step=completed_step,
+                                        total=total_phases,
+                                        gate_status="skipped",
+                                        violations=gate_violations,
+                                        message=gate_reason,
+                                    ))
                                 elif self.config.gate_mode == "fail":
                                     logger.error(f"Phase {name}: {gate_reason}")
+                                    self._emit_event(PipelineEvent(
+                                        event_type=EventType.GATE_EVALUATED,
+                                        phase=name,
+                                        step=completed_step,
+                                        total=total_phases,
+                                        gate_status="blocked",
+                                        violations=gate_violations,
+                                        message=gate_reason,
+                                    ))
                                     self._failed.add(name)
                                     results[name] = PhaseResult.failed(gate_reason)
                                     continue
                                 else:  # pause
                                     logger.warning(f"Phase {name}: {gate_reason} (paused)")
+                                    self._emit_event(PipelineEvent(
+                                        event_type=EventType.GATE_BLOCKED,
+                                        phase=name,
+                                        step=completed_step,
+                                        total=total_phases,
+                                        gate_status="blocked",
+                                        violations=gate_violations,
+                                        message=gate_reason,
+                                    ))
                                     self._gate_blocked.add(name)
                                     results[name] = PhaseResult(
                                         status=PhaseStatus.GATE_BLOCKED,
                                         error=gate_reason,
                                     )
                                     continue
+                            elif phase.entropy_preconditions:
+                                # Gate passed with preconditions — emit pass event
+                                self._emit_event(PipelineEvent(
+                                    event_type=EventType.GATE_EVALUATED,
+                                    phase=name,
+                                    step=completed_step,
+                                    total=total_phases,
+                                    gate_status="passed",
+                                    scores=self._entropy_state.to_dict(),
+                                ))
 
                             # Ready — submit to executor immediately
                             self._running.add(name)
@@ -395,7 +462,14 @@ class Pipeline:
                                 self._outputs.copy(),
                             )
                             active_futures[future] = name
-                            logger.info(f"Started phase: {name} (running: {len(active_futures)})")
+                            self._emit_event(PipelineEvent(
+                                event_type=EventType.PHASE_STARTED,
+                                phase=name,
+                                step=completed_step,
+                                total=total_phases,
+                                message=f"Running {name}",
+                                parallel_phases=list(self._running),
+                            ))
                         else:
                             # Not ready — re-queue at back
                             not_ready.append(name)
@@ -424,7 +498,8 @@ class Pipeline:
                             gate_passed, gate_reason = self._check_gate(target)
                             if not gate_passed:
                                 violations = self._entropy_state.check_preconditions(
-                                    self.phases[target].entropy_preconditions
+                                    self.phases[target].entropy_preconditions,
+                                    producible_dimensions=self._producible_dimensions,
                                 )
                                 gate = build_gate(
                                     blocked_phase=target,
@@ -432,6 +507,11 @@ class Pipeline:
                                     entropy_state=self._entropy_state.to_dict(),
                                 )
                                 resolution = self.config.gate_handler.resolve(gate)
+                                self._emit_event(PipelineEvent(
+                                    event_type=EventType.GATE_RESOLVED,
+                                    phase=target,
+                                    message=str(resolution.action_taken.value),
+                                ))
 
                                 if resolution.action_taken == GateActionType.SKIP:
                                     self._gate_blocked.discard(target)
@@ -509,6 +589,14 @@ class Pipeline:
                                 )
                                 for dim, score in post_scores.items():
                                     self._entropy_state.update_score(dim, score)
+                                if post_scores:
+                                    self._emit_event(PipelineEvent(
+                                        event_type=EventType.POST_VERIFICATION,
+                                        phase=name,
+                                        step=completed_step,
+                                        total=total_phases,
+                                        scores=post_scores,
+                                    ))
 
                             self._notify_progress(
                                 progress_callback,
@@ -516,7 +604,15 @@ class Pipeline:
                                 total_phases,
                                 f"Completed {name}",
                             )
-                            logger.info(
+                            self._emit_event(PipelineEvent(
+                                event_type=EventType.PHASE_COMPLETED,
+                                phase=name,
+                                step=completed_step,
+                                total=total_phases,
+                                duration_seconds=phase_result.duration_seconds,
+                                scores=self._entropy_state.to_dict(),
+                            ))
+                            logger.debug(
                                 f"Phase {name} completed in {phase_result.duration_seconds:.1f}s"
                             )
                             if phase_result.warnings:
@@ -531,7 +627,14 @@ class Pipeline:
                                 total_phases,
                                 f"Skipped {name}",
                             )
-                            logger.info(f"Phase {name} skipped: {phase_result.error}")
+                            self._emit_event(PipelineEvent(
+                                event_type=EventType.PHASE_SKIPPED,
+                                phase=name,
+                                step=completed_step,
+                                total=total_phases,
+                                error=phase_result.error or "",
+                            ))
+                            logger.debug(f"Phase {name} skipped: {phase_result.error}")
                         else:
                             self._failed.add(name)
                             completed_step += 1
@@ -541,6 +644,13 @@ class Pipeline:
                                 total_phases,
                                 f"Failed {name}: {phase_result.error}",
                             )
+                            self._emit_event(PipelineEvent(
+                                event_type=EventType.PHASE_FAILED,
+                                phase=name,
+                                step=completed_step,
+                                total=total_phases,
+                                error=phase_result.error or "",
+                            ))
                             logger.error(f"Phase {name} failed: {phase_result.error}")
                             if phase_result.warnings:
                                 for warning in phase_result.warnings:
@@ -562,6 +672,13 @@ class Pipeline:
                 total_phases,
                 "Pipeline complete",
             )
+            self._emit_event(PipelineEvent(
+                event_type=EventType.PIPELINE_COMPLETED,
+                step=completed_step,
+                total=total_phases,
+                scores=self._entropy_state.to_dict(),
+                duration_seconds=time.time() - start_time,
+            ))
 
             # End pipeline metrics collection
             final_metrics = end_pipeline_metrics()
@@ -929,10 +1046,6 @@ class Pipeline:
                     if scores:
                         aggregated[dim] = sum(scores) / len(scores)
 
-                logger.info(
-                    f"Post-verification for {phase.name}: "
-                    f"{', '.join(f'{d}={s:.3f}' for d, s in aggregated.items())}"
-                )
                 return aggregated
 
         except Exception:
@@ -960,14 +1073,20 @@ class Pipeline:
         if not preconditions:
             return True, ""
 
-        violations = self._entropy_state.check_preconditions(preconditions)
+        violations = self._entropy_state.check_preconditions(
+            preconditions,
+            producible_dimensions=self._producible_dimensions,
+        )
         if not violations:
             return True, ""
 
         # Format violation message
         parts = []
         for dim, (current, threshold) in violations.items():
-            parts.append(f"{dim}: {current:.2f} > {threshold:.2f}")
+            if current < 0:
+                parts.append(f"{dim}: not yet measured (needs {threshold:.2f})")
+            else:
+                parts.append(f"{dim}: {current:.2f} > {threshold:.2f}")
         reason = f"Gate blocked: {', '.join(parts)}"
         return False, reason
 

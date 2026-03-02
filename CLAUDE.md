@@ -1,5 +1,7 @@
 # DataRaum Context Engine
 
+A Python library for extracting rich metadata context from data sources to power AI-driven data analytics. Instead of giving AI tools to discover metadata at runtime, we pre-compute comprehensive metadata and serve it as structured context documents interpreted through domain ontologies.
+
 ## Core Philosophy
 
 This project prioritizes **correctness over speed**. We would rather have working code slowly than broken code quickly.
@@ -214,18 +216,54 @@ These are enforced mechanically — you don't need to remember them, but know th
 
 ## Current Work
 
-**Before starting work, read these files to understand current state:**
+Check [Linear](https://linear.app/dataraum) for active issues, plans, and project documents. Linear MCP is available.
 
-| File | Purpose |
-|------|---------|
-| `docs/BACKLOG.md` | Task tracker — what's done, what's next |
-| `docs/PROGRESS.md` | Session log — recent work history |
+Active project specs live in `docs/projects/` — read these before working on the relevant area:
+- `docs/projects/fixes.md` — Data fix persistence, recipes, decision ledger
+- `docs/projects/progressive-delivery.md` — SEP-1686 tasks, streaming pipeline results
+- `docs/projects/release.md` — CI, PyPI, MCP registry, docs site
 
-Check Linear for any active plan linked to the current task (Linear MCP is available).
+## Architecture
 
-## Project Reference
+### Key Design Decisions
 
-For architecture, module structure, tech stack, design decisions, prototypes, file locations, and dependencies — see `docs/REFERENCE.md`.
+- **VARCHAR-first staging** — All data loaded as VARCHAR to preserve raw values. Type inference happens in profiling, not during load. Prevents silent data loss.
+- **Quarantine pattern** — Failed type casts go to quarantine tables for review, not pipeline failure.
+- **Pre-computed context** — AI receives a pre-assembled `ContextDocument` with all metadata already computed and interpreted through the selected ontology. No runtime discovery.
+- **Ontologies as configuration** — Domain ontologies (financial_reporting, marketing, etc.) are YAML configs that map column patterns to business terms, define computable metrics, and guide semantic interpretation.
+- **Minimal AI tools** — 6 core MCP tools + 3 source management tools. See `src/dataraum/mcp/server.py`.
+- **Free-threading** — Python 3.14t with GIL disabled for true CPU parallelism in pipeline phases.
+
+### Module Structure
+
+```
+src/dataraum/
+├── analysis/       # Data analysis (typing, statistics, correlations, relationships,
+│                   #   semantic, temporal, slicing, cycles, validation, quality_summary)
+├── entropy/        # Uncertainty quantification (detectors, context, interpretation,
+│                   #   decisions, fix_executor, action_executors)
+├── graphs/         # Calculation graphs, context assembly
+├── pipeline/       # Pipeline orchestrator (19 phases), gates, events
+├── sources/        # Data source loaders (CSV, Parquet)
+├── storage/        # SQLAlchemy models, migrations
+├── llm/            # LLM providers and prompts
+├── core/           # Config, connections, utilities
+├── cli/            # Typer CLI + Textual TUI
+└── mcp/            # MCP server (9 tools)
+```
+
+SQLAlchemy DB models are co-located with business logic in `db_models.py` files within each module.
+
+### Data Flow
+
+```
+Source (CSV/Parquet) → [staging] VARCHAR → raw_{table}
+  → [profiling] Type inference → typed_{table}, quarantine_{table}
+  → [enrichment] LLM semantic analysis → roles, entities, relationships
+  → [enrichment] Temporal + topology → additional metadata
+  → [quality] LLM rule generation + entropy → scores, actions
+  → [context] Assembly + LLM summary → ContextDocument (for AI)
+```
 
 ### Quick Reference Commands
 ```bash

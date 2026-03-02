@@ -53,22 +53,33 @@ class PipelineEntropyState:
         return ds.score if ds else None
 
     def check_preconditions(
-        self, preconditions: dict[str, float]
+        self,
+        preconditions: dict[str, float],
+        producible_dimensions: set[str] | None = None,
     ) -> dict[str, tuple[float, float]]:
         """Check which preconditions are violated.
 
         Args:
             preconditions: sub_dimension -> max_allowed_score
+            producible_dimensions: Dimensions that some phase in this pipeline
+                run is known to produce via post_verification.  When a required
+                dimension is not yet measured *and* it appears in this set, it
+                is treated as a violation (sentinel score ``-1.0``) because the
+                producing phase hasn't run yet and the gate should wait.
 
         Returns:
             Dict of violated preconditions: sub_dimension -> (current_score, threshold).
             Empty dict means all preconditions pass.
         """
         violations: dict[str, tuple[float, float]] = {}
+        producible = producible_dimensions or set()
         for sub_dim, threshold in preconditions.items():
             current = self.get_score(sub_dim)
             if current is not None and current > threshold:
                 violations[sub_dim] = (current, threshold)
+            elif current is None and sub_dim in producible:
+                # Not yet measured but a pipeline phase will produce it — block
+                violations[sub_dim] = (-1.0, threshold)
         return violations
 
     def take_snapshot(self) -> dict[str, DimensionScore]:

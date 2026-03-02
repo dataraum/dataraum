@@ -4,6 +4,7 @@ Computes Pearson and Spearman correlations on numpy arrays.
 No database, no async - just math.
 """
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -77,9 +78,11 @@ def compute_pairwise_correlations(
             if std1 < 1e-10 or std2 < 1e-10:
                 continue
 
-            # Suppress numpy divide warnings from scipy internals
-            # (spearmanr calls np.corrcoef on ranks which can hit edge cases)
-            with np.errstate(invalid="ignore"):
+            # Suppress numpy divide-by-zero warnings from scipy internals
+            # (spearmanr calls np.corrcoef on ranks which can hit constant-column edge cases)
+            with np.errstate(invalid="ignore"), warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+
                 # Pearson
                 pearson_r, pearson_p = stats.pearsonr(col1_clean, col2_clean)
                 pearson_r = float(np.asarray(pearson_r).item())

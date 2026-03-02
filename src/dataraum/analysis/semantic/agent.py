@@ -105,6 +105,7 @@ class SemanticAgent(LLMFeature):
         ontology: str = "general",
         relationship_candidates: list[dict[str, Any]] | None = None,
         column_annotations: ColumnAnnotationOutput | None = None,
+        required_standard_fields: list[str] | None = None,
     ) -> Result[SemanticEnrichmentResult]:
         """Analyze semantic meaning of tables and columns.
 
@@ -121,6 +122,8 @@ class SemanticAgent(LLMFeature):
                 When provided, included as context so the capable model can focus
                 on relationships, table classification, and reviewing/upgrading
                 low-confidence annotations.
+            required_standard_fields: Standard field concepts required by active
+                metric graphs. Prioritizes mapping these to actual columns.
 
         Returns:
             Result containing SemanticEnrichmentResult or error
@@ -191,6 +194,7 @@ class SemanticAgent(LLMFeature):
             ),
             "within_table_correlations": self._format_derived_columns(derived_columns),
             "column_annotations": self._format_column_annotations(column_annotations),
+            "required_standard_fields": self._format_required_fields(required_standard_fields),
         }
 
         # Render prompt with system/user split
@@ -524,6 +528,26 @@ class SemanticAgent(LLMFeature):
                     lines.append("    [LOW CONFIDENCE — review recommended]")
 
         return "\n".join(lines) if lines else "No prior column annotations available."
+
+    @staticmethod
+    def _format_required_fields(fields: list[str] | None) -> str:
+        """Format required standard fields for the prompt.
+
+        Args:
+            fields: Standard field concept names from metric graphs, or None
+
+        Returns:
+            Formatted string for the prompt
+        """
+        if not fields:
+            return "No specific standard fields required by metrics."
+        lines = ["The following standard_field concepts are used by active metrics:"]
+        for f in fields:
+            lines.append(f"  - {f}")
+        lines.append("")
+        lines.append("PRIORITY: If a column semantically matches one of these concepts,")
+        lines.append("set business_concept to the EXACT concept name from this list.")
+        return "\n".join(lines)
 
     @staticmethod
     def _truncate_sample(value: Any, max_length: int = 100) -> Any:

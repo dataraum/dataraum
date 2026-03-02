@@ -366,19 +366,51 @@ _CLEANUP_MAP: dict[str, CleanupFn] = {
 }
 
 
+# Phases that create DuckDB tables/views, mapped to the layers they own.
+_DUCKDB_LAYER_MAP: dict[str, list[str]] = {
+    "typing": ["typed", "quarantine"],
+    "slice_analysis": ["slice"],
+    "enriched_views": ["enriched"],
+}
+
+
+def _collect_duckdb_paths(source_id: str, layers: list[str], session: Session) -> list[str]:
+    """Collect DuckDB table names for the given layers before metadata is deleted."""
+    stmt = select(Table.duckdb_path).where(
+        Table.source_id == source_id,
+        Table.layer.in_(layers),
+        Table.duckdb_path.is_not(None),
+    )
+    return [p for p in session.execute(stmt).scalars().all() if p is not None]
+
+
+def _drop_duckdb_tables(
+    duckdb_conn: duckdb.DuckDBPyConnection, paths: list[str], layers: list[str]
+) -> None:
+    """Drop DuckDB tables/views that were collected before metadata cleanup."""
+    # Enriched layer creates VIEWs, other layers create TABLEs
+    has_views = "enriched" in layers
+    for path in paths:
+        kind = "VIEW" if has_views else "TABLE"
+        try:
+            duckdb_conn.execute(f'DROP {kind} IF EXISTS "{path}"')
+        except duckdb.Error:
+            logger.debug(f"Could not drop DuckDB {kind} {path}")
+
+
 def cleanup_phase(
     phase_name: str,
     source_id: str,
     session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
 ) -> int:
-    """Delete a phase's output records for the given source.
+    """Delete a phase's output records and DuckDB tables for the given source.
 
     Args:
         phase_name: Name of the phase to clean up.
         source_id: Source identifier to scope deletions.
         session: Active SQLAlchemy session (caller manages transaction).
-        duckdb_conn: DuckDB connection (unused currently — phases use CREATE OR REPLACE).
+        duckdb_conn: DuckDB connection for dropping tables created by the phase.
 
     Returns:
         Total number of records deleted.
@@ -392,8 +424,17 @@ def cleanup_phase(
     table_ids = _get_table_ids(source_id, session)
     column_ids = _get_column_ids(table_ids, session)
 
-    # Run phase-specific cleanup
+    # Collect DuckDB paths BEFORE metadata cleanup deletes the records
+    duckdb_layers = _DUCKDB_LAYER_MAP.get(phase_name, [])
+    duckdb_paths = _collect_duckdb_paths(source_id, duckdb_layers, session) if duckdb_layers else []
+
+    # Run phase-specific cleanup (deletes SQLite metadata)
     count = cleanup_fn(session, source_id, table_ids, column_ids)
+
+    # Drop orphaned DuckDB tables/views
+    if duckdb_paths:
+        _drop_duckdb_tables(duckdb_conn, duckdb_paths, duckdb_layers)
+        logger.info("duckdb_cleanup", phase=phase_name, tables_dropped=len(duckdb_paths))
 
     # Always delete checkpoint for this phase + source
     count += _exec_delete(

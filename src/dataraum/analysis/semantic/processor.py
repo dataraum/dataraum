@@ -145,6 +145,7 @@ def enrich_semantic(
     relationship_candidates: list[dict[str, Any]] | None = None,
     duckdb_conn: duckdb.DuckDBPyConnection | None = None,
     column_annotations: ColumnAnnotationOutput | None = None,
+    required_standard_fields: list[str] | None = None,
 ) -> Result[SemanticEnrichmentResult]:
     """Run semantic enrichment on tables.
 
@@ -166,6 +167,9 @@ def enrich_semantic(
         duckdb_conn: Optional DuckDB connection for computing RI metrics
             for relationships not in candidates
         column_annotations: Tier 1 column annotations from ColumnAnnotationAgent
+        required_standard_fields: Standard field concepts required by active
+            metric graphs. When provided, the semantic agent prioritizes mapping
+            these concepts to actual dataset columns.
 
     Returns:
         Result containing semantic enrichment data
@@ -177,6 +181,7 @@ def enrich_semantic(
         ontology=ontology,
         relationship_candidates=relationship_candidates,
         column_annotations=column_annotations,
+        required_standard_fields=required_standard_fields,
     )
 
     if not llm_result.success:

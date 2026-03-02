@@ -193,7 +193,7 @@ def resolve_types(
         return Result.fail(f"Table has no DuckDB path: {table_id}")
 
     raw_table = table.duckdb_path
-    base_name = raw_table.replace("raw_", "")
+    base_name = raw_table.removeprefix("raw_")
     typed_table = f"typed_{base_name}"
     quarantine_table = f"quarantine_{base_name}"
 

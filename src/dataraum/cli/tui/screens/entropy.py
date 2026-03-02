@@ -305,7 +305,8 @@ class EntropyScreen(Screen[None]):
                             or_(
                                 Relationship.from_table_id.in_(typed_table_ids),
                                 Relationship.to_table_id.in_(typed_table_ids),
-                            )
+                            ),
+                            Relationship.detection_method == "llm",
                         )
                     )
                     for rel in rel_result.scalars().all():

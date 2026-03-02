@@ -43,6 +43,9 @@ system_prompt: |
   - Column "txn_date" with date values -> fiscal_period
   - Column "cust_id" that references customers -> (no concept, it's a key)
 
+  When required_standard_fields are provided, these concepts take priority.
+  If a column matches one of them semantically, use the EXACT concept name.
+
   Only set business_concept to null if no ontology concept applies.
   </business_concept_mapping>
 
@@ -107,6 +110,10 @@ user_prompt: |
   {ontology_concepts}
   </ontology>
 
+  <required_standard_fields>
+  {required_standard_fields}
+  </required_standard_fields>
+
   <relationship_candidates>
   Pre-computed relationship candidates based on actual data value overlap.
   Each candidate shows the value overlap score (1.0 = perfect containment).
@@ -157,6 +164,10 @@ inputs:
   within_table_correlations:
     description: Within-table derived column candidates
     required: true
+
+  required_standard_fields:
+    description: Standard field concepts required by active metrics
+    required: false
 
 # Output is defined by the Pydantic tool schema (SemanticAnalysisOutput)
 # No output_schema needed here since we use tool-based output

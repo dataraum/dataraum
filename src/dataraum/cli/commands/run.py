@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -79,7 +80,7 @@ def run(
             "--verbose",
             "-v",
             count=True,
-            help="Increase logging verbosity (-v=DEBUG)",
+            help="Increase logging verbosity (-v=INFO, -vv=DEBUG)",
         ),
     ] = 0,
     log_format: Annotated[
@@ -102,7 +103,7 @@ def run(
 
         dataraum run /path/to/data --phase semantic  # Run up to semantic phase
 
-        dataraum run /path/to/data -v         # Show INFO level logs
+        dataraum run /path/to/data -v         # Show INFO level structlog
 
         dataraum run /path/to/data -vv        # Show DEBUG level logs
 
@@ -276,15 +277,21 @@ def run(
     )
 
     # Run pipeline — with live display if interactive
-    if is_interactive and event_callback is not None:
-        from rich.live import Live
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning, module="numpy")
+        warnings.filterwarnings("ignore", category=RuntimeWarning, module="scipy")
 
-        with Live(console=console, refresh_per_second=4) as live:
-            _live_ctx = live
+        if is_interactive and event_callback is not None:
+            from rich.live import Live
+
+            with Live(console=console, refresh_per_second=4, transient=True) as live:
+                _live_ctx = live
+                if gate_handler is not None:
+                    gate_handler.set_live(live)
+                result = run_pipeline(config)
+                _live_ctx = None
+        else:
             result = run_pipeline(config)
-            _live_ctx = None
-    else:
-        result = run_pipeline(config)
     run_result = result.unwrap()
 
     # Print user-facing output
@@ -326,7 +333,7 @@ def run(
                     f"  {status_icon} {phase_result.phase_name}: "
                     f"{phase_result.status}{duration_str}"
                 )
-                if phase_result.error:
+                if phase_result.error and phase_result.status != "gate_blocked":
                     console.print(f"      [red]Error: {phase_result.error}[/red]")
 
                 # Show gate info for this phase

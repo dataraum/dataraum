@@ -12,7 +12,6 @@ from __future__ import annotations
 import math
 import time
 from collections import deque
-from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -44,9 +43,6 @@ from dataraum.pipeline.gates import GateActionType
 from dataraum.pipeline.registry import get_all_dependencies, get_registry
 
 logger = get_logger(__name__)
-
-# Sync callback: (current_step, total_steps, message) -> None
-ProgressCallback = Callable[[int, int, str], None]
 
 
 def _sanitize_for_json(obj: Any) -> Any:
@@ -146,7 +142,6 @@ class Pipeline:
     _outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
     _phase_priority: dict[str, int] = field(default_factory=dict)  # Transitive dependent count
     _entropy_state: PipelineEntropyState = field(default_factory=PipelineEntropyState)
-    _producible_dimensions: set[str] = field(default_factory=set)
     _collected_events: list[PipelineEvent] = field(default_factory=list)
     _event_callback: EventCallback | None = field(default=None, repr=False)
 
@@ -179,21 +174,6 @@ class Pipeline:
                 visited.add(current)
                 queue.extend(reverse_deps.get(current, set()) - visited)
             self._phase_priority[name] = len(visited)
-
-    @staticmethod
-    def _notify_progress(
-        callback: ProgressCallback | None,
-        current: int,
-        total: int,
-        message: str,
-    ) -> None:
-        """Send a progress notification, swallowing any errors."""
-        if callback is None:
-            return
-        try:
-            callback(current, total, message)
-        except Exception:
-            pass  # Never let progress reporting crash the pipeline
 
     def _emit_event(self, event: PipelineEvent) -> None:
         """Emit a structured pipeline event, swallowing any callback errors."""
@@ -231,7 +211,6 @@ class Pipeline:
         phase_configs: dict[str, dict[str, Any]] | None = None,
         runtime_config: dict[str, Any] | None = None,
         run_id: str | None = None,
-        progress_callback: ProgressCallback | None = None,
         force_phase: bool = False,
         event_callback: EventCallback | None = None,
     ) -> dict[str, PhaseResult]:
@@ -251,8 +230,6 @@ class Pipeline:
             runtime_config: Runtime overrides (source_path, source_name)
                 merged into every phase's config.
             run_id: Optional run ID (generated if not provided)
-            progress_callback: Optional callback for progress notifications.
-                Called with (current_step, total_steps, message).
             force_phase: If True, force re-run of target_phase by cleaning
                 up its previous output and bypassing skip logic.
 
@@ -273,7 +250,6 @@ class Pipeline:
         self._gate_attempts = {}
         self._outputs = {}
         self._entropy_state = PipelineEntropyState()
-        self._producible_dimensions: set[str] = set()
         self._collected_events = []
         self._event_callback = event_callback
 
@@ -313,14 +289,6 @@ class Pipeline:
         results: dict[str, PhaseResult] = {}
         total_phases = len(phases_to_run)
         completed_step = 0  # Counter for progress notifications
-
-        # Collect all dimensions that active phases can produce via post_verification.
-        # Used by gate checking to block on not-yet-measured dimensions.
-        self._producible_dimensions = set()
-        for pname in phases_to_run:
-            p = self.phases.get(pname)
-            if p and p.post_verification:
-                self._producible_dimensions.update(p.post_verification)
 
         # Compute priority so ready phases are scheduled in critical-path order
         self._compute_phase_priority()
@@ -389,7 +357,12 @@ class Pipeline:
                                 # Get violations for event
                                 gate_violations = self._entropy_state.check_preconditions(
                                     phase.entropy_preconditions,
-                                    producible_dimensions=self._producible_dimensions,
+                                    producible_dimensions={
+                                        d
+                                        for n, pp in self.phases.items()
+                                        if n not in self._completed and pp.post_verification
+                                        for d in pp.post_verification
+                                    },
                                 )
                                 if self.config.gate_mode in ("skip", "auto_fix"):
                                     logger.debug(f"Phase {name}: {gate_reason} (skipping gate)")
@@ -446,12 +419,6 @@ class Pipeline:
 
                             # Ready — submit to executor immediately
                             self._running.add(name)
-                            self._notify_progress(
-                                progress_callback,
-                                completed_step,
-                                total_phases,
-                                f"Running {name}...",
-                            )
                             future = pool.submit(
                                 self._run_phase,
                                 name,
@@ -499,7 +466,12 @@ class Pipeline:
                             if not gate_passed:
                                 violations = self._entropy_state.check_preconditions(
                                     self.phases[target].entropy_preconditions,
-                                    producible_dimensions=self._producible_dimensions,
+                                    producible_dimensions={
+                                        d
+                                        for n, pp in self.phases.items()
+                                        if n not in self._completed and pp.post_verification
+                                        for d in pp.post_verification
+                                    },
                                 )
                                 gate = build_gate(
                                     blocked_phase=target,
@@ -598,12 +570,6 @@ class Pipeline:
                                         scores=post_scores,
                                     ))
 
-                            self._notify_progress(
-                                progress_callback,
-                                completed_step,
-                                total_phases,
-                                f"Completed {name}",
-                            )
                             self._emit_event(PipelineEvent(
                                 event_type=EventType.PHASE_COMPLETED,
                                 phase=name,
@@ -621,12 +587,6 @@ class Pipeline:
                         elif phase_result.status == PhaseStatus.SKIPPED:
                             self._skipped.add(name)
                             completed_step += 1
-                            self._notify_progress(
-                                progress_callback,
-                                completed_step,
-                                total_phases,
-                                f"Skipped {name}",
-                            )
                             self._emit_event(PipelineEvent(
                                 event_type=EventType.PHASE_SKIPPED,
                                 phase=name,
@@ -638,12 +598,6 @@ class Pipeline:
                         else:
                             self._failed.add(name)
                             completed_step += 1
-                            self._notify_progress(
-                                progress_callback,
-                                completed_step,
-                                total_phases,
-                                f"Failed {name}: {phase_result.error}",
-                            )
                             self._emit_event(PipelineEvent(
                                 event_type=EventType.PHASE_FAILED,
                                 phase=name,
@@ -665,13 +619,6 @@ class Pipeline:
                     if self.config.fail_fast and self._failed:
                         break
 
-            # Final progress notification
-            self._notify_progress(
-                progress_callback,
-                completed_step,
-                total_phases,
-                "Pipeline complete",
-            )
             self._emit_event(PipelineEvent(
                 event_type=EventType.PIPELINE_COMPLETED,
                 step=completed_step,
@@ -1058,6 +1005,10 @@ class Pipeline:
     def _check_gate(self, phase_name: str) -> tuple[bool, str]:
         """Check if a phase's entropy preconditions are met.
 
+        Only blocks on unmeasured dimensions if a not-yet-completed phase
+        can still produce them. Once a producer phase has completed (even
+        if the dimension score is 0), the gate evaluates the actual score.
+
         Args:
             phase_name: Name of the phase to check
 
@@ -1073,9 +1024,15 @@ class Pipeline:
         if not preconditions:
             return True, ""
 
+        # Only block on unmeasured dims if a not-yet-completed phase produces them
+        active_producible: set[str] = set()
+        for name, p in self.phases.items():
+            if name not in self._completed and p.post_verification:
+                active_producible.update(p.post_verification)
+
         violations = self._entropy_state.check_preconditions(
             preconditions,
-            producible_dimensions=self._producible_dimensions,
+            producible_dimensions=active_producible,
         )
         if not violations:
             return True, ""
@@ -1143,7 +1100,6 @@ def run_pipeline(
     phase_configs: dict[str, dict[str, Any]] | None = None,
     runtime_config: dict[str, Any] | None = None,
     run_id: str | None = None,
-    progress_callback: ProgressCallback | None = None,
     force_phase: bool = False,
 ) -> dict[str, PhaseResult]:
     """Run the pipeline.
@@ -1159,7 +1115,6 @@ def run_pipeline(
         phase_configs: Per-phase config dicts keyed by phase name
         runtime_config: Runtime overrides merged into every phase's config
         run_id: Optional run ID (generated if not provided)
-        progress_callback: Optional callback for progress notifications.
         force_phase: If True, force re-run of target_phase.
 
     Returns:
@@ -1177,6 +1132,5 @@ def run_pipeline(
         phase_configs=phase_configs,
         runtime_config=runtime_config,
         run_id=run_id,
-        progress_callback=progress_callback,
         force_phase=force_phase,
     )

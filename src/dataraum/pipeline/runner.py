@@ -42,7 +42,7 @@ from dataraum.core.models.base import Result
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
 from dataraum.pipeline.events import EventCallback, EventType  # noqa: F401
-from dataraum.pipeline.orchestrator import Pipeline, PipelineConfig, ProgressCallback, get_pipeline
+from dataraum.pipeline.orchestrator import Pipeline, PipelineConfig, get_pipeline
 from dataraum.storage import Source
 
 logger = get_logger(__name__)
@@ -71,7 +71,6 @@ class RunConfig:
     source_name: str | None = None
     target_phase: str | None = None
     force_phase: bool = False
-    progress_callback: ProgressCallback | None = None
     event_callback: EventCallback | None = None
 
     # Gate configuration
@@ -403,7 +402,7 @@ def run(config: RunConfig) -> Result[RunResult]:
         if config.gate_handler and hasattr(config.gate_handler, "set_context"):
             config.gate_handler.set_context(manager, source_id)
 
-        logger.info(
+        logger.debug(
             "pipeline_run_started",
             source_path=str(config.source_path) if config.source_path else "(registered sources)",
             output_dir=str(config.output_dir),
@@ -442,7 +441,6 @@ def run(config: RunConfig) -> Result[RunResult]:
             target_phase=config.target_phase,
             phase_configs=phase_configs,
             runtime_config=runtime_config,
-            progress_callback=config.progress_callback,
             force_phase=config.force_phase,
             event_callback=config.event_callback,
         )
@@ -520,7 +518,7 @@ def run(config: RunConfig) -> Result[RunResult]:
             if result.status == PhaseStatus.FAILED and result.error:
                 warnings.append(f"{phase_name} failed: {result.error}")
 
-        logger.info(
+        logger.debug(
             "pipeline_run_completed",
             source_id=source_id,
             phases_completed=completed,

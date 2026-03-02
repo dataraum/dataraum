@@ -15,11 +15,6 @@ class TestRunConfigGateHandler:
         config = RunConfig(gate_handler=handler)
         assert config.gate_handler is handler
 
-    def test_progress_callback_can_be_set(self):
-        callback = MagicMock()
-        config = RunConfig(progress_callback=callback)
-        assert config.progress_callback is callback
-
 
 class TestInteractiveDetection:
     def test_non_tty_skips_interactive(self):

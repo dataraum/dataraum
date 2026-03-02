@@ -26,7 +26,7 @@ from dataraum.mcp.formatters import (
     format_pipeline_result,
     format_query_result,
 )
-from dataraum.pipeline.orchestrator import ProgressCallback
+from dataraum.pipeline.events import EventCallback, EventType, PipelineEvent
 
 _log = logging.getLogger(__name__)
 
@@ -34,24 +34,38 @@ _log = logging.getLogger(__name__)
 _background_tasks: set[asyncio.Task[Any]] = set()
 
 
-def _make_task_progress_callback(
+def _make_task_event_callback(
     task: ServerTaskContext,
     loop: asyncio.AbstractEventLoop,
-) -> ProgressCallback:
-    """Create a sync callback that bridges to async task.update_status().
+) -> EventCallback:
+    """Create a sync event callback that bridges to async task.update_status().
 
     Called from the pipeline thread (sync context) to push progress updates
     to the MCP task (async context) via run_coroutine_threadsafe.
     """
 
-    def _callback(current: int, total: int, message: str) -> None:
+    def _callback(event: PipelineEvent) -> None:
         try:
-            label = _PHASE_LABELS.get(message, message)
-            future = asyncio.run_coroutine_threadsafe(
-                task.update_status(f"Phase {current}/{total}: {label}"),
-                loop,
-            )
-            future.result(timeout=5.0)
+            if event.event_type in (
+                EventType.PHASE_STARTED,
+                EventType.PHASE_COMPLETED,
+                EventType.PHASE_FAILED,
+                EventType.PIPELINE_COMPLETED,
+            ):
+                label = _PHASE_LABELS.get(event.phase or "", event.phase or "")
+                if event.event_type == EventType.PHASE_STARTED:
+                    msg = f"Phase {event.step}/{event.total}: Running {label}"
+                elif event.event_type == EventType.PHASE_COMPLETED:
+                    msg = f"Phase {event.step}/{event.total}: Completed {label}"
+                elif event.event_type == EventType.PHASE_FAILED:
+                    msg = f"Phase {event.step}/{event.total}: Failed {label}"
+                else:
+                    msg = f"Phase {event.step}/{event.total}: Pipeline complete"
+                future = asyncio.run_coroutine_threadsafe(
+                    task.update_status(msg),
+                    loop,
+                )
+                future.result(timeout=5.0)
         except Exception:
             pass  # Never let notification failures break the pipeline
 
@@ -328,7 +342,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                 loop = asyncio.get_running_loop()
 
                 async def _work(task: ServerTaskContext) -> CallToolResult:
-                    callback = _make_task_progress_callback(task, loop)
+                    callback = _make_task_event_callback(task, loop)
                     text = await asyncio.to_thread(
                         _analyze, output_dir, path, source_name, callback, gate_mode_arg
                     )
@@ -520,7 +534,7 @@ def _analyze(
     output_dir: Path,
     path: str | None = None,
     name: str | None = None,
-    progress_callback: ProgressCallback | None = None,
+    event_callback: EventCallback | None = None,
     gate_mode: str | None = None,
 ) -> str:
     """Run the pipeline on a data source.
@@ -529,7 +543,7 @@ def _analyze(
         output_dir: Pipeline output directory
         path: Path to CSV/Parquet file or directory. When None, uses registered sources.
         name: Optional source name
-        progress_callback: Optional callback for progress notifications
+        event_callback: Optional callback for pipeline events
         gate_mode: How to handle entropy gates (skip, pause, fail)
 
     Returns:
@@ -560,7 +574,7 @@ def _analyze(
         source_path=source_path,
         output_dir=output_dir,
         source_name=name,
-        progress_callback=progress_callback,
+        event_callback=event_callback,
         gate_mode=resolved_gate_mode,
         gate_handler=gate_handler,
     )

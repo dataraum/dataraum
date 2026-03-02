@@ -1,4 +1,4 @@
-"""Tests for pipeline progress callback notifications."""
+"""Tests for pipeline event callback notifications."""
 
 from __future__ import annotations
 
@@ -9,26 +9,8 @@ from uuid import uuid4
 import pytest
 
 from dataraum.pipeline.base import PhaseResult
+from dataraum.pipeline.events import EventType
 from dataraum.pipeline.orchestrator import Pipeline, PipelineConfig
-
-
-class TestNotifyProgress:
-    """Tests for Pipeline._notify_progress static method."""
-
-    def test_calls_callback(self):
-        cb = MagicMock()
-        Pipeline._notify_progress(cb, 1, 10, "hello")
-        cb.assert_called_once_with(1, 10, "hello")
-
-    def test_none_callback_is_noop(self):
-        # Should not raise
-        Pipeline._notify_progress(None, 1, 10, "hello")
-
-    def test_exception_in_callback_is_swallowed(self):
-        cb = MagicMock(side_effect=RuntimeError("boom"))
-        # Should not raise
-        Pipeline._notify_progress(cb, 1, 10, "hello")
-        cb.assert_called_once()
 
 
 def _make_mock_manager():
@@ -47,8 +29,8 @@ def _make_mock_manager():
     return mgr
 
 
-class TestPipelineProgressCallback:
-    """Tests that Pipeline.run() invokes progress_callback at the right points."""
+class TestPipelineEventCallback:
+    """Tests that Pipeline.run() invokes event_callback at the right points."""
 
     @pytest.fixture()
     def mock_phase(self):
@@ -73,11 +55,11 @@ class TestPipelineProgressCallback:
                 manager=manager,
                 source_id="test-src",
                 run_id=str(uuid4()),
-                progress_callback=cb,
+                event_callback=cb,
             )
 
-    def test_callback_called_for_each_phase(self, mock_phase, manager):
-        """Callback receives started + completed notifications for each phase."""
+    def test_events_emitted_for_each_phase(self, mock_phase, manager):
+        """Event callback receives started + completed events for each phase."""
         cb = MagicMock()
 
         pipeline = Pipeline(config=PipelineConfig(max_parallel=1, skip_completed=False))
@@ -88,62 +70,14 @@ class TestPipelineProgressCallback:
             mock_exec.return_value = PhaseResult.success(outputs={})
             self._run_with_callback(pipeline, manager, cb)
 
-        messages = [c[0][2] for c in cb.call_args_list]
+        event_types = [c[0][0].event_type for c in cb.call_args_list]
 
-        assert any("Running phase_a" in m for m in messages)
-        assert any("Completed phase_a" in m for m in messages)
-        assert any("Running phase_b" in m for m in messages)
-        assert any("Completed phase_b" in m for m in messages)
-        assert any("Pipeline complete" in m for m in messages)
-
-    def test_callback_reports_correct_total(self, mock_phase, manager):
-        """Total always equals number of phases to run."""
-        cb = MagicMock()
-
-        pipeline = Pipeline(config=PipelineConfig(max_parallel=1, skip_completed=False))
-        pipeline.register(mock_phase("a"))
-        pipeline.register(mock_phase("b", dependencies=["a"]))
-        pipeline.register(mock_phase("c", dependencies=["b"]))
-
-        with patch.object(Pipeline, "_execute_phase") as mock_exec:
-            mock_exec.return_value = PhaseResult.success(outputs={})
-            self._run_with_callback(pipeline, manager, cb)
-
-        for call in cb.call_args_list:
-            assert call[0][1] == 3
-
-    def test_callback_on_skipped_phase(self, mock_phase, manager):
-        """Skipped phases trigger progress notifications."""
-        cb = MagicMock()
-
-        pipeline = Pipeline(config=PipelineConfig(max_parallel=1, skip_completed=False))
-        pipeline.register(mock_phase("skipper", skip_reason="already done"))
-
-        with patch.object(Pipeline, "_execute_phase") as mock_exec:
-            mock_exec.return_value = PhaseResult.skipped("already done")
-            self._run_with_callback(pipeline, manager, cb)
-
-        messages = [c[0][2] for c in cb.call_args_list]
-        assert any("Skipped skipper" in m for m in messages)
-
-    def test_callback_on_failed_phase(self, mock_phase, manager):
-        """Failed phases trigger progress notifications."""
-        cb = MagicMock()
-
-        pipeline = Pipeline(
-            config=PipelineConfig(max_parallel=1, skip_completed=False, fail_fast=True)
-        )
-        pipeline.register(mock_phase("bad", should_fail=True))
-
-        with patch.object(Pipeline, "_execute_phase") as mock_exec:
-            mock_exec.return_value = PhaseResult.failed("intentional")
-            self._run_with_callback(pipeline, manager, cb)
-
-        messages = [c[0][2] for c in cb.call_args_list]
-        assert any("Failed bad" in m for m in messages)
+        assert EventType.PHASE_STARTED in event_types
+        assert EventType.PHASE_COMPLETED in event_types
+        assert EventType.PIPELINE_COMPLETED in event_types
 
     def test_pipeline_works_without_callback(self, mock_phase, manager):
-        """Pipeline runs normally when progress_callback is None."""
+        """Pipeline runs normally when event_callback is None."""
         pipeline = Pipeline(config=PipelineConfig(max_parallel=1, skip_completed=False))
         pipeline.register(mock_phase("solo"))
 
@@ -166,26 +100,32 @@ class TestPipelineProgressCallback:
 
         assert "resilient" in results
 
-    def test_step_counter_increments(self, mock_phase, manager):
-        """The current step increments with each completed/skipped/failed phase."""
+    def test_failed_phase_emits_failed_event(self, mock_phase, manager):
+        """Failed phases trigger PHASE_FAILED events."""
+        cb = MagicMock()
+
+        pipeline = Pipeline(
+            config=PipelineConfig(max_parallel=1, skip_completed=False, fail_fast=True)
+        )
+        pipeline.register(mock_phase("bad", should_fail=True))
+
+        with patch.object(Pipeline, "_execute_phase") as mock_exec:
+            mock_exec.return_value = PhaseResult.failed("intentional")
+            self._run_with_callback(pipeline, manager, cb)
+
+        event_types = [c[0][0].event_type for c in cb.call_args_list]
+        assert EventType.PHASE_FAILED in event_types
+
+    def test_skipped_phase_emits_skipped_event(self, mock_phase, manager):
+        """Skipped phases trigger PHASE_SKIPPED events."""
         cb = MagicMock()
 
         pipeline = Pipeline(config=PipelineConfig(max_parallel=1, skip_completed=False))
-        pipeline.register(mock_phase("a"))
-        pipeline.register(mock_phase("b", dependencies=["a"]))
+        pipeline.register(mock_phase("skipper", skip_reason="already done"))
 
         with patch.object(Pipeline, "_execute_phase") as mock_exec:
-            mock_exec.return_value = PhaseResult.success(outputs={})
+            mock_exec.return_value = PhaseResult.skipped("already done")
             self._run_with_callback(pipeline, manager, cb)
 
-        # Extract (current, total) from completed/skipped/failed notifications
-        completion_steps = [
-            c[0][0]
-            for c in cb.call_args_list
-            if any(
-                kw in c[0][2]
-                for kw in ("Completed", "Skipped", "Failed", "Pipeline complete")
-            )
-        ]
-        # Should be [1, 2, 2] — "Completed a" (1), "Completed b" (2), "Pipeline complete" (2)
-        assert completion_steps == [1, 2, 2]
+        event_types = [c[0][0].event_type for c in cb.call_args_list]
+        assert EventType.PHASE_SKIPPED in event_types

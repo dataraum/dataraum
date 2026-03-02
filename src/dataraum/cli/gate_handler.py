@@ -34,6 +34,7 @@ class InteractiveCLIHandler:
         self.console = console or Console()
         self._manager: Any | None = None
         self._source_id: str = ""
+        self._live: Any | None = None
 
     def set_context(self, manager: Any, source_id: str) -> None:
         """Inject pipeline context for fix execution.
@@ -43,14 +44,23 @@ class InteractiveCLIHandler:
         self._manager = manager
         self._source_id = source_id
 
+    def set_live(self, live: Any) -> None:
+        """Inject the Live display so we can pause/resume it."""
+        self._live = live
+
     def resolve(self, gate: Gate) -> GateResolution:
         """Present gate to user and collect their choice."""
         try:
+            if self._live:
+                self._live.stop()
             self._render_gate(gate)
             return self._prompt_user(gate)
         except (KeyboardInterrupt, EOFError):
             self.console.print("\n  [dim]Interrupted — skipping gate[/dim]")
             return GateResolution(action_taken=GateActionType.SKIP)
+        finally:
+            if self._live:
+                self._live.start()
 
     def notify(self, message: str) -> None:
         """Display a notification message."""

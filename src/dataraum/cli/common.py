@@ -68,13 +68,15 @@ def setup_logging(verbosity: int = 0, log_format: str = "console") -> None:
     """Configure structured logging based on verbosity level.
 
     Args:
-        verbosity: 0=INFO, 1+=DEBUG (with timestamps)
+        verbosity: 0=WARNING (clean terminal), 1=INFO, 2+=DEBUG (with timestamps)
         log_format: "console" for development, "json" for production/cloud
     """
-    if verbosity >= 1:
+    if verbosity >= 2:
         level = "DEBUG"
-    else:
+    elif verbosity >= 1:
         level = "INFO"
+    else:
+        level = "WARNING"
 
     configure_logging(
         log_level=level,

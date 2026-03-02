@@ -9,23 +9,52 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from dataraum.mcp.server import _analyze, _make_task_progress_callback
+from dataraum.mcp.server import _analyze, _make_task_event_callback
+from dataraum.pipeline.events import EventType, PipelineEvent
 
 
-class TestMakeTaskProgressCallback:
-    """Tests for _make_task_progress_callback sync→async bridge."""
+class TestMakeTaskEventCallback:
+    """Tests for _make_task_event_callback sync→async bridge."""
 
     @pytest.mark.asyncio
-    async def test_callback_calls_update_status(self):
-        """Callback bridges sync call to async task.update_status()."""
+    async def test_callback_calls_update_status_on_phase_started(self):
+        """Callback bridges sync PHASE_STARTED event to async task.update_status()."""
         task = MagicMock()
         task.update_status = AsyncMock()
 
-        callback = _make_task_progress_callback(task, asyncio.get_running_loop())
+        callback = _make_task_event_callback(task, asyncio.get_running_loop())
 
-        await asyncio.to_thread(callback, 3, 10, "Running typing...")
+        event = PipelineEvent(
+            event_type=EventType.PHASE_STARTED,
+            phase="typing",
+            step=3,
+            total=10,
+        )
+        await asyncio.to_thread(callback, event)
 
-        task.update_status.assert_called_once_with("Phase 3/10: Running typing...")
+        task.update_status.assert_called_once()
+        msg = task.update_status.call_args[0][0]
+        assert msg.startswith("Phase 3/10: Running ")
+
+    @pytest.mark.asyncio
+    async def test_callback_calls_update_status_on_phase_completed(self):
+        """Callback bridges sync PHASE_COMPLETED event."""
+        task = MagicMock()
+        task.update_status = AsyncMock()
+
+        callback = _make_task_event_callback(task, asyncio.get_running_loop())
+
+        event = PipelineEvent(
+            event_type=EventType.PHASE_COMPLETED,
+            phase="typing",
+            step=3,
+            total=10,
+        )
+        await asyncio.to_thread(callback, event)
+
+        task.update_status.assert_called_once()
+        msg = task.update_status.call_args[0][0]
+        assert msg.startswith("Phase 3/10: Completed ")
 
     @pytest.mark.asyncio
     async def test_callback_swallows_update_failure(self):
@@ -33,22 +62,51 @@ class TestMakeTaskProgressCallback:
         task = MagicMock()
         task.update_status = AsyncMock(side_effect=RuntimeError("connection lost"))
 
-        callback = _make_task_progress_callback(task, asyncio.get_running_loop())
+        callback = _make_task_event_callback(task, asyncio.get_running_loop())
 
+        event = PipelineEvent(
+            event_type=EventType.PHASE_STARTED,
+            phase="test",
+            step=1,
+            total=5,
+        )
         # Should not raise
-        await asyncio.to_thread(callback, 1, 5, "test")
+        await asyncio.to_thread(callback, event)
 
     @pytest.mark.asyncio
-    async def test_callback_formats_message(self):
-        """Callback formats [current/total] message."""
+    async def test_callback_formats_pipeline_complete(self):
+        """Callback formats PIPELINE_COMPLETED message."""
         task = MagicMock()
         task.update_status = AsyncMock()
 
-        callback = _make_task_progress_callback(task, asyncio.get_running_loop())
+        callback = _make_task_event_callback(task, asyncio.get_running_loop())
 
-        await asyncio.to_thread(callback, 15, 18, "Pipeline complete")
+        event = PipelineEvent(
+            event_type=EventType.PIPELINE_COMPLETED,
+            step=15,
+            total=18,
+        )
+        await asyncio.to_thread(callback, event)
 
         task.update_status.assert_called_once_with("Phase 15/18: Pipeline complete")
+
+    @pytest.mark.asyncio
+    async def test_callback_ignores_non_progress_events(self):
+        """Events like POST_VERIFICATION don't trigger update_status."""
+        task = MagicMock()
+        task.update_status = AsyncMock()
+
+        callback = _make_task_event_callback(task, asyncio.get_running_loop())
+
+        event = PipelineEvent(
+            event_type=EventType.POST_VERIFICATION,
+            phase="typing",
+            step=3,
+            total=10,
+        )
+        await asyncio.to_thread(callback, event)
+
+        task.update_status.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_callback_called_multiple_times(self):
@@ -56,16 +114,18 @@ class TestMakeTaskProgressCallback:
         task = MagicMock()
         task.update_status = AsyncMock()
 
-        callback = _make_task_progress_callback(task, asyncio.get_running_loop())
+        callback = _make_task_event_callback(task, asyncio.get_running_loop())
 
-        await asyncio.to_thread(callback, 1, 5, "phase A")
-        await asyncio.to_thread(callback, 2, 5, "phase B")
-        await asyncio.to_thread(callback, 3, 5, "phase C")
+        events = [
+            PipelineEvent(event_type=EventType.PHASE_STARTED, phase="a", step=1, total=5),
+            PipelineEvent(event_type=EventType.PHASE_COMPLETED, phase="a", step=1, total=5),
+            PipelineEvent(event_type=EventType.PHASE_STARTED, phase="b", step=2, total=5),
+        ]
+
+        for event in events:
+            await asyncio.to_thread(callback, event)
 
         assert task.update_status.call_count == 3
-        task.update_status.assert_any_call("Phase 1/5: phase A")
-        task.update_status.assert_any_call("Phase 2/5: phase B")
-        task.update_status.assert_any_call("Phase 3/5: phase C")
 
 
 class TestAnalyzeFunction:
@@ -129,8 +189,8 @@ class TestAnalyzeFunction:
 
         assert result == "Pipeline completed: 18/18 phases"
 
-    def test_progress_callback_forwarded(self):
-        """Progress callback is passed through to RunConfig."""
+    def test_event_callback_forwarded(self):
+        """Event callback is passed through to RunConfig."""
         mock_result = MagicMock()
         mock_result.success = True
         mock_result.value = MagicMock()
@@ -148,14 +208,14 @@ class TestAnalyzeFunction:
                 _analyze(
                     output_dir=Path("/tmp/test_output"),
                     path=tmp_path,
-                    progress_callback=cb,
+                    event_callback=cb,
                 )
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
         # Verify the RunConfig was created with the callback
         run_config = mock_run.call_args[0][0]
-        assert run_config.progress_callback is cb
+        assert run_config.event_callback is cb
 
 
 class TestCreateServer:

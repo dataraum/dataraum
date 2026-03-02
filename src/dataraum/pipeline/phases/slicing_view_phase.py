@@ -16,9 +16,11 @@ from __future__ import annotations
 
 from types import ModuleType
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import select
 
+from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.views.db_models import EnrichedView, SlicingView
 from dataraum.core.logging import get_logger
@@ -71,23 +73,28 @@ class SlicingViewPhase(BasePhase):
 
         table_ids = [t.table_id for t in typed_tables]
 
-        # Tables that have slice definitions
-        sliced_stmt = select(SliceDefinition.table_id.distinct()).where(
-            SliceDefinition.table_id.in_(table_ids)
+        # Fact tables that have slice definitions
+        sliced_fact_stmt = (
+            select(SliceDefinition.table_id.distinct())
+            .join(TableEntity, TableEntity.table_id == SliceDefinition.table_id)
+            .where(
+                SliceDefinition.table_id.in_(table_ids),
+                TableEntity.is_fact_table.is_(True),
+            )
         )
-        sliced_table_ids = set(ctx.session.execute(sliced_stmt).scalars().all())
+        sliced_fact_table_ids = set(ctx.session.execute(sliced_fact_stmt).scalars().all())
 
-        if not sliced_table_ids:
-            return "No slice definitions found"
+        if not sliced_fact_table_ids:
+            return "No slice definitions found for fact tables"
 
-        # Tables that already have slicing views
+        # Fact tables that already have slicing views
         view_stmt = select(SlicingView.fact_table_id.distinct()).where(
-            SlicingView.fact_table_id.in_(list(sliced_table_ids))
+            SlicingView.fact_table_id.in_(list(sliced_fact_table_ids))
         )
         existing_view_table_ids = set(ctx.session.execute(view_stmt).scalars().all())
 
-        if existing_view_table_ids >= sliced_table_ids:
-            return "Slicing views already exist for all tables with slice definitions"
+        if existing_view_table_ids >= sliced_fact_table_ids:
+            return "Slicing views already exist for all fact tables with slice definitions"
 
         return None
 
@@ -118,14 +125,21 @@ class SlicingViewPhase(BasePhase):
         for sd in all_slice_defs:
             slice_defs_by_table.setdefault(sd.table_id, []).append(sd)
 
+        # Restrict to actual fact tables only — slicing views are not created for dimension tables
+        fact_entity_stmt = select(TableEntity.table_id).where(
+            TableEntity.table_id.in_(list(slice_defs_by_table.keys())),
+            TableEntity.is_fact_table.is_(True),
+        )
+        fact_table_id_set = set(ctx.session.execute(fact_entity_stmt).scalars().all())
+
         # Check which tables already have slicing views
         existing_stmt = select(SlicingView.fact_table_id).where(
-            SlicingView.fact_table_id.in_(list(slice_defs_by_table.keys()))
+            SlicingView.fact_table_id.in_(list(fact_table_id_set))
         )
         existing_view_table_ids = set(ctx.session.execute(existing_stmt).scalars().all())
 
         # Load all columns for fact tables that need processing
-        fact_table_ids = [tid for tid in slice_defs_by_table if tid not in existing_view_table_ids]
+        fact_table_ids = [tid for tid in fact_table_id_set if tid not in existing_view_table_ids]
         if not fact_table_ids:
             return PhaseResult.success(
                 outputs={"slicing_views": 0, "message": "All slicing views already exist"},
@@ -158,7 +172,10 @@ class SlicingViewPhase(BasePhase):
                 logger.warning("fact_table_missing", table_id=fact_table_id)
                 continue
 
-            slice_defs = slice_defs_by_table[fact_table_id]
+            # Include slice defs from the fact table AND from dimension tables
+            # (SliceDefinition.table_id can point to a dim table when the LLM
+            # recommends slicing on a column from a joined dimension table)
+            slice_defs = list(all_slice_defs)
             enriched_view = enriched_views_by_table.get(fact_table_id)
 
             # Build the slicing view SQL
@@ -203,7 +220,7 @@ class SlicingViewPhase(BasePhase):
                     pass
                 continue
 
-            # Store record
+            # Store SlicingView record
             slicing_view = SlicingView(
                 fact_table_id=fact_table_id,
                 view_name=view_name,
@@ -213,6 +230,43 @@ class SlicingViewPhase(BasePhase):
                 is_grain_verified=is_grain_verified,
             )
             ctx.session.add(slicing_view)
+
+            # Register the slicing view as a Table(layer="slicing_view") so that
+            # downstream phases can look up its column schema via standard metadata
+            # queries instead of reading from DuckDB or guessing from slice tables.
+            sv_table = Table(
+                table_id=str(uuid4()),
+                source_id=fact_table.source_id,
+                table_name=view_name,
+                layer="slicing_view",
+                duckdb_path=view_name,
+                row_count=fact_table.row_count,
+            )
+            ctx.session.add(sv_table)
+
+            duckdb_cols = ctx.duckdb_conn.execute(f'DESCRIBE "{view_name}"').fetchall()
+            for pos, row in enumerate(duckdb_cols):
+                ctx.session.add(
+                    Column(
+                        column_id=str(uuid4()),
+                        table_id=sv_table.table_id,
+                        column_name=row[0],
+                        column_position=pos,
+                        raw_type=row[1],
+                        resolved_type=row[1],
+                    )
+                )
+
+            # Rewrite sql_templates so they reference the slicing view instead of
+            # the raw typed table path. This makes slice_analysis independent of
+            # any source substitution logic.
+            typed_path = fact_table.duckdb_path
+            for sd in slice_defs:
+                if sd.sql_template and typed_path:
+                    sd.sql_template = sd.sql_template.replace(
+                        f"FROM {typed_path}", f'FROM "{view_name}"'
+                    )
+
             views_created += 1
 
             logger.info(
@@ -245,28 +299,32 @@ class SlicingViewPhase(BasePhase):
         view_name = f"slicing_{fact_table.table_name}"
         slice_def_ids = [sd.slice_id for sd in slice_defs]
 
-        # Determine which dimension columns from the enriched view are slice-relevant
-        # A slice column is slice-relevant if it's from a dimension table and appears
-        # in the enriched_view's dimension_columns as "{dim_table}__{col_name}"
-        enriched_dim_cols = set(enriched_view.dimension_columns or []) if enriched_view else set()
-
-        slice_dim_cols: list[str] = []
-        seen: set[str] = set()
+        # Resolve column names referenced by slice definitions.
+        # Prefer sd.column_name (set by slicing_phase, stores the actual LLM-recommended name
+        # including enriched dim cols like "kontonummer_des_gegenkontos__land"). Fall back to
+        # resolving via columns_by_id for older records without column_name.
+        slice_col_names: set[str] = set()
         for sd in slice_defs:
-            col = columns_by_id.get(sd.column_id)
-            if col is None:
-                continue
-            # Native fact table columns are already in the explicit fact column list
-            if col.table_id == fact_table.table_id:
-                continue
-            # Dimension column — check if it's in the enriched view
-            dim_table = tables_by_id.get(col.table_id)
-            if dim_table is None:
-                continue
-            enriched_col_name = f"{dim_table.table_name}__{col.column_name}"
-            if enriched_col_name in enriched_dim_cols and enriched_col_name not in seen:
-                slice_dim_cols.append(enriched_col_name)
-                seen.add(enriched_col_name)
+            if sd.column_name:
+                slice_col_names.add(sd.column_name)
+            else:
+                col = columns_by_id.get(sd.column_id)
+                if col:
+                    slice_col_names.add(col.column_name)
+
+        # Filter enriched dimension columns to only those that are slice dimensions:
+        #   - full name match: LLM directly recommended this enriched dim column, OR
+        #   - FK prefix match: LLM recommended the fact-table FK column (prefix before "__"),
+        #     so include all dim cols from that join for downstream context.
+        all_dim_cols: list[str] = (
+            list(enriched_view.dimension_columns or []) if enriched_view else []
+        )
+        slice_dim_cols: list[str] = []
+        for dim_col in all_dim_cols:
+            if dim_col in slice_col_names:
+                slice_dim_cols.append(dim_col)
+            elif "__" in dim_col and dim_col.split("__")[0] in slice_col_names:
+                slice_dim_cols.append(dim_col)
 
         # Build explicit SELECT — never SELECT * to avoid pulling all enriched columns
         fact_col_names = [col.column_name for col in fact_columns]

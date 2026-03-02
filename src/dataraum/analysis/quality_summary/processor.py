@@ -137,6 +137,10 @@ def aggregate_slice_results(
         if not source_table or not slice_column:
             return Result.fail("Source table or slice column not found")
 
+        # Prefer slice_definition.column_name (stores the actual LLM-recommended name,
+        # which for enriched dim cols is e.g. "kontonummer_des_gegenkontos__land").
+        effective_slice_col_name = slice_definition.column_name or slice_column.column_name
+
         # Get all slice definition column IDs to exclude from analysis
         # These are columns used for slicing - same values in each slice, so redundant
         all_slice_def_cols_stmt = select(sql_distinct(SliceDefinition.column_id)).where(
@@ -145,15 +149,53 @@ def aggregate_slice_results(
         all_slice_def_cols_result = session.execute(all_slice_def_cols_stmt)
         slice_definition_column_ids = set(all_slice_def_cols_result.scalars().all())
 
-        # Get all columns from source table, excluding slice columns
-        source_cols_stmt = (
-            select(Column)
-            .where(Column.table_id == source_table.table_id)
-            .where(Column.column_id.notin_(slice_definition_column_ids))
-            .order_by(Column.column_position)
-        )
-        source_cols_result = session.execute(source_cols_stmt)
-        source_columns = list(source_cols_result.scalars().all())
+        # If a slicing_view Table was registered for this fact table, use its columns —
+        # they include enriched FK-prefixed dimension columns absent from the typed table.
+        # Fall back to the typed source table for dimension tables (no slicing view).
+        sv_table = session.execute(
+            select(Table).where(
+                Table.source_id == source_table.source_id,
+                Table.table_name == f"slicing_{source_table.table_name}",
+                Table.layer == "slicing_view",
+            )
+        ).scalar_one_or_none()
+
+        # Use slicing_view table as the authoritative schema when available —
+        # it contains enriched FK-prefixed dimension columns absent from the typed table.
+        # Use its id/name for AggregatedColumnData so reports reference the view, not the typed table.
+        effective_table = sv_table if sv_table else source_table
+
+        if sv_table:
+            # Exclude slice-definition columns by name — they are constant within each
+            # slice (same value for all rows) so analysing them adds no signal.
+            slice_def_col_names = set(
+                session.execute(
+                    select(Column.column_name).where(
+                        Column.column_id.in_(slice_definition_column_ids)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            source_cols_stmt = (
+                select(Column)
+                .where(Column.table_id == sv_table.table_id)
+                .order_by(Column.column_position)
+            )
+            source_columns = [
+                col
+                for col in session.execute(source_cols_stmt).scalars().all()
+                if col.column_name not in slice_def_col_names
+            ]
+        else:
+            # Dimension table (or no slicing view registered) — use typed source directly
+            source_cols_stmt = (
+                select(Column)
+                .where(Column.table_id == source_table.table_id)
+                .where(Column.column_id.notin_(slice_definition_column_ids))
+                .order_by(Column.column_position)
+            )
+            source_columns = list(session.execute(source_cols_stmt).scalars().all())
 
         # Get all slice tables for this definition
         slice_values = slice_definition.distinct_values or []
@@ -163,7 +205,7 @@ def aggregate_slice_results(
         for value in slice_values:
             # Generate expected slice table name
             # Note: naming convention matches SlicingAgent (without source table name)
-            safe_column = re.sub(r"[^a-zA-Z0-9]", "_", slice_column.column_name)
+            safe_column = re.sub(r"[^a-zA-Z0-9]", "_", effective_slice_col_name)
             safe_column = re.sub(r"_+", "_", safe_column).strip("_").lower()
             safe_value = re.sub(r"[^a-zA-Z0-9]", "_", str(value))
             safe_value = re.sub(r"_+", "_", safe_value).strip("_").lower()
@@ -194,9 +236,9 @@ def aggregate_slice_results(
             agg_data = AggregatedColumnData(
                 column_name=source_col.column_name,
                 column_id=source_col.column_id,
-                source_table_id=source_table.table_id,
-                source_table_name=source_table.table_name,
-                slice_column_name=slice_column.column_name,
+                source_table_id=effective_table.table_id,
+                source_table_name=effective_table.table_name,
+                slice_column_name=effective_slice_col_name,
                 resolved_type=source_col.resolved_type,
             )
 
@@ -382,6 +424,19 @@ def summarize_quality(
     if not source_table or not slice_column:
         return Result.fail("Source table or slice column not found")
 
+    # Prefer slice_definition.column_name for enriched dim cols (e.g. "kontonummer_des_gegenkontos__land")
+    effective_slice_col_name = slice_definition.column_name or slice_column.column_name
+
+    # Resolve the effective table: prefer slicing_view layer (has enriched FK-prefixed columns)
+    sv_table = session.execute(
+        select(Table).where(
+            Table.source_id == source_table.source_id,
+            Table.table_name == f"slicing_{source_table.table_name}",
+            Table.layer == "slicing_view",
+        )
+    ).scalar_one_or_none()
+    effective_table = sv_table if sv_table else source_table
+
     try:
         # Aggregate results across slices
         agg_result = aggregate_slice_results(session, slice_definition)
@@ -409,10 +464,13 @@ def summarize_quality(
             },
         )
 
-        # Skip columns with existing reports if requested
+        # Skip columns with existing reports if requested.
+        # Scope by slice_column_name too so enriched dim slice defs sharing the same
+        # FK column_id (e.g. land vs geschaeftspartnertyp) don't falsely skip each other.
         if skip_existing:
             existing_stmt = select(ColumnQualityReport.source_column_id).where(
-                ColumnQualityReport.slice_column_id == slice_column.column_id
+                ColumnQualityReport.slice_column_id == slice_column.column_id,
+                ColumnQualityReport.slice_column_name == effective_slice_col_name,
             )
             existing_result = session.execute(existing_stmt)
             existing_column_ids = set(existing_result.scalars().all())
@@ -426,9 +484,9 @@ def summarize_quality(
             duration = (datetime.now(UTC) - started_at).total_seconds()
             return Result.ok(
                 QualitySummaryResult(
-                    source_table_id=source_table.table_id,
-                    source_table_name=source_table.table_name,
-                    slice_column_name=slice_column.column_name,
+                    source_table_id=effective_table.table_id,
+                    source_table_name=effective_table.table_name,
+                    slice_column_name=effective_slice_col_name,
                     slice_count=len(slice_definition.distinct_values or []),
                     column_summaries=[],
                     column_classifications=classifications,
@@ -461,8 +519,8 @@ def summarize_quality(
                         batch,
                         agent,
                         session_factory,
-                        source_table.table_name,
-                        slice_column.column_name,
+                        effective_table.table_name,
+                        effective_slice_col_name,
                         total_slices,
                     ): batch
                     for batch in batches
@@ -478,8 +536,8 @@ def summarize_quality(
                 llm_result = agent.summarize_columns_batch(
                     session=session,
                     columns_data=batch,
-                    source_table_name=source_table.table_name,
-                    slice_column_name=slice_column.column_name,
+                    source_table_name=effective_table.table_name,
+                    slice_column_name=effective_slice_col_name,
                     total_slices=total_slices,
                 )
 
@@ -523,15 +581,15 @@ def summarize_quality(
             session=session,
             aggregated_columns=aggregated_columns,
             slice_definition=slice_definition,
-            source_table_name=source_table.table_name,
+            source_table_name=effective_table.table_name,
             variance_metrics=variance_metrics,
         )
 
         return Result.ok(
             QualitySummaryResult(
-                source_table_id=source_table.table_id,
-                source_table_name=source_table.table_name,
-                slice_column_name=slice_column.column_name,
+                source_table_id=effective_table.table_id,
+                source_table_name=effective_table.table_name,
+                slice_column_name=effective_slice_col_name,
                 slice_count=len(slice_definition.distinct_values or []),
                 column_summaries=column_summaries,
                 column_classifications=classifications,
@@ -561,19 +619,22 @@ def _save_slice_profiles_from_aggregated(
         slice_definition: The slice definition being processed
         source_table_name: Name of the source table
     """
-    # Delete existing profiles for this slice definition via ORM
-    # (Using session.delete() instead of session.execute(delete(...)) so the
-    # DELETE is batched with the commit lock, avoiding an immediate write
-    # transaction that would block parallel phases.)
+    # Get slice column name — prefer slice_definition.column_name for enriched dim cols
+    slice_column = session.get(Column, slice_definition.column_id)
+    slice_column_name = slice_definition.column_name or (
+        slice_column.column_name if slice_column else "unknown"
+    )
+
+    # Delete existing profiles for this slice definition via ORM.
+    # Scope by BOTH slice_column_id AND slice_column_name so that two enriched dim
+    # slice defs sharing the same FK column_id (e.g. kontonummer_des_gegenkontos__land
+    # and kontonummer_des_gegenkontos__geschaeftspartnertyp) don't clobber each other.
     existing_stmt = select(ColumnSliceProfile).where(
-        ColumnSliceProfile.slice_column_id == slice_definition.column_id
+        ColumnSliceProfile.slice_column_id == slice_definition.column_id,
+        ColumnSliceProfile.slice_column_name == slice_column_name,
     )
     for existing in session.execute(existing_stmt).scalars().all():
         session.delete(existing)
-
-    # Get slice column name
-    slice_column = session.get(Column, slice_definition.column_id)
-    slice_column_name = slice_column.column_name if slice_column else "unknown"
 
     # Load quality scoring config
     cfg = _load_config()

@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.slicing_phase import SlicingPhase
 from dataraum.storage import Column, Source, Table
@@ -39,7 +40,7 @@ class TestSlicingPhase:
 
         skip_reason = phase.should_skip(ctx)
         assert skip_reason is not None
-        assert "No typed tables" in skip_reason
+        assert "No fact tables" in skip_reason
 
     def test_does_not_skip_with_unsliced_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
@@ -78,6 +79,20 @@ class TestSlicingPhase:
             )
             session.add(col)
 
+        session.flush()  # ensure table row exists before EnrichedView FK reference
+
+        # Register an enriched view so this table qualifies as a fact table
+        session.add(
+            EnrichedView(
+                view_id=str(uuid4()),
+                fact_table_id=table.table_id,
+                view_name="slicing_test_table",
+                view_sql="SELECT * FROM typed_test_table",
+                is_grain_verified=True,
+                dimension_columns=[],
+            )
+        )
+
         session.commit()
 
         ctx = PhaseContext(
@@ -108,7 +123,7 @@ class TestSlicingPhase:
         result = phase.run(ctx)
 
         assert result.status == PhaseStatus.FAILED
-        assert "No typed tables" in (result.error or "")
+        assert "No fact tables" in (result.error or "")
 
     def test_skip_when_all_sliced(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection):
         """Test skip when all tables already have slice definitions."""
@@ -147,6 +162,20 @@ class TestSlicingPhase:
             resolved_type="VARCHAR",
         )
         session.add(col)
+
+        session.flush()  # ensure table row exists before EnrichedView FK reference
+
+        # Register an enriched view so this table qualifies as a fact table
+        session.add(
+            EnrichedView(
+                view_id=str(uuid4()),
+                fact_table_id=table_id,
+                view_name="slicing_test_table",
+                view_sql="SELECT * FROM typed_test_table",
+                is_grain_verified=True,
+                dimension_columns=[],
+            )
+        )
 
         # Add existing slice definition
         slice_def = SliceDefinition(

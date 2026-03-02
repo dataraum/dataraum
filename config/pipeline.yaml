@@ -18,6 +18,7 @@ phases:
   - semantic
   - enriched_views
   - slicing
+  - slicing_view
   - slice_analysis
   - temporal_slice_analysis
   - quality_summary

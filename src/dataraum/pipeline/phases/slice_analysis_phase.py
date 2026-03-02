@@ -16,7 +16,6 @@ from dataraum.analysis.slicing.slice_runner import (
     register_slice_tables,
     run_analysis_on_slices,
 )
-from dataraum.analysis.views.db_models import SlicingView
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
@@ -118,27 +117,10 @@ class SliceAnalysisPhase(BasePhase):
                 records_created=0,
             )
 
-        # Load slicing views to use as source when available
-        # slicing_{table} is a narrowed projection of enriched_{table} with only
-        # fact columns + slice-relevant dimension columns
-        slicing_view_by_table: dict[str, str] = {}
-        sv_stmt = select(SlicingView).where(
-            SlicingView.fact_table_id.in_(table_ids),
-            SlicingView.is_grain_verified.is_(True),
-        )
-        for sv in ctx.session.execute(sv_stmt).scalars().all():
-            slicing_view_by_table[sv.fact_table_id] = sv.view_name
-
-        # Build typed table duckdb_path lookup for substitution
-        typed_path_by_table_id: dict[str, str] = {}
-        for t in typed_tables:
-            if t.duckdb_path:
-                typed_path_by_table_id[t.table_id] = t.duckdb_path
-
-        # Execute slice SQL templates to create slice tables in DuckDB
-        # Each sql_template contains CREATE statements for ALL values in that slice
-        # When a slicing_view exists, substitute it as the source so slices include
-        # the enriched dimension columns (e.g. customers__region)
+        # Execute slice SQL templates to create slice tables in DuckDB.
+        # Each sql_template contains CREATE statements for ALL values in that slice.
+        # The templates already reference the slicing view as their source
+        # (rewritten by slicing_view_phase after view creation).
         slices_created = 0
         errors: list[str] = []
 
@@ -146,16 +128,8 @@ class SliceAnalysisPhase(BasePhase):
             if not slice_def.sql_template:
                 continue
 
-            sql = slice_def.sql_template
-            # Substitute slicing_view as source if available for this table
-            slicing_view_name = slicing_view_by_table.get(slice_def.table_id)
-            typed_path = typed_path_by_table_id.get(slice_def.table_id)
-            if slicing_view_name and typed_path:
-                sql = sql.replace(f"FROM {typed_path}", f"FROM {slicing_view_name}")
-
             try:
-                # Execute the full template (contains all CREATE OR REPLACE statements)
-                ctx.duckdb_conn.execute(sql)
+                ctx.duckdb_conn.execute(slice_def.sql_template)
                 slices_created += len(slice_def.distinct_values or [])
             except Exception as e:
                 errors.append(f"Failed to create slices for {slice_def.column_id}: {e}")

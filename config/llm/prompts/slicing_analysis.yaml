@@ -1,11 +1,11 @@
 # Slicing Analysis Prompt
 #
-# Analyzes table statistics, semantic annotations, correlations, and quality metrics
-# to identify the best categorical dimensions for data slicing.
+# Analyzes table metadata (with statistics and semantic annotations merged into
+# each column object) to identify the best categorical dimensions for data slicing.
 # Uses tool-based output for structured responses.
 
 name: slicing_analysis
-version: "2.0.0"
+version: "3.0.0"
 description: Identify optimal categorical dimensions for slicing data into subsets
 
 # Temperature (0.0 = deterministic, 1.0 = creative)
@@ -19,85 +19,90 @@ system_prompt: |
   meaningful, analyzable subsets.
   </role>
 
+  <context>
+  You are analyzing a dataset with {num_tables} table(s): {table_names}.
+  Your total budget is {max_recommendations} slicing dimensions across ALL tables combined.
+  Allocate recommendations where they add the most analytical value — not evenly across tables.
+  </context>
+
   <goal>
-  Identify up to {max_recommendations} columns that would create useful data subsets when filtered by each unique value.
+  Identify up to {max_recommendations} columns (total, across all tables) that would create
+  the most useful data subsets when filtered by each unique value.
   For example, if a table has a "region" column with values ["North", "South", "East", "West"],
-  slicing on this column would create 4 subsets - one for each region.
+  slicing on this column would create 4 subsets — one for each region.
   </goal>
 
   <selection_criteria>
   A good slicing dimension should have:
 
   1. Appropriate Cardinality: At most {max_cardinality} distinct values
-  2. Business Meaning: Represent a meaningful business dimension
+  2. Business Meaning: Represent a meaningful business dimension (e.g. region, product line, customer segment — not internal IDs or codes)
   3. Balanced Distribution: Values should have reasonable row counts (avoid 99% in one value)
-  4. Independence: Not highly correlated with other slice dimensions (avoid redundancy)
-  5. Quality Insight Potential: May help explain quality issues in related columns
+  4. Independence: Not redundant with other recommendations — across tables too.
+     If table_a.country and table_b.region encode the same geographical split, pick one.
+  5. Analytical Leverage: Prioritize dimensions that partition the MOST rows or the MOST tables
+     (e.g. a shared foreign-key dimension that appears in 3 tables beats a column unique to 1 table)
+  6. Insight Potential: May help explain data quality issues in related columns or give additional context about the data and business processes
   </selection_criteria>
 
-  <guidelines>
-  - Only recommend categorical columns (VARCHAR type), not numeric or date columns
-  - Order recommendations by priority (1 = highest priority)
-  - Include all distinct values (up to 5 most frequent if many values)
+  <anti_patterns>
+  Explicitly SKIP columns that are:
+  - High-cardinality identifiers (IDs, names, emails, hashes) even if VARCHAR
+  - Derived or redundant encodings of another recommended dimension (e.g. country_code + country_name)
+  - Boolean flags with extreme skew (>95% one value)
+  - Free-text or description fields
+  - Columns with >50% NULL values
+  </anti_patterns>
+
+  <output_rules>
+  - Order recommendations by global priority (1 = highest value across the entire dataset)
+  - For each recommendation, note which other tables this dimension could join/filter
+  - Prefer FEWER, higher-impact dimensions over many marginal ones
   - Return empty recommendations if no good dimensions exist
-  - Not more than {max_recommendations} columns
-  </guidelines>
+  </output_rules>
 
   Use the analyze_slicing tool to provide your structured response.
 
 # User prompt - provides data context
 user_prompt: |
   <task>
-  Analyze the provided table metadata and statistics to identify optimal slicing dimensions.
+  Analyze the table metadata below and recommend the best slicing dimensions
+  across all {num_tables} table(s).
   </task>
 
-  <tables>
+  <schema_and_statistics>
+  Each table includes column names, types, distinct value counts, top values,
+  null rates, and semantic annotations where available.
+
+  Columns with "is_enriched_dimension": true come from joined dimension tables
+  (format: "fk_column__dimension_column"). These are valid slice candidates
+  if they have appropriate cardinality — treat them on equal footing with fact-table columns.
+
   {tables_json}
-  </tables>
-
-  <statistics>
-  Statistical profiles including distinct value counts and top values:
-  {statistics_json}
-  </statistics>
-
-  <semantic_annotations>
-  Business meaning and roles for columns:
-  {semantic_json}
-  </semantic_annotations>
-
-  <quality_metrics>
-  Quality analysis including Benford's Law compliance and outlier detection:
-  {quality_json}
-  </quality_metrics>
+  </schema_and_statistics>
 
   Use the analyze_slicing tool to provide your recommendations.
 
 # Input variable definitions
 inputs:
   tables_json:
-    description: JSON array of tables with columns and metadata
+    description: JSON array of tables with columns, statistics, and semantic annotations merged
     required: true
 
-  statistics_json:
-    description: JSON array of statistical profiles per column
+  num_tables:
+    description: Number of tables being analyzed
     required: true
 
-  semantic_json:
-    description: JSON array of semantic annotations (may be empty)
-    required: false
-    default: "[]"
-
-  quality_json:
-    description: JSON array of statistical quality metrics (Benford's Law, outliers)
-    required: false
-    default: "[]"
+  table_names:
+    description: Comma-separated list of table names being analyzed
+    required: true
 
   max_cardinality:
     description: Maximum distinct values for a column to be considered for slicing
     required: false
-    default: "15"
+    default: "10"
 
   max_recommendations:
-    description: Maximum number of slice dimension recommendations per table
+    description: Maximum number of slice dimension recommendations across all tables
     required: false
-    default: "4"
+    default: "6"

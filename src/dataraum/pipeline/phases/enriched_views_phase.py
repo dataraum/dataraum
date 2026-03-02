@@ -34,6 +34,18 @@ logger = get_logger(__name__)
 _GRAIN_SAFE_CARDINALITIES = {"many-to-one", "one-to-one"}
 _MIN_CONFIDENCE = 0.7
 
+_CARDINALITY_FLIP = {
+    "one-to-many": "many-to-one",
+    "many-to-one": "one-to-many",
+    "one-to-one": "one-to-one",
+    "many-to-many": "many-to-many",
+}
+
+
+def _flip_cardinality(cardinality: str | None) -> str | None:
+    """Return the cardinality as seen from the opposite join direction."""
+    return _CARDINALITY_FLIP.get(cardinality or "", cardinality)
+
 
 @analysis_phase
 class EnrichedViewsPhase(BasePhase):
@@ -255,20 +267,25 @@ class EnrichedViewsPhase(BasePhase):
         joins: list[DimensionJoin] = []
 
         for rel in relationships:
-            # Determine which side is fact, which is dimension
+            # Determine which side is fact, which is dimension.
+            # Cardinality is stored as "from_table → to_table", so when traversing
+            # in reverse (fact is to_table) we must flip it:
+            #   stored one-to-many (dim→fact) = many-to-one (fact→dim) = grain-safe
             if rel.from_table_id == fact_table.table_id:
                 fk_column_id = rel.from_column_id
                 dim_table_id = rel.to_table_id
                 dim_pk_column_id = rel.to_column_id
+                cardinality = rel.cardinality
             elif rel.to_table_id == fact_table.table_id:
                 fk_column_id = rel.to_column_id
                 dim_table_id = rel.from_table_id
                 dim_pk_column_id = rel.from_column_id
+                # Flip cardinality for the reversed direction
+                cardinality = _flip_cardinality(rel.cardinality)
             else:
                 continue
 
             # Check cardinality is grain-safe
-            cardinality = rel.cardinality
             if cardinality not in _GRAIN_SAFE_CARDINALITIES:
                 continue
 

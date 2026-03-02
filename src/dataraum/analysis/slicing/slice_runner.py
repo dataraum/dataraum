@@ -108,19 +108,15 @@ def register_slice_tables(
             if not source_table or not source_column:
                 continue
 
-            # Get source columns for copying schema
-            source_columns_stmt = (
-                select(Column)
-                .where(Column.table_id == source_table.table_id)
-                .order_by(Column.column_position)
-            )
-            source_columns_result = session.execute(source_columns_stmt)
-            source_columns = list(source_columns_result.scalars().all())
+            # Prefer slice_def.column_name (stores the actual LLM-recommended name,
+            # which for enriched dim cols is e.g. "kontonummer_des_gegenkontos__land").
+            # Fall back to source_column.column_name for older records.
+            effective_column_name = slice_def.column_name or source_column.column_name
 
             # Process each slice value
             for value in slice_def.distinct_values or []:
                 slice_table_name = _get_slice_table_name(
-                    source_column.column_name,
+                    effective_column_name,
                     value,
                 )
 
@@ -162,7 +158,7 @@ def register_slice_tables(
                             slice_table_name=slice_table_name,
                             source_table_id=source_table.table_id,
                             source_table_name=source_table.table_name,
-                            slice_column_name=source_column.column_name,
+                            slice_column_name=effective_column_name,
                             slice_value=value,
                             row_count=row_count,
                         )
@@ -187,18 +183,50 @@ def register_slice_tables(
                 )
                 session.add(slice_table)
 
-                # Create Column entries (copy from parent)
-                # Generate column_id explicitly since SQLAlchemy defaults only apply at INSERT time
-                for src_col in source_columns:
-                    col = Column(
-                        column_id=str(uuid4()),
-                        table_id=slice_table.table_id,
-                        column_name=src_col.column_name,
-                        column_position=src_col.column_position,
-                        raw_type=src_col.raw_type,
-                        resolved_type=src_col.resolved_type,
+                # Derive column schema from the slicing view metadata table
+                # (layer="slicing_view"), if one exists for this fact table.
+                # That table has the correct schema (fact columns + enriched
+                # FK-prefixed dimension columns) registered by slicing_view_phase.
+                # Fall back to DuckDB DESCRIBE if no slicing_view table is found.
+                sv_table_stmt = select(Table).where(
+                    Table.source_id == source_table.source_id,
+                    Table.table_name == f"slicing_{source_table.table_name}",
+                    Table.layer == "slicing_view",
+                )
+                sv_table = session.execute(sv_table_stmt).scalar_one_or_none()
+
+                if sv_table:
+                    sv_cols_stmt = (
+                        select(Column)
+                        .where(Column.table_id == sv_table.table_id)
+                        .order_by(Column.column_position)
                     )
-                    session.add(col)
+                    schema_cols = session.execute(sv_cols_stmt).scalars().all()
+                    for src_col in schema_cols:
+                        session.add(
+                            Column(
+                                column_id=str(uuid4()),
+                                table_id=slice_table.table_id,
+                                column_name=src_col.column_name,
+                                column_position=src_col.column_position,
+                                raw_type=src_col.raw_type,
+                                resolved_type=src_col.resolved_type,
+                            )
+                        )
+                else:
+                    # No slicing view registered — read schema directly from DuckDB.
+                    duckdb_cols = duckdb_conn.execute(f"DESCRIBE {slice_table_name}").fetchall()
+                    for pos, row in enumerate(duckdb_cols):
+                        session.add(
+                            Column(
+                                column_id=str(uuid4()),
+                                table_id=slice_table.table_id,
+                                column_name=row[0],
+                                column_position=pos,
+                                raw_type=row[1],
+                                resolved_type=row[1],
+                            )
+                        )
 
                 registered.append(
                     SliceTableInfo(
@@ -206,7 +234,7 @@ def register_slice_tables(
                         slice_table_name=slice_table_name,
                         source_table_id=source_table.table_id,
                         source_table_name=source_table.table_name,
-                        slice_column_name=source_column.column_name,
+                        slice_column_name=effective_column_name,
                         slice_value=value,
                         row_count=row_count,
                     )

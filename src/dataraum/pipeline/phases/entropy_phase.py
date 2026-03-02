@@ -609,9 +609,32 @@ def _run_dimensional_entropy(
         table_columns = list(ctx.session.execute(table_cols_stmt).scalars().all())
         table_column_ids = [c.column_id for c in table_columns]
 
-        # Load column slice profiles by FK to typed table's columns
+        # If a slicing_view was registered for this fact table, profiles and reports
+        # reference its columns (not the typed table's) — include those IDs too.
+        sv_table = ctx.session.execute(
+            select(Table).where(
+                Table.source_id == ctx.source_id,
+                Table.table_name == f"slicing_{table.table_name}",
+                Table.layer == "slicing_view",
+            )
+        ).scalar_one_or_none()
+
+        if sv_table:
+            sv_cols = (
+                ctx.session.execute(select(Column).where(Column.table_id == sv_table.table_id))
+                .scalars()
+                .all()
+            )
+            lookup_column_ids = [c.column_id for c in sv_cols]
+            # Build column_name -> typed column_id for entropy object anchoring
+            sv_col_name_to_typed_id = {c.column_name: c.column_id for c in table_columns}
+        else:
+            lookup_column_ids = table_column_ids
+            sv_col_name_to_typed_id = None
+
+        # Load column slice profiles by FK (via slicing_view columns when available)
         profiles_stmt = select(ColumnSliceProfile).where(
-            ColumnSliceProfile.source_column_id.in_(table_column_ids)
+            ColumnSliceProfile.source_column_id.in_(lookup_column_ids)
         )
         profiles = list(ctx.session.execute(profiles_stmt).scalars().all())
 
@@ -770,9 +793,9 @@ def _run_dimensional_entropy(
             },
         )
 
-        # Load ColumnQualityReports for this table (LLM-generated quality assessments)
+        # Load ColumnQualityReports (source_column_id references slicing_view cols when available)
         quality_reports_stmt = select(ColumnQualityReport).where(
-            ColumnQualityReport.source_column_id.in_(table_column_ids)
+            ColumnQualityReport.source_column_id.in_(lookup_column_ids)
         )
         quality_reports = list(ctx.session.execute(quality_reports_stmt).scalars().all())
 
@@ -784,7 +807,9 @@ def _run_dimensional_entropy(
                 reports_by_column[col_name] = []
             reports_by_column[col_name].append(report)
 
-        # Build column_id lookup for this table (reuse table_columns from above)
+        # Build column_id lookup: resolve to typed table column IDs for entropy anchoring.
+        # For slicing_view tables, map via sv_col_name_to_typed_id (falls back to None for
+        # enriched FK-prefixed columns that have no counterpart in the typed table).
         column_id_lookup = {c.column_name: c.column_id for c in table_columns}
 
         # Create EntropyObjects for each column's quality assessment
@@ -809,8 +834,16 @@ def _run_dimensional_entropy(
                 all_quality_issues.extend(data.get("quality_issues", []))
                 all_recommendations.extend(data.get("recommendations", []))
 
-            # Get column_id for this column — skip if not in this typed table
+            # Resolve column_id: prefer typed table column, fall back to slicing_view column
+            # (for FK-prefixed enriched columns that only exist in the slicing_view)
             col_id = column_id_lookup.get(col_name)
+            effective_table_id = table.table_id
+            effective_table_name = table.table_name
+            if col_id is None and sv_table and sv_col_name_to_typed_id is not None:
+                # Use the report's source_column_id directly (it's a slicing_view col)
+                col_id = reports[0].source_column_id if reports else None
+                effective_table_id = sv_table.table_id
+                effective_table_name = sv_table.table_name
             if col_id is None:
                 continue
 
@@ -819,13 +852,13 @@ def _run_dimensional_entropy(
                 layer="semantic",
                 dimension="dimensional",
                 sub_dimension="column_quality",
-                target=f"column:{table.table_name}.{col_name}",
+                target=f"column:{effective_table_name}.{col_name}",
                 score=entropy_score_val,
                 evidence=[
                     {
                         "source": "column_quality_report",
                         "column_id": col_id,
-                        "table_id": table.table_id,
+                        "table_id": effective_table_id,
                         "slices_analyzed": len(reports),
                         "avg_quality_score": avg_quality_score,
                         "grades": grades,

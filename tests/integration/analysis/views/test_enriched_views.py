@@ -123,8 +123,9 @@ class TestEnrichedViewsIntegration:
         assert duckdb_conn.execute('SELECT COUNT(*) FROM "enriched_orders"').fetchone()[0] == 2
 
         # Unmatched customer_id=99 gets NULL
+        # Column is named {fact_fk_column}__{dim_col} = customer_id__name
         result = duckdb_conn.execute(
-            'SELECT "customers__name" FROM "enriched_orders" WHERE customer_id = 99'
+            'SELECT "customer_id__name" FROM "enriched_orders" WHERE customer_id = 99'
         ).fetchone()
         assert result[0] is None
 

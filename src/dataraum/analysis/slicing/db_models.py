@@ -47,6 +47,10 @@ class SliceDefinition(Base):
     column_id: Mapped[str] = mapped_column(
         ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
     )
+    # Actual column name used for slicing — may differ from columns.column_name when the
+    # slice dimension is an enriched FK-prefixed dim col (e.g. "kontonummer_des_gegenkontos__land")
+    # while column_id points to the underlying FK column record.
+    column_name: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Slice configuration
     slice_priority: Mapped[int] = mapped_column(Integer, nullable=False)

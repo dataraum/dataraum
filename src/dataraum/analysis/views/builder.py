@@ -72,8 +72,11 @@ def build_enriched_view_sql(
     join_aliases = [get_unique_alias(join.dim_table_name) for join in dimension_joins]
 
     for join, alias in zip(dimension_joins, join_aliases, strict=True):
+        # Use fact FK column as prefix so repeated joins of the same dim table are distinct:
+        # e.g. kontonummer_des_gegenkontos__beschriftung vs kontonummer_des_kontos__beschriftung
+        col_prefix = join.fact_fk_column
         for col in join.include_columns:
-            qualified_name = f"{join.dim_table_name}__{col}"
+            qualified_name = f"{col_prefix}__{col}"
             select_parts.append(f'{alias}."{col}" AS "{qualified_name}"')
             dimension_column_names.append(qualified_name)
 

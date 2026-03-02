@@ -180,6 +180,14 @@ class SemanticPhase(BasePhase):
                 "No vertical configured. Set 'vertical' in config/phases/semantic.yaml."
             )
 
+        # Load standard_fields required by metric graphs so the semantic phase
+        # can prioritize mapping those concepts to actual dataset columns.
+        from dataraum.graphs.loader import GraphLoader
+
+        metric_loader = GraphLoader(vertical=ontology)
+        metric_loader.load_all()
+        required_standard_fields = sorted(metric_loader.get_all_abstract_fields())
+
         # ========================================================
         # Step 1: Fast column annotation (tier 1)
         # ========================================================
@@ -241,6 +249,7 @@ class SemanticPhase(BasePhase):
             relationship_candidates=relationship_candidates,
             duckdb_conn=ctx.duckdb_conn,
             column_annotations=column_annotations,
+            required_standard_fields=required_standard_fields,
         )
 
         if not enrich_result.success:

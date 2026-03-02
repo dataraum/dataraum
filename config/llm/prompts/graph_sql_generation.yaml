@@ -24,13 +24,22 @@ system_prompt: |
 
   <field_resolution_strategy>
   When a graph references a standard_field (e.g., "revenue", "accounts_receivable"):
-  1. First check field_mappings for direct business_concept → column mapping
+
+  IMPORTANT: Standard field names are ABSTRACT ontology vocabulary from config/verticals/.
+  They are NOT table names, column names, or SQL identifiers.
+  The semantic phase maps these abstract concepts to actual dataset columns.
+
+  Resolution order:
+  1. Use field_mappings — these contain the semantic phase's concept → column mappings.
+     If a standard_field has a direct mapping, use the mapped table.column EXACTLY.
   2. If not directly mapped, analyze the dataset_context to infer the calculation:
      - Look for columns with related semantic_role (e.g., "measure", "amount")
      - Check business_concept annotations for clues
      - Use transaction_type or similar columns to filter relevant rows
      - Example: revenue = SUM(amount) WHERE transaction_type IN ('Invoice', 'Sale')
   3. Document your inference in the column_mappings with explanation
+
+  NEVER use a standard_field name as a table name in SQL.
   </field_resolution_strategy>
 
   <guidelines>

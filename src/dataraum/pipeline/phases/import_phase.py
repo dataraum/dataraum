@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from dataraum.core.config import load_pipeline_config
+from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
@@ -22,6 +23,8 @@ from dataraum.sources.csv import CSVLoader
 from dataraum.sources.csv.null_values import load_null_value_config
 from dataraum.sources.parquet import ParquetLoader
 from dataraum.storage import Column, Source, Table
+
+logger = get_logger(__name__)
 
 _CSV_EXTENSIONS = {".csv", ".tsv"}
 _PARQUET_EXTENSIONS = {".parquet", ".pq"}
@@ -562,12 +565,30 @@ class ImportPhase(BasePhase):
         prefixed_name = f"{source_name}__{staged_table.table_name}"
         duckdb_name = staged_table.raw_table_name
 
+        # Check for table name collision (e.g., Orders.csv and orders.csv both → same name)
+        existing_table = ctx.session.execute(
+            select(Table).where(
+                Table.source_id == source.source_id,
+                Table.table_name == prefixed_name,
+            )
+        ).scalar_one_or_none()
+        if existing_table:
+            # Drop the just-created DuckDB table to avoid orphans
+            try:
+                ctx.duckdb_conn.execute(f'DROP TABLE IF EXISTS "{duckdb_name}"')
+            except Exception:
+                pass
+            return PhaseResult.failed(
+                f"Table name collision: '{file_path.name}' produces table name "
+                f"'{prefixed_name}' which already exists from a previous file"
+            )
+
         try:
             ctx.duckdb_conn.execute(
                 f'ALTER TABLE "{duckdb_name}" RENAME TO "{prefixed_name}"'
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("duckdb_rename_failed", table=duckdb_name, target=prefixed_name, error=str(e))
 
         # Update the SQLAlchemy Table record
         table_record = ctx.session.execute(

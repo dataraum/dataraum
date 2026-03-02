@@ -198,6 +198,7 @@ uv run pytest tests/e2e/test_pipeline_phases.py -v
 - [ ] No debug statements left in code
 - [ ] Error handling is in place
 - [ ] Edge cases are handled
+- [ ] Docs updated (if user-facing behavior changed)
 
 ## Cross-Project Work
 
@@ -214,14 +215,61 @@ These are enforced mechanically — you don't need to remember them, but know th
 - **Post-edit**: `ruff format` runs after every file edit
 - **End-of-turn**: `ruff check` + `mypy` + `pytest --testmon` blocks if any fail
 
+## Documentation
+
+### Docs Site
+
+User-facing documentation lives in `docs/` and is published via [Zensical](https://zensical.org/) to GitHub Pages.
+
+| Location | Purpose | Published |
+|----------|---------|-----------|
+| `docs/*.md` | User-facing guides (pipeline, entropy, CLI, MCP setup, etc.) | Yes — in site nav |
+| `docs/internals/` | Contributor/developer internals (per-module deep dives) | No — not in nav |
+| `docs_old/projects/` | Design specs and project plans | No — not published |
+
+**Local preview:** `uv run zensical serve`
+**Build:** `uv run zensical build --clean`
+
+### When to Update Docs
+
+- **New user-facing feature or behavior change** → update the relevant `docs/*.md` page
+- **Internal implementation detail** → update `docs/internals/` if a page exists, otherwise skip
+- **Design decision or project plan** → update `docs_old/projects/` or create a Linear document
+
+### Docstring Convention
+
+Google-style docstrings, required on **new** public functions, classes, and methods. No backfill obligation.
+
+```python
+def infer_types(cursor: DuckDBPyConnection, table: str) -> Result[TypeProfile]:
+    """Infer column types from raw VARCHAR data.
+
+    Args:
+        cursor: DuckDB connection with the raw table loaded.
+        table: Name of the raw staging table.
+
+    Returns:
+        TypeProfile with inferred types and cast failures.
+
+    Raises:
+        StorageError: If the table does not exist.
+    """
+```
+
+Rules:
+- One-line summary in imperative mood ("Infer types", not "Infers types")
+- `Args`, `Returns`, `Raises` sections when applicable
+- Not required on: private functions (`_helper`), trivial one-liners, test functions
+- Enforced by ruff `D` rules (Google convention, relaxed for existing code)
+
 ## Current Work
 
 Check [Linear](https://linear.app/dataraum) for active issues, plans, and project documents. Linear MCP is available.
 
-Active project specs live in `docs/projects/` — read these before working on the relevant area:
-- `docs/projects/fixes.md` — Data fix persistence, recipes, decision ledger
-- `docs/projects/progressive-delivery.md` — SEP-1686 tasks, streaming pipeline results
-- `docs/projects/release.md` — CI, PyPI, MCP registry, docs site
+Active project specs live in `docs_old/projects/` — read these before working on the relevant area:
+- `docs_old/projects/fixes.md` — Data fix persistence, recipes, decision ledger
+- `docs_old/projects/progressive-delivery.md` — SEP-1686 tasks, streaming pipeline results
+- `docs_old/projects/release.md` — CI, PyPI, MCP registry, docs site
 
 ## Architecture
 

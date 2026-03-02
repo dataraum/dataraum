@@ -17,7 +17,7 @@ The codebase works but isn't shippable. There's no CI, no release process, no pu
 | MCP server | Works locally via `dataraum-mcp` console script. 9 tools (6 core + 3 source mgmt). Not listed in any registry |
 | Plugin | **Done** — Separate repo `dataraum/dataraum-plugin` with 9 skills, `.mcp.json`, `plugin.json` |
 | Onboarding | **Done** — Source discovery, add/remove, credential chain, database backends (postgres/mysql/sqlite) |
-| Documentation | Hand-written Markdown in `docs_new/` (rewrite complete, swap to `docs/` pending). No generated site |
+| Documentation | **Done** — User-facing docs in `docs/`, published via Zensical to GitHub Pages |
 | README | **Done** — Rewritten to match actual state |
 | LICENSE | **Done** — Apache 2.0 with `Copyright 2026 dataraum.com` |
 | Version management | `"0.1.0"` in pyproject.toml and plugin.json — synced but not tag-driven |
@@ -284,7 +284,7 @@ Anthropic curates tools shown in Claude Desktop. Submission requires:
 6. List in MCP registries                  ─┘
         │
         ▼
-7. Docs site                               ─┐
+7. Docs site                          ✅  ─┐
 8. Migrate roadmap to GitHub/Linear    ✅  ─┤── Public presence
 9. Apply to Claude Desktop directory       ─┘
 ```
@@ -302,7 +302,7 @@ Anthropic curates tools shown in Claude Desktop. Submission requires:
 - Version sync strategy (tag-driven vs hardcoded)
 - PyPI release pipeline + first publish
 - MCP registry listings
-- Docs site (swap `docs_new/` → `docs/`, then Zensical or similar)
+- ~~Docs site~~ **Done** — `docs/` published via Zensical, GitHub Actions workflow deployed
 
 ## Open Questions
 

@@ -116,14 +116,14 @@ uv run ruff format --check src/
 
 ## Documentation
 
-- [Architecture](docs_new/architecture.md) — system design and pipeline overview
-- [Pipeline](docs_new/pipeline.md) — 19-phase pipeline reference
-- [Entropy](docs_new/entropy.md) — uncertainty quantification system
-- [Data Model](docs_new/data-model.md) — metadata schema
-- [CLI Reference](docs_new/cli.md) — command-line interface
-- [MCP Setup](docs_new/mcp-setup.md) — MCP server configuration
-- [Configuration](docs_new/configuration.md) — config directory reference
-- [Contributing](docs_new/contributing.md) — development setup and patterns
+- [Architecture](docs/architecture.md) — system design and pipeline overview
+- [Pipeline](docs/pipeline.md) — 19-phase pipeline reference
+- [Entropy](docs/entropy.md) — uncertainty quantification system
+- [Data Model](docs/data-model.md) — metadata schema
+- [CLI Reference](docs/cli.md) — command-line interface
+- [MCP Setup](docs/mcp-setup.md) — MCP server configuration
+- [Configuration](docs/configuration.md) — config directory reference
+- [Contributing](docs/contributing.md) — development setup and patterns
 
 ## License
 

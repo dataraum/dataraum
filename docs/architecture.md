@@ -12,7 +12,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           CONSUMERS                                         │
 │                                                                             │
-│   Claude Code ──── MCP Server (7 tools)                                     │
+│   Claude Code ──── MCP Server (10 tools)                                     │
 │   Claude Desktop ─┘                       ContextDocument (pre-assembled)   │
 │   Python ──────── Context API                                               │
 │   Terminal ────── CLI + TUI (3 commands)                                     │
@@ -97,7 +97,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 
 | Layer | Technology | Purpose |
 |-------|------------|---------|
-| **AI Interface** | MCP Server | 7 tools for AI agents (Claude Code, Claude Desktop) |
+| **AI Interface** | MCP Server | 10 tools for AI agents (Claude Code, Claude Desktop) |
 | **CLI** | Typer + Rich | 3 commands for terminal use |
 | **TUI** | Textual | Interactive terminal dashboards |
 | **Python API** | `Context` class | Programmatic access for notebooks and scripts |
@@ -122,7 +122,7 @@ AI doesn't discover metadata at runtime via tools. It receives a pre-assembled c
 
 ### Minimal Tool Surface
 
-Only 7 MCP tools: `analyze`, `get_context`, `get_entropy`, `evaluate_contract`, `query`, `get_actions`, `apply_fix`. Rich context upfront instead of many discovery tools.
+10 MCP tools: 7 core (`analyze`, `get_context`, `get_entropy`, `evaluate_contract`, `query`, `get_actions`, `apply_fix`) + 3 source management (`discover_sources`, `add_source`, `remove_source`). Rich context upfront instead of many discovery tools.
 
 ### Entropy Over Binary Quality
 
@@ -188,7 +188,7 @@ src/dataraum/
 │   ├── screens/           # TUI screens (home with gate status)
 │   └── widgets/           # TUI widgets
 └── mcp/                   # MCP server
-    ├── server.py          # 7 tool definitions
+    ├── server.py          # 10 tool definitions
     ├── gate_handler.py    # MCPGateHandler for AI agent gate resolution
     └── formatters.py      # LLM-optimized markdown output
 ```
@@ -231,7 +231,7 @@ At each gate (⊘), the pipeline checks hard detector scores against thresholds.
 
 ## Interfaces
 
-### MCP Server (7 tools)
+### MCP Server (10 tools)
 
 Primary interface for AI agents. Tools return markdown formatted for LLM consumption.
 
@@ -244,6 +244,9 @@ Primary interface for AI agents. Tools return markdown formatted for LLM consump
 | `query` | Natural language data queries |
 | `get_actions` | Prioritized quality fixes |
 | `apply_fix` | Execute a fix action with verification |
+| `discover_sources` | Scan workspace for data files |
+| `add_source` | Register a file or database source |
+| `remove_source` | Archive a data source |
 
 ### CLI (3 commands)
 
@@ -284,7 +287,7 @@ with Context("./pipeline_output") as ctx:
 
 ## LLM Integration
 
-7 of 19 pipeline phases use LLM.
+7 of 20 pipeline phases use LLM (19 active, 1 de-configured).
 
 | Feature | Model Tier | Purpose |
 |---------|------------|---------|

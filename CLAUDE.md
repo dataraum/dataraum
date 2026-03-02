@@ -224,7 +224,6 @@ User-facing documentation lives in `docs/` and is published via [Zensical](https
 | Location | Purpose | Published |
 |----------|---------|-----------|
 | `docs/*.md` | User-facing guides (pipeline, entropy, CLI, MCP setup, etc.) | Yes — in site nav |
-| `docs/internals/` | Contributor/developer internals (per-module deep dives) | No — not in nav |
 | `docs_old/projects/` | Design specs and project plans | No — not published |
 
 **Local preview:** `uv run zensical serve`
@@ -233,7 +232,7 @@ User-facing documentation lives in `docs/` and is published via [Zensical](https
 ### When to Update Docs
 
 - **New user-facing feature or behavior change** → update the relevant `docs/*.md` page
-- **Internal implementation detail** → update `docs/internals/` if a page exists, otherwise skip
+- **Internal implementation detail** → use docstrings in source code
 - **Design decision or project plan** → update `docs_old/projects/` or create a Linear document
 
 ### Docstring Convention

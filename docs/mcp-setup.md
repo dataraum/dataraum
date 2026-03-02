@@ -1,4 +1,4 @@
-# MCP Setup Guide (WIP)
+# MCP Setup Guide
 
 How to connect DataRaum to Claude Code, Claude Desktop, and Claude for Work.
 
@@ -94,93 +94,39 @@ Add this to the file (create it if it doesn't exist):
 
 **Important:** Claude Desktop doesn't inherit your shell's working directory, so use absolute paths for both `--project` and `DATARAUM_OUTPUT_DIR`.
 
-Restart Claude Desktop after editing. The hammer icon in the text input should show 7 DataRaum tools.
+Restart Claude Desktop after editing. The hammer icon in the text input should show 10 DataRaum tools.
 
 ---
 
 ## Claude for Work (via Plugin)
 
-### 1. Prepare the plugin
+The DataRaum plugin lives in a separate repository: [`dataraum/dataraum-plugin`](https://github.com/dataraum/dataraum-plugin).
 
-The plugin lives at `src/dataraum/plugin/`. To upload it to Claude for Work, create a zip archive of the plugin directory:
-
-```bash
-cd src/dataraum/plugin
-zip -r dataraum-plugin.zip . -x '*.DS_Store'
-```
-
-### 2. Upload to Claude for Work
-
-1. Open Claude for Work → **Settings** → **Plugins** (or equivalent admin section)
-2. Upload `dataraum-plugin.zip`
-3. The plugin will be available to all users in the workspace
-
-### 3. Configure the MCP server
-
-The MCP server configuration needs to be set in **two places**:
-
-1. **Inside the plugin** (`src/dataraum/plugin/.mcp.json`) — bundled with the zip
-2. **In your Claude for Work MCP server settings** — configured in the workspace
-
-> **Note:** We have not yet tested whether both configurations are strictly necessary. In our setup both were present and the server worked correctly. If you experiment with removing one, let us know.
-
-The full configuration with all required environment variables:
-
-```json
-{
-  "mcpServers": {
-    "dataraum": {
-      "command": "uv",
-      "args": [
-        "run", "--project", "/absolute/path/to/dataraum-context", "dataraum-mcp"
-      ],
-      "env": {
-        "DATARAUM_OUTPUT_DIR": "/absolute/path/to/pipeline_output",
-        "PYTHON_GIL": "0",
-        "ANTHROPIC_API_KEY": "sk-ant-..."
-      }
-    }
-  }
-}
-```
-
-**Environment variables explained:**
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DATARAUM_OUTPUT_DIR` | Yes | Path to directory containing `metadata.db` and `data.duckdb` |
-| `PYTHON_GIL` | Recommended | Set to `0` to enable free-threading for better performance |
-| `ANTHROPIC_API_KEY` | If using LLM features | API key for LLM-powered analysis (semantic, quality rules, etc.) |
-
-**Important:** Use absolute paths for `--project` and `DATARAUM_OUTPUT_DIR`. Claude for Work does not inherit your shell's working directory.
-
-### Plugin skills
-
-The plugin provides 7 skills that map to the MCP tools:
-
-| Skill | Trigger examples |
-|-------|-----------------|
-| Analyze | "analyze this CSV", "process my data" |
-| Context | "what tables", "describe the data" |
-| Entropy | "entropy", "how reliable" |
-| Contracts | "aggregation safe", "contract compliance" |
-| Query | "how many", "total revenue" |
-| Actions | "what should I fix", "quality issues" |
-| Fix | "apply fix", "override type", "fix orders.amount" |
+See the plugin repo's README for installation and configuration instructions. The plugin provides skills that map to the MCP tools and is designed for workspace-wide deployment.
 
 ---
 
 ## Available Tools
 
+### Core tools
+
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `analyze` | `path`, `name?` | Run pipeline on CSV/Parquet data |
+| `analyze` | `path`, `name?`, `gate_mode?` | Run pipeline on CSV/Parquet data |
 | `get_context` | — | Schema, relationships, semantic annotations, quality |
 | `get_entropy` | `table_name?` | Uncertainty by dimension (structural, semantic, value, computational) |
 | `evaluate_contract` | `contract_name` | Quality evaluation against a contract |
 | `query` | `question`, `contract_name?` | Natural language query with confidence level |
 | `get_actions` | `priority?`, `table_name?` | Prioritized resolution actions |
 | `apply_fix` | `action_type`, `target`, `parameters?` | Execute a fix action with verification and decision recording |
+
+### Source management tools
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `discover_sources` | `path?`, `recursive?` | Scan workspace for data files (CSV, Parquet, JSON, XLSX) |
+| `add_source` | `name`, `path?`, `backend?`, `tables?`, `credential_ref?` | Register a file or database source |
+| `remove_source` | `name`, `purge_results?` | Archive a data source |
 
 ### apply_fix
 
@@ -195,6 +141,16 @@ Built-in action types: `override_type`, `declare_unit`, `add_business_name`, `de
 ### Contract names
 
 `exploratory_analysis`, `data_science`, `operational_analytics`, `aggregation_safe`, `executive_dashboard`, `regulatory_reporting`
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATARAUM_OUTPUT_DIR` | Yes | Path to directory containing `metadata.db` and `data.duckdb` |
+| `PYTHON_GIL` | Recommended | Set to `0` to enable free-threading for better performance |
+| `ANTHROPIC_API_KEY` | If using LLM features | API key for LLM-powered analysis (semantic, quality rules, etc.) |
 
 ---
 

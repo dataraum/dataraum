@@ -500,13 +500,22 @@ class PipelineScheduler:
             self.session.flush()
 
     def _invalidate_downstream(self, phase_name: str) -> None:
-        """Reset completed downstream phases to PENDING so they re-run."""
+        """Reset downstream phases to PENDING so they re-run.
+
+        Resets COMPLETED, SKIPPED, and FAILED phases. COMPLETED phases
+        need cleanup (delete output records). SKIPPED phases need to
+        re-evaluate should_skip() since the upstream data changed.
+        FAILED phases should retry with the corrected data.
+        """
         dependents = self._transitive_dependents(phase_name)
         for dep_name in dependents:
-            if self._state[dep_name] == PhaseStatus.COMPLETED:
+            dep_status = self._state[dep_name]
+            if dep_status == PhaseStatus.COMPLETED:
                 cleanup_phase(
                     dep_name, self.source_id, self.session, self.duckdb_conn
                 )
+                self._state[dep_name] = PhaseStatus.PENDING
+            elif dep_status in (PhaseStatus.SKIPPED, PhaseStatus.FAILED):
                 self._state[dep_name] = PhaseStatus.PENDING
 
     def _transitive_dependents(self, phase_name: str) -> list[str]:

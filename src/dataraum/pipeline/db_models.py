@@ -176,3 +176,7 @@ class Fix(Base):
     )
     last_applied_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_applied_run_id: Mapped[str | None] = mapped_column(String)
+
+
+# Composite index for _replay_fixes query: WHERE source_id=? AND after_phase=? AND status=?
+Index("idx_fix_source_phase_status", Fix.source_id, Fix.after_phase, Fix.status)

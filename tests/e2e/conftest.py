@@ -169,7 +169,7 @@ def _read_phases(output_dir: Path) -> list[PhaseRunResult]:
     phases: list[PhaseRunResult] = []
     with engine.connect() as conn:
         rows = conn.execute(
-            text("SELECT phase_name, status, duration_seconds FROM phase_checkpoints")
+            text("SELECT phase_name, status, duration_seconds FROM phase_logs")
         ).fetchall()
         for row in rows:
             phases.append(

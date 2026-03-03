@@ -511,7 +511,8 @@ def run(config: RunConfig) -> Result[RunResult]:
             if log and log.status == "failed" and log.error:
                 warnings.append(f"{phase_name} failed: {log.error}")
 
-        # Close connections
+        # Commit session and close connections
+        session.commit()
         manager.close()
 
         logger.debug(

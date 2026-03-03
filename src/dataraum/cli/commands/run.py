@@ -225,16 +225,15 @@ def _setup_pipeline(
 ]:
     """Create PipelineScheduler and return its generator.
 
-    This is a best-effort wiring. Full runtime_config / phase_configs
-    integration is Phase 6's job. Phase 5 delivers the event loop + UX.
-
     Returns:
         Tuple of (generator, action_registry).
     """
+    from typing import Any
     from uuid import uuid4
 
     from sqlalchemy import select
 
+    from dataraum.core.config import load_phase_config, load_pipeline_config
     from dataraum.core.connections import ConnectionConfig, ConnectionManager
     from dataraum.entropy.fix_executor import (
         FixExecutor,
@@ -253,7 +252,7 @@ def _setup_pipeline(
     manager.initialize()
 
     session = manager.get_session()
-    duckdb_conn = manager._duckdb_conn  # noqa: SLF001  # Phase 6 will clean up
+    duckdb_conn = manager._duckdb_conn  # noqa: SLF001
 
     # 2. Resolve source_id
     source_id: str
@@ -269,17 +268,34 @@ def _setup_pipeline(
         ).scalar_one_or_none()
         source_id = existing.source_id if existing else str(uuid4())
 
-    # 3. Load phases from registry
+    # 3. Load pipeline and phase configs
+    pipeline_yaml_config = load_pipeline_config()
+    active_phase_names = pipeline_yaml_config.get("phases", [])
+    phase_configs = {name: load_phase_config(name) for name in active_phase_names}
+
+    # Build runtime config
+    runtime_config: dict[str, Any]
+    if source_path is not None:
+        runtime_config = {
+            "source_path": str(source_path),
+            "source_name": source_name or source_path.stem,
+        }
+    else:
+        runtime_config = {
+            "source_name": "multi_source",
+        }
+
+    # 4. Load phases from registry
     registry = get_registry()
     phases: dict[str, Phase] = {name: cls() for name, cls in registry.items()}
 
-    # 4. Filter phases if --phase set
+    # 5. Filter phases if --phase set
     if target_phase:
         deps = get_all_dependencies(target_phase)
         keep = deps | {target_phase}
         phases = {n: p for n, p in phases.items() if n in keep}
 
-    # 5. Create PipelineRun record
+    # 6. Create PipelineRun record
     run_id = str(uuid4())
     run_record = PipelineRun(
         run_id=run_id,
@@ -290,7 +306,7 @@ def _setup_pipeline(
     session.add(run_record)
     session.flush()
 
-    # 6. Load contract thresholds
+    # 7. Load contract thresholds
     thresholds: dict[str, float] = {}
     if contract:
         from dataraum.entropy.contracts import get_contract
@@ -299,11 +315,11 @@ def _setup_pipeline(
         if contract_obj:
             thresholds = contract_obj.dimension_thresholds
 
-    # 7. Create fix executor
+    # 8. Create fix executor
     action_registry = get_default_action_registry()
     fix_executor = FixExecutor(action_registry)
 
-    # 8. Create scheduler and return generator
+    # 9. Create scheduler and return generator
     scheduler = PipelineScheduler(
         phases=phases,
         source_id=source_id,
@@ -312,6 +328,8 @@ def _setup_pipeline(
         duckdb_conn=duckdb_conn,
         contract_thresholds=thresholds,
         fix_executor=fix_executor,
+        phase_configs=phase_configs,
+        runtime_config=runtime_config,
     )
 
     return scheduler.run(), action_registry

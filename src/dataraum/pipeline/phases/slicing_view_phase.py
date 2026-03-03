@@ -266,13 +266,20 @@ class SlicingViewPhase(BasePhase):
                 )
 
             # Rewrite sql_templates so they reference the slicing view instead of
-            # the raw typed table path. This makes slice_analysis independent of
-            # any source substitution logic.
-            typed_path = fact_table.duckdb_path
+            # the typed table or enriched view the agent originally used.
+            # The agent picks enriched view when available, typed path otherwise.
+            from_targets = set()
+            if fact_table.duckdb_path:
+                from_targets.add(fact_table.duckdb_path)
+            if enriched_view and enriched_view.view_name:
+                from_targets.add(enriched_view.view_name)
+
             for sd in slice_defs:
-                if sd.sql_template and typed_path:
+                if not sd.sql_template:
+                    continue
+                for target in from_targets:
                     sd.sql_template = sd.sql_template.replace(
-                        f"FROM {typed_path}", f'FROM "{view_name}"'
+                        f"FROM {target}", f'FROM "{view_name}"'
                     )
 
             views_created += 1

@@ -270,11 +270,12 @@ class SlicingAgent(LLMFeature):
 
             # Use proper quoting for column names with spaces
             quoted_column = f'"{column_name}"'
+            escaped_value = str(value).replace("'", "''")
 
             lines.append(f"-- Slice: {column_name} = '{value}'")
             lines.append(f"CREATE OR REPLACE TABLE {slice_table} AS")
             lines.append(f"SELECT * FROM {table_name}")
-            lines.append(f"WHERE {quoted_column} = '{value}';")
+            lines.append(f"WHERE {quoted_column} = '{escaped_value}';")
             lines.append("")
 
         return "\n".join(lines)

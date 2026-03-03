@@ -168,6 +168,7 @@ inputs:
   required_standard_fields:
     description: Standard field concepts required by active metrics
     required: false
+    default: ""
 
 # Output is defined by the Pydantic tool schema (SemanticAnalysisOutput)
 # No output_schema needed here since we use tool-based output

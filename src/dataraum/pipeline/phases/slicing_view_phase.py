@@ -172,11 +172,19 @@ class SlicingViewPhase(BasePhase):
                 logger.warning("fact_table_missing", table_id=fact_table_id)
                 continue
 
-            # Include slice defs from the fact table AND from dimension tables
-            # (SliceDefinition.table_id can point to a dim table when the LLM
-            # recommends slicing on a column from a joined dimension table)
-            slice_defs = list(all_slice_defs)
             enriched_view = enriched_views_by_table.get(fact_table_id)
+
+            # Get dimension table IDs from this fact table's enriched view
+            dim_table_ids = set()
+            if enriched_view and enriched_view.dimension_table_ids:
+                dim_table_ids = set(enriched_view.dimension_table_ids)
+
+            # Filter to slice defs relevant to this fact table
+            slice_defs = [
+                sd
+                for sd in all_slice_defs
+                if sd.table_id == fact_table_id or sd.table_id in dim_table_ids
+            ]
 
             # Build the slicing view SQL
             view_sql, slice_dim_cols, slice_def_ids = self._build_slicing_view_sql(

@@ -149,7 +149,7 @@ def register_slice_tables(
                 if existing_table:
                     # Already registered
                     count_result = duckdb_conn.execute(
-                        f"SELECT COUNT(*) FROM {slice_table_name}"
+                        f'SELECT COUNT(*) FROM "{slice_table_name}"'
                     ).fetchone()
                     row_count = count_result[0] if count_result else 0
                     registered.append(
@@ -167,7 +167,7 @@ def register_slice_tables(
 
                 # Get row count from DuckDB
                 count_result = duckdb_conn.execute(
-                    f"SELECT COUNT(*) FROM {slice_table_name}"
+                    f'SELECT COUNT(*) FROM "{slice_table_name}"'
                 ).fetchone()
                 row_count = count_result[0] if count_result else 0
 
@@ -215,7 +215,7 @@ def register_slice_tables(
                         )
                 else:
                     # No slicing view registered — read schema directly from DuckDB.
-                    duckdb_cols = duckdb_conn.execute(f"DESCRIBE {slice_table_name}").fetchall()
+                    duckdb_cols = duckdb_conn.execute(f'DESCRIBE "{slice_table_name}"').fetchall()
                     for pos, row in enumerate(duckdb_cols):
                         session.add(
                             Column(
@@ -281,20 +281,20 @@ def run_statistics_on_slice(
     if not table:
         return Result.fail(f"Slice table not found: {slice_info.slice_table_id}")
 
-    # Temporarily set layer to 'typed' for profiling
-    # No flush needed - SQLAlchemy identity map returns modified object to same session
+    # Temporarily set layer to 'typed' so profile_statistics accepts it.
+    # Use no_autoflush to prevent the fake layer from being written to the DB.
     original_layer = table.layer
     table.layer = "typed"
 
     try:
-        result = profile_statistics(
-            table_id=slice_info.slice_table_id,
-            duckdb_conn=duckdb_conn,
-            session=session,
-        )
+        with session.no_autoflush:
+            result = profile_statistics(
+                table_id=slice_info.slice_table_id,
+                duckdb_conn=duckdb_conn,
+                session=session,
+            )
         return result
     finally:
-        # Restore layer - no flush needed, commit happens at session_scope() end
         table.layer = original_layer
 
 

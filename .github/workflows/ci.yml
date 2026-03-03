@@ -6,6 +6,9 @@ on:
     pull_request:
         branches: [main]
 
+env:
+    UV_NO_SOURCES: "1"
+
 jobs:
     lint:
         runs-on: ubuntu-latest
@@ -23,7 +26,7 @@ jobs:
             - name: Install dependencies
               run: |
                   echo "3.14" > .python-version
-                  uv sync --group dev --no-sources
+                  uv sync --group dev
 
             - name: Ruff check
               run: uv run ruff check src/
@@ -47,7 +50,7 @@ jobs:
             - name: Install dependencies
               run: |
                   echo "3.14" > .python-version
-                  uv sync --group dev --no-sources
+                  uv sync --group dev
 
             - name: Run unit tests
               run: uv run pytest tests/unit -q --timeout=120

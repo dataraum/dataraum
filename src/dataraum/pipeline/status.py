@@ -13,7 +13,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from dataraum.pipeline.base import PhaseStatus
-from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
+from dataraum.pipeline.db_models import PhaseLog, PipelineRun
 from dataraum.pipeline.registry import get_phase_class, get_registry
 from dataraum.storage.base import Base
 
@@ -105,40 +105,37 @@ def get_pipeline_status(session: Session, source_id: str) -> PipelineStatus:
     run_result = session.execute(latest_run_stmt)
     latest_run = run_result.scalar_one_or_none()
 
-    # Get all checkpoints for this source
-    checkpoints_stmt = select(PhaseCheckpoint).where(PhaseCheckpoint.source_id == source_id)
-    checkpoint_result = session.execute(checkpoints_stmt)
-    checkpoints: list[PhaseCheckpoint] = list(checkpoint_result.scalars().all())
+    # Get all phase logs for this source (latest per phase)
+    logs_stmt = (
+        select(PhaseLog)
+        .where(PhaseLog.source_id == source_id)
+        .order_by(PhaseLog.completed_at.desc())
+    )
+    log_result = session.execute(logs_stmt)
+    logs: list[PhaseLog] = list(log_result.scalars().all())
 
-    # Build checkpoint lookup (latest per phase)
-    checkpoint_by_phase: dict[str, PhaseCheckpoint] = {}
-    for checkpoint in checkpoints:
-        existing = checkpoint_by_phase.get(checkpoint.phase_name)
-        if existing is None or (
-            existing.completed_at is not None
-            and checkpoint.completed_at is not None
-            and checkpoint.completed_at > existing.completed_at
-        ):
-            checkpoint_by_phase[checkpoint.phase_name] = checkpoint
+    # Build log lookup (latest per phase)
+    log_by_phase: dict[str, PhaseLog] = {}
+    for log in logs:
+        if log.phase_name not in log_by_phase:
+            log_by_phase[log.phase_name] = log
 
     # Build phase status list from registry
     registry = get_registry()
     phases: list[PhaseStatusInfo] = []
     for name, cls in registry.items():
         instance = cls()
-        phase_checkpoint = checkpoint_by_phase.get(name)
-        if phase_checkpoint is not None:
-            status = PhaseStatus(phase_checkpoint.status)
+        phase_log = log_by_phase.get(name)
+        if phase_log is not None:
+            status = PhaseStatus(phase_log.status)
             phases.append(
                 PhaseStatusInfo(
                     name=name,
                     description=instance.description,
                     status=status,
-                    duration_seconds=phase_checkpoint.duration_seconds,
-                    completed_at=phase_checkpoint.completed_at,
-                    error=phase_checkpoint.error,
-                    records_processed=phase_checkpoint.records_processed,
-                    records_created=phase_checkpoint.records_created,
+                    duration_seconds=phase_log.duration_seconds,
+                    completed_at=phase_log.completed_at,
+                    error=phase_log.error,
                 )
             )
         else:
@@ -160,21 +157,21 @@ def get_pipeline_status(session: Session, source_id: str) -> PipelineStatus:
 
 
 def reset_pipeline(session: Session, source_id: str) -> int:
-    """Reset all checkpoints for a source.
+    """Reset all phase logs for a source.
 
     Args:
         session: SQLAlchemy session
         source_id: Source identifier
 
     Returns:
-        Number of checkpoints deleted
+        Number of logs deleted
     """
-    # Count checkpoints
-    count_stmt = select(func.count()).where(PhaseCheckpoint.source_id == source_id)
+    # Count logs
+    count_stmt = select(func.count()).where(PhaseLog.source_id == source_id)
     result = session.execute(count_stmt)
     count = result.scalar() or 0
 
-    # Delete all runs and checkpoints (cascade)
+    # Delete all runs (cascades to PhaseLog via FK)
     runs_stmt = select(PipelineRun).where(PipelineRun.source_id == source_id)
     result = session.execute(runs_stmt)
     runs = result.scalars().all()
@@ -270,12 +267,12 @@ def reset_phase(session: Session, source_id: str, phase_name: str) -> int:
         result = session.execute(stmt)
         deleted += result.rowcount  # type: ignore[attr-defined]
 
-    # Delete phase checkpoint
-    cp_stmt = delete(PhaseCheckpoint).where(
-        PhaseCheckpoint.source_id == source_id,
-        PhaseCheckpoint.phase_name == phase_name,
+    # Delete phase logs
+    log_stmt = delete(PhaseLog).where(
+        PhaseLog.source_id == source_id,
+        PhaseLog.phase_name == phase_name,
     )
-    cp_result = session.execute(cp_stmt)
-    deleted += cp_result.rowcount  # type: ignore[attr-defined]
+    log_result = session.execute(log_stmt)
+    deleted += log_result.rowcount  # type: ignore[attr-defined]
 
     return int(deleted)

@@ -160,7 +160,7 @@ class HomeScreen(Screen[None]):
         """Update the pipeline status table."""
         from sqlalchemy import select
 
-        from dataraum.pipeline.db_models import PhaseCheckpoint
+        from dataraum.pipeline.db_models import PhaseLog
 
         table_widget = self.query_one("#pipeline-table", DataTable)
         table_widget.clear(columns=True)
@@ -169,11 +169,11 @@ class HomeScreen(Screen[None]):
         table_widget.add_column("Status", key="status")
         table_widget.add_column("Duration", key="duration")
 
-        # Get pipeline checkpoints
+        # Get phase logs
         states_result = session.execute(
-            select(PhaseCheckpoint)
-            .where(PhaseCheckpoint.source_id == source.source_id)
-            .order_by(PhaseCheckpoint.started_at)
+            select(PhaseLog)
+            .where(PhaseLog.source_id == source.source_id)
+            .order_by(PhaseLog.started_at)
         )
         states = states_result.scalars().all()
 
@@ -182,7 +182,7 @@ class HomeScreen(Screen[None]):
             "running": "[yellow]Running[/yellow]",
             "failed": "[red]Failed[/red]",
             "pending": "[dim]Pending[/dim]",
-            "gate_blocked": "[yellow]Gate Blocked[/yellow]",
+            "skipped": "[dim]Skipped[/dim]",
         }
 
         for state in states:
@@ -200,26 +200,26 @@ class HomeScreen(Screen[None]):
         """Update the gate status section."""
         from sqlalchemy import select
 
-        from dataraum.pipeline.db_models import PhaseCheckpoint
+        from dataraum.pipeline.db_models import PhaseLog
 
         gate_widget = self.query_one("#gate-status", Static)
 
-        # Find gate-blocked phases
-        blocked_result = session.execute(
-            select(PhaseCheckpoint).where(
-                PhaseCheckpoint.source_id == source.source_id,
-                PhaseCheckpoint.gate_status == "blocked",
+        # Find failed phases (gates are now handled via EXIT_CHECK in scheduler)
+        failed_result = session.execute(
+            select(PhaseLog).where(
+                PhaseLog.source_id == source.source_id,
+                PhaseLog.status == "failed",
             )
         )
-        blocked = blocked_result.scalars().all()
+        failed = failed_result.scalars().all()
 
-        if not blocked:
+        if not failed:
             gate_widget.update("[green]No active gates[/green]")
             return
 
         lines = []
-        for cp in blocked:
-            reason = cp.gate_reason or "entropy preconditions not met"
-            lines.append(f"[yellow]Phase {cp.phase_name}:[/yellow] {reason}")
+        for log in failed:
+            reason = log.error or "phase failed"
+            lines.append(f"[yellow]Phase {log.phase_name}:[/yellow] {reason}")
 
         gate_widget.update("\n".join(lines))

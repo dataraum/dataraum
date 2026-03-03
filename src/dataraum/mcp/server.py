@@ -461,7 +461,7 @@ def _get_pipeline_progress(manager: Any) -> str | None:
     """
     from sqlalchemy import func, select
 
-    from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
+    from dataraum.pipeline.db_models import PhaseLog, PipelineRun
     from dataraum.pipeline.registry import get_registry
     from dataraum.storage import Source
 
@@ -488,7 +488,7 @@ def _get_pipeline_progress(manager: Any) -> str | None:
 
         completed_count: int = (
             session.execute(
-                select(func.count()).where(PhaseCheckpoint.run_id == running_run.run_id)
+                select(func.count()).where(PhaseLog.run_id == running_run.run_id)
             ).scalar()
             or 0
         )
@@ -498,10 +498,10 @@ def _get_pipeline_progress(manager: Any) -> str | None:
 
         # Determine currently running phases from dependency graph
         completed_names: set[str] = set()
-        cp_result = session.execute(
-            select(PhaseCheckpoint.phase_name).where(PhaseCheckpoint.run_id == running_run.run_id)
+        log_result = session.execute(
+            select(PhaseLog.phase_name).where(PhaseLog.run_id == running_run.run_id)
         )
-        for row in cp_result:
+        for row in log_result:
             completed_names.add(row[0])
 
         running_phases: list[str] = []

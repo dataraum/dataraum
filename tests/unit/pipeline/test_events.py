@@ -9,8 +9,6 @@ class TestEventType:
     def test_values(self):
         assert EventType.PHASE_STARTED.value == "phase_started"
         assert EventType.PHASE_COMPLETED.value == "phase_completed"
-        assert EventType.GATE_EVALUATED.value == "gate_evaluated"
-        assert EventType.GATE_BLOCKED.value == "gate_blocked"
         assert EventType.PIPELINE_COMPLETED.value == "pipeline_completed"
 
     def test_is_str_enum(self):
@@ -49,9 +47,9 @@ class TestPipelineEvent:
         with pytest.raises(AttributeError):
             event.phase = "other"  # type: ignore[misc]
 
-    def test_gate_event_with_violations(self):
+    def test_event_with_gate_fields(self):
         event = PipelineEvent(
-            event_type=EventType.GATE_BLOCKED,
+            event_type=EventType.EXIT_CHECK,
             phase="semantic",
             gate_status="blocked",
             violations={"join_path_determinism": (-1.0, 0.5)},

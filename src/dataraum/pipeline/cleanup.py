@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.dml import Delete
 
 from dataraum.core.logging import get_logger
-from dataraum.pipeline.db_models import PhaseCheckpoint
+from dataraum.pipeline.db_models import PhaseLog
 from dataraum.storage.models import Column, Table
 
 logger = get_logger(__name__)
@@ -440,12 +440,12 @@ def cleanup_phase(
         _drop_duckdb_tables(duckdb_conn, duckdb_paths, duckdb_layers)
         logger.info("duckdb_cleanup", phase=phase_name, tables_dropped=len(duckdb_paths))
 
-    # Always delete checkpoint for this phase + source
+    # Always delete phase logs for this phase + source
     count += _exec_delete(
         session,
-        delete(PhaseCheckpoint).where(
-            PhaseCheckpoint.source_id == source_id,
-            PhaseCheckpoint.phase_name == phase_name,
+        delete(PhaseLog).where(
+            PhaseLog.source_id == source_id,
+            PhaseLog.phase_name == phase_name,
         ),
     )
 

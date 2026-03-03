@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from dataraum.pipeline.cleanup import _CLEANUP_MAP, cleanup_phase
-from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
+from dataraum.pipeline.db_models import PhaseLog, PipelineRun
 from dataraum.storage.models import Column, Source, Table
 
 
@@ -48,23 +48,24 @@ def _make_column(session: Session, table_id: str) -> Column:
     return col
 
 
-def _make_checkpoint(session: Session, source_id: str, phase_name: str) -> PhaseCheckpoint:
-    """Create a pipeline run + checkpoint."""
+def _make_phase_log(session: Session, source_id: str, phase_name: str) -> PhaseLog:
+    """Create a pipeline run + phase log."""
     run = PipelineRun(source_id=source_id)
     session.add(run)
     session.flush()
 
-    cp = PhaseCheckpoint(
+    log = PhaseLog(
         run_id=run.run_id,
         source_id=source_id,
         phase_name=phase_name,
         status="completed",
         started_at=datetime.now(UTC),
+        completed_at=datetime.now(UTC),
         duration_seconds=1.0,
     )
-    session.add(cp)
+    session.add(log)
     session.flush()
-    return cp
+    return log
 
 
 @pytest.fixture
@@ -105,13 +106,13 @@ class TestCleanupStatistics:
             profile_data={},
         )
         session.add(profile)
-        _make_checkpoint(session, source.source_id, "statistics")
+        _make_phase_log(session, source.source_id, "statistics")
         session.flush()
 
         count = cleanup_phase("statistics", source.source_id, session, duck)
         session.flush()
 
-        assert count >= 2  # profile + checkpoint
+        assert count >= 2  # profile + phase log
         remaining = session.query(StatisticalProfile).filter_by(column_id=col.column_id).all()
         assert len(remaining) == 0
 
@@ -137,13 +138,13 @@ class TestCleanupBusinessCycles:
             confidence=0.8,
         )
         session.add_all([cycle, other_cycle])
-        _make_checkpoint(session, source.source_id, "business_cycles")
+        _make_phase_log(session, source.source_id, "business_cycles")
         session.flush()
 
         count = cleanup_phase("business_cycles", source.source_id, session, duck)
         session.flush()
 
-        assert count >= 2  # cycle + checkpoint
+        assert count >= 2  # cycle + phase log
 
         # Other source's cycle should remain
         remaining = (
@@ -152,13 +153,13 @@ class TestCleanupBusinessCycles:
         assert len(remaining) == 1
 
 
-class TestCleanupCheckpoint:
-    def test_always_deletes_checkpoint(
+class TestCleanupPhaseLog:
+    def test_always_deletes_phase_log(
         self, session: Session, duck: duckdb.DuckDBPyConnection
     ) -> None:
-        """Cleanup always deletes PhaseCheckpoint for the phase+source, even if no other data."""
+        """Cleanup always deletes PhaseLog for the phase+source, even if no other data."""
         source = _make_source(session)
-        _make_checkpoint(session, source.source_id, "statistics")
+        _make_phase_log(session, source.source_id, "statistics")
         session.flush()
 
         count = cleanup_phase("statistics", source.source_id, session, duck)
@@ -166,7 +167,7 @@ class TestCleanupCheckpoint:
 
         assert count >= 1
         remaining = (
-            session.query(PhaseCheckpoint)
+            session.query(PhaseLog)
             .filter_by(source_id=source.source_id, phase_name="statistics")
             .all()
         )
@@ -180,7 +181,7 @@ class TestCleanupTyping:
         raw_table = _make_table(session, source.source_id, layer="raw")
         typed_table = _make_table(session, source.source_id, layer="typed")
         typed_col = _make_column(session, typed_table.table_id)
-        _make_checkpoint(session, source.source_id, "typing")
+        _make_phase_log(session, source.source_id, "typing")
         session.flush()
 
         typed_table_id = typed_table.table_id
@@ -190,7 +191,7 @@ class TestCleanupTyping:
         session.flush()
         session.expire_all()  # Clear identity map so get() hits DB
 
-        assert count >= 2  # typed table + checkpoint
+        assert count >= 2  # typed table + phase log
 
         # Typed table and column should be gone
         assert session.get(Table, typed_table_id) is None

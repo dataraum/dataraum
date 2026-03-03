@@ -53,10 +53,6 @@ class ColumnEligibilityPhase(BasePhase):
         return ["statistics"]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["eligible", "warned", "dropped"]
-
-    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.eligibility import db_models
 

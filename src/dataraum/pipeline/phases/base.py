@@ -19,7 +19,6 @@ class BasePhase(ABC):
     - name property
     - description property
     - dependencies property
-    - outputs property
     - _run method
     """
 
@@ -39,12 +38,6 @@ class BasePhase(ABC):
     @abstractmethod
     def dependencies(self) -> list[str]:
         """List of phase names that must complete before this phase."""
-        ...
-
-    @property
-    @abstractmethod
-    def outputs(self) -> list[str]:
-        """List of output keys this phase produces."""
         ...
 
     @property

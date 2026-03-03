@@ -50,10 +50,6 @@ class TemporalPhase(BasePhase):
         return ["column_eligibility"]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["temporal_profiles"]
-
-    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.temporal import db_models
 

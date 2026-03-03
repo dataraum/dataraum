@@ -21,7 +21,6 @@ class TestTemporalSliceAnalysisPhase:
         assert phase.name == "temporal_slice_analysis"
         assert phase.description == "Distribution drift analysis on slices"
         assert phase.dependencies == ["slice_analysis", "temporal"]
-        assert phase.outputs == ["drift_summaries", "period_analyses"]
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

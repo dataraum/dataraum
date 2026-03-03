@@ -45,10 +45,6 @@ class SliceAnalysisPhase(BasePhase):
     def dependencies(self) -> list[str]:
         return ["slicing_view"]
 
-    @property
-    def outputs(self) -> list[str]:
-        return ["slice_profiles"]
-
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no slice definitions exist or all slices already analyzed."""
         # Get typed tables for this source

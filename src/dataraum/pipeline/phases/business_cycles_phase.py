@@ -12,9 +12,9 @@ from types import ModuleType
 from sqlalchemy import func, select
 
 from dataraum.analysis.cycles import BusinessCycleAgent
+from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
-from dataraum.pipeline.db_models import PhaseCheckpoint
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
@@ -51,10 +51,6 @@ class BusinessCyclesPhase(BasePhase):
         ]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["detected_cycles", "business_processes"]
-
-    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.cycles import db_models
 
@@ -64,21 +60,22 @@ class BusinessCyclesPhase(BasePhase):
         """Skip if business cycles have already been detected."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        typed_tables = ctx.session.execute(stmt).scalars().all()
 
         if not typed_tables:
             return "No typed tables found"
 
-        # Check for existing completed phase checkpoint
-        cp_stmt = select(func.count(PhaseCheckpoint.checkpoint_id)).where(
-            PhaseCheckpoint.source_id == ctx.source_id,
-            PhaseCheckpoint.phase_name == self.name,
-            PhaseCheckpoint.status == "completed",
+        # Check for existing detected cycles
+        cycle_count = (
+            ctx.session.execute(
+                select(func.count(DetectedBusinessCycle.cycle_id)).where(
+                    DetectedBusinessCycle.source_id == ctx.source_id,
+                )
+            ).scalar()
+            or 0
         )
-        cp_count = (ctx.session.execute(cp_stmt)).scalar() or 0
 
-        if cp_count > 0:
+        if cycle_count > 0:
             return "Business cycle analysis already run for these tables"
 
         return None

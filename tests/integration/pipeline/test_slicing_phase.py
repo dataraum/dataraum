@@ -22,7 +22,6 @@ class TestSlicingPhase:
         assert phase.name == "slicing"
         assert phase.description == "LLM-powered slice dimension identification"
         assert phase.dependencies == ["enriched_views"]
-        assert phase.outputs == ["slice_definitions", "slice_queries"]
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

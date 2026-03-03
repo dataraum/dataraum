@@ -72,10 +72,6 @@ class EntropyPhase(BasePhase):
         ]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["entropy_profiles"]
-
-    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.entropy import db_models
 

@@ -44,10 +44,6 @@ class StatisticsPhase(BasePhase):
         return ["typing"]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["statistical_profiles"]
-
-    @property
     def entropy_preconditions(self) -> dict[str, float]:
         return {"type_fidelity": 0.5}
 

@@ -87,10 +87,6 @@ class EntropyInterpretationPhase(BasePhase):
         return ["entropy"]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["interpretations", "assumptions", "resolution_actions"]
-
-    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.entropy import interpretation_db_models
 

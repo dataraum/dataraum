@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from types import ModuleType
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from dataraum.analysis.validation import ValidationAgent
+from dataraum.analysis.validation.db_models import ValidationResultRecord
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
-from dataraum.pipeline.db_models import PhaseCheckpoint
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
@@ -43,10 +43,6 @@ class ValidationPhase(BasePhase):
         return ["semantic", "relationships", "enriched_views", "slicing"]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["validation_results"]
-
-    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.validation import db_models
 
@@ -56,22 +52,22 @@ class ValidationPhase(BasePhase):
         """Skip if validations have already been run for this source."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        typed_tables = ctx.session.execute(stmt).scalars().all()
 
         if not typed_tables:
             return "No typed tables found"
 
-        # Check for existing completed phase checkpoint
-        cp_stmt = select(func.count(PhaseCheckpoint.checkpoint_id)).where(
-            PhaseCheckpoint.source_id == ctx.source_id,
-            PhaseCheckpoint.phase_name == self.name,
-            PhaseCheckpoint.status == "completed",
-        )
-        cp_count = (ctx.session.execute(cp_stmt)).scalar() or 0
+        # Check for existing validation results for this source's tables.
+        # table_ids is a JSON array, so we check overlap in Python but only
+        # project the minimal columns needed.
+        table_id_set = {t.table_id for t in typed_tables}
+        rows = ctx.session.execute(
+            select(ValidationResultRecord.table_ids)
+        ).all()
 
-        if cp_count > 0:
-            return "Validation already run for these tables"
+        for (result_table_ids,) in rows:
+            if set(result_table_ids or []) & table_id_set:
+                return "Validation already run for these tables"
 
         return None
 

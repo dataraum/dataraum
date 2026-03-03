@@ -45,10 +45,6 @@ class CrossTableQualityPhase(BasePhase):
     def dependencies(self) -> list[str]:
         return ["semantic"]
 
-    @property
-    def outputs(self) -> list[str]:
-        return ["cross_table_correlations"]
-
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no confirmed relationships exist."""
         # Get typed tables for this source

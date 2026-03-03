@@ -37,13 +37,6 @@ class TypingPhase(BasePhase):
 
     Configuration (in ctx.config):
         min_confidence: Minimum confidence for automatic type selection (default: 0.85)
-
-    Inputs (from previous phases):
-        import.raw_tables: List of raw table IDs to process
-
-    Outputs:
-        typed_tables: List of typed table IDs
-        type_decisions: Dict mapping column_id to resolved type
     """
 
     @property
@@ -59,10 +52,6 @@ class TypingPhase(BasePhase):
         return ["import"]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["typed_tables", "type_decisions"]
-
-    @property
     def post_verification(self) -> list[str]:
         return ["type_fidelity"]
 
@@ -74,25 +63,22 @@ class TypingPhase(BasePhase):
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if typed tables already exist for all raw tables."""
-        raw_table_ids = ctx.get_output("import", "raw_tables", [])
-        if not raw_table_ids:
+        stmt = select(Table).where(
+            Table.source_id == ctx.source_id,
+            Table.layer == "raw",
+        )
+        raw_tables = list(ctx.session.execute(stmt).scalars())
+        if not raw_tables:
             return "No raw tables to process"
 
         # Check if all raw tables have corresponding typed tables
-        for table_id in raw_table_ids:
-            raw_table = ctx.session.get(Table, table_id)
-            if not raw_table:
-                continue
-
-            # Check if typed table exists
-            stmt = select(Table).where(
-                Table.source_id == raw_table.source_id,
+        for raw_table in raw_tables:
+            typed_stmt = select(Table).where(
+                Table.source_id == ctx.source_id,
                 Table.table_name == raw_table.table_name,
                 Table.layer == "typed",
             )
-            result = ctx.session.execute(stmt)
-            typed_table = result.scalar_one_or_none()
-
+            typed_table = ctx.session.execute(typed_stmt).scalar_one_or_none()
             if not typed_table:
                 return None  # At least one table needs typing
 
@@ -189,10 +175,14 @@ class TypingPhase(BasePhase):
         Returns:
             PhaseResult with typed_tables and type_decisions
         """
-        # Get raw tables from import phase
-        raw_table_ids = ctx.get_output("import", "raw_tables", [])
+        # Get raw tables from DB
+        stmt = select(Table.table_id).where(
+            Table.source_id == ctx.source_id,
+            Table.layer == "raw",
+        )
+        raw_table_ids = [row[0] for row in ctx.session.execute(stmt)]
         if not raw_table_ids:
-            # Try to get from table_ids in context
+            # Fall back to table_ids in context
             raw_table_ids = ctx.table_ids
 
         if not raw_table_ids:
@@ -209,10 +199,10 @@ class TypingPhase(BasePhase):
 
         for table_id in raw_table_ids:
             # Load table with columns
-            stmt = (
-                select(Table).where(Table.table_id == table_id).options(selectinload(Table.columns))
+            table_stmt = select(Table).where(Table.table_id == table_id).options(
+                selectinload(Table.columns)
             )
-            result = ctx.session.execute(stmt)
+            result = ctx.session.execute(table_stmt)
             table = result.scalar_one_or_none()
 
             if not table:

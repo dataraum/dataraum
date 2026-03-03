@@ -46,10 +46,6 @@ class SlicingPhase(BasePhase):
         return ["enriched_views"]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["slice_definitions", "slice_queries"]
-
-    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.slicing import db_models
 

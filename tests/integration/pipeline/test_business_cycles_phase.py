@@ -27,7 +27,7 @@ class TestBusinessCyclesPhase:
             "slicing",
             "quality_summary",
         ]
-        assert phase.outputs == ["detected_cycles", "business_processes"]
+
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
@@ -107,14 +107,11 @@ class TestBusinessCyclesPhase:
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test skip when business cycle analysis already run."""
-        from datetime import UTC, datetime
-
-        from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
+        from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
 
         phase = BusinessCyclesPhase()
         source_id = str(uuid4())
         table_id = str(uuid4())
-        run_id = str(uuid4())
 
         # Create a source with a typed table
         source = Source(
@@ -133,27 +130,16 @@ class TestBusinessCyclesPhase:
             row_count=10,
         )
         session.add(table)
+        session.flush()
 
-        # Add pipeline run + phase checkpoint
-        pipeline_run = PipelineRun(
-            run_id=run_id,
+        # Add a detected business cycle
+        cycle = DetectedBusinessCycle(
+            cycle_id=str(uuid4()),
             source_id=source_id,
-            status="completed",
-            started_at=datetime.now(UTC),
-            completed_at=datetime.now(UTC),
+            cycle_name="order_lifecycle",
+            cycle_type="lifecycle",
         )
-        session.add(pipeline_run)
-
-        checkpoint = PhaseCheckpoint(
-            run_id=run_id,
-            source_id=source_id,
-            phase_name="business_cycles",
-            status="completed",
-            started_at=datetime.now(UTC),
-            completed_at=datetime.now(UTC),
-            duration_seconds=1.0,
-        )
-        session.add(checkpoint)
+        session.add(cycle)
         session.commit()
 
         ctx = PhaseContext(

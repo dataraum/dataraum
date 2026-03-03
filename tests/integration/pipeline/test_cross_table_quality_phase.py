@@ -21,7 +21,7 @@ class TestCrossTableQualityPhase:
         assert phase.name == "cross_table_quality"
         assert phase.description == "Cross-table correlation analysis"
         assert phase.dependencies == ["semantic"]
-        assert phase.outputs == ["cross_table_correlations"]
+
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

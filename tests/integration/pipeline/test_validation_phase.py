@@ -21,7 +21,6 @@ class TestValidationPhase:
         assert phase.name == "validation"
         assert phase.description == "LLM-powered validation checks"
         assert phase.dependencies == ["semantic", "relationships", "enriched_views", "slicing"]
-        assert phase.outputs == ["validation_results"]
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
@@ -101,14 +100,11 @@ class TestValidationPhase:
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
         """Test skip when all tables already validated."""
-        from datetime import UTC, datetime
-
-        from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
+        from dataraum.analysis.validation.db_models import ValidationResultRecord
 
         phase = ValidationPhase()
         source_id = str(uuid4())
         table_id = str(uuid4())
-        run_id = str(uuid4())
 
         # Create a source with a typed table
         source = Source(
@@ -128,26 +124,16 @@ class TestValidationPhase:
         )
         session.add(table)
 
-        # Add pipeline run + phase checkpoint
-        pipeline_run = PipelineRun(
-            run_id=run_id,
-            source_id=source_id,
-            status="completed",
-            started_at=datetime.now(UTC),
-            completed_at=datetime.now(UTC),
+        # Add a validation result for this table
+        result_record = ValidationResultRecord(
+            result_id=str(uuid4()),
+            validation_id=str(uuid4()),
+            table_ids=[table_id],
+            status="passed",
+            severity="info",
+            passed=True,
         )
-        session.add(pipeline_run)
-
-        checkpoint = PhaseCheckpoint(
-            run_id=run_id,
-            source_id=source_id,
-            phase_name="validation",
-            status="completed",
-            started_at=datetime.now(UTC),
-            completed_at=datetime.now(UTC),
-            duration_seconds=1.0,
-        )
-        session.add(checkpoint)
+        session.add(result_record)
         session.commit()
 
         ctx = PhaseContext(

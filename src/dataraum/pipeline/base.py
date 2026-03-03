@@ -32,8 +32,7 @@ class PhaseStatus(str, Enum):
 class PhaseContext:
     """Context passed to each phase.
 
-    Contains database connections, source information, and any
-    outputs from previous phases.
+    Contains database connections and source information.
     """
 
     session: Session
@@ -41,7 +40,8 @@ class PhaseContext:
     source_id: str
     table_ids: list[str] = field(default_factory=list)
 
-    # Outputs from previous phases (keyed by phase name)
+    # Deprecated: kept for orchestrator backward compatibility until Phase 6.
+    # No phase code should read this field — use DB queries instead.
     previous_outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # Configuration overrides
@@ -53,10 +53,6 @@ class PhaseContext:
 
     # Connection manager for vector DB access (optional)
     manager: ConnectionManager | None = None
-
-    def get_output(self, phase_name: str, key: str, default: Any = None) -> Any:
-        """Get an output from a previous phase."""
-        return self.previous_outputs.get(phase_name, {}).get(key, default)
 
 
 @dataclass
@@ -114,7 +110,7 @@ class Phase(Protocol):
     """Protocol for pipeline phases.
 
     Each phase is a callable that takes a PhaseContext and returns a PhaseResult.
-    Phases declare their dependencies and what they produce.
+    Phases declare their dependencies and can be skipped based on DB state.
     """
 
     @property
@@ -132,16 +128,11 @@ class Phase(Protocol):
         """List of phase names that must complete before this phase."""
         ...
 
-    @property
-    def outputs(self) -> list[str]:
-        """List of output keys this phase produces."""
-        ...
-
     def run(self, ctx: PhaseContext) -> PhaseResult:
         """Execute the phase.
 
         Args:
-            ctx: Phase context with connections and previous outputs
+            ctx: Phase context with connections and source information
 
         Returns:
             PhaseResult with status and outputs

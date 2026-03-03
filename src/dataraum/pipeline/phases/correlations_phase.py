@@ -43,10 +43,6 @@ class CorrelationsPhase(BasePhase):
         return ["column_eligibility"]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["correlations", "derived_columns"]
-
-    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.correlation import db_models
 

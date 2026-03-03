@@ -21,7 +21,6 @@ class TestSemanticPhase:
         assert phase.name == "semantic"
         assert phase.description == "LLM-powered semantic analysis"
         assert phase.dependencies == ["relationships", "correlations"]
-        assert phase.outputs == ["annotations", "entities", "confirmed_relationships"]
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

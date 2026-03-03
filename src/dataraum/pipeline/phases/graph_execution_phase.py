@@ -63,10 +63,6 @@ class GraphExecutionPhase(BasePhase):
         ]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["metrics_calculated", "metrics_skipped", "execution_context"]
-
-    @property
     def entropy_preconditions(self) -> dict[str, float]:
         return {"type_fidelity": 0.3, "naming_clarity": 0.4}
 

@@ -78,10 +78,6 @@ class EnrichedViewsPhase(BasePhase):
         return ["semantic"]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["enriched_views"]
-
-    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.views import db_models
 

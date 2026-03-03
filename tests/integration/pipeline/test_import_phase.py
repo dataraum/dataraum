@@ -56,7 +56,7 @@ class TestImportPhase:
         assert phase.name == "import"
         assert phase.description == "Load data files into raw tables"
         assert phase.dependencies == []
-        assert phase.outputs == ["raw_tables"]
+
 
     def test_import_single_csv(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, csv_file: Path

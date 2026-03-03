@@ -63,11 +63,6 @@ class TestSlicingViewPhaseRegistry:
         phase = SlicingViewPhase()
         assert "slicing" in phase.dependencies
 
-    def test_phase_outputs(self):
-        """Phase outputs slicing_views."""
-        phase = SlicingViewPhase()
-        assert "slicing_views" in phase.outputs
-
 
 class TestBuildSlicingViewSql:
     """Tests for _build_slicing_view_sql logic."""

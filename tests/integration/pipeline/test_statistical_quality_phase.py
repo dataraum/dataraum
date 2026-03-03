@@ -21,7 +21,6 @@ class TestStatisticalQualityPhase:
         assert phase.name == "statistical_quality"
         assert phase.description == "Benford's Law and outlier detection"
         assert phase.dependencies == ["column_eligibility"]
-        assert phase.outputs == ["quality_metrics"]
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

@@ -46,10 +46,6 @@ class RelationshipsPhase(BasePhase):
         return ["column_eligibility"]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["relationship_candidates"]
-
-    @property
     def post_verification(self) -> list[str]:
         return ["join_path_determinism", "relationship_quality"]
 

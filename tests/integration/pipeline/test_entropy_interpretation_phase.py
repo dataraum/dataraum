@@ -21,7 +21,7 @@ class TestEntropyInterpretationPhase:
         assert phase.name == "entropy_interpretation"
         assert phase.description == "LLM interpretation of entropy"
         assert phase.dependencies == ["entropy"]
-        assert phase.outputs == ["interpretations", "assumptions", "resolution_actions"]
+
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

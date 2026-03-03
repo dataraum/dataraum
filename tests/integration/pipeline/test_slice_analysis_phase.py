@@ -19,7 +19,6 @@ class TestSliceAnalysisPhase:
         assert phase.name == "slice_analysis"
         assert phase.description == "Execute slice SQL and analyze slice tables"
         assert phase.dependencies == ["slicing_view"]
-        assert phase.outputs == ["slice_profiles"]
 
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

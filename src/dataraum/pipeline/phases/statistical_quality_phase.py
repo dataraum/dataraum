@@ -43,10 +43,6 @@ class StatisticalQualityPhase(BasePhase):
         return ["column_eligibility"]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["quality_metrics"]
-
-    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.statistics import quality_db_models
 

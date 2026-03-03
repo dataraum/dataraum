@@ -379,14 +379,15 @@ The rest is cleanly separated:
 | Concern | Where | Est. lines |
 |---------|-------|-----------|
 | Scheduling + exit checks | `PipelineScheduler.run()` | ~100 |
-| Phase execution + retry | `PipelineScheduler._execute()` | ~50 |
+| Phase execution + skip/retry | `PipelineScheduler._execute()` | ~50 |
 | Post-verification + contract check | `_post_verify()`, `_assess_impact()` | ~40 |
-| Checkpoint save/restore | `CheckpointManager` (separate) | ~80 |
+| Fix replay + invalidation | `_replay_fixes()`, `_invalidate_downstream()` | ~60 |
+| PhaseLog persistence | `_log_phase()` | ~30 |
 | CLI display + interaction | `cli/commands/run.py` | ~200 |
 | Gate rendering + fix execution | `cli/gate_handler.py` | ~150 |
 | MCP adapter | `mcp/server.py` | ~50 |
 
-Total: ~670 lines across clean modules vs. ~1200 tangled today.
+Total: ~680 lines across clean modules vs. ~1200 tangled today.
 
 ---
 
@@ -520,69 +521,160 @@ The graph agent (graph_execution phase) prepares the computation foundation: bus
 
 ---
 
-## Migration: Clean Rewrite
+## Implementation Phases
 
-No dual path. No backward compatibility shim. The phase implementations don't change. The storage layer doesn't change. The entropy detectors don't change. We rewrite the orchestration layer.
+No dual path. No backward compatibility. The DB is recreated on each run — no migrations needed. We can delete models, rename tables, and restructure freely.
 
-### What to delete
+Each phase leaves all tests green. Review session after Phase 6.
 
-| File | Why |
-|------|-----|
-| `orchestrator.py` scheduling loop (~300 lines) | Replaced by `PipelineScheduler` |
-| `orchestrator.py` gate checking (~200 lines) | Gates emerge from scheduling state |
-| `orchestrator.py` progress callbacks (~100 lines) | Events are yields, not callbacks |
-| `runner.py` (~150 lines) | Thin wrapper around scheduler |
-| `cli/commands/run.py` Live display (~200 lines) | Replaced by event-driven rendering |
-| `cli/gate_handler.py` Live management (~100 lines) | Handler always has full terminal |
+---
 
-### What to write
+### Phase 1: Clean the Phase protocol (S)
 
-| File | Purpose | Lines (est.) |
-|------|---------|-------------|
-| `pipeline/scheduler.py` | `PipelineScheduler` with reactive loop | ~150 |
-| `pipeline/runner.py` | Thin wrapper: build config → create scheduler → return result | ~80 |
-| `cli/commands/run.py` | Event-driven rendering with gate prompts | ~250 |
-| `cli/gate_handler.py` | Gate rendering + fix execution (simplified) | ~150 |
+Remove dead weight from the Phase contract. Purely mechanical, zero behavior change.
 
-### What changes minimally
+**Do:**
+- Remove `outputs` property from Phase protocol (`base.py`), BasePhase (`phases/base.py`), all 20 phase files
+- Remove `previous_outputs`, `get_output` from PhaseContext
+- Fix `typing_phase.py` to query `Table` records from DB instead of `get_output("import", "raw_tables")`
 
-| File | Change |
-|------|--------|
-| `pipeline/base.py` | Remove `entropy_preconditions` from Phase protocol, remove `outputs`/`previous_outputs`/`get_output` |
-| `pipeline/phases/base.py` | Remove `entropy_preconditions` property from BasePhase |
-| `pipeline/phases/semantic_phase.py` | Remove `entropy_preconditions` override |
-| `pipeline/phases/statistics_phase.py` | Remove `entropy_preconditions` override |
-| `pipeline/phases/graph_execution_phase.py` | Remove `entropy_preconditions` override |
-| `pipeline/phases/typing_phase.py` | Remove `get_output("import", "raw_tables")` → DB query |
-| `pipeline/entropy_state.py` | Remove `check_preconditions()` (contract evaluation replaces it) |
-| `pipeline/gates.py` | Simplify — gate violations come from contract, not from preconditions; replace `_DIMENSION_TO_ACTIONS` with `ActionRegistry.improves_dimensions` lookup |
-| `pipeline/db_models.py` | Replace `PhaseCheckpoint` with `PhaseLog` (observability only), simplify `PipelineRun` |
-| `pipeline/cleanup.py` | Remove checkpoint deletion (no longer exists); cleanup_phase stays for output deletion |
-| `pipeline/status.py` | Derive status from `should_skip` + DB state, not from checkpoints |
-| `entropy/fix_executor.py` | Add `improves_dimensions` to `ActionDefinition` |
-| `mcp/server.py` | Update `_analyze()` to use new scheduler (~20 lines) |
+**Verify:** All tests pass. `outputs` was never read by the orchestrator.
 
-### What stays unchanged
+---
 
-| File | Reason |
-|------|--------|
-| `pipeline/phases/*.py` (other 15) | Phase logic untouched — only remove dead property |
-| `pipeline/events.py` | EventType, PipelineEvent |
-| `entropy/*.py` | All detectors, processor, fix executor |
-| `entropy/contracts.py` | Contract evaluation — now also used during pipeline, not just at end |
+### Phase 2: Fix `should_skip` for checkpoint independence (S)
+
+Make all phases detect their own output existence without PhaseCheckpoint.
+
+**Do:**
+- `business_cycles`: check `DetectedBusinessCycle` records for source_id
+- `validation`: check `ValidationResultRecord` records for source's tables
+- `quality_summary`: check `ColumnQualityReport` records for source's slices
+- `slice_analysis`: tighten heuristic to verify slice tables actually exist
+
+**Verify:** All tests pass. PhaseCheckpoint still exists — just no longer queried by `should_skip`.
+
+---
+
+### Phase 3: Add `improves_dimensions` to ActionDefinition (S)
+
+Self-declaring fix actions. Additive change.
+
+**Do:**
+- Add `improves_dimensions: list[str]` to `ActionDefinition` in `fix_executor.py`
+- Register dimension paths for each of the 6 seed actions in `action_executors.py`:
+  - `override_type` → `["structural.types"]`
+  - `confirm_relationship` → `["structural.relations"]`
+  - `add_business_name` → `["semantic.business_meaning"]`
+  - `declare_unit` → `["semantic.units"]`
+  - `declare_null_meaning` → `["value.nulls"]`
+  - `create_filtered_view` → `["value.outliers"]`
+
+**Verify:** All tests pass. No existing code reads the new field yet.
+
+---
+
+### Phase 4: Write PipelineScheduler (M)
+
+The core new module. Tested with mock phases only — not wired to the real pipeline.
+
+**Write:** `pipeline/scheduler.py`
+- Generator-based reactive loop (`run()` → `Generator[PipelineEvent, Resolution | None, PipelineResult]`)
+- `_execute()`: calls `should_skip`, runs phase, writes PhaseLog
+- `_post_verify()`: runs detectors, stores scores by `dimension_path` (Option B from dimension mapping)
+- `_assess_impact()`: checks scores against contract thresholds
+- `_replay_fixes()`: replays active Fix records after phase completion
+- `_invalidate_downstream()`: `cleanup_phase()` on transitive dependents after fix
+- Init: derive state from `should_skip` on all phases
+
+**Write:** `pipeline/models.py` (or in `db_models.py`)
+- `PhaseLog` model (append-only observability)
+- `Fix` model (with `after_phase`, `status`, `parameters`)
+- Simplified `PipelineRun` (status, contract_name, final_entropy_state, deferred_issues)
+- Delete `PhaseCheckpoint` model
+
+**Test:** Unit tests with mock phases, mock contract, mock detectors. Verify:
+- Phases run in dependency order
+- `should_skip` prevents re-execution
+- Post-verification runs correct detectors
+- Contract violations create issues
+- Natural pauses yield EXIT_CHECK events
+- Fix replay works after phase completion
+- Invalidation re-queues downstream phases
+- Generator protocol: yield/send/StopIteration
+
+---
+
+### Phase 5: Write CLI driver (M)
+
+Event-driven rendering. Tested with mock scheduler.
+
+**Rewrite:** `cli/commands/run.py`
+- Consume generator events: PHASE_STARTED → spinner, PHASE_COMPLETED → result, EXIT_CHECK → batch resolution
+- No Rich Live. Spinner during execution, full terminal at exit checks.
+- `--contract` flag (default: `exploratory_analysis`)
+- Log capture: buffer structlog during execution, show after
+
+**Rewrite:** `cli/gate_handler.py`
+- Batch resolution UX: ranked issues, per-column fix options, fix/defer/abort
+- Fix execution via FixExecutor
+- Resolution sent back via `gen.send()`
+
+**Test:** Unit tests with mock scheduler yielding scripted events.
+
+---
+
+### Phase 6: The swap (L)
+
+Replace orchestrator with scheduler. This is the atomic switchover.
+
+**Wire:**
+- `runner.py`: build config → create PipelineScheduler → run → return result
+- `mcp/server.py`: update `_analyze()` to use new runner (~20 lines)
+
+**Remove:**
+- `entropy_preconditions` from Phase protocol, BasePhase, 3 phase overrides
+- `check_preconditions()` from `PipelineEntropyState`
+- `_check_gate()` and gate-checking logic from orchestrator
+- `_DIMENSION_TO_ACTIONS` static map from `gates.py` (replaced by `improves_dimensions` lookup)
+- Old orchestrator scheduling loop, progress callbacks
+- `PhaseCheckpoint` references from `cleanup.py`, `status.py`
+
+**Simplify:**
+- `gates.py`: gate violations come from contract, not preconditions
+- `status.py`: derive from `should_skip` + PhaseLog, not checkpoints
+- `events.py`: replace `GATE_BLOCKED`/`GATE_EVALUATED`/`GATE_RESOLVED` with `EXIT_CHECK`
+
+**Delete:**
+- Old orchestrator code (scheduling loop, gate interleaving, progress callbacks)
+- `PhaseCheckpoint` model entirely (DB recreated on each run — no migration)
+- Old `cli/gate_handler.py` Live management code
+
+**Test:** Integration test — run pipeline end-to-end with new scheduler on test data.
+
+---
+
+### Review session
+
+After Phase 6: reflect on what worked, what didn't, what needs adjustment. Assess:
+- Does the generator protocol feel right in practice?
+- Is the batch resolution UX useful or noisy?
+- Are exit checks firing at the right moments?
+- Performance: is post-verification adding noticeable latency?
+- What's missing before this can ship?
+
+---
+
+### What stays unchanged throughout
+
+| File/Module | Reason |
+|-------------|--------|
+| `pipeline/phases/*.py` (phase logic) | `_run()` methods untouched |
+| `entropy/*.py` | All detectors, processor, contracts, fix executor |
 | `analysis/*.py` | All analysis modules |
 | `storage/*.py` | All storage modules |
-
-### Migration steps
-
-1. **Write `PipelineScheduler`** — the reactive loop with contract-driven exit checks. Test with mock phases.
-2. **Write CLI driver** — event-driven rendering with batch resolution UX. Test with mock scheduler.
-3. **Add `Fix` model + replay** — fix persistence, `after_phase`, replay on re-run. Test with FixExecutor.
-4. **Wire together** — replace `orchestrator.run()` call sites with scheduler.
-5. **Delete old orchestrator code** — scheduling loop, gate interleaving, progress callbacks, PhaseCheckpoint.
-6. **Migrate PhaseCheckpoint → PhaseLog** — DB migration, update status/CLI queries.
-
-Each step: tests green.
+| `graphs/*.py` | Graph agent, context assembly |
+| `llm/*.py` | LLM providers, prompts |
 
 ---
 

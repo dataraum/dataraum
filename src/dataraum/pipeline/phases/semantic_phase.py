@@ -56,10 +56,6 @@ class SemanticPhase(BasePhase):
         return ["relationships", "correlations"]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["annotations", "entities", "confirmed_relationships"]
-
-    @property
     def entropy_preconditions(self) -> dict[str, float]:
         return {"type_fidelity": 0.3, "join_path_determinism": 0.5}
 

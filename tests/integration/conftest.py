@@ -84,19 +84,11 @@ class PipelineTestHarness:
             raise ValueError(f"Phase '{phase_name}' not registered")
 
         with self.session_factory() as session:
-            # Build previous outputs from stored results
-            previous_outputs = {
-                name: result.outputs
-                for name, result in self.results.items()
-                if result.status == PhaseStatus.COMPLETED
-            }
-
             ctx = PhaseContext(
                 session=session,
                 duckdb_conn=self.duckdb_conn,
                 source_id=self.source_id,
                 table_ids=table_ids or [],
-                previous_outputs=previous_outputs,
                 config=config or {},
             )
 

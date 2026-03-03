@@ -16,16 +16,16 @@ from typing import TYPE_CHECKING
 from sqlalchemy import func, select
 
 from dataraum.analysis.quality_summary.agent import QualitySummaryAgent
+from dataraum.analysis.quality_summary.db_models import ColumnQualityReport
 from dataraum.analysis.quality_summary.processor import summarize_quality
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.llm.config import LLMConfig
 from dataraum.llm.providers.base import LLMProvider
 from dataraum.pipeline.base import PhaseContext, PhaseResult
-from dataraum.pipeline.db_models import PhaseCheckpoint
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
-from dataraum.storage import Table
+from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -132,10 +132,6 @@ class QualitySummaryPhase(BasePhase):
         return ["slice_analysis", "temporal_slice_analysis"]
 
     @property
-    def outputs(self) -> list[str]:
-        return ["quality_reports", "quality_grades"]
-
-    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.quality_summary import db_models
 
@@ -145,8 +141,7 @@ class QualitySummaryPhase(BasePhase):
         """Skip if no slice definitions exist or summaries already generated."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        typed_tables = ctx.session.execute(stmt).scalars().all()
 
         if not typed_tables:
             return "No typed tables found"
@@ -155,20 +150,23 @@ class QualitySummaryPhase(BasePhase):
 
         # Check for slice definitions
         slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
-        slice_defs = (ctx.session.execute(slice_stmt)).scalars().all()
+        slice_defs = ctx.session.execute(slice_stmt).scalars().all()
 
         if not slice_defs:
             return "No slice definitions found"
 
-        # Check for existing completed phase checkpoint
-        cp_stmt = select(func.count(PhaseCheckpoint.checkpoint_id)).where(
-            PhaseCheckpoint.source_id == ctx.source_id,
-            PhaseCheckpoint.phase_name == self.name,
-            PhaseCheckpoint.status == "completed",
+        # Check for existing quality reports for this source's columns
+        column_subq = select(Column.column_id).where(Column.table_id.in_(table_ids))
+        report_count = (
+            ctx.session.execute(
+                select(func.count(ColumnQualityReport.report_id)).where(
+                    ColumnQualityReport.source_column_id.in_(column_subq)
+                )
+            ).scalar()
+            or 0
         )
-        cp_count = (ctx.session.execute(cp_stmt)).scalar() or 0
 
-        if cp_count > 0:
+        if report_count > 0:
             return "Quality summaries already generated"
 
         return None

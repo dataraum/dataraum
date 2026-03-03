@@ -84,7 +84,7 @@ dev = [
     "zensical>=0.0.24",
 ]
 e2e = [
-    "dataraum-testdata",
+    "dataraum-testdata @ git+https://github.com/dataraum/dataraum-testdata.git",
 ]
 
 [tool.uv.sources]

@@ -46,6 +46,12 @@ class HomeScreen(Screen[None]):
                     DataTable(id="pipeline-table"),
                     classes="pipeline-section",
                 ),
+                # Gate status
+                Container(
+                    Static("Gate Status", classes="section-title"),
+                    Static("No active gates", id="gate-status"),
+                    classes="gate-section",
+                ),
                 classes="main-content",
             ),
             classes="screen-container",
@@ -83,9 +89,12 @@ class HomeScreen(Screen[None]):
 
                 source = sources[0]
 
-                # Get tables
+                # Get typed tables only — raw/quarantine layers aren't useful in the UI
                 tables_result = session.execute(
-                    select(Table).where(Table.source_id == source.source_id)
+                    select(Table).where(
+                        Table.source_id == source.source_id,
+                        Table.layer == "typed",
+                    )
                 )
                 tables = tables_result.scalars().all()
 
@@ -93,6 +102,7 @@ class HomeScreen(Screen[None]):
                 self._update_status(source, tables)
                 self._update_tables_table(session, tables)
                 self._update_pipeline_status(session, source)
+                self._update_gate_status(session, source)
 
                 self._data_loaded = True
         finally:
@@ -139,15 +149,12 @@ class HomeScreen(Screen[None]):
             self._table_names.append(tbl.table_name)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Handle row selection in tables table."""
+        """Handle row selection in tables table — open entropy screen for that table."""
         if event.data_table.id == "tables-table" and event.cursor_row < len(self._table_names):
             table_name = self._table_names[event.cursor_row]
-            # Access app and push table screen
-            from dataraum.cli.tui.app import DataraumApp
+            from dataraum.cli.tui.screens.entropy import EntropyScreen
 
-            app = self.app
-            if isinstance(app, DataraumApp):
-                app.push_table_screen(table_name)
+            self.app.push_screen(EntropyScreen(self.output_dir, table_filter=table_name))
 
     def _update_pipeline_status(self, session: Any, source: Any) -> None:
         """Update the pipeline status table."""
@@ -175,6 +182,7 @@ class HomeScreen(Screen[None]):
             "running": "[yellow]Running[/yellow]",
             "failed": "[red]Failed[/red]",
             "pending": "[dim]Pending[/dim]",
+            "gate_blocked": "[yellow]Gate Blocked[/yellow]",
         }
 
         for state in states:
@@ -187,3 +195,31 @@ class HomeScreen(Screen[None]):
                 duration_str = "-"
 
             table_widget.add_row(state.phase_name, status, duration_str)
+
+    def _update_gate_status(self, session: Any, source: Any) -> None:
+        """Update the gate status section."""
+        from sqlalchemy import select
+
+        from dataraum.pipeline.db_models import PhaseCheckpoint
+
+        gate_widget = self.query_one("#gate-status", Static)
+
+        # Find gate-blocked phases
+        blocked_result = session.execute(
+            select(PhaseCheckpoint).where(
+                PhaseCheckpoint.source_id == source.source_id,
+                PhaseCheckpoint.gate_status == "blocked",
+            )
+        )
+        blocked = blocked_result.scalars().all()
+
+        if not blocked:
+            gate_widget.update("[green]No active gates[/green]")
+            return
+
+        lines = []
+        for cp in blocked:
+            reason = cp.gate_reason or "entropy preconditions not met"
+            lines.append(f"[yellow]Phase {cp.phase_name}:[/yellow] {reason}")
+
+        gate_widget.update("\n".join(lines))

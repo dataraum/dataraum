@@ -60,6 +60,13 @@ class SemanticAnnotation(Base):
     # from the active ontology (e.g., 'accounts_receivable', 'revenue', 'fiscal_period')
     business_concept: Mapped[str | None] = mapped_column(String)
 
+    # Temporal behavior from ontology: 'additive' or 'point_in_time'
+    temporal_behavior: Mapped[str | None] = mapped_column(String)
+
+    # Cross-column unit inference: column name that defines the unit for this measure
+    # e.g., 'currency_code' for monetary measures. Set by semantic analysis (tier 2).
+    unit_source_column: Mapped[str | None] = mapped_column(String)
+
     # Provenance
     annotation_source: Mapped[str | None] = mapped_column(
         String
@@ -100,6 +107,7 @@ class TableEntity(Base):
     )  # List of column IDs that define grain
     is_fact_table: Mapped[bool | None] = mapped_column(Boolean)
     is_dimension_table: Mapped[bool | None] = mapped_column(Boolean)
+    time_column: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Provenance
     detection_source: Mapped[str | None] = mapped_column(String)  # 'llm', 'heuristic', 'manual'

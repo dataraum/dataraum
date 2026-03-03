@@ -166,5 +166,9 @@ class SourceConfig(BaseModel):
     schema_name: str | None = None  # Renamed from 'schema' to avoid shadowing BaseModel.schema
     tables: list[str] | None = None
 
+    # Source management (onboarding)
+    backend: str | None = None  # DuckDB backend: 'postgres', 'mysql', 'sqlite'
+    credential_ref: str | None = None  # Key for credential chain lookup (defaults to name)
+
     # Options
     sample_size: int | None = None

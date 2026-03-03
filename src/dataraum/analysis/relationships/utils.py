@@ -5,93 +5,11 @@ Helper functions for loading and formatting relationship data.
 
 from typing import Any
 
-from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.storage import Column, Table
-
-
-class EnrichedRelationship(BaseModel):
-    """Enriched relationship with table/column names for context building."""
-
-    from_table: str
-    from_column: str
-    to_table: str
-    to_column: str
-    relationship_type: str
-    cardinality: str | None
-    confidence: float
-
-
-def gather_relationships(
-    table_ids: list[str],
-    session: Session,
-    *,
-    detection_method: str = "llm",
-) -> list[EnrichedRelationship]:
-    """Gather relationships between tables with enriched metadata.
-
-    Returns relationships matching the detection method with table/column
-    names resolved for context building.
-
-    Args:
-        table_ids: List of table IDs to analyze
-        session: Database session
-        detection_method: Filter by detection method (default: "llm")
-
-    Returns:
-        List of enriched relationships with names
-    """
-    stmt = (
-        select(Relationship)
-        .where(
-            (Relationship.from_table_id.in_(table_ids))
-            & (Relationship.to_table_id.in_(table_ids))
-            & (Relationship.detection_method == detection_method)
-        )
-        .order_by(Relationship.confidence.desc())
-    )
-
-    result = session.execute(stmt)
-    db_relationships = result.scalars().all()
-
-    # Dedupe bidirectional relationships
-    enriched = []
-    seen_pairs: set[tuple[str, str]] = set()
-
-    for db_rel in db_relationships:
-        pair_forward = (db_rel.from_column_id, db_rel.to_column_id)
-        pair_reverse = (db_rel.to_column_id, db_rel.from_column_id)
-
-        if pair_forward in seen_pairs or pair_reverse in seen_pairs:
-            continue
-
-        # Load column/table metadata
-        from_col = session.get(Column, db_rel.from_column_id)
-        to_col = session.get(Column, db_rel.to_column_id)
-        from_table = session.get(Table, db_rel.from_table_id)
-        to_table = session.get(Table, db_rel.to_table_id)
-
-        if not all([from_col, to_col, from_table, to_table]):
-            continue
-
-        enriched.append(
-            EnrichedRelationship(
-                from_table=from_table.table_name,  # type: ignore[union-attr]
-                from_column=from_col.column_name,  # type: ignore[union-attr]
-                to_table=to_table.table_name,  # type: ignore[union-attr]
-                to_column=to_col.column_name,  # type: ignore[union-attr]
-                relationship_type=db_rel.relationship_type or "unknown",
-                cardinality=db_rel.cardinality,
-                confidence=db_rel.confidence,
-            )
-        )
-
-        seen_pairs.add(pair_forward)
-
-    return enriched
 
 
 def load_relationship_candidates_for_semantic(

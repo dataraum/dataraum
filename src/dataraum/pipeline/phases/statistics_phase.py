@@ -11,15 +11,19 @@ Computes statistical profiles for typed tables:
 
 from __future__ import annotations
 
+from types import ModuleType
+
 from sqlalchemy import select
 
 from dataraum.analysis.statistics import profile_statistics
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 
+@analysis_phase
 class StatisticsPhase(BasePhase):
     """Statistics profiling phase.
 
@@ -42,6 +46,20 @@ class StatisticsPhase(BasePhase):
     @property
     def outputs(self) -> list[str]:
         return ["statistical_profiles"]
+
+    @property
+    def entropy_preconditions(self) -> dict[str, float]:
+        return {"type_fidelity": 0.5}
+
+    @property
+    def post_verification(self) -> list[str]:
+        return ["null_ratio", "outlier_rate"]
+
+    @property
+    def db_models(self) -> list[ModuleType]:
+        from dataraum.analysis.statistics import db_models
+
+        return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all typed tables already have profiles."""
@@ -124,6 +142,7 @@ class StatisticsPhase(BasePhase):
                 table_id=typed_table.table_id,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
+                config=ctx.config,
             )
 
             if not stats_result.success:

@@ -1,0 +1,4 @@
+# Validation phase settings
+vertical: finance
+# Optional: filter to a specific validation category (e.g., 'financial', 'data_quality')
+# validation_category: financial

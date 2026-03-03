@@ -1,30 +1,33 @@
 """Correlations phase implementation.
 
-Analyzes within-table correlations:
-- Numeric correlations (Pearson, Spearman)
-- Categorical associations (Cramér's V)
-- Functional dependencies (A → B)
-- Derived columns detection
+Analyzes within-table patterns:
+- Derived columns detection (sum, product, ratio, etc.)
+
+Numeric correlations (Pearson, Spearman) are available on-demand via
+the correlation processor but are not computed in the pipeline — no
+downstream consumer acts on them.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from types import ModuleType
 
 from sqlalchemy import select
 
 from dataraum.analysis.correlation import analyze_correlations
-from dataraum.analysis.correlation.db_models import CorrelationAnalysisRun
+from dataraum.analysis.correlation.db_models import DerivedColumn
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
-from dataraum.storage import Column, Table
+from dataraum.pipeline.registry import analysis_phase
+from dataraum.storage import Table
 
 
+@analysis_phase
 class CorrelationsPhase(BasePhase):
     """Within-table correlation analysis phase.
 
     Analyzes correlations within each typed table to identify
-    related columns, functional dependencies, and derived columns.
+    related columns and derived columns.
     """
 
     @property
@@ -37,14 +40,20 @@ class CorrelationsPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        return ["statistics"]
+        return ["column_eligibility"]
 
     @property
     def outputs(self) -> list[str]:
         return ["correlations", "derived_columns"]
 
+    @property
+    def db_models(self) -> list[ModuleType]:
+        from dataraum.analysis.correlation import db_models
+
+        return [db_models]
+
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if all tables already have correlation analysis."""
+        """Skip if all tables already have derived column analysis."""
         # Get typed tables
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
         result = ctx.session.execute(stmt)
@@ -53,11 +62,13 @@ class CorrelationsPhase(BasePhase):
         if not typed_tables:
             return "No typed tables found"
 
-        # Check which tables already have correlation analysis
-        analyzed_stmt = select(CorrelationAnalysisRun.target_id).where(
-            CorrelationAnalysisRun.target_type == "table"
+        table_ids = [t.table_id for t in typed_tables]
+
+        # Check which tables already have derived column results
+        derived_stmt = select(DerivedColumn.table_id.distinct()).where(
+            DerivedColumn.table_id.in_(table_ids)
         )
-        analyzed_ids = set((ctx.session.execute(analyzed_stmt)).scalars().all())
+        analyzed_ids = set(ctx.session.execute(derived_stmt).scalars().all())
 
         unanalyzed = [t for t in typed_tables if t.table_id not in analyzed_ids]
         if not unanalyzed:
@@ -66,7 +77,7 @@ class CorrelationsPhase(BasePhase):
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Run within-table correlation analysis."""
+        """Run derived column detection on typed tables."""
         # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
         result = ctx.session.execute(stmt)
@@ -75,11 +86,13 @@ class CorrelationsPhase(BasePhase):
         if not typed_tables:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")
 
-        # Check which tables already have correlation analysis
-        analyzed_stmt = select(CorrelationAnalysisRun.target_id).where(
-            CorrelationAnalysisRun.target_type == "table"
+        table_ids = [t.table_id for t in typed_tables]
+
+        # Check which tables already have derived column results
+        derived_stmt = select(DerivedColumn.table_id.distinct()).where(
+            DerivedColumn.table_id.in_(table_ids)
         )
-        analyzed_ids = set((ctx.session.execute(analyzed_stmt)).scalars().all())
+        analyzed_ids = set(ctx.session.execute(derived_stmt).scalars().all())
 
         unanalyzed_tables = [t for t in typed_tables if t.table_id not in analyzed_ids]
 
@@ -92,9 +105,6 @@ class CorrelationsPhase(BasePhase):
 
         # Analyze each table
         analyzed_tables = []
-        total_numeric_corr = 0
-        total_categorical_assoc = 0
-        total_func_deps = 0
         total_derived = 0
         warnings = []
 
@@ -111,26 +121,7 @@ class CorrelationsPhase(BasePhase):
 
             result_data = corr_result.unwrap()
             analyzed_tables.append(typed_table.table_name)
-
-            total_numeric_corr += len(result_data.numeric_correlations)
-            total_categorical_assoc += len(result_data.categorical_associations)
-            total_func_deps += len(result_data.functional_dependencies)
             total_derived += len(result_data.derived_columns)
-
-            # Create analysis run record to track completion
-            columns_stmt = select(Column).where(Column.table_id == typed_table.table_id)
-            columns = (ctx.session.execute(columns_stmt)).scalars().all()
-
-            run_record = CorrelationAnalysisRun(
-                target_id=typed_table.table_id,
-                target_type="table",
-                rows_analyzed=0,
-                columns_analyzed=len(columns),
-                started_at=result_data.computed_at,
-                completed_at=datetime.now(UTC),
-                duration_seconds=result_data.duration_seconds,
-            )
-            ctx.session.add(run_record)
 
         # Note: commit handled by session_scope() in orchestrator
 
@@ -140,15 +131,9 @@ class CorrelationsPhase(BasePhase):
         return PhaseResult.success(
             outputs={
                 "correlations": analyzed_tables,
-                "numeric_correlations": total_numeric_corr,
-                "categorical_associations": total_categorical_assoc,
-                "functional_dependencies": total_func_deps,
                 "derived_columns": total_derived,
             },
             records_processed=len(analyzed_tables),
-            records_created=total_numeric_corr
-            + total_categorical_assoc
-            + total_func_deps
-            + total_derived,
+            records_created=total_derived,
             warnings=warnings if warnings else None,
         )

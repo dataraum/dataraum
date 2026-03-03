@@ -6,12 +6,11 @@ Pydantic models for statistical profiling data structures:
 - StringStats: Statistics for string columns
 - HistogramBucket: Histogram bin
 - ValueCount: Frequency count for top values
-- DetectedPattern: Pattern detection result (used by schema profiler)
 - StatisticsProfileResult: Result of statistics profiling
 
 Statistical Quality Models (moved from quality/models.py in Phase 9A):
 - BenfordAnalysis: Benford's Law compliance analysis
-- OutlierDetection: Outlier detection results (IQR + Isolation Forest)
+- OutlierDetection: Outlier detection results (IQR + Modified Z-Score)
 - StatisticalQualityResult: Comprehensive statistical quality assessment
 """
 
@@ -35,6 +34,8 @@ class NumericStats(BaseModel):
     skewness: float | None = None
     kurtosis: float | None = None
     cv: float | None = None  # Coefficient of variation (stddev/mean)
+    mad: float | None = None  # Median Absolute Deviation
+    robust_cv: float | None = None  # MAD / |median|, outlier-resistant CV
     percentiles: dict[str, float | None] = Field(default_factory=dict)
 
 
@@ -62,19 +63,6 @@ class ValueCount(BaseModel):
     percentage: float
 
 
-class DetectedPattern(BaseModel):
-    """A detected pattern in column values.
-
-    Used by the schema profiler for pattern detection on raw tables.
-    Patterns are stored in SchemaProfileResult.detected_patterns (dict by column name),
-    NOT in ColumnProfile which is for statistics stage only.
-    """
-
-    name: str
-    match_rate: float
-    semantic_type: str | None = None
-
-
 class ColumnProfile(BaseModel):
     """Statistical profile of a column.
 
@@ -84,6 +72,7 @@ class ColumnProfile(BaseModel):
 
     column_id: str
     column_ref: ColumnRef
+    original_name: str | None = None
     profiled_at: datetime
 
     total_count: int
@@ -135,10 +124,9 @@ class OutlierDetection(BaseModel):
     iqr_outlier_count: int
     iqr_outlier_ratio: float
 
-    # Isolation Forest
-    isolation_forest_score: float  # Average anomaly score
-    isolation_forest_anomaly_count: int
-    isolation_forest_anomaly_ratio: float
+    # Modified Z-Score (MAD-based)
+    zscore_outlier_count: int = 0
+    zscore_outlier_ratio: float = 0.0
 
     # Sample outliers
     outlier_samples: list[dict[str, Any]] = Field(default_factory=list)  # [{value, method, score}]

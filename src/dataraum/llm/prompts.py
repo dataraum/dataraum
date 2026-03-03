@@ -43,9 +43,9 @@ class PromptRenderer:
                         If None, uses config/prompts/
         """
         if prompts_dir is None:
-            from dataraum.core.config import get_settings
+            from dataraum.core.config import get_config_dir
 
-            prompts_dir = get_settings().config_path / "prompts"
+            prompts_dir = get_config_dir("llm/prompts")
 
         self.prompts_dir = prompts_dir
         self._cache: dict[str, PromptTemplate] = {}

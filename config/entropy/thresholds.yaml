@@ -7,33 +7,6 @@
 # See BACKLOG.md Step 2.5.1 for context on this configuration.
 
 # ============================================================================
-# COMPOSITE SCORING
-# ============================================================================
-# Weights for combining layer scores into composite score.
-# Must sum to 1.0.
-composite_weights:
-  structural: 0.25 # Schema, types, relations
-  semantic: 0.30 # Business meaning, units, temporal
-  value: 0.30 # Nulls, outliers, ranges
-  computational: 0.15 # Derived values, aggregations
-
-# ============================================================================
-# READINESS CLASSIFICATION
-# ============================================================================
-# Thresholds for classifying data readiness based on composite score.
-# ready:       score < ready_threshold
-# investigate: ready_threshold <= score < blocked_threshold
-# blocked:     score >= blocked_threshold
-readiness:
-  ready_threshold: 0.3
-  blocked_threshold: 0.6
-
-# High entropy and critical entropy thresholds (for flagging/warnings)
-entropy_levels:
-  high_entropy: 0.5 # Columns flagged as high entropy
-  critical_entropy: 0.8 # Columns flagged as critical/blocked
-
-# ============================================================================
 # DETECTOR CONFIGURATIONS
 # ============================================================================
 # Each detector has its own section with formula parameters and thresholds.
@@ -54,10 +27,8 @@ detectors:
   # --------------------------------------------------------------------------
   # NULL RATIO DETECTOR (value.nulls.null_ratio)
   # --------------------------------------------------------------------------
-  # Formula: entropy = min(1.0, null_ratio * multiplier)
+  # Score equals null_ratio directly (already 0.0–1.0)
   null_ratio:
-    # Multiplier: 50% nulls = max entropy
-    multiplier: 2.0
     # Impact classification thresholds
     impact_minimal: 0.05 # < 5% nulls = minimal impact
     impact_moderate: 0.20 # < 20% nulls = moderate impact
@@ -74,15 +45,22 @@ detectors:
   # --------------------------------------------------------------------------
   # OUTLIER RATE DETECTOR (value.outliers.outlier_rate)
   # --------------------------------------------------------------------------
-  # Formula: entropy = min(1.0, outlier_ratio * multiplier)
+  # Formula: piecewise-linear mapping aligned with impact thresholds
+  # 0% → 0.0, 1% → 0.15, 5% → 0.4, 10% → 0.65, 20%+ → 1.0
   outlier_rate:
-    # Multiplier: 10% outliers = max entropy
-    multiplier: 10.0
     # Impact classification thresholds (based on ratio, not score)
     impact_minimal: 0.01 # < 1% outliers = minimal impact
     impact_moderate: 0.05 # < 5% outliers = moderate impact
     impact_significant: 0.10 # < 10% outliers = significant impact
     # >= 10% = critical impact
+    # Piecewise-linear score breakpoints at each impact boundary
+    score_at_minimal: 0.15
+    score_at_moderate: 0.40
+    score_at_significant: 0.65
+    # CV attenuation: cap score when coefficient of variation is high.
+    # High-CV columns (e.g., FX rates spanning 0.7–150) have naturally wide
+    # ranges — IQR "outliers" are legitimate values, not quality issues.
+    cv_attenuation_threshold: 2.0  # CV above which to attenuate outlier score (proportional dampening)
     # Resolution thresholds (based on score)
     suggest_winsorize_threshold: 0.2 # Score above which to suggest winsorization
     suggest_exclude_threshold: 0.5 # Score above which to suggest exclusion
@@ -117,6 +95,11 @@ detectors:
     score_unconfirmed: 0.3 # Known type but not human-confirmed
     score_unknown_type: 0.6 # Unknown relationship type
     reduction_verify_relationship: 0.6
+    # Component weights for weighted average (replaces MAX aggregation)
+    component_weights:
+      referential_integrity: 0.5
+      cardinality: 0.3
+      semantic_clarity: 0.2
 
   # --------------------------------------------------------------------------
   # DERIVED VALUE DETECTOR (computational.derived_values.formula_match)
@@ -141,10 +124,10 @@ detectors:
     score_missing: 1.0 # No description = high entropy
     score_partial: 0.6 # Description only, no business_name/entity_type
     score_documented: 0.2 # Has description + business_name or entity_type
-    # Confidence weighting (low LLM confidence increases entropy)
-    confidence_weight: 0.3 # How much LLM confidence affects score
+    score_fully_documented: 0.0 # Has description + business_name + entity_type
+    # Confidence penalty (additive: confidence_weight * (1 - confidence))
+    confidence_weight: 0.3 # How much low LLM confidence adds to entropy
     ontology_bonus: 0.1 # Reduction if business_concept is present
-    min_confidence: 0.5 # Below this, treat as speculative
     # Expected entropy reduction
     reduction_add_description: 0.8
     reduction_add_business_name: 0.2
@@ -162,6 +145,34 @@ detectors:
     reduction_declare_unit: 0.8
 
   # --------------------------------------------------------------------------
+  # BENFORD DETECTOR (value.distribution.benford_compliance)
+  # --------------------------------------------------------------------------
+  # Measures deviation from Benford's Law for numeric measure columns
+  benford:
+    score_compliant: 0.1       # Benford-compliant = low entropy
+    score_non_compliant: 0.7   # Non-compliant = high entropy
+    chi_sq_escalation_threshold: 0.01  # p-value below this → use chi-sq severity
+    chi_sq_log_max: 3.0        # log10(chi_sq) at which score reaches 1.0 (chi_sq=1000)
+    reduction_investigate: 0.5
+
+  # --------------------------------------------------------------------------
+  # DIMENSIONAL ENTROPY DETECTOR (semantic.dimensional.cross_column_patterns)
+  # --------------------------------------------------------------------------
+  # Pattern weights for cross-column entropy calculation
+  dimensional_entropy:
+    score_undocumented_rule: 0.7  # High-confidence undocumented pattern
+    score_partial_pattern: 0.5   # Lower-confidence pattern
+    correlation_threshold: 0.8   # Min correlation to flag as pattern
+    mutual_exclusivity_threshold: 0.95  # Min inverse null correlation
+    # Pattern type weights for DimensionalEntropyScore.calculate_total()
+    pattern_weights:
+      mutual_exclusivity: 0.8   # Critical business rule
+      conditional_dependency: 0.6  # Context-dependent behavior
+      correlated_variance: 0.4  # Relationship exists
+      temporal_correlation: 0.5 # Time-based relationship
+      temporal_drift: 0.3       # Expected in some cases
+
+  # --------------------------------------------------------------------------
   # TEMPORAL ENTROPY DETECTOR (semantic.temporal.time_role)
   # --------------------------------------------------------------------------
   # Measures whether temporal columns are properly identified
@@ -172,89 +183,19 @@ detectors:
     reduction_mark_timestamp: 0.6
 
 # ============================================================================
-# COMPOUND RISK DEFINITIONS
+# DIMENSION DISPLAY LABELS
 # ============================================================================
-# Dangerous combinations of entropy dimensions that create multiplicative risk.
-# Each risk pattern specifies which dimensions must both be high.
-#
-# NOTE: Only dimensions with active detectors should be used here:
-# - structural.types (TypeFidelityDetector)
-# - structural.relations (JoinPathDeterminismDetector, RelationshipEntropyDetector)
-# - semantic.business_meaning (BusinessMeaningDetector)
-# - semantic.units (UnitEntropyDetector)
-# - semantic.temporal (TemporalEntropyDetector)
-# - value.nulls (NullRatioDetector)
-# - value.outliers (OutlierRateDetector)
-# - computational.derived_values (DerivedValueDetector)
+# Human-readable labels for dimension paths. Used in contract violations,
+# dashboards, and reports. Falls back to title-casing the last segment.
 
-compound_risks:
-  # Critical: Unknown units in derived calculations
-  units_derived:
-    dimensions:
-      - semantic.units
-      - computational.derived_values
-    threshold: 0.5
-    multiplier: 2.0
-    risk_level: critical
-    impact_template: >
-      Numeric measures without declared units are used in formulas.
-      Results may be incorrect if units don't match.
-
-  # High: Temporal columns with null values
-  temporal_nulls:
-    dimensions:
-      - semantic.temporal
-      - value.nulls
-    threshold: 0.5
-    multiplier: 1.5
-    risk_level: high
-    impact_template: >
-      Timestamp columns have null values.
-      Time-based analysis may have gaps.
-
-  # High: Type issues in derived calculations
-  types_derived:
-    dimensions:
-      - structural.types
-      - computational.derived_values
-    threshold: 0.6
-    multiplier: 1.5
-    risk_level: high
-    impact_template: >
-      Type inference issues in columns used for calculations.
-      Some values may fail to parse, skewing results.
-
-  # High: Relationship issues in derived calculations
-  relations_derived:
-    dimensions:
-      - structural.relations
-      - computational.derived_values
-    threshold: 0.5
-    multiplier: 1.5
-    risk_level: high
-    impact_template: >
-      Relationships with integrity issues are used in derived columns.
-      Join results may be incomplete or duplicated.
-
-  # Medium: Unclear business meaning with outliers
-  meaning_outliers:
-    dimensions:
-      - semantic.business_meaning
-      - value.outliers
-    threshold: 0.5
-    multiplier: 1.3
-    risk_level: medium
-    impact_template: >
-      Columns with unclear business meaning have outliers.
-      Cannot determine if outliers are valid edge cases or errors.
-
-# ============================================================================
-# RESOLUTION EFFORT FACTORS
-# ============================================================================
-# Used to calculate priority_score = entropy_reduction / effort_factor
-# Higher priority_score = more worthwhile to implement
-
-effort_factors:
-  low: 1.0
-  medium: 2.0
-  high: 4.0
+dimension_labels:
+  structural.types: "Type Consistency"
+  structural.relations: "Relationship Clarity"
+  semantic.business_meaning: "Business Documentation"
+  semantic.units: "Unit Documentation"
+  semantic.temporal: "Temporal Clarity"
+  value.nulls: "Data Completeness"
+  value.outliers: "Outlier Impact"
+  value.temporal: "Temporal Stability"
+  value.distribution: "Distribution Conformance"
+  computational.derived_values: "Computation Reliability"

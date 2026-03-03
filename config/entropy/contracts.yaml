@@ -84,8 +84,31 @@ contracts:
     blocking_conditions:
       - type: any_dimension_exceeds
         threshold: 0.6
-      - type: has_critical_compound_risk
-        description: "Critical compound risks block operational reporting"
+
+  # --------------------------------------------------------------------------
+  # AGGREGATION SAFE
+  # --------------------------------------------------------------------------
+  # For SUM, AVG, COUNT queries — focuses on value dimensions
+  aggregation_safe:
+    display_name: "Aggregation Safe"
+    description: "For SUM/AVG/COUNT queries — ensures numeric types, nulls, outliers, and units are under control"
+    overall_threshold: 0.35
+
+    dimension_thresholds:
+      structural.types: 0.2       # Numeric types must be resolved for aggregation
+      structural.relations: 0.5   # Join quality less critical for simple aggregates
+      semantic.business_meaning: 0.5  # Semantic meaning not critical for SUM/AVG
+      semantic.units: 0.2         # Unit consistency is critical — can't sum kg + lbs
+      semantic.temporal: 0.5      # Temporal less critical for aggregation
+      semantic.dimensional: 0.4   # Cross-column patterns moderately important
+      value.nulls: 0.25          # Nulls directly distort COUNT/AVG
+      value.outliers: 0.3        # Outliers skew averages
+      computational.derived_values: 0.3
+
+    blocking_conditions:
+      - type: any_dimension_exceeds
+        threshold: 0.6
+        description: "Value or type dimension too uncertain for safe aggregation"
 
   # --------------------------------------------------------------------------
   # EXECUTIVE DASHBOARD
@@ -112,9 +135,6 @@ contracts:
       - type: any_dimension_exceeds
         threshold: 0.5
         description: "Any dimension exceeding 0.5 blocks executive reporting"
-      - type: has_critical_compound_risk
-        description: "Critical compound risks block executive reporting"
-
   # --------------------------------------------------------------------------
   # REGULATORY REPORTING
   # --------------------------------------------------------------------------
@@ -140,10 +160,6 @@ contracts:
       - type: any_dimension_exceeds
         threshold: 0.2
         description: "Any dimension exceeding 0.2 blocks regulatory reporting"
-      - type: has_critical_compound_risk
-        description: "Critical compound risks block regulatory reporting"
-      - type: has_high_compound_risk
-        description: "High compound risks block regulatory reporting"
 
 # --------------------------------------------------------------------------
 # CUSTOM CONTRACTS

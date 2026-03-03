@@ -75,6 +75,44 @@ class QueryDocument:
     column_mappings: dict[str, str] = field(default_factory=dict)
     assumptions: list[QueryAssumptionData] = field(default_factory=list)
 
+    @staticmethod
+    def _build_assumptions(
+        assumptions: list[dict[str, Any]] | None,
+        pydantic_assumptions: list[Any] | None = None,
+    ) -> list[QueryAssumptionData]:
+        """Convert assumption dicts or Pydantic objects to QueryAssumptionData.
+
+        Args:
+            assumptions: List of assumption dicts (takes priority if provided)
+            pydantic_assumptions: List of Pydantic assumption objects (fallback)
+
+        Returns:
+            List of QueryAssumptionData
+        """
+        if assumptions:
+            return [
+                QueryAssumptionData(
+                    dimension=a.get("dimension", ""),
+                    target=a.get("target", ""),
+                    assumption=a.get("assumption", ""),
+                    basis=a.get("basis", "inferred"),
+                    confidence=a.get("confidence", 0.5),
+                )
+                for a in assumptions
+            ]
+        if pydantic_assumptions:
+            return [
+                QueryAssumptionData(
+                    dimension=a.dimension,
+                    target=a.target,
+                    assumption=a.assumption,
+                    basis=a.basis,
+                    confidence=a.confidence,
+                )
+                for a in pydantic_assumptions
+            ]
+        return []
+
     @classmethod
     def from_query_analysis(
         cls,
@@ -94,38 +132,12 @@ class QueryDocument:
             SQLStep(step_id=s.step_id, sql=s.sql, description=s.description) for s in output.steps
         ]
 
-        # Use assumptions from output if not overridden
-        assumption_data: list[QueryAssumptionData] = []
-        if assumptions:
-            assumption_data = [
-                QueryAssumptionData(
-                    dimension=a.get("dimension", ""),
-                    target=a.get("target", ""),
-                    assumption=a.get("assumption", ""),
-                    basis=a.get("basis", "inferred"),
-                    confidence=a.get("confidence", 0.5),
-                )
-                for a in assumptions
-            ]
-        else:
-            # Convert from Pydantic output
-            for a in output.assumptions:
-                assumption_data.append(
-                    QueryAssumptionData(
-                        dimension=a.dimension,
-                        target=a.target,
-                        assumption=a.assumption,
-                        basis=a.basis,
-                        confidence=a.confidence,
-                    )
-                )
-
         return cls(
             summary=output.summary,
             steps=steps,
             final_sql=output.final_sql,
             column_mappings=output.column_mappings,
-            assumptions=assumption_data,
+            assumptions=cls._build_assumptions(assumptions, output.assumptions),
         )
 
     @classmethod
@@ -147,25 +159,12 @@ class QueryDocument:
             SQLStep(step_id=s.step_id, sql=s.sql, description=s.description) for s in output.steps
         ]
 
-        assumption_data: list[QueryAssumptionData] = []
-        if assumptions:
-            assumption_data = [
-                QueryAssumptionData(
-                    dimension=a.get("dimension", ""),
-                    target=a.get("target", ""),
-                    assumption=a.get("assumption", ""),
-                    basis=a.get("basis", "inferred"),
-                    confidence=a.get("confidence", 0.5),
-                )
-                for a in assumptions
-            ]
-
         return cls(
             summary=output.summary,
             steps=steps,
             final_sql=output.final_sql,
             column_mappings=output.column_mappings,
-            assumptions=assumption_data,
+            assumptions=cls._build_assumptions(assumptions),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -177,14 +176,6 @@ class QueryDocument:
             "column_mappings": self.column_mappings,
             "assumptions": [a.to_dict() for a in self.assumptions],
         }
-
-    def get_step_descriptions(self) -> list[str]:
-        """Get list of step descriptions for embedding."""
-        return [s.description for s in self.steps]
-
-    def get_assumption_texts(self) -> list[str]:
-        """Get list of assumption texts for embedding."""
-        return [a.assumption for a in self.assumptions]
 
 
 __all__ = ["QueryDocument", "SQLStep", "QueryAssumptionData"]

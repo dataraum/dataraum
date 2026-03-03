@@ -1,14 +1,15 @@
 """Ontology loading from configuration files.
 
-Loads ontology definitions from config/ontologies/*.yaml files.
+Loads ontology definitions from config/verticals/<vertical>/ontology.yaml.
 Follows the same pattern as PromptRenderer for YAML config loading.
 """
 
 from pathlib import Path
-from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
+
+from dataraum.core.config import get_config_dir
 
 
 class OntologyConcept(BaseModel):
@@ -21,38 +22,8 @@ class OntologyConcept(BaseModel):
     temporal_behavior: str | None = None
     typical_role: str | None = None
     typical_values: list[str] = Field(default_factory=list)
-
-
-class OntologyMetric(BaseModel):
-    """A computable metric within an ontology."""
-
-    name: str
-    formula: str
-    description: str | None = None
-    required_concepts: list[str] = Field(default_factory=list)
-    output_type: str | None = None
-    typical_range: list[float] | None = None
-    aliases: list[str] = Field(default_factory=list)
-
-
-class OntologyRule(BaseModel):
-    """A quality rule within an ontology."""
-
-    name: str
-    description: str | None = None
-    applies_to: str | None = None
-    rule_type: str
-    expression: str | None = None
-    severity: str = "warning"
-
-
-class SemanticHint(BaseModel):
-    """A semantic hint for column patterns."""
-
-    pattern: str
-    likely_type: str | None = None
-    likely_role: str | None = None
-    likely_concept: str | None = None
+    unit_from_concept: str | None = None  # Which concept provides this measure's unit
+    is_unit_dimension: bool = False  # Whether this concept defines units for measures
 
 
 class OntologyDefinition(BaseModel):
@@ -62,46 +33,40 @@ class OntologyDefinition(BaseModel):
     version: str = "1.0.0"
     description: str | None = None
     concepts: list[OntologyConcept] = Field(default_factory=list)
-    metrics: list[OntologyMetric] = Field(default_factory=list)
-    quality_rules: list[OntologyRule] = Field(default_factory=list)
-    semantic_hints: list[SemanticHint] = Field(default_factory=list)
-    suggested_queries: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class OntologyLoader:
     """Load ontology definitions from YAML configuration files.
 
-    Loads ontologies from config/ontologies/*.yaml and caches them in memory.
+    Loads ontologies from config/verticals/<vertical>/ontology.yaml.
     """
 
-    def __init__(self, ontologies_dir: Path | None = None):
+    def __init__(self, verticals_dir: Path | None = None):
         """Initialize ontology loader.
 
         Args:
-            ontologies_dir: Directory containing ontology YAML files.
-                          If None, uses config/ontologies/
+            verticals_dir: Root verticals directory.
+                          If None, uses config/verticals/
         """
-        if ontologies_dir is None:
-            from dataraum.core.config import get_settings
+        if verticals_dir is None:
+            verticals_dir = get_config_dir("verticals")
 
-            ontologies_dir = get_settings().config_path / "ontologies"
-
-        self.ontologies_dir = ontologies_dir
+        self.verticals_dir = verticals_dir
         self._cache: dict[str, OntologyDefinition] = {}
 
-    def load(self, name: str) -> OntologyDefinition | None:
-        """Load and cache an ontology definition.
+    def load(self, vertical: str) -> OntologyDefinition | None:
+        """Load and cache an ontology definition for a vertical.
 
         Args:
-            name: Ontology name (without .yaml extension)
+            vertical: Vertical name (e.g. 'finance')
 
         Returns:
             Loaded ontology definition, or None if not found
         """
-        if name in self._cache:
-            return self._cache[name]
+        if vertical in self._cache:
+            return self._cache[vertical]
 
-        ontology_path = self.ontologies_dir / f"{name}.yaml"
+        ontology_path = self.verticals_dir / vertical / "ontology.yaml"
         if not ontology_path.exists():
             return None
 
@@ -109,15 +74,15 @@ class OntologyLoader:
             data = yaml.safe_load(f)
 
         ontology = OntologyDefinition(**data)
-        self._cache[name] = ontology
+        self._cache[vertical] = ontology
         return ontology
 
-    def list_ontologies(self) -> list[str]:
-        """List available ontology names."""
-        if not self.ontologies_dir.exists():
+    def list_verticals(self) -> list[str]:
+        """List available verticals with ontology definitions."""
+        if not self.verticals_dir.exists():
             return []
 
-        return [p.stem for p in self.ontologies_dir.glob("*.yaml")]
+        return [p.parent.name for p in self.verticals_dir.glob("*/ontology.yaml")]
 
     def format_concepts_for_prompt(self, ontology: OntologyDefinition | None) -> str:
         """Format ontology concepts for inclusion in LLM prompts.
@@ -152,9 +117,6 @@ class OntologyLoader:
 
 __all__ = [
     "OntologyConcept",
-    "OntologyMetric",
-    "OntologyRule",
-    "SemanticHint",
     "OntologyDefinition",
     "OntologyLoader",
 ]

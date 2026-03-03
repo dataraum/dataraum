@@ -25,6 +25,7 @@ class PhaseStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    GATE_BLOCKED = "gate_blocked"
 
 
 @dataclass
@@ -147,6 +148,16 @@ class Phase(Protocol):
         """
         ...
 
+    @property
+    def entropy_preconditions(self) -> dict[str, float]:
+        """Hard entropy dimensions that must be below thresholds before this phase runs."""
+        ...
+
+    @property
+    def post_verification(self) -> list[str]:
+        """Hard detector sub_dimensions to re-measure after this phase completes."""
+        ...
+
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Check if this phase should be skipped.
 
@@ -154,212 +165,3 @@ class Phase(Protocol):
             None if phase should run, or a reason string if it should be skipped.
         """
         ...
-
-
-@dataclass
-class PhaseDefinition:
-    """Static definition of a phase for the DAG."""
-
-    name: str
-    description: str
-    dependencies: list[str]
-    outputs: list[str]
-    requires_llm: bool = False
-    parallel_group: str | None = None  # Phases in same group can run in parallel
-
-
-# Pipeline DAG definition
-# This defines the structure; actual Phase implementations are in phases/
-PIPELINE_DAG: list[PhaseDefinition] = [
-    # ============================================================
-    # FOUNDATION PHASES
-    # ============================================================
-    PhaseDefinition(
-        name="import",
-        description="Load CSV files into raw tables",
-        dependencies=[],
-        outputs=["raw_tables"],
-    ),
-    PhaseDefinition(
-        name="typing",
-        description="Type inference and resolution",
-        dependencies=["import"],
-        outputs=["typed_tables", "type_decisions"],
-    ),
-    # ============================================================
-    # ANALYSIS PHASES (can run in parallel post-typing)
-    # ============================================================
-    PhaseDefinition(
-        name="statistics",
-        description="Statistical profiling",
-        dependencies=["typing"],
-        outputs=["statistical_profiles"],
-        parallel_group="post_typing",
-    ),
-    PhaseDefinition(
-        name="temporal",
-        description="Temporal column analysis",
-        dependencies=["column_eligibility"],
-        outputs=["temporal_profiles"],
-        parallel_group="post_typing",
-    ),
-    # ============================================================
-    # COLUMN ELIGIBILITY (gate before further analysis)
-    # ============================================================
-    PhaseDefinition(
-        name="column_eligibility",
-        description="Column eligibility evaluation and cleanup",
-        dependencies=["statistics"],
-        outputs=["column_eligibility_records"],
-    ),
-    # ============================================================
-    # STATISTICAL ANALYSIS PHASES
-    # ============================================================
-    PhaseDefinition(
-        name="statistical_quality",
-        description="Benford's Law and outlier detection",
-        dependencies=["column_eligibility"],
-        outputs=["quality_metrics"],
-    ),
-    PhaseDefinition(
-        name="relationships",
-        description="Cross-table relationship detection",
-        dependencies=["column_eligibility"],
-        outputs=["relationship_candidates"],
-    ),
-    PhaseDefinition(
-        name="correlations",
-        description="Within-table correlation analysis",
-        dependencies=["column_eligibility"],
-        outputs=["correlations", "derived_columns"],
-    ),
-    # ============================================================
-    # LLM SEMANTIC PHASES
-    # ============================================================
-    PhaseDefinition(
-        name="semantic",
-        description="LLM semantic enrichment",
-        dependencies=["relationships", "correlations"],
-        outputs=["semantic_annotations", "confirmed_relationships"],
-        requires_llm=True,
-    ),
-    PhaseDefinition(
-        name="validation",
-        description="LLM-powered validation checks",
-        dependencies=["semantic"],  # Needs semantic annotations for better SQL generation
-        outputs=["validation_results"],
-        requires_llm=True,
-    ),
-    # ============================================================
-    # SLICING PHASES
-    # ============================================================
-    PhaseDefinition(
-        name="slicing",
-        description="LLM-powered data slicing",
-        dependencies=["semantic"],  # Needs semantic annotations for context
-        outputs=["slice_definitions"],
-        requires_llm=True,
-    ),
-    PhaseDefinition(
-        name="slice_analysis",
-        description="Analysis on slice tables (includes TDA topology)",
-        dependencies=["slicing"],
-        outputs=["slice_profiles", "slice_topology"],
-        requires_llm=True,
-    ),
-    PhaseDefinition(
-        name="temporal_slice_analysis",
-        description="Temporal + topology analysis on slices",
-        dependencies=["slice_analysis", "temporal"],
-        outputs=["temporal_slice_profiles", "slice_topology", "topology_drift"],
-    ),
-    # ============================================================
-    # ENTROPY PHASES
-    # ============================================================
-    PhaseDefinition(
-        name="entropy",
-        description="Entropy detection across all dimensions",
-        dependencies=[
-            "typing",
-            "column_eligibility",  # Ensures only eligible columns are analyzed
-            "semantic",
-            "relationships",
-            "correlations",
-            "quality_summary",
-        ],
-        outputs=["entropy_profiles", "compound_risks"],
-    ),
-    PhaseDefinition(
-        name="entropy_interpretation",
-        description="LLM interpretation of entropy metrics",
-        dependencies=["entropy"],
-        outputs=["entropy_interpretations", "assumptions", "resolution_actions"],
-        requires_llm=True,
-    ),
-    # ============================================================
-    # BUSINESS ANALYSIS PHASES (LLM)
-    # ============================================================
-    PhaseDefinition(
-        name="business_cycles",
-        description="Expert LLM cycle detection",
-        dependencies=["semantic", "relationships"],
-        outputs=["cycle_analysis"],
-        requires_llm=True,
-    ),
-    PhaseDefinition(
-        name="cross_table_quality",
-        description="Cross-table correlation analysis",
-        dependencies=["semantic"],
-        outputs=["cross_table_correlations", "multicollinearity_groups"],
-        # Note: Despite being in the "quality" family, this is statistical analysis
-        requires_llm=False,
-    ),
-    PhaseDefinition(
-        name="quality_summary",
-        description="LLM quality report generation",
-        dependencies=["slice_analysis"],
-        outputs=["quality_reports", "quality_grades"],
-        requires_llm=True,
-    ),
-    # ============================================================
-    # METRIC CALCULATION
-    # ============================================================
-    PhaseDefinition(
-        name="graph_execution",
-        description="Execute metric graphs via LLM SQL generation",
-        dependencies=[
-            "semantic",
-            "column_eligibility",  # Ensures only eligible columns in context
-            "statistical_quality",
-            "temporal",
-            "relationships",
-            "correlations",
-            "slicing",
-            "quality_summary",
-            "business_cycles",
-            "entropy_interpretation",
-        ],
-        outputs=["metrics_calculated", "metrics_skipped"],
-        requires_llm=True,
-    ),
-]
-
-
-def get_phase_definition(name: str) -> PhaseDefinition | None:
-    """Get a phase definition by name."""
-    for phase in PIPELINE_DAG:
-        if phase.name == name:
-            return phase
-    return None
-
-
-def get_all_dependencies(phase_name: str) -> set[str]:
-    """Get all transitive dependencies for a phase."""
-    phase = get_phase_definition(phase_name)
-    if not phase:
-        return set()
-
-    deps = set(phase.dependencies)
-    for dep in phase.dependencies:
-        deps |= get_all_dependencies(dep)
-    return deps

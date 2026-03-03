@@ -4,8 +4,6 @@ This module contains all Pydantic models for the correlation analysis module.
 
 Within-Table Analysis:
 - NumericCorrelation: Pearson and Spearman correlations
-- CategoricalAssociation: Cramér's V associations
-- FunctionalDependency: A → B dependencies
 - DerivedColumn: Detected derived columns
 
 Cross-Table Quality (post-confirmation):
@@ -63,65 +61,6 @@ class NumericCorrelation(BaseModel):
     is_significant: bool  # p_value < 0.05
 
 
-class CategoricalAssociation(BaseModel):
-    """Cramér's V association between two categorical columns."""
-
-    association_id: str
-    table_id: str
-    column1_id: str
-    column2_id: str
-    column1_name: str
-    column2_name: str
-
-    # Cramér's V (0 to 1)
-    cramers_v: float
-
-    # Chi-square test
-    chi_square: float
-    p_value: float
-    degrees_of_freedom: int
-
-    # Metadata
-    sample_size: int
-    computed_at: datetime
-
-    # Interpretation
-    association_strength: str  # 'none', 'weak', 'moderate', 'strong'
-    is_significant: bool
-
-
-class FunctionalDependency(BaseModel):
-    """A functional dependency: determinant → dependent.
-
-    Represents that values in determinant column(s) uniquely determine
-    values in the dependent column.
-    """
-
-    dependency_id: str
-    table_id: str
-
-    # Determinant (left side) - can be multiple columns
-    determinant_column_ids: list[str]
-    determinant_column_names: list[str]
-
-    # Dependent (right side) - single column
-    dependent_column_id: str
-    dependent_column_name: str
-
-    # Confidence (1.0 = exact, < 1.0 = approximate)
-    confidence: float
-
-    # Evidence
-    unique_determinant_values: int
-    violation_count: int
-
-    # Example
-    example: dict[str, Any] | None = None
-
-    # Metadata
-    computed_at: datetime
-
-
 class DerivedColumn(BaseModel):
     """A column that appears to be derived from other columns."""
 
@@ -170,26 +109,6 @@ class CrossTableCorrelation(BaseModel):
     is_join_column: bool  # True if this is the join column pair
 
 
-class RedundantColumnPair(BaseModel):
-    """Two columns that appear to contain the same data."""
-
-    table: str
-    column1: str
-    column2: str
-    correlation: float
-    recommendation: str  # e.g., "Consider removing one column"
-
-
-class DerivedColumnCandidate(BaseModel):
-    """A column that may be derived from another (cross-table detection)."""
-
-    table: str
-    derived_column: str
-    source_column: str
-    correlation: float
-    likely_formula: str | None = None  # e.g., "derived = source * 0.1"
-
-
 class DependencyGroup(BaseModel):
     """A group of columns involved in multicollinearity."""
 
@@ -225,12 +144,6 @@ class CorrelationAnalysisResult(BaseModel):
     # Numeric correlations
     numeric_correlations: list[NumericCorrelation] = Field(default_factory=list)
 
-    # Categorical associations
-    categorical_associations: list[CategoricalAssociation] = Field(default_factory=list)
-
-    # Functional dependencies
-    functional_dependencies: list[FunctionalDependency] = Field(default_factory=list)
-
     # Derived columns
     derived_columns: list[DerivedColumn] = Field(default_factory=list)
 
@@ -257,12 +170,8 @@ class CrossTableQualityResult(BaseModel):
     joined_row_count: int
     numeric_columns_analyzed: int
 
-    # Cross-table correlations (excluding join columns)
+    # Cross-table correlations
     cross_table_correlations: list[CrossTableCorrelation] = Field(default_factory=list)
-
-    # Within-table issues
-    redundant_columns: list[RedundantColumnPair] = Field(default_factory=list)
-    derived_columns: list[DerivedColumnCandidate] = Field(default_factory=list)
 
     # Multicollinearity
     overall_condition_index: float

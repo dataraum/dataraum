@@ -9,15 +9,23 @@ Detects relationships between typed tables:
 
 from __future__ import annotations
 
+from types import ModuleType
+
 from sqlalchemy import func, select
 
 from dataraum.analysis.relationships import detect_relationships
 from dataraum.analysis.relationships.db_models import Relationship
+from dataraum.core.config import load_phase_config
+from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
+logger = get_logger(__name__)
 
+
+@analysis_phase
 class RelationshipsPhase(BasePhase):
     """Relationship detection phase.
 
@@ -35,11 +43,21 @@ class RelationshipsPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        return ["statistics"]
+        return ["column_eligibility"]
 
     @property
     def outputs(self) -> list[str]:
         return ["relationship_candidates"]
+
+    @property
+    def post_verification(self) -> list[str]:
+        return ["join_path_determinism", "relationship_quality"]
+
+    @property
+    def db_models(self) -> list[ModuleType]:
+        from dataraum.analysis.relationships import db_models
+
+        return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if relationships already detected for this source."""
@@ -89,9 +107,13 @@ class RelationshipsPhase(BasePhase):
 
         table_ids = [t.table_id for t in typed_tables]
 
-        # Configuration from context
-        min_confidence = ctx.config.get("min_confidence", 0.3)
-        sample_percent = ctx.config.get("sample_percent", 10.0)
+        # Configuration from phase config (fallback to file for standalone usage)
+        if "min_confidence" in ctx.config:
+            config = ctx.config
+        else:
+            config = load_phase_config("relationships")
+        min_confidence = config["min_confidence"]
+        sample_percent = config["sample_percent"]
 
         # Run relationship detection
         detection_result = detect_relationships(

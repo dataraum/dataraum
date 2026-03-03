@@ -11,12 +11,27 @@ produces EntropyObject instances with scores, evidence, and resolution options.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from dataraum.entropy.models import (
     EntropyObject,
     ResolutionOption,
 )
+
+
+class DetectorTrust(str, Enum):
+    """Trust level for entropy detectors.
+
+    HARD detectors produce machine-verifiable scores (e.g., type parsing,
+    null ratio, statistical tests). These can gate pipeline progression.
+
+    SOFT detectors rely on LLM judgment or heuristics (e.g., business meaning,
+    unit inference). These inform but don't block.
+    """
+
+    HARD = "hard"
+    SOFT = "soft"
 
 
 @dataclass
@@ -76,6 +91,9 @@ class EntropyDetector(ABC):
     layer: str = ""  # structural, semantic, value, computational
     dimension: str = ""  # types, relations, units, etc.
     sub_dimension: str = ""  # type_fidelity, naming_clarity, etc.
+
+    # Trust level: HARD = machine-verifiable, SOFT = LLM/heuristic
+    trust_level: DetectorTrust = DetectorTrust.SOFT
 
     # What analysis modules this detector requires
     required_analyses: list[str] = []
@@ -137,17 +155,28 @@ class EntropyDetector(ABC):
         Returns:
             Configured EntropyObject
         """
+        # Inject context identifiers into evidence for self-identification
+        enriched_evidence = evidence or []
+        for ev in enriched_evidence:
+            ev["_column_name"] = context.column_name
+            ev["_table_name"] = context.table_name
+
         return EntropyObject(
             layer=self.layer,
             dimension=self.dimension,
             sub_dimension=self.sub_dimension,
             target=context.target_ref,
             score=score,
-            evidence=evidence or [],
+            evidence=enriched_evidence,
             resolution_options=resolution_options or [],
             detector_id=self.detector_id,
             source_analysis_ids=[],
         )
+
+    @property
+    def is_verifier(self) -> bool:
+        """Whether this detector can be used for hard verification at gates."""
+        return self.trust_level == DetectorTrust.HARD
 
     @property
     def dimension_path(self) -> str:
@@ -226,6 +255,14 @@ class DetectorRegistry:
         """
         return [d for d in self.detectors.values() if d.layer == layer and d.dimension == dimension]
 
+    def get_hard_detectors(self) -> list[EntropyDetector]:
+        """Get all detectors with HARD trust level (machine-verifiable)."""
+        return [d for d in self.detectors.values() if d.trust_level == DetectorTrust.HARD]
+
+    def get_soft_detectors(self) -> list[EntropyDetector]:
+        """Get all detectors with SOFT trust level (LLM/heuristic)."""
+        return [d for d in self.detectors.values() if d.trust_level == DetectorTrust.SOFT]
+
     def get_runnable_detectors(self, context: DetectorContext) -> list[EntropyDetector]:
         """Get all detectors that can run with the given context.
 
@@ -302,20 +339,26 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
     registry.register(RelationshipEntropyDetector())
 
     # Value layer detectors
+    from dataraum.entropy.detectors.value.benford import BenfordDetector
     from dataraum.entropy.detectors.value.null_semantics import NullRatioDetector
     from dataraum.entropy.detectors.value.outliers import OutlierRateDetector
+    from dataraum.entropy.detectors.value.temporal_drift import TemporalDriftDetector
 
     registry.register(NullRatioDetector())
     registry.register(OutlierRateDetector())
+    registry.register(BenfordDetector())
+    registry.register(TemporalDriftDetector())
 
     # Semantic layer detectors
     from dataraum.entropy.detectors.semantic.business_meaning import BusinessMeaningDetector
+    from dataraum.entropy.detectors.semantic.dimensional_entropy import DimensionalEntropyDetector
     from dataraum.entropy.detectors.semantic.temporal_entropy import TemporalEntropyDetector
     from dataraum.entropy.detectors.semantic.unit_entropy import UnitEntropyDetector
 
     registry.register(BusinessMeaningDetector())
     registry.register(UnitEntropyDetector())
     registry.register(TemporalEntropyDetector())
+    registry.register(DimensionalEntropyDetector())
 
     # Computational layer detectors
     from dataraum.entropy.detectors.computational.derived_values import (

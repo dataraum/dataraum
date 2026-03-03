@@ -1,0 +1,64 @@
+# Three-Way Match Validation
+# Checks PO–receipt–invoice consistency for procure-to-pay cycle
+
+validation_id: three_way_match
+name: Three-Way Match
+description: >
+  Validates the three-way match in procure-to-pay cycles: purchase order
+  amounts should agree with goods receipt quantities and vendor invoice
+  amounts. Mismatches indicate pricing errors, short shipments,
+  overbilling, or process gaps. This is a key internal control for
+  accounts payable and procurement integrity.
+
+category: financial
+severity: warning
+version: "1.0"
+
+tags:
+  - cycle
+  - procure-to-pay
+  - three-way-match
+  - accounts-payable
+  - internal-control
+
+relevant_cycles:
+  - procure_to_pay
+  - accounts_payable
+
+check_type: comparison
+
+parameters:
+  # Acceptable tolerance for amount matching (percentage)
+  amount_tolerance_pct: 0.01
+  # Acceptable tolerance for quantity matching (percentage)
+  quantity_tolerance_pct: 0.02
+
+sql_hints: >
+  Look for tables and columns that represent the three documents in a
+  procurement cycle: purchase orders, goods receipts (or receiving),
+  and vendor invoices. Use semantic annotations and relationships to
+  identify linking keys (e.g., PO number) and amount/quantity columns.
+
+  If the data has separate tables for POs, receipts, and invoices, join
+  them on the linking key. If it's a single transaction table with a
+  type/status column, filter by document type.
+
+  Generate SQL that compares:
+  1. PO amount vs invoice amount (should match within tolerance)
+  2. PO quantity vs received quantity (should match within tolerance)
+
+  Return columns:
+  - match_type (VARCHAR): 'po_vs_invoice' or 'po_vs_receipt'
+  - total_matched (INTEGER): records where both sides exist
+  - within_tolerance (INTEGER): records matching within tolerance
+  - over_tolerance (INTEGER): records exceeding tolerance
+  - match_rate (DOUBLE): within_tolerance / total_matched
+
+  If the data does not contain enough information for three-way matching
+  (e.g., no PO table or no receipt data), use the skip mechanism — set
+  can_validate to false and provide a skip_reason.
+
+expected_outcome: >
+  Match rate should exceed 95% for both amount and quantity comparisons.
+  Systematic mismatches above tolerance suggest pricing discrepancies,
+  partial deliveries without adjustment, or invoice fraud risk.

@@ -21,23 +21,18 @@ classifiers = [
 dependencies = [
     # Data processing
     "duckdb>=1.0.0",
-    "pyarrow>=15.0.0",
     "pint>=0.23",
-    "pandas>=2.0.0",
+    "pandas>=3.0.0",
     # Database (SQLAlchemy + SQLite backend)
     "sqlalchemy>=2.0.0",
-    "aiosqlite>=0.19.0",
     # Pydantic
     "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
     # MCP
     "mcp>=1.0.0",
     # Configuration
     "pyyaml>=6.0.0",
-    # TDA (Topological Data Analysis)
+    # Scientific computing
     "scipy>=1.11.0",
-    "ripser>=0.6.0",
-    "persim>=0.3.0",
     # Time Series Analysis
     "statsmodels>=0.14.0",
     "ruptures>=1.1.0",
@@ -47,8 +42,9 @@ dependencies = [
     "typer>=0.9.0",
     "rich>=13.0.0",
     "networkx>=3.6",
+    "pgmpy>=0.1.25",
+    "torch>=2.0.0",
     "anthropic>=0.76.0",
-    "sentence-transformers>=5.2.0",
     # TUI
     "textual>=0.50.0",
 ]
@@ -62,50 +58,6 @@ dev = [
     "ruff>=0.2.0",
     "mypy>=1.8.0",
     "pre-commit>=3.6.0",
-]
-
-# LLM providers (install what you need)
-anthropic = ["anthropic>=0.40.0"]
-openai = ["openai>=1.50.0"]
-llm = [
-    "anthropic>=0.40.0",
-    "openai>=1.50.0",
-]
-postgres = ["asyncpg>=0.29.0"]
-
-# CLI and TUI
-cli = [
-    "typer>=0.9.0",
-    "rich>=13.0.0",
-    "textual>=0.50.0",
-]
-
-# Web API server
-api = [
-    "fastapi>=0.110.0",
-    "uvicorn>=0.27.0",
-    "jinja2>=3.1.0",
-]
-
-# MCP server for LLM integration
-mcp = ["mcp>=1.0.0"]
-
-# Statistical quality metrics (ML-based anomaly detection)
-statistical-quality = [
-    "scikit-learn>=1.3.0",
-]
-
-# Synthetic data generation for privacy (SDV) - heavy dependency with PyTorch
-privacy = ["sdv>=1.17.0"]
-
-# Common optional features (excluding heavy privacy/SDV dependencies)
-complete = [
-    "dataraum[cli,api,mcp,anthropic,openai,postgres,statistical-quality]",
-]
-
-# Everything including heavy ML dependencies
-all = [
-    "dataraum[complete,privacy]",
 ]
 
 [project.scripts]
@@ -130,7 +82,20 @@ dev = [
     "types-pyyaml>=6.0.12.20250915",
     "scipy-stubs>=1.16.3.2",
     "pytest-testmon>=2.2.0",
+    "zensical>=0.0.24",
 ]
+e2e = [
+    "dataraum-testdata @ git+https://github.com/dataraum/dataraum-testdata.git",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+dataraum-testdata = { path = "../dataraum-testdata", editable = true }
+torch = [{ index = "pytorch-cpu" }]
 
 [build-system]
 requires = ["hatchling"]
@@ -142,10 +107,11 @@ packages = ["src/dataraum"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short --ignore=tests/e2e"
 markers = [
     "integration: marks tests as integration tests (may be slower)",
     "slow: marks tests as slow (use real data, skip in CI)",
+    "e2e: end-to-end tests using dataraum-testdata (excluded from testmon)",
 ]
 filterwarnings = [
     # Numpy warnings during correlation calculations with constant columns (expected)
@@ -153,6 +119,8 @@ filterwarnings = [
     "ignore:divide by zero encountered in scalar divide:RuntimeWarning",
     # DuckDB GIL warning on Python 3.14 free-threaded (external library)
     "ignore:The global interpreter lock.*:RuntimeWarning",
+    # pgmpy invalid escape sequences (external library)
+    "ignore:.*is an invalid escape sequence.*:SyntaxWarning",
 ]
 
 [tool.ruff]
@@ -172,10 +140,31 @@ select = [
     "B",   # flake8-bugbear
     "C4",  # flake8-comprehensions
     "UP",  # pyupgrade
+    "D",   # pydocstyle
 ]
 ignore = [
     "E501",  # line too long (handled by formatter)
+    "D100",  # missing docstring in public module
+    "D104",  # missing docstring in public package
+    "D105",  # missing docstring in magic method
+    "D106",  # missing docstring in public nested class
+    "D107",  # missing docstring in __init__
+    "D203",  # one-blank-line-before-class (conflicts with D211)
+    "D213",  # multi-line-summary-second-line (conflicts with D212)
 ]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"src/**" = [
+    "D101", "D102", "D103",  # no backfill: missing docstrings in classes/methods/functions
+    "D202", "D209", "D212",  # formatting in existing docstrings
+    "D410", "D411", "D412",  # section blank line formatting
+    "D415", "D417",          # punctuation and incomplete args
+]
+"tests/**" = ["D"]                    # no docstring enforcement in tests
+"scripts/**" = ["D"]                  # no docstring enforcement in scripts
 
 [tool.ruff.lint.isort]
 known-first-party = ["dataraum"]
@@ -198,18 +187,14 @@ module = [
     "duckdb.*",
     "mcp.*",
     "anthropic.*",
-    "openai.*",
     "sdv.*",
-    "hamilton.*",
-    "ripser.*",
-    "persim.*",
     "scipy.*",
-    "sklearn.*",
     "statsmodels.*",
     "ruptures.*",
-    "pyarrow.*",
     "networkx.*",
+    "pgmpy.*",
     "textual.*",
+    "typer.*",
 ]
 ignore_missing_imports = true
 

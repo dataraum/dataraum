@@ -7,42 +7,41 @@ Runs detectors to quantify uncertainty in each column and table.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from types import ModuleType
 from typing import Any
 
-import structlog
 from sqlalchemy import func, select
 
 from dataraum.analysis.correlation.db_models import DerivedColumn
 from dataraum.analysis.quality_summary.db_models import ColumnQualityReport, ColumnSliceProfile
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
-from dataraum.analysis.statistics.db_models import StatisticalProfile, StatisticalQualityMetrics
-from dataraum.analysis.temporal_slicing.db_models import (
-    TemporalDriftAnalysis,
-    TemporalSliceAnalysis,
-)
+from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.analysis.slicing.slice_runner import _get_slice_table_name
+from dataraum.analysis.statistics.db_models import StatisticalProfile
+from dataraum.analysis.statistics.quality_db_models import StatisticalQualityMetrics
+from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
 from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
-from dataraum.entropy.config import get_entropy_config
+from dataraum.core.logging import get_logger
 from dataraum.entropy.db_models import (
-    CompoundRiskRecord,
-    EntropyInterpretationRecord,
     EntropyObjectRecord,
     EntropySnapshotRecord,
 )
-from dataraum.entropy.detectors.base import DetectorContext
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust
 from dataraum.entropy.detectors.semantic import (
-    ColumnQualityFinding,
     DimensionalEntropyDetector,
-    generate_dataset_summary,
 )
 from dataraum.entropy.processor import EntropyProcessor
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 
+# TODO: focus prioritization on actions that impact downstream context generation and LLM performance - e.g. structural issues that cause RI failures, semantic issues that cause misinterpretation, value issues that cause parsing failures, etc.
+@analysis_phase
 class EntropyPhase(BasePhase):
     """Entropy detection phase.
 
@@ -64,20 +63,23 @@ class EntropyPhase(BasePhase):
     def dependencies(self) -> list[str]:
         return [
             "typing",
-            "statistics",
+            "column_eligibility",
             "semantic",
             "relationships",
             "correlations",
             "quality_summary",
+            "temporal_slice_analysis",
         ]
 
     @property
     def outputs(self) -> list[str]:
-        return ["entropy_profiles", "compound_risks"]
+        return ["entropy_profiles"]
 
     @property
-    def is_llm_phase(self) -> bool:
-        return False
+    def db_models(self) -> list[ModuleType]:
+        from dataraum.entropy import db_models
+
+        return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all columns already have entropy profiles."""
@@ -225,6 +227,31 @@ class EntropyPhase(BasePhase):
         for dc in (ctx.session.execute(derived_stmt)).scalars().all():
             derived_columns[dc.derived_column_id] = dc
 
+        # Load drift summaries for TemporalDriftDetector, scoped per typed table.
+        # Key by (table_id, column_name) to prevent cross-table leakage when
+        # different tables share column names (e.g. "amount", "date").
+        drift_summaries_by_table_column: dict[tuple[str, str], list[ColumnDriftSummary]] = {}
+        col_name_by_id = {c.column_id: c.column_name for c in all_columns}
+        # Map slice_table_name -> owning typed table_id
+        slice_table_to_typed: dict[str, str] = {}
+        for table in typed_tables:
+            sd_stmt = select(SliceDefinition).where(SliceDefinition.table_id == table.table_id)
+            for sd in ctx.session.execute(sd_stmt).scalars().all():
+                col_name = col_name_by_id.get(sd.column_id)
+                if col_name and sd.distinct_values:
+                    for value in sd.distinct_values:
+                        stn = _get_slice_table_name(col_name, value)
+                        slice_table_to_typed[stn] = table.table_id
+        if slice_table_to_typed:
+            drift_stmt = select(ColumnDriftSummary).where(
+                ColumnDriftSummary.slice_table_name.in_(slice_table_to_typed.keys())
+            )
+            for ds in ctx.session.execute(drift_stmt).scalars().all():
+                owning_table_id = slice_table_to_typed.get(ds.slice_table_name)
+                if owning_table_id:
+                    key = (owning_table_id, ds.column_name)
+                    drift_summaries_by_table_column.setdefault(key, []).append(ds)
+
         # Initialize processor
         processor = EntropyProcessor()
 
@@ -237,16 +264,15 @@ class EntropyPhase(BasePhase):
 
         # Process each table
         total_entropy_objects = 0
-        total_compound_risks = 0
-        table_profiles = []
+        tables_processed = 0
+        all_domain_objects: list[Any] = []  # Collect EntropyObject for network inference
+        all_records: list[EntropyObjectRecord] = []  # Batch for session.add_all()
 
         for table in typed_tables:
             table_columns = columns_by_table.get(table.table_id, [])
             if not table_columns:
                 continue
 
-            # Build column specs with analysis_results
-            columns_data: list[dict[str, Any]] = []
             for col in table_columns:
                 analysis_results: dict[str, Any] = {}
 
@@ -302,15 +328,21 @@ class EntropyPhase(BasePhase):
                     # Add quality metrics (outlier detection, Benford's Law)
                     if col.column_id in quality_metrics:
                         qm = quality_metrics[col.column_id]
+                        qd = qm.quality_data or {}
+                        outlier_data = qd.get("outlier_detection", {})
                         stats_dict["quality"] = {
                             "outlier_detection": {
                                 "iqr_outlier_ratio": qm.iqr_outlier_ratio or 0.0,
-                                "isolation_forest_anomaly_ratio": qm.isolation_forest_anomaly_ratio,
+                                "iqr_outlier_count": outlier_data.get("iqr_outlier_count", 0),
+                                "iqr_lower_fence": outlier_data.get("iqr_lower_fence"),
+                                "iqr_upper_fence": outlier_data.get("iqr_upper_fence"),
+                                "zscore_outlier_ratio": qm.zscore_outlier_ratio,
                                 "has_outliers": bool(qm.has_outliers),
                             },
                             "benford_compliant": bool(qm.benford_compliant)
                             if qm.benford_compliant is not None
                             else None,
+                            "benford_analysis": qd.get("benford_analysis"),
                             "quality_data": qm.quality_data,
                         }
 
@@ -319,21 +351,25 @@ class EntropyPhase(BasePhase):
                 # Add semantic info
                 if col.column_id in semantic_annotations:
                     sa = semantic_annotations[col.column_id]
-                    analysis_results["semantic"] = {
+                    semantic_dict: dict[str, Any] = {
                         "semantic_role": sa.semantic_role,
                         "entity_type": sa.entity_type,
                         "business_name": sa.business_name,
                         "business_description": sa.business_description,
+                        "confidence": sa.confidence,
+                        "business_concept": sa.business_concept,
                     }
+                    if sa.unit_source_column:
+                        semantic_dict["unit_source_column"] = sa.unit_source_column
+                    analysis_results["semantic"] = semantic_dict
 
                 # Add relationship info (already formatted as dicts with table names)
                 if col.column_id in relationships_by_column:
                     analysis_results["relationships"] = relationships_by_column[col.column_id]
 
-                # Add derived column info (for computational entropy)
+                # Add derived column info (for DerivedValueDetector)
                 if col.column_id in derived_columns:
                     dc = derived_columns[col.column_id]
-                    # Format expected by DerivedValueDetector
                     analysis_results["correlation"] = {
                         "derived_columns": [
                             {
@@ -346,36 +382,32 @@ class EntropyPhase(BasePhase):
                         ]
                     }
 
-                columns_data.append(
-                    {
-                        "name": col.column_name,
-                        "column_id": col.column_id,
-                        "analysis_results": analysis_results,
-                    }
+                # Add drift summaries for this column (for TemporalDriftDetector)
+                col_drift = drift_summaries_by_table_column.get((table.table_id, col.column_name))
+                if col_drift:
+                    analysis_results["drift_summaries"] = col_drift
+
+                # Process the column - returns list[EntropyObject] directly
+                entropy_objects = processor.process_column(
+                    table_name=table.table_name,
+                    column_name=col.column_name,
+                    analysis_results=analysis_results,
+                    source_id=ctx.source_id,
+                    table_id=table.table_id,
+                    column_id=col.column_id,
                 )
 
-            # Process the table
-            table_profile = processor.process_table(
-                table_name=table.table_name,
-                columns=columns_data,
-                source_id=ctx.source_id,
-                table_id=table.table_id,
-            )
-            table_profiles.append(table_profile)
+                # Keep domain objects for in-memory network inference
+                all_domain_objects.extend(entropy_objects)
 
-            # Persist entropy records
-            for col_profile in table_profile.columns:
                 # Persist each EntropyObject with full evidence
-                for entropy_obj in col_profile.entropy_objects:
-                    # Serialize resolution options to dicts
+                for entropy_obj in entropy_objects:
                     resolution_dicts = [
                         {
                             "action": opt.action,
                             "parameters": opt.parameters,
-                            "expected_entropy_reduction": opt.expected_entropy_reduction,
                             "effort": opt.effort,
                             "description": opt.description,
-                            "cascade_dimensions": opt.cascade_dimensions,
                         }
                         for opt in entropy_obj.resolution_options
                     ]
@@ -383,35 +415,20 @@ class EntropyPhase(BasePhase):
                     record = EntropyObjectRecord(
                         source_id=ctx.source_id,
                         table_id=table.table_id,
-                        column_id=col_profile.column_id,
+                        column_id=col.column_id,
                         target=entropy_obj.target,
                         layer=entropy_obj.layer,
                         dimension=entropy_obj.dimension,
                         sub_dimension=entropy_obj.sub_dimension,
                         score=entropy_obj.score,
-                        confidence=entropy_obj.confidence,
                         evidence=entropy_obj.evidence,
                         resolution_options=resolution_dicts if resolution_dicts else None,
                         detector_id=entropy_obj.detector_id,
                     )
-                    ctx.session.add(record)
+                    all_records.append(record)
                     total_entropy_objects += 1
 
-                # Persist compound risks
-                for risk in col_profile.compound_risks:
-                    risk_record = CompoundRiskRecord(
-                        source_id=ctx.source_id,
-                        table_id=table.table_id,
-                        target=risk.target,
-                        dimensions=risk.dimensions,
-                        dimension_scores=risk.dimension_scores,
-                        risk_level=risk.risk_level,
-                        impact=risk.impact,
-                        multiplier=risk.multiplier,
-                        combined_score=risk.combined_score,
-                    )
-                    ctx.session.add(risk_record)
-                    total_compound_risks += 1
+            tables_processed += 1
 
         # Run table-level dimensional entropy detection
         # This detects cross-column patterns from quality_summary data
@@ -419,7 +436,8 @@ class EntropyPhase(BasePhase):
             ctx=ctx,
             typed_tables=typed_tables,
         )
-        logger.info(
+        all_domain_objects.extend(dimensional_objects)
+        logger.debug(
             "dimensional_entropy_results",
             objects_count=len(dimensional_objects),
         )
@@ -428,10 +446,8 @@ class EntropyPhase(BasePhase):
                 {
                     "action": opt.action,
                     "parameters": opt.parameters,
-                    "expected_entropy_reduction": opt.expected_entropy_reduction,
                     "effort": opt.effort,
                     "description": opt.description,
-                    "cascade_dimensions": opt.cascade_dimensions,
                 }
                 for opt in entropy_obj.resolution_options
             ]
@@ -462,12 +478,11 @@ class EntropyPhase(BasePhase):
                 dimension=entropy_obj.dimension,
                 sub_dimension=entropy_obj.sub_dimension,
                 score=entropy_obj.score,
-                confidence=entropy_obj.confidence,
                 evidence=entropy_obj.evidence,
                 resolution_options=resolution_dicts if resolution_dicts else None,
                 detector_id=entropy_obj.detector_id,
             )
-            ctx.session.add(record)
+            all_records.append(record)
             total_entropy_objects += 1
             logger.debug(
                 "dimensional_entropy_object_saved",
@@ -476,110 +491,93 @@ class EntropyPhase(BasePhase):
                 score=entropy_obj.score,
             )
 
-        # Compute summary statistics from table profiles
-        config = get_entropy_config()
-        high_threshold = config.high_entropy_threshold
-        critical_threshold = config.critical_entropy_threshold
+        # Batch insert all entropy records at once
+        ctx.session.add_all(all_records)
 
-        high_entropy_count = 0
-        critical_entropy_count = 0
-        all_compound_risks: list[Any] = []
-        all_composite_scores: list[float] = []
-        all_layer_scores: dict[str, list[float]] = {
-            "structural": [],
-            "semantic": [],
-            "value": [],
-            "computational": [],
+        # Compute summary statistics from in-memory domain objects.
+        # No DB round-trip needed — the session hasn't committed yet and
+        # uses autoflush=False, so re-querying the DB would see nothing.
+        from dataraum.entropy.network.model import EntropyNetwork
+        from dataraum.entropy.views.network_context import _assemble_network_context
+
+        network = EntropyNetwork()
+        network_ctx = _assemble_network_context(all_domain_objects, network)
+
+        high_entropy_count = network_ctx.columns_blocked + network_ctx.columns_investigate
+        critical_entropy_count = network_ctx.columns_blocked
+        overall_readiness = network_ctx.overall_readiness
+
+        # Average entropy score: per-target max, then mean across targets.
+        # This prevents table-level dimensional entropy object counts from
+        # dominating the average (each target contributes its worst score).
+        target_max: dict[str, float] = {}
+        for obj in all_domain_objects:
+            if obj.target not in target_max or obj.score > target_max[obj.target]:
+                target_max[obj.target] = obj.score
+        avg_entropy = sum(target_max.values()) / len(target_max) if target_max else 0.0
+
+        # Serialize Bayesian network state for downstream consumers
+        snapshot_data: dict[str, Any] = {
+            "node_states": {
+                intent.intent_name: {
+                    "worst_p_high": intent.worst_p_high,
+                    "mean_p_high": intent.mean_p_high,
+                    "columns_blocked": intent.columns_blocked,
+                    "columns_investigate": intent.columns_investigate,
+                    "columns_ready": intent.columns_ready,
+                    "overall_readiness": intent.overall_readiness,
+                }
+                for intent in network_ctx.intents
+            },
+            "total_columns": network_ctx.total_columns,
+            "columns_blocked": network_ctx.columns_blocked,
+            "columns_investigate": network_ctx.columns_investigate,
+            "columns_ready": network_ctx.columns_ready,
         }
 
-        for table_profile in table_profiles:
-            for col_summary in table_profile.columns:
-                if col_summary.composite_score >= critical_threshold:
-                    critical_entropy_count += 1
-                    high_entropy_count += 1
-                elif col_summary.composite_score >= high_threshold:
-                    high_entropy_count += 1
-                all_compound_risks.extend(col_summary.compound_risks)
-
-                # Collect scores for averaging
-                all_composite_scores.append(col_summary.composite_score)
-                for layer, score in col_summary.layer_scores.items():
-                    if layer in all_layer_scores:
-                        all_layer_scores[layer].append(score)
-
-        # Calculate average scores
-        avg_composite = (
-            sum(all_composite_scores) / len(all_composite_scores) if all_composite_scores else 0.0
-        )
-        avg_structural = (
-            sum(all_layer_scores["structural"]) / len(all_layer_scores["structural"])
-            if all_layer_scores["structural"]
-            else 0.0
-        )
-        avg_semantic = (
-            sum(all_layer_scores["semantic"]) / len(all_layer_scores["semantic"])
-            if all_layer_scores["semantic"]
-            else 0.0
-        )
-        avg_value = (
-            sum(all_layer_scores["value"]) / len(all_layer_scores["value"])
-            if all_layer_scores["value"]
-            else 0.0
-        )
-        avg_computational = (
-            sum(all_layer_scores["computational"]) / len(all_layer_scores["computational"])
-            if all_layer_scores["computational"]
-            else 0.0
-        )
-
-        # Determine overall readiness
-        if critical_entropy_count > 0:
-            overall_readiness = "blocked"
-        elif high_entropy_count > 0:
-            overall_readiness = "investigate"
-        else:
-            overall_readiness = "ready"
-
-        # Create snapshot record with all averages
+        # Create snapshot record
         snapshot = EntropySnapshotRecord(
             source_id=ctx.source_id,
             total_entropy_objects=total_entropy_objects,
             high_entropy_count=high_entropy_count,
             critical_entropy_count=critical_entropy_count,
-            compound_risk_count=len(all_compound_risks),
             overall_readiness=overall_readiness,
-            avg_composite_score=avg_composite,
-            avg_structural_entropy=avg_structural,
-            avg_semantic_entropy=avg_semantic,
-            avg_value_entropy=avg_value,
-            avg_computational_entropy=avg_computational,
+            avg_entropy_score=avg_entropy,
+            snapshot_data=snapshot_data,
         )
         ctx.session.add(snapshot)
 
         # Note: commit handled by session_scope() in orchestrator
 
+        # Compute aggregated hard detector scores for gate checking.
+        # For each hard sub_dimension, compute the mean score across all targets.
+        registry = get_default_registry()
+        hard_sub_dims = {
+            d.sub_dimension
+            for d in registry.get_all_detectors()
+            if d.trust_level == DetectorTrust.HARD
+        }
+        hard_scores_by_dim: dict[str, list[float]] = {}
+        for obj in all_domain_objects:
+            if obj.sub_dimension in hard_sub_dims:
+                hard_scores_by_dim.setdefault(obj.sub_dimension, []).append(obj.score)
+
+        entropy_hard_scores = {
+            dim: sum(scores) / len(scores) for dim, scores in hard_scores_by_dim.items() if scores
+        }
+
         return PhaseResult.success(
             outputs={
-                "entropy_profiles": len(table_profiles),
-                "compound_risks": total_compound_risks,
+                "entropy_profiles": tables_processed,
                 "entropy_objects": total_entropy_objects,
                 "overall_readiness": overall_readiness,
                 "high_entropy_columns": high_entropy_count,
                 "critical_entropy_columns": critical_entropy_count,
+                "entropy_hard_scores": entropy_hard_scores,
             },
             records_processed=len(all_columns),
-            records_created=total_entropy_objects + total_compound_risks + 1,
+            records_created=total_entropy_objects + 1,
         )
-
-
-def _complexity_to_readiness(complexity: str) -> str:
-    """Map complexity level to readiness status."""
-    return {
-        "low": "ready",
-        "moderate": "investigate",
-        "high": "investigate",
-        "very_high": "blocked",
-    }.get(complexity, "investigate")
 
 
 def _run_dimensional_entropy(
@@ -590,8 +588,6 @@ def _run_dimensional_entropy(
 
     Loads slice variance data from quality_summary tables and runs
     the DimensionalEntropyDetector to calculate entropy scores.
-    If LLM is available, generates dataset-level summaries and writes
-    them as table-level EntropyInterpretationRecords.
 
     Args:
         ctx: Phase context with session
@@ -605,40 +601,44 @@ def _run_dimensional_entropy(
     all_entropy_objects: list[EntropyObject] = []
     detector = DimensionalEntropyDetector()
 
-    # Attempt optional LLM for executive summaries
-    summary_agent = None
-    try:
-        from dataraum.entropy.summary_agent import DimensionalSummaryAgent
-        from dataraum.llm import LLMCache, PromptRenderer, create_provider, load_llm_config
-
-        llm_config = load_llm_config()
-        feature_config = llm_config.features.dimensional_summary
-        if feature_config and feature_config.enabled:
-            provider_config = llm_config.providers.get(llm_config.active_provider)
-            if provider_config:
-                provider = create_provider(llm_config.active_provider, provider_config.model_dump())
-                cache = LLMCache()
-                renderer = PromptRenderer()
-                summary_agent = DimensionalSummaryAgent(
-                    config=llm_config,
-                    provider=provider,
-                    prompt_renderer=renderer,
-                    cache=cache,
-                )
-                logger.info("dimensional_summary_agent_initialized")
-    except Exception as e:
-        logger.info("dimensional_summary_llm_unavailable", reason=str(e))
-
-    logger.info("dimensional_entropy_start", tables=len(typed_tables))
+    logger.debug("dimensional_entropy_start", tables=len(typed_tables))
 
     for table in typed_tables:
-        # Load column slice profiles directly by table name
+        # Get column IDs for this typed table (FK-based scoping)
+        table_cols_stmt = select(Column).where(Column.table_id == table.table_id)
+        table_columns = list(ctx.session.execute(table_cols_stmt).scalars().all())
+        table_column_ids = [c.column_id for c in table_columns]
+
+        # If a slicing_view was registered for this fact table, profiles and reports
+        # reference its columns (not the typed table's) — include those IDs too.
+        sv_table = ctx.session.execute(
+            select(Table).where(
+                Table.source_id == ctx.source_id,
+                Table.table_name == f"slicing_{table.table_name}",
+                Table.layer == "slicing_view",
+            )
+        ).scalar_one_or_none()
+
+        if sv_table:
+            sv_cols = (
+                ctx.session.execute(select(Column).where(Column.table_id == sv_table.table_id))
+                .scalars()
+                .all()
+            )
+            lookup_column_ids = [c.column_id for c in sv_cols]
+            # Build column_name -> typed column_id for entropy object anchoring
+            sv_col_name_to_typed_id = {c.column_name: c.column_id for c in table_columns}
+        else:
+            lookup_column_ids = table_column_ids
+            sv_col_name_to_typed_id = None
+
+        # Load column slice profiles by FK (via slicing_view columns when available)
         profiles_stmt = select(ColumnSliceProfile).where(
-            ColumnSliceProfile.source_table_name == table.table_name
+            ColumnSliceProfile.source_column_id.in_(lookup_column_ids)
         )
         profiles = list(ctx.session.execute(profiles_stmt).scalars().all())
 
-        logger.info(
+        logger.debug(
             "dimensional_entropy_profiles_loaded",
             table=table.table_name,
             profile_count=len(profiles),
@@ -650,12 +650,10 @@ def _run_dimensional_entropy(
         # Build slice_data structure: slice_value -> column_name -> metrics
         slice_data: dict[str, dict[str, dict[str, Any]]] = {}
         columns_data: dict[str, dict[str, Any]] = {}
-        slice_column_name: str | None = None
 
         for profile in profiles:
             slice_val = profile.slice_value
             col_name = profile.column_name
-            slice_column_name = profile.slice_column_name  # Track slice column
 
             if slice_val not in slice_data:
                 slice_data[slice_val] = {}
@@ -704,64 +702,80 @@ def _run_dimensional_entropy(
                 if col_metrics["distinct_ratio"] > 2.0:
                     col_metrics["exceeded_thresholds"].append("distinct_ratio")
 
-        # Load temporal data if available
-        temporal_columns: dict[str, dict[str, Any]] = {}
+        # Load drift summaries for slice tables belonging to this typed table
+        drift_summaries: list[Any] = []
+        slice_table_names: list[str] = []
+        slice_def_stmt = select(SliceDefinition).where(SliceDefinition.table_id == table.table_id)
+        slice_defs = list(ctx.session.execute(slice_def_stmt).scalars().all())
+
+        if slice_defs:
+            # Derive slice table names from this table's slice definitions
+            col_name_by_id = {c.column_id: c.column_name for c in table_columns}
+            for sd in slice_defs:
+                sd_col_name = col_name_by_id.get(sd.column_id)
+                if sd_col_name and sd.distinct_values:
+                    for value in sd.distinct_values:
+                        slice_table_names.append(_get_slice_table_name(sd_col_name, value))
+
+            if slice_table_names:
+                drift_stmt = select(ColumnDriftSummary).where(
+                    ColumnDriftSummary.slice_table_name.in_(slice_table_names)
+                )
+                drift_summaries = list(ctx.session.execute(drift_stmt).scalars().all())
+
+        # Build temporal_drift list from drift summaries for backward compatibility
+        # with DimensionalEntropyDetector
         temporal_drift: list[dict[str, Any]] = []
+        for ds in drift_summaries:
+            if ds.max_js_divergence > 0:
+                evidence = ds.drift_evidence_json or {}
+                change_points = evidence.get("change_points", [])
+                temporal_drift.append(
+                    {
+                        "column_name": ds.column_name,
+                        "js_divergence": ds.max_js_divergence,
+                        "has_significant_drift": ds.periods_with_drift > 0,
+                        "has_category_changes": bool(
+                            evidence.get("emerged_categories")
+                            or evidence.get("vanished_categories")
+                        ),
+                        "change_points": change_points,
+                    }
+                )
 
-        # Load temporal slice analyses - filter by slice_table_name matching table name pattern
-        # TemporalSliceAnalysis stores metrics per time period for slice tables
-        temporal_stmt = select(TemporalSliceAnalysis).where(
-            TemporalSliceAnalysis.slice_table_name.like(f"{table.table_name}_%")
-        )
-        temporal_analyses = list(ctx.session.execute(temporal_stmt).scalars().all())
+        # Load period analyses (completeness + volume anomalies) for slice tables
+        # and aggregate into temporal_columns for the dimensional detector
+        temporal_columns: dict[str, dict[str, Any]] = {}
+        if slice_table_names:
+            from dataraum.analysis.temporal_slicing.db_models import TemporalSliceAnalysis
 
-        # Aggregate temporal info by time_column
-        for ta in temporal_analyses:
-            col_name = ta.time_column
-            if col_name not in temporal_columns:
-                temporal_columns[col_name] = {
-                    "is_interesting": False,
-                    "reasons": [],
-                    "coverage_ratio": ta.coverage_ratio,
-                    "last_day_ratio": ta.last_day_ratio,
-                    "is_volume_anomaly": bool(ta.is_volume_anomaly),
-                }
-            # Check if interesting based on available fields
-            if (
-                (ta.coverage_ratio and ta.coverage_ratio < 0.5)
-                or (ta.last_day_ratio and ta.last_day_ratio > 1.5)
-                or ta.is_volume_anomaly
-            ):
-                temporal_columns[col_name]["is_interesting"] = True
-                if ta.coverage_ratio and ta.coverage_ratio < 0.5:
-                    temporal_columns[col_name]["reasons"].append("low_coverage")
-                if ta.last_day_ratio and ta.last_day_ratio > 1.5:
-                    temporal_columns[col_name]["reasons"].append("period_end_spike")
-                if ta.is_volume_anomaly:
-                    temporal_columns[col_name]["reasons"].append("volume_anomaly")
-
-        # Load drift analyses - filter by slice_table_name matching table name pattern
-        drift_stmt = select(TemporalDriftAnalysis).where(
-            TemporalDriftAnalysis.slice_table_name.like(f"{table.table_name}_%")
-        )
-        drift_analyses = list(ctx.session.execute(drift_stmt).scalars().all())
-
-        for da in drift_analyses:
-            temporal_drift.append(
-                {
-                    "column_name": da.column_name,
-                    "period_label": da.period_label,
-                    "js_divergence": da.js_divergence,
-                    "has_significant_drift": bool(da.has_significant_drift)
-                    if da.has_significant_drift is not None
-                    else (da.js_divergence and da.js_divergence > 0.3),
-                    "has_category_changes": bool(da.has_category_changes)
-                    if da.has_category_changes is not None
-                    else bool(da.new_categories_json or da.missing_categories_json),
-                    "new_categories_json": da.new_categories_json,
-                    "missing_categories_json": da.missing_categories_json,
-                }
+            period_stmt = select(TemporalSliceAnalysis).where(
+                TemporalSliceAnalysis.slice_table_name.in_(slice_table_names)
             )
+            period_analyses = list(ctx.session.execute(period_stmt).scalars().all())
+
+            for ta in period_analyses:
+                col_name = ta.time_column
+                if col_name not in temporal_columns:
+                    temporal_columns[col_name] = {
+                        "is_interesting": False,
+                        "reasons": [],
+                        "coverage_ratio": ta.coverage_ratio,
+                        "last_day_ratio": ta.last_day_ratio,
+                        "is_volume_anomaly": bool(ta.is_volume_anomaly),
+                    }
+                if (
+                    (ta.coverage_ratio is not None and ta.coverage_ratio < 0.5)
+                    or (ta.last_day_ratio is not None and ta.last_day_ratio > 1.5)
+                    or ta.is_volume_anomaly
+                ):
+                    temporal_columns[col_name]["is_interesting"] = True
+                    if ta.coverage_ratio is not None and ta.coverage_ratio < 0.5:
+                        temporal_columns[col_name]["reasons"].append("low_coverage")
+                    if ta.last_day_ratio is not None and ta.last_day_ratio > 1.5:
+                        temporal_columns[col_name]["reasons"].append("period_end_spike")
+                    if ta.is_volume_anomaly:
+                        temporal_columns[col_name]["reasons"].append("volume_anomaly")
 
         # Build detector context
         context = DetectorContext(
@@ -774,17 +788,18 @@ def _run_dimensional_entropy(
                     "slice_data": slice_data,
                     "temporal_columns": temporal_columns,
                     "temporal_drift": temporal_drift,
-                }
+                },
+                "drift_summaries": drift_summaries,
             },
         )
 
-        # Load ColumnQualityReports for this table (LLM-generated quality assessments)
+        # Load ColumnQualityReports (source_column_id references slicing_view cols when available)
         quality_reports_stmt = select(ColumnQualityReport).where(
-            ColumnQualityReport.source_table_name == table.table_name
+            ColumnQualityReport.source_column_id.in_(lookup_column_ids)
         )
         quality_reports = list(ctx.session.execute(quality_reports_stmt).scalars().all())
 
-        # Group reports by column and aggregate into ColumnQualityFinding objects
+        # Group reports by column
         reports_by_column: dict[str, list[Any]] = {}
         for report in quality_reports:
             col_name = report.column_name
@@ -792,13 +807,12 @@ def _run_dimensional_entropy(
                 reports_by_column[col_name] = []
             reports_by_column[col_name].append(report)
 
-        # Build column_id lookup for this table
-        cols_stmt = select(Column).where(Column.table_id == table.table_id)
-        cols_result = ctx.session.execute(cols_stmt)
-        column_id_lookup = {c.column_name: c.column_id for c in cols_result.scalars().all()}
+        # Build column_id lookup: resolve to typed table column IDs for entropy anchoring.
+        # For slicing_view tables, map via sv_col_name_to_typed_id (falls back to None for
+        # enriched FK-prefixed columns that have no counterpart in the typed table).
+        column_id_lookup = {c.column_name: c.column_id for c in table_columns}
 
-        # Create ColumnQualityFinding objects and EntropyObjects for each column
-        column_quality_findings: list[ColumnQualityFinding] = []
+        # Create EntropyObjects for each column's quality assessment
         from dataraum.entropy.models import ResolutionOption
 
         for col_name, reports in reports_by_column.items():
@@ -813,45 +827,38 @@ def _run_dimensional_entropy(
             all_key_findings: list[str] = []
             all_quality_issues: list[dict[str, Any]] = []
             all_recommendations: list[str] = []
-            all_slice_comparisons: list[dict[str, Any]] = []
 
             for report in reports:
                 data = report.report_data or {}
                 all_key_findings.extend(data.get("key_findings", []))
                 all_quality_issues.extend(data.get("quality_issues", []))
                 all_recommendations.extend(data.get("recommendations", []))
-                all_slice_comparisons.extend(data.get("slice_comparisons", []))
 
-            # Create ColumnQualityFinding
-            finding = ColumnQualityFinding(
-                column_name=col_name,
-                avg_quality_score=avg_quality_score,
-                entropy_score=entropy_score_val,
-                grades=grades,
-                slices_analyzed=len(reports),
-                key_findings=all_key_findings,
-                quality_issues=all_quality_issues,
-                recommendations=all_recommendations,
-                slice_comparisons=all_slice_comparisons,
-            )
-            column_quality_findings.append(finding)
-
-            # Get column_id for this column
+            # Resolve column_id: prefer typed table column, fall back to slicing_view column
+            # (for FK-prefixed enriched columns that only exist in the slicing_view)
             col_id = column_id_lookup.get(col_name)
+            effective_table_id = table.table_id
+            effective_table_name = table.table_name
+            if col_id is None and sv_table and sv_col_name_to_typed_id is not None:
+                # Use the report's source_column_id directly (it's a slicing_view col)
+                col_id = reports[0].source_column_id if reports else None
+                effective_table_id = sv_table.table_id
+                effective_table_name = sv_table.table_name
+            if col_id is None:
+                continue
 
             # Create EntropyObject for this column's quality assessment
             column_entropy_obj = EntropyObject(
                 layer="semantic",
                 dimension="dimensional",
                 sub_dimension="column_quality",
-                target=f"column:{table.table_name}.{col_name}",
+                target=f"column:{effective_table_name}.{col_name}",
                 score=entropy_score_val,
-                confidence=0.9,  # High confidence for LLM-assessed quality
                 evidence=[
                     {
                         "source": "column_quality_report",
                         "column_id": col_id,
-                        "table_id": table.table_id,
+                        "table_id": effective_table_id,
                         "slices_analyzed": len(reports),
                         "avg_quality_score": avg_quality_score,
                         "grades": grades,
@@ -862,25 +869,15 @@ def _run_dimensional_entropy(
                 ],
                 resolution_options=[
                     ResolutionOption(
-                        action="review_quality_findings",
+                        action="investigate_quality_issues",
                         parameters={
                             "column_name": col_name,
                             "key_findings": all_key_findings,
+                            "quality_issues": all_quality_issues,
                             "recommendations": all_recommendations,
                         },
-                        expected_entropy_reduction=entropy_score_val * 0.5,
-                        effort="low",
-                        description=f"Review {len(all_key_findings)} quality findings for {col_name}",
-                    ),
-                    ResolutionOption(
-                        action="address_quality_issues",
-                        parameters={
-                            "column_name": col_name,
-                            "issues": all_quality_issues,
-                        },
-                        expected_entropy_reduction=entropy_score_val * 0.7,
                         effort="medium",
-                        description=f"Address {len(all_quality_issues)} quality issues in {col_name}",
+                        description=f"Review {len(all_quality_issues)} quality issues and {len(all_recommendations)} recommendations for {col_name}",
                     ),
                 ],
                 detector_id="dimensional_entropy_column_quality",
@@ -888,80 +885,32 @@ def _run_dimensional_entropy(
             )
             all_entropy_objects.append(column_entropy_obj)
 
-        logger.info(
+        logger.debug(
             "column_quality_reports_processed",
             table=table.table_name,
             reports_count=len(quality_reports),
-            columns_with_findings=len(column_quality_findings),
+            columns_with_findings=len(reports_by_column),
         )
 
-        logger.info(
+        logger.debug(
             "dimensional_entropy_context_built",
             table=table.table_name,
             columns_count=len(columns_data),
             slice_count=len(slice_data),
-            temporal_columns=len(temporal_columns),
+            temporal_columns=0,
         )
 
-        # Run detector with details for summary generation
-        entropy_objects, patterns, entropy_score, analysis_data = detector.detect_with_details(
-            context
-        )
+        # Run detector
+        entropy_objects = detector.detect(context)
         all_entropy_objects.extend(entropy_objects)
 
-        logger.info(
+        logger.debug(
             "dimensional_entropy_detected",
             table=table.table_name,
             entropy_objects=len(entropy_objects),
-            patterns=len(patterns),
-            entropy_score=entropy_score.total_score if entropy_score else 0,
         )
 
-        # Generate dataset summary if there are interesting columns
-        if columns_data or temporal_columns:
-            summary = generate_dataset_summary(
-                table_name=table.table_name,
-                columns_data=analysis_data["columns_data"],
-                temporal_columns=analysis_data["temporal_columns"],
-                patterns=patterns,
-                entropy_score=entropy_score,
-                slice_column=slice_column_name,
-                summary_agent=summary_agent,
-                column_quality_findings=column_quality_findings,
-            )
-            if summary is not None:
-                # Write as table-level interpretation record
-                interp_record = EntropyInterpretationRecord(
-                    source_id=ctx.source_id,
-                    table_id=table.table_id,
-                    column_id=None,
-                    table_name=table.table_name,
-                    column_name=None,
-                    composite_score=summary.dimensional_entropy_score,
-                    readiness=_complexity_to_readiness(summary.complexity_level),
-                    explanation=summary.executive_summary,
-                    assumptions_json=summary.to_dict(),
-                    resolution_actions_json=[
-                        {
-                            "action": "review",
-                            "description": r,
-                            "priority": "medium",
-                            "effort": "low",
-                            "expected_impact": "medium",
-                            "parameters": {},
-                        }
-                        for r in summary.recommendations
-                    ],
-                    from_cache=False,
-                )
-                ctx.session.add(interp_record)
-                logger.info(
-                    "dimensional_entropy_summary_stored",
-                    table=table.table_name,
-                    readiness=interp_record.readiness,
-                )
-
-    logger.info(
+    logger.debug(
         "dimensional_entropy_complete",
         total_objects=len(all_entropy_objects),
     )

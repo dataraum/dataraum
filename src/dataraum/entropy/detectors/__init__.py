@@ -28,6 +28,7 @@ Usage:
 from dataraum.entropy.detectors.base import (
     DetectorContext,
     DetectorRegistry,
+    DetectorTrust,
     EntropyDetector,
     get_default_registry,
 )
@@ -54,8 +55,10 @@ from dataraum.entropy.detectors.structural import (
 
 # Value layer detectors
 from dataraum.entropy.detectors.value import (
+    BenfordDetector,
     NullRatioDetector,
     OutlierRateDetector,
+    TemporalDriftDetector,
 )
 
 # All built-in detector classes (per-column detectors only)
@@ -68,6 +71,8 @@ BUILTIN_DETECTORS: list[type[EntropyDetector]] = [
     # Value
     NullRatioDetector,
     OutlierRateDetector,
+    TemporalDriftDetector,
+    BenfordDetector,
     # Semantic
     BusinessMeaningDetector,
     UnitEntropyDetector,
@@ -97,6 +102,7 @@ __all__ = [
     "EntropyDetector",
     "DetectorContext",
     "DetectorRegistry",
+    "DetectorTrust",
     "get_default_registry",
     # Registration
     "BUILTIN_DETECTORS",
@@ -106,8 +112,10 @@ __all__ = [
     "JoinPathDeterminismDetector",
     "RelationshipEntropyDetector",
     # Value detectors
+    "BenfordDetector",
     "NullRatioDetector",
     "OutlierRateDetector",
+    "TemporalDriftDetector",
     # Semantic detectors
     "BusinessMeaningDetector",
     "UnitEntropyDetector",

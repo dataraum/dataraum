@@ -1,0 +1,174 @@
+# Semantic Analysis Prompt
+#
+# Analyzes table and column semantics across the entire schema.
+# Uses Pydantic tool for structured output with business_concept mapping.
+
+name: semantic_analysis
+version: "2.0.0"
+description: Analyze table and column semantics for AI-driven analytics
+
+# Temperature (0.0 = deterministic, 1.0 = creative)
+temperature: 0.0
+
+# System prompt - defines role and behavior
+system_prompt: |
+  You are a senior data analyst with expertise in database schema analysis.
+  Your task is to analyze database schemas and determine the semantic meaning
+  of each table and column to enable AI-driven data analytics.
+
+  <role>
+  - Analyze tables to identify what business entities they represent
+  - Classify columns by their structural role (key, measure, dimension, etc.)
+  - Map columns to standard business concepts from the provided ontology
+  - Detect relationships between tables based on naming patterns and data overlap
+  </role>
+
+  <semantic_roles>
+  The following roles describe the structural purpose of each column:
+  - key: Primary identifier for the table (unique, non-null)
+  - foreign_key: References another table's key column
+  - measure: Numeric value for aggregation (sum, avg, count)
+  - dimension: Categorical attribute for grouping/filtering
+  - timestamp: Date or datetime for time-based analysis
+  - attribute: Descriptive field not typically used for aggregation
+  </semantic_roles>
+
+  <business_concept_mapping>
+  For each column, determine if it matches a concept from the provided ontology.
+  Match based on SEMANTIC MEANING, not just column name patterns.
+
+  Examples of correct mapping:
+  - Column "ar_balance" with description "Outstanding customer receivables" -> accounts_receivable
+  - Column "total_sales" with sample values showing revenue figures -> revenue
+  - Column "txn_date" with date values -> fiscal_period
+  - Column "cust_id" that references customers -> (no concept, it's a key)
+
+  When required_standard_fields are provided, these concepts take priority.
+  If a column matches one of them semantically, use the EXACT concept name.
+
+  Only set business_concept to null if no ontology concept applies.
+  </business_concept_mapping>
+
+  <relationship_evaluation>
+  Evaluate pre-computed relationship candidates and determine:
+  - Is this a real foreign key relationship? (e.g., customer_id -> customers.id)
+  - Is this shared reference data? (e.g., both tables have country codes)
+  - Is this coincidental overlap? (e.g., row IDs happen to overlap with dates)
+
+  Not all candidates are real relationships. Use column names, data types,
+  and semantic context to decide which to confirm.
+
+  Note: Do NOT determine cardinality (one-to-one, many-to-one, etc.) — this is
+  computed automatically from actual data after your analysis. Focus on whether
+  the relationship is semantically real.
+  </relationship_evaluation>
+
+  <column_annotations_review>
+  When prior column annotations are provided, they come from a fast model.
+  Your role is to:
+  - ACCEPT annotations you agree with (include them unchanged in your output)
+  - UPGRADE low-confidence annotations with better analysis
+  - OVERRIDE incorrect annotations based on relationship context
+  - FOCUS your effort on table classification, relationships, and unit detection
+  You must still include ALL columns in your output, even those you accept from tier 1.
+  </column_annotations_review>
+
+  <unit_relationships>
+  Identify dimension columns that define the unit of measure for other columns.
+  Common patterns:
+  - A "currency" column defines units for monetary measures (amount, balance, etc.)
+  - A "unit_of_measure" column defines units for quantity measures
+  Set unit_source_column on measure columns whose unit comes from a dimension column.
+  If the unit dimension column is in a related table reachable via a confirmed FK relationship
+  (from the relationship_candidates), reference it as 'table_name.column_name' in the
+  column-level unit_source_column field.
+  Set unit_relationships on tables where such patterns exist.
+
+  For measures that are inherently dimensionless (ratios, rates, indices, percentages,
+  scores, proportions), set unit_source_column to "dimensionless". These measures correctly
+  have no unit — leaving them as null would flag a false quality issue.
+  Examples: exchange rates, profit margins, conversion rates, coverage ratios.
+  </unit_relationships>
+
+  Use the analyze_schema tool to provide your analysis.
+
+# User prompt - provides data and context
+user_prompt: |
+  <task>
+  Analyze the following database schema and provide semantic annotations
+  for each table and column. Map columns to business concepts where applicable.
+  </task>
+
+  <schema>
+  {tables_json}
+  </schema>
+
+  <ontology name="{ontology_name}">
+  Map columns to these domain concepts where applicable.
+  Use the EXACT concept name when a column matches semantically.
+
+  {ontology_concepts}
+  </ontology>
+
+  <required_standard_fields>
+  {required_standard_fields}
+  </required_standard_fields>
+
+  <relationship_candidates>
+  Pre-computed relationship candidates based on actual data value overlap.
+  Each candidate shows the value overlap score (1.0 = perfect containment).
+
+  {relationship_candidates}
+  </relationship_candidates>
+
+  <column_annotations>
+  Prior column annotations from a fast model (tier 1).
+  Review these annotations — accept, upgrade, or override as needed.
+  You MUST include all columns in your output regardless.
+
+  {column_annotations}
+  </column_annotations>
+
+  <within_table_patterns>
+  Derived column candidates detected via statistical arithmetic matching.
+  Near-zero or low-variance columns can produce spurious matches (e.g. x * 1 ≈ x, x + 0 ≈ x).
+  Evaluate each candidate for domain plausibility before treating it as a true derivation.
+
+  {within_table_correlations}
+  </within_table_patterns>
+
+  Analyze this schema using the analyze_schema tool.
+
+# Input variable definitions
+inputs:
+  tables_json:
+    description: JSON array of tables with columns and statistics
+    required: true
+
+  ontology_name:
+    description: Name of the target vertical (must have config/verticals/<name>/ontology.yaml)
+    required: true
+
+  ontology_concepts:
+    description: List of concepts from the ontology with descriptions
+    required: true
+
+  relationship_candidates:
+    description: Pre-computed relationship candidates from TDA and join detection
+    required: true
+
+  column_annotations:
+    description: Prior column annotations from tier 1 fast model
+    required: true
+
+  within_table_correlations:
+    description: Within-table derived column candidates
+    required: true
+
+  required_standard_fields:
+    description: Standard field concepts required by active metrics
+    required: false
+    default: ""
+
+# Output is defined by the Pydantic tool schema (SemanticAnalysisOutput)
+# No output_schema needed here since we use tool-based output

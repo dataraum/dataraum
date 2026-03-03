@@ -10,6 +10,9 @@ import duckdb
 import pandas as pd
 
 from dataraum.analysis.relationships.joins import find_join_columns
+from dataraum.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Type alias for table data: (duckdb_path, sampled_df, column_types)
 TableData = tuple[str, pd.DataFrame, dict[str, str | None]]

@@ -20,16 +20,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.orchestrator import Pipeline, PipelineConfig
-from dataraum.pipeline.phases import (
-    CorrelationsPhase,
-    EntropyPhase,
-    ImportPhase,
-    RelationshipsPhase,
-    StatisticalQualityPhase,
-    StatisticsPhase,
-    TemporalPhase,
-    TypingPhase,
-)
+from dataraum.pipeline.phases.correlations_phase import CorrelationsPhase
+from dataraum.pipeline.phases.entropy_phase import EntropyPhase
+from dataraum.pipeline.phases.import_phase import ImportPhase
+from dataraum.pipeline.phases.relationships_phase import RelationshipsPhase
+from dataraum.pipeline.phases.statistical_quality_phase import StatisticalQualityPhase
+from dataraum.pipeline.phases.statistics_phase import StatisticsPhase
+from dataraum.pipeline.phases.temporal_phase import TemporalPhase
+from dataraum.pipeline.phases.typing_phase import TypingPhase
 from dataraum.storage import init_database
 
 # Paths to test data
@@ -366,64 +364,3 @@ def mock_prompt_renderer() -> MagicMock:
     renderer = MagicMock()
     renderer.render_split.return_value = ("System prompt", "User prompt", 0.0)
     return renderer
-
-
-@pytest.fixture
-def mock_llm_cache() -> MagicMock:
-    """Mock LLM cache."""
-    cache = MagicMock()
-    cache.get.return_value = None
-    cache.put.return_value = None
-    return cache
-
-
-@pytest.fixture
-def vectors_conn() -> duckdb.DuckDBPyConnection:
-    """In-memory DuckDB connection with VSS extension for query library tests."""
-    conn = duckdb.connect(":memory:")
-    conn.execute("INSTALL vss")
-    conn.execute("LOAD vss")
-    conn.execute("""
-        CREATE TABLE query_embeddings (
-            query_id VARCHAR PRIMARY KEY,
-            embedding FLOAT[384]
-        )
-    """)
-    yield conn
-    conn.close()
-
-
-@pytest.fixture
-def mock_connection_manager(
-    vectors_conn: duckdb.DuckDBPyConnection,
-) -> MagicMock:
-    """Mock ConnectionManager with real vectors database for library tests."""
-    from unittest.mock import PropertyMock
-
-    manager = MagicMock()
-    type(manager).vectors_enabled = PropertyMock(return_value=True)
-
-    def vectors_cursor_ctx():
-        class CursorCtx:
-            def __enter__(self_inner):
-                return vectors_conn.cursor()
-
-            def __exit__(self_inner, *args):
-                pass
-
-        return CursorCtx()
-
-    def vectors_write_ctx():
-        class WriteCtx:
-            def __enter__(self_inner):
-                return vectors_conn
-
-            def __exit__(self_inner, *args):
-                pass
-
-        return WriteCtx()
-
-    manager.vectors_cursor = vectors_cursor_ctx
-    manager.vectors_write = vectors_write_ctx
-
-    return manager

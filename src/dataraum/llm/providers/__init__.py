@@ -2,16 +2,19 @@
 
 from typing import Any
 
-from dataraum.llm.providers.base import LLMProvider, LLMRequest, LLMResponse
+from dataraum.core.logging import get_logger
+from dataraum.llm.providers.base import LLMProvider
 
-__all__ = ["LLMProvider", "LLMRequest", "LLMResponse", "create_provider"]
+__all__ = ["LLMProvider", "create_provider"]
+
+logger = get_logger(__name__)
 
 
 def create_provider(provider_name: str, provider_config: dict[str, Any]) -> LLMProvider:
     """Create LLM provider based on configuration.
 
     Args:
-        provider_name: Provider name ('anthropic', 'openai', 'local')
+        provider_name: Provider name ('anthropic')
         provider_config: Provider-specific configuration dict
 
     Returns:
@@ -19,27 +22,12 @@ def create_provider(provider_name: str, provider_config: dict[str, Any]) -> LLMP
 
     Raises:
         ValueError: If provider name is unknown
-        NotImplementedError: If provider is not yet implemented
     """
     if provider_name == "anthropic":
         from dataraum.llm.providers.anthropic import AnthropicConfig, AnthropicProvider
 
         anthropic_config = AnthropicConfig(**provider_config)
+        logger.debug("llm_provider_created", provider=provider_name)
         return AnthropicProvider(anthropic_config)
 
-    elif provider_name == "openai":
-        from dataraum.llm.providers.openai import OpenAIConfig, OpenAIProvider
-
-        openai_config = OpenAIConfig(**provider_config)
-        return OpenAIProvider(openai_config)
-
-    elif provider_name == "local":
-        from dataraum.llm.providers.local import LocalConfig, LocalProvider
-
-        local_config = LocalConfig(**provider_config)
-        return LocalProvider(local_config)
-
-    else:
-        raise ValueError(
-            f"Unknown LLM provider: {provider_name}. Supported providers: anthropic, openai, local"
-        )
+    raise ValueError(f"Unknown LLM provider: {provider_name}. Supported providers: anthropic")

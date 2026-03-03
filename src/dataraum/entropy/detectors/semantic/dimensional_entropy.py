@@ -17,18 +17,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import log2
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import structlog
-
+from dataraum.core.logging import get_logger
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
-if TYPE_CHECKING:
-    from dataraum.entropy.summary_agent import DimensionalSummaryAgent
-
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -114,16 +110,24 @@ class DimensionalEntropyScore:
     # Interpretation
     interpretation: str = ""
 
-    def calculate_total(self) -> None:
-        """Calculate total entropy score from components."""
-        # Weight factors for different pattern types
-        weights = {
-            "mutual_exclusivity": 0.8,  # High - critical business rule
-            "conditional_dependency": 0.6,  # Medium - context-dependent behavior
-            "correlated_variance": 0.4,  # Lower - relationship exists
-            "temporal_correlation": 0.5,  # Medium - time-based relationship
-            "temporal_drift": 0.3,  # Lower - expected in some cases
-        }
+    def calculate_total(
+        self,
+        weights: dict[str, float] | None = None,
+    ) -> None:
+        """Calculate total entropy score from components.
+
+        Args:
+            weights: Optional pattern type weights. Defaults to built-in values
+                     if not provided (or loaded from config by caller).
+        """
+        if weights is None:
+            weights = {
+                "mutual_exclusivity": 0.8,
+                "conditional_dependency": 0.6,
+                "correlated_variance": 0.4,
+                "temporal_correlation": 0.5,
+                "temporal_drift": 0.3,
+            }
 
         # Calculate weighted pattern score
         pattern_score = (
@@ -224,6 +228,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         score_partial_pattern = detector_config.get("score_partial_pattern", 0.5)
         correlation_threshold = detector_config.get("correlation_threshold", 0.8)
         mutual_exclusivity_threshold = detector_config.get("mutual_exclusivity_threshold", 0.95)
+        pattern_weights = detector_config.get("pattern_weights", {})
 
         slice_variance = context.get_analysis("slice_variance", {})
         columns_data = slice_variance.get("columns", {})
@@ -244,6 +249,13 @@ class DimensionalEntropyDetector(EntropyDetector):
 
         # Extract INTERESTING temporal columns
         interesting_temporal = self._get_interesting_temporal_columns(temporal_columns)
+
+        # Resolve weights (config or defaults)
+        w_me = pattern_weights.get("mutual_exclusivity", 0.8)
+        w_cd = pattern_weights.get("conditional_dependency", 0.6)
+        w_cv = pattern_weights.get("correlated_variance", 0.4)
+        w_tc = pattern_weights.get("temporal_correlation", 0.5)
+        w_td = pattern_weights.get("temporal_drift", 0.3)
 
         # Detect categorical patterns
         patterns: list[CrossColumnPattern] = []
@@ -284,19 +296,19 @@ class DimensionalEntropyDetector(EntropyDetector):
         patterns.extend(drift_patterns)
         entropy_score.temporal_drift_count = len(drift_patterns)
 
-        # Calculate overall entropy score
+        # Calculate overall entropy score using configurable weights
         entropy_score.categorical_entropy = (
-            entropy_score.mutual_exclusivity_count * 0.8
-            + entropy_score.conditional_dependency_count * 0.6
-            + entropy_score.correlated_variance_count * 0.4
+            entropy_score.mutual_exclusivity_count * w_me
+            + entropy_score.conditional_dependency_count * w_cd
+            + entropy_score.correlated_variance_count * w_cv
         ) / max(len(interesting_columns), 1)
 
         entropy_score.temporal_entropy = (
-            entropy_score.temporal_correlation_count * 0.5
-            + entropy_score.temporal_drift_count * 0.3
+            entropy_score.temporal_correlation_count * w_tc
+            + entropy_score.temporal_drift_count * w_td
         ) / max(len(interesting_temporal), 1)
 
-        entropy_score.calculate_total()
+        entropy_score.calculate_total(weights=pattern_weights or None)
 
         # Create entropy objects for each pattern
         entropy_objects: list[EntropyObject] = []
@@ -324,17 +336,15 @@ class DimensionalEntropyDetector(EntropyDetector):
                         "columns": pattern.columns,
                         "hypothesis": pattern.business_rule_hypothesis,
                     },
-                    expected_entropy_reduction=0.6,
                     effort="medium",
                     description=f"Document business rule: {pattern.description}",
                 ),
                 ResolutionOption(
-                    action="add_constraint",
+                    action="create_constraint",
                     parameters={
                         "pattern_type": pattern.pattern_type,
                         "columns": pattern.columns,
                     },
-                    expected_entropy_reduction=0.3,
                     effort="high",
                     description="Add database constraint to enforce this rule",
                 ),
@@ -381,9 +391,8 @@ class DimensionalEntropyDetector(EntropyDetector):
                     evidence=summary_evidence,
                     resolution_options=[
                         ResolutionOption(
-                            action="document_all_patterns",
+                            action="document_business_rule",
                             parameters={"pattern_count": entropy_score.total_patterns},
-                            expected_entropy_reduction=entropy_score.total_score * 0.8,
                             effort="high",
                             description=f"Document all {entropy_score.total_patterns} detected business rules",
                         )
@@ -423,6 +432,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         score_partial_pattern = detector_config.get("score_partial_pattern", 0.5)
         correlation_threshold = detector_config.get("correlation_threshold", 0.8)
         mutual_exclusivity_threshold = detector_config.get("mutual_exclusivity_threshold", 0.95)
+        pattern_weights = detector_config.get("pattern_weights", {})
 
         slice_variance = context.get_analysis("slice_variance", {})
         columns_data = slice_variance.get("columns", {})
@@ -443,6 +453,13 @@ class DimensionalEntropyDetector(EntropyDetector):
 
         # Extract INTERESTING temporal columns
         interesting_temporal = self._get_interesting_temporal_columns(temporal_columns)
+
+        # Resolve weights (config or defaults)
+        w_me = pattern_weights.get("mutual_exclusivity", 0.8)
+        w_cd = pattern_weights.get("conditional_dependency", 0.6)
+        w_cv = pattern_weights.get("correlated_variance", 0.4)
+        w_tc = pattern_weights.get("temporal_correlation", 0.5)
+        w_td = pattern_weights.get("temporal_drift", 0.3)
 
         # Detect categorical patterns
         patterns: list[CrossColumnPattern] = []
@@ -483,19 +500,19 @@ class DimensionalEntropyDetector(EntropyDetector):
         patterns.extend(drift_patterns)
         entropy_score.temporal_drift_count = len(drift_patterns)
 
-        # Calculate overall entropy score
+        # Calculate overall entropy score using configurable weights
         entropy_score.categorical_entropy = (
-            entropy_score.mutual_exclusivity_count * 0.8
-            + entropy_score.conditional_dependency_count * 0.6
-            + entropy_score.correlated_variance_count * 0.4
+            entropy_score.mutual_exclusivity_count * w_me
+            + entropy_score.conditional_dependency_count * w_cd
+            + entropy_score.correlated_variance_count * w_cv
         ) / max(len(interesting_columns), 1)
 
         entropy_score.temporal_entropy = (
-            entropy_score.temporal_correlation_count * 0.5
-            + entropy_score.temporal_drift_count * 0.3
+            entropy_score.temporal_correlation_count * w_tc
+            + entropy_score.temporal_drift_count * w_td
         ) / max(len(interesting_temporal), 1)
 
-        entropy_score.calculate_total()
+        entropy_score.calculate_total(weights=pattern_weights or None)
 
         # Create entropy objects for each pattern
         entropy_objects: list[EntropyObject] = []
@@ -523,17 +540,15 @@ class DimensionalEntropyDetector(EntropyDetector):
                         "columns": pattern.columns,
                         "hypothesis": pattern.business_rule_hypothesis,
                     },
-                    expected_entropy_reduction=0.6,
                     effort="medium",
                     description=f"Document business rule: {pattern.description}",
                 ),
                 ResolutionOption(
-                    action="add_constraint",
+                    action="create_constraint",
                     parameters={
                         "pattern_type": pattern.pattern_type,
                         "columns": pattern.columns,
                     },
-                    expected_entropy_reduction=0.3,
                     effort="high",
                     description="Add database constraint to enforce this rule",
                 ),
@@ -580,9 +595,8 @@ class DimensionalEntropyDetector(EntropyDetector):
                     evidence=summary_evidence,
                     resolution_options=[
                         ResolutionOption(
-                            action="document_all_patterns",
+                            action="document_business_rule",
                             parameters={"pattern_count": entropy_score.total_patterns},
-                            expected_entropy_reduction=entropy_score.total_score * 0.8,
                             effort="high",
                             description=f"Document all {entropy_score.total_patterns} detected business rules",
                         )
@@ -915,28 +929,25 @@ class DimensionalEntropyDetector(EntropyDetector):
 
         Looks for:
         1. Columns with same temporal reasons (both have gaps, both have spikes)
-        2. Columns that drift in the same periods
-        3. Columns with similar completeness patterns
+        2. Columns that drift at the same change points
 
         Args:
             temporal_columns: List of INTERESTING temporal columns
-            temporal_drift: List of drift analysis records
+            temporal_drift: List of drift summary records with change_points
 
         Returns:
             List of detected temporal correlation patterns
         """
         patterns = []
 
-        # Build drift lookup: column -> list of periods with significant drift
-        drift_by_column: dict[str, list[str]] = {}
+        # Build drift lookup: column -> set of change points
+        drift_by_column: dict[str, set[str]] = {}
         for drift in temporal_drift:
             if drift.get("has_significant_drift") or drift.get("has_category_changes"):
                 col = drift.get("column_name", "")
-                period = drift.get("period_label", "")
-                if col and period:
-                    if col not in drift_by_column:
-                        drift_by_column[col] = []
-                    drift_by_column[col].append(period)
+                change_points = drift.get("change_points", [])
+                if col and change_points:
+                    drift_by_column[col] = set(change_points)
 
         # Check for correlated temporal patterns between column pairs
         for i, col_a in enumerate(temporal_columns):
@@ -963,14 +974,14 @@ class DimensionalEntropyDetector(EntropyDetector):
                         col_b.column_name: col_b.period_end_spike_ratio,
                     }
 
-                # Pattern 3: Drift in same periods
-                drift_a = set(drift_by_column.get(col_a.column_name, []))
-                drift_b = set(drift_by_column.get(col_b.column_name, []))
-                common_drift_periods = drift_a & drift_b
+                # Pattern 3: Drift at same change points
+                drift_a = drift_by_column.get(col_a.column_name, set())
+                drift_b = drift_by_column.get(col_b.column_name, set())
+                common_change_points = drift_a & drift_b
 
-                if common_drift_periods and len(common_drift_periods) >= 1:
-                    confidence += 0.3 * min(len(common_drift_periods), 3) / 3
-                    correlation_evidence["common_drift_periods"] = list(common_drift_periods)
+                if common_change_points:
+                    confidence += 0.3 * min(len(common_change_points), 3) / 3
+                    correlation_evidence["common_change_points"] = list(common_change_points)
 
                 # Pattern 4: Similar completeness (both have gaps or both complete)
                 if col_a.completeness_ratio is not None and col_b.completeness_ratio is not None:
@@ -1011,75 +1022,66 @@ class DimensionalEntropyDetector(EntropyDetector):
     ) -> list[CrossColumnPattern]:
         """Detect significant drift patterns that indicate business rule changes.
 
-        Looks for:
-        1. High JS divergence (distribution shift)
-        2. New/missing categories (value set changes)
-        3. Multiple columns drifting in same period (systemic change)
+        Uses drift summaries (one per column) with change_points to detect
+        systemic changes — multiple columns drifting at the same change point.
 
         Args:
-            temporal_drift: List of drift analysis records
+            temporal_drift: List of drift summary records with change_points
 
         Returns:
             List of detected drift patterns
         """
         patterns = []
 
-        # Group drift by period to detect systemic changes
-        drift_by_period: dict[str, list[dict[str, Any]]] = {}
+        # Group columns by change points to detect systemic changes
+        drift_by_change_point: dict[str, list[dict[str, Any]]] = {}
         for drift in temporal_drift:
-            # Skip if not interesting (pre-filter)
             if not drift.get("has_significant_drift") and not drift.get("has_category_changes"):
                 continue
 
-            # Skip expected replacements (e.g., Stapelnummer)
-            js_div = drift.get("js_divergence", 0)
+            change_points = drift.get("change_points", [])
             col_name = drift.get("column_name", "")
-            if col_name == "Stapelnummer" and js_div and abs(js_div - 0.693) < 0.01:
+
+            for cp in change_points:
+                if cp not in drift_by_change_point:
+                    drift_by_change_point[cp] = []
+                drift_by_change_point[cp].append(drift)
+
+            # If no change points but has drift, use "unknown" as period
+            if not change_points and col_name:
+                if "__no_change_point__" not in drift_by_change_point:
+                    drift_by_change_point["__no_change_point__"] = []
+                drift_by_change_point["__no_change_point__"].append(drift)
+
+        # Detect systemic drift (multiple columns at same change point)
+        for change_point, drifts in drift_by_change_point.items():
+            if change_point == "__no_change_point__" or len(drifts) < 2:
                 continue
 
-            period = drift.get("period_label", "")
-            if period:
-                if period not in drift_by_period:
-                    drift_by_period[period] = []
-                drift_by_period[period].append(drift)
+            columns = [d.get("column_name", "") for d in drifts]
+            avg_divergence = sum(d.get("js_divergence", 0) or 0 for d in drifts) / len(drifts)
 
-        # Detect systemic drift (multiple columns in same period)
-        for period, drifts in drift_by_period.items():
-            if len(drifts) >= 2:
-                columns = [d.get("column_name", "") for d in drifts]
-                avg_divergence = sum(d.get("js_divergence", 0) or 0 for d in drifts) / len(drifts)
-
-                patterns.append(
-                    CrossColumnPattern(
-                        pattern_type="temporal_drift",
-                        columns=columns,
-                        confidence=min(0.5 + 0.1 * len(drifts), 1.0),
-                        description=(
-                            f"Systemic drift in period {period}: "
-                            f"{len(drifts)} columns changed together"
-                        ),
-                        business_rule_hypothesis=(
-                            f"Multiple columns changed in {period}. This may indicate: "
-                            f"(1) Business rule change, (2) Data migration, "
-                            f"(3) New data source, or (4) Seasonal business pattern."
-                        ),
-                        evidence={
-                            "period": period,
-                            "affected_columns": columns,
-                            "avg_js_divergence": avg_divergence,
-                            "drift_details": [
-                                {
-                                    "column": d.get("column_name"),
-                                    "js_divergence": d.get("js_divergence"),
-                                    "new_categories": d.get("new_categories_json"),
-                                    "missing_categories": d.get("missing_categories_json"),
-                                }
-                                for d in drifts
-                            ],
-                        },
-                        uncertainty_bits=log2(1 + len(drifts) * avg_divergence),
-                    )
+            patterns.append(
+                CrossColumnPattern(
+                    pattern_type="temporal_drift",
+                    columns=columns,
+                    confidence=min(0.5 + 0.1 * len(drifts), 1.0),
+                    description=(
+                        f"Systemic drift at {change_point}: {len(drifts)} columns changed together"
+                    ),
+                    business_rule_hypothesis=(
+                        f"Multiple columns changed at {change_point}. This may indicate: "
+                        f"(1) Business rule change, (2) Data migration, "
+                        f"(3) New data source, or (4) Seasonal business pattern."
+                    ),
+                    evidence={
+                        "change_point": change_point,
+                        "affected_columns": columns,
+                        "avg_js_divergence": avg_divergence,
+                    },
+                    uncertainty_bits=log2(1 + len(drifts) * avg_divergence),
                 )
+            )
 
         return patterns
 
@@ -1124,345 +1126,3 @@ def compute_dimensional_entropy(
     entropy = log2(1 + pattern_ratio * 10) / log2(11)  # Normalize to 0-1
 
     return min(1.0, entropy)
-
-
-# =============================================================================
-# DATASET-LEVEL SUMMARY
-# =============================================================================
-
-
-@dataclass
-class ColumnQualityFinding:
-    """Aggregated quality findings for a column from ColumnQualityReport.
-
-    Contains the LLM-generated quality assessment data aggregated across
-    all slice columns for a single source column.
-    """
-
-    column_name: str
-    avg_quality_score: float  # Average overall_quality_score across slices
-    entropy_score: float  # 1.0 - avg_quality_score (higher = more uncertainty)
-    grades: list[str]  # Quality grades from each slice (A-F)
-    slices_analyzed: int
-    key_findings: list[str]  # Aggregated from all report_data
-    quality_issues: list[dict[str, Any]]  # Aggregated issues
-    recommendations: list[str]  # Aggregated recommendations
-    slice_comparisons: list[dict[str, Any]]  # Aggregated comparisons
-
-
-@dataclass
-class InterestingColumnSummary:
-    """Summary of why a column is interesting."""
-
-    column_name: str
-    classification: str  # "interesting" for categorical, or temporal reason
-    source: str  # "categorical" or "temporal"
-    reasons: list[str] = field(default_factory=list)
-    metrics: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class DetectedBusinessRule:
-    """A detected business rule from cross-column patterns."""
-
-    rule_type: str  # mutual_exclusivity, conditional_dependency, etc.
-    columns: list[str]
-    confidence: float
-    description: str
-    hypothesis: str
-    actionable: bool = True
-
-
-@dataclass
-class DatasetDimensionalSummary:
-    """Dataset-level summary synthesizing all dimensional entropy findings.
-
-    This provides a unified view of:
-    - Which columns are interesting and why
-    - What cross-column business rules were detected
-    - Overall data complexity assessment
-    - Recommendations for documentation/validation
-
-    Intended for:
-    - LLM context (to generate human-readable insights)
-    - API responses (structured dataset overview)
-    - Entropy snapshots (persisted summary)
-    """
-
-    # Identification
-    table_name: str
-    slice_column: str | None = None
-
-    # Column analysis summary
-    total_columns: int = 0
-    interesting_categorical_columns: int = 0
-    interesting_temporal_columns: int = 0
-    stable_columns: int = 0
-    empty_columns: int = 0
-    constant_columns: int = 0
-
-    # Interesting columns with reasons
-    interesting_columns: list[InterestingColumnSummary] = field(default_factory=list)
-
-    # Detected business rules
-    business_rules: list[DetectedBusinessRule] = field(default_factory=list)
-
-    # Entropy scores
-    dimensional_entropy_score: float = 0.0
-    categorical_entropy: float = 0.0
-    temporal_entropy: float = 0.0
-    uncertainty_bits: float = 0.0
-
-    # Pattern counts
-    mutual_exclusivity_patterns: int = 0
-    conditional_dependency_patterns: int = 0
-    correlated_variance_patterns: int = 0
-    temporal_correlation_patterns: int = 0
-    temporal_drift_patterns: int = 0
-
-    # Column-level quality findings from ColumnQualityReport (LLM-generated)
-    column_quality_findings: list[ColumnQualityFinding] = field(default_factory=list)
-
-    # Overall assessment
-    complexity_level: str = "low"  # low, moderate, high, very_high
-    data_quality_concerns: list[str] = field(default_factory=list)
-    recommendations: list[str] = field(default_factory=list)
-
-    # Text summary for LLM/human consumption
-    executive_summary: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return {
-            "table_name": self.table_name,
-            "slice_column": self.slice_column,
-            "column_counts": {
-                "total": self.total_columns,
-                "interesting_categorical": self.interesting_categorical_columns,
-                "interesting_temporal": self.interesting_temporal_columns,
-                "stable": self.stable_columns,
-                "empty": self.empty_columns,
-                "constant": self.constant_columns,
-            },
-            "interesting_columns": [
-                {
-                    "column_name": col.column_name,
-                    "classification": col.classification,
-                    "source": col.source,
-                    "reasons": col.reasons,
-                    "metrics": col.metrics,
-                }
-                for col in self.interesting_columns
-            ],
-            "business_rules": [
-                {
-                    "rule_type": rule.rule_type,
-                    "columns": rule.columns,
-                    "confidence": rule.confidence,
-                    "description": rule.description,
-                    "hypothesis": rule.hypothesis,
-                    "actionable": rule.actionable,
-                }
-                for rule in self.business_rules
-            ],
-            "entropy_scores": {
-                "dimensional_entropy": self.dimensional_entropy_score,
-                "categorical_entropy": self.categorical_entropy,
-                "temporal_entropy": self.temporal_entropy,
-                "uncertainty_bits": self.uncertainty_bits,
-            },
-            "pattern_counts": {
-                "mutual_exclusivity": self.mutual_exclusivity_patterns,
-                "conditional_dependency": self.conditional_dependency_patterns,
-                "correlated_variance": self.correlated_variance_patterns,
-                "temporal_correlation": self.temporal_correlation_patterns,
-                "temporal_drift": self.temporal_drift_patterns,
-            },
-            "column_quality_findings": [
-                {
-                    "column_name": cqf.column_name,
-                    "avg_quality_score": cqf.avg_quality_score,
-                    "entropy_score": cqf.entropy_score,
-                    "grades": cqf.grades,
-                    "slices_analyzed": cqf.slices_analyzed,
-                    "key_findings": cqf.key_findings,
-                    "quality_issues": cqf.quality_issues,
-                    "recommendations": cqf.recommendations,
-                }
-                for cqf in self.column_quality_findings
-            ],
-            "assessment": {
-                "complexity_level": self.complexity_level,
-                "data_quality_concerns": self.data_quality_concerns,
-                "recommendations": self.recommendations,
-            },
-            "executive_summary": self.executive_summary,
-        }
-
-
-def generate_dataset_summary(
-    table_name: str,
-    columns_data: dict[str, dict[str, Any]],
-    temporal_columns: dict[str, dict[str, Any]],
-    patterns: list[CrossColumnPattern],
-    entropy_score: DimensionalEntropyScore,
-    slice_column: str | None = None,
-    summary_agent: DimensionalSummaryAgent | None = None,
-    column_quality_findings: list[ColumnQualityFinding] | None = None,
-) -> DatasetDimensionalSummary | None:
-    """Generate a dataset-level summary from dimensional entropy analysis.
-
-    Synthesizes column classifications, detected patterns, entropy scores,
-    and column quality findings into a unified summary. The executive summary,
-    quality concerns, and recommendations are generated by LLM via the summary_agent.
-
-    If summary_agent is None or the LLM call fails, returns None (no summary).
-
-    Args:
-        table_name: Name of the analyzed table
-        columns_data: Column variance data with classifications
-        temporal_columns: Temporal analysis results per column
-        patterns: List of detected cross-column patterns
-        entropy_score: Calculated dimensional entropy score
-        slice_column: Name of the slice column (if applicable)
-        summary_agent: LLM agent for summary generation (required for output)
-        column_quality_findings: LLM-generated column quality assessments from
-            ColumnQualityReport, aggregated per column
-
-    Returns:
-        DatasetDimensionalSummary with all findings synthesized, or None
-        if LLM is unavailable or fails.
-    """
-    if summary_agent is None:
-        logger.info(
-            "dimensional_summary_skipped",
-            table=table_name,
-            reason="no_summary_agent",
-        )
-        return None
-
-    summary = DatasetDimensionalSummary(
-        table_name=table_name,
-        slice_column=slice_column,
-    )
-
-    # Count column classifications
-    summary.total_columns = len(columns_data)
-    for col_name, metrics in columns_data.items():
-        classification = metrics.get("classification", "stable")
-        if classification == "interesting":
-            summary.interesting_categorical_columns += 1
-            summary.interesting_columns.append(
-                InterestingColumnSummary(
-                    column_name=col_name,
-                    classification=classification,
-                    source="categorical",
-                    reasons=metrics.get("exceeded_thresholds", []),
-                    metrics={
-                        "null_spread": metrics.get("null_spread", 0.0),
-                        "distinct_ratio": metrics.get("distinct_ratio", 1.0),
-                        "outlier_spread": metrics.get("outlier_spread", 0.0),
-                    },
-                )
-            )
-        elif classification == "stable":
-            summary.stable_columns += 1
-        elif classification == "empty":
-            summary.empty_columns += 1
-        elif classification == "constant":
-            summary.constant_columns += 1
-
-    # Add temporal interesting columns
-    for col_name, temporal_metrics in temporal_columns.items():
-        if temporal_metrics.get("is_interesting", False):
-            summary.interesting_temporal_columns += 1
-            # Only add if not already in categorical interesting
-            if not any(c.column_name == col_name for c in summary.interesting_columns):
-                summary.interesting_columns.append(
-                    InterestingColumnSummary(
-                        column_name=col_name,
-                        classification="temporal_variance",
-                        source="temporal",
-                        reasons=temporal_metrics.get("reasons", []),
-                        metrics={
-                            "completeness_ratio": temporal_metrics.get("completeness_ratio"),
-                            "period_end_spike_ratio": temporal_metrics.get(
-                                "period_end_spike_ratio"
-                            ),
-                            "gap_count": temporal_metrics.get("gap_count", 0),
-                        },
-                    )
-                )
-
-    # Convert patterns to business rules (deterministic)
-    for pattern in patterns:
-        rule = DetectedBusinessRule(
-            rule_type=pattern.pattern_type,
-            columns=pattern.columns,
-            confidence=pattern.confidence,
-            description=pattern.description,
-            hypothesis=pattern.business_rule_hypothesis,
-            actionable=pattern.confidence > 0.5,
-        )
-        summary.business_rules.append(rule)
-
-    # Set entropy scores
-    summary.dimensional_entropy_score = entropy_score.total_score
-    summary.categorical_entropy = entropy_score.categorical_entropy
-    summary.temporal_entropy = entropy_score.temporal_entropy
-    summary.uncertainty_bits = entropy_score.total_uncertainty_bits
-
-    # Set pattern counts
-    summary.mutual_exclusivity_patterns = entropy_score.mutual_exclusivity_count
-    summary.conditional_dependency_patterns = entropy_score.conditional_dependency_count
-    summary.correlated_variance_patterns = entropy_score.correlated_variance_count
-    summary.temporal_correlation_patterns = entropy_score.temporal_correlation_count
-    summary.temporal_drift_patterns = entropy_score.temporal_drift_count
-
-    # Determine complexity level
-    total_interesting = (
-        summary.interesting_categorical_columns + summary.interesting_temporal_columns
-    )
-    total_patterns = entropy_score.total_patterns
-
-    if total_patterns == 0 and total_interesting <= 2:
-        summary.complexity_level = "low"
-    elif total_patterns <= 2 and total_interesting <= 5:
-        summary.complexity_level = "moderate"
-    elif total_patterns <= 5 or total_interesting <= 10:
-        summary.complexity_level = "high"
-    else:
-        summary.complexity_level = "very_high"
-
-    # Add column quality findings from ColumnQualityReport (if available)
-    if column_quality_findings:
-        summary.column_quality_findings = column_quality_findings
-
-    # Generate executive summary, quality concerns, and recommendations via LLM
-    try:
-        llm_result = summary_agent.summarize(summary)
-        if not llm_result.success:
-            logger.warning(
-                "dimensional_summary_llm_failed",
-                error=llm_result.error,
-                table=table_name,
-            )
-            return None
-
-        output = llm_result.unwrap()
-        summary.executive_summary = output.executive_summary
-        summary.data_quality_concerns = output.data_quality_concerns
-        summary.recommendations = output.recommendations
-        logger.info(
-            "dimensional_summary_generated",
-            table=table_name,
-        )
-    except Exception as e:
-        logger.warning(
-            "dimensional_summary_llm_failed",
-            error=str(e),
-            table=table_name,
-        )
-        return None
-
-    return summary

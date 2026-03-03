@@ -1,20 +1,22 @@
 # DataRaum Context Engine
 
+A Python library for extracting rich metadata context from data sources to power AI-driven data analytics. Instead of giving AI tools to discover metadata at runtime, we pre-compute comprehensive metadata and serve it as structured context documents interpreted through domain ontologies.
+
 ## Core Philosophy
 
 This project prioritizes **correctness over speed**. We would rather have working code slowly than broken code quickly.
 
-## Critical Rules - READ THESE FIRST
+## Critical Rules
 
-### Never Claim "Done" or "Production Ready" Until:
-1. ALL tests pass (run the full test suite, not just the file you changed)
-2. You have verified the actual output matches expected behavior
-3. Type checking passes (if applicable)
-4. Linting passes (if applicable)
+### Never Claim "Done" Until:
+1. ALL tests pass (not just the file you changed)
+2. You have verified actual output matches expected behavior
+3. Type checking passes
+4. Linting passes
 
 If any of these fail, the task is NOT complete. Fix the issues before declaring success.
 
-### The "Three Strikes" Rule for Debugging
+### The "Three Strikes" Rule
 If you've attempted the same fix 3 times without success:
 1. STOP making changes
 2. Explain what you've tried and what you observed
@@ -22,6 +24,21 @@ If you've attempted the same fix 3 times without success:
 4. Ask for guidance or propose a fundamentally different approach
 
 Do not continue making random changes hoping something works.
+
+### E2E Test Failures Mean Production Bugs
+When an e2e test fails, the default assumption is: **the production code has a bug, not the test.**
+
+1. Read the assertion, understand what behavior it expects.
+2. Fix the **source code** (not the test).
+3. If you genuinely believe the test expectation is wrong, STOP and explain your reasoning to the user before touching the test.
+
+**Never do these to make e2e tests pass:**
+- Weaken thresholds (e.g., changing `>= 0.5` to `>= 0.3`) — these are calibrated
+- Add `pytest.mark.skip` or `pytest.mark.xfail`
+- Delete or comment out assertions
+- Change expected values to match broken output
+
+You may edit `tests/e2e/` files when the user explicitly asks you to (e.g., adding new tests, restructuring fixtures, updating test infrastructure). The rule is about *motive*: never edit a test to make a failure disappear.
 
 ## Problem-Solving Standards
 
@@ -31,11 +48,11 @@ Do not continue making random changes hoping something works.
 - Consider edge cases upfront, not as an afterthought
 
 ### When Something Doesn't Work
-1. **Read the actual error message** - quote it in your response
+1. **Read the actual error message** — quote it in your response
 2. **Form a hypothesis** about WHY this error occurred
 3. **Verify your hypothesis** before attempting a fix
 4. **Make ONE targeted change** to test your hypothesis
-5. **Observe the result** - did it confirm or refute your hypothesis?
+5. **Observe the result** — did it confirm or refute your hypothesis?
 
 Do NOT:
 - Make multiple simultaneous changes
@@ -44,18 +61,67 @@ Do NOT:
 - Skip the hypothesis step
 
 ### Test Failures Are Information
-When a test fails:
 - The test is probably right and your code is wrong
 - Understand WHAT the test expects and WHY
 - Only modify the test if you can articulate why the test's expectation is incorrect
 
-## Testing Standards
+## Work Decomposition Protocol
+
+### Task Sizing
+Before starting any work item, classify it:
+
+| Size | Definition | Approach |
+|------|-----------|----------|
+| **S** | 1-3 files, <50 lines changed | Direct implementation, no plan needed |
+| **M** | 3-8 files, <200 lines changed | Use Plan Mode, single session |
+| **L** | 8+ files or 200+ lines | Linear document linked to issue, phased execution |
+| **XL** | Spans multiple modules or repos | Plan approval required, integration branch, phased PRs |
+
+### For M/L/XL tasks: mandatory plan structure
+Plans live as Linear documents (linked to the relevant Linear issue) and must include:
+1. **Scope**: What changes. What explicitly does NOT change.
+2. **Files affected**: List every file. Mark read-only/do-not-touch files.
+3. **Dependency order**: Which steps block which (e.g., A1a → A1b).
+4. **Per-step acceptance criteria**: Verifiable outcomes, not vague descriptions.
+5. **Test plan**: Which test files cover this step, what new tests are needed.
+6. **Rollback**: How to safely abort mid-phase (revert strategy, branch state).
+
+### Phasing Rules
+- Each phase MUST leave ALL tests green — no half-done states
+- Commit after each verified phase
+- Never start phase N+1 until phase N passes all checks
+- For L/XL: use integration branch, PR per phase into it
+
+### Boundaries — Scope Creep Prevention
+Every plan must declare:
+```
+DO change: [list of files]
+DO NOT change: [list of files that must remain untouched]
+```
+If you find yourself wanting to edit a file not in the "DO change" list, STOP and discuss first. Unplanned edits to adjacent code are the #1 source of refactoring errors.
+
+## After Writing Code — Verification Sequence
+
+1. **Read back what you wrote** — does it match the requirement?
+2. **Run the specific test file** for the module you changed
+3. **Check imports** — no unused imports, no missing imports
+4. **Check callers** — does the function signature match all call sites? (grep for usage)
+5. **For refactors: verify the old code path is dead** — grep for references to removed/renamed functions
+6. **For rewrites: verify nothing imports from `_legacy/`** — legacy code is reference only
+
+## Testing
 
 ### Test Quality
 - Each test should test ONE thing
 - Test names should describe the expected behavior
-- Tests should be independent - order should not matter
+- Tests should be independent — order should not matter
 - Prefer many small, focused tests over few large tests
+
+### Test-Driven Debugging
+When fixing a bug:
+1. First write a failing test that reproduces the bug
+2. Then fix the bug
+3. Verify the test now passes
 
 ### When Tests Become Bloated
 If you find yourself iterating heavily on tests:
@@ -64,12 +130,51 @@ If you find yourself iterating heavily on tests:
 3. Delete the bloated test
 4. Write a fresh, minimal test for that single behavior
 
-### Test-Driven Debugging
-When fixing a bug:
-1. First write a failing test that reproduces the bug
-2. Then fix the bug
-3. Verify the test now passes
-4. This proves you actually fixed the issue
+### Running Tests
+
+This project uses `pytest-testmon` to only re-run tests affected by code changes.
+
+**During development (after each code change):**
+```bash
+uv run pytest tests/unit/path/to/test_file.py -v
+```
+
+**After finishing a feature or fix:**
+```bash
+uv run pytest --testmon tests/unit -q
+```
+
+**Before declaring a task done:**
+```bash
+uv run pytest --testmon tests -q
+```
+
+**Rules:**
+- **NEVER run `pytest tests/ -v` (full suite without testmon)** — takes 2+ minutes
+- **Only run specific integration test files** when you changed integration-level code
+- Unit tests: `tests/unit/` (~760 tests, ~13s). Integration: `tests/integration/` (~300 tests, ~2min)
+- The end-of-turn hook runs testmon automatically — don't duplicate its work
+
+### E2E Tests (when asked to run them)
+E2E tests are expensive (real LLM calls, full pipeline). Only run when explicitly asked.
+```bash
+# Run all e2e tests
+uv run pytest tests/e2e -v -m e2e
+
+# Run a specific e2e file
+uv run pytest tests/e2e/test_pipeline_phases.py -v
+```
+
+**When an e2e test fails, this is the protocol:**
+1. Quote the full assertion error and traceback
+2. Identify which production module is responsible (not the test file)
+3. Read the relevant source code
+4. Form a hypothesis about the bug in the production code
+5. Fix the production code
+6. Re-run only the failed test to verify
+7. If you cannot determine the fix, report the failure with your analysis — do NOT patch the test
+
+**Remember: `tests/e2e/` files are READ-ONLY. See "E2E Tests Are Read-Only Ground Truth" above.**
 
 ## Code Quality
 
@@ -83,424 +188,166 @@ When fixing a bug:
 - Only abstract when you see actual duplication (rule of three)
 - Simple, readable code beats clever, abstract code
 
-## Definition of Done Checklist
-
-Before declaring any task complete, verify:
+## Definition of Done
 
 - [ ] All existing tests still pass
 - [ ] New functionality has tests
 - [ ] Type checking passes
 - [ ] Linting passes
-- [ ] Code has been manually verified (if UI) or output checked (if logic)
-- [ ] No console.log or debug statements left in code
+- [ ] Output verified (not just "it compiles")
+- [ ] No debug statements left in code
 - [ ] Error handling is in place
 - [ ] Edge cases are handled
+- [ ] Docs updated (if user-facing behavior changed)
 
-## Current Work - READ THIS FOR CONTEXT
+## Cross-Project Work
 
-**Before starting work, read these files to understand current state:**
+For work spanning multiple repos:
+1. Plan lives in the *coordinating* repo
+2. Each repo gets its own sub-plan with repo-local acceptance criteria
+3. Integration testing happens in a dedicated step AFTER per-repo work
+4. Never assume another repo's state — verify with tests/imports
+5. Pin dependencies between repos during cross-project work
 
-| File | Purpose |
-|------|---------|
-| `docs/BACKLOG.md` | Task stack - what's done, what's next |
-| `docs/PROGRESS.md` | Session log - recent work history |
-| `docs/plans/cli-tui-plan.md` | Current plan: Textual TUI + MCP |
-| `docs/ENTROPY_IMPLEMENTATION_PLAN.md` | Entropy system architecture |
+## Quality Gates (Automated via Hooks)
 
-**Current Focus (from BACKLOG.md):**
-- CLI/TUI: Textual screens for status, entropy, contracts, query
-- MCP Server: 4 tools (get_context, get_entropy, evaluate_contract, query)
+These are enforced mechanically — you don't need to remember them, but know they exist:
+- **Post-edit**: `ruff format` runs after every file edit
+- **End-of-turn**: `ruff check` + `mypy` + `pytest --testmon` blocks if any fail
 
-**Core Concept - Entropy:**
-The key innovation is quantifying **uncertainty (entropy)** in data so LLMs can make deterministic decisions. See `entropy-management-framework.md` for the full spec.
+## Documentation
 
----
+### Docs Site
 
-## What Is This?
+User-facing documentation lives in `docs/` and is published via [Zensical](https://zensical.org/) to GitHub Pages.
 
-A Python library for extracting rich metadata context from data sources to power
-AI-driven data analytics. The core idea: instead of giving AI tools to discover
-metadata at runtime, we pre-compute comprehensive metadata and serve it as
-structured context documents interpreted through domain ontologies.
+| Location | Purpose | Published |
+|----------|---------|-----------|
+| `docs/*.md` | User-facing guides (pipeline, entropy, CLI, MCP setup, etc.) | Yes — in site nav |
+| `docs_old/projects/` | Design specs and project plans | No — not published |
 
-## Quick Start for Claude Code
+**Local preview:** `uv run zensical serve`
+**Build:** `uv run zensical build --clean`
 
-```bash
-# Read these first
-cat docs/ARCHITECTURE.md    # High-level design
-cat docs/DATA_MODEL.md      # SQLAlchemy schema
-cat docs/INTERFACES.md      # Module interfaces
+### When to Update Docs
 
-# Check configuration
-cat config/llm.yaml         # LLM provider settings
-cat config/prompts/         # Customizable prompts
+- **New user-facing feature or behavior change** → update the relevant `docs/*.md` page
+- **Internal implementation detail** → use docstrings in source code
+- **Design decision or project plan** → update `docs_old/projects/` or create a Linear document
 
-# Check existing prototypes (USE AS INSPIRATION)
-ls prototypes/pattern_detection/helper/ # PyArrow + Pint pattern detection, check _convertCsvFile in ../main.py
-ls prototypes/topology/                 # TDA-based relationship detection
-ls prototypes/analytics-agents-ts       # Agents and prompts (inside prompts folder) for data-engineering and business-analysis
+### Docstring Convention
+
+Google-style docstrings, required on **new** public functions, classes, and methods. No backfill obligation.
+
+```python
+def infer_types(cursor: DuckDBPyConnection, table: str) -> Result[TypeProfile]:
+    """Infer column types from raw VARCHAR data.
+
+    Args:
+        cursor: DuckDB connection with the raw table loaded.
+        table: Name of the raw staging table.
+
+    Returns:
+        TypeProfile with inferred types and cast failures.
+
+    Raises:
+        StorageError: If the table does not exist.
+    """
 ```
 
-## Core Principles
+Rules:
+- One-line summary in imperative mood ("Infer types", not "Infers types")
+- `Args`, `Returns`, `Raises` sections when applicable
+- Not required on: private functions (`_helper`), trivial one-liners, test functions
+- Enforced by ruff `D` rules (Google convention, relaxed for existing code)
 
-1. **DuckDB for compute** - All data operations through DuckDB/PyArrow
-2. **SQLAlchemy for metadata** - SQLite for dev, PostgreSQL for production
-3. **Configuration as YAML** - Ontologies, patterns, rules, null values
-4. **OSS-ready** - Clean interfaces, pip-installable, Apache-licensed core
-5. **CLI-first** - Textual TUI for interactive use, MCP for LLM integration
+## Current Work
 
-## Technology Stack
+Check [Linear](https://linear.app/dataraum) for active issues, plans, and project documents. Linear MCP is available.
 
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| Data compute | DuckDB | Load, query, transform data |
-| Data interchange | PyArrow | Efficient data transfer |
-| Pattern detection | PyArrow + Pint | Type inference, unit detection |
-| Topology | TDA (existing prototype) | Relationship detection |
-| Metadata storage | SQLAlchemy | SQLite (dev) / PostgreSQL (prod) |
-| CLI | Typer + Rich | Command-line interface |
-| TUI | Textual | Interactive terminal UI |
-| AI interface | MCP SDK | Tool definitions for AI |
-| Python Runtime | Python 3.14t | Free-threading for true parallelism |
+Active project specs live in `docs_old/projects/` — read these before working on the relevant area:
+- `docs_old/projects/fixes.md` — Data fix persistence, recipes, decision ledger
+- `docs_old/projects/progressive-delivery.md` — SEP-1686 tasks, streaming pipeline results
+- `docs_old/projects/release.md` — CI, PyPI, MCP registry, docs site
 
-## Free-Threading (NO_GIL)
+## Architecture
 
-This project uses **Python 3.14 free-threaded build** for true CPU parallelism. The GIL is disabled, enabling:
-- ~3.5x speedup on 4-core CPU-bound work via `ThreadPoolExecutor`
-- Pipeline phases run in parallel without GIL contention
+### Key Design Decisions
 
-### Running with Free-Threading
+- **VARCHAR-first staging** — All data loaded as VARCHAR to preserve raw values. Type inference happens in profiling, not during load. Prevents silent data loss.
+- **Quarantine pattern** — Failed type casts go to quarantine tables for review, not pipeline failure.
+- **Pre-computed context** — AI receives a pre-assembled `ContextDocument` with all metadata already computed and interpreted through the selected ontology. No runtime discovery.
+- **Ontologies as configuration** — Domain ontologies (financial_reporting, marketing, etc.) are YAML configs that map column patterns to business terms, define computable metrics, and guide semantic interpretation.
+- **Minimal AI tools** — 6 core MCP tools + 3 source management tools. See `src/dataraum/mcp/server.py`.
+- **Free-threading** — Python 3.14t with GIL disabled for true CPU parallelism in pipeline phases.
 
-```bash
-# Run pipeline with GIL disabled
-uv run python -Xgil=0 -m dataraum run /path/to/data
-
-# Verify free-threading is enabled
-python -c "import sys; print('Free-threading:', not sys._is_gil_enabled())"
-```
-
-### Architecture Notes
-
-- **Single ConnectionManager** (`core/connections.py`) shared across modules
-- **Pipeline in ThreadPoolExecutor**: Gets true parallelism from free-threading
-- **DuckDB**: Read cursors are thread-safe; writes serialized via mutex
-
-## Module Structure
+### Module Structure
 
 ```
 src/dataraum/
-├── analysis/       # Data analysis modules
-│   ├── typing/         # Type inference, pattern detection
-│   ├── statistics/     # Column profiling, distributions
-│   ├── correlation/    # Numeric/categorical correlations
-│   ├── relationships/  # Join detection, FK candidates
-│   ├── semantic/       # LLM-powered semantic analysis
-│   ├── temporal/       # Time series analysis
-│   ├── slicing/        # Data slicing recommendations
-│   ├── cycles/         # Business cycle detection
-│   ├── validation/     # Data validation rules
-│   └── quality_summary/# Quality report synthesis
-├── entropy/        # Uncertainty quantification (core innovation)
-│   ├── detectors/      # Entropy measurement per dimension
-│   ├── context.py      # Entropy context builder
-│   └── interpretation.py # LLM entropy interpretation
+├── analysis/       # Data analysis (typing, statistics, correlations, relationships,
+│                   #   semantic, temporal, slicing, cycles, validation, quality_summary)
+├── entropy/        # Uncertainty quantification (detectors, context, interpretation,
+│                   #   decisions, fix_executor, action_executors)
 ├── graphs/         # Calculation graphs, context assembly
-├── pipeline/       # Pipeline orchestrator (18 phases)
-├── sources/        # Data source loaders
-├── storage/        # SQLAlchemy models
+├── pipeline/       # Pipeline orchestrator (19 phases), gates, events
+├── sources/        # Data source loaders (CSV, Parquet)
+├── storage/        # SQLAlchemy models, migrations
 ├── llm/            # LLM providers and prompts
 ├── core/           # Config, connections, utilities
-├── cli/            # Textual TUI (TODO)
-│   ├── main.py         # Typer app, command definitions
-│   ├── app.py          # Textual DataraumApp
-│   ├── screens/        # TUI screens
-│   └── widgets/        # TUI widgets
-└── mcp/            # MCP server (TODO)
-    ├── server.py       # MCP tool definitions
-    └── formatters.py   # LLM-optimized output
+├── cli/            # Typer CLI + Textual TUI
+└── mcp/            # MCP server (9 tools)
 ```
 
-**Note:** SQLAlchemy DB models are co-located with business logic in `db_models.py` files within each module.
+SQLAlchemy DB models are co-located with business logic in `db_models.py` files within each module.
 
-## Data Flow
+### Data Flow
 
 ```
-Source (CSV/DB/API)
-    ↓
-[staging] Load as VARCHAR → raw_{table}
-    ↓
-[profiling] Statistical analysis → profiles, type_candidates
-    ↓
-[profiling] Type resolution → typed_{table}, quarantine_{table}
-    ↓
-[enrichment] LLM semantic analysis → roles, entities, relationships
-    ↓
-[enrichment] Topology (TDA) + temporal → additional metadata
-    ↓
-[quality] LLM rule generation + assessment → rules, scores
-    ↓
-[context] Assembly + LLM summary → ContextDocument (for AI)
-         + LLM suggested queries
+Source (CSV/Parquet) → [staging] VARCHAR → raw_{table}
+  → [profiling] Type inference → typed_{table}, quarantine_{table}
+  → [enrichment] LLM semantic analysis → roles, entities, relationships
+  → [enrichment] Temporal + topology → additional metadata
+  → [quality] LLM rule generation + entropy → scores, actions
+  → [context] Assembly + LLM summary → ContextDocument (for AI)
 ```
 
-## LLM-Powered Features
+### Quick Reference Commands
+```bash
+# Run pipeline
+dataraum run /path/to/data --output ./output
 
-The following features use LLM (configurable via `config/llm.yaml`):
+# Check status / entropy / contracts
+dataraum status ./output
+dataraum entropy ./output
+dataraum contracts ./output
 
-| Feature | Description | Fallback |
-|---------|-------------|----------|
-| Semantic Analysis | Column roles, entity types, relationships | `config/semantic_overrides.yaml` |
-| Quality Rules | Domain-specific rule generation | `config/rules/*.yaml` |
-| Suggested Queries | Context-aware SQL queries | Skip |
-| Context Summary | Natural language data overview | Skip |
+# Start MCP server
+dataraum-mcp
 
-When LLM is disabled, manual YAML configuration is required for semantic analysis.
-Prompts are customizable in `config/prompts/`.
+# Run migration
+python -m dataraum.storage.migrations up
+```
 
-## Key Design Decisions
-
-### VARCHAR-First Staging
-Load all data as VARCHAR to preserve raw values. Type inference happens in
-profiling, not during load. This prevents silent data loss.
-
-### Quarantine Pattern
-Failed type casts don't fail the pipeline. They go to quarantine tables for
-human review. The workflow can checkpoint and wait for approval.
-
-### Pre-computed Context
-AI doesn't discover metadata. It receives a pre-assembled `ContextDocument`
-with all relevant metadata already computed and interpreted through the
-selected ontology.
-
-### Minimal AI Tools
-Only 4 MCP tools:
-- `get_context` - Primary context retrieval
-- `get_entropy` - Entropy analysis for tables/columns
-- `evaluate_contract` - Data readiness evaluation
-- `query` - Execute SQL with entropy awareness
-
-### Ontologies as Configuration
-Domain ontologies (financial_reporting, marketing, etc.) are YAML configs that:
-- Map column patterns to business terms
-- Define computable metrics with formulas
-- Provide domain-specific quality rules
-- Guide semantic interpretation
-
-## Existing Prototypes
-
-### Pattern Detection (`prototypes/pattern_detection/helper`)
-**REIMPLEMENT** take inspiration from the code. Use the yaml configurations for patterns and null values inside config for a reimplementation. Don't use the stats part.
-
+### Code Patterns
 ```python
-# Entry point
-from helper.convert_csv import ChunkedArrayAnalyzer
-
-csv_analyzer = ChunkedArrayAnalyzer(header)
-converted_row = csv_analyzer.process_chunked_array(struct_array)
-# Returns: PatternResult with type_candidates, detected_patterns, detected_unit, stats
-```
-
-Features:
-- Regex-based pattern matching (dates, emails, UUIDs, etc.)
-- Pint integration for unit detection (kg, m/s, USD, etc.)
-- Type candidate scoring with confidence
-
-### Topology Analysis (`prototypes/topology/`)
-**REIMPLEMENT** - take inspiration from the code, remove string comparisons for ranking, focus on extracting the topology and related metrics as additional context for the semantic analysis.
-
-```python
-# Entry point
-from core.topology_extractor import TableTopologyExtractor
-from core.relationship_finder import TableRelationshipFinder
-
-extractor = TableTopologyExtractor()
-finder = TableRelationshipFinder()
-
-
-topology = extractor.extract_topology(df)
-relationships = finder.find_relationships(tables)
-
-# Returns: TopologyGraph with relationships, confidence scores
-```
-
-Features:
-- TDA-based structural analysis
-- Semantic similarity integration
-- FK candidate detection with evidence
-
-### Topology Analysis (`prototypes/analytics-agents-ts/`)
-**REIMPLEMENT** - take inspiration from the code, check the data-analysis prompts inside the prompts folder. Check the data-analysis schema inside the prompts/schemas folder. Follow the same pattern of system prompt, user prompt, JSON Schema as a tool. Only focus on the semantic meaning, skip the data quality part
-
-Features:
-- Analyse the semantics of the provided data schema.
-- Summarize the business purpose.
-- Dynamically create the prompts, with context injected.
-
-## Implementation Guidelines
-
-### Error Handling
-```python
-# Use Result type, not exceptions
+# Error handling — use Result type, not exceptions
 from dataraum.core.models import Result
 
 async def some_operation() -> Result[SomeOutput]:
     try:
-        # ... do work ...
         return Result.ok(output, warnings=["minor issue"])
     except SomeExpectedError as e:
         return Result.fail(str(e))
-```
 
-### Database Connections
-```python
-# Use context managers
+# Database connections — always use context managers
 with manager.session_scope() as session:
     with manager.duckdb_cursor() as cursor:
         result = some_operation(cursor, session)
 ```
 
-### Testing
-- Unit tests for each module
-- Integration tests with DuckDB in-memory + SQLite in-memory
-- Property-based tests for pattern detection
-- Mock LLM responses for deterministic testing
-- Use pytest-asyncio for async tests
-
 ### Code Style
 - Type hints on all functions
 - Pydantic models for data classes
 - No classes where functions suffice
-- Docstrings with Args/Returns
 - Max function length: ~50 lines
-
-## Implementation Order (Historical Reference)
-
-> **Note:** This section reflects the original plan. For current status, see `docs/BACKLOG.md`.
-> Phases 1-4 are complete. Current work is CLI/TUI + MCP.
-
-### Phase 1: Foundation ✅ COMPLETE
-These must come first - everything else depends on them.
-
-| Step | Module | Deliverables |
-|------|--------|--------------|
-| 1 | Storage | SQLAlchemy models, `llm_cache` table |
-| 2 | Core/Config | Settings, YAML loaders, connection managers |
-
-### Phase 2A: LLM Infrastructure ✅ COMPLETE
-
-### Phase 2B: Data Pipeline ✅ COMPLETE
-
-### Phase 3: Intelligent Enrichment ✅ COMPLETE
-
-### Phase 4: Quality & Context ✅ COMPLETE
-(Includes Entropy layer - see `docs/ENTROPY_IMPLEMENTATION_PLAN.md`)
-
-### Phase 5: Interfaces & Orchestration ⏳ IN PROGRESS
-
-| Step | Module | Status |
-|------|--------|--------|
-| Pipeline Orchestrator | `pipeline/` | ✅ 18 phases, CLI complete |
-| CLI/TUI | `cli/` | ⏳ Next: Textual screens |
-| MCP Server | `mcp/` | Pending (after TUI) |
-
-### Testing Strategy
-
-| Phase | Approach |
-|-------|----------|
-| 1-2 | Unit tests with SQLite in-memory |
-| 3-4 | Mock LLM provider (no API calls) |
-| 5-6 | Property-based tests, sample datasets |
-| 7-9 | Integration tests: mock LLM + real DuckDB |
-| 10-11 | Golden file tests for context documents |
-
-## File Locations
-
-| What | Where |
-|------|-------|
-| Architecture docs | `docs/` |
-| Existing prototypes | `prototypes/` |
-| Source code | `src/dataraum/` |
-| Tests | `tests/` |
-| Ontology configs | `config/ontologies/` |
-| Pattern configs | `config/patterns/` |
-| Quality rule configs | `config/rules/` |
-| LLM prompts | `config/prompts/` |
-| LLM config | `config/llm.yaml` |
-| Null value lists | `config/null_values.yaml` |
-| Semantic overrides | `config/semantic_overrides.yaml` |
-| Example data | `examples/data/` |
-
-## Dependencies
-
-```toml
-# pyproject.toml [project.dependencies]
-dependencies = [
-    "duckdb>=1.0.0",
-    "pyarrow>=15.0.0",
-    "pint>=0.23",
-    "sqlalchemy>=2.0.0",
-    "aiosqlite>=0.19.0",
-    "pydantic>=2.0.0",
-    "typer>=0.9.0",
-    "rich>=13.0.0",
-    "textual>=0.50.0",
-    "mcp>=1.0.0",
-    "pyyaml>=6.0.0",
-]
-
-# Optional: LLM providers
-# pip install dataraum[anthropic]  # Claude
-# pip install dataraum[openai]     # OpenAI
-# pip install dataraum[llm]        # Both
-
-# Optional: Synthetic data for privacy
-# pip install dataraum[privacy]    # SDV
-
-# Optional: Everything
-# pip install dataraum[all]
-```
-
-## Quick Reference
-
-### Run pipeline (CLI)
-```bash
-# Run on CSV data
-dataraum run /path/to/data --output ./output
-
-# Check status (launches TUI by default)
-dataraum status ./output
-
-# Check status (raw output)
-dataraum status ./output --no-tui
-
-# View entropy dashboard
-dataraum entropy ./output
-
-# Evaluate contracts
-dataraum contracts ./output
-
-# Inspect graphs and context
-dataraum inspect ./output
-
-# List phases
-dataraum phases
-```
-
-See `docs/CLI.md` for full CLI documentation.
-
-### Run tests
-```bash
-pytest tests/ -v
-```
-
-### Start MCP server
-```bash
-dataraum-mcp
-# or
-python -m dataraum.mcp.server
-```
-
-### Run migration
-```bash
-python -m dataraum.storage.migrations up
-```

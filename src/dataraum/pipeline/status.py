@@ -9,11 +9,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from dataraum.pipeline.base import PIPELINE_DAG, PhaseStatus
+from dataraum.pipeline.base import PhaseStatus
 from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
+from dataraum.pipeline.registry import get_phase_class, get_registry
+from dataraum.storage.base import Base
 
 
 @dataclass
@@ -119,16 +121,18 @@ def get_pipeline_status(session: Session, source_id: str) -> PipelineStatus:
         ):
             checkpoint_by_phase[checkpoint.phase_name] = checkpoint
 
-    # Build phase status list
+    # Build phase status list from registry
+    registry = get_registry()
     phases: list[PhaseStatusInfo] = []
-    for phase_def in PIPELINE_DAG:
-        phase_checkpoint = checkpoint_by_phase.get(phase_def.name)
+    for name, cls in registry.items():
+        instance = cls()
+        phase_checkpoint = checkpoint_by_phase.get(name)
         if phase_checkpoint is not None:
             status = PhaseStatus(phase_checkpoint.status)
             phases.append(
                 PhaseStatusInfo(
-                    name=phase_def.name,
-                    description=phase_def.description,
+                    name=name,
+                    description=instance.description,
                     status=status,
                     duration_seconds=phase_checkpoint.duration_seconds,
                     completed_at=phase_checkpoint.completed_at,
@@ -140,8 +144,8 @@ def get_pipeline_status(session: Session, source_id: str) -> PipelineStatus:
         else:
             phases.append(
                 PhaseStatusInfo(
-                    name=phase_def.name,
-                    description=phase_def.description,
+                    name=name,
+                    description=instance.description,
                     status=PhaseStatus.PENDING,
                 )
             )
@@ -179,3 +183,99 @@ def reset_pipeline(session: Session, source_id: str) -> int:
         session.delete(run)
 
     return count
+
+
+def get_phase_tables(phase_name: str) -> list[type[Base]]:
+    """Get all SQLAlchemy model classes owned by a phase.
+
+    Introspects the phase's db_models modules for Base subclasses.
+
+    Args:
+        phase_name: Name of the phase.
+
+    Returns:
+        List of SQLAlchemy model classes.
+    """
+    cls = get_phase_class(phase_name)
+    if not cls:
+        return []
+
+    instance = cls()
+    tables: list[type[Base]] = []
+    for module in instance.db_models:
+        for attr_name in dir(module):
+            attr = getattr(module, attr_name)
+            if isinstance(attr, type) and issubclass(attr, Base) and attr is not Base:
+                tables.append(attr)
+    return tables
+
+
+def _sort_by_fk_depth(models: list[type[Base]]) -> list[type[Base]]:
+    """Sort models so child tables (with FKs to others in the list) come first.
+
+    This ensures we delete from leaf tables before parent tables to
+    avoid FK constraint violations.
+    """
+    table_names = {m.__tablename__ for m in models}
+
+    def fk_depth(model: type[Base]) -> int:
+        depth = 0
+        for col in model.__table__.columns:
+            for fk in col.foreign_keys:
+                if fk.column.table.name in table_names:
+                    depth += 1
+        return -depth  # Negative so more FKs = sorted first
+
+    return sorted(models, key=fk_depth)
+
+
+def reset_phase(session: Session, source_id: str, phase_name: str) -> int:
+    """Reset a specific phase for a source.
+
+    Deletes phase data (bulk DELETE filtered by source_id) and
+    removes the phase checkpoint so the pipeline re-runs it.
+
+    Args:
+        session: SQLAlchemy session
+        source_id: Source identifier
+        phase_name: Phase to reset
+
+    Returns:
+        Number of rows deleted.
+    """
+    deleted = 0
+    tables = get_phase_tables(phase_name)
+    sorted_tables = _sort_by_fk_depth(tables)
+
+    for model in sorted_tables:
+        if hasattr(model, "source_id"):
+            stmt = delete(model).where(model.source_id == source_id)
+        elif hasattr(model, "column_id"):
+            from dataraum.storage.models import Column, Table
+
+            subq = (
+                select(Column.column_id)
+                .join(Table, Column.table_id == Table.table_id)
+                .where(Table.source_id == source_id)
+            )
+            stmt = delete(model).where(model.column_id.in_(subq))
+        elif hasattr(model, "table_id"):
+            from dataraum.storage.models import Table
+
+            subq = select(Table.table_id).where(Table.source_id == source_id)
+            stmt = delete(model).where(model.table_id.in_(subq))
+        else:
+            continue
+
+        result = session.execute(stmt)
+        deleted += result.rowcount  # type: ignore[attr-defined]
+
+    # Delete phase checkpoint
+    cp_stmt = delete(PhaseCheckpoint).where(
+        PhaseCheckpoint.source_id == source_id,
+        PhaseCheckpoint.phase_name == phase_name,
+    )
+    cp_result = session.execute(cp_stmt)
+    deleted += cp_result.rowcount  # type: ignore[attr-defined]
+
+    return int(deleted)

@@ -4,6 +4,7 @@ Computes Pearson and Spearman correlations on numpy arrays.
 No database, no async - just math.
 """
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -77,15 +78,20 @@ def compute_pairwise_correlations(
             if std1 < 1e-10 or std2 < 1e-10:
                 continue
 
-            # Pearson
-            pearson_r, pearson_p = stats.pearsonr(col1_clean, col2_clean)
-            pearson_r = float(np.asarray(pearson_r).item())
-            pearson_p = float(np.asarray(pearson_p).item())
+            # Suppress numpy divide-by-zero warnings from scipy internals
+            # (spearmanr calls np.corrcoef on ranks which can hit constant-column edge cases)
+            with np.errstate(invalid="ignore"), warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
 
-            # Spearman
-            spearman_rho, spearman_p = stats.spearmanr(col1_clean, col2_clean)
-            spearman_rho = float(np.asarray(spearman_rho).item())
-            spearman_p = float(np.asarray(spearman_p).item())
+                # Pearson
+                pearson_r, pearson_p = stats.pearsonr(col1_clean, col2_clean)
+                pearson_r = float(np.asarray(pearson_r).item())
+                pearson_p = float(np.asarray(pearson_p).item())
+
+                # Spearman
+                spearman_rho, spearman_p = stats.spearmanr(col1_clean, col2_clean)
+                spearman_rho = float(np.asarray(spearman_rho).item())
+                spearman_p = float(np.asarray(spearman_p).item())
 
             # Filter by threshold
             if abs(pearson_r) < min_correlation and abs(spearman_rho) < min_correlation:

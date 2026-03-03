@@ -17,6 +17,7 @@ from textual.widgets import (
 from textual.widgets.tree import TreeNode
 
 from dataraum.cli.common import get_manager
+from dataraum.cli.tui.formatting import format_evidence_field
 
 
 class ContractsScreen(Screen[None]):
@@ -42,6 +43,8 @@ class ContractsScreen(Screen[None]):
         self._violations_by_dim: dict[str, Any] = {}
         # Interpretations keyed by column key ("table.column") for LLM resolution actions
         self._interp_by_col: dict[str, Any] = {}
+        # Column summaries keyed by "table.column" for resolution hints
+        self._column_summaries: dict[str, Any] = {}
 
     def compose(self) -> ComposeResult:
         """Create the screen layout with tree and detail panel."""
@@ -78,6 +81,7 @@ class ContractsScreen(Screen[None]):
         self._entropy_by_dim_col.clear()
         self._violations_by_dim.clear()
         self._interp_by_col.clear()
+        self._column_summaries.clear()
         self._selected_contract = None
         self._load_data()
 
@@ -88,13 +92,14 @@ class ContractsScreen(Screen[None]):
 
         from sqlalchemy import select
 
-        from dataraum.entropy.analysis.aggregator import ColumnSummary, EntropyAggregator
         from dataraum.entropy.contracts import (
             evaluate_all_contracts,
             get_contract,
         )
-        from dataraum.entropy.core.storage import EntropyRepository
-        from dataraum.entropy.db_models import EntropyInterpretationRecord, EntropyObjectRecord
+        from dataraum.entropy.db_models import EntropyObjectRecord
+        from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
+        from dataraum.entropy.views.network_context import build_for_network
+        from dataraum.entropy.views.query_context import network_to_column_summaries
         from dataraum.storage import Column, Source, Table
 
         manager = get_manager(self.output_dir)
@@ -123,26 +128,11 @@ class ContractsScreen(Screen[None]):
 
                 table_ids = [t.table_id for t in tables]
 
-                # Build column summaries
-                repo = EntropyRepository(session)
-                aggregator = EntropyAggregator()
+                # Build column summaries via network
+                network_ctx = build_for_network(session, table_ids)
+                column_summaries = network_to_column_summaries(network_ctx)
 
-                typed_table_ids = repo.get_typed_table_ids(table_ids)
-                column_summaries: dict[str, ColumnSummary] = {}
-                compound_risks: list[Any] = []
-
-                if typed_table_ids:
-                    table_map, column_map = repo.get_table_column_mapping(typed_table_ids)
-                    entropy_objects = repo.load_for_tables(typed_table_ids, enforce_typed=True)
-
-                    if entropy_objects:
-                        column_summaries, _ = aggregator.summarize_columns_by_table(
-                            entropy_objects=entropy_objects,
-                            table_map=table_map,
-                            column_map=column_map,
-                        )
-                        for summary in column_summaries.values():
-                            compound_risks.extend(summary.compound_risks)
+                self._column_summaries = column_summaries
 
                 # Load entropy objects for dimension-specific evidence
                 # Build column_id -> column_key mapping
@@ -183,7 +173,7 @@ class ContractsScreen(Screen[None]):
                     self._interp_by_col[col_key] = interp
 
                 # Evaluate all contracts and store
-                self._evaluations = evaluate_all_contracts(column_summaries, compound_risks)
+                self._evaluations = evaluate_all_contracts(column_summaries)
 
                 # Store profiles
                 for name in self._evaluations:
@@ -461,8 +451,7 @@ class ContractsScreen(Screen[None]):
                     )
                     content_parts.append(
                         f"  [bold]{obj.sub_dimension}[/bold]  "
-                        f"[{score_color}]{obj.score:.3f}[/{score_color}]  "
-                        f"[dim]confidence: {obj.confidence:.2f}[/dim]"
+                        f"[{score_color}]{obj.score:.3f}[/{score_color}]"
                     )
 
                     # Show all evidence fields
@@ -471,7 +460,7 @@ class ContractsScreen(Screen[None]):
                         evidence = evidence[0] if evidence and isinstance(evidence[0], dict) else {}
                     if evidence:
                         for key, value in evidence.items():
-                            content_parts.append(f"    {_format_evidence_field(key, value)}")
+                            content_parts.append(f"    {format_evidence_field(key, value)}")
                     else:
                         content_parts.append("    [dim]No evidence data[/dim]")
             else:
@@ -489,21 +478,24 @@ class ContractsScreen(Screen[None]):
         content_parts: list[str] = []
         priority_colors = {"high": "red", "medium": "yellow", "low": "green"}
 
-        # Build cascade lookup from detector resolution_options (secondary source)
-        cascade_by_action: dict[str, list[str]] = {}
-        reduction_by_action: dict[str, float] = {}
+        # Collect top resolution hints from ColumnSummary for affected columns
+        hint_counts: dict[str, int] = {}  # action -> number of columns affected
         for col_key in affected_columns:
-            dim_key = (dimension, col_key)
-            for obj in self._entropy_by_dim_col.get(dim_key, []):
-                if not obj.resolution_options:
-                    continue
-                for opt in obj.resolution_options:
-                    if not isinstance(opt, dict):
-                        continue
-                    act = opt.get("action", "")
-                    if act and act not in cascade_by_action:
-                        cascade_by_action[act] = opt.get("cascade_dimensions", [])
-                        reduction_by_action[act] = opt.get("expected_entropy_reduction", 0.0)
+            summary = self._column_summaries.get(col_key)
+            if not summary or not summary.top_resolution_hints:
+                continue
+            for hint in summary.top_resolution_hints:
+                hint_counts[hint.action] = hint_counts.get(hint.action, 0) + 1
+
+        # Show summary header if hints found
+        if hint_counts:
+            top_action = max(hint_counts, key=lambda a: hint_counts[a])
+            top_count = hint_counts[top_action]
+            content_parts.append(
+                f"[bold]Top action:[/bold] {top_action}, "
+                f"affects {top_count} column{'s' if top_count != 1 else ''}"
+            )
+            content_parts.append("")
 
         # Primary source: LLM interpretation actions filtered by dimension
         for col_key in affected_columns:
@@ -555,14 +547,6 @@ class ContractsScreen(Screen[None]):
                     param_str = ", ".join(f"{k}={v}" for k, v in parameters.items())
                     content_parts.append(f"    [dim]params: {param_str}[/dim]")
 
-                # Cross-reference cascade from detector data
-                cascade = cascade_by_action.get(action_name, [])
-                reduction = reduction_by_action.get(action_name, 0.0)
-                if cascade:
-                    content_parts.append(f"    [dim]cascades: {', '.join(cascade)}[/dim]")
-                if reduction:
-                    content_parts.append(f"    [dim]reduction: {reduction:.0%}[/dim]")
-
             content_parts.append("")
 
         if not content_parts:
@@ -587,16 +571,25 @@ def _action_matches_dimension(action: dict[str, Any], dimension: str) -> bool:
         return True
 
     # Map common action names to their related dimensions
+    # Actions follow taxonomy: document_*, investigate_*, transform_*, create_*
     action_name = str(action.get("action", "")).lower()
     action_to_dim = {
-        "types": ["add_type_declaration", "override_type", "declare_type"],
-        "units": ["declare_unit", "add_unit"],
-        "nulls": ["declare_null_meaning", "filter_nulls", "impute"],
-        "outliers": ["winsorize", "exclude_outliers"],
-        "relations": ["confirm_relationship", "add_fk_constraint"],
-        "business_meaning": ["add_definition", "document_semantics", "document_flag_semantics"],
-        "temporal": ["add_temporal_declaration"],
-        "derived_values": ["declare_formula"],
+        "types": ["document_type_override", "transform_quarantine_values"],
+        "units": ["document_unit"],
+        "nulls": ["document_null_semantics", "transform_filter_nulls", "transform_impute_values"],
+        "outliers": ["transform_winsorize", "transform_exclude_outliers", "investigate_outliers"],
+        "relations": [
+            "document_relationship",
+            "document_join_path",
+            "transform_fix_referential_integrity",
+        ],
+        "business_meaning": [
+            "document_description",
+            "document_business_name",
+            "document_entity_type",
+        ],
+        "temporal": ["document_timestamp_role", "transform_resolve_temporal_mismatch"],
+        "derived_values": ["document_formula", "investigate_formula_mismatches"],
     }
 
     related_actions = action_to_dim.get(sub, [])
@@ -609,31 +602,3 @@ def _action_matches_dimension(action: dict[str, Any], dimension: str) -> bool:
         return True
 
     return False
-
-
-def _format_evidence_field(key: str, value: Any) -> str:
-    """Format a single evidence field with human-readable label and value."""
-    label = key.replace("_", " ").title()
-
-    if isinstance(value, float):
-        if key.endswith(("_rate", "_ratio", "_confidence", "confidence")):
-            return f"[dim]{label}:[/dim] {value:.1%}"
-        return f"[dim]{label}:[/dim] {value:.3f}"
-    elif isinstance(value, bool):
-        return f"[dim]{label}:[/dim] {'yes' if value else 'no'}"
-    elif isinstance(value, int):
-        return f"[dim]{label}:[/dim] {value:,}"
-    elif isinstance(value, list):
-        if not value:
-            return f"[dim]{label}:[/dim] (none)"
-        items = [str(v) for v in value[:5]]
-        suffix = f" ... +{len(value) - 5}" if len(value) > 5 else ""
-        return f"[dim]{label}:[/dim] {', '.join(items)}{suffix}"
-    elif isinstance(value, dict):
-        items = [f"{k}={v}" for k, v in list(value.items())[:3]]
-        return f"[dim]{label}:[/dim] {', '.join(items)}"
-    else:
-        val_str = str(value)
-        if len(val_str) > 80:
-            val_str = val_str[:77] + "..."
-        return f"[dim]{label}:[/dim] {val_str}"

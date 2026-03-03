@@ -11,17 +11,21 @@ Analyzes temporal columns for:
 
 from __future__ import annotations
 
+from types import ModuleType
+
 from sqlalchemy import func, select
 
 from dataraum.analysis.temporal import TemporalColumnProfile, profile_temporal
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
 
 
+@analysis_phase
 class TemporalPhase(BasePhase):
     """Temporal profiling phase.
 
@@ -49,6 +53,12 @@ class TemporalPhase(BasePhase):
     def outputs(self) -> list[str]:
         return ["temporal_profiles"]
 
+    @property
+    def db_models(self) -> list[ModuleType]:
+        from dataraum.analysis.temporal import db_models
+
+        return [db_models]
+
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no temporal columns or all already profiled."""
 
@@ -60,7 +70,7 @@ class TemporalPhase(BasePhase):
         if not typed_tables:
             return f"No typed tables found for source {ctx.source_id}"
 
-        logger.info(f"Temporal: Found {len(typed_tables)} typed tables")
+        logger.debug(f"Temporal: Found {len(typed_tables)} typed tables")
 
         # Check for temporal columns
         temporal_types = ["DATE", "TIMESTAMP", "TIMESTAMPTZ"]
@@ -73,7 +83,7 @@ class TemporalPhase(BasePhase):
         for col in all_columns:
             t = col.resolved_type or "NULL"
             type_counts[t] = type_counts.get(t, 0) + 1
-        logger.info(f"Temporal: Column types in typed tables: {type_counts}")
+        logger.debug(f"Temporal: Column types in typed tables: {type_counts}")
 
         temporal_columns_stmt = select(Column).where(
             Column.table_id.in_(typed_table_ids),
@@ -84,7 +94,7 @@ class TemporalPhase(BasePhase):
         if not temporal_columns:
             return f"No temporal columns found (types: {temporal_types}, available: {list(type_counts.keys())})"
 
-        logger.info(f"Temporal: Found {len(temporal_columns)} temporal columns")
+        logger.debug(f"Temporal: Found {len(temporal_columns)} temporal columns")
 
         # Check existing profiles
         existing_count = (
@@ -135,6 +145,7 @@ class TemporalPhase(BasePhase):
                 table_id=typed_table.table_id,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
+                config=ctx.config if "processing" in ctx.config else None,
             )
 
             if not profile_result.success:

@@ -1,0 +1,48 @@
+# Trial Balance Validation
+# Checks if Assets = Liabilities + Equity (accounting equation)
+
+validation_id: trial_balance
+name: Trial Balance (Accounting Equation)
+description: >
+  Validates the fundamental accounting equation: Assets = Liabilities + Equity.
+  This equation must always balance and is the foundation of the balance sheet.
+
+category: financial
+severity: critical
+version: "1.0"
+
+tags:
+  - accounting
+  - trial-balance
+  - balance-sheet
+  - equation
+
+relevant_cycles:
+  - journal_entry_cycle
+  - accounts_receivable
+  - accounts_payable
+
+check_type: comparison
+
+parameters:
+  tolerance: 0.01
+  # Account type classifications (hints for LLM)
+  asset_types: ["asset", "assets"]
+  liability_types: ["liability", "liabilities"]
+  equity_types: ["equity", "stockholders equity", "shareholders equity", "capital"]
+
+sql_hints: >
+  Look for columns that represent amounts and account types/categories.
+  Check semantic annotations for entity_type: amount, account_type.
+
+  Group by account_type and sum amounts for each category:
+  - Assets: account types containing 'asset'
+  - Liabilities: account types containing 'liability'
+  - Equity: account types containing 'equity', 'capital'
+
+  Calculate: assets, liabilities, equity, difference = assets - (liabilities + equity)
+  Include equation_holds = (ABS(difference) <= tolerance) as boolean.
+
+expected_outcome: >
+  Assets should equal Liabilities + Equity within tolerance.
+  The equation_holds column should be true for a passing check.

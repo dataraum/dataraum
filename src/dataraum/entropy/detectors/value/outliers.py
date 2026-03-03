@@ -4,8 +4,10 @@ Measures uncertainty from outlier values.
 High outlier rate indicates data quality issues that affect aggregations.
 """
 
+from typing import Any
+
 from dataraum.entropy.config import get_entropy_config
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -17,43 +19,59 @@ class OutlierRateDetector(EntropyDetector):
     that can skew aggregations.
 
     Source: statistics/quality.iqr_outlier_ratio
-    Formula: entropy = min(1.0, outlier_ratio * multiplier)
+    Formula: piecewise-linear mapping aligned with impact thresholds.
+    0% → 0.0, 1% → 0.15, 5% → 0.4, 10% → 0.65, 20%+ → 1.0
 
-    Multiplier is configurable in config/entropy/thresholds.yaml.
-    Default: 10x (10% outliers = max entropy).
+    Impact thresholds configurable in config/entropy/thresholds.yaml.
     """
 
     detector_id = "outlier_rate"
     layer = "value"
     dimension = "outliers"
+    trust_level = DetectorTrust.HARD
     sub_dimension = "outlier_rate"
-    required_analyses = ["statistics"]
+    required_analyses = ["statistics", "semantic"]
     description = "Measures uncertainty from outlier values"
+
+    # Semantic roles where outlier detection is meaningless
+    _SKIP_ROLES = frozenset({"key", "foreign_key"})
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect outlier rate entropy.
 
+        Skips columns with semantic_role key/foreign_key (outliers are
+        meaningless for identifiers).
+
         Args:
-            context: Detector context with statistics/quality analysis
+            context: Detector context with statistics and semantic analysis
 
         Returns:
-            List with single EntropyObject for outlier rate
+            List with single EntropyObject for outlier rate,
+            or empty list if not applicable
         """
+        # Skip identifier columns — outliers are meaningless for keys
+        semantic = context.get_analysis("semantic", {})
+        if hasattr(semantic, "semantic_role"):
+            role = semantic.semantic_role
+        else:
+            role = semantic.get("semantic_role")
+        if role in self._SKIP_ROLES:
+            return []
+
         # Load configuration
         config = get_entropy_config()
         detector_config = config.detector("outlier_rate")
 
         # Get configurable thresholds
-        multiplier = detector_config.get("multiplier", 10.0)
         impact_minimal = detector_config.get("impact_minimal", 0.01)
         impact_moderate = detector_config.get("impact_moderate", 0.05)
         impact_significant = detector_config.get("impact_significant", 0.10)
+        score_at_minimal = detector_config.get("score_at_minimal", 0.15)
+        score_at_moderate = detector_config.get("score_at_moderate", 0.40)
+        score_at_significant = detector_config.get("score_at_significant", 0.65)
         suggest_winsorize = detector_config.get("suggest_winsorize_threshold", 0.2)
         suggest_exclude = detector_config.get("suggest_exclude_threshold", 0.5)
-        reduction_winsorize = detector_config.get("reduction_winsorize", 0.7)
-        reduction_exclude = detector_config.get("reduction_exclude", 0.9)
-        reduction_investigate = detector_config.get("reduction_investigate", 0.5)
-
+        cv_attenuation_threshold = detector_config.get("cv_attenuation_threshold", 2.0)
         stats = context.get_analysis("statistics", {})
 
         # Extract outlier information
@@ -66,18 +84,21 @@ class OutlierRateDetector(EntropyDetector):
         elif isinstance(quality, dict):
             outlier_detection = quality.get("outlier_detection")
 
-        # Extract IQR outlier ratio
+        # Extract IQR and Z-score outlier ratios
+        zscore_ratio: float = 0.0
         if outlier_detection:
             if hasattr(outlier_detection, "iqr_outlier_ratio"):
                 outlier_ratio = outlier_detection.iqr_outlier_ratio
                 outlier_count = getattr(outlier_detection, "iqr_outlier_count", 0)
                 lower_fence = getattr(outlier_detection, "iqr_lower_fence", None)
                 upper_fence = getattr(outlier_detection, "iqr_upper_fence", None)
+                zscore_ratio = getattr(outlier_detection, "zscore_outlier_ratio", 0.0)
             else:
                 outlier_ratio = outlier_detection.get("iqr_outlier_ratio", 0.0)
                 outlier_count = outlier_detection.get("iqr_outlier_count", 0)
                 lower_fence = outlier_detection.get("iqr_lower_fence")
                 upper_fence = outlier_detection.get("iqr_upper_fence")
+                zscore_ratio = outlier_detection.get("zscore_outlier_ratio", 0.0)
         else:
             # No outlier detection available - check for direct ratio
             outlier_ratio = stats.get("iqr_outlier_ratio", 0.0)
@@ -85,8 +106,46 @@ class OutlierRateDetector(EntropyDetector):
             lower_fence = stats.get("iqr_lower_fence")
             upper_fence = stats.get("iqr_upper_fence")
 
-        # Calculate entropy using configurable multiplier
-        score = min(1.0, outlier_ratio * multiplier)
+        # Calculate entropy using piecewise-linear mapping aligned with impact thresholds
+        # 0% → 0.0, impact_minimal → score_at_minimal, impact_moderate → score_at_moderate,
+        # impact_significant → score_at_significant, 2×impact_significant → 1.0
+        if outlier_ratio == 0:
+            score = 0.0
+        elif outlier_ratio < impact_minimal:
+            score = (outlier_ratio / impact_minimal) * score_at_minimal
+        elif outlier_ratio < impact_moderate:
+            score = score_at_minimal + (outlier_ratio - impact_minimal) / (
+                impact_moderate - impact_minimal
+            ) * (score_at_moderate - score_at_minimal)
+        elif outlier_ratio < impact_significant:
+            score = score_at_moderate + (outlier_ratio - impact_moderate) / (
+                impact_significant - impact_moderate
+            ) * (score_at_significant - score_at_moderate)
+        else:
+            score = min(
+                1.0,
+                score_at_significant
+                + (outlier_ratio - impact_significant)
+                / impact_significant
+                * (1.0 - score_at_significant),
+            )
+
+        # Attenuate score for high-CV columns where IQR outlier detection is unreliable.
+        # Columns with high coefficient of variation (e.g., FX rates spanning 0.7 to 150)
+        # naturally have wide ranges — IQR "outliers" are legitimate values, not quality issues.
+        # Attenuate using robust_cv (MAD/|median|) which is not inflated by the outliers
+        # being detected, avoiding the self-defeating attenuation loop that stddev-based CV caused.
+        # No fallback to classical cv — if robust_cv is absent, skip attenuation entirely.
+        cv_attenuated = False
+        profile_data = stats.get("profile_data", {})
+        if isinstance(profile_data, dict):
+            numeric_stats = profile_data.get("numeric_stats", {})
+            if isinstance(numeric_stats, dict):
+                cv = numeric_stats.get("robust_cv")
+                if cv is not None and cv > cv_attenuation_threshold:
+                    dampen = cv_attenuation_threshold / cv
+                    score = score * dampen
+                    cv_attenuated = True
 
         # Classify outlier impact using configurable thresholds
         if outlier_ratio == 0:
@@ -101,15 +160,25 @@ class OutlierRateDetector(EntropyDetector):
             outlier_impact = "critical"
 
         # Build evidence
-        evidence = [
-            {
-                "outlier_ratio": outlier_ratio,
-                "outlier_count": outlier_count,
-                "outlier_impact": outlier_impact,
-                "iqr_lower_fence": lower_fence,
-                "iqr_upper_fence": upper_fence,
-            }
-        ]
+        evidence_dict: dict[str, Any] = {
+            "outlier_ratio": outlier_ratio,
+            "outlier_count": outlier_count,
+            "outlier_impact": outlier_impact,
+            "iqr_lower_fence": lower_fence,
+            "iqr_upper_fence": upper_fence,
+        }
+        if cv_attenuated:
+            evidence_dict["cv_attenuated"] = True
+            evidence_dict["robust_cv"] = cv  # type: ignore[possibly-undefined]
+
+        # Add Z-score cross-method evidence
+        if zscore_ratio > 0:
+            evidence_dict["zscore_outlier_ratio"] = zscore_ratio
+            iqr = outlier_ratio
+            if iqr > 0 and zscore_ratio > 0:
+                evidence_dict["method_agreement"] = min(iqr, zscore_ratio) / max(iqr, zscore_ratio)
+
+        evidence = [evidence_dict]
 
         # Build resolution options using configurable thresholds
         resolution_options: list[ResolutionOption] = []
@@ -118,13 +187,12 @@ class OutlierRateDetector(EntropyDetector):
             # Some outliers - suggest capping or exclusion
             resolution_options.append(
                 ResolutionOption(
-                    action="winsorize",
+                    action="transform_winsorize",
                     parameters={
                         "column": context.column_name,
                         "lower_percentile": 1,
                         "upper_percentile": 99,
                     },
-                    expected_entropy_reduction=score * reduction_winsorize,
                     effort="low",
                     description="Cap extreme values at specified percentiles",
                 )
@@ -134,13 +202,12 @@ class OutlierRateDetector(EntropyDetector):
             # High outliers - suggest review or removal
             resolution_options.append(
                 ResolutionOption(
-                    action="exclude_outliers",
+                    action="transform_exclude_outliers",
                     parameters={
                         "column": context.column_name,
                         "method": "iqr",
                         "multiplier": 1.5,
                     },
-                    expected_entropy_reduction=score * reduction_exclude,
                     effort="low",
                     description="Exclude IQR-based outliers from aggregations",
                 )
@@ -151,7 +218,6 @@ class OutlierRateDetector(EntropyDetector):
                     parameters={
                         "column": context.column_name,
                     },
-                    expected_entropy_reduction=score * reduction_investigate,
                     effort="high",
                     description="Manual review of outlier values for data quality issues",
                 )

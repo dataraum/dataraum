@@ -1,0 +1,58 @@
+# Fiscal Period Integrity Validation
+# Checks for complete and clean fiscal period cutoffs
+
+validation_id: fiscal_period_integrity
+name: Fiscal Period Integrity
+description: >
+  Validates fiscal period completeness and cutoff cleanliness.
+  Checks for missing days within periods and transactions that fall
+  outside expected period boundaries (early or late transactions).
+
+category: financial
+severity: warning
+version: "1.0"
+
+tags:
+  - accounting
+  - fiscal-period
+  - cutoff
+  - completeness
+
+relevant_cycles: []
+
+check_type: aggregate
+
+parameters:
+  # Default fiscal year end (December)
+  fiscal_year_end_month: 12
+  # Maximum acceptable gap in days
+  max_gap_days: 5
+
+sql_hints: >
+  Look for date columns (transaction_date, posting_date, date, etc.).
+  Check semantic annotations for entity_type: date, or semantic_role: temporal.
+
+  Generate a single SELECT query (no CTEs with VALUES clauses) that:
+  1. Find MIN and MAX dates from the actual data
+  2. Count distinct days with transactions as actual_days
+  3. Calculate expected_days as the difference between max and min dates + 1
+  4. Calculate missing_days as expected_days - actual_days
+  5. Count transactions outside fiscal year boundaries
+
+  IMPORTANT: Do NOT use VALUES clauses or CTEs that define static data.
+  Calculate all metrics directly from the source table.
+
+  Return these exact columns:
+  - period_start (DATE): MIN date found
+  - period_end (DATE): MAX date found  
+  - expected_days (INTEGER): calculated as (period_end - period_start) + 1
+  - actual_days (INTEGER): COUNT(DISTINCT date_column)
+  - missing_days (INTEGER): expected_days - actual_days
+  - is_complete (BOOLEAN): missing_days <= max_gap_days parameter
+
+expected_outcome: >
+  A complete fiscal period with:
+  - missing_days <= max_gap_days
+  - late_transactions = 0
+  - early_transactions = 0
+  - is_complete = true

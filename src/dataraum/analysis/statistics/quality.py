@@ -2,24 +2,19 @@
 
 This module implements focused statistical quality metrics:
 - Benford's Law compliance (fraud detection)
-- Outlier detection (IQR and Isolation Forest)
+- Outlier detection (IQR and Modified Z-Score)
 
 Note: Distribution stability (KS test) is in analysis/temporal module.
-Isolation Forest is particularly valuable for financial data with non-normal
-distributions and seasonal patterns.
 
-These metrics may require additional dependencies:
+Dependencies:
 - scipy (already in core dependencies)
-- scikit-learn (optional for Isolation Forest: pip install dataraum-context[statistical-quality])
 
 Uses parallel processing for large tables to speed up assessment.
-
-Moved from quality/statistical.py in Phase 9A restructuring.
 """
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import uuid4
 
 import duckdb
@@ -28,21 +23,17 @@ from scipy import stats
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dataraum.analysis.statistics.db_models import (
-    StatisticalQualityMetrics as DBStatisticalQualityMetrics,
-)
 from dataraum.analysis.statistics.models import (
     BenfordAnalysis,
     OutlierDetection,
     StatisticalQualityResult,
 )
+from dataraum.analysis.statistics.quality_db_models import (
+    StatisticalQualityMetrics as DBStatisticalQualityMetrics,
+)
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, Result
 from dataraum.storage import Column, Table
-
-# Type checking imports to avoid hard dependency on scikit-learn
-if TYPE_CHECKING:
-    pass
 
 logger = get_logger(__name__)
 
@@ -238,10 +229,6 @@ def detect_outliers_iqr(
             iqr_upper_fence=float(upper_fence),
             iqr_outlier_count=int(outlier_count),
             iqr_outlier_ratio=float(outlier_ratio),
-            # Isolation Forest (not computed yet)
-            isolation_forest_score=0.0,
-            isolation_forest_anomaly_count=0,
-            isolation_forest_anomaly_ratio=0.0,
             # Sample outliers
             outlier_samples=outlier_samples if outlier_samples else [],
         )
@@ -252,86 +239,94 @@ def detect_outliers_iqr(
         return Result.fail(f"IQR outlier detection failed: {e}")
 
 
-def detect_outliers_isolation_forest(
+def detect_outliers_zscore(
     table: Table,
     column: Column,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    contamination: float = 0.05,
-) -> tuple[float, int, float, list[dict[str, Any]]] | None:
-    """Detect outliers using Isolation Forest (ML-based).
+    threshold: float = 3.5,
+) -> tuple[int, float, list[dict[str, Any]]] | None:
+    """Detect outliers using Modified Z-Score (MAD-based).
 
-    Isolation Forest is an unsupervised anomaly detection algorithm that
-    isolates anomalies by randomly selecting a feature and then randomly
-    selecting a split value between the maximum and minimum values of the
-    selected feature.
+    The modified Z-score uses the median and MAD (Median Absolute Deviation)
+    instead of mean and standard deviation, making it robust to the outliers
+    it's trying to detect.
 
-    Requires: scikit-learn (pip install dataraum-context[statistical-quality])
+    Formula: modified_z = 0.6745 * (x - median) / MAD
+    Values where |modified_z| > threshold are flagged as outliers.
 
     Args:
         table: Table containing the column
         column: Column to test
         duckdb_conn: DuckDB connection
-        contamination: Expected proportion of outliers (default 0.05 = 5%)
+        threshold: Modified Z-score threshold (default 3.5)
 
     Returns:
-        Tuple of (avg_score, anomaly_count, anomaly_ratio, samples) or None if sklearn not available
+        Tuple of (outlier_count, outlier_ratio, samples) or None if not applicable
     """
     try:
-        # Check if scikit-learn is available
-        try:
-            from sklearn.ensemble import IsolationForest
-        except ImportError:
-            return None  # Skip if not installed
-
         table_name = table.duckdb_path
         col_name = column.column_name
 
-        # Get numeric values
+        # Compute median and MAD in a single pass, then count outliers
         query = f"""
-            SELECT TRY_CAST("{col_name}" AS DOUBLE) as val
-            FROM {table_name}
-            WHERE TRY_CAST("{col_name}" AS DOUBLE) IS NOT NULL
+            WITH base AS (
+                SELECT TRY_CAST("{col_name}" AS DOUBLE) AS val
+                FROM {table_name}
+                WHERE TRY_CAST("{col_name}" AS DOUBLE) IS NOT NULL
+            ),
+            stats AS (
+                SELECT
+                    MEDIAN(val) AS med,
+                    MEDIAN(ABS(val - (SELECT MEDIAN(val) FROM base))) AS mad,
+                    COUNT(*) AS total
+                FROM base
+            )
+            SELECT
+                stats.med,
+                stats.mad,
+                stats.total,
+                (SELECT COUNT(*) FROM base, stats
+                 WHERE ABS(0.6745 * (base.val - stats.med) / NULLIF(stats.mad, 0)) > {threshold}
+                ) AS outlier_count
+            FROM stats
         """
 
-        values = duckdb_conn.execute(query).fetchnumpy()["val"]
+        result_row = duckdb_conn.execute(query).fetchone()
 
-        if len(values) < 100:
-            # Not enough data for meaningful outlier detection
+        if not result_row or result_row[2] == 0:
             return None
 
-        # Ensure we have a numpy array (not Categorical)
-        if not isinstance(values, np.ndarray):
-            values = np.asarray(values)
+        median_val, mad_val, total_count, outlier_count = result_row
 
-        # Reshape for sklearn (needs 2D array)
-        X = values.reshape(-1, 1)
+        # MAD of 0 means all values are identical — no outliers
+        if mad_val is None or mad_val == 0:
+            return None
 
-        # Fit Isolation Forest
-        iso_forest = IsolationForest(contamination=contamination, random_state=42)  # type: ignore[arg-type]
-        predictions = iso_forest.fit_predict(X)
-        scores = iso_forest.score_samples(X)
+        outlier_ratio = outlier_count / total_count if total_count > 0 else 0.0
 
-        # -1 = outlier, 1 = inlier
-        outlier_mask = predictions == -1
-        outlier_count = int(np.sum(outlier_mask))
-        outlier_ratio = float(outlier_count / len(values))
-        avg_score = float(np.mean(scores))
+        # Get sample outliers
+        sample_query = f"""
+            WITH base AS (
+                SELECT TRY_CAST("{col_name}" AS DOUBLE) AS val
+                FROM {table_name}
+                WHERE TRY_CAST("{col_name}" AS DOUBLE) IS NOT NULL
+            )
+            SELECT val, ABS(0.6745 * (val - {median_val}) / {mad_val}) AS zscore
+            FROM base
+            WHERE ABS(0.6745 * (val - {median_val}) / {mad_val}) > {threshold}
+            ORDER BY zscore DESC
+            LIMIT 10
+        """
 
-        # Get sample outliers with their scores
-        outlier_indices = np.where(outlier_mask)[0][:10]  # Top 10
         outlier_samples = [
-            {
-                "value": float(values[idx]),
-                "method": "isolation_forest",
-                "score": float(scores[idx]),
-            }
-            for idx in outlier_indices
+            {"value": float(row[0]), "method": "zscore", "score": float(row[1])}
+            for row in duckdb_conn.execute(sample_query).fetchall()
         ]
 
-        return (avg_score, outlier_count, outlier_ratio, outlier_samples)
+        return (int(outlier_count), float(outlier_ratio), outlier_samples)
 
     except Exception as e:
-        logger.debug("isolation_forest_failed", column=column.column_name, error=str(e))
+        logger.debug("zscore_detection_failed", column=column.column_name, error=str(e))
         return None
 
 
@@ -380,15 +375,14 @@ def _assess_column_quality_parallel(
         iqr_result = detect_outliers_iqr(table, column, cursor)  # type: ignore[arg-type]
         outlier_detection = iqr_result.value if iqr_result.success else None
 
-        # Run Isolation Forest outlier detection and merge into OutlierDetection
-        iso_forest_data = detect_outliers_isolation_forest(table, column, cursor)  # type: ignore[arg-type]
-        if iso_forest_data and outlier_detection:
-            avg_score, anomaly_count, anomaly_ratio, iso_samples = iso_forest_data
-            outlier_detection.isolation_forest_score = avg_score
-            outlier_detection.isolation_forest_anomaly_count = anomaly_count
-            outlier_detection.isolation_forest_anomaly_ratio = anomaly_ratio
-            if iso_samples:
-                outlier_detection.outlier_samples.extend(iso_samples)
+        # Run Modified Z-Score outlier detection and merge into OutlierDetection
+        zscore_data = detect_outliers_zscore(table, column, cursor)  # type: ignore[arg-type]
+        if zscore_data and outlier_detection:
+            zscore_count, zscore_ratio, zscore_samples = zscore_data
+            outlier_detection.zscore_outlier_count = zscore_count
+            outlier_detection.zscore_outlier_ratio = zscore_ratio
+            if zscore_samples:
+                outlier_detection.outlier_samples.extend(zscore_samples)
 
         return (column_id, column_name, benford_analysis, outlier_detection)
     except Exception as e:
@@ -464,6 +458,12 @@ def assess_statistical_quality(
         if not numeric_columns:
             return Result.ok([])
 
+        logger.debug(
+            "assessing_statistical_quality",
+            table=table.table_name,
+            numeric_columns=len(numeric_columns),
+        )
+
         table_duckdb_path = table.duckdb_path
         if not table_duckdb_path:
             return Result.fail("Table has no DuckDB path")
@@ -482,7 +482,7 @@ def assess_statistical_quality(
                     table_duckdb_path,
                     column.column_id,
                     column.column_name,
-                    column.resolved_type or "VARCHAR",
+                    column.resolved_type,  # type: ignore[arg-type]  # filtered to numeric above
                 )
                 for column in numeric_columns
             ]
@@ -525,16 +525,23 @@ def assess_statistical_quality(
                         iqr_outlier_ratio=outlier_detection.iqr_outlier_ratio
                         if outlier_detection
                         else None,
-                        isolation_forest_anomaly_ratio=outlier_detection.isolation_forest_anomaly_ratio
+                        zscore_outlier_ratio=outlier_detection.zscore_outlier_ratio
                         if outlier_detection
                         else None,
                         quality_data=quality_result.model_dump(mode="json"),
                     )
                     session.add(db_metric)
 
+        logger.debug(
+            "statistical_quality_assessment_complete",
+            table=table.table_name,
+            results=len(results),
+        )
+
         return Result.ok(results)
 
     except Exception as e:
+        logger.error("statistical_quality_assessment_failed", error=str(e))
         return Result.fail(f"Statistical quality assessment failed: {e}")
 
 
@@ -575,23 +582,17 @@ def _generate_statistical_quality_issues(
             }
         )
 
-    # High anomaly ratio (Isolation Forest)
-    if (
-        outlier_detection
-        and outlier_detection.isolation_forest_anomaly_ratio > 0.0
-        and outlier_detection.isolation_forest_anomaly_ratio > 0.05
-    ):
-        severity = (
-            "warning" if outlier_detection.isolation_forest_anomaly_ratio < 0.10 else "critical"
-        )
+    # High outlier ratio (Modified Z-Score)
+    if outlier_detection and outlier_detection.zscore_outlier_ratio > 0.05:
+        severity = "warning" if outlier_detection.zscore_outlier_ratio < 0.10 else "critical"
         issues.append(
             {
-                "issue_type": "outliers_isolation_forest",
+                "issue_type": "outliers_zscore",
                 "severity": severity,
-                "description": f"{outlier_detection.isolation_forest_anomaly_ratio * 100:.1f}% of values are anomalies (Isolation Forest)",
+                "description": f"{outlier_detection.zscore_outlier_ratio * 100:.1f}% of values are outliers (Modified Z-Score)",
                 "evidence": {
-                    "anomaly_count": outlier_detection.isolation_forest_anomaly_count,
-                    "anomaly_ratio": outlier_detection.isolation_forest_anomaly_ratio,
+                    "outlier_count": outlier_detection.zscore_outlier_count,
+                    "outlier_ratio": outlier_detection.zscore_outlier_ratio,
                 },
             }
         )

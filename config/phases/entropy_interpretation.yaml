@@ -1,0 +1,8 @@
+# Entropy interpretation phase settings
+# LLM-based interpretation of entropy scores
+
+# Parallel workers for batch processing
+workers: 4
+
+# Tables per LLM call
+batch_size: 10

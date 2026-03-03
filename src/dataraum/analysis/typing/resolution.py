@@ -22,8 +22,11 @@ from sqlalchemy.orm import Session, selectinload
 from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
 from dataraum.analysis.typing.models import ColumnCastResult, TypeResolutionResult
 from dataraum.analysis.typing.patterns import Pattern, load_pattern_config
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, DataType, Result
 from dataraum.storage import Column, Table
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -151,7 +154,7 @@ def resolve_types(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
-    min_confidence: float = 0.85,
+    min_confidence: float,
 ) -> Result[TypeResolutionResult]:
     """Resolve types for a raw table using DuckDB SQL.
 
@@ -190,7 +193,7 @@ def resolve_types(
         return Result.fail(f"Table has no DuckDB path: {table_id}")
 
     raw_table = table.duckdb_path
-    base_name = raw_table.replace("raw_", "")
+    base_name = raw_table.removeprefix("raw_")
     typed_table = f"typed_{base_name}"
     quarantine_table = f"quarantine_{base_name}"
 
@@ -225,6 +228,7 @@ def resolve_types(
         quarantine_sql = _generate_quarantine_sql(raw_table, quarantine_table, specs)
         duckdb_conn.execute(quarantine_sql)
     except Exception as e:
+        logger.error("type_resolution_sql_error", table=table.table_name, error=str(e))
         return Result.fail(f"SQL execution failed: {e}")
 
     # Get row counts
@@ -260,10 +264,12 @@ def resolve_types(
     typed_column_map: dict[str, str] = {}  # column_name -> typed_column_id
     for i, spec in enumerate(specs):
         typed_col_id = str(uuid4())
+        raw_col = raw_col_by_id[spec.column_id]
         typed_col = Column(
             column_id=typed_col_id,
             table_id=typed_table_record.table_id,
             column_name=spec.column_name,
+            original_name=raw_col.original_name,
             column_position=i,
             raw_type="VARCHAR",
             resolved_type=spec.data_type.value,
@@ -273,10 +279,12 @@ def resolve_types(
 
     # Create column records for quarantine table (all columns + _quarantined_at)
     for i, spec in enumerate(specs):
+        raw_col = raw_col_by_id[spec.column_id]
         quarantine_col = Column(
             column_id=str(uuid4()),
             table_id=quarantine_table_record.table_id,
             column_name=spec.column_name,
+            original_name=raw_col.original_name,
             column_position=i,
             raw_type="VARCHAR",
             resolved_type="VARCHAR",  # Quarantine keeps original VARCHAR
@@ -363,6 +371,15 @@ def resolve_types(
                 success_rate=success / total_rows if total_rows > 0 else 1.0,
             )
         )
+
+    logger.debug(
+        "type_resolution_completed",
+        table=table.table_name,
+        total_rows=total_rows,
+        typed_rows=typed_rows,
+        quarantined_rows=quarantine_rows,
+        columns=len(specs),
+    )
 
     return Result.ok(
         TypeResolutionResult(

@@ -10,19 +10,21 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from types import ModuleType
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 
 from dataraum.analysis.quality_summary.agent import QualitySummaryAgent
-from dataraum.analysis.quality_summary.db_models import QualitySummaryRun
 from dataraum.analysis.quality_summary.processor import summarize_quality
 from dataraum.analysis.slicing.db_models import SliceDefinition
-from dataraum.llm import LLMCache, PromptRenderer, create_provider, load_llm_config
+from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.llm.config import LLMConfig
 from dataraum.llm.providers.base import LLMProvider
 from dataraum.pipeline.base import PhaseContext, PhaseResult
+from dataraum.pipeline.db_models import PhaseCheckpoint
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
 if TYPE_CHECKING:
@@ -64,13 +66,11 @@ def _process_slice_definition(
     """
     try:
         # Create LLM components (cache and renderer are lightweight)
-        cache = LLMCache()
         renderer = PromptRenderer()
         agent = QualitySummaryAgent(
             config=config,
             provider=provider,
             prompt_renderer=renderer,
-            cache=cache,
         )
 
         # Use session factory to get a dedicated session for this thread
@@ -106,6 +106,7 @@ def _process_slice_definition(
         )
 
 
+@analysis_phase
 class QualitySummaryPhase(BasePhase):
     """LLM-powered quality summary phase.
 
@@ -128,15 +129,17 @@ class QualitySummaryPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        return ["slice_analysis"]
+        return ["slice_analysis", "temporal_slice_analysis"]
 
     @property
     def outputs(self) -> list[str]:
         return ["quality_reports", "quality_grades"]
 
     @property
-    def is_llm_phase(self) -> bool:
-        return True
+    def db_models(self) -> list[ModuleType]:
+        from dataraum.analysis.quality_summary import db_models
+
+        return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no slice definitions exist or summaries already generated."""
@@ -157,13 +160,15 @@ class QualitySummaryPhase(BasePhase):
         if not slice_defs:
             return "No slice definitions found"
 
-        # Check for existing quality summary runs
-        run_stmt = select(func.count(QualitySummaryRun.run_id)).where(
-            QualitySummaryRun.source_table_id.in_(table_ids)
+        # Check for existing completed phase checkpoint
+        cp_stmt = select(func.count(PhaseCheckpoint.checkpoint_id)).where(
+            PhaseCheckpoint.source_id == ctx.source_id,
+            PhaseCheckpoint.phase_name == self.name,
+            PhaseCheckpoint.status == "completed",
         )
-        run_count = (ctx.session.execute(run_stmt)).scalar() or 0
+        cp_count = (ctx.session.execute(cp_stmt)).scalar() or 0
 
-        if run_count >= len(slice_defs):
+        if cp_count > 0:
             return "Quality summaries already generated"
 
         return None
@@ -215,9 +220,9 @@ class QualitySummaryPhase(BasePhase):
         except Exception as e:
             return PhaseResult.failed(f"Failed to create LLM provider: {e}")
 
-        # Get settings from config
-        skip_existing = ctx.config.get("skip_existing_summaries", True)
-        max_workers = ctx.config.get("quality_summary_workers", 4)
+        # Get settings from phase config
+        skip_existing = ctx.config.get("skip_existing", True)
+        max_workers = ctx.config.get("workers", 4)
 
         # Process slice definitions
         total_reports = 0
@@ -249,13 +254,11 @@ class QualitySummaryPhase(BasePhase):
                         errors.append(f"Slice {proc_result.slice_id}: {proc_result.error}")
         else:
             # Sequential processing (fallback)
-            cache = LLMCache()
             renderer = PromptRenderer()
             agent = QualitySummaryAgent(
                 config=config,
                 provider=provider,
                 prompt_renderer=renderer,
-                cache=cache,
             )
 
             for slice_def in slice_definitions:

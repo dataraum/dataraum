@@ -8,19 +8,21 @@ LLM-powered analysis to identify optimal data slicing dimensions:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from types import ModuleType
 from typing import Any
 
 from sqlalchemy import select
 
 from dataraum.analysis.slicing.agent import SlicingAgent
-from dataraum.analysis.slicing.db_models import SliceDefinition, SlicingAnalysisRun
-from dataraum.llm import LLMCache, PromptRenderer, create_provider, load_llm_config
+from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 
+@analysis_phase
 class SlicingPhase(BasePhase):
     """LLM-powered slicing analysis phase.
 
@@ -41,27 +43,26 @@ class SlicingPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        return ["semantic"]
+        return ["enriched_views"]
 
     @property
     def outputs(self) -> list[str]:
         return ["slice_definitions", "slice_queries"]
 
     @property
-    def is_llm_phase(self) -> bool:
-        return True
+    def db_models(self) -> list[ModuleType]:
+        from dataraum.analysis.slicing import db_models
+
+        return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if all tables already have slice definitions."""
-        # Get typed tables for this source
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        """Skip if all fact tables already have slice definitions."""
+        fact_tables = self._get_fact_tables(ctx)
 
-        if not typed_tables:
-            return "No typed tables found"
+        if not fact_tables:
+            return "No fact tables with enriched views found"
 
-        table_ids = [t.table_id for t in typed_tables]
+        table_ids = [t.table_id for t in fact_tables]
 
         # Check which tables already have slice definitions
         sliced_stmt = select(SliceDefinition.table_id.distinct()).where(
@@ -70,30 +71,52 @@ class SlicingPhase(BasePhase):
         sliced_ids = set((ctx.session.execute(sliced_stmt)).scalars().all())
 
         if len(sliced_ids) >= len(table_ids):
-            return "All tables already have slice definitions"
+            return "All fact tables already have slice definitions"
 
         return None
 
-    def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Run slicing analysis using LLM."""
-        start_time = datetime.now(UTC)
+    def _get_fact_tables(self, ctx: PhaseContext) -> list[Table]:
+        """Return only typed tables that have an enriched view (fact tables)."""
+        from dataraum.analysis.views.db_models import EnrichedView
 
-        # Get typed tables for this source
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        typed_tables = list(ctx.session.execute(stmt).scalars().all())
 
         if not typed_tables:
-            return PhaseResult.failed("No typed tables found. Run typing phase first.")
+            return []
 
-        table_ids = [t.table_id for t in typed_tables]
+        # Keep only tables that are fact tables in at least one verified enriched view
+        fact_table_ids = set(
+            ctx.session.execute(
+                select(EnrichedView.fact_table_id.distinct()).where(
+                    EnrichedView.fact_table_id.in_([t.table_id for t in typed_tables]),
+                    EnrichedView.is_grain_verified.is_(True),
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        return [t for t in typed_tables if t.table_id in fact_table_ids]
+
+    def _run(self, ctx: PhaseContext) -> PhaseResult:
+        """Run slicing analysis using LLM."""
+        # Get only fact tables (those with enriched views) for this source
+        fact_tables = self._get_fact_tables(ctx)
+
+        if not fact_tables:
+            return PhaseResult.failed(
+                "No fact tables with enriched views found. Run enriched_views phase first."
+            )
+
+        table_ids = [t.table_id for t in fact_tables]
 
         # Check which tables already have slice definitions
         sliced_stmt = select(SliceDefinition.table_id.distinct()).where(
             SliceDefinition.table_id.in_(table_ids)
         )
         sliced_ids = set((ctx.session.execute(sliced_stmt)).scalars().all())
-        unsliced_tables = [t for t in typed_tables if t.table_id not in sliced_ids]
+        unsliced_tables = [t for t in fact_tables if t.table_id not in sliced_ids]
 
         if not unsliced_tables:
             return PhaseResult.success(
@@ -130,7 +153,6 @@ class SlicingPhase(BasePhase):
             return PhaseResult.failed(f"Failed to create LLM provider: {e}")
 
         # Create other components
-        cache = LLMCache()
         renderer = PromptRenderer()
 
         # Create slicing agent
@@ -138,22 +160,16 @@ class SlicingPhase(BasePhase):
             config=config,
             provider=provider,
             prompt_renderer=renderer,
-            cache=cache,
         )
 
         # Build context data for the agent
         context_data = self._build_context_data(ctx, unsliced_tables)
 
-        # Create analysis run record
-        run_record = SlicingAnalysisRun(
-            table_ids=[t.table_id for t in unsliced_tables],
-            tables_analyzed=len(unsliced_tables),
-            columns_considered=context_data.get("column_count", 0),
-            started_at=start_time,
-            status="running",
-        )
-        ctx.session.add(run_record)
-        # No flush needed - run_id is client-generated UUID, commit happens at session_scope() end
+        # Pass config constraints so the prompt can reference them
+        context_data["constraints"] = {
+            "max_cardinality": ctx.config.get("max_cardinality", 15),
+            "max_recommendations": ctx.config.get("max_recommendations", 4),
+        }
 
         # Run slicing analysis
         analysis_result = agent.analyze(
@@ -163,10 +179,6 @@ class SlicingPhase(BasePhase):
         )
 
         if not analysis_result.success:
-            run_record.status = "failed"
-            run_record.error_message = analysis_result.error
-            run_record.completed_at = datetime.now(UTC)
-            # Note: commit handled by session_scope() in orchestrator
             return PhaseResult.failed(analysis_result.error or "Slicing analysis failed")
 
         slicing = analysis_result.unwrap()
@@ -176,6 +188,7 @@ class SlicingPhase(BasePhase):
             slice_def = SliceDefinition(
                 table_id=rec.table_id,
                 column_id=rec.column_id,
+                column_name=rec.column_name,
                 slice_priority=rec.slice_priority,
                 slice_type="categorical",
                 distinct_values=rec.distinct_values,
@@ -187,17 +200,6 @@ class SlicingPhase(BasePhase):
                 detection_source="llm",
             )
             ctx.session.add(slice_def)
-
-        # Update run record
-        run_record.status = "completed"
-        run_record.completed_at = datetime.now(UTC)
-        run_record.duration_seconds = (
-            run_record.completed_at - run_record.started_at
-        ).total_seconds()
-        run_record.recommendations_count = len(slicing.recommendations)
-        run_record.slices_generated = len(slicing.slice_queries)
-
-        # Note: commit handled by session_scope() in orchestrator
 
         return PhaseResult.success(
             outputs={
@@ -212,39 +214,164 @@ class SlicingPhase(BasePhase):
     def _build_context_data(self, ctx: PhaseContext, tables: list[Table]) -> dict[str, Any]:
         """Build context data for the slicing agent.
 
-        Loads statistics, semantic annotations, correlations, and quality metrics.
+        Statistics and semantic annotations are merged directly into each column dict
+        to eliminate cross-referencing in the prompt and reduce token usage.
+
+        Enriched FK-prefixed dimension columns (e.g. ``fk_col__dim_col``) are appended
+        to the fact table's column list so the LLM can recommend them as slice candidates.
+        Their ``column_id`` is set to the FK column's column_id (the prefix part) because
+        enriched dim columns are not yet individually registered as Column records.
         """
-        from dataraum.analysis.correlation.db_models import (
-            ColumnCorrelation,
-            DerivedColumn,
-            FunctionalDependency,
-        )
         from dataraum.analysis.semantic.db_models import SemanticAnnotation
         from dataraum.analysis.statistics.db_models import StatisticalProfile
+        from dataraum.analysis.views.db_models import EnrichedView
 
         table_ids = [t.table_id for t in tables]
         tables_data = []
-        statistics_data = []
-        semantic_data = []
-        correlations_data = []
         column_count = 0
+
+        # Pre-load enriched views for all tables so we can merge dim cols per-table
+        ev_by_fact: dict[str, EnrichedView | None] = {}
+        try:
+            ev_stmt = select(EnrichedView).where(
+                EnrichedView.fact_table_id.in_(table_ids),
+                EnrichedView.is_grain_verified.is_(True),
+            )
+            for ev in ctx.session.execute(ev_stmt).scalars().all():
+                ev_by_fact[ev.fact_table_id] = ev
+        except Exception:
+            pass  # Enriched views not available, proceed without
 
         for table in tables:
             # Get columns for this table
             col_stmt = select(Column).where(Column.table_id == table.table_id)
-            columns = (ctx.session.execute(col_stmt)).scalars().all()
+            columns = list((ctx.session.execute(col_stmt)).scalars().all())
             column_count += len(columns)
 
-            columns_list = []
-            for col in columns:
-                columns_list.append(
-                    {
-                        "column_id": col.column_id,
-                        "column_name": col.column_name,
-                        "raw_type": col.raw_type,
-                        "resolved_type": col.resolved_type,
+            col_ids = [c.column_id for c in columns]
+
+            columns_list: list[dict[str, Any]] = [
+                {
+                    "column_id": col.column_id,
+                    "column_name": col.column_name,
+                    "raw_type": col.raw_type,
+                    "resolved_type": col.resolved_type,
+                }
+                for col in columns
+            ]
+
+            # Build lookup from column_id -> column dict
+            col_dict_by_id = {
+                col.column_id: col_dict for col, col_dict in zip(columns, columns_list, strict=True)
+            }
+            # Also build lookup from column_name -> column_id (for FK prefix resolution)
+            col_id_by_name = {col.column_name: col.column_id for col in columns}
+
+            # Merge statistical profiles into columns
+            stats_stmt = select(StatisticalProfile).where(StatisticalProfile.column_id.in_(col_ids))
+            for profile in (ctx.session.execute(stats_stmt)).scalars().all():
+                col_dict = col_dict_by_id.get(profile.column_id)
+                if col_dict:
+                    profile_data = profile.profile_data or {}
+                    col_dict["total_count"] = profile.total_count
+                    col_dict["null_count"] = profile.null_count
+                    col_dict["null_ratio"] = profile.null_ratio
+                    col_dict["distinct_count"] = profile.distinct_count
+                    col_dict["cardinality_ratio"] = profile.cardinality_ratio
+                    col_dict["top_values"] = profile_data.get("top_values", [])
+
+            # Merge semantic annotations into columns
+            sem_stmt = select(SemanticAnnotation).where(SemanticAnnotation.column_id.in_(col_ids))
+            for ann in (ctx.session.execute(sem_stmt)).scalars().all():
+                col_dict = col_dict_by_id.get(ann.column_id)
+                if col_dict:
+                    col_dict["semantic_role"] = ann.semantic_role
+                    col_dict["entity_type"] = ann.entity_type
+                    col_dict["business_name"] = ann.business_name
+                    col_dict["business_description"] = ann.business_description
+
+            # Append enriched FK-prefixed dimension columns so the LLM can consider them.
+            # Format: "{fk_col}__{dim_col}" — we resolve column_id via the FK prefix part.
+            # Stats are queried directly from DuckDB since no StatisticalProfile records
+            # exist for enriched dim columns (they are not registered as Column records).
+            # Batch all stats into 2 queries (one pass for counts, one for top values)
+            # instead of N queries per column to avoid scanning the enriched view 40+ times.
+            table_ev = ev_by_fact.get(table.table_id)
+            if table_ev and table_ev.dimension_columns:
+                ev_view_name = table_ev.view_name  # e.g. "enriched_kontobuchungen"
+                dim_col_names = list(table_ev.dimension_columns)
+
+                # Batch stats query: one scan for all dim columns
+                dim_stats: dict[str, dict[str, Any]] = {}
+                try:
+                    select_parts = ["COUNT(*) AS total_count"]
+                    for dcn in dim_col_names:
+                        q = f'"{dcn}"'
+                        safe = dcn.replace('"', "")
+                        select_parts.append(f"COUNT(DISTINCT {q}) AS d_{safe}")
+                        select_parts.append(f"COUNT(*) - COUNT({q}) AS n_{safe}")
+                    stats_row = ctx.duckdb_conn.execute(
+                        f'SELECT {", ".join(select_parts)} FROM "{ev_view_name}"'
+                    ).fetchone()
+                    if stats_row:
+                        total = stats_row[0] or 0
+                        for i, dcn in enumerate(dim_col_names):
+                            distinct_c = stats_row[1 + i * 2] or 0
+                            null_c = stats_row[2 + i * 2] or 0
+                            dim_stats[dcn] = {
+                                "total_count": total,
+                                "null_count": null_c,
+                                "null_ratio": round(null_c / total, 4) if total else 0.0,
+                                "distinct_count": distinct_c,
+                                "cardinality_ratio": round(distinct_c / total, 4) if total else 0.0,
+                            }
+                except Exception:
+                    pass
+
+                # Batch top values query: one UNION ALL for all low-cardinality dim columns
+                low_card_cols = [
+                    dcn
+                    for dcn in dim_col_names
+                    if dim_stats.get(dcn, {}).get("distinct_count", 999) <= 20
+                ]
+                top_values_by_col: dict[str, list[dict[str, Any]]] = {}
+                if low_card_cols:
+                    try:
+                        union_parts = [
+                            f"SELECT '{dcn}' AS col_name, \"{dcn}\"::VARCHAR AS val,"
+                            f' COUNT(*) AS cnt FROM "{ev_view_name}"'
+                            f' WHERE "{dcn}" IS NOT NULL GROUP BY "{dcn}"'
+                            for dcn in low_card_cols
+                        ]
+                        top_rows = ctx.duckdb_conn.execute(
+                            " UNION ALL ".join(union_parts) + " ORDER BY col_name, cnt DESC"
+                        ).fetchall()
+                        for col_name, val, cnt in top_rows:
+                            top_values_by_col.setdefault(col_name, [])
+                            if len(top_values_by_col[col_name]) < 10:
+                                top_values_by_col[col_name].append(
+                                    {"value": str(val), "count": cnt}
+                                )
+                    except Exception:
+                        pass
+
+                for dim_col_name in dim_col_names:
+                    fk_prefix = dim_col_name.split("__")[0] if "__" in dim_col_name else None
+                    fk_col_id = col_id_by_name.get(fk_prefix) if fk_prefix else None
+                    dim_entry: dict[str, Any] = {
+                        "column_id": fk_col_id or "",
+                        "column_name": dim_col_name,
+                        "is_enriched_dimension": True,
+                        "fk_column_name": fk_prefix,
                     }
-                )
+                    if dim_col_name in dim_stats:
+                        dim_entry.update(dim_stats[dim_col_name])
+                    if dim_col_name in top_values_by_col:
+                        dim_entry["top_values"] = top_values_by_col[dim_col_name]
+                    columns_list.append(dim_entry)
+                    column_count += 1
+
+            enriched_view_name = table_ev.view_name if table_ev else None
 
             tables_data.append(
                 {
@@ -253,114 +380,13 @@ class SlicingPhase(BasePhase):
                     "duckdb_path": table.duckdb_path,
                     "row_count": table.row_count,
                     "columns": columns_list,
-                }
-            )
-
-            # Get statistical profiles
-            stats_stmt = select(StatisticalProfile).where(
-                StatisticalProfile.column_id.in_([c.column_id for c in columns])
-            )
-            profiles = (ctx.session.execute(stats_stmt)).scalars().all()
-
-            for profile in profiles:
-                profile_col: Column | None = next(
-                    (c for c in columns if c.column_id == profile.column_id), None
-                )
-                if not profile_col:
-                    continue
-
-                profile_data = profile.profile_data or {}
-                top_values = profile_data.get("top_values", [])
-
-                statistics_data.append(
-                    {
-                        "table_name": table.table_name,
-                        "column_name": profile_col.column_name,
-                        "total_count": profile.total_count,
-                        "null_count": profile.null_count,
-                        "null_ratio": profile.null_ratio,
-                        "distinct_count": profile.distinct_count,
-                        "cardinality_ratio": profile.cardinality_ratio,
-                        "top_values": top_values,
-                    }
-                )
-
-            # Get semantic annotations
-            sem_stmt = select(SemanticAnnotation).where(
-                SemanticAnnotation.column_id.in_([c.column_id for c in columns])
-            )
-            annotations = (ctx.session.execute(sem_stmt)).scalars().all()
-
-            for ann in annotations:
-                ann_col: Column | None = next(
-                    (c for c in columns if c.column_id == ann.column_id), None
-                )
-                if not ann_col:
-                    continue
-
-                semantic_data.append(
-                    {
-                        "table_name": table.table_name,
-                        "column_name": ann_col.column_name,
-                        "semantic_role": ann.semantic_role,
-                        "entity_type": ann.entity_type,
-                        "business_name": ann.business_name,
-                        "business_description": ann.business_description,
-                    }
-                )
-
-        # Get correlations for all tables
-        # Functional dependencies
-        fd_stmt = select(FunctionalDependency).where(FunctionalDependency.table_id.in_(table_ids))
-        fds = (ctx.session.execute(fd_stmt)).scalars().all()
-
-        for fd in fds:
-            correlations_data.append(
-                {
-                    "type": "functional_dependency",
-                    "table_id": fd.table_id,
-                    "determinant": fd.determinant_column_ids,
-                    "dependent": fd.dependent_column_id,
-                    "confidence": fd.confidence,
-                }
-            )
-
-        # Column correlations (numeric)
-        cc_stmt = select(ColumnCorrelation).where(ColumnCorrelation.table_id.in_(table_ids))
-        ccs = (ctx.session.execute(cc_stmt)).scalars().all()
-
-        for cc in ccs:
-            correlations_data.append(
-                {
-                    "type": "numeric_correlation",
-                    "table_id": cc.table_id,
-                    "column1": cc.column1_id,
-                    "column2": cc.column2_id,
-                    "pearson_r": cc.pearson_r,
-                    "spearman_rho": cc.spearman_rho,
-                }
-            )
-
-        # Derived columns
-        dc_stmt = select(DerivedColumn).where(DerivedColumn.table_id.in_(table_ids))
-        dcs = (ctx.session.execute(dc_stmt)).scalars().all()
-
-        for dc in dcs:
-            correlations_data.append(
-                {
-                    "type": "derived_column",
-                    "table_id": dc.table_id,
-                    "derived_column": dc.derived_column_id,
-                    "formula": dc.formula,
-                    "match_rate": dc.match_rate,
+                    # Use enriched view if available, otherwise use typed table
+                    "enriched_view_name": enriched_view_name,
+                    "enriched_duckdb_path": enriched_view_name if table_ev else None,
                 }
             )
 
         return {
             "tables": tables_data,
-            "statistics": statistics_data,
-            "semantic": semantic_data,
-            "correlations": correlations_data,
-            "quality": [],  # Quality metrics would come from statistical_quality phase
             "column_count": column_count,
         }

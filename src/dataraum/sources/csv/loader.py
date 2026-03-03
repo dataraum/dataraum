@@ -7,11 +7,14 @@ from uuid import uuid4
 import duckdb
 from sqlalchemy.orm import Session
 
+from dataraum.core.logging import get_logger
 from dataraum.core.models import Result, SourceConfig
-from dataraum.sources.base import ColumnInfo, LoaderBase, TypeSystemStrength
+from dataraum.sources.base import ColumnInfo, LoaderBase, TypeSystemStrength, normalize_column_name
 from dataraum.sources.csv.models import StagedTable, StagingResult
 from dataraum.sources.csv.null_values import NullValueConfig, load_null_value_config
 from dataraum.storage import Column, Source, Table
+
+logger = get_logger(__name__)
 
 
 class CSVLoader(LoaderBase):
@@ -123,21 +126,33 @@ class CSVLoader(LoaderBase):
             )
 
             if not file_result.success:
+                logger.warning("csv_load_failed", file=str(path), error=file_result.error)
                 return Result.fail(file_result.error or "Failed to load CSV")
 
             staged_table = file_result.unwrap()
             session.commit()
+
+            duration = time.time() - start_time
+            logger.debug(
+                "csv_loaded",
+                file=str(path),
+                table=staged_table.table_name,
+                rows=staged_table.row_count,
+                columns=staged_table.column_count,
+                duration_s=round(duration, 2),
+            )
 
             return Result.ok(
                 StagingResult(
                     source_id=source_id,
                     tables=[staged_table],
                     total_rows=staged_table.row_count,
-                    duration_seconds=time.time() - start_time,
+                    duration_seconds=duration,
                 )
             )
 
         except Exception as e:
+            logger.error("csv_load_error", file=str(path), error=str(e))
             return Result.fail(f"Failed to load CSV: {e}")
 
     def load_directory(
@@ -172,6 +187,13 @@ class CSVLoader(LoaderBase):
         csv_files = sorted(directory.glob(file_pattern))
         if not csv_files:
             return Result.fail(f"No CSV files found matching '{file_pattern}' in {directory}")
+
+        logger.debug(
+            "csv_directory_loading",
+            directory=str(directory),
+            file_count=len(csv_files),
+            pattern=file_pattern,
+        )
 
         start_time = time.time()
         warnings: list[str] = []
@@ -208,6 +230,7 @@ class CSVLoader(LoaderBase):
                 )
 
                 if not file_result.success:
+                    logger.warning("csv_file_skipped", file=csv_file.name, error=file_result.error)
                     warnings.append(f"Failed to load {csv_file.name}: {file_result.error}")
                     continue
 
@@ -221,6 +244,14 @@ class CSVLoader(LoaderBase):
             session.commit()
 
             duration = time.time() - start_time
+            logger.debug(
+                "csv_directory_loaded",
+                directory=str(directory),
+                tables=len(staged_tables),
+                total_rows=total_rows,
+                skipped=len(warnings),
+                duration_s=round(duration, 2),
+            )
 
             result = StagingResult(
                 source_id=source_id,
@@ -232,6 +263,7 @@ class CSVLoader(LoaderBase):
             return Result.ok(result, warnings=warnings)
 
         except Exception as e:
+            logger.error("csv_directory_load_error", directory=str(directory), error=str(e))
             return Result.fail(f"Failed to load CSV directory: {e}")
 
     def _load_single_file(
@@ -277,20 +309,39 @@ class CSVLoader(LoaderBase):
             table_name = self._sanitize_table_name(file_path.stem)
             raw_table_name = f"raw_{table_name}"
 
-            # Build column type specification (all VARCHAR)
-            column_spec = {col.name: "VARCHAR" for col in columns}
-
-            # Track which columns are junk for later filtering
+            # Track which columns are junk for later filtering (match on original name)
             junk_set = set(junk_columns) if junk_columns else set()
+
+            # Normalize column names and detect collisions
+            seen: dict[str, int] = {}
+            for col in columns:
+                col.original_name = col.name
+                normalized = normalize_column_name(col.name, col.position)
+                if normalized in seen:
+                    seen[normalized] += 1
+                    normalized = f"{normalized}_{seen[normalized]}"
+                else:
+                    seen[normalized] = 1
+                col.name = normalized
+
+            # Filter out junk columns before SQL generation (match on original name)
+            kept_columns = [col for col in columns if col.original_name not in junk_set]
+
+            # Build column type specification for read_csv (uses original headers)
+            column_spec = {col.original_name: "VARCHAR" for col in columns}
 
             # Format null strings for DuckDB
             null_strings = null_config.get_null_strings(include_placeholders=True)
             null_str_param = ", ".join(f"'{s}'" for s in null_strings)
 
-            # Create the raw table with all VARCHAR columns
+            # Build SELECT with aliasing: "OriginalName" AS "normalized_name"
+            select_exprs = [f'"{col.original_name}" AS "{col.name}"' for col in kept_columns]
+
+            # Create the raw table with normalized column names
             sql = f"""
-                CREATE TABLE {raw_table_name} AS
-                SELECT * FROM read_csv(
+                CREATE TABLE "{raw_table_name}" AS
+                SELECT {", ".join(select_exprs)}
+                FROM read_csv(
                     '{file_path}',
                     columns = {column_spec},
                     header = true,
@@ -301,19 +352,9 @@ class CSVLoader(LoaderBase):
             """
             duckdb_conn.execute(sql)
 
-            # Drop junk columns from DuckDB table
-            dropped_columns: list[str] = []
-            for junk in junk_set:
-                try:
-                    duckdb_conn.execute(f'ALTER TABLE {raw_table_name} DROP COLUMN "{junk}"')
-                    dropped_columns.append(junk)
-                except Exception:
-                    # Column doesn't exist - that's fine
-                    pass
-
             # Get row count
             row_count_result = duckdb_conn.execute(
-                f"SELECT COUNT(*) FROM {raw_table_name}"
+                f'SELECT COUNT(*) FROM "{raw_table_name}"'
             ).fetchone()
             row_count = row_count_result[0] if row_count_result else 0
 
@@ -329,26 +370,22 @@ class CSVLoader(LoaderBase):
             )
             session.add(table)
 
-            # Create Column records (excluding junk columns)
-            # Adjust positions after filtering
-            position = 0
-            for col_info in columns:
-                if col_info.name in junk_set:
-                    continue  # Skip junk columns
+            # Create Column records for kept columns
+            for position, col_info in enumerate(kept_columns):
                 column_id = str(uuid4())
                 column = Column(
                     column_id=column_id,
                     table_id=table_id,
                     column_name=col_info.name,
+                    original_name=col_info.original_name,
                     column_position=position,
                     raw_type="VARCHAR",
                     resolved_type=None,
                 )
                 session.add(column)
-                position += 1
 
             # Calculate actual column count after filtering
-            actual_column_count = len(columns) - len(dropped_columns)
+            actual_column_count = len(kept_columns)
 
             return Result.ok(
                 StagedTable(

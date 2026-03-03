@@ -46,17 +46,17 @@ class PipelineRun(Base):
     # Timing metrics
     total_duration_seconds: Mapped[float] = mapped_column(Float, default=0.0)
 
-    # Aggregate LLM metrics
-    total_llm_calls: Mapped[int] = mapped_column(Integer, default=0)
-    total_llm_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    total_llm_output_tokens: Mapped[int] = mapped_column(Integer, default=0)
-
     # Aggregate data metrics
     total_tables_processed: Mapped[int] = mapped_column(Integer, default=0)
     total_rows_processed: Mapped[int] = mapped_column(Integer, default=0)
 
     # Error info
     error: Mapped[str | None] = mapped_column(String)
+
+    # Gate configuration
+    contract_name: Mapped[str | None] = mapped_column(String)
+    gate_mode: Mapped[str | None] = mapped_column(String)  # skip, pause, fail
+    final_entropy_state: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     # Relationships
     checkpoints: Mapped[list[PhaseCheckpoint]] = relationship(
@@ -103,9 +103,6 @@ class PhaseCheckpoint(Base):
     tables_processed: Mapped[int] = mapped_column(Integer, default=0)
     columns_processed: Mapped[int] = mapped_column(Integer, default=0)
     rows_processed: Mapped[int] = mapped_column(Integer, default=0)
-    llm_calls: Mapped[int] = mapped_column(Integer, default=0)
-    llm_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    llm_output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     db_queries: Mapped[int] = mapped_column(Integer, default=0)
     db_writes: Mapped[int] = mapped_column(Integer, default=0)
 
@@ -115,6 +112,11 @@ class PhaseCheckpoint(Base):
     # Error/warning info
     error: Mapped[str | None] = mapped_column(String)
     warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    # Gate state
+    entropy_hard_scores: Mapped[dict[str, float] | None] = mapped_column(JSON)
+    gate_status: Mapped[str | None] = mapped_column(String)  # passed, blocked, skipped
+    gate_reason: Mapped[str | None] = mapped_column(String)
 
     # Relationship
     run: Mapped[PipelineRun] = relationship(back_populates="checkpoints")

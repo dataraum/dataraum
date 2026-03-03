@@ -5,7 +5,7 @@ High parse failure rate indicates the detected type may not be correct.
 """
 
 from dataraum.entropy.config import get_entropy_config
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -25,6 +25,7 @@ class TypeFidelityDetector(EntropyDetector):
     layer = "structural"
     dimension = "types"
     sub_dimension = "type_fidelity"
+    trust_level = DetectorTrust.HARD
     required_analyses = ["typing"]
     description = "Measures uncertainty in type inference based on parse success rate"
 
@@ -44,8 +45,6 @@ class TypeFidelityDetector(EntropyDetector):
         # Get configurable thresholds
         suggest_override = detector_config.get("suggest_override_threshold", 0.3)
         suggest_quarantine = detector_config.get("suggest_quarantine_threshold", 0.1)
-        reduction_override = detector_config.get("reduction_override", 0.8)
-        reduction_quarantine = detector_config.get("reduction_quarantine", 0.9)
 
         typing_result = context.get_analysis("typing", {})
 
@@ -82,12 +81,11 @@ class TypeFidelityDetector(EntropyDetector):
             # Significant parse failures - suggest manual type override
             resolution_options.append(
                 ResolutionOption(
-                    action="override_type",
+                    action="document_type_override",
                     parameters={
                         "column": context.column_name,
                         "suggested_type": "VARCHAR",  # Fallback to string
                     },
-                    expected_entropy_reduction=score * reduction_override,
                     effort="low",
                     description="Override detected type with VARCHAR to preserve all values",
                 )
@@ -97,12 +95,11 @@ class TypeFidelityDetector(EntropyDetector):
             # Some failures - suggest data cleanup
             resolution_options.append(
                 ResolutionOption(
-                    action="quarantine_values",
+                    action="transform_quarantine_values",
                     parameters={
                         "column": context.column_name,
                         "pattern": "non_parseable",
                     },
-                    expected_entropy_reduction=score * reduction_quarantine,
                     effort="medium",
                     description="Move non-parseable values to quarantine table",
                 )

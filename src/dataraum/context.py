@@ -79,7 +79,10 @@ class Context:
             source = sources[0]
 
             tables_result = session.execute(
-                select(Table).where(Table.source_id == source.source_id)
+                select(Table).where(
+                    Table.source_id == source.source_id,
+                    Table.layer == "typed",
+                )
             )
             tables = tables_result.scalars().all()
 
@@ -98,6 +101,99 @@ class Context:
         if self._contracts is None:
             self._contracts = ContractsAccessor(self)
         return self._contracts
+
+    def actions(self, contract: str | None = None) -> list[dict[str, Any]]:
+        """Get merged resolution actions, optionally filtered by contract.
+
+        Args:
+            contract: Optional contract name to filter violations
+
+        Returns:
+            List of action dicts sorted by priority score
+        """
+        from collections import defaultdict
+
+        from sqlalchemy import select
+
+        from dataraum.entropy.actions import merge_actions
+        from dataraum.entropy.contracts import evaluate_all_contracts
+        from dataraum.entropy.db_models import EntropyObjectRecord
+        from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
+        from dataraum.entropy.views.network_context import build_for_network
+        from dataraum.entropy.views.query_context import network_to_column_summaries
+        from dataraum.storage import Column, Source, Table
+
+        with self.manager.session_scope() as session:
+            sources_result = session.execute(select(Source))
+            sources = sources_result.scalars().all()
+
+            if not sources:
+                return []
+
+            source = sources[0]
+
+            tables_result = session.execute(
+                select(Table).where(
+                    Table.source_id == source.source_id,
+                    Table.layer == "typed",
+                )
+            )
+            tables = tables_result.scalars().all()
+
+            if not tables:
+                return []
+
+            table_ids = [t.table_id for t in tables]
+
+            # Build column_id -> column_key mapping
+            col_id_to_key: dict[str, str] = {}
+            for tbl in tables:
+                cols_result = session.execute(select(Column).where(Column.table_id == tbl.table_id))
+                for col in cols_result.scalars().all():
+                    col_id_to_key[col.column_id] = f"{tbl.table_name}.{col.column_name}"
+
+            # Build column summaries and network context
+            network_context = build_for_network(session, table_ids)
+            column_summaries = network_to_column_summaries(network_context)
+
+            # Get LLM interpretations
+            interp_result = session.execute(
+                select(EntropyInterpretationRecord).where(
+                    EntropyInterpretationRecord.source_id == source.source_id,
+                    EntropyInterpretationRecord.column_name.isnot(None),
+                )
+            )
+            interp_by_col: dict[str, Any] = {}
+            for interp in interp_result.scalars().all():
+                col_key = f"{interp.table_name}.{interp.column_name}"
+                interp_by_col[col_key] = interp
+
+            # Get entropy objects by column
+            entropy_objects_by_col: dict[str, list[Any]] = defaultdict(list)
+            obj_result = session.execute(
+                select(EntropyObjectRecord).where(
+                    EntropyObjectRecord.source_id == source.source_id,
+                )
+            )
+            for obj in obj_result.scalars().all():
+                col_key = obj.target.removeprefix("column:")
+                entropy_objects_by_col[col_key].append(obj)
+
+            # Contract violations
+            violation_dims: dict[str, list[str]] = {}
+            evals = evaluate_all_contracts(column_summaries)
+            target_evals = {contract: evals[contract]} if contract and contract in evals else evals
+            for eval_result in target_evals.values():
+                for v in eval_result.violations:
+                    if v.dimension:
+                        violation_dims.setdefault(v.dimension, []).extend(v.affected_columns)
+
+            return merge_actions(
+                interp_by_col,
+                entropy_objects_by_col,
+                violation_dims,
+                network_context=network_context,
+            )
 
     def query(self, question: str, contract: str | None = None) -> QueryResultWrapper:
         """Execute a natural language query.
@@ -130,7 +226,6 @@ class Context:
                     duckdb_conn=cursor,
                     source_id=source.source_id,
                     contract=contract,
-                    manager=self.manager,
                 )
 
             if not result.success or not result.value:
@@ -155,7 +250,10 @@ class Context:
             source = sources[0]
 
             tables_result = session.execute(
-                select(Table).where(Table.source_id == source.source_id)
+                select(Table).where(
+                    Table.source_id == source.source_id,
+                    Table.layer == "typed",
+                )
             )
             tables = tables_result.scalars().all()
 
@@ -189,10 +287,12 @@ class EntropyAccessor:
         from sqlalchemy import select
 
         from dataraum.entropy.db_models import (
-            EntropyInterpretationRecord,
             EntropySnapshotRecord,
         )
-        from dataraum.storage import Source
+        from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
+        from dataraum.entropy.views.network_context import build_for_network
+        from dataraum.entropy.views.query_context import network_to_column_summaries
+        from dataraum.storage import Source, Table
 
         with self._ctx.manager.session_scope() as session:
             sources_result = session.execute(select(Source))
@@ -215,9 +315,10 @@ class EntropyAccessor:
             if not snapshot:
                 return {"error": "No entropy data"}
 
-            # Get interpretations
+            # Get interpretations (column-level only; table-level have column_id=NULL)
             interp_query = select(EntropyInterpretationRecord).where(
-                EntropyInterpretationRecord.source_id == source.source_id
+                EntropyInterpretationRecord.source_id == source.source_id,
+                EntropyInterpretationRecord.column_id.isnot(None),
             )
 
             if table_name:
@@ -225,29 +326,101 @@ class EntropyAccessor:
                     EntropyInterpretationRecord.table_name == table_name
                 )
 
-            interp_query = interp_query.order_by(EntropyInterpretationRecord.composite_score.desc())
+            interp_query = interp_query.order_by(
+                EntropyInterpretationRecord.table_name,
+                EntropyInterpretationRecord.column_name,
+            )
             interp_result = session.execute(interp_query)
             interpretations = interp_result.scalars().all()
+
+            # Build dimension scores from network + direct signals
+            dimension_scores: dict[str, float] = {}
+            try:
+                tables_result = session.execute(
+                    select(Table).where(
+                        Table.source_id == source.source_id,
+                        Table.layer == "typed",
+                    )
+                )
+                tables = tables_result.scalars().all()
+                table_ids = [t.table_id for t in tables]
+
+                if table_ids:
+                    network_ctx = build_for_network(session, table_ids)
+                    col_summaries = network_to_column_summaries(network_ctx)
+                    dim_totals: dict[str, list[float]] = {}
+                    for col_summary in col_summaries.values():
+                        for dim_path, score in col_summary.dimension_scores.items():
+                            dim_totals.setdefault(dim_path, []).append(score)
+                    dimension_scores = {
+                        dim: sum(scores) / len(scores) for dim, scores in dim_totals.items()
+                    }
+            except Exception:
+                pass
 
             return {
                 "source": source.name,
                 "overall_readiness": snapshot.overall_readiness,
-                "composite_score": snapshot.avg_composite_score,
-                "dimensions": {
-                    "structural": snapshot.avg_structural_entropy,
-                    "semantic": snapshot.avg_semantic_entropy,
-                    "value": snapshot.avg_value_entropy,
-                    "computational": snapshot.avg_computational_entropy,
-                },
+                "entropy_score": snapshot.avg_entropy_score,
+                "dimension_scores": dimension_scores,
                 "columns": [
                     {
                         "table": i.table_name,
                         "column": i.column_name,
-                        "score": i.composite_score,
-                        "readiness": i.readiness,
                         "explanation": i.explanation,
                     }
                     for i in interpretations
+                ],
+            }
+
+    def details(self, table_name: str, column_name: str) -> dict[str, Any]:
+        """Get full detector evidence for a specific column.
+
+        Args:
+            table_name: Table name
+            column_name: Column name
+
+        Returns:
+            Dictionary with detector-level evidence and scores
+        """
+        from sqlalchemy import select
+
+        from dataraum.entropy.db_models import EntropyObjectRecord
+        from dataraum.storage import Source
+
+        with self._ctx.manager.session_scope() as session:
+            sources_result = session.execute(select(Source))
+            sources = sources_result.scalars().all()
+
+            if not sources:
+                return {"error": "No sources found"}
+
+            source = sources[0]
+            target = f"column:{table_name}.{column_name}"
+
+            objects_result = session.execute(
+                select(EntropyObjectRecord).where(
+                    EntropyObjectRecord.source_id == source.source_id,
+                    EntropyObjectRecord.target == target,
+                )
+            )
+            objects = objects_result.scalars().all()
+
+            return {
+                "table": table_name,
+                "column": column_name,
+                "target": target,
+                "detectors": [
+                    {
+                        "detector_id": obj.detector_id,
+                        "layer": obj.layer,
+                        "dimension": obj.dimension,
+                        "sub_dimension": obj.sub_dimension,
+                        "score": obj.score,
+                        "evidence": obj.evidence,
+                        "resolution_options": obj.resolution_options,
+                    }
+                    for obj in objects
                 ],
             }
 
@@ -279,9 +452,9 @@ class ContractsAccessor:
         """
         from sqlalchemy import select
 
-        from dataraum.entropy.analysis.aggregator import ColumnSummary, EntropyAggregator
         from dataraum.entropy.contracts import evaluate_contract, get_contract
-        from dataraum.entropy.core.storage import EntropyRepository
+        from dataraum.entropy.views.network_context import build_for_network
+        from dataraum.entropy.views.query_context import network_to_column_summaries
         from dataraum.storage import Source, Table
 
         with self._ctx.manager.session_scope() as session:
@@ -294,7 +467,10 @@ class ContractsAccessor:
             source = sources[0]
 
             tables_result = session.execute(
-                select(Table).where(Table.source_id == source.source_id)
+                select(Table).where(
+                    Table.source_id == source.source_id,
+                    Table.layer == "typed",
+                )
             )
             tables = tables_result.scalars().all()
 
@@ -303,32 +479,15 @@ class ContractsAccessor:
 
             table_ids = [t.table_id for t in tables]
 
-            # Build column summaries
-            repo = EntropyRepository(session)
-            aggregator = EntropyAggregator()
-
-            typed_table_ids = repo.get_typed_table_ids(table_ids)
-            column_summaries: dict[str, ColumnSummary] = {}
-            compound_risks: list[Any] = []
-
-            if typed_table_ids:
-                table_map, column_map = repo.get_table_column_mapping(typed_table_ids)
-                entropy_objects = repo.load_for_tables(typed_table_ids, enforce_typed=True)
-
-                if entropy_objects:
-                    column_summaries, _ = aggregator.summarize_columns_by_table(
-                        entropy_objects=entropy_objects,
-                        table_map=table_map,
-                        column_map=column_map,
-                    )
-                    for summary in column_summaries.values():
-                        compound_risks.extend(summary.compound_risks)
+            # Build column summaries via network
+            network_ctx = build_for_network(session, table_ids)
+            column_summaries = network_to_column_summaries(network_ctx)
 
             profile = get_contract(contract_name)
             if profile is None:
                 return {"error": f"Contract not found: {contract_name}"}
 
-            evaluation = evaluate_contract(column_summaries, contract_name, compound_risks)
+            evaluation = evaluate_contract(column_summaries, contract_name)
 
             return {
                 "contract": contract_name,

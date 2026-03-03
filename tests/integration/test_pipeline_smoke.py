@@ -202,13 +202,13 @@ class TestTypingPhaseSmoke:
         col_types = {row[0]: row[1] for row in columns}
 
         # Transaction ID should be integer
-        assert col_types["Transaction ID"] == "BIGINT"
+        assert col_types["transaction_id"] == "BIGINT"
 
         # Transaction date should be date
-        assert col_types["Transaction date"] == "DATE"
+        assert col_types["transaction_date"] == "DATE"
 
         # Amount should be numeric
-        assert col_types["Amount"] == "DOUBLE"
+        assert col_types["amount"] == "DOUBLE"
 
     def test_typing_preserves_row_counts(
         self,
@@ -339,10 +339,10 @@ class TestStatisticsPhaseSmoke:
             table = (session.execute(table_stmt)).scalar_one_or_none()
             assert table is not None
 
-            # Find the Transaction ID column
+            # Find the transaction_id column (normalized from "Transaction ID")
             col_stmt = select(Column).where(
                 Column.table_id == table.table_id,
-                Column.column_name == "Transaction ID",
+                Column.column_name == "transaction_id",
             )
             column = (session.execute(col_stmt)).scalar_one_or_none()
             assert column is not None
@@ -436,10 +436,10 @@ class TestStatisticsPhaseSmoke:
             table = (session.execute(table_stmt)).scalar_one_or_none()
             assert table is not None
 
-            # Find the Transaction type column (categorical)
+            # Find the transaction_type column (normalized from "Transaction type")
             col_stmt = select(Column).where(
                 Column.table_id == table.table_id,
-                Column.column_name == "Transaction type",
+                Column.column_name == "transaction_type",
             )
             column = (session.execute(col_stmt)).scalar_one_or_none()
             assert column is not None

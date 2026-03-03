@@ -22,9 +22,6 @@ from sqlalchemy.orm import Session
 from dataraum.analysis.correlation.algorithms import (
     compute_pairwise_correlations,
 )
-from dataraum.analysis.correlation.db_models import (
-    ColumnCorrelation as DBColumnCorrelation,
-)
 from dataraum.analysis.correlation.models import NumericCorrelation
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
@@ -88,7 +85,7 @@ def compute_numeric_correlations(
         use_sampling = row_count > LARGE_TABLE_THRESHOLD
         if use_sampling:
             actual_sample_size = min(sample_size, row_count)
-            logger.info(
+            logger.debug(
                 f"Using RESERVOIR sampling ({actual_sample_size:,} rows) for "
                 f"numeric correlations on {table.table_name} ({row_count:,} rows)"
             )
@@ -136,23 +133,6 @@ def compute_numeric_correlations(
                 is_significant=algo_result.is_significant,
             )
             correlations.append(correlation)
-
-            # Store in database
-            db_corr = DBColumnCorrelation(
-                correlation_id=correlation.correlation_id,
-                table_id=correlation.table_id,
-                column1_id=correlation.column1_id,
-                column2_id=correlation.column2_id,
-                pearson_r=correlation.pearson_r,
-                pearson_p_value=correlation.pearson_p_value,
-                spearman_rho=correlation.spearman_rho,
-                spearman_p_value=correlation.spearman_p_value,
-                sample_size=correlation.sample_size,
-                computed_at=correlation.computed_at,
-                correlation_strength=correlation.correlation_strength,
-                is_significant=correlation.is_significant,
-            )
-            session.add(db_corr)
 
         return Result.ok(correlations)
 

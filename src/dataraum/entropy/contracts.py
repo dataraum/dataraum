@@ -31,18 +31,17 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from dataraum.core.config import get_config_file
 from dataraum.core.logging import get_logger
-from dataraum.entropy.models import CompoundRisk, ResolutionOption
+from dataraum.entropy.config import get_dimension_label
+from dataraum.entropy.models import ResolutionOption
 
 if TYPE_CHECKING:
     from dataraum.entropy.analysis.aggregator import ColumnSummary
 
 logger = get_logger(__name__)
 
-# Default config path relative to project root
-DEFAULT_CONTRACTS_PATH = (
-    Path(__file__).parent.parent.parent.parent / "config" / "entropy" / "contracts.yaml"
-)
+ENTROPY_CONTRACTS_CONFIG = "entropy/contracts.yaml"
 
 
 class ConfidenceLevel(str, Enum):
@@ -86,14 +85,13 @@ class DimensionThreshold:
 class BlockingCondition:
     """A condition that blocks contract compliance."""
 
-    condition_type: str  # e.g., "any_dimension_exceeds", "has_critical_compound_risk"
+    condition_type: str  # e.g., "any_dimension_exceeds", "has_blocked_columns"
     parameters: dict[str, Any] = field(default_factory=dict)
     description: str = ""
 
     def evaluate(
         self,
         column_summaries: dict[str, ColumnSummary],
-        compound_risks: list[CompoundRisk],
         evaluation: ContractEvaluation,
     ) -> bool:
         """Check if this blocking condition is triggered.
@@ -107,22 +105,10 @@ class BlockingCondition:
                     return True
             return False
 
-        elif self.condition_type == "has_critical_compound_risk":
-            return any(r.risk_level == "critical" for r in compound_risks)
-
-        elif self.condition_type == "has_high_compound_risk":
-            return any(r.risk_level in ("critical", "high") for r in compound_risks)
-
         elif self.condition_type == "critical_entropy_count_exceeds":
             threshold = int(self.parameters.get("threshold", 0))
-            # Count columns with critical entropy (>= 0.8)
-            from dataraum.entropy.config import get_entropy_config
-
-            config = get_entropy_config()
-            critical_threshold = config.critical_entropy_threshold
-            critical_count = sum(
-                1 for s in column_summaries.values() if s.composite_score >= critical_threshold
-            )
+            # Count columns with blocked readiness (network-derived)
+            critical_count = sum(1 for s in column_summaries.values() if s.readiness == "blocked")
             return critical_count > threshold
 
         # Unknown condition type - don't block
@@ -265,13 +251,11 @@ def load_contracts(config_path: Path | None = None) -> dict[str, ContractProfile
         FileNotFoundError: If config file doesn't exist.
         ValueError: If config file is invalid.
     """
-    config_path = config_path or DEFAULT_CONTRACTS_PATH
+    if config_path is None:
+        config_path = get_config_file(ENTROPY_CONTRACTS_CONFIG)
 
     if not config_path.exists():
-        raise FileNotFoundError(
-            f"Contracts config not found: {config_path}. "
-            f"Create the file or specify a different path."
-        )
+        raise FileNotFoundError(f"Contracts config not found: {config_path}.")
 
     try:
         with open(config_path) as f:
@@ -330,7 +314,12 @@ def get_contracts(config_path: Path | None = None) -> dict[str, ContractProfile]
     """
     global _contracts_cache, _contracts_path_cache
 
-    path = config_path or DEFAULT_CONTRACTS_PATH
+    if config_path is not None:
+        path = config_path
+    elif _contracts_path_cache is not None:
+        path = _contracts_path_cache
+    else:
+        path = get_config_file(ENTROPY_CONTRACTS_CONFIG)
 
     if _contracts_cache is not None and _contracts_path_cache == path:
         return _contracts_cache
@@ -372,36 +361,6 @@ def get_contract(name: str, config_path: Path | None = None) -> ContractProfile 
     return contracts.get(name)
 
 
-def _get_layer_from_dimension(dimension: str) -> str | None:
-    """Extract layer name from dimension path using convention.
-
-    Convention: dimension format is "layer.subdimension" (e.g., "structural.types").
-    The first part before '.' is the layer.
-
-    Args:
-        dimension: Dimension path like "structural.types"
-
-    Returns:
-        Layer name or None if dimension has no dot.
-    """
-    if "." in dimension:
-        return dimension.split(".")[0]
-    return None
-
-
-def _get_layer_score(summary: ColumnSummary, layer: str) -> float:
-    """Get the entropy score for a specific layer from a column summary.
-
-    Args:
-        summary: Column entropy summary
-        layer: Layer name (structural, semantic, value, computational)
-
-    Returns:
-        Layer score or 0.0 if layer not recognized.
-    """
-    return summary.layer_scores.get(layer, 0.0)
-
-
 def _get_dimension_score(
     column_summaries: dict[str, ColumnSummary],
     dimension: str,
@@ -409,6 +368,7 @@ def _get_dimension_score(
     """Get the score for a specific dimension from column summaries.
 
     Aggregates scores across all columns for the dimension.
+    Only includes columns that actually have data for this dimension.
     Supports prefix matching: "semantic.dimensional" matches
     "semantic.dimensional.overall_score", etc.
 
@@ -417,12 +377,9 @@ def _get_dimension_score(
         dimension: Dimension path like "structural.types" or "semantic.dimensional"
 
     Returns:
-        Average score for this dimension across all columns (0.0 if no data).
+        Average score for this dimension across columns that have it (0.0 if no data).
     """
     scores: list[float] = []
-
-    # Extract layer from dimension using convention (first part before '.')
-    layer = _get_layer_from_dimension(dimension)
 
     for summary in column_summaries.values():
         # First check dimension_scores for exact match
@@ -439,9 +396,8 @@ def _get_dimension_score(
             if matching_scores:
                 # Use the average of all sub-dimensions
                 scores.append(sum(matching_scores) / len(matching_scores))
-            # Fall back to layer-level score
-            elif layer:
-                scores.append(_get_layer_score(summary, layer))
+            # No score for this dimension on this column — skip it
+            # (detector didn't run, not a reason to use layer average)
 
     return sum(scores) / len(scores) if scores else 0.0
 
@@ -453,6 +409,7 @@ def _find_affected_columns(
 ) -> list[str]:
     """Find columns that exceed threshold for a dimension.
 
+    Only considers columns that actually have data for this dimension.
     Supports prefix matching: "semantic.dimensional" matches
     "semantic.dimensional.overall_score", etc.
 
@@ -466,11 +423,8 @@ def _find_affected_columns(
     """
     affected: list[str] = []
 
-    # Extract layer from dimension using convention (first part before '.')
-    layer = _get_layer_from_dimension(dimension)
-
     for key, summary in column_summaries.items():
-        score = 0.0
+        score: float | None = None
 
         if dimension in summary.dimension_scores:
             score = summary.dimension_scores[dimension]
@@ -483,10 +437,8 @@ def _find_affected_columns(
             ]
             if matching_scores:
                 score = sum(matching_scores) / len(matching_scores)
-            elif layer:
-                score = _get_layer_score(summary, layer)
 
-        if score > threshold:
+        if score is not None and score > threshold:
             affected.append(key)
 
     return affected
@@ -495,7 +447,6 @@ def _find_affected_columns(
 def evaluate_contract(
     column_summaries: dict[str, ColumnSummary],
     contract_name: str,
-    compound_risks: list[CompoundRisk] | None = None,
     config_path: Path | None = None,
 ) -> ContractEvaluation:
     """Evaluate entropy against a contract.
@@ -503,7 +454,6 @@ def evaluate_contract(
     Args:
         column_summaries: Dict mapping column key to ColumnSummary
         contract_name: Name of the contract to evaluate against
-        compound_risks: Optional list of compound risks
         config_path: Optional path to contracts config
 
     Returns:
@@ -515,8 +465,6 @@ def evaluate_contract(
     contract = get_contract(contract_name, config_path)
     if contract is None:
         raise ValueError(f"Contract not found: {contract_name}")
-
-    compound_risks = compound_risks or []
 
     violations: list[Violation] = []
     warnings: list[Violation] = []
@@ -542,13 +490,19 @@ def evaluate_contract(
             blocking_threshold = max_score * (1 + contract.warning_margin * 2)
             severity = "blocking" if actual_score > blocking_threshold else "warning"
 
+            label = get_dimension_label(dimension)
+            col_list = ", ".join(affected[:5])
             violation = Violation(
                 violation_type="dimension",
                 severity=severity,
                 dimension=dimension,
                 max_allowed=max_score,
                 actual=actual_score,
-                details=f"{dimension} score {actual_score:.2f} exceeds threshold {max_score:.2f}",
+                details=(
+                    f"{label} ({actual_score:.2f}/{max_score:.2f}) — "
+                    f"too uncertain for {contract.display_name}. "
+                    f"Affected: {col_list}"
+                ),
                 affected_columns=affected[:10],  # Limit to 10
             )
 
@@ -566,6 +520,8 @@ def evaluate_contract(
             affected = _find_affected_columns(
                 column_summaries, dimension, max_score * (1 - contract.warning_margin)
             )
+            label = get_dimension_label(dimension)
+            col_list = ", ".join(affected[:5])
             warnings.append(
                 Violation(
                     violation_type="dimension",
@@ -573,7 +529,10 @@ def evaluate_contract(
                     dimension=dimension,
                     max_allowed=max_score,
                     actual=actual_score,
-                    details=f"{dimension} approaching threshold ({actual_score:.2f}/{max_score:.2f})",
+                    details=(
+                        f"{label} approaching limit ({actual_score:.2f}/{max_score:.2f}) "
+                        f"for {contract.display_name}. Affected: {col_list}"
+                    ),
                     affected_columns=affected[:10],
                 )
             )
@@ -594,7 +553,10 @@ def evaluate_contract(
                 severity="blocking",
                 max_allowed=contract.overall_threshold,
                 actual=overall_score,
-                details=f"Overall entropy {overall_score:.2f} exceeds threshold {contract.overall_threshold:.2f}",
+                details=(
+                    f"Overall uncertainty ({overall_score:.2f}) exceeds "
+                    f"{contract.display_name} threshold ({contract.overall_threshold:.2f})"
+                ),
             )
         )
 
@@ -612,16 +574,34 @@ def evaluate_contract(
 
     # Check blocking conditions
     for condition in contract.blocking_conditions:
-        if condition.evaluate(column_summaries, compound_risks, evaluation):
+        if condition.evaluate(column_summaries, evaluation):
             violations.append(
                 Violation(
                     violation_type="blocking_condition",
                     severity="blocking",
                     condition=condition.condition_type,
                     details=condition.description
-                    or f"Blocking condition triggered: {condition.condition_type}",
+                    or f"Data readiness blocked: {condition.condition_type.replace('_', ' ')}",
                 )
             )
+
+    # Check if any column has blocked readiness (from Bayesian network).
+    # This ensures contract evaluation is consistent with overall readiness:
+    # if readiness=BLOCKED, no contract should pass.
+    blocked_columns = [key for key, s in column_summaries.items() if s.readiness == "blocked"]
+    if blocked_columns:
+        violations.append(
+            Violation(
+                violation_type="blocking_condition",
+                severity="blocking",
+                condition="blocked_columns",
+                details=(
+                    f"{len(blocked_columns)} column(s) have blocked readiness: "
+                    + ", ".join(blocked_columns[:5])
+                ),
+                affected_columns=blocked_columns[:10],
+            )
+        )
 
     # Determine compliance
     blocking_violations = [v for v in violations if v.severity == "blocking"]
@@ -692,7 +672,7 @@ def _calculate_confidence_level(
         if len(blocking_violations) >= 3:
             return ConfidenceLevel.RED
 
-        # Check for critical compound risk blocking
+        # Check for blocking conditions (e.g., blocked columns exist)
         blocking_types = [v.violation_type for v in blocking_violations]
         if "blocking_condition" in blocking_types:
             return ConfidenceLevel.RED
@@ -724,7 +704,6 @@ def get_confidence_level(evaluation: ContractEvaluation) -> ConfidenceLevel:
 
 def evaluate_all_contracts(
     column_summaries: dict[str, ColumnSummary],
-    compound_risks: list[CompoundRisk] | None = None,
     config_path: Path | None = None,
 ) -> dict[str, ContractEvaluation]:
     """Evaluate entropy against all available contracts.
@@ -733,7 +712,6 @@ def evaluate_all_contracts(
 
     Args:
         column_summaries: Dict mapping column key to ColumnSummary
-        compound_risks: Optional list of compound risks
         config_path: Optional path to contracts config
 
     Returns:
@@ -743,28 +721,26 @@ def evaluate_all_contracts(
     evaluations: dict[str, ContractEvaluation] = {}
 
     for name in contracts:
-        evaluations[name] = evaluate_contract(column_summaries, name, compound_risks, config_path)
+        evaluations[name] = evaluate_contract(column_summaries, name, config_path)
 
     return evaluations
 
 
 def find_best_contract(
     column_summaries: dict[str, ColumnSummary],
-    compound_risks: list[CompoundRisk] | None = None,
     config_path: Path | None = None,
 ) -> tuple[str | None, ContractEvaluation | None]:
     """Find the strictest contract that passes.
 
     Args:
         column_summaries: Dict mapping column key to ColumnSummary
-        compound_risks: Optional list of compound risks
         config_path: Optional path to contracts config
 
     Returns:
         Tuple of (contract_name, evaluation) for strictest passing contract.
         Returns (None, None) if no contracts pass.
     """
-    evaluations = evaluate_all_contracts(column_summaries, compound_risks, config_path)
+    evaluations = evaluate_all_contracts(column_summaries, config_path)
     contracts = get_contracts(config_path)
 
     # Sort by strictness (lower overall_threshold = stricter)

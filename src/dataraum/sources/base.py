@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -13,6 +15,43 @@ from dataraum.core.models import Result, SourceConfig
 
 if TYPE_CHECKING:
     from dataraum.sources.csv.models import StagingResult
+
+
+def normalize_column_name(header: str, position: int = 0) -> str:
+    """Normalize a CSV column header to a clean SQL identifier.
+
+    Transforms: lowercase, whitespace→underscore, strip diacritics,
+    remove punctuation like -,&, collapse multiple underscores,
+    strip leading/trailing underscores.
+
+    Args:
+        header: Original column header string.
+        position: Column position (used as fallback if name empties out).
+
+    Returns:
+        Normalized column name safe for use as a SQL identifier.
+    """
+    name = header.strip().lower()
+    # Strip diacritics (NFD decomposition, drop combining marks)
+    name = unicodedata.normalize("NFD", name)
+    name = "".join(c for c in name if unicodedata.category(c) != "Mn")
+    # Whitespace → underscore
+    name = re.sub(r"\s+", "_", name)
+    # Remove problematic punctuation
+    name = re.sub(r"[-,&/]", "", name)
+    # Keep only alphanumeric and underscores
+    name = re.sub(r"[^a-z0-9_]", "", name)
+    # Collapse multiple underscores
+    name = re.sub(r"_+", "_", name)
+    # Strip leading/trailing underscores
+    name = name.strip("_")
+    # Guard: prefix if starts with digit
+    if name and name[0].isdigit():
+        name = f"c_{name}"
+    # Guard: empty result
+    if not name:
+        name = f"column_{position}"
+    return name
 
 
 class TypeSystemStrength(str, Enum):
@@ -33,12 +72,14 @@ class ColumnInfo:
         source_type: str | None = None,
         nullable: bool = True,
         sample_values: list[str] | None = None,
+        original_name: str | None = None,
     ):
         self.name = name
         self.position = position
         self.source_type = source_type
         self.nullable = nullable
         self.sample_values = sample_values or []
+        self.original_name = original_name
 
 
 class LoaderBase(ABC):

@@ -1,86 +1,50 @@
 # Pipeline Configuration
 #
-# Phase-specific settings for the data profiling pipeline.
+# Orchestrator settings only. Per-phase config lives in config/phases/<name>.yaml.
 
 version: "1.0.0"
 
-# Import phase settings
-import:
-  # Junk columns to remove after loading CSV files.
-  # These are typically CSV export artifacts like pandas index columns.
-  junk_columns:
-    - "Unnamed: 0"
-    - "Unnamed: 0.1"
-    - "Unnamed: 0.2"
-    - "column0"
-    - "column00"
+# Active phases (display order; actual execution order determined by dependencies).
+# Comment out a phase to disable it. Dependencies are defined in the phase classes.
+phases:
+  - import
+  - typing
+  - statistics
+  - column_eligibility
+  - statistical_quality
+  - relationships
+  - correlations
+  - temporal
+  - semantic
+  - enriched_views
+  - slicing
+  - slicing_view
+  - slice_analysis
+  - temporal_slice_analysis
+  - quality_summary
+  - entropy
+  - entropy_interpretation
+  - business_cycles
+  - validation
+  - graph_execution
+  # De-configured phases (uncomment to enable):
+  # - cross_table_quality
 
-# Temporal analysis settings
-temporal:
-  # Preferred time column name for temporal analysis.
-  # Small_finance fixture columns: "Transaction date", "Created date", "Due date"
-  # If not specified, auto-detects from columns with date/timestamp types.
-  time_column: "Transaction date"
+# Limits
+limits:
+  max_columns: 500  # Overall across all tables in a pipeline run
 
-  # Time granularity: daily, weekly, monthly
-  time_grain: monthly
+# Pipeline orchestrator settings
+pipeline:
+  # Maximum phases to run in parallel (ThreadPoolExecutor workers)
+  max_parallel: 4
+  # Stop pipeline on first phase failure
+  fail_fast: true
+  # Skip phases that already have completed checkpoints
+  skip_completed: true
 
-  # Analysis period (defaults to last year if not specified)
-  # period_start: "2025-01-01"
-  # period_end: "2025-12-31"
-
-# Temporal slice analysis settings
-temporal_slice_analysis:
-  # Override time column for slice analysis (inherits from temporal if not set)
-  time_column: "Transaction date"
-
-  # Bottleneck distance threshold for topology drift detection
-  bottleneck_threshold: 0.5
-
-# Slicing settings
-slicing:
-  # Maximum distinct values for a column to be considered for slicing
-  max_cardinality: 20
-  
-  # Minimum rows per slice
-  min_slice_rows: 10
-
-# Quality summary settings (LLM-based analysis)
-quality_summary:
-  # Variance filter for slice-based analysis
-  # Filters out columns with no interesting variance across slices
-  # to reduce LLM noise and token costs.
-  variance_filter:
-    # Enable/disable variance filtering (true = filter, false = send all to LLM)
-    enabled: true
-
-    # Null ratio spread threshold
-    # If max(null_ratio) - min(null_ratio) > threshold, column is INTERESTING
-    # 0.10 = 10% variation indicates conditionally populated field
-    null_spread_threshold: 0.10
-
-    # Distinct count ratio threshold
-    # If max(distinct_count) / min(distinct_count) > threshold, column is INTERESTING
-    # 2.0 = cardinality doubles between slices
-    distinct_ratio_threshold: 2.0
-
-    # Outlier ratio spread threshold
-    # If max(outlier_ratio) - min(outlier_ratio) > threshold, column is INTERESTING
-    # 0.05 = 5% variation indicates slice-specific quality issues
-    outlier_spread_threshold: 0.05
-
-    # Benford p-value spread threshold
-    # If max(benford_p_value) - min(benford_p_value) > threshold, column is INTERESTING
-    # 0.30 = Benford compliance varies significantly (some slices pass, others fail)
-    # Potential indicator of data manipulation or synthetic data in specific slices
-    benford_spread_threshold: 0.30
-
-    # Row count ratio threshold (informational)
-    # If max(row_count) / min(row_count) > threshold, noted as uneven coverage
-    # 10.0 = one slice has 10x more rows than another
-    row_ratio_threshold: 10.0
-
-    # Null ratio threshold for EMPTY classification
-    # If all slices have null_ratio > threshold, column is classified EMPTY
-    # 0.99 = effectively all nulls
-    empty_null_threshold: 0.99
+  # Retry configuration for transient SQLite contention errors
+  retry:
+    max_retries: 2
+    # Exponential backoff: backoff_base * (2^attempt) seconds
+    backoff_base: 2.0

@@ -32,32 +32,36 @@ class DataSampler:
     def prepare_samples(
         self,
         column_profiles: list[ColumnProfile],
-    ) -> dict[str, list[Any]]:
+    ) -> dict[tuple[str, str], list[Any]]:
         """Prepare sample values for LLM analysis.
 
         Args:
             column_profiles: Column profiles containing top values
 
         Returns:
-            Dictionary mapping column_name -> sample_values
+            Dictionary mapping (table_name, column_name) -> sample_values
         """
-        samples = {}
+        samples: dict[tuple[str, str], list[Any]] = {}
 
         for profile in column_profiles:
             column_name = profile.column_ref.column_name
+            table_name = profile.column_ref.table_name
+            key = (table_name, column_name)
 
             # Check if column matches sensitive pattern
             if self._is_sensitive(column_name):
                 # Redact sensitive columns
-                samples[column_name] = ["<REDACTED>"] * min(3, self.config.max_sample_values)
+                samples[key] = ["<REDACTED>"] * min(
+                    self.config.redacted_sample_count, self.config.max_sample_values
+                )
             else:
                 # Use real top values from profile
                 if profile.top_values:
-                    samples[column_name] = [
+                    samples[key] = [
                         vc.value for vc in profile.top_values[: self.config.max_sample_values]
                     ]
                 else:
-                    samples[column_name] = []
+                    samples[key] = []
 
         return samples
 
@@ -74,45 +78,3 @@ class DataSampler:
             if re.match(pattern, column_name, re.IGNORECASE):
                 return True
         return False
-
-
-# TODO: Implement SDV synthetic data generation service
-# This should be a separate service due to PyTorch dependencies
-#
-# Design:
-# 1. Separate Docker container running SDV
-# 2. REST API endpoint: POST /synthesize
-# 3. Input: Column profile (distribution, top values, etc.)
-# 4. Output: Synthetic samples matching statistical properties
-# 5. Called from DataSampler when use_synthetic_samples=True
-#
-# Example usage:
-#
-# class SDVSynthesizer:
-#     def __init__(self, sdv_service_url: str):
-#         self.url = sdv_service_url
-#
-#     async def generate_samples(
-#         self,
-#         profile: ColumnProfile,
-#         count: int,
-#     ) -> list[Any]:
-#         """Generate synthetic samples via SDV service."""
-#         async with aiohttp.ClientSession() as session:
-#             async with session.post(
-#                 f"{self.url}/synthesize",
-#                 json={
-#                     "column_name": profile.column_ref.column_name,
-#                     "data_type": profile.column_ref.data_type,
-#                     "distribution": {
-#                         "min": profile.numeric_stats.min_value,
-#                         "max": profile.numeric_stats.max_value,
-#                         "mean": profile.numeric_stats.mean,
-#                         "stddev": profile.numeric_stats.stddev,
-#                     },
-#                     "top_values": [v.value for v in profile.top_values],
-#                     "count": count,
-#                 }
-#             ) as resp:
-#                 data = await resp.json()
-#                 return data["samples"]

@@ -7,22 +7,27 @@ inferring column mappings from semantic annotations.
 
 from __future__ import annotations
 
+from types import ModuleType
 from typing import Any
 
 from sqlalchemy import select
 
+from dataraum.core.logging import get_logger
 from dataraum.graphs.agent import ExecutionContext, GraphAgent
 from dataraum.graphs.field_mapping import can_execute_metric, load_semantic_mappings
 from dataraum.graphs.loader import GraphLoader
 from dataraum.graphs.persistence import GraphExecutionRepository
 from dataraum.llm import create_provider, load_llm_config
-from dataraum.llm.cache import LLMCache
 from dataraum.llm.prompts import PromptRenderer
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
+logger = get_logger(__name__)
 
+
+@analysis_phase
 class GraphExecutionPhase(BasePhase):
     """Execute transformation graphs to calculate metrics.
 
@@ -45,15 +50,16 @@ class GraphExecutionPhase(BasePhase):
         # Depends on all phases that build_execution_context pulls data from
         return [
             "semantic",  # field mappings, table entities
-            "statistics",  # statistical profiles
+            "column_eligibility",  # ensures only eligible columns in context
             "statistical_quality",  # quality metrics
             "temporal",  # temporal profiles
             "relationships",  # table relationships
             "correlations",  # derived columns
             "slicing",  # slice definitions
             "quality_summary",  # quality reports
-            "business_cycles",  # detected cycles
-            "entropy_interpretation",  # entropy data
+            "entropy",  # entropy scores and network (interpretation not needed)
+            "validation",  # data validation results
+            "business_cycles",  # business cycle detection
         ]
 
     @property
@@ -61,8 +67,14 @@ class GraphExecutionPhase(BasePhase):
         return ["metrics_calculated", "metrics_skipped", "execution_context"]
 
     @property
-    def is_llm_phase(self) -> bool:
-        return True
+    def entropy_preconditions(self) -> dict[str, float]:
+        return {"type_fidelity": 0.3, "naming_clarity": 0.4}
+
+    @property
+    def db_models(self) -> list[ModuleType]:
+        from dataraum.graphs import db_models
+
+        return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no typed tables found."""
@@ -91,8 +103,19 @@ class GraphExecutionPhase(BasePhase):
         field_mappings = load_semantic_mappings(ctx.session, table_ids)
 
         # Load graph definitions
-        loader = GraphLoader()
+        vertical = ctx.config.get("vertical")
+        if not vertical:
+            return PhaseResult.failed(
+                "No vertical configured. Set 'vertical' in config/phases/graph_execution.yaml."
+            )
+        loader = GraphLoader(vertical=vertical)
         loader.load_all()
+
+        # Validate standard_field references against ontology
+        field_warnings = loader.validate_standard_fields(vertical)
+        for warning in field_warnings:
+            logger.warning(warning)
+
         metric_graphs = loader.get_metric_graphs()
 
         if not metric_graphs:
@@ -122,37 +145,18 @@ class GraphExecutionPhase(BasePhase):
             return PhaseResult.failed(f"Failed to create LLM provider: {e}")
 
         renderer = PromptRenderer()
-        cache = LLMCache()
 
         agent = GraphAgent(
             config=config,
             provider=provider,
             prompt_renderer=renderer,
-            cache=cache,
         )
 
-        # Find primary fact table for execution
-        primary_table = next(
-            (
-                t
-                for t in typed_tables
-                if any(
-                    kw in t.table_name.lower() for kw in ["txn", "transaction", "fact", "master"]
-                )
-            ),
-            typed_tables[0] if typed_tables else None,
-        )
-
-        if not primary_table:
-            return PhaseResult.failed("No suitable table found for metric execution")
-
-        # Create execution context with rich metadata
+        # Create execution context with rich metadata (all tables)
         exec_context = ExecutionContext.with_rich_context(
             session=ctx.session,
             duckdb_conn=ctx.duckdb_conn,
-            table_name=f"typed_{primary_table.table_name}",
             table_ids=table_ids,
-            entropy_behavior_mode="balanced",
         )
 
         # Execute each metric graph
@@ -176,8 +180,6 @@ class GraphExecutionPhase(BasePhase):
                     graph=graph,
                     context=exec_context,
                     force_regenerate=False,  # Use cache if available
-                    manager=ctx.manager,
-                    source_id=ctx.source_id,
                 )
 
                 if exec_result.success and exec_result.value is not None:
@@ -238,7 +240,7 @@ class GraphExecutionPhase(BasePhase):
                 "metrics_calculated": calculated_metrics,
                 "metrics_skipped": skipped_metrics,
                 "total_graphs": len(metric_graphs),
-                "primary_table": primary_table.table_name,
+                "tables": len(typed_tables),
                 "execution_context": context_stats,
             },
             records_processed=len(metric_graphs),

@@ -3,9 +3,10 @@
 This agent handles ALL graph types (filters and metrics) through a unified approach:
 1. Load graph specification (YAML with accounting context)
 2. Analyze actual data schema (columns, types, samples)
-3. Use LLM to generate executable SQL
-4. Cache generated SQL for deterministic re-execution (in-memory + DB)
-5. Execute SQL and capture results
+3. Look up cached SQL snippets from the knowledge base
+4. Use LLM to generate executable SQL (with snippet hints)
+5. Cache generated SQL in-memory + save as snippets for cross-agent reuse
+6. Execute SQL and capture results
 
 See docs/CALCULATION_ENGINE_DESIGN.md for full architecture.
 """
@@ -16,41 +17,30 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import uuid4
 
 import duckdb
 import yaml
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
-from dataraum.graphs.db_models import GeneratedCodeRecord
-from dataraum.llm.cache import LLMCache
 from dataraum.llm.config import LLMConfig
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.prompts import PromptRenderer
 from dataraum.llm.providers.base import LLMProvider
 
-from .entropy_behavior import (
-    EntropyBehaviorConfig,
-    get_default_config,
-)
 from .models import (
     AssumptionBasis,
     DatasetSchemaMapping,
     GraphExecution,
     GraphSQLGenerationOutput,
     QueryAssumption,
-    SQLStepOutput,
     StepResult,
     StepType,
     TransformationGraph,
 )
-
-if TYPE_CHECKING:
-    from dataraum.core.connections import ConnectionManager
 
 logger = get_logger(__name__)
 
@@ -85,7 +75,7 @@ class ExecutionContext:
     """Context for graph execution."""
 
     duckdb_conn: duckdb.DuckDBPyConnection
-    table_name: str
+    table_name: str = ""  # Deprecated: use rich_context.tables for multi-table access
     schema_mapping: DatasetSchemaMapping | None = None
     schema_mapping_id: str | None = None
     period: str | None = None
@@ -101,17 +91,12 @@ class ExecutionContext:
     # - Entropy scores and data readiness
     rich_context: Any | None = None  # GraphExecutionContext from graphs.context
 
-    # Entropy behavior configuration (controls how agent responds to uncertainty)
-    entropy_behavior: EntropyBehaviorConfig | None = None
-
     @classmethod
     def with_rich_context(
         cls,
         session: Any,  # Session
         duckdb_conn: duckdb.DuckDBPyConnection,
-        table_name: str,
         table_ids: list[str],
-        entropy_behavior_mode: str = "balanced",
         **kwargs: Any,
     ) -> ExecutionContext:
         """Create ExecutionContext with rich metadata loaded from analysis modules.
@@ -122,15 +107,16 @@ class ExecutionContext:
         Args:
             session: SQLAlchemy session
             duckdb_conn: DuckDB connection for queries
-            table_name: Primary table name for execution
             table_ids: List of table IDs to include in context
-            entropy_behavior_mode: One of "strict", "balanced", "lenient"
             **kwargs: Additional ExecutionContext arguments
 
         Returns:
-            ExecutionContext with rich_context and entropy_behavior populated
+            ExecutionContext with rich_context populated
         """
         from dataraum.graphs.context import build_execution_context
+
+        # Pop table_name if passed (backward compat), but it's no longer used
+        kwargs.pop("table_name", None)
 
         rich_context = build_execution_context(
             session=session,
@@ -140,24 +126,11 @@ class ExecutionContext:
             slice_value=kwargs.pop("slice_value", None),
         )
 
-        entropy_behavior = get_default_config(entropy_behavior_mode)
-
         return cls(
             duckdb_conn=duckdb_conn,
-            table_name=table_name,
             rich_context=rich_context,
-            entropy_behavior=entropy_behavior,
             **kwargs,
         )
-
-
-@dataclass
-class TableSchema:
-    """Schema information for a table."""
-
-    table_name: str
-    columns: list[dict[str, Any]]  # name, type, sample_values
-    row_count: int
 
 
 class GraphAgent(LLMFeature):
@@ -176,10 +149,9 @@ class GraphAgent(LLMFeature):
         config: LLMConfig,
         provider: LLMProvider,
         prompt_renderer: PromptRenderer,
-        cache: LLMCache,
     ):
         """Initialize the graph agent."""
-        super().__init__(config, provider, prompt_renderer, cache)
+        super().__init__(config, provider, prompt_renderer)
         self._code_cache: dict[str, GeneratedCode] = {}  # In-memory cache
 
     def execute(
@@ -189,9 +161,6 @@ class GraphAgent(LLMFeature):
         context: ExecutionContext,
         parameters: dict[str, Any] | None = None,
         force_regenerate: bool = False,
-        *,
-        manager: ConnectionManager | None = None,
-        source_id: str | None = None,
     ) -> Result[GraphExecution]:
         """Execute a graph by generating and running SQL.
 
@@ -201,8 +170,6 @@ class GraphAgent(LLMFeature):
             context: Execution context with data connection
             parameters: Parameter values for the graph
             force_regenerate: If True, regenerate SQL even if cached
-            manager: ConnectionManager for library access (enables cross-agent reuse)
-            source_id: Source ID for library storage
 
         Returns:
             Result containing GraphExecution with results
@@ -216,33 +183,74 @@ class GraphAgent(LLMFeature):
         schema_mapping_id = context.schema_mapping_id or "default"
         cache_key = self._cache_key(graph, schema_mapping_id)
 
-        # Check caches for generated code (in-memory first, then DB)
+        # Check in-memory cache for generated code
         generated_code: GeneratedCode | None = None
 
         if not force_regenerate:
             # Check in-memory cache
             generated_code = self._code_cache.get(cache_key)
 
-            # Check database cache if not in memory
-            if generated_code is None:
-                db_code = self._load_from_db(
-                    session, graph.graph_id, graph.version, schema_mapping_id
-                )
-                if db_code:
-                    generated_code = db_code
-                    self._code_cache[cache_key] = generated_code
-
         if generated_code is None:
-            # Generate SQL using LLM
-            gen_result = self._generate_sql(session, graph, context, resolved_params)
-            if not gen_result.success or not gen_result.value:
-                return Result.fail(gen_result.error or "SQL generation failed")
+            # Check snippet library for cached individual steps
+            cached_snippets = self._lookup_snippets(
+                session,
+                graph,
+                schema_mapping_id,
+                resolved_params,
+            )
 
-            generated_code = gen_result.value
+            # If ALL steps have cached snippets, assemble without LLM
+            if cached_snippets and len(cached_snippets) == len(graph.steps):
+                generated_code = self._assemble_from_snippets(
+                    graph, context, cached_snippets, resolved_params
+                )
+                if generated_code:
+                    logger.debug(
+                        "assembled_from_snippets",
+                        graph_id=graph.graph_id,
+                        snippet_count=len(cached_snippets),
+                    )
+                    # Track usage: all steps were exact reuses
+                    self._track_snippet_usage(
+                        session=session,
+                        execution_id=generated_code.code_id,
+                        cached_snippets=cached_snippets,
+                        generated_steps=generated_code.steps,
+                    )
+            else:
+                # Generate SQL using LLM (with cached snippet hints)
+                gen_result = self._generate_sql(
+                    session,
+                    graph,
+                    context,
+                    resolved_params,
+                    cached_snippets=cached_snippets if cached_snippets else None,
+                )
+                if not gen_result.success or not gen_result.value:
+                    return Result.fail(gen_result.error or "SQL generation failed")
+
+                generated_code = gen_result.value
+
+                # Track usage: compare generated steps against provided snippets
+                self._track_snippet_usage(
+                    session=session,
+                    execution_id=generated_code.code_id,
+                    cached_snippets=cached_snippets or {},
+                    generated_steps=generated_code.steps,
+                )
+
+            if generated_code is None:
+                return Result.fail("Failed to generate or assemble SQL code")
+
             self._code_cache[cache_key] = generated_code
 
-            # Persist to database
-            self._save_to_db(session, generated_code)
+            # Save generated steps as snippets for cross-graph reuse
+            self._save_snippets(
+                session=session,
+                graph=graph,
+                generated_code=generated_code,
+                schema_mapping_id=schema_mapping_id,
+            )
 
         # Execute the generated SQL
         exec_result = self._execute_sql(generated_code, context, graph, resolved_params)
@@ -251,20 +259,69 @@ class GraphAgent(LLMFeature):
 
         execution = exec_result.value
 
-        # Save to QueryLibrary for cross-agent reuse
-        if manager and source_id:
-            library_entry_id = self._save_to_library(
-                session=session,
-                manager=manager,
-                source_id=source_id,
-                graph=graph,
-                generated_code=generated_code,
-                execution=execution,
-            )
-            if library_entry_id:
-                execution.library_entry_id = library_entry_id
-
         return Result.ok(execution)
+
+    def _assemble_from_snippets(
+        self,
+        graph: TransformationGraph,
+        context: ExecutionContext,
+        cached_snippets: dict[str, dict[str, Any]],
+        parameters: dict[str, Any],
+    ) -> GeneratedCode | None:
+        """Assemble GeneratedCode from cached snippets without LLM call.
+
+        When ALL graph steps have cached SQL snippets, we can skip the LLM
+        entirely and assemble the generated code from the cache.
+
+        Args:
+            graph: Graph specification
+            context: Execution context
+            cached_snippets: Dict of step_id -> {sql, description, snippet_id}
+            parameters: Resolved parameter values
+
+        Returns:
+            GeneratedCode if assembly succeeds, None if not possible
+        """
+        steps = []
+        merged_column_mappings: dict[str, str] = {}
+        for step_id in graph.steps:
+            snippet = cached_snippets.get(step_id)
+            if not snippet:
+                return None  # Missing a step, can't assemble
+            steps.append(
+                {
+                    "step_id": step_id,
+                    "sql": snippet["sql"],
+                    "description": snippet["description"],
+                }
+            )
+            # Merge column_mappings from each snippet
+            snippet_mappings = snippet.get("column_mappings")
+            if isinstance(snippet_mappings, dict):
+                merged_column_mappings.update(snippet_mappings)
+
+        # Build final_sql by referencing the output step
+        output_step = graph.get_output_step()
+        if output_step:
+            final_sql = f"SELECT * FROM {output_step.step_id}"
+        else:
+            # Fallback: select from last step
+            final_sql = f"SELECT * FROM {steps[-1]['step_id']}"
+
+        return GeneratedCode(
+            code_id=str(uuid4()),
+            graph_id=graph.graph_id,
+            graph_version=graph.version,
+            schema_mapping_id=context.schema_mapping_id or "default",
+            summary=f"Assembled from {len(steps)} cached snippets",
+            steps=steps,
+            final_sql=final_sql,
+            column_mappings=merged_column_mappings,
+            llm_model="cached",
+            prompt_hash="snippets",
+            generated_at=datetime.now(UTC),
+            is_validated=True,  # Snippets are pre-validated
+        )
 
     def _generate_sql(
         self,
@@ -272,6 +329,7 @@ class GraphAgent(LLMFeature):
         graph: TransformationGraph,
         context: ExecutionContext,
         parameters: dict[str, Any],
+        cached_snippets: dict[str, dict[str, Any]] | None = None,
     ) -> Result[GeneratedCode]:
         """Use LLM to generate SQL from graph specification using tool-based output."""
         from dataraum.llm.providers.base import (
@@ -280,12 +338,8 @@ class GraphAgent(LLMFeature):
             ToolDefinition,
         )
 
-        # Get table schema
-        schema_result = self._get_table_schema(context)
-        if not schema_result.success or not schema_result.value:
-            return Result.fail(schema_result.error or "Failed to get schema")
-
-        table_schema = schema_result.value
+        # Build multi-table schema from rich context
+        schema_info = self._build_schema_info(context)
 
         # Serialize graph to YAML for LLM context
         graph_yaml = self._graph_to_yaml(graph)
@@ -294,16 +348,21 @@ class GraphAgent(LLMFeature):
         prompt_context = {
             "graph_yaml": graph_yaml,
             "graph_type": graph.graph_type.value,
-            "table_schema": json.dumps(
-                {
-                    "table_name": table_schema.table_name,
-                    "columns": table_schema.columns,
-                    "row_count": table_schema.row_count,
-                },
-                indent=2,
-            ),
+            "table_schema": json.dumps(schema_info, indent=2),
             "parameters": json.dumps(parameters, indent=2),
         }
+
+        # Inject cached snippets into prompt context
+        if cached_snippets:
+            prompt_context["cached_steps"] = json.dumps(
+                {
+                    step_id: {"sql": info["sql"], "description": info["description"]}
+                    for step_id, info in cached_snippets.items()
+                },
+                indent=2,
+            )
+        else:
+            prompt_context["cached_steps"] = ""
 
         # Add rich context if available (provides semantic, statistical, relational metadata)
         if context.rich_context is not None:
@@ -364,8 +423,10 @@ class GraphAgent(LLMFeature):
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
             tools=[tool],
+            tool_choice={"type": "tool", "name": "generate_sql"},
             max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
+            model=model,
         )
 
         result = self.provider.converse(request)
@@ -423,6 +484,11 @@ class GraphAgent(LLMFeature):
         generated_code.is_validated = validation_result.success
         if not validation_result.success:
             generated_code.validation_errors = [validation_result.error or "Unknown"]
+            logger.warning(
+                "sql_validation_failed",
+                graph_id=graph.graph_id,
+                error=validation_result.error,
+            )
 
         return Result.ok(generated_code)
 
@@ -540,13 +606,13 @@ class GraphAgent(LLMFeature):
             - max_entropy: Highest entropy score encountered
             - warnings: List of warning messages
             - high_entropy_columns: List of columns with entropy > 0.6
-            - compound_risks: List of compound risk descriptions
+            - readiness_blockers: List of blocked column descriptions
         """
         result: dict[str, Any] = {
             "max_entropy": 0.0,
             "warnings": [],
             "high_entropy_columns": [],
-            "compound_risks": [],
+            "readiness_blockers": [],
         }
 
         if context.rich_context is None:
@@ -557,10 +623,9 @@ class GraphAgent(LLMFeature):
         if not entropy_summary:
             return result
 
-        # Extract high entropy count
+        # Extract entropy counts (network-derived)
         high_count = entropy_summary.get("high_entropy_count", 0)
         critical_count = entropy_summary.get("critical_entropy_count", 0)
-        compound_count = entropy_summary.get("compound_risk_count", 0)
         blockers = entropy_summary.get("readiness_blockers", [])
 
         # Build warnings
@@ -568,8 +633,6 @@ class GraphAgent(LLMFeature):
             result["warnings"].append(f"{critical_count} columns have critical entropy")
         if high_count > 0:
             result["warnings"].append(f"{high_count} columns have high uncertainty")
-        if compound_count > 0:
-            result["warnings"].append(f"{compound_count} dangerous column combinations")
 
         # Find max entropy from tables
         tables = getattr(context.rich_context, "tables", [])
@@ -577,10 +640,11 @@ class GraphAgent(LLMFeature):
             for col in getattr(table, "columns", []):
                 entropy_scores = getattr(col, "entropy_scores", None)
                 if entropy_scores:
-                    score = entropy_scores.get("composite_score", 0.0)
+                    score = entropy_scores.get("worst_intent_p_high", 0.0)
                     if score > result["max_entropy"]:
                         result["max_entropy"] = score
-                    if score >= 0.6:
+                    readiness = entropy_scores.get("readiness", "ready")
+                    if readiness != "ready" or score > 0.3:
                         result["high_entropy_columns"].append(
                             {
                                 "table": getattr(table, "table_name", "unknown"),
@@ -590,8 +654,8 @@ class GraphAgent(LLMFeature):
                             }
                         )
 
-        # Add blockers as compound risks
-        result["compound_risks"] = blockers
+        # Add blockers
+        result["readiness_blockers"] = blockers
 
         return result
 
@@ -634,8 +698,8 @@ class GraphAgent(LLMFeature):
                     continue
 
                 # Only include assumptions for columns with meaningful entropy
-                composite_score = entropy_scores.get("composite_score", 0.0)
-                if composite_score < 0.3:
+                p_high = entropy_scores.get("worst_intent_p_high", 0.0)
+                if p_high < 0.3:
                     continue
 
                 table_name = getattr(table, "table_name", "unknown")
@@ -671,24 +735,56 @@ class GraphAgent(LLMFeature):
 
         return assumptions
 
-    def _get_table_schema(self, context: ExecutionContext) -> Result[TableSchema]:
-        """Get schema information from the actual table."""
+    def _build_schema_info(
+        self,
+        context: ExecutionContext,
+    ) -> dict[str, Any]:
+        """Build multi-table schema information from rich context and DuckDB.
+
+        Iterates over all tables in the execution context and enriched views,
+        querying DuckDB for column types and sample values.
+
+        Returns:
+            Dict with 'tables' list, each containing name, columns (with
+            sample_values), and row_count.
+        """
+        tables: list[dict[str, Any]] = []
+
+        if context.rich_context is not None:
+            # Typed tables from rich context
+            for table_ctx in context.rich_context.tables:
+                duckdb_name = table_ctx.duckdb_name or table_ctx.table_name
+                table_info = self._describe_table(context.duckdb_conn, duckdb_name)
+                if table_info:
+                    tables.append(table_info)
+
+            # Enriched views (pre-joined fact + dimension)
+            for ev in context.rich_context.enriched_views:
+                table_info = self._describe_table(context.duckdb_conn, ev.view_name)
+                if table_info:
+                    tables.append(table_info)
+
+        return {"tables": tables}
+
+    @staticmethod
+    def _describe_table(
+        duckdb_conn: duckdb.DuckDBPyConnection,
+        table_name: str,
+    ) -> dict[str, Any] | None:
+        """DESCRIBE a single DuckDB table and return schema with sample values."""
         try:
-            # Get column info
-            columns_result = context.duckdb_conn.execute(
-                f'DESCRIBE "{context.table_name}"'
-            ).fetchall()
+            columns_result = duckdb_conn.execute(f'DESCRIBE "{table_name}"').fetchall()
 
             columns = []
             for col in columns_result:
                 col_name = col[0]
                 col_type = col[1]
 
-                # Get sample values (quote column name for spaces/special chars)
-                sample_result = context.duckdb_conn.execute(
-                    f'SELECT DISTINCT "{col_name}" FROM "{context.table_name}" LIMIT 5'
+                sample_result = duckdb_conn.execute(
+                    f'SELECT DISTINCT "{col_name}" FROM "{table_name}" '
+                    f'WHERE "{col_name}" IS NOT NULL LIMIT 5'
                 ).fetchall()
-                samples = [str(r[0]) for r in sample_result if r[0] is not None]
+                samples = [str(r[0]) for r in sample_result]
 
                 columns.append(
                     {
@@ -698,22 +794,17 @@ class GraphAgent(LLMFeature):
                     }
                 )
 
-            # Get row count
-            count_result = context.duckdb_conn.execute(
-                f'SELECT COUNT(*) FROM "{context.table_name}"'
-            ).fetchone()
+            count_result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()
             row_count = count_result[0] if count_result else 0
 
-            return Result.ok(
-                TableSchema(
-                    table_name=context.table_name,
-                    columns=columns,
-                    row_count=row_count,
-                )
-            )
-
-        except Exception as e:
-            return Result.fail(f"Failed to get table schema: {e}")
+            return {
+                "table_name": table_name,
+                "columns": columns,
+                "row_count": row_count,
+            }
+        except Exception:
+            logger.warning("describe_table_failed", table=table_name)
+            return None
 
     def _graph_to_yaml(self, graph: TransformationGraph) -> str:
         """Serialize graph to YAML for LLM context."""
@@ -817,24 +908,14 @@ class GraphAgent(LLMFeature):
         # Get model tier from config (default to fast)
         model_tier = getattr(feature_config, "model_tier", "fast")
 
-        # Get table schema for context
-        schema_result = self._get_table_schema(context)
-        if not schema_result.success or not schema_result.value:
-            return Result.fail("Cannot repair: failed to get schema")
-
-        table_schema = schema_result.value
+        # Build multi-table schema for context
+        schema_info = self._build_schema_info(context)
 
         # Build prompt context
         prompt_context = {
             "error_message": error_message,
             "failed_sql": failed_sql,
-            "table_schema": json.dumps(
-                {
-                    "table_name": table_schema.table_name,
-                    "columns": table_schema.columns,
-                },
-                indent=2,
-            ),
+            "table_schema": json.dumps(schema_info, indent=2),
             "step_description": step_description or "Execute the query",
         }
 
@@ -927,138 +1008,233 @@ class GraphAgent(LLMFeature):
             json.dumps(hash_input, sort_keys=True, default=str).encode()
         ).hexdigest()[:16]
 
-    def _load_from_db(
+    def _track_snippet_usage(
         self,
         session: Session,
-        graph_id: str,
-        graph_version: str,
-        schema_mapping_id: str,
-    ) -> GeneratedCode | None:
-        """Load generated code from database cache."""
-        stmt = select(GeneratedCodeRecord).where(
-            GeneratedCodeRecord.graph_id == graph_id,
-            GeneratedCodeRecord.graph_version == graph_version,
-            GeneratedCodeRecord.schema_mapping_id == schema_mapping_id,
-        )
-        result = session.execute(stmt)
-        record = result.scalar_one_or_none()
-
-        if record is None:
-            return None
-
-        return GeneratedCode(
-            code_id=record.code_id,
-            graph_id=record.graph_id,
-            graph_version=record.graph_version,
-            schema_mapping_id=record.schema_mapping_id,
-            summary=record.summary or "",
-            steps=record.steps_json,
-            final_sql=record.final_sql,
-            column_mappings=record.column_mappings,
-            llm_model=record.llm_model,
-            prompt_hash=record.prompt_hash,
-            generated_at=record.generated_at,
-            is_validated=record.is_validated,
-            validation_errors=record.validation_errors,
-        )
-
-    def _save_to_db(
-        self,
-        session: Session,
-        generated_code: GeneratedCode,
+        execution_id: str,
+        cached_snippets: dict[str, dict[str, Any]],
+        generated_steps: list[dict[str, str]],
     ) -> None:
-        """Save generated code to database cache."""
-        record = GeneratedCodeRecord(
-            code_id=generated_code.code_id,
-            graph_id=generated_code.graph_id,
-            graph_version=generated_code.graph_version,
-            schema_mapping_id=generated_code.schema_mapping_id,
-            summary=generated_code.summary,
-            steps_json=generated_code.steps,
-            final_sql=generated_code.final_sql,
-            column_mappings=generated_code.column_mappings,
-            llm_model=generated_code.llm_model,
-            prompt_hash=generated_code.prompt_hash,
-            generated_at=generated_code.generated_at,
-            is_validated=generated_code.is_validated,
-            validation_errors=generated_code.validation_errors,
-        )
-        session.add(record)
-        # No flush needed - code_id is client-generated UUID, commit happens at session_scope() end
+        """Track how cached snippets were used in graph execution."""
+        from dataraum.query.snippet_library import SnippetLibrary
+        from dataraum.query.snippet_utils import determine_usage_type
 
-    def _save_to_library(
+        library = SnippetLibrary(session)
+        used_snippet_ids: set[str] = set()
+
+        for gen_step in generated_steps:
+            step_id = gen_step.get("step_id", "")
+            provided = cached_snippets.get(step_id)
+
+            if provided is None:
+                library.record_usage(
+                    execution_id=execution_id,
+                    execution_type="graph",
+                    usage_type="newly_generated",
+                    step_id=step_id,
+                )
+            else:
+                snippet_id = provided.get("snippet_id")
+                usage_type = determine_usage_type(
+                    gen_step.get("sql", ""),
+                    provided.get("sql", ""),
+                )
+                is_exact = usage_type == "exact_reuse"
+                library.record_usage(
+                    execution_id=execution_id,
+                    execution_type="graph",
+                    usage_type=usage_type,
+                    snippet_id=snippet_id,
+                    match_confidence=1.0,
+                    sql_match_ratio=1.0 if is_exact else 0.0,
+                    step_id=step_id,
+                )
+                if snippet_id:
+                    used_snippet_ids.add(snippet_id)
+
+        # Provided snippets not used by any generated step
+        generated_step_ids = {s.get("step_id", "") for s in generated_steps}
+        for step_id, provided in cached_snippets.items():
+            if step_id not in generated_step_ids:
+                snippet_id = provided.get("snippet_id")
+                if snippet_id and snippet_id not in used_snippet_ids:
+                    library.record_usage(
+                        execution_id=execution_id,
+                        execution_type="graph",
+                        usage_type="provided_not_used",
+                        snippet_id=snippet_id,
+                        step_id=step_id,
+                    )
+
+    def _save_snippets(
         self,
         session: Session,
-        manager: ConnectionManager,
-        source_id: str,
         graph: TransformationGraph,
         generated_code: GeneratedCode,
-        execution: GraphExecution,
-    ) -> str | None:
-        """Save graph execution to QueryLibrary for cross-agent reuse.
+        schema_mapping_id: str,
+    ) -> None:
+        """Save generated SQL steps as snippets for cross-graph reuse.
 
-        This enables Query Agent to find and reuse graph-generated SQL
-        via semantic similarity search.
+        Decomposes the generated code into individual snippets based on the
+        graph step definitions. Each graph step maps to a snippet type:
+        - extract steps -> extract snippets (keyed by standard_field + statement + aggregation)
+        - constant steps -> constant snippets (keyed by parameter + value)
+        - formula steps -> formula template snippets (keyed by normalized expression)
 
         Args:
             session: SQLAlchemy session
-            manager: ConnectionManager with vectors
-            source_id: Source ID for the library
-            graph: The graph specification
-            generated_code: Generated SQL code
-            execution: Execution result with assumptions
+            graph: Graph specification (defines step types and metadata)
+            generated_code: LLM-generated SQL code
+            schema_mapping_id: Schema mapping identifier
+        """
+        from dataraum.query.snippet_library import SnippetLibrary
+        from dataraum.query.snippet_utils import normalize_expression
+
+        library = SnippetLibrary(session)
+
+        source = f"graph:{graph.graph_id}"
+
+        # Build a map of generated step_id -> {sql, description}
+        generated_steps: dict[str, dict[str, str]] = {}
+        for step_dict in generated_code.steps:
+            step_id = step_dict.get("step_id", "")
+            if step_id:
+                generated_steps[step_id] = step_dict
+
+        # Map graph steps to snippets
+        for step_id, graph_step in graph.steps.items():
+            gen_step = generated_steps.get(step_id)
+            if not gen_step:
+                continue
+
+            sql = gen_step.get("sql", "")
+            description = gen_step.get("description", "")
+
+            if graph_step.step_type == StepType.EXTRACT and graph_step.source:
+                # Extract snippet: keyed by standard_field + statement + aggregation
+                library.save_snippet(
+                    snippet_type="extract",
+                    sql=sql,
+                    description=description,
+                    schema_mapping_id=schema_mapping_id,
+                    source=source,
+                    standard_field=graph_step.source.standard_field,
+                    statement=graph_step.source.statement,
+                    aggregation=graph_step.aggregation,
+                    column_mappings=generated_code.column_mappings,
+                    llm_model=generated_code.llm_model,
+                )
+
+            elif graph_step.step_type == StepType.CONSTANT:
+                # Constant snippet: keyed by parameter name + resolved value
+                param_value = None
+                if graph_step.parameter:
+                    # Look up the resolved parameter value from the graph defaults
+                    for param in graph.parameters:
+                        if param.name == graph_step.parameter:
+                            param_value = str(param.default) if param.default is not None else None
+                            break
+
+                library.save_snippet(
+                    snippet_type="constant",
+                    sql=sql,
+                    description=description,
+                    schema_mapping_id=schema_mapping_id,
+                    source=source,
+                    standard_field=graph_step.parameter or step_id,
+                    parameter_value=param_value,
+                    llm_model=generated_code.llm_model,
+                )
+
+            elif graph_step.step_type == StepType.FORMULA and graph_step.expression:
+                # Formula template snippet: keyed by normalized expression
+                normalized, sorted_fields, bindings = normalize_expression(graph_step.expression)
+
+                library.save_snippet(
+                    snippet_type="formula",
+                    sql=sql,
+                    description=description,
+                    schema_mapping_id=schema_mapping_id,
+                    source=source,
+                    normalized_expression=normalized,
+                    input_fields=sorted_fields,
+                    llm_model=generated_code.llm_model,
+                )
+
+        logger.debug("saved_snippets", graph_id=graph.graph_id)
+
+    def _lookup_snippets(
+        self,
+        session: Session,
+        graph: TransformationGraph,
+        schema_mapping_id: str,
+        parameters: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        """Look up cached snippets for graph steps before LLM generation.
+
+        For each graph step, check the snippet library for a matching cached SQL.
+        Returns a dict of step_id -> {sql, description, snippet_id, column_mappings}
+        for steps that have cached SQL.
+
+        Args:
+            session: SQLAlchemy session
+            graph: Graph specification
+            schema_mapping_id: Schema mapping identifier
+            parameters: Resolved parameter values
 
         Returns:
-            The query_id of the saved library entry, or None if save failed
+            Dict mapping step_id to cached snippet info for found snippets
         """
-        from dataraum.query.document import QueryDocument
-        from dataraum.query.library import QueryLibrary, QueryLibraryError
+        from dataraum.query.snippet_library import SnippetLibrary
 
-        # Build assumptions from execution
-        assumptions = [
-            {
-                "dimension": a.dimension,
-                "target": a.target,
-                "assumption": a.assumption,
-                "basis": a.basis.value,
-                "confidence": a.confidence,
-            }
-            for a in execution.assumptions
-        ]
+        library = SnippetLibrary(session)
 
-        # Convert to GraphSQLGenerationOutput format for QueryDocument
-        output = GraphSQLGenerationOutput(
-            summary=generated_code.summary or f"Calculates {graph.metadata.name}",
-            steps=[
-                SQLStepOutput(
-                    step_id=s["step_id"],
-                    sql=s["sql"],
-                    description=s["description"],
+        cached_steps: dict[str, dict[str, Any]] = {}
+
+        for step_id, graph_step in graph.steps.items():
+            match = None
+
+            if graph_step.step_type == StepType.EXTRACT and graph_step.source:
+                match = library.find_by_key(
+                    snippet_type="extract",
+                    schema_mapping_id=schema_mapping_id,
+                    standard_field=graph_step.source.standard_field,
+                    statement=graph_step.source.statement,
+                    aggregation=graph_step.aggregation,
                 )
-                for s in generated_code.steps
-            ],
-            final_sql=generated_code.final_sql,
-            column_mappings=generated_code.column_mappings,
-        )
 
-        document = QueryDocument.from_graph_output(output, assumptions)
+            elif graph_step.step_type == StepType.CONSTANT:
+                param_value = None
+                if graph_step.parameter and graph_step.parameter in parameters:
+                    param_value = str(parameters[graph_step.parameter])
 
-        try:
-            library = QueryLibrary(session, manager)
-            entry = library.save(
-                source_id=source_id,
-                document=document,
+                match = library.find_by_key(
+                    snippet_type="constant",
+                    schema_mapping_id=schema_mapping_id,
+                    standard_field=graph_step.parameter or step_id,
+                    parameter_value=param_value,
+                )
+
+            elif graph_step.step_type == StepType.FORMULA and graph_step.expression:
+                match = library.find_by_expression(
+                    expression=graph_step.expression,
+                    schema_mapping_id=schema_mapping_id,
+                )
+
+            if match:
+                cached_steps[step_id] = {
+                    "sql": match.snippet.sql,
+                    "description": match.snippet.description,
+                    "snippet_id": match.snippet.snippet_id,
+                    "column_mappings": match.snippet.column_mappings or {},
+                }
+
+        if cached_steps:
+            logger.debug(
+                "found_cached_snippets",
+                cached=len(cached_steps),
+                total=len(graph.steps),
                 graph_id=graph.graph_id,
-                name=graph.metadata.name,
-                description=graph.metadata.description,
-                confidence_level="GREEN",  # Graphs are pre-validated
             )
-            logger.info(f"Saved graph '{graph.graph_id}' to query library")
-            return entry.query_id
-        except QueryLibraryError as e:
-            # Library not available (vectors disabled) - not an error
-            logger.debug(f"Skipping library save (vectors not enabled): {e}")
-            return None
-        except Exception as e:
-            logger.warning(f"Failed to save graph to library: {e}")
-            return None
+
+        return cached_steps

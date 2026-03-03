@@ -7,7 +7,6 @@ Usage:
     from dataraum.entropy.config import get_entropy_config
 
     config = get_entropy_config()
-    weights = config.composite_weights
     threshold = config.detector("null_ratio").multiplier
 """
 
@@ -17,14 +16,12 @@ from typing import Any
 
 import yaml
 
+from dataraum.core.config import get_config_file
 from dataraum.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Default config path relative to project root
-DEFAULT_CONFIG_PATH = (
-    Path(__file__).parent.parent.parent.parent / "config" / "entropy" / "thresholds.yaml"
-)
+ENTROPY_THRESHOLDS_CONFIG = "entropy/thresholds.yaml"
 
 
 @dataclass
@@ -46,53 +43,14 @@ class DetectorConfig:
 
 
 @dataclass
-class CompoundRiskConfig:
-    """Configuration for a compound risk pattern."""
-
-    risk_type: str
-    dimensions: list[str]
-    threshold: float
-    multiplier: float
-    risk_level: str
-    impact_template: str
-
-
-@dataclass
 class EntropyConfig:
     """Complete entropy configuration."""
-
-    # Composite scoring weights
-    composite_weights: dict[str, float] = field(
-        default_factory=lambda: {
-            "structural": 0.25,
-            "semantic": 0.30,
-            "value": 0.30,
-            "computational": 0.15,
-        }
-    )
-
-    # Readiness thresholds
-    ready_threshold: float = 0.3
-    blocked_threshold: float = 0.6
-
-    # Entropy level thresholds
-    high_entropy_threshold: float = 0.5
-    critical_entropy_threshold: float = 0.8
 
     # Detector configurations
     detectors: dict[str, DetectorConfig] = field(default_factory=dict)
 
-    # Compound risk definitions
-    compound_risks: dict[str, CompoundRiskConfig] = field(default_factory=dict)
-
-    # Effort factors for priority calculation
-    effort_factors: dict[str, float] = field(
-        default_factory=lambda: {
-            "low": 1.0,
-            "medium": 2.0,
-            "high": 4.0,
-        }
-    )
+    # Human-readable dimension labels
+    dimension_labels: dict[str, str] = field(default_factory=dict)
 
     def detector(self, detector_id: str) -> DetectorConfig:
         """Get configuration for a specific detector.
@@ -100,34 +58,6 @@ class EntropyConfig:
         Returns empty config if detector not found.
         """
         return self.detectors.get(detector_id, DetectorConfig(name=detector_id))
-
-    def get_readiness(self, score: float) -> str:
-        """Classify readiness based on composite score."""
-        if score < self.ready_threshold:
-            return "ready"
-        elif score < self.blocked_threshold:
-            return "investigate"
-        return "blocked"
-
-    def is_high_entropy(self, score: float) -> bool:
-        """Check if score exceeds high entropy threshold."""
-        return score >= self.high_entropy_threshold
-
-    def is_critical_entropy(self, score: float) -> bool:
-        """Check if score exceeds critical entropy threshold."""
-        return score >= self.critical_entropy_threshold
-
-    def effort_factor(self, effort: str) -> float:
-        """Get effort factor for priority calculation.
-
-        Raises:
-            KeyError: If effort level is not recognized (fail-fast behavior).
-        """
-        if effort not in self.effort_factors:
-            raise KeyError(
-                f"Unknown effort level '{effort}'. Valid levels: {list(self.effort_factors.keys())}"
-            )
-        return self.effort_factors[effort]
 
 
 # Module-level cache for configuration
@@ -139,7 +69,8 @@ def load_entropy_config(config_path: Path | None = None) -> EntropyConfig:
     """Load entropy configuration from YAML file.
 
     Args:
-        config_path: Path to thresholds.yaml. Defaults to config/entropy/thresholds.yaml.
+        config_path: Absolute path to thresholds.yaml, for testing.
+                     If None, resolves via central config loader.
 
     Returns:
         EntropyConfig with loaded values.
@@ -148,13 +79,11 @@ def load_entropy_config(config_path: Path | None = None) -> EntropyConfig:
         FileNotFoundError: If config file doesn't exist (fail-fast behavior).
         RuntimeError: If config file cannot be parsed.
     """
-    config_path = config_path or DEFAULT_CONFIG_PATH
+    if config_path is None:
+        config_path = get_config_file(ENTROPY_THRESHOLDS_CONFIG)
 
     if not config_path.exists():
-        raise FileNotFoundError(
-            f"Required entropy config not found: {config_path}. "
-            "Create config/entropy/thresholds.yaml with entropy configuration."
-        )
+        raise FileNotFoundError(f"Required entropy config not found: {config_path}.")
 
     try:
         with open(config_path) as f:
@@ -163,7 +92,7 @@ def load_entropy_config(config_path: Path | None = None) -> EntropyConfig:
         return _parse_config(raw)
 
     except FileNotFoundError:
-        raise  # Re-raise FileNotFoundError
+        raise
     except Exception as e:
         raise RuntimeError(f"Error loading entropy config from {config_path}: {e}") from e
 
@@ -171,20 +100,6 @@ def load_entropy_config(config_path: Path | None = None) -> EntropyConfig:
 def _parse_config(raw: dict[str, Any]) -> EntropyConfig:
     """Parse raw YAML config into EntropyConfig."""
     config = EntropyConfig()
-
-    # Parse composite weights
-    if "composite_weights" in raw:
-        config.composite_weights = dict(raw["composite_weights"])
-
-    # Parse readiness thresholds
-    if "readiness" in raw:
-        config.ready_threshold = raw["readiness"].get("ready_threshold", 0.3)
-        config.blocked_threshold = raw["readiness"].get("blocked_threshold", 0.6)
-
-    # Parse entropy level thresholds
-    if "entropy_levels" in raw:
-        config.high_entropy_threshold = raw["entropy_levels"].get("high_entropy", 0.5)
-        config.critical_entropy_threshold = raw["entropy_levels"].get("critical_entropy", 0.8)
 
     # Parse detector configurations
     if "detectors" in raw:
@@ -194,38 +109,41 @@ def _parse_config(raw: dict[str, Any]) -> EntropyConfig:
                 values=dict(values) if values else {},
             )
 
-    # Parse compound risk definitions
-    if "compound_risks" in raw:
-        for risk_type, definition in raw["compound_risks"].items():
-            config.compound_risks[risk_type] = CompoundRiskConfig(
-                risk_type=risk_type,
-                dimensions=definition.get("dimensions", []),
-                threshold=definition.get("threshold", 0.5),
-                multiplier=definition.get("multiplier", 1.5),
-                risk_level=definition.get("risk_level", "high"),
-                impact_template=definition.get("impact_template", ""),
-            )
-
-    # Parse effort factors
-    if "effort_factors" in raw:
-        config.effort_factors = dict(raw["effort_factors"])
+    # Parse dimension labels
+    if "dimension_labels" in raw:
+        config.dimension_labels = dict(raw["dimension_labels"])
 
     return config
 
 
-def get_entropy_config(config_path: Path | None = None) -> EntropyConfig:
+def get_entropy_config(
+    config_path: Path | None = None,
+    config_dict: dict[str, Any] | None = None,
+) -> EntropyConfig:
     """Get entropy configuration, using cache if available.
 
     Args:
-        config_path: Optional path to override default config location.
+        config_path: Optional absolute path to override default config location.
                     If different from cached path, reloads config.
+        config_dict: Optional pre-loaded config dict (from ctx.config in pipeline).
+                    If provided with required keys, parsed directly (no caching).
 
     Returns:
         Cached or newly loaded EntropyConfig.
     """
     global _config_cache, _config_path_cache
 
-    path = config_path or DEFAULT_CONFIG_PATH
+    # If a config dict is provided with entropy-specific keys, use it directly
+    if config_dict is not None and "detectors" in config_dict:
+        return _parse_config(config_dict)
+
+    # Resolve path: explicit arg or central config
+    if config_path is not None:
+        path = config_path
+    elif _config_path_cache is not None:
+        path = _config_path_cache
+    else:
+        path = get_config_file(ENTROPY_THRESHOLDS_CONFIG)
 
     # Return cached config if path matches
     if _config_cache is not None and _config_path_cache == path:
@@ -235,3 +153,33 @@ def get_entropy_config(config_path: Path | None = None) -> EntropyConfig:
     _config_cache = load_entropy_config(path)
     _config_path_cache = path
     return _config_cache
+
+
+def get_dimension_label(dimension_path: str) -> str:
+    """Get business-friendly label for a dimension path.
+
+    Looks up labels from config with exact match first, then prefix match
+    (first two segments), falling back to title-casing the last segment.
+
+    Args:
+        dimension_path: Dot-separated dimension path, e.g. "semantic.units.unit_declaration"
+
+    Returns:
+        Human-readable label string.
+    """
+    config = get_entropy_config()
+    labels = config.dimension_labels
+
+    # Try exact match
+    if dimension_path in labels:
+        return labels[dimension_path]
+
+    # Try prefix match (first two segments)
+    parts = dimension_path.split(".")
+    if len(parts) >= 2:
+        prefix = f"{parts[0]}.{parts[1]}"
+        if prefix in labels:
+            return labels[prefix]
+
+    # Fallback: title-case the last segment
+    return parts[-1].replace("_", " ").title()

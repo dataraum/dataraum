@@ -27,6 +27,11 @@ class SQLStepOutput(BaseModel):
         "Must NOT contain WITH clauses or reference other steps."
     )
     description: str = Field(description="Human-readable description of what this step does")
+    snippet_id: str | None = Field(
+        default=None,
+        description="If reusing or adapting a snippet from the knowledge base, "
+        "set this to the snippet's snippet_id. Omit for fresh SQL.",
+    )
 
 
 class QueryAssumptionOutput(BaseModel):
@@ -100,6 +105,16 @@ class QueryAnalysisOutput(BaseModel):
 
 
 @dataclass
+class ExecutionStep:
+    """A single step in the SQL execution graph."""
+
+    step_id: str
+    sql: str
+    description: str
+    snippet_id: str | None = None  # Non-None if reused from snippet knowledge base
+
+
+@dataclass
 class QueryResult:
     """Complete result of answering a question via the Query Agent.
 
@@ -114,7 +129,8 @@ class QueryResult:
 
     # The answer
     answer: str = ""  # Natural language response
-    sql: str | None = None  # Generated SQL
+    sql: str | None = None  # Final combining SQL
+    execution_steps: list[ExecutionStep] = field(default_factory=list)  # Full execution graph
     data: list[dict[str, Any]] | None = None  # Query results as records
     columns: list[str] | None = None  # Column names in result order
 
@@ -136,11 +152,6 @@ class QueryResult:
     column_mappings: dict[str, str] = field(default_factory=dict)
     validation_notes: list[str] = field(default_factory=list)
 
-    # Library reuse tracking
-    library_entry_id: str | None = None  # If reused from library
-    similarity_score: float | None = None  # Similarity to library entry
-    was_reused: bool = False  # True if SQL came from library
-
     # Error handling
     success: bool = True
     error: str | None = None
@@ -153,6 +164,15 @@ class QueryResult:
             "executed_at": self.executed_at.isoformat(),
             "answer": self.answer,
             "sql": self.sql,
+            "execution_steps": [
+                {
+                    "step_id": s.step_id,
+                    "sql": s.sql,
+                    "description": s.description,
+                    "snippet_id": s.snippet_id,
+                }
+                for s in self.execution_steps
+            ],
             "data": self.data,
             "columns": self.columns,
             "confidence_level": self.confidence_level.value,
@@ -180,9 +200,6 @@ class QueryResult:
             "metric_type": self.metric_type,
             "column_mappings": self.column_mappings,
             "validation_notes": self.validation_notes,
-            "library_entry_id": self.library_entry_id,
-            "similarity_score": round(self.similarity_score, 3) if self.similarity_score else None,
-            "was_reused": self.was_reused,
             "success": self.success,
             "error": self.error,
         }

@@ -1,198 +1,128 @@
 """Configuration loader for validation specs.
 
-Loads validation specifications from YAML files in config/validations/.
+Loads validation specifications from YAML files in config/verticals/<vertical>/validations/.
+Uses core config loader for path resolution and YAML parsing.
 """
 
 from __future__ import annotations
 
-from functools import lru_cache
-from pathlib import Path
-
-import yaml
-
 from dataraum.analysis.validation.models import (
-    ValidationSeverity,
     ValidationSpec,
 )
 from dataraum.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Default path to validation configs (config/ is in packages/api/)
-# Path: src/dataraum/analysis/validation/config.py -> 5 parents -> packages/api/config/validations
-CONFIG_DIR = Path(__file__).parent.parent.parent.parent.parent / "config" / "validations"
 
-
-def get_validations_config_path() -> Path:
-    """Get the path to validations config directory.
-
-    Returns:
-        Path to config/validations/
-    """
-    return CONFIG_DIR
-
-
-@lru_cache(maxsize=1)
-def load_all_validation_specs() -> dict[str, ValidationSpec]:
+def load_all_validation_specs(vertical: str) -> dict[str, ValidationSpec]:
     """Load all validation specs from config directory.
+
+    Args:
+        vertical: Vertical name (e.g. 'finance')
 
     Returns:
         Dict mapping validation_id to ValidationSpec
-    """
-    specs: dict[str, ValidationSpec] = {}
-    config_path = get_validations_config_path()
 
-    if not config_path.exists():
-        logger.warning(f"Validations config directory not found: {config_path}")
+    Raises:
+        FileNotFoundError: If the vertical does not exist.
+    """
+    import yaml
+
+    from dataraum.core.vertical import VerticalConfig
+
+    specs: dict[str, ValidationSpec] = {}
+    config_path = VerticalConfig(vertical).validations_dir
+
+    if not config_path.is_dir():
+        logger.warning("validations_dir_missing", vertical=vertical, path=str(config_path))
         return specs
 
-    # Load all YAML files recursively
     for yaml_file in config_path.rglob("*.yaml"):
-        try:
-            spec = load_validation_spec(yaml_file)
-            if spec:
-                specs[spec.validation_id] = spec
-                logger.debug(f"Loaded validation spec: {spec.validation_id}")
-        except Exception as e:
-            logger.error(f"Failed to load validation spec {yaml_file}: {e}")
-
-    logger.info(f"Loaded {len(specs)} validation specs")
-    return specs
-
-
-def load_validation_spec(file_path: Path) -> ValidationSpec | None:
-    """Load a single validation spec from a YAML file.
-
-    Args:
-        file_path: Path to YAML file
-
-    Returns:
-        ValidationSpec or None if invalid
-    """
-    try:
-        with open(file_path) as f:
+        with open(yaml_file) as f:
             data = yaml.safe_load(f)
 
         if not data or not isinstance(data, dict):
-            return None
+            logger.warning("validation_spec_empty", file=str(yaml_file))
+            continue
 
-        # Parse severity
-        severity_str = data.get("severity", "error").lower()
-        try:
-            severity = ValidationSeverity(severity_str)
-        except ValueError:
-            severity = ValidationSeverity.ERROR
+        spec = ValidationSpec.model_validate(data)
+        specs[spec.validation_id] = spec
+        logger.debug("validation_spec_loaded", validation_id=spec.validation_id)
 
-        spec = ValidationSpec(
-            validation_id=data.get("validation_id", file_path.stem),
-            name=data.get("name", file_path.stem),
-            description=data.get("description", ""),
-            category=data.get("category", "general"),
-            severity=severity,
-            check_type=data.get("check_type", "custom"),
-            parameters=data.get("parameters", {}),
-            sql_hints=data.get("sql_hints"),
-            expected_outcome=data.get("expected_outcome"),
-            tags=data.get("tags", []),
-            version=data.get("version", "1.0"),
-            source="config",
-        )
-
-        return spec
-
-    except Exception as e:
-        logger.error(f"Error parsing validation spec {file_path}: {e}")
-        return None
+    logger.debug("validation_specs_loaded", count=len(specs))
+    return specs
 
 
-def get_validation_specs_by_category(category: str) -> list[ValidationSpec]:
+def get_validation_specs_by_category(category: str, vertical: str) -> list[ValidationSpec]:
     """Get all validation specs for a specific category.
 
     Args:
         category: Category name (e.g., 'financial', 'data_quality')
+        vertical: Vertical name (e.g. 'finance')
 
     Returns:
         List of ValidationSpecs matching the category
     """
-    all_specs = load_all_validation_specs()
+    all_specs = load_all_validation_specs(vertical)
     return [spec for spec in all_specs.values() if spec.category == category]
 
 
-def get_validation_specs_by_tags(tags: list[str]) -> list[ValidationSpec]:
+def get_validation_specs_by_tags(tags: list[str], vertical: str) -> list[ValidationSpec]:
     """Get all validation specs that have any of the specified tags.
 
     Args:
         tags: List of tags to filter by
+        vertical: Vertical name (e.g. 'finance')
 
     Returns:
         List of ValidationSpecs that have at least one matching tag
     """
-    all_specs = load_all_validation_specs()
+    all_specs = load_all_validation_specs(vertical)
     tag_set = set(tags)
     return [spec for spec in all_specs.values() if set(spec.tags) & tag_set]
 
 
-def get_validation_spec(validation_id: str) -> ValidationSpec | None:
+def get_validation_specs_for_cycles(cycle_types: list[str], vertical: str) -> list[ValidationSpec]:
+    """Get validation specs relevant to detected cycle types.
+
+    Returns specs that either:
+    - Have relevant_cycles overlapping with cycle_types, or
+    - Have empty relevant_cycles (universal applicability)
+
+    Args:
+        cycle_types: Detected cycle canonical types (e.g. ['journal_entry_cycle'])
+        vertical: Vertical name (e.g. 'finance')
+
+    Returns:
+        List of matching ValidationSpecs
+    """
+    all_specs = load_all_validation_specs(vertical)
+    cycle_set = set(cycle_types)
+    return [
+        spec
+        for spec in all_specs.values()
+        if not spec.relevant_cycles or set(spec.relevant_cycles) & cycle_set
+    ]
+
+
+def get_validation_spec(validation_id: str, vertical: str) -> ValidationSpec | None:
     """Get a specific validation spec by ID.
 
     Args:
         validation_id: ID of the validation spec
+        vertical: Vertical name (e.g. 'finance')
 
     Returns:
         ValidationSpec or None if not found
     """
-    all_specs = load_all_validation_specs()
+    all_specs = load_all_validation_specs(vertical)
     return all_specs.get(validation_id)
 
 
-def format_validation_specs_for_context(category: str | None = None) -> str:
-    """Format validation specs as context for LLM prompts.
-
-    Args:
-        category: Optional category filter
-
-    Returns:
-        Formatted string describing available validations
-    """
-    if category:
-        specs = get_validation_specs_by_category(category)
-    else:
-        specs = list(load_all_validation_specs().values())
-
-    if not specs:
-        return "No validation specs available."
-
-    lines = ["## Available Validation Checks\n"]
-
-    for spec in sorted(specs, key=lambda s: s.validation_id):
-        lines.append(f"### {spec.name} ({spec.validation_id})")
-        lines.append(f"Category: {spec.category}")
-        lines.append(f"Severity: {spec.severity.value}")
-        lines.append(f"Description: {spec.description}")
-
-        if spec.sql_hints:
-            lines.append(f"SQL hints: {spec.sql_hints}")
-
-        if spec.expected_outcome:
-            lines.append(f"Expected outcome: {spec.expected_outcome}")
-
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-def clear_cache() -> None:
-    """Clear the cached validation specs."""
-    load_all_validation_specs.cache_clear()
-
-
 __all__ = [
-    "get_validations_config_path",
     "load_all_validation_specs",
-    "load_validation_spec",
     "get_validation_specs_by_category",
     "get_validation_specs_by_tags",
+    "get_validation_specs_for_cycles",
     "get_validation_spec",
-    "format_validation_specs_for_context",
-    "clear_cache",
 ]

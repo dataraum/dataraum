@@ -9,7 +9,7 @@ from collections import defaultdict
 from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -28,6 +28,7 @@ class JoinPathDeterminismDetector(EntropyDetector):
 
     detector_id = "join_path_determinism"
     layer = "structural"
+    trust_level = DetectorTrust.HARD
     dimension = "relations"
     sub_dimension = "join_path_determinism"
     required_analyses = ["relationships"]
@@ -54,8 +55,6 @@ class JoinPathDeterminismDetector(EntropyDetector):
         score_orphan = detector_config.get("score_orphan", 0.9)
         score_deterministic = detector_config.get("score_deterministic", 0.1)
         score_ambiguous = detector_config.get("score_ambiguous", 0.7)
-        reduction_declare_rel = detector_config.get("reduction_declare_relationship", 0.8)
-        reduction_preferred = detector_config.get("reduction_declare_preferred_path", 0.5)
 
         relationships = context.get_analysis("relationships", [])
 
@@ -93,8 +92,10 @@ class JoinPathDeterminismDetector(EntropyDetector):
             score = score_orphan
             path_status = "orphan"
         elif ambiguous_tables:
-            # Multiple paths to at least one table - ambiguous
-            score = score_ambiguous
+            # Proportional: ratio of ambiguous tables to total connections
+            ambiguity_ratio = len(ambiguous_tables) / total_connections
+            # Scale between score_deterministic and score_ambiguous
+            score = score_deterministic + (score_ambiguous - score_deterministic) * ambiguity_ratio
             path_status = "ambiguous"
         else:
             # Each connected table has exactly one path - deterministic (star schema OK)
@@ -117,9 +118,8 @@ class JoinPathDeterminismDetector(EntropyDetector):
         if path_status == "orphan":
             resolution_options.append(
                 ResolutionOption(
-                    action="declare_relationship",
+                    action="document_relationship",
                     parameters={"table": context.table_name, "type": "foreign_key"},
-                    expected_entropy_reduction=reduction_declare_rel,
                     effort="medium",
                     description="Declare a relationship to connect this table to the schema",
                 )
@@ -127,12 +127,11 @@ class JoinPathDeterminismDetector(EntropyDetector):
         elif path_status == "ambiguous":
             resolution_options.append(
                 ResolutionOption(
-                    action="declare_preferred_path",
+                    action="document_join_path",
                     parameters={
                         "table": context.table_name,
                         "ambiguous_targets": ambiguous_tables,
                     },
-                    expected_entropy_reduction=reduction_preferred,
                     effort="low",
                     description=f"Specify preferred join path for: {', '.join(ambiguous_tables)}",
                 )

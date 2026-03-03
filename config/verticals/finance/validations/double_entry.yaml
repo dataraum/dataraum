@@ -1,0 +1,40 @@
+# Double Entry Balance Validation
+# Checks if debits equal credits (fundamental accounting principle)
+
+validation_id: double_entry_balance
+name: Double Entry Balance
+description: >
+  Validates that total debits equal total credits in the accounting data.
+  This is a fundamental principle of double-entry bookkeeping where every
+  transaction affects at least two accounts with equal and opposite effects.
+
+category: financial
+severity: critical
+version: "1.0"
+
+tags:
+  - accounting
+  - double-entry
+  - balance
+  - critical
+
+relevant_cycles:
+  - journal_entry_cycle
+
+check_type: balance
+
+parameters:
+  tolerance: 0.01  # Acceptable difference threshold
+
+sql_hints: >
+  Look for columns that represent debit and credit amounts. These might be:
+  - Separate columns named debit/credit, dr/cr, debit_amount/credit_amount
+  - A single amount column with an account_type column indicating debit/credit
+  - Look at semantic annotations for entity_type: debit, credit, or amount
+
+  Generate SQL that calculates total debits and total credits.
+  Return columns: total_debits, total_credits, difference.
+
+expected_outcome: >
+  The difference between total debits and total credits should be
+  within the tolerance threshold (0.01). If balanced, the check passes.

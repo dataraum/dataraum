@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import uuid4
 
 import duckdb
@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 from dataraum.analysis.validation.config import load_all_validation_specs
 from dataraum.analysis.validation.db_models import (
     ValidationResultRecord,
-    ValidationRunRecord,
 )
 from dataraum.analysis.validation.models import (
     GeneratedSQL,
@@ -42,12 +41,6 @@ from dataraum.llm.providers.base import (
     ToolDefinition,
 )
 
-if TYPE_CHECKING:
-    from dataraum.llm.cache import LLMCache
-    from dataraum.llm.config import LLMConfig
-    from dataraum.llm.prompts import PromptRenderer
-    from dataraum.llm.providers.base import LLMProvider
-
 logger = get_logger(__name__)
 
 
@@ -63,22 +56,9 @@ class ValidationAgent(LLMFeature):
     when validations require data from multiple tables.
     """
 
-    def __init__(
-        self,
-        config: LLMConfig,
-        provider: LLMProvider,
-        prompt_renderer: PromptRenderer,
-        cache: LLMCache,
-    ) -> None:
-        """Initialize validation agent.
-
-        Args:
-            config: LLM configuration
-            provider: LLM provider instance
-            prompt_renderer: Prompt template renderer
-            cache: Response cache
-        """
-        super().__init__(config, provider, prompt_renderer, cache)
+    MAX_TOKENS = 2000
+    MAX_STORED_ROWS = 10
+    DEFAULT_TOLERANCE = 0.01
 
     def run_validations(
         self,
@@ -88,6 +68,8 @@ class ValidationAgent(LLMFeature):
         validation_ids: list[str] | None = None,
         category: str | None = None,
         persist: bool = True,
+        *,
+        vertical: str,
     ) -> Result[ValidationRunResult]:
         """Run validation checks across multiple tables.
 
@@ -98,6 +80,7 @@ class ValidationAgent(LLMFeature):
             validation_ids: Specific validations to run (None = all applicable)
             category: Filter by category (e.g., 'financial')
             persist: Whether to save results to the database (default True)
+            vertical: Vertical name (e.g. 'finance')
 
         Returns:
             Result containing ValidationRunResult
@@ -106,8 +89,8 @@ class ValidationAgent(LLMFeature):
         started_at = datetime.now(UTC)
         results: list[ValidationResult] = []
 
-        # Get multi-table schema with relationships
-        schema = get_multi_table_schema_for_llm(session, table_ids)
+        # Get multi-table schema with relationships and row counts
+        schema = get_multi_table_schema_for_llm(session, table_ids, duckdb_conn=duckdb_conn)
         if "error" in schema:
             return Result.fail(str(schema["error"]))
 
@@ -121,7 +104,7 @@ class ValidationAgent(LLMFeature):
         combined_table_name = ", ".join(table_names)
 
         # Determine which validations to run
-        specs = self._get_applicable_specs(validation_ids, category)
+        specs = self._get_applicable_specs(validation_ids, category, vertical)
 
         if not specs:
             return Result.ok(
@@ -220,17 +203,19 @@ class ValidationAgent(LLMFeature):
         self,
         validation_ids: list[str] | None,
         category: str | None,
+        vertical: str,
     ) -> list[ValidationSpec]:
         """Get validation specs to run.
 
         Args:
             validation_ids: Specific IDs to run
             category: Category filter
+            vertical: Vertical name (e.g. 'finance')
 
         Returns:
             List of ValidationSpecs
         """
-        all_specs = load_all_validation_specs()
+        all_specs = load_all_validation_specs(vertical)
 
         if validation_ids:
             return [all_specs[vid] for vid in validation_ids if vid in all_specs]
@@ -292,10 +277,32 @@ class ValidationAgent(LLMFeature):
                 columns_used=generated.columns_used,
             )
 
+        # Validate SQL with EXPLAIN before execution
+        try:
+            duckdb_conn.execute(f"EXPLAIN {generated.sql_query}")
+        except Exception as e:
+            logger.error("sql_validation_failed", validation_id=spec.validation_id, error=str(e))
+            return ValidationResult(
+                validation_id=spec.validation_id,
+                spec_name=spec.name,
+                status=ValidationStatus.ERROR,
+                severity=spec.severity,
+                table_ids=table_ids,
+                table_name=combined_table_name,
+                passed=False,
+                message=f"Generated SQL is invalid: {e}",
+                sql_used=generated.sql_query,
+                columns_used=generated.columns_used,
+            )
+
         # Execute SQL
         try:
-            result_df = duckdb_conn.execute(generated.sql_query).df()
-            result_rows: list[dict[str, Any]] = result_df.to_dict(orient="records")  # type: ignore[assignment]
+            result_obj = duckdb_conn.execute(generated.sql_query)
+            col_names = [desc[0] for desc in result_obj.description]
+            raw_rows = result_obj.fetchall()
+            result_rows: list[dict[str, Any]] = [
+                dict(zip(col_names, row, strict=True)) for row in raw_rows
+            ]
             row_count = len(result_rows)
 
             # Evaluate results based on check type
@@ -317,12 +324,12 @@ class ValidationAgent(LLMFeature):
                 details=details,
                 sql_used=generated.sql_query,
                 columns_used=generated.columns_used,
-                result_rows=result_rows[:10],  # Limit stored rows
+                result_rows=result_rows[: self.MAX_STORED_ROWS],
                 row_count=row_count,
             )
 
         except Exception as e:
-            logger.error(f"SQL execution failed for {spec.validation_id}: {e}")
+            logger.error("sql_execution_failed", validation_id=spec.validation_id, error=str(e))
             return ValidationResult(
                 validation_id=spec.validation_id,
                 spec_name=spec.name,
@@ -403,7 +410,8 @@ class ValidationAgent(LLMFeature):
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
             tools=[tool],
-            max_tokens=2000,
+            tool_choice={"type": "tool", "name": "generate_validation_sql"},
+            max_tokens=self.MAX_TOKENS,
             temperature=temperature,
             model=model,
         )
@@ -417,11 +425,21 @@ class ValidationAgent(LLMFeature):
         # Extract tool call result
         if not response.tool_calls:
             # LLM didn't use the tool - try to parse text as fallback
+            logger.warning(
+                "validation_llm_no_tool_call",
+                validation_id=spec.validation_id,
+                has_content=bool(response.content),
+            )
             if response.content:
                 try:
                     response_data = json.loads(response.content)
                     output = ValidationSQLOutput.model_validate(response_data)
-                except Exception:
+                except Exception as e:
+                    logger.warning(
+                        "validation_json_fallback_failed",
+                        validation_id=spec.validation_id,
+                        error=str(e),
+                    )
                     return Result.fail(f"LLM did not use tool. Response: {response.content[:200]}")
             else:
                 return Result.fail("LLM did not use the generate_validation_sql tool")
@@ -475,9 +493,19 @@ class ValidationAgent(LLMFeature):
                 return (False, "No results returned", {})
 
             row = result_rows[0]
-            tolerance = params.get("tolerance", 0.01)
+            tolerance = params.get("tolerance", self.DEFAULT_TOLERANCE)
 
-            # Find the columns to compare
+            # Look for difference column first (preferred: LLM computes the diff)
+            if "difference" in row or "diff" in row:
+                diff = abs(float(row.get("difference", row.get("diff", 0)) or 0))
+                passed = diff <= tolerance
+                return (
+                    passed,
+                    f"Balance difference: {diff:.2f} (tolerance: {tolerance})",
+                    {"difference": diff, "tolerance": tolerance, "row": row},
+                )
+
+            # Look for standard balance column names
             value_cols = [k for k in row.keys() if "total" in k.lower() or "sum" in k.lower()]
             if len(value_cols) >= 2:
                 val1 = float(row[value_cols[0]] or 0)
@@ -490,17 +518,13 @@ class ValidationAgent(LLMFeature):
                     {"values": row, "difference": diff, "tolerance": tolerance},
                 )
 
-            # Fall back to checking if difference column is within tolerance
-            if "difference" in row or "diff" in row:
-                diff = abs(float(row.get("difference", row.get("diff", 0)) or 0))
-                passed = diff <= tolerance
-                return (
-                    passed,
-                    f"Balance difference: {diff:.2f} (tolerance: {tolerance})",
-                    {"difference": diff, "tolerance": tolerance},
-                )
-
-            return (True, "Balance check passed", {"row": row})
+            # No recognizable columns — fail explicitly rather than silently pass
+            return (
+                False,
+                f"Balance check inconclusive: could not identify balance columns in result. "
+                f"Columns returned: {list(row.keys())}",
+                {"row": row},
+            )
 
         elif check_type == "constraint":
             # Constraint checks return violating rows
@@ -518,7 +542,7 @@ class ValidationAgent(LLMFeature):
                 return (False, "No results returned", {})
 
             row = result_rows[0]
-            tolerance = params.get("tolerance", 0.01)
+            tolerance = params.get("tolerance", self.DEFAULT_TOLERANCE)
 
             # Check for an equation_holds or is_valid column
             if "equation_holds" in row:
@@ -539,7 +563,12 @@ class ValidationAgent(LLMFeature):
                     {"difference": diff},
                 )
 
-            return (True, "Comparison check completed", row)
+            return (
+                False,
+                f"Comparison check inconclusive: could not identify comparison columns in result. "
+                f"Columns returned: {list(row.keys())}",
+                {"row": row},
+            )
 
         elif check_type == "aggregate":
             # Aggregate checks return summary values
@@ -568,31 +597,12 @@ class ValidationAgent(LLMFeature):
             session: Database session
             run_result: Validation run result to persist
         """
-        # Create run record
-        run_record = ValidationRunRecord(
-            run_id=run_result.run_id,
-            table_ids=run_result.table_ids,
-            table_name=run_result.table_name,
-            started_at=run_result.started_at,
-            completed_at=run_result.completed_at,
-            total_checks=run_result.total_checks,
-            passed_checks=run_result.passed_checks,
-            failed_checks=run_result.failed_checks,
-            skipped_checks=run_result.skipped_checks,
-            error_checks=run_result.error_checks,
-            overall_status=run_result.overall_status.value,
-            has_critical_failures=run_result.has_critical_failures,
-            results=[r.model_dump(mode="json") for r in run_result.results],
-        )
-        session.add(run_record)
-
         # Create individual result records with client-side IDs
         for result in run_result.results:
             # Serialize details to ensure JSON compatibility
             result_data = result.model_dump(mode="json")
             result_record = ValidationResultRecord(
                 result_id=str(uuid4()),
-                run_id=run_result.run_id,
                 validation_id=result.validation_id,
                 table_ids=result.table_ids,
                 status=result.status.value,
@@ -605,8 +615,10 @@ class ValidationAgent(LLMFeature):
             )
             session.add(result_record)
 
-        logger.info(
-            f"Persisted validation run {run_result.run_id} with {len(run_result.results)} results"
+        logger.debug(
+            "validation_results_persisted",
+            run_id=run_result.run_id,
+            count=len(run_result.results),
         )
 
 

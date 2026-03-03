@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
-from dataraum.llm import LLMCache, PromptRenderer, create_provider, load_llm_config
+from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.storage import Source, Table
 
 from .agent import QueryAgent
@@ -21,8 +21,6 @@ from .models import QueryResult
 if TYPE_CHECKING:
     import duckdb
     from sqlalchemy.orm import Session
-
-    from dataraum.core.connections import ConnectionManager
 
 logger = get_logger(__name__)
 
@@ -36,7 +34,6 @@ def answer_question(
     contract: str | None = None,
     auto_contract: bool = False,
     table_ids: list[str] | None = None,
-    manager: ConnectionManager | None = None,
     ephemeral: bool = False,
 ) -> Result[QueryResult]:
     """Answer a natural language question about the data.
@@ -53,8 +50,7 @@ def answer_question(
         contract: Explicit contract name (e.g., "executive_dashboard")
         auto_contract: If True, find the strictest passing contract
         table_ids: Optional list of specific table IDs (defaults to all tables in source)
-        manager: ConnectionManager for query library (enables save/reuse)
-        ephemeral: If True, don't save query to library (default: saves successful queries)
+        ephemeral: If True, don't save novel snippets to knowledge base
 
     Returns:
         Result containing QueryResult with:
@@ -106,9 +102,8 @@ def answer_question(
 
         provider = create_provider(config.active_provider, provider_config.model_dump())
         renderer = PromptRenderer()
-        cache = LLMCache()
     except Exception as e:
-        logger.error(f"Failed to initialize LLM: {e}")
+        logger.error("llm_init_failed", error=str(e))
         return Result.fail(f"Failed to initialize LLM: {e}")
 
     # Create agent and analyze
@@ -116,7 +111,6 @@ def answer_question(
         config=config,
         provider=provider,
         prompt_renderer=renderer,
-        cache=cache,
     )
 
     return agent.analyze(
@@ -127,6 +121,5 @@ def answer_question(
         contract=contract,
         auto_contract=auto_contract,
         source_id=source_id,
-        manager=manager,
         ephemeral=ephemeral,
     )

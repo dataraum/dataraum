@@ -1,0 +1,121 @@
+# Bayesian Entropy Network Configuration
+states: [low, medium, high]
+
+discretization:
+  low_upper: 0.3
+  medium_upper: 0.6
+  # high: > 0.6
+
+nodes:
+  # Observable roots (8) - each has a detector and a prior
+  type_fidelity:
+    layer: structural
+    dimension: types
+    sub_dimension: type_fidelity
+    prior: [0.7, 0.2, 0.1]  # P(low, medium, high)
+  null_ratio:
+    layer: value
+    dimension: nulls
+    sub_dimension: null_ratio
+    prior: [0.5, 0.3, 0.2]
+  outlier_rate:
+    layer: value
+    dimension: outliers
+    sub_dimension: outlier_rate
+    prior: [0.6, 0.25, 0.15]
+  naming_clarity:
+    layer: semantic
+    dimension: business_meaning
+    sub_dimension: naming_clarity
+    prior: [0.4, 0.3, 0.3]
+  unit_declaration:
+    layer: semantic
+    dimension: units
+    sub_dimension: unit_declaration
+    prior: [0.5, 0.3, 0.2]
+  time_role:
+    layer: semantic
+    dimension: temporal
+    sub_dimension: time_role
+    prior: [0.6, 0.25, 0.15]
+  temporal_drift:
+    layer: value
+    dimension: temporal
+    sub_dimension: temporal_drift
+    prior: [0.6, 0.25, 0.15]
+  benford_compliance:
+    layer: value
+    dimension: distribution
+    sub_dimension: benford_compliance
+    prior: [0.6, 0.25, 0.15]
+
+  # Observable children (2) - have detectors but also real causal parents
+  join_path_determinism:
+    layer: structural
+    dimension: relations
+    sub_dimension: join_path_determinism
+  relationship_quality:
+    layer: structural
+    dimension: relations
+    sub_dimension: relationship_quality
+
+  # Inferred children (2) - genuine causal composites
+  formula_match:
+    layer: computational
+    dimension: derived_values
+    sub_dimension: formula_match
+  aggregation_safety:
+    layer: computational
+    dimension: derived_values
+    sub_dimension: aggregation_safety
+
+  # Intent leaves (3) - readiness scores
+  query_intent:
+    layer: intent
+    dimension: query
+    sub_dimension: readiness
+  aggregation_intent:
+    layer: intent
+    dimension: aggregation
+    sub_dimension: readiness
+  reporting_intent:
+    layer: intent
+    dimension: reporting
+    sub_dimension: readiness
+
+edges:
+  # Format: [parent, child, strength]
+  # Structural -> children
+  - [type_fidelity, join_path_determinism, 0.5]
+  - [type_fidelity, relationship_quality, 0.6]
+  # Root -> computational children
+  - [naming_clarity, formula_match, 0.5]
+  - [unit_declaration, formula_match, 0.8]
+  - [null_ratio, formula_match, 0.4]
+  - [null_ratio, aggregation_safety, 0.7]
+  - [outlier_rate, aggregation_safety, 0.6]
+  - [unit_declaration, aggregation_safety, 0.9]
+  # -> query_intent (6 parents)
+  - [type_fidelity, query_intent, 0.7]
+  - [join_path_determinism, query_intent, 0.8]
+  - [null_ratio, query_intent, 0.5]
+  - [outlier_rate, query_intent, 0.4]
+  - [naming_clarity, query_intent, 0.3]
+  - [temporal_drift, query_intent, 0.3]
+  # -> aggregation_intent (4 parents)
+  - [aggregation_safety, aggregation_intent, 0.9]
+  - [formula_match, aggregation_intent, 0.7]
+  - [temporal_drift, aggregation_intent, 0.5]
+  - [benford_compliance, aggregation_intent, 0.4]
+  # -> reporting_intent (6 parents)
+  - [naming_clarity, reporting_intent, 0.7]
+  - [relationship_quality, reporting_intent, 0.5]
+  - [aggregation_safety, reporting_intent, 0.8]
+  - [unit_declaration, reporting_intent, 0.6]
+  - [time_role, reporting_intent, 0.4]
+  - [type_fidelity, reporting_intent, 0.4]
+
+cpt_generation:
+  influence_blend: 0.7    # Weight for influence matrix vs uniform
+  pessimistic_shift: 0.1  # Shift probability mass toward "high" for multi-parent
+  min_probability: 0.01   # Floor to avoid zero probabilities

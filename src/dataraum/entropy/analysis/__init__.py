@@ -1,22 +1,12 @@
-"""Entropy analysis and aggregation module.
+"""Entropy analysis module.
 
-Layer 2 of the entropy framework - provides:
-- Dynamic aggregation (compute summaries on demand)
-- Summary dataclasses (ColumnSummary, TableSummary, RelationshipSummary)
-- Compound risk detection
-- Resolution hint generation
+Provides ColumnSummary dataclass for contract evaluation.
 """
 
 from dataraum.entropy.analysis.aggregator import (
     ColumnSummary,
-    EntropyAggregator,
-    RelationshipSummary,
-    TableSummary,
 )
 
 __all__ = [
     "ColumnSummary",
-    "TableSummary",
-    "RelationshipSummary",
-    "EntropyAggregator",
 ]

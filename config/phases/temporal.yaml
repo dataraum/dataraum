@@ -1,0 +1,122 @@
+# Temporal Analysis Configuration
+#
+# Thresholds and parameters for temporal pattern analysis.
+# These are algorithm tuning parameters — calibrate with test data.
+
+version: "1.0.0"
+
+# Granularity inference
+# Maps median gap (seconds) to granularity name.
+# Each entry: [name, expected_seconds, tolerance_seconds]
+granularity:
+  definitions:
+    - [second, 1, 0.5]
+    - [minute, 60, 5]
+    - [hour, 3600, 300]
+    - [day, 86400, 3600]
+    - [week, 604800, 86400]
+    - [month, 2592000, 259200]     # ~30 days
+    - [quarter, 7776000, 777600]   # ~90 days
+    - [year, 31536000, 3153600]    # ~365 days
+  # Confidence when min/max gap stats are unavailable
+  default_confidence: 0.7
+  # Confidence for irregular patterns
+  irregular_confidence: 0.3
+  # Variation divisor for confidence calculation: confidence = 1 - min(variation / divisor, 0.5)
+  variation_divisor: 10
+
+# Gap detection
+gaps:
+  # Multiplier on median gap to define "significant gap"
+  significant_gap_multiplier: 2.0
+  # Severity thresholds (multipliers on median gap)
+  severity_severe_multiplier: 10.0
+  severity_moderate_multiplier: 5.0
+  # Maximum gaps to report
+  max_gaps: 10
+
+# Seasonality analysis
+seasonality:
+  # Minimum data points to attempt seasonality analysis
+  min_data_points: 20
+  # Strength threshold for declaring seasonality present
+  strength_threshold: 0.3
+  # Auto-detected periods by frequency
+  periods:
+    daily: 7       # Weekly seasonality for daily data
+    weekly: 52     # Yearly seasonality for weekly data
+    monthly: 12    # Yearly seasonality for monthly data
+    quarterly: 4   # Yearly seasonality for quarterly data
+  # Fallback period: min(len / divisor, max)
+  fallback_period_divisor: 4
+  fallback_period_max: 12
+
+# Trend analysis
+trend:
+  # Minimum data points for trend analysis
+  min_data_points: 10
+  # Significance: slope must exceed stderr * multiplier
+  significance_multiplier: 2.0
+  # R² threshold for declaring trend present
+  strength_threshold: 0.3
+
+# Change point detection (PELT algorithm)
+change_points:
+  # Minimum data points for change point analysis
+  min_data_points: 30
+  # PELT parameters
+  min_segment_size: 10
+  jump: 5
+  penalty: 5
+  # Maximum points before sampling kicks in
+  max_points: 1000
+  # Confidence calculation: min(max_conf, (before + after) / divisor)
+  max_confidence: 0.9
+  confidence_divisor: 100
+
+# Update frequency and staleness
+staleness:
+  # Multiplier on median interval to define "stale"
+  stale_multiplier: 2.0
+
+# Fiscal calendar detection
+fiscal_calendar:
+  # Minimum data points (~3 months)
+  min_data_points: 90
+  # Fiscal year end: month count must exceed mean * multiplier
+  activity_spike_multiplier: 1.5
+  # Period-end effects: actual ratio must exceed expected * multiplier
+  period_end_spike_multiplier: 1.5
+  # Expected ratio of end-of-month days (days 28-31 / 30 days)
+  expected_end_of_month_ratio: 0.13
+
+# Distribution stability (KS test)
+distribution_stability:
+  # Number of periods to split time series into
+  num_periods: 4
+  # p-value threshold for significant shift
+  significance_level: 0.05
+  # Mean change thresholds for direction classification
+  increase_threshold: 1.1   # mean2 > mean1 * threshold → "increase"
+  decrease_threshold: 0.9   # mean2 < mean1 * threshold → "decrease"
+
+# Quality issue thresholds
+quality_issues:
+  # Completeness thresholds
+  low_completeness: 0.8        # Below this → issue
+  very_low_completeness: 0.5   # Below this → severity "high"
+  # Gap thresholds (days)
+  large_gap_days: 30           # Above this → issue
+  severe_gap_days: 90          # Above this → severity "high"
+  # Change point count
+  many_change_points: 5        # Above this → issue
+  # Distribution stability
+  unstable_distribution: 0.7   # Below this → issue
+
+# Sampling and parallelism
+processing:
+  # Maximum parallel workers for column profiling
+  max_workers: 4
+  # Time series sampling (Bernoulli)
+  sample_percent: 20.0
+  min_sample_rows: 1000

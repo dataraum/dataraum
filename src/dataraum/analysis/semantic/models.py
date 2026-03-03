@@ -88,6 +88,35 @@ class ColumnSemanticOutput(BaseModel):
         description="Confidence in this analysis (0.0-1.0). Use higher values when certain.",
     )
 
+    unit_source_column: str | None = Field(
+        default=None,
+        description=(
+            "Column that defines the unit for this measure. "
+            "For same-table references, use just the column name (e.g., 'currency_code'). "
+            "For cross-table references via a confirmed FK relationship, use "
+            "'table_name.column_name' (e.g., 'chart_of_accounts.currency'). "
+            "For measures that are inherently dimensionless (ratios, rates, indices, "
+            "percentages, scores), set to 'dimensionless'. "
+            "Only set a column reference when there is a concrete dimension column — "
+            "never guess a unit."
+        ),
+    )
+
+
+class UnitRelationship(BaseModel):
+    """A dimension column that defines units for one or more measure columns."""
+
+    unit_column: str = Field(
+        description="The dimension column that defines the unit (e.g., 'currency_code')."
+    )
+    measure_columns: list[str] = Field(
+        description="Measure columns whose unit is defined by this dimension (e.g., ['amount', 'debit', 'credit'])."
+    )
+    unit_values: list[str] = Field(
+        default_factory=list,
+        description="Known unit values from the dimension column (e.g., ['USD', 'EUR', 'GBP']).",
+    )
+
 
 class TableSemanticOutput(BaseModel):
     """Semantic annotation for a database table.
@@ -132,6 +161,14 @@ class TableSemanticOutput(BaseModel):
         description="Semantic annotations for each column in this table."
     )
 
+    unit_relationships: list[UnitRelationship] = Field(
+        default_factory=list,
+        description=(
+            "Dimension columns that define units for measure columns. "
+            "E.g., a 'currency' dimension defines units for monetary measures."
+        ),
+    )
+
 
 class RelationshipOutput(BaseModel):
     """A detected relationship between two tables.
@@ -156,14 +193,6 @@ class RelationshipOutput(BaseModel):
         description=(
             "'foreign_key' = standard FK relationship; "
             "'hierarchy' = parent-child relationship within same entity"
-        )
-    )
-
-    cardinality: Literal["one_to_one", "one_to_many", "many_to_one", "many_to_many"] = Field(
-        description=(
-            "Relationship cardinality: 'many_to_one' = many source rows reference one target row "
-            "(most common for FKs); 'one_to_many' = one source row has many target rows; "
-            "'one_to_one' = exact match; 'many_to_many' = requires junction table"
         )
     )
 
@@ -198,12 +227,29 @@ class SemanticAnalysisOutput(BaseModel):
         ),
     )
 
-    summary: str = Field(
-        default="",
-        description=(
-            "2-3 sentence overview of the schema structure, main entities, and business domain."
-        ),
+
+# =============================================================================
+# Tier 1: Column Annotation Output (fast model)
+# =============================================================================
+
+
+class TableColumnAnnotation(BaseModel):
+    """Column annotations for a single table (tier 1 fast model output)."""
+
+    table_name: str = Field(description="Exact table name from the provided schema.")
+    columns: list[ColumnSemanticOutput] = Field(
+        description="Semantic annotations for each column in this table."
     )
+
+
+class ColumnAnnotationOutput(BaseModel):
+    """Output from tier 1 column annotation (fast model).
+
+    Contains column-level annotations only — no relationships or
+    table-level entity classification. Those are handled by tier 2.
+    """
+
+    tables: list[TableColumnAnnotation] = Field(description="Column annotations grouped by table.")
 
 
 # =============================================================================
@@ -226,6 +272,12 @@ class SemanticAnnotation(BaseModel):
     # from the active ontology (e.g., 'accounts_receivable', 'revenue', 'fiscal_period')
     business_concept: str | None = None
 
+    # Temporal behavior from ontology: 'additive' or 'point_in_time'
+    temporal_behavior: str | None = None
+
+    # Cross-column unit inference: column name that defines the unit for this measure
+    unit_source_column: str | None = None
+
     annotation_source: DecisionSource
     annotated_by: str | None = None  # e.g., 'claude-sonnet-4-20250514' or 'user@example.com'
     confidence: float
@@ -240,7 +292,6 @@ class EntityDetection(BaseModel):
     entity_type: str
     description: str | None = None  # LLM-generated table description
     confidence: float
-    evidence: dict[str, Any] = Field(default_factory=dict)
 
     grain_columns: list[str] = Field(default_factory=list)
     is_fact_table: bool = False
@@ -265,8 +316,6 @@ class Relationship(BaseModel):
     detection_method: str
     evidence: dict[str, Any] = Field(default_factory=dict)
 
-    is_confirmed: bool = False
-
 
 class SemanticEnrichmentResult(BaseModel):
     """Result of semantic enrichment operation."""
@@ -280,9 +329,13 @@ class SemanticEnrichmentResult(BaseModel):
 __all__ = [
     # Tool output models for LLM structured output
     "ColumnSemanticOutput",
+    "UnitRelationship",
     "TableSemanticOutput",
     "RelationshipOutput",
     "SemanticAnalysisOutput",
+    # Tier 1 column annotation output
+    "TableColumnAnnotation",
+    "ColumnAnnotationOutput",
     # Internal models for storage and processing
     "SemanticAnnotation",
     "EntityDetection",

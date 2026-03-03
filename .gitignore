@@ -1,6 +1,9 @@
 data/
 test_output/
 pipeline_output/
+pipeline_testdata/
+examples/
+prototypes/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -39,6 +42,9 @@ MANIFEST
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+
+# E2E test output (cached pipeline runs)
+.e2e/
 
 # Unit test / coverage reports
 htmlcov/

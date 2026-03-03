@@ -1,70 +1,47 @@
 """Temporal slicing analysis module.
 
-Provides temporal analysis capabilities for slice data including:
-- Period completeness analysis (data cutoffs)
-- Distribution drift detection (JS divergence)
-- Cross-slice temporal comparison
-- Volume anomaly detection
-- Temporal topology analysis (correlation structure drift)
+Provides drift detection and period-level completeness/anomaly analysis
+for slice data using Jensen-Shannon divergence and z-score methods.
 """
 
 from dataraum.analysis.temporal_slicing.analyzer import (
-    TemporalSliceAnalyzer,
-    TemporalSliceContext,
-    aggregate_temporal_data,
-    analyze_temporal_slices,
-    analyze_temporal_topology,
+    analyze_column_drift,
+    analyze_period_metrics,
+    persist_drift_results,
+    persist_period_results,
 )
 from dataraum.analysis.temporal_slicing.db_models import (
-    SliceTimeMatrixEntry,
-    TemporalDriftAnalysis,
+    ColumnDriftSummary,
     TemporalSliceAnalysis,
-    TemporalSliceRun,
-    TemporalTopologyAnalysis,
 )
 from dataraum.analysis.temporal_slicing.models import (
-    AggregatedTemporalData,
+    ColumnDriftResult,
     CompletenessResult,
-    DistributionDriftResult,
+    DriftEvidence,
+    PeriodAnalysisResult,
     PeriodMetrics,
-    PeriodTopology,
-    SliceTimeCell,
-    SliceTimeMatrix,
-    TemporalAnalysisResult,
     TemporalSliceConfig,
-    TemporalTopologyResult,
     TimeGrain,
-    TopologyDrift,
     VolumeAnomalyResult,
 )
 
 __all__ = [
-    # Main entry points
-    "analyze_temporal_slices",
-    "analyze_temporal_topology",
-    "aggregate_temporal_data",
-    "TemporalSliceAnalyzer",
-    "TemporalSliceContext",
+    # Entry points
+    "analyze_column_drift",
+    "analyze_period_metrics",
+    "persist_drift_results",
+    "persist_period_results",
     # Config
     "TemporalSliceConfig",
     "TimeGrain",
-    # Models
+    # Result models
+    "ColumnDriftResult",
+    "DriftEvidence",
     "PeriodMetrics",
     "CompletenessResult",
-    "DistributionDriftResult",
-    "SliceTimeCell",
-    "SliceTimeMatrix",
     "VolumeAnomalyResult",
-    "TemporalAnalysisResult",
-    "AggregatedTemporalData",
-    # Temporal Topology Models
-    "PeriodTopology",
-    "TopologyDrift",
-    "TemporalTopologyResult",
+    "PeriodAnalysisResult",
     # DB Models
+    "ColumnDriftSummary",
     "TemporalSliceAnalysis",
-    "TemporalSliceRun",
-    "TemporalDriftAnalysis",
-    "SliceTimeMatrixEntry",
-    "TemporalTopologyAnalysis",
 ]

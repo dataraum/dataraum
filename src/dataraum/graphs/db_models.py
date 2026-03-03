@@ -10,59 +10,10 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dataraum.storage import Base
-
-
-class GeneratedCodeRecord(Base):
-    """Persisted LLM-generated SQL for a graph + schema combination.
-
-    This enables:
-    - Cache persistence across restarts (no need to regenerate)
-    - Audit trail of what SQL was generated
-    - Reproducibility verification
-    """
-
-    __tablename__ = "generated_code"
-
-    code_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-
-    # Graph identification
-    graph_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    graph_version: Mapped[str] = mapped_column(String, nullable=False)
-    schema_mapping_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-
-    # Generated SQL
-    summary: Mapped[str | None] = mapped_column(
-        Text, nullable=True
-    )  # Plain English description of what the query calculates
-    steps_json: Mapped[list[dict[str, str]]] = mapped_column(
-        JSON, nullable=False, default=list
-    )  # [{step_id, sql, description}]
-    final_sql: Mapped[str] = mapped_column(Text, nullable=False)
-    column_mappings: Mapped[dict[str, str]] = mapped_column(
-        JSON, nullable=False, default=dict
-    )  # abstract_field -> concrete_column
-
-    # Generation metadata
-    llm_model: Mapped[str] = mapped_column(String, nullable=False)
-    prompt_hash: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    generated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(UTC)
-    )
-
-    # Validation
-    is_validated: Mapped[bool] = mapped_column(Boolean, default=False)
-    validation_errors: Mapped[list[str]] = mapped_column(JSON, default=list)
-
-    # Relationships - executions that used this code
-    executions: Mapped[list[GraphExecutionRecord]] = relationship(
-        "GraphExecutionRecord",
-        back_populates="generated_code",
-        foreign_keys="GraphExecutionRecord.generated_code_id",
-    )
 
 
 class GraphExecutionRecord(Base):
@@ -104,34 +55,11 @@ class GraphExecutionRecord(Base):
     # Dependencies
     depends_on_executions: Mapped[list[str]] = mapped_column(JSON, default=list)
 
-    # Link to generated code (for agent-based execution)
-    generated_code_id: Mapped[str | None] = mapped_column(
-        ForeignKey("generated_code.code_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-
-    # Link to query library entry (bidirectional with query library)
-    library_entry_id: Mapped[str | None] = mapped_column(
-        ForeignKey("query_library.query_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-
     # Relationships
     step_results: Mapped[list[StepResultRecord]] = relationship(
         "StepResultRecord",
         back_populates="execution",
         cascade="all, delete-orphan",
-    )
-    generated_code: Mapped[GeneratedCodeRecord | None] = relationship(
-        "GeneratedCodeRecord",
-        back_populates="executions",
-        foreign_keys=[generated_code_id],
-    )
-    library_entry: Mapped[Any | None] = relationship(
-        "QueryLibraryEntry",
-        foreign_keys=[library_entry_id],
     )
 
 

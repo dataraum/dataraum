@@ -11,7 +11,7 @@ Source: relationships.Relationship.evidence (contains JoinCandidate metrics)
 from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -36,6 +36,7 @@ class RelationshipEntropyDetector(EntropyDetector):
     layer = "structural"
     dimension = "relations"
     sub_dimension = "relationship_quality"
+    trust_level = DetectorTrust.HARD
     required_analyses = ["relationships"]
     description = "Measures relationship quality from evaluation metrics"
 
@@ -63,7 +64,12 @@ class RelationshipEntropyDetector(EntropyDetector):
         score_cardinality_mismatch = detector_config.get("score_cardinality_mismatch", 0.7)
         score_unconfirmed = detector_config.get("score_unconfirmed", 0.3)
         score_unknown_type = detector_config.get("score_unknown_type", 0.6)
-        reduction_verify = detector_config.get("reduction_verify_relationship", 0.6)
+
+        # Component weights for weighted average (replaces MAX aggregation)
+        component_weights = detector_config.get("component_weights", {})
+        ri_weight = component_weights.get("referential_integrity", 0.5)
+        card_weight = component_weights.get("cardinality", 0.3)
+        semantic_weight = component_weights.get("semantic_clarity", 0.2)
 
         relationships = context.get_analysis("relationships", [])
 
@@ -91,15 +97,18 @@ class RelationshipEntropyDetector(EntropyDetector):
             # Get evaluation metrics from evidence (JoinCandidate fields)
             left_ri = evidence.get("left_referential_integrity")
             orphan_count = evidence.get("orphan_count")
+            total_count = evidence.get("total_count") or evidence.get("left_total_count")
             cardinality_verified = evidence.get("cardinality_verified")
 
             # 1. Compute referential integrity entropy
             if left_ri is not None:
                 # 100% integrity = 0 entropy, 0% integrity = 1.0 entropy
                 ri_entropy = 1.0 - (left_ri / 100.0)
+            elif orphan_count is not None and total_count and total_count > 0:
+                # Ratio-based: orphan_count / total = orphan ratio
+                ri_entropy = min(1.0, orphan_count / total_count)
             elif orphan_count is not None and orphan_count > 0:
-                # High orphan count indicates referential integrity issues
-                # Without knowing total count, use orphan presence as indicator
+                # Last resort: count-based (no total available)
                 ri_entropy = min(1.0, 0.3 + (orphan_count / 1000.0))
             else:
                 # Unknown referential integrity
@@ -121,8 +130,12 @@ class RelationshipEntropyDetector(EntropyDetector):
             else:
                 semantic_entropy = score_unknown_type  # Unknown type
 
-            # Overall score is the maximum component (worst case)
-            score = max(ri_entropy, card_entropy, semantic_entropy)
+            # Weighted average of components (replaces MAX aggregation)
+            score = (
+                ri_entropy * ri_weight
+                + card_entropy * card_weight
+                + semantic_entropy * semantic_weight
+            )
 
             # Build evidence
             from_table = self._get_value(rel, "from_table", "unknown")
@@ -138,6 +151,12 @@ class RelationshipEntropyDetector(EntropyDetector):
                 "ri_entropy": round(ri_entropy, 3),
                 "card_entropy": round(card_entropy, 3),
                 "semantic_entropy": round(semantic_entropy, 3),
+                "aggregation_method": "weighted_avg",
+                "component_weights": {
+                    "referential_integrity": ri_weight,
+                    "cardinality": card_weight,
+                    "semantic_clarity": semantic_weight,
+                },
                 "evaluation_metrics": {
                     "left_referential_integrity": left_ri,
                     "orphan_count": orphan_count,
@@ -152,13 +171,12 @@ class RelationshipEntropyDetector(EntropyDetector):
                 if not is_confirmed:
                     resolution_options.append(
                         ResolutionOption(
-                            action="confirm_relationship",
+                            action="document_relationship",
                             parameters={
                                 "from_table": from_table,
                                 "to_table": to_table,
                                 "column": context.column_name,
                             },
-                            expected_entropy_reduction=reduction_verify,
                             effort="low",
                             description=f"Confirm relationship between {from_table} and {to_table}",
                         )
@@ -167,13 +185,12 @@ class RelationshipEntropyDetector(EntropyDetector):
                 if ri_entropy > 0.3:
                     resolution_options.append(
                         ResolutionOption(
-                            action="fix_referential_integrity",
+                            action="transform_fix_referential_integrity",
                             parameters={
                                 "from_table": from_table,
                                 "to_table": to_table,
                                 "orphan_count": orphan_count,
                             },
-                            expected_entropy_reduction=ri_entropy * 0.8,
                             effort="high",
                             description="Fix referential integrity issues (orphan records)",
                         )

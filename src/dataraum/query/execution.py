@@ -168,12 +168,15 @@ def _execute_step(
             last_error = str(e)
             if attempt < max_repair_attempts and repair_fn:
                 logger.info(
-                    f"Step '{step.step_id}' failed (attempt {attempt + 1}), attempting repair: {e}"
+                    "step_failed_attempting_repair",
+                    step_id=step.step_id,
+                    attempt=attempt + 1,
+                    error=str(e),
                 )
                 repair_result = repair_fn(current_sql, last_error, step.description)
                 if repair_result.success and repair_result.value:
                     current_sql = repair_result.value
-                    logger.info(f"Repaired SQL for step '{step.step_id}'")
+                    logger.info("step_repaired", step_id=step.step_id)
                 else:
                     return Result.fail(
                         f"Step '{step.step_id}' failed and repair failed: {last_error}"
@@ -213,7 +216,7 @@ def _execute_final(
         except Exception as e:
             last_error = str(e)
             if attempt < max_repair_attempts and repair_fn:
-                logger.info(f"Final SQL failed (attempt {attempt + 1}), attempting repair: {e}")
+                logger.info("final_sql_failed_attempting_repair", attempt=attempt + 1, error=str(e))
                 repair_result = repair_fn(
                     current_sql, last_error, "Combine step results into final answer"
                 )

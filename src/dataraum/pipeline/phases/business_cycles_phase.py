@@ -7,27 +7,28 @@ and identifies cycles based on entity flows, status columns, and relationships.
 
 from __future__ import annotations
 
+from types import ModuleType
+
 from sqlalchemy import func, select
 
 from dataraum.analysis.cycles import BusinessCycleAgent
-from dataraum.analysis.cycles.db_models import BusinessCycleAnalysisRun
-from dataraum.llm import create_provider, load_llm_config
+from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
+from dataraum.pipeline.db_models import PhaseCheckpoint
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
 
+@analysis_phase
 class BusinessCyclesPhase(BasePhase):
     """Expert LLM agent for business cycle detection.
 
-    Uses semantic metadata as context and provides tools for
-    on-demand data exploration to detect business cycles like:
-    - Order-to-Cash (revenue cycle)
-    - Procure-to-Pay (expense cycle)
-    - Accounts Receivable/Payable cycles
-    - Inventory cycles
+    Synthesizes pre-computed pipeline metadata (slice definitions,
+    statistical profiles, temporal patterns, enriched views, quality
+    signals) into business cycle analysis via a single LLM call.
 
-    Requires: semantic, temporal phases.
+    Requires: semantic, temporal, enriched_views, slicing, quality_summary.
     """
 
     @property
@@ -40,15 +41,24 @@ class BusinessCyclesPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        return ["semantic", "temporal"]
+        # Depends on all phases that build_cycle_detection_context reads from
+        return [
+            "semantic",  # column annotations, table entities
+            "temporal",  # temporal column profiles
+            "enriched_views",  # pre-joined fact-dimension views
+            "slicing",  # categorical dimensions (status columns)
+            "quality_summary",  # column quality reports
+        ]
 
     @property
     def outputs(self) -> list[str]:
         return ["detected_cycles", "business_processes"]
 
     @property
-    def is_llm_phase(self) -> bool:
-        return True
+    def db_models(self) -> list[ModuleType]:
+        from dataraum.analysis.cycles import db_models
+
+        return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if business cycles have already been detected."""
@@ -60,15 +70,15 @@ class BusinessCyclesPhase(BasePhase):
         if not typed_tables:
             return "No typed tables found"
 
-        table_ids = [t.table_id for t in typed_tables]
-
-        # Check for existing business cycle analysis
-        run_stmt = select(func.count(BusinessCycleAnalysisRun.analysis_id)).where(
-            BusinessCycleAnalysisRun.table_ids.contains(table_ids)
+        # Check for existing completed phase checkpoint
+        cp_stmt = select(func.count(PhaseCheckpoint.checkpoint_id)).where(
+            PhaseCheckpoint.source_id == ctx.source_id,
+            PhaseCheckpoint.phase_name == self.name,
+            PhaseCheckpoint.status == "completed",
         )
-        run_count = (ctx.session.execute(run_stmt)).scalar() or 0
+        cp_count = (ctx.session.execute(cp_stmt)).scalar() or 0
 
-        if run_count > 0:
+        if cp_count > 0:
             return "Business cycle analysis already run for these tables"
 
         return None
@@ -101,22 +111,29 @@ class BusinessCyclesPhase(BasePhase):
         except Exception as e:
             return PhaseResult.failed(f"Failed to create LLM provider: {e}")
 
-        # Create business cycle agent (only takes provider, not full LLM infrastructure)
-        agent = BusinessCycleAgent(provider=provider)
+        # Create other components
+        renderer = PromptRenderer()
 
-        # Get optional domain from config (e.g., "financial", "retail", "manufacturing")
-        domain = ctx.config.get("domain")
+        # Create business cycle agent
+        agent = BusinessCycleAgent(
+            config=config,
+            provider=provider,
+            prompt_renderer=renderer,
+        )
 
-        # Get max tool calls from config
-        max_tool_calls = ctx.config.get("max_tool_calls", 10)
+        vertical = ctx.config.get("vertical")
+        if not vertical:
+            return PhaseResult.failed(
+                "No vertical configured. Set 'vertical' in config/phases/business_cycles.yaml."
+            )
 
         # Run analysis
         analysis_result = agent.analyze(
             session=ctx.session,
             duckdb_conn=ctx.duckdb_conn,
             table_ids=table_ids,
-            max_tool_calls=max_tool_calls,
-            domain=domain,
+            source_id=ctx.source_id,
+            vertical=vertical,
         )
 
         if not analysis_result.success:
@@ -131,7 +148,6 @@ class BusinessCyclesPhase(BasePhase):
                 "business_summary": analysis.business_summary,
                 "data_quality_observations": analysis.data_quality_observations,
                 "recommendations": analysis.recommendations,
-                "tool_calls_made": len(analysis.tool_calls_made),
                 "tables_analyzed": [t.table_name for t in typed_tables],
             },
             records_processed=len(table_ids),

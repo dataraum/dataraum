@@ -241,11 +241,17 @@ def _should_compare_columns(
 
     Skip pairs where:
     - Types are incompatible (e.g., VARCHAR vs BIGINT)
-    - Either column has 0 or 1 distinct values (constant/boolean)
+    - Either column is boolean (only 2 possible values — always gives false containment matches)
+    - Either column has 0 or 1 distinct values (constant)
     - Cardinality ratio is extreme (e.g., 1000:1)
     """
     # Skip if types are incompatible
     if not _are_types_compatible(stats1.resolved_type, stats2.resolved_type):
+        return False
+
+    # Skip boolean columns — {True, False} will always fully contain each other,
+    # giving containment=1.0 for every boolean pair regardless of actual relationship
+    if _get_type_group(stats1.resolved_type) == "boolean":
         return False
 
     # Skip constant or near-constant columns
@@ -326,8 +332,14 @@ def _compute_exact_jaccard(
         union = count1 + count2 - intersection
         jaccard = intersection / union if union > 0 else 0.0
 
-        # Check containment (full inclusion of one set in another)
-        containment = 1.0 if (intersection == count1 or intersection == count2) else 0.0
+        # Check containment (full inclusion of one set in another).
+        # Only meaningful when the smaller set has enough distinct values —
+        # low-cardinality columns (e.g., 2-3 values) trivially contain each other.
+        min_distinct = min(count1, count2)
+        if min_distinct > 10 and (intersection == count1 or intersection == count2):
+            containment = 1.0
+        else:
+            containment = 0.0
         score = max(jaccard, containment)
 
         cardinality = _determine_cardinality(stats1, stats2)
@@ -431,12 +443,16 @@ def _compute_sampled_jaccard(
         union_estimate = n1 + n2 - intersection_estimate
         jaccard_estimate = intersection_estimate / union_estimate if union_estimate > 0 else 0.0
 
-        # Check for full containment (one set fully contained in another)
-        # Use a threshold (0.95) to account for sampling variance
-        containment1 = intersection_estimate / n1 if n1 > 0 else 0.0
-        containment2 = intersection_estimate / n2 if n2 > 0 else 0.0
-        # Only return 1.0 for near-full containment to match exact behavior
-        containment = 1.0 if (containment1 >= 0.95 or containment2 >= 0.95) else 0.0
+        # Check for full containment (one set fully contained in another).
+        # Only meaningful when the smaller set has enough distinct values —
+        # low-cardinality columns trivially contain each other.
+        min_distinct = min(n1, n2)
+        if min_distinct > 10:
+            containment1 = intersection_estimate / n1 if n1 > 0 else 0.0
+            containment2 = intersection_estimate / n2 if n2 > 0 else 0.0
+            containment = 1.0 if (containment1 >= 0.95 or containment2 >= 0.95) else 0.0
+        else:
+            containment = 0.0
 
         score = max(jaccard_estimate, containment)
 

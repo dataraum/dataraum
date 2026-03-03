@@ -1,0 +1,4 @@
+# Semantic analysis settings
+# Vertical providing the ontology for business concept mapping.
+# Must match a directory in config/verticals/<vertical>/ontology.yaml
+vertical: finance

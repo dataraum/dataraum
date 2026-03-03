@@ -6,19 +6,16 @@ Loads and validates the column eligibility configuration from YAML.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
-
-import yaml
 
 
 @dataclass
 class EligibilityThresholds:
     """Thresholds for eligibility evaluation."""
 
-    max_null_ratio: float = 1.0  # Column is INELIGIBLE if null_ratio >= this
-    eliminate_single_value: bool = True  # Eliminate columns with single value
-    warn_null_ratio: float = 0.5  # Column gets WARN status if null_ratio > this
+    max_null_ratio: float
+    warn_single_value: bool
+    warn_null_ratio: float
 
 
 @dataclass
@@ -35,123 +32,57 @@ class EligibilityRule:
 class EligibilityConfig:
     """Column eligibility configuration."""
 
-    version: str = "1.0"
-    thresholds: EligibilityThresholds = field(default_factory=EligibilityThresholds)
-    rules: list[EligibilityRule] = field(default_factory=list)
-    default_status: str = "ELIGIBLE"
-
-    # Patterns for likely key columns (fail pipeline if ineligible)
+    version: str
+    thresholds: EligibilityThresholds
+    rules: list[EligibilityRule]
+    default_status: str
     key_patterns: list[str] = field(default_factory=lambda: ["_id$", "^id$", "_key$"])
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EligibilityConfig:
-        """Create config from dictionary."""
+        """Create config from dictionary.
+
+        Requires all fields to be present in the config — no silent defaults.
+        """
+        thresholds_data = data["thresholds"]
         thresholds = EligibilityThresholds(
-            max_null_ratio=data.get("thresholds", {}).get("max_null_ratio", 1.0),
-            eliminate_single_value=data.get("thresholds", {}).get("eliminate_single_value", True),
-            warn_null_ratio=data.get("thresholds", {}).get("warn_null_ratio", 0.5),
+            max_null_ratio=thresholds_data["max_null_ratio"],
+            warn_single_value=thresholds_data["warn_single_value"],
+            warn_null_ratio=thresholds_data["warn_null_ratio"],
         )
 
-        rules = []
-        for rule_data in data.get("rules", []):
-            rules.append(
-                EligibilityRule(
-                    id=rule_data["id"],
-                    condition=rule_data["condition"],
-                    status=rule_data["status"],
-                    reason=rule_data["reason"],
-                )
+        rules = [
+            EligibilityRule(
+                id=rule_data["id"],
+                condition=rule_data["condition"],
+                status=rule_data["status"],
+                reason=rule_data["reason"],
             )
+            for rule_data in data["rules"]
+        ]
 
         return cls(
-            version=data.get("version", "1.0"),
+            version=data["version"],
             thresholds=thresholds,
             rules=rules,
-            default_status=data.get("default_status", "ELIGIBLE"),
+            default_status=data["default_status"],
             key_patterns=data.get("key_patterns", ["_id$", "^id$", "_key$"]),
         )
 
 
-_cached_config: EligibilityConfig | None = None
-
-
-def load_eligibility_config(config_path: Path | None = None) -> EligibilityConfig:
-    """Load eligibility configuration from YAML.
-
-    Uses default config if no path provided or file doesn't exist.
+def load_eligibility_config(config_dict: dict[str, Any] | None = None) -> EligibilityConfig:
+    """Load eligibility configuration.
 
     Args:
-        config_path: Optional path to config file
+        config_dict: Pre-loaded config dict (from ctx.config in pipeline).
+            If None or missing required keys, loads from config file.
 
     Returns:
         EligibilityConfig instance
     """
-    global _cached_config
+    if config_dict is not None and "thresholds" in config_dict:
+        return EligibilityConfig.from_dict(config_dict)
+    from dataraum.core.config import load_phase_config
 
-    if _cached_config is not None and config_path is None:
-        return _cached_config
-
-    if config_path is None:
-        # Look for config via settings (resolves regardless of CWD)
-        from dataraum.core.config import get_settings
-
-        config_path = get_settings().config_path / "column_eligibility.yaml"
-
-    if config_path is not None and config_path.exists():
-        with open(config_path) as f:
-            data = yaml.safe_load(f)
-            config = EligibilityConfig.from_dict(data)
-    else:
-        # Use defaults
-        config = _get_default_config()
-
-    if config_path is None:
-        _cached_config = config
-
-    return config
-
-
-def _get_default_config() -> EligibilityConfig:
-    """Get default eligibility configuration."""
-    return EligibilityConfig(
-        version="1.0",
-        thresholds=EligibilityThresholds(
-            max_null_ratio=1.0,
-            eliminate_single_value=True,
-            warn_null_ratio=0.5,
-        ),
-        rules=[
-            EligibilityRule(
-                id="all_null",
-                condition="null_ratio >= max_null_ratio",
-                status="INELIGIBLE",
-                reason="Column has {null_ratio:.0%} null values - no usable data",
-            ),
-            EligibilityRule(
-                id="single_value",
-                condition="distinct_count == 1 and eliminate_single_value",
-                status="INELIGIBLE",
-                reason="Column has single value - no variance for analysis",
-            ),
-            EligibilityRule(
-                id="high_null",
-                condition="null_ratio > warn_null_ratio",
-                status="WARN",
-                reason="High null ratio ({null_ratio:.0%}) may affect analysis",
-            ),
-            EligibilityRule(
-                id="near_constant",
-                condition="cardinality_ratio < 0.01 and distinct_count <= 3",
-                status="WARN",
-                reason="Near-constant column with only {distinct_count} distinct values",
-            ),
-        ],
-        default_status="ELIGIBLE",
-        key_patterns=["_id$", "^id$", "_key$"],
-    )
-
-
-def clear_config_cache() -> None:
-    """Clear the cached configuration."""
-    global _cached_config
-    _cached_config = None
+    data = load_phase_config("column_eligibility")
+    return EligibilityConfig.from_dict(data)

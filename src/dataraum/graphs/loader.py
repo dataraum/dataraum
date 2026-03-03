@@ -69,19 +69,33 @@ class GraphLoader:
             └── profitability/
     """
 
-    def __init__(self, graphs_dir: Path | None = None):
+    def __init__(self, graphs_dir: Path | None = None, *, vertical: str | None = None):
         """Initialize loader.
 
         Args:
             graphs_dir: Root directory containing graphs.
-                        Defaults to config/graphs/
+                        Defaults to config/verticals/<vertical>/
+            vertical: Vertical name, required when graphs_dir is None.
         """
         if graphs_dir is None:
-            # Default: 4 levels up from src/dataraum/graphs/
-            graphs_dir = Path(__file__).parent.parent.parent.parent / "config" / "graphs"
+            if vertical is None:
+                raise ValueError("vertical is required when graphs_dir is not provided")
+            from dataraum.core.vertical import VerticalConfig
+
+            graphs_dir = VerticalConfig(vertical).base_dir
         self.graphs_dir = graphs_dir
         self.graphs: dict[str, TransformationGraph] = {}
         self._load_errors: list[GraphLoadError] = []
+
+        # Auto-detect system filters only in vertical mode
+        self._system_filters_dir: Path | None = None
+        if vertical is not None:
+            from dataraum.core.config import get_config_dir
+
+            try:
+                self._system_filters_dir = get_config_dir("filters")
+            except FileNotFoundError:
+                pass
 
     def load_all(self) -> dict[str, TransformationGraph]:
         """Load all transformation graphs from the directory.
@@ -95,7 +109,11 @@ class GraphLoader:
         if not self.graphs_dir.exists():
             return {}
 
-        # Load filters
+        # System-level filters first (vertical filters can override by graph_id)
+        if self._system_filters_dir and self._system_filters_dir.exists():
+            self._load_directory(self._system_filters_dir, GraphType.FILTER)
+
+        # Vertical-specific filters
         filters_dir = self.graphs_dir / "filters"
         if filters_dir.exists():
             self._load_directory(filters_dir, GraphType.FILTER)
@@ -671,6 +689,31 @@ class GraphLoader:
             result[column_name] = filters
 
         return result
+
+    def validate_standard_fields(self, vertical: str) -> list[str]:
+        """Warn about standard_field values not found in ontology.
+
+        Args:
+            vertical: Vertical name (e.g. 'finance')
+
+        Returns:
+            List of warning messages for unknown fields
+        """
+        from dataraum.analysis.semantic.ontology import OntologyLoader
+
+        loader = OntologyLoader()
+        ontology = loader.load(vertical)
+        if not ontology:
+            return []
+
+        concept_names = {c.name for c in ontology.concepts}
+        abstract_fields = self.get_all_abstract_fields()
+        unknown = abstract_fields - concept_names
+
+        warnings = []
+        for field_name in sorted(unknown):
+            warnings.append(f"standard_field '{field_name}' not found in {vertical} ontology")
+        return warnings
 
     def get_quality_filter_summary(
         self,

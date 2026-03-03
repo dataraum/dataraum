@@ -21,7 +21,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import Any
 from uuid import uuid4
 
 import duckdb
@@ -38,13 +38,9 @@ from dataraum.analysis.statistics.models import (
     StringStats,
     ValueCount,
 )
-from dataraum.core.config import get_settings
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import ColumnRef, Result
 from dataraum.storage import Column, Table
-
-if TYPE_CHECKING:
-    pass
 
 logger = get_logger(__name__)
 
@@ -112,6 +108,26 @@ def _profile_column_stats_parallel(
                     stddev_val = float(numeric_row[3]) if numeric_row[3] is not None else 0.0
                     cv_val = stddev_val / abs(mean_val) if mean_val != 0 else None
 
+                    p50_val = float(numeric_row[8]) if numeric_row[8] is not None else None
+
+                    # Compute MAD (Median Absolute Deviation) and robust_cv
+                    mad_val: float | None = None
+                    robust_cv_val: float | None = None
+                    if p50_val is not None:
+                        try:
+                            mad_query = f"""
+                                SELECT MEDIAN(ABS("{column_name}"::DOUBLE - {p50_val}))
+                                FROM "{table_duckdb_path}"
+                                WHERE "{column_name}" IS NOT NULL
+                            """
+                            mad_row = cursor.execute(mad_query).fetchone()
+                            if mad_row and mad_row[0] is not None:
+                                mad_val = float(mad_row[0])
+                                if abs(p50_val) > 0:
+                                    robust_cv_val = mad_val / abs(p50_val)
+                        except Exception:
+                            pass  # MAD is supplementary; don't fail profiling
+
                     numeric_stats = NumericStats(
                         min_value=float(numeric_row[0]),
                         max_value=float(numeric_row[1]),
@@ -120,10 +136,12 @@ def _profile_column_stats_parallel(
                         skewness=(float(numeric_row[4]) if numeric_row[4] is not None else None),
                         kurtosis=(float(numeric_row[5]) if numeric_row[5] is not None else None),
                         cv=cv_val,
+                        mad=mad_val,
+                        robust_cv=robust_cv_val,
                         percentiles={
                             "p01": (float(numeric_row[6]) if numeric_row[6] is not None else None),
                             "p25": (float(numeric_row[7]) if numeric_row[7] is not None else None),
-                            "p50": (float(numeric_row[8]) if numeric_row[8] is not None else None),
+                            "p50": p50_val,
                             "p75": (float(numeric_row[9]) if numeric_row[9] is not None else None),
                             "p99": (
                                 float(numeric_row[10]) if numeric_row[10] is not None else None
@@ -252,6 +270,7 @@ def profile_statistics(
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
     max_workers: int = 4,
+    config: dict[str, Any] | None = None,
 ) -> Result[StatisticsProfileResult]:
     """Profile typed data to compute all row-based statistics.
 
@@ -279,7 +298,10 @@ def profile_statistics(
         Result containing StatisticsProfileResult
     """
     start_time = time.time()
-    settings = get_settings()
+    if config is not None and "top_k_values" in config:
+        stats_config = config
+    else:
+        stats_config = load_statistics_config()
 
     try:
         # session.get() checks the identity map first, so pending objects
@@ -329,9 +351,16 @@ def profile_statistics(
         if not columns:
             return Result.fail(f"No columns found for table {table.table_id}")
 
+        # Typed tables must have resolved_type on all columns
+        unresolved = [c.column_name for c in columns if not c.resolved_type]
+        if unresolved:
+            return Result.fail(f"Columns missing resolved_type in typed table: {unresolved}")
+
+        logger.debug("profiling_statistics", table=table.table_name, columns=len(columns))
+
         profiled_at = datetime.now(UTC)
         profiles: list[ColumnProfile] = []
-        top_k = settings.profile_top_k_values
+        top_k = stats_config["top_k_values"]
 
         # Use parallel processing with cursors from shared connection
         # DuckDB cursors are thread-safe for read operations
@@ -344,7 +373,7 @@ def profile_statistics(
                     table.duckdb_path,
                     column.column_id,
                     column.column_name,
-                    column.resolved_type or "VARCHAR",
+                    column.resolved_type,  # type: ignore[arg-type]  # validated above
                     profiled_at,
                     top_k,
                 )
@@ -386,6 +415,13 @@ def profile_statistics(
 
         duration = time.time() - start_time
 
+        logger.debug(
+            "profiling_statistics_complete",
+            table=table.table_name,
+            profiles=len(profiles),
+            duration=round(duration, 2),
+        )
+
         return Result.ok(
             StatisticsProfileResult(
                 column_profiles=profiles,
@@ -394,4 +430,16 @@ def profile_statistics(
         )
 
     except Exception as e:
+        logger.error("profiling_statistics_failed", error=str(e))
         return Result.fail(f"Statistics profiling failed: {e}")
+
+
+def load_statistics_config() -> dict[str, Any]:
+    """Load the statistics configuration from YAML.
+
+    Returns:
+        Dict with statistics config (top_k_values, etc.)
+    """
+    from dataraum.core.config import load_phase_config
+
+    return load_phase_config("statistics")

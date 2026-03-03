@@ -1,0 +1,9 @@
+# Import phase settings
+# Junk columns to remove after loading CSV files.
+# These are typically CSV export artifacts like pandas index columns.
+junk_columns:
+  - "Unnamed: 0"
+  - "Unnamed: 0.1"
+  - "Unnamed: 0.2"
+  - "column0"
+  - "column00"

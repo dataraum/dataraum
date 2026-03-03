@@ -5,7 +5,7 @@ High null ratio indicates missing data that affects aggregation reliability.
 """
 
 from dataraum.entropy.config import get_entropy_config
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -16,16 +16,14 @@ class NullRatioDetector(EntropyDetector):
     Higher null ratios mean more uncertainty in aggregations.
 
     Source: statistics/ColumnProfile.null_ratio
-    Formula: entropy = min(1.0, null_ratio * multiplier)
-
-    Multiplier is configurable in config/entropy/thresholds.yaml.
-    Default: 2x (50% nulls = max entropy).
+    Score equals null_ratio directly (already 0.0–1.0).
     """
 
     detector_id = "null_ratio"
     layer = "value"
     dimension = "nulls"
     sub_dimension = "null_ratio"
+    trust_level = DetectorTrust.HARD
     required_analyses = ["statistics"]
     description = "Measures uncertainty from null/missing values"
 
@@ -43,16 +41,11 @@ class NullRatioDetector(EntropyDetector):
         detector_config = config.detector("null_ratio")
 
         # Get configurable thresholds
-        multiplier = detector_config.get("multiplier", 2.0)
         impact_minimal = detector_config.get("impact_minimal", 0.05)
         impact_moderate = detector_config.get("impact_moderate", 0.20)
         impact_significant = detector_config.get("impact_significant", 0.50)
         suggest_declare = detector_config.get("suggest_declare_threshold", 0.1)
         suggest_filter = detector_config.get("suggest_filter_threshold", 0.4)
-        reduction_declare = detector_config.get("reduction_declare", 0.3)
-        reduction_filter = detector_config.get("reduction_filter", 0.8)
-        reduction_impute = detector_config.get("reduction_impute", 0.6)
-
         stats = context.get_analysis("statistics", {})
 
         # Extract null ratio
@@ -66,8 +59,8 @@ class NullRatioDetector(EntropyDetector):
             null_count = stats.get("null_count", 0)
             total_count = stats.get("total_count", 0)
 
-        # Calculate entropy using configurable multiplier
-        score = min(1.0, null_ratio * multiplier)
+        # Score equals null_ratio directly (already 0.0–1.0)
+        score = null_ratio
 
         # Classify null impact using configurable thresholds
         if null_ratio == 0:
@@ -98,15 +91,13 @@ class NullRatioDetector(EntropyDetector):
             # Some nulls - suggest null semantics declaration
             resolution_options.append(
                 ResolutionOption(
-                    action="declare_null_meaning",
+                    action="document_null_semantics",
                     parameters={
                         "column": context.column_name,
                         "meanings": ["not_applicable", "unknown", "not_yet_set"],
                     },
-                    expected_entropy_reduction=score * reduction_declare,
                     effort="low",
                     description="Declare what null values mean in this context",
-                    cascade_dimensions=["semantic.business_meaning"],
                 )
             )
 
@@ -114,24 +105,22 @@ class NullRatioDetector(EntropyDetector):
             # High nulls - suggest imputation or filtering
             resolution_options.append(
                 ResolutionOption(
-                    action="filter_nulls",
+                    action="transform_filter_nulls",
                     parameters={
                         "column": context.column_name,
                         "strategy": "exclude",
                     },
-                    expected_entropy_reduction=score * reduction_filter,
                     effort="low",
                     description="Exclude null values from aggregations",
                 )
             )
             resolution_options.append(
                 ResolutionOption(
-                    action="impute_values",
+                    action="transform_impute_values",
                     parameters={
                         "column": context.column_name,
                         "strategy": "mean",  # or median, mode, etc.
                     },
-                    expected_entropy_reduction=score * reduction_impute,
                     effort="medium",
                     description="Impute missing values using statistical methods",
                 )

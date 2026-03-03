@@ -18,9 +18,11 @@ from dataraum.analysis.slicing.slice_runner import (
 )
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
 
+@analysis_phase
 class SliceAnalysisPhase(BasePhase):
     """Execute slice SQL and analyze resulting slice tables.
 
@@ -41,15 +43,11 @@ class SliceAnalysisPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        return ["slicing"]
+        return ["slicing_view"]
 
     @property
     def outputs(self) -> list[str]:
         return ["slice_profiles"]
-
-    @property
-    def is_llm_phase(self) -> bool:
-        return False
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if no slice definitions exist or all slices already analyzed."""
@@ -119,7 +117,10 @@ class SliceAnalysisPhase(BasePhase):
                 records_created=0,
             )
 
-        # Execute slice SQL templates to create slice tables in DuckDB
+        # Execute slice SQL templates to create slice tables in DuckDB.
+        # Each sql_template contains CREATE statements for ALL values in that slice.
+        # The templates already reference the slicing view as their source
+        # (rewritten by slicing_view_phase after view creation).
         slices_created = 0
         errors: list[str] = []
 
@@ -127,15 +128,11 @@ class SliceAnalysisPhase(BasePhase):
             if not slice_def.sql_template:
                 continue
 
-            for value in slice_def.distinct_values or []:
-                # Substitute the value into the SQL template
-                # The template should have a placeholder like {value} or similar
-                try:
-                    sql = slice_def.sql_template.format(value=value)
-                    ctx.duckdb_conn.execute(sql)
-                    slices_created += 1
-                except Exception as e:
-                    errors.append(f"Failed to create slice for {value}: {e}")
+            try:
+                ctx.duckdb_conn.execute(slice_def.sql_template)
+                slices_created += len(slice_def.distinct_values or [])
+            except Exception as e:
+                errors.append(f"Failed to create slices for {slice_def.column_id}: {e}")
 
         # Register slice tables in metadata
         register_result = register_slice_tables(
@@ -161,15 +158,12 @@ class SliceAnalysisPhase(BasePhase):
             )
 
         # Run analysis on slice tables
-        # Note: semantic_agent is None since we copy annotations, not re-analyze
         analysis_result = run_analysis_on_slices(
             session=ctx.session,
             duckdb_conn=ctx.duckdb_conn,
             slice_infos=slice_infos,
-            semantic_agent=None,
             run_statistics=True,
             run_quality=True,
-            run_semantic=False,  # Skip semantic - it needs an agent
         )
 
         errors.extend(analysis_result.errors)

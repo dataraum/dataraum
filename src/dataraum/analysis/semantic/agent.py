@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.graph_topology import (
@@ -21,6 +21,7 @@ from dataraum.analysis.relationships.graph_topology import (
     analyze_graph_topology,
 )
 from dataraum.analysis.semantic.models import (
+    ColumnAnnotationOutput,
     EntityDetection,
     Relationship,
     SemanticAnalysisOutput,
@@ -28,11 +29,18 @@ from dataraum.analysis.semantic.models import (
     SemanticEnrichmentResult,
 )
 from dataraum.analysis.semantic.ontology import OntologyLoader
-from dataraum.analysis.semantic.utils import load_correlations_for_semantic
-from dataraum.analysis.statistics.models import ColumnProfile
+from dataraum.analysis.semantic.utils import load_derived_columns_for_semantic
+from dataraum.analysis.statistics.db_models import (
+    StatisticalProfile as ColumnProfileModel,
+)
+from dataraum.analysis.statistics.models import (
+    ColumnProfile,
+    NumericStats,
+    StringStats,
+    ValueCount,
+)
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import (
-    Cardinality,
     ColumnRef,
     DecisionSource,
     RelationshipType,
@@ -49,7 +57,6 @@ from dataraum.llm.providers.base import (
 from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
-    from dataraum.llm.cache import LLMCache
     from dataraum.llm.config import LLMConfig
     from dataraum.llm.prompts import PromptRenderer
     from dataraum.llm.providers.base import LLMProvider
@@ -68,7 +75,7 @@ class SemanticAgent(LLMFeature):
 
     This agent follows the same pattern as GraphAgent:
     - Extends LLMFeature for LLM infrastructure access
-    - Can be instantiated directly with LLM config, provider, renderer, cache
+    - Can be instantiated directly with LLM config, provider, renderer
     - Does not depend on LLMService facade
     """
 
@@ -77,8 +84,7 @@ class SemanticAgent(LLMFeature):
         config: LLMConfig,
         provider: LLMProvider,
         prompt_renderer: PromptRenderer,
-        cache: LLMCache,
-        ontologies_dir: Path | None = None,
+        verticals_dir: Path | None = None,
     ) -> None:
         """Initialize semantic agent.
 
@@ -86,12 +92,11 @@ class SemanticAgent(LLMFeature):
             config: LLM configuration
             provider: LLM provider instance
             prompt_renderer: Prompt template renderer
-            cache: Response cache
-            ontologies_dir: Directory containing ontology YAML files.
-                          If None, uses config/ontologies/
+            verticals_dir: Root verticals directory.
+                          If None, uses config/verticals/
         """
-        super().__init__(config, provider, prompt_renderer, cache)
-        self._ontology_loader = OntologyLoader(ontologies_dir)
+        super().__init__(config, provider, prompt_renderer)
+        self._ontology_loader = OntologyLoader(verticals_dir)
 
     def analyze(
         self,
@@ -99,6 +104,8 @@ class SemanticAgent(LLMFeature):
         table_ids: list[str],
         ontology: str = "general",
         relationship_candidates: list[dict[str, Any]] | None = None,
+        column_annotations: ColumnAnnotationOutput | None = None,
+        required_standard_fields: list[str] | None = None,
     ) -> Result[SemanticEnrichmentResult]:
         """Analyze semantic meaning of tables and columns.
 
@@ -111,6 +118,12 @@ class SemanticAgent(LLMFeature):
                 - table1, table2: Table names
                 - join_columns: List of column pairs with confidence scores
                 - topology_similarity: TDA-based structural similarity
+            column_annotations: Tier 1 column annotations from ColumnAnnotationAgent.
+                When provided, included as context so the capable model can focus
+                on relationships, table classification, and reviewing/upgrading
+                low-confidence annotations.
+            required_standard_fields: Standard field concepts required by active
+                metric graphs. Prioritizes mapping these to actual columns.
 
         Returns:
             Result containing SemanticEnrichmentResult or error
@@ -131,27 +144,15 @@ class SemanticAgent(LLMFeature):
         sampler = DataSampler(self.config.privacy)
         samples = sampler.prepare_samples(profiles)
 
-        # Load within-table correlation data (if available from Phase 4b)
-        correlations = load_correlations_for_semantic(session, table_ids)
+        # Load derived column data (if available from Phase 4b)
+        derived_columns = load_derived_columns_for_semantic(session, table_ids)
 
-        # Log correlation context usage
-        if correlations:
-            total_fds = sum(
-                len(d.get("functional_dependencies", [])) for d in correlations.values()
-            )
-            total_corrs = sum(len(d.get("numeric_correlations", [])) for d in correlations.values())
-            total_derived = sum(len(d.get("derived_columns", [])) for d in correlations.values())
-            if total_fds or total_corrs or total_derived:
-                logger.info(
-                    "within_table_correlations",
-                    functional_dependencies=total_fds,
-                    numeric_correlations=total_corrs,
-                    derived_columns=total_derived,
-                )
-            else:
-                logger.debug("no_significant_correlations")
+        # Log derived column context usage
+        total_derived = sum(len(cols) for cols in derived_columns.values())
+        if total_derived:
+            logger.debug("derived_columns_context", derived_columns=total_derived)
         else:
-            logger.debug("no_correlation_data")
+            logger.debug("no_derived_columns")
 
         # Build context for prompt
         tables_json = self._build_tables_json(profiles, samples)
@@ -159,11 +160,11 @@ class SemanticAgent(LLMFeature):
 
         # Ontology is required for business_concept mapping
         if ontology_def is None:
-            available = self._ontology_loader.list_ontologies()
+            available = self._ontology_loader.list_verticals()
             return Result.fail(
-                f"Ontology '{ontology}' not found. "
-                f"Available ontologies: {available}. "
-                f"Create config/ontologies/{ontology}.yaml or use an existing ontology."
+                f"Vertical '{ontology}' not found. "
+                f"Available verticals: {available}. "
+                f"Create config/verticals/{ontology}/ontology.yaml or use an existing vertical."
             )
 
         # Compute graph topology from relationship candidates
@@ -191,7 +192,9 @@ class SemanticAgent(LLMFeature):
             "relationship_candidates": self._format_relationship_candidates(
                 relationship_candidates, graph_structure=graph_structure
             ),
-            "within_table_correlations": self._format_correlations(correlations),
+            "within_table_correlations": self._format_derived_columns(derived_columns),
+            "column_annotations": self._format_column_annotations(column_annotations),
+            "required_standard_fields": self._format_required_fields(required_standard_fields),
         }
 
         # Render prompt with system/user split
@@ -221,7 +224,7 @@ class SemanticAgent(LLMFeature):
 
         try:
             # Parse tool output into our internal models
-            return self._parse_tool_output(tool_output, model_name)
+            return self._parse_tool_output(tool_output, model_name, ontology_def=ontology_def)
         except Exception as e:
             return Result.fail(f"Failed to parse semantic response: {e}")
 
@@ -238,17 +241,6 @@ class SemanticAgent(LLMFeature):
         try:
             # Get latest profile for each column in these tables
             # We use a subquery to get the most recent profile per column
-            from sqlalchemy import func
-
-            from dataraum.analysis.statistics.db_models import (
-                StatisticalProfile as ColumnProfileModel,
-            )
-            from dataraum.analysis.statistics.models import (
-                NumericStats,
-                StringStats,
-                ValueCount,
-            )
-
             subq = (
                 select(
                     ColumnProfileModel.column_id,
@@ -321,6 +313,7 @@ class SemanticAgent(LLMFeature):
                 profile = ColumnProfile(
                     column_id=col.column_id,
                     column_ref=ColumnRef(table_name=table.table_name, column_name=col.column_name),
+                    original_name=col.original_name,
                     profiled_at=profile_model.profiled_at,
                     total_count=profile_model.total_count,
                     null_count=profile_model.null_count,
@@ -479,74 +472,82 @@ class SemanticAgent(LLMFeature):
 
         return "\n".join(lines)
 
-    def _format_correlations(self, correlations: dict[str, dict[str, Any]]) -> str:
-        """Format within-table correlation data for the prompt.
+    def _format_derived_columns(self, derived_columns: dict[str, list[dict[str, Any]]]) -> str:
+        """Format derived column data for the prompt.
 
         Args:
-            correlations: Dict mapping table_name to correlation data
+            derived_columns: Dict mapping table_name to list of derived column dicts
 
         Returns:
             Formatted string for the prompt
         """
-        if not correlations:
-            return "No within-table correlation data available."
-
-        # Check if we have any actual data
-        has_data = False
-        for table_data in correlations.values():
-            if (
-                table_data.get("functional_dependencies")
-                or table_data.get("numeric_correlations")
-                or table_data.get("derived_columns")
-            ):
-                has_data = True
-                break
-
-        if not has_data:
-            return "No significant within-table correlations detected."
+        if not derived_columns or not any(derived_columns.values()):
+            return "No derived column candidates detected."
 
         lines = []
 
-        for table_name, data in correlations.items():
-            fds = data.get("functional_dependencies", [])
-            corrs = data.get("numeric_correlations", [])
-            derived = data.get("derived_columns", [])
-
-            if not fds and not corrs and not derived:
+        for table_name, derived in derived_columns.items():
+            if not derived:
                 continue
 
             lines.append(f"\n### {table_name}")
-
-            # Functional dependencies (key indicators)
-            if fds:
-                lines.append("Functional dependencies (determinant → dependent):")
-                for fd in fds:
-                    det = ", ".join(fd["determinant"])
-                    dep = fd["dependent"]
-                    conf = fd["confidence"]
-                    lines.append(f"  - {det} → {dep} (conf: {conf:.2f})")
-
-            # Strong numeric correlations
-            if corrs:
-                lines.append("Strong numeric correlations:")
-                for c in corrs:
-                    r = c.get("pearson_r") or c.get("spearman_rho") or 0
-                    lines.append(
-                        f"  - {c['column1']} <-> {c['column2']}: r={r:.2f} ({c['strength']})"
-                    )
-
-            # Derived columns (already deduplicated at detection time)
-            if derived:
+            lines.append(
+                "Derived column candidates (statistical matches — "
+                "verify domain plausibility, not all are true derivations):"
+            )
+            for d in derived:
                 lines.append(
-                    "Derived column candidates (statistical matches — "
-                    "verify domain plausibility, not all are true derivations):"
+                    f"  - {d['derived_column']} = {d['formula']} (match: {d['match_rate']:.0%})"
                 )
-                for d in derived:
-                    lines.append(
-                        f"  - {d['derived_column']} = {d['formula']} (match: {d['match_rate']:.0%})"
-                    )
 
-        return "\n".join(lines) if lines else "No significant within-table correlations detected."
+        return "\n".join(lines) if lines else "No derived column candidates detected."
+
+    @staticmethod
+    def _format_column_annotations(annotations: ColumnAnnotationOutput | None) -> str:
+        """Format tier 1 column annotations for the prompt.
+
+        Args:
+            annotations: Tier 1 column annotations, or None
+
+        Returns:
+            Formatted string for the prompt
+        """
+        if annotations is None:
+            return "No prior column annotations available."
+
+        lines = []
+        for table in annotations.tables:
+            lines.append(f"\n### {table.table_name}")
+            for col in table.columns:
+                concept = col.business_concept or "(none)"
+                lines.append(
+                    f"  - {col.column_name}: role={col.semantic_role}, "
+                    f"concept={concept}, confidence={col.confidence:.2f}"
+                )
+                if col.confidence < 0.7:
+                    lines.append("    [LOW CONFIDENCE — review recommended]")
+
+        return "\n".join(lines) if lines else "No prior column annotations available."
+
+    @staticmethod
+    def _format_required_fields(fields: list[str] | None) -> str:
+        """Format required standard fields for the prompt.
+
+        Args:
+            fields: Standard field concept names from metric graphs, or None
+
+        Returns:
+            Formatted string for the prompt
+        """
+        if not fields:
+            return "No specific standard fields required by metrics."
+        lines = ["The following standard_field concepts are used by active metrics:"]
+        for f in fields:
+            lines.append(f"  - {f}")
+        lines.append("")
+        lines.append("PRIORITY: If a column semantically matches one of these concepts,")
+        lines.append("set business_concept to the EXACT concept name from this list.")
+        return "\n".join(lines)
 
     @staticmethod
     def _truncate_sample(value: Any, max_length: int = 100) -> Any:
@@ -564,13 +565,13 @@ class SemanticAgent(LLMFeature):
         return value
 
     def _build_tables_json(
-        self, profiles: list[ColumnProfile], samples: dict[str, list[Any]]
+        self, profiles: list[ColumnProfile], samples: dict[tuple[str, str], list[Any]]
     ) -> list[dict[str, Any]]:
         """Build JSON representation of tables for prompt.
 
         Args:
             profiles: Column profiles
-            samples: Sample values per column
+            samples: Sample values keyed by (table_name, column_name)
 
         Returns:
             List of table dicts for JSON serialization
@@ -580,6 +581,7 @@ class SemanticAgent(LLMFeature):
 
         for profile in profiles:
             table_name = profile.column_ref.table_name
+            column_name = profile.column_ref.column_name
 
             if table_name not in tables_data:
                 tables_data[table_name] = {
@@ -589,14 +591,17 @@ class SemanticAgent(LLMFeature):
                 }
 
             col_data: dict[str, Any] = {
-                "column_name": profile.column_ref.column_name,
+                "column_name": column_name,
                 "distinct_count": profile.distinct_count,
                 "cardinality_ratio": round(profile.cardinality_ratio, 4),  # Helps identify keys
                 "sample_values": [
-                    self._truncate_sample(v)
-                    for v in samples.get(profile.column_ref.column_name, [])
+                    self._truncate_sample(v) for v in samples.get((table_name, column_name), [])
                 ],
             }
+
+            # Include original column name when it differs from normalized name
+            if profile.original_name and profile.original_name != column_name:
+                col_data["original_name"] = profile.original_name
 
             # Only include null_ratio when non-zero to save tokens
             null_ratio = round(profile.null_ratio, 4)
@@ -664,7 +669,8 @@ class SemanticAgent(LLMFeature):
             messages=[Message(role="user", content=user_prompt)],
             system=system_prompt,
             tools=[tool],
-            max_tokens=8192,  # Semantic analysis can produce large output
+            tool_choice={"type": "tool", "name": "analyze_schema"},
+            max_tokens=self.config.limits.max_output_tokens_per_request,
             temperature=temperature,
             model=model,
         )
@@ -698,7 +704,10 @@ class SemanticAgent(LLMFeature):
         return Result.ok((tool_call.input, response.model))
 
     def _parse_tool_output(
-        self, tool_output: dict[str, Any], model_name: str
+        self,
+        tool_output: dict[str, Any],
+        model_name: str,
+        ontology_def: Any = None,
     ) -> Result[SemanticEnrichmentResult]:
         """Parse tool output into SemanticEnrichmentResult.
 
@@ -726,7 +735,6 @@ class SemanticAgent(LLMFeature):
                     entity_type=table.entity_type,
                     description=table.description,
                     confidence=0.9,  # Tool-based output has higher confidence
-                    evidence={},
                     grain_columns=table.grain,
                     is_fact_table=table.is_fact_table,
                     is_dimension_table=not table.is_fact_table,
@@ -752,28 +760,36 @@ class SemanticAgent(LLMFeature):
                         business_name=col.business_term,
                         business_description=col.description,
                         business_concept=col.business_concept,
+                        unit_source_column=col.unit_source_column,
                         annotation_source=DecisionSource.LLM,
                         annotated_by=model_name,
                         confidence=col.confidence,
                     )
                     annotations.append(annotation)
 
-            # Parse relationships
+                # Backfill unit_source_column from table-level unit_relationships
+                for unit_rel in table.unit_relationships:
+                    for annotation in annotations:
+                        if (
+                            annotation.column_ref.table_name == table.table_name
+                            and annotation.column_ref.column_name in unit_rel.measure_columns
+                            and annotation.unit_source_column is None
+                        ):
+                            annotation.unit_source_column = unit_rel.unit_column
+
+            # Backfill temporal_behavior from ontology concepts
+            if ontology_def:
+                concept_map = {c.name: c.temporal_behavior for c in ontology_def.concepts}
+                for annotation in annotations:
+                    if annotation.business_concept:
+                        annotation.temporal_behavior = concept_map.get(annotation.business_concept)
+
+            # Parse relationships (cardinality is computed post-hoc from actual data)
             for rel in analysis.relationships:
                 try:
                     rel_type = RelationshipType(rel.relationship_type)
                 except ValueError:
                     rel_type = RelationshipType.FOREIGN_KEY
-
-                cardinality = None
-                if rel.cardinality == "one_to_one":
-                    cardinality = Cardinality.ONE_TO_ONE
-                elif rel.cardinality == "one_to_many":
-                    cardinality = Cardinality.ONE_TO_MANY
-                elif rel.cardinality == "many_to_one":
-                    cardinality = Cardinality.ONE_TO_MANY  # Flip perspective
-                elif rel.cardinality == "many_to_many":
-                    cardinality = Cardinality.MANY_TO_MANY
 
                 relationship = Relationship(
                     relationship_id=str(uuid4()),
@@ -782,7 +798,7 @@ class SemanticAgent(LLMFeature):
                     to_table=rel.to_table,
                     to_column=rel.to_column,
                     relationship_type=rel_type,
-                    cardinality=cardinality,
+                    cardinality=None,  # Set by processor from actual data
                     confidence=rel.confidence,
                     detection_method="llm_tool",
                     evidence={"source": "semantic_analysis", "reasoning": rel.reasoning},

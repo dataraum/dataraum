@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import math
 import time
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -30,15 +31,16 @@ from dataraum.core.logging import (
     start_pipeline_metrics,
 )
 from dataraum.pipeline.base import (
-    PIPELINE_DAG,
     Phase,
     PhaseContext,
     PhaseResult,
     PhaseStatus,
-    get_all_dependencies,
-    get_phase_definition,
 )
 from dataraum.pipeline.db_models import PhaseCheckpoint, PipelineRun
+from dataraum.pipeline.entropy_state import PipelineEntropyState
+from dataraum.pipeline.events import EventCallback, EventType, PipelineEvent
+from dataraum.pipeline.gates import GateActionType
+from dataraum.pipeline.registry import get_all_dependencies, get_registry
 
 logger = get_logger(__name__)
 
@@ -108,6 +110,12 @@ class PipelineConfig:
     max_parallel: int = 4
     fail_fast: bool = True
     skip_completed: bool = True
+    max_retries: int = 2
+    backoff_base: float = 2.0
+    gate_mode: str = "skip"  # "skip", "pause", "fail"
+    contract: str | None = None  # Target contract name
+    gate_handler: Any | None = None  # GateHandler implementation
+    max_fix_attempts: int = 3  # Max gate resolution attempts per phase
 
 
 @dataclass
@@ -129,32 +137,70 @@ class Pipeline:
     _running: set[str] = field(default_factory=set)
     _failed: set[str] = field(default_factory=set)
     _skipped: set[str] = field(default_factory=set)
+    _gate_blocked: set[str] = field(default_factory=set)
+    _gate_attempts: dict[str, int] = field(default_factory=dict)  # Per-phase gate attempt count
     _outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
-    _logged_waiting: set[str] = field(default_factory=set)  # Track phases we've logged waiting for
+    _phase_priority: dict[str, int] = field(default_factory=dict)  # Transitive dependent count
+    _entropy_state: PipelineEntropyState = field(default_factory=PipelineEntropyState)
+    _collected_events: list[PipelineEvent] = field(default_factory=list)
+    _event_callback: EventCallback | None = field(default=None, repr=False)
 
     def register(self, phase: Phase) -> None:
         """Register a phase implementation."""
         self.phases[phase.name] = phase
 
+    def _compute_phase_priority(self) -> None:
+        """Compute priority for each phase based on transitive dependent count.
+
+        Phases that unblock more downstream work get higher priority.
+        This ensures critical-path phases get worker slots first when
+        multiple phases are ready simultaneously.
+        """
+        # Build reverse dependency graph: phase -> set of phases that depend on it
+        reverse_deps: dict[str, set[str]] = {name: set() for name in self.phases}
+        for name, phase in self.phases.items():
+            for dep in phase.dependencies:
+                if dep in reverse_deps:
+                    reverse_deps[dep].add(name)
+
+        # Count transitive dependents for each phase via BFS
+        for name in self.phases:
+            visited: set[str] = set()
+            queue = list(reverse_deps.get(name, set()))
+            while queue:
+                current = queue.pop()
+                if current in visited:
+                    continue
+                visited.add(current)
+                queue.extend(reverse_deps.get(current, set()) - visited)
+            self._phase_priority[name] = len(visited)
+
+    def _emit_event(self, event: PipelineEvent) -> None:
+        """Emit a structured pipeline event, swallowing any callback errors."""
+        self._collected_events.append(event)
+        if self._event_callback is not None:
+            try:
+                self._event_callback(event)
+            except Exception:
+                pass  # Never let event reporting crash the pipeline
+
     def get_phases_to_run(self, target_phase: str | None = None) -> list[str]:
-        """Get phases to run in dependency order.
+        """Get phases to run based on registered phases.
 
         Args:
             target_phase: If set, only run this phase and its dependencies.
-                         If None, run all phases.
+                         If None, run all registered phases.
 
         Returns:
-            List of phase names in execution order.
+            List of phase names to execute.
         """
         if target_phase:
-            # Get target + all dependencies
+            # Get target + all transitive dependencies, filtered to registered
             deps = get_all_dependencies(target_phase)
             deps.add(target_phase)
-            phases = [p.name for p in PIPELINE_DAG if p.name in deps]
+            return [name for name in self.phases if name in deps]
         else:
-            phases = [p.name for p in PIPELINE_DAG]
-
-        return phases
+            return list(self.phases.keys())
 
     def run(
         self,
@@ -162,8 +208,11 @@ class Pipeline:
         source_id: str,
         table_ids: list[str] | None = None,
         target_phase: str | None = None,
-        run_config: dict[str, Any] | None = None,
+        phase_configs: dict[str, dict[str, Any]] | None = None,
+        runtime_config: dict[str, Any] | None = None,
         run_id: str | None = None,
+        force_phase: bool = False,
+        event_callback: EventCallback | None = None,
     ) -> dict[str, PhaseResult]:
         """Run the pipeline.
 
@@ -176,18 +225,39 @@ class Pipeline:
             source_id: Source identifier
             table_ids: Optional list of table IDs to process
             target_phase: Optional target phase (runs phase + dependencies)
-            run_config: Optional configuration overrides
+            phase_configs: Per-phase config dicts keyed by phase name.
+                Each phase gets its own scoped config from this mapping.
+            runtime_config: Runtime overrides (source_path, source_name)
+                merged into every phase's config.
             run_id: Optional run ID (generated if not provided)
+            force_phase: If True, force re-run of target_phase by cleaning
+                up its previous output and bypassing skip logic.
 
         Returns:
             Dict mapping phase names to their results
         """
+        # Store phase configs for use in _execute_phase
+        self._phase_configs = phase_configs or {}
+        self._runtime_config = runtime_config or {}
+        self._force_target = target_phase if force_phase else None
+
         # Reset state
         self._completed = set()
         self._running = set()
         self._failed = set()
         self._skipped = set()
+        self._gate_blocked = set()
+        self._gate_attempts = {}
         self._outputs = {}
+        self._entropy_state = PipelineEntropyState()
+        self._collected_events = []
+        self._event_callback = event_callback
+
+        # Build a serializable record of the full config for the DB
+        stored_config = {
+            "phase_configs": self._phase_configs,
+            "runtime_config": self._runtime_config,
+        }
 
         # Create pipeline run record (needs its own session)
         # Generate run_id if not provided
@@ -198,7 +268,9 @@ class Pipeline:
                 run_id=run_id,
                 source_id=source_id,
                 target_phase=target_phase,
-                config=run_config or {},
+                config=stored_config,
+                contract_name=self.config.contract,
+                gate_mode=self.config.gate_mode,
             )
             session.add(run)
 
@@ -206,9 +278,20 @@ class Pipeline:
             if self.config.skip_completed:
                 self._load_completed_checkpoints(session, source_id)
 
+            # If forcing a phase, remove it from completed so it re-runs
+            if self._force_target and self._force_target in self._completed:
+                self._completed.discard(self._force_target)
+                self._outputs.pop(self._force_target, None)
+                logger.debug(f"Force re-run: removed {self._force_target} from completed set")
+
         # Get phases to run
         phases_to_run = self.get_phases_to_run(target_phase)
         results: dict[str, PhaseResult] = {}
+        total_phases = len(phases_to_run)
+        completed_step = 0  # Counter for progress notifications
+
+        # Compute priority so ready phases are scheduled in critical-path order
+        self._compute_phase_priority()
 
         start_time = time.time()
 
@@ -217,17 +300,132 @@ class Pipeline:
 
         try:
             with ThreadPoolExecutor(max_workers=self.config.max_parallel) as pool:
-                # Track all active futures
                 active_futures: dict[Future[PhaseResult], str] = {}
 
-                while not self._is_complete(phases_to_run):
-                    # Fill available slots with ready phases
-                    available_slots = self.config.max_parallel - len(active_futures)
-                    if available_slots > 0:
-                        ready = self._get_ready_phases(phases_to_run)
-                        batch = list(ready)[:available_slots]
+                # Work queue: phases sorted by priority (highest first).
+                # Pop from front, submit if ready, push to back if blocked.
+                work_queue: deque[str] = deque(
+                    sorted(
+                        phases_to_run,
+                        key=lambda n: self._phase_priority.get(n, 0),
+                        reverse=True,
+                    )
+                )
 
-                        for name in batch:
+                while work_queue or active_futures:
+                    # Pop phases from front of queue, submit ready ones,
+                    # collect blocked ones to re-queue at the back.
+                    not_ready: list[str] = []
+                    queue_len = len(work_queue)
+                    scanned = 0
+
+                    while work_queue and len(active_futures) < self.config.max_parallel:
+                        name = work_queue.popleft()
+                        scanned += 1
+
+                        # Skip already-handled phases
+                        if (
+                            name in self._completed
+                            or name in self._failed
+                            or name in self._skipped
+                            or name in self._gate_blocked
+                        ):
+                            continue
+                        if name in self._running:
+                            continue
+
+                        phase = self.phases.get(name)
+                        if not phase:
+                            logger.debug(f"Phase {name} skipped: no implementation registered")
+                            self._skipped.add(name)
+                            continue
+
+                        deps = phase.dependencies
+                        failed_deps = [d for d in deps if d in self._failed]
+                        if failed_deps:
+                            logger.warning(
+                                f"Phase {name} blocked: dependencies failed: {failed_deps}"
+                            )
+                            self._skipped.add(name)
+                            continue
+
+                        done = self._completed | self._skipped
+                        if all(d in done for d in deps):
+                            # Check entropy gate preconditions
+                            gate_passed, gate_reason = self._check_gate(name)
+                            if not gate_passed:
+                                # Get violations for event
+                                gate_violations = self._entropy_state.check_preconditions(
+                                    phase.entropy_preconditions,
+                                    producible_dimensions={
+                                        d
+                                        for n, pp in self.phases.items()
+                                        if n not in self._completed and pp.post_verification
+                                        for d in pp.post_verification
+                                    },
+                                )
+                                if self.config.gate_mode in ("skip", "auto_fix"):
+                                    logger.debug(f"Phase {name}: {gate_reason} (skipping gate)")
+                                    self._emit_event(
+                                        PipelineEvent(
+                                            event_type=EventType.GATE_EVALUATED,
+                                            phase=name,
+                                            step=completed_step,
+                                            total=total_phases,
+                                            gate_status="skipped",
+                                            violations=gate_violations,
+                                            message=gate_reason,
+                                        )
+                                    )
+                                elif self.config.gate_mode == "fail":
+                                    logger.error(f"Phase {name}: {gate_reason}")
+                                    self._emit_event(
+                                        PipelineEvent(
+                                            event_type=EventType.GATE_EVALUATED,
+                                            phase=name,
+                                            step=completed_step,
+                                            total=total_phases,
+                                            gate_status="blocked",
+                                            violations=gate_violations,
+                                            message=gate_reason,
+                                        )
+                                    )
+                                    self._failed.add(name)
+                                    results[name] = PhaseResult.failed(gate_reason)
+                                    continue
+                                else:  # pause
+                                    logger.warning(f"Phase {name}: {gate_reason} (paused)")
+                                    self._emit_event(
+                                        PipelineEvent(
+                                            event_type=EventType.GATE_BLOCKED,
+                                            phase=name,
+                                            step=completed_step,
+                                            total=total_phases,
+                                            gate_status="blocked",
+                                            violations=gate_violations,
+                                            message=gate_reason,
+                                        )
+                                    )
+                                    self._gate_blocked.add(name)
+                                    results[name] = PhaseResult(
+                                        status=PhaseStatus.GATE_BLOCKED,
+                                        error=gate_reason,
+                                    )
+                                    continue
+                            elif phase.entropy_preconditions:
+                                # Gate passed with preconditions — emit pass event
+                                self._emit_event(
+                                    PipelineEvent(
+                                        event_type=EventType.GATE_EVALUATED,
+                                        phase=name,
+                                        step=completed_step,
+                                        total=total_phases,
+                                        gate_status="passed",
+                                        scores=self._entropy_state.to_dict(),
+                                    )
+                                )
+
+                            # Ready — submit to executor immediately
                             self._running.add(name)
                             future = pool.submit(
                                 self._run_phase,
@@ -236,28 +434,107 @@ class Pipeline:
                                 source_id,
                                 table_ids or [],
                                 run_id,
-                                run_config or {},
                                 self._outputs.copy(),
                             )
                             active_futures[future] = name
-                            logger.info(f"Started phase: {name} (running: {len(active_futures)})")
+                            self._emit_event(
+                                PipelineEvent(
+                                    event_type=EventType.PHASE_STARTED,
+                                    phase=name,
+                                    step=completed_step,
+                                    total=total_phases,
+                                    message=f"Running {name}",
+                                    parallel_phases=list(self._running),
+                                )
+                            )
+                        else:
+                            # Not ready — re-queue at back
+                            not_ready.append(name)
+
+                        # If we've scanned the entire original queue, stop
+                        if scanned >= queue_len:
+                            break
+
+                    # Push blocked phases back to the end of the queue
+                    work_queue.extend(not_ready)
 
                     if not active_futures:
-                        # No phases running and none ready - deadlock or done
+                        # Nothing running — check for gate-blocked phases that can
+                        # be resolved via handler before declaring deadlock.
+                        gate_blocked_in_queue = [n for n in work_queue if n in self._gate_blocked]
+                        if gate_blocked_in_queue and self.config.gate_handler:
+                            from dataraum.pipeline.gates import build_gate
+
+                            # Pick highest-priority blocked phase
+                            target = max(
+                                gate_blocked_in_queue,
+                                key=lambda n: self._phase_priority.get(n, 0),
+                            )
+                            gate_passed, gate_reason = self._check_gate(target)
+                            if not gate_passed:
+                                violations = self._entropy_state.check_preconditions(
+                                    self.phases[target].entropy_preconditions,
+                                    producible_dimensions={
+                                        d
+                                        for n, pp in self.phases.items()
+                                        if n not in self._completed and pp.post_verification
+                                        for d in pp.post_verification
+                                    },
+                                )
+                                gate = build_gate(
+                                    blocked_phase=target,
+                                    violations=violations,
+                                    entropy_state=self._entropy_state.to_dict(),
+                                )
+                                resolution = self.config.gate_handler.resolve(gate)
+                                self._emit_event(
+                                    PipelineEvent(
+                                        event_type=EventType.GATE_RESOLVED,
+                                        phase=target,
+                                        message=str(resolution.action_taken.value),
+                                    )
+                                )
+
+                                if resolution.action_taken == GateActionType.SKIP:
+                                    self._gate_blocked.discard(target)
+                                    # Remove the GATE_BLOCKED result so it can be re-submitted
+                                    results.pop(target, None)
+                                elif resolution.action_taken in (
+                                    GateActionType.FIX,
+                                    GateActionType.FIX_ALL,
+                                ):
+                                    # After fix, re-check all gates — some may now pass
+                                    for name in list(self._gate_blocked):
+                                        passed, _ = self._check_gate(name)
+                                        if passed:
+                                            self._gate_blocked.discard(name)
+                                            results.pop(name, None)
+
+                                # Track attempts, enforce max
+                                self._gate_attempts[target] = self._gate_attempts.get(target, 0) + 1
+                                if (
+                                    self._gate_attempts.get(target, 0)
+                                    >= self.config.max_fix_attempts
+                                ):
+                                    results[target] = PhaseResult(
+                                        status=PhaseStatus.GATE_BLOCKED,
+                                        error="Max fix attempts exceeded",
+                                    )
+                                    self._gate_blocked.discard(target)
+                                    work_queue = deque(n for n in work_queue if n != target)
+
+                                continue  # Re-loop to try submitting unblocked phases
                         break
 
-                    # Wait for at least one future to complete (with timeout for responsiveness)
+                    # Wait for at least one future to complete
                     done_futures: set[Future[PhaseResult]] = set()
                     try:
                         for future in as_completed(active_futures.keys(), timeout=0.5):
                             done_futures.add(future)
-                            # Process one at a time so we can fill slots quickly
                             break
                     except TimeoutError:
-                        # No futures completed yet, loop back to check for new ready phases
                         continue
 
-                    # Process completed futures
                     for future in done_futures:
                         name = active_futures.pop(future)
                         self._running.discard(name)
@@ -272,43 +549,109 @@ class Pipeline:
                         if phase_result.status == PhaseStatus.COMPLETED:
                             self._completed.add(name)
                             self._outputs[name] = phase_result.outputs
-                            logger.info(
+                            completed_step += 1
+
+                            # Update entropy state from phase outputs
+                            hard_scores = phase_result.outputs.get("entropy_hard_scores")
+                            if hard_scores and isinstance(hard_scores, dict):
+                                for dim, score in hard_scores.items():
+                                    self._entropy_state.update_score(dim, score)
+
+                            # Post-verification: run hard detectors for declared dimensions
+                            phase = self.phases.get(name)
+                            if phase and phase.post_verification:
+                                post_scores = self._run_post_verification(
+                                    phase, manager, source_id, table_ids or []
+                                )
+                                for dim, score in post_scores.items():
+                                    self._entropy_state.update_score(dim, score)
+                                if post_scores:
+                                    self._emit_event(
+                                        PipelineEvent(
+                                            event_type=EventType.POST_VERIFICATION,
+                                            phase=name,
+                                            step=completed_step,
+                                            total=total_phases,
+                                            scores=post_scores,
+                                        )
+                                    )
+
+                            self._emit_event(
+                                PipelineEvent(
+                                    event_type=EventType.PHASE_COMPLETED,
+                                    phase=name,
+                                    step=completed_step,
+                                    total=total_phases,
+                                    duration_seconds=phase_result.duration_seconds,
+                                    scores=self._entropy_state.to_dict(),
+                                )
+                            )
+                            logger.debug(
                                 f"Phase {name} completed in {phase_result.duration_seconds:.1f}s"
                             )
-                            # Log any warnings from completed phase
                             if phase_result.warnings:
                                 for warning in phase_result.warnings:
                                     logger.warning(f"Phase {name}: {warning}")
-                            # Clear logged_waiting so pending phases log their deps again
-                            self._logged_waiting.clear()
                         elif phase_result.status == PhaseStatus.SKIPPED:
                             self._skipped.add(name)
-                            logger.info(f"Phase {name} skipped: {phase_result.error}")
+                            completed_step += 1
+                            self._emit_event(
+                                PipelineEvent(
+                                    event_type=EventType.PHASE_SKIPPED,
+                                    phase=name,
+                                    step=completed_step,
+                                    total=total_phases,
+                                    error=phase_result.error or "",
+                                )
+                            )
+                            logger.debug(f"Phase {name} skipped: {phase_result.error}")
                         else:
                             self._failed.add(name)
+                            completed_step += 1
+                            self._emit_event(
+                                PipelineEvent(
+                                    event_type=EventType.PHASE_FAILED,
+                                    phase=name,
+                                    step=completed_step,
+                                    total=total_phases,
+                                    error=phase_result.error or "",
+                                )
+                            )
                             logger.error(f"Phase {name} failed: {phase_result.error}")
-                            # Log any warnings from failed phase
                             if phase_result.warnings:
                                 for warning in phase_result.warnings:
                                     logger.warning(f"Phase {name}: {warning}")
                             if self.config.fail_fast:
-                                # Cancel remaining futures
                                 for f in active_futures:
                                     f.cancel()
                                 active_futures.clear()
+                                work_queue.clear()
                                 break
 
                     if self.config.fail_fast and self._failed:
                         break
+
+            self._emit_event(
+                PipelineEvent(
+                    event_type=EventType.PIPELINE_COMPLETED,
+                    step=completed_step,
+                    total=total_phases,
+                    scores=self._entropy_state.to_dict(),
+                    duration_seconds=time.time() - start_time,
+                )
+            )
 
             # End pipeline metrics collection
             final_metrics = end_pipeline_metrics()
 
             # Update run record with final status and aggregate metrics
             with manager.session_scope() as session:
-                from sqlalchemy import update
-
-                status = "completed" if not self._failed else "failed"
+                if self._failed:
+                    status = "failed"
+                elif self._gate_blocked:
+                    status = "gate_blocked"
+                else:
+                    status = "completed"
                 phases_completed = sum(
                     1 for r in results.values() if r.status == PhaseStatus.COMPLETED
                 )
@@ -321,17 +664,11 @@ class Pipeline:
                         error_msg = results[failed_name].error
 
                 # Calculate aggregate metrics from collected phase metrics
-                total_llm_calls = 0
-                total_llm_input_tokens = 0
-                total_llm_output_tokens = 0
                 total_tables_processed = 0
                 total_rows_processed = 0
 
                 if final_metrics:
                     for pm in final_metrics.phases:
-                        total_llm_calls += pm.llm_calls
-                        total_llm_input_tokens += pm.llm_input_tokens
-                        total_llm_output_tokens += pm.llm_output_tokens
                         total_tables_processed += pm.tables_processed
                         total_rows_processed += pm.rows_processed
 
@@ -345,12 +682,10 @@ class Pipeline:
                         phases_completed=phases_completed,
                         phases_failed=phases_failed,
                         phases_skipped=phases_skipped,
-                        total_llm_calls=total_llm_calls,
-                        total_llm_input_tokens=total_llm_input_tokens,
-                        total_llm_output_tokens=total_llm_output_tokens,
                         total_tables_processed=total_tables_processed,
                         total_rows_processed=total_rows_processed,
                         error=error_msg,
+                        final_entropy_state=self._entropy_state.to_dict() or None,
                     )
                 )
                 session.execute(stmt)
@@ -360,8 +695,6 @@ class Pipeline:
             end_pipeline_metrics()
             # Update run record with error
             with manager.session_scope() as session:
-                from sqlalchemy import update
-
                 stmt = (
                     update(PipelineRun)
                     .where(PipelineRun.run_id == run_id)
@@ -384,7 +717,6 @@ class Pipeline:
         source_id: str,
         table_ids: list[str],
         run_id: str,
-        run_config: dict[str, Any],
         previous_outputs: dict[str, dict[str, Any]],
     ) -> PhaseResult:
         """Run a single phase with retry on transient SQLite errors.
@@ -399,13 +731,13 @@ class Pipeline:
             source_id: Source identifier
             table_ids: List of table IDs to process
             run_id: Pipeline run ID
-            run_config: Runtime configuration
             previous_outputs: Outputs from previous phases
 
         Returns:
             PhaseResult from the phase execution
         """
-        max_retries = 2
+        max_retries = self.config.max_retries
+        backoff_base = self.config.backoff_base
         for attempt in range(max_retries + 1):
             try:
                 return self._execute_phase(
@@ -414,12 +746,11 @@ class Pipeline:
                     source_id,
                     table_ids,
                     run_id,
-                    run_config,
                     previous_outputs,
                 )
             except OperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries:
-                    wait = 2.0 * (2**attempt)  # 2s, 4s
+                    wait = backoff_base * (2**attempt)
                     logger.warning(
                         f"Phase {phase_name} SQLite contention "
                         f"(attempt {attempt + 1}/{max_retries + 1}), "
@@ -438,7 +769,6 @@ class Pipeline:
         source_id: str,
         table_ids: list[str],
         run_id: str,
-        run_config: dict[str, Any],
         previous_outputs: dict[str, dict[str, Any]],
     ) -> PhaseResult:
         """Execute a single phase in its own thread with its own session.
@@ -452,7 +782,6 @@ class Pipeline:
             source_id: Source identifier
             table_ids: List of table IDs to process
             run_id: Pipeline run ID
-            run_config: Runtime configuration
             previous_outputs: Outputs from previous phases
 
         Returns:
@@ -476,6 +805,10 @@ class Pipeline:
             # DuckDB cursors are thread-safe for reads
             with manager.session_scope() as session:
                 with manager.duckdb_cursor() as cursor:
+                    # Build scoped config: phase-specific + runtime overrides
+                    phase_section = self._phase_configs.get(phase_name, {})
+                    scoped_config = {**phase_section, **self._runtime_config}
+
                     # Build context with this phase's session and cursor
                     ctx = PhaseContext(
                         session=session,
@@ -483,13 +816,21 @@ class Pipeline:
                         source_id=source_id,
                         table_ids=table_ids,
                         previous_outputs=previous_outputs,
-                        config=run_config,
+                        config=scoped_config,
                         session_factory=manager.session_scope,
                         manager=manager,
                     )
 
-                    # Check if should skip
-                    skip_reason = phase.should_skip(ctx)
+                    # Force cleanup and bypass skip for forced phase
+                    if phase_name == self._force_target:
+                        from dataraum.pipeline.cleanup import cleanup_phase
+
+                        deleted = cleanup_phase(phase_name, source_id, session, cursor)
+                        logger.info(f"Force cleanup: deleted {deleted} records for {phase_name}")
+                        skip_reason = None  # Force re-run
+                    else:
+                        skip_reason = phase.should_skip(ctx)
+
                     if skip_reason:
                         result = PhaseResult.skipped(skip_reason)
                     else:
@@ -499,6 +840,19 @@ class Pipeline:
 
                 # End phase metrics collection and get the data
                 collected_metrics = end_phase_metrics()
+
+                # Determine gate status for this phase
+                phase_obj = self.phases.get(phase_name)
+                gate_status_val: str | None = None
+                gate_reason_val: str | None = None
+                if phase_obj and phase_obj.entropy_preconditions:
+                    gate_passed, gate_reason_str = self._check_gate(phase_name)
+                    if gate_passed:
+                        gate_status_val = "passed"
+                    else:
+                        # Phase ran despite gate (skip mode)
+                        gate_status_val = "skipped"
+                        gate_reason_val = gate_reason_str
 
                 # Save checkpoint with detailed metrics (outside cursor context, inside session)
                 checkpoint = PhaseCheckpoint(
@@ -518,11 +872,6 @@ class Pipeline:
                     if collected_metrics
                     else 0,
                     rows_processed=collected_metrics.rows_processed if collected_metrics else 0,
-                    llm_calls=collected_metrics.llm_calls if collected_metrics else 0,
-                    llm_input_tokens=collected_metrics.llm_input_tokens if collected_metrics else 0,
-                    llm_output_tokens=collected_metrics.llm_output_tokens
-                    if collected_metrics
-                    else 0,
                     db_queries=collected_metrics.db_queries if collected_metrics else 0,
                     db_writes=collected_metrics.db_writes if collected_metrics else 0,
                     timings=_sanitize_for_json(
@@ -530,6 +879,10 @@ class Pipeline:
                     ),
                     error=result.error,
                     warnings=result.warnings,
+                    # Gate tracking
+                    entropy_hard_scores=self._entropy_state.to_dict() or None,
+                    gate_status=gate_status_val,
+                    gate_reason=gate_reason_val,
                 )
                 session.add(checkpoint)
                 # session.commit() happens automatically in session_scope()
@@ -557,13 +910,6 @@ class Pipeline:
                         if collected_metrics
                         else 0,
                         rows_processed=collected_metrics.rows_processed if collected_metrics else 0,
-                        llm_calls=collected_metrics.llm_calls if collected_metrics else 0,
-                        llm_input_tokens=collected_metrics.llm_input_tokens
-                        if collected_metrics
-                        else 0,
-                        llm_output_tokens=collected_metrics.llm_output_tokens
-                        if collected_metrics
-                        else 0,
                         db_queries=collected_metrics.db_queries if collected_metrics else 0,
                         db_writes=collected_metrics.db_writes if collected_metrics else 0,
                         timings=_sanitize_for_json(
@@ -576,6 +922,142 @@ class Pipeline:
                 pass  # Don't mask the original error
 
         return result
+
+    def _run_post_verification(
+        self,
+        phase: Phase,
+        manager: ConnectionManager,
+        source_id: str,
+        table_ids: list[str],
+    ) -> dict[str, float]:
+        """Run hard detectors for a phase's declared post_verification dimensions.
+
+        Called on the main thread after a phase completes. Uses a fresh session
+        since the phase's thread-local session is closed.
+
+        Args:
+            phase: The completed phase with post_verification declarations
+            manager: Connection manager for DB access
+            source_id: Source identifier
+            table_ids: Table IDs to measure
+
+        Returns:
+            Dict of sub_dimension -> aggregated score
+        """
+        from dataraum.entropy.hard_snapshot import take_hard_snapshot
+        from dataraum.storage import Column, Table
+
+        dimensions = phase.post_verification
+        if not dimensions:
+            return {}
+
+        try:
+            with manager.session_scope() as session:
+                # Get typed tables and their columns
+                if table_ids:
+                    tables = (
+                        session.execute(
+                            select(Table).where(
+                                Table.table_id.in_(table_ids),
+                                Table.layer == "typed",
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                else:
+                    tables = (
+                        session.execute(
+                            select(Table).where(
+                                Table.source_id == source_id,
+                                Table.layer == "typed",
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+
+                if not tables:
+                    return {}
+
+                # Collect scores across all columns
+                all_scores: dict[str, list[float]] = {}
+
+                for table in tables:
+                    columns = (
+                        session.execute(select(Column).where(Column.table_id == table.table_id))
+                        .scalars()
+                        .all()
+                    )
+                    for col in columns:
+                        target = f"column:{table.table_name}.{col.column_name}"
+                        snapshot = take_hard_snapshot(
+                            target=target,
+                            session=session,
+                            dimensions=dimensions,
+                        )
+                        for dim, score in snapshot.scores.items():
+                            all_scores.setdefault(dim, []).append(score)
+
+                # Aggregate: mean score per dimension
+                aggregated: dict[str, float] = {}
+                for dim, scores in all_scores.items():
+                    if scores:
+                        aggregated[dim] = sum(scores) / len(scores)
+
+                return aggregated
+
+        except Exception:
+            logger.warning(
+                f"Post-verification failed for {phase.name}",
+                exc_info=True,
+            )
+            return {}
+
+    def _check_gate(self, phase_name: str) -> tuple[bool, str]:
+        """Check if a phase's entropy preconditions are met.
+
+        Only blocks on unmeasured dimensions if a not-yet-completed phase
+        can still produce them. Once a producer phase has completed (even
+        if the dimension score is 0), the gate evaluates the actual score.
+
+        Args:
+            phase_name: Name of the phase to check
+
+        Returns:
+            (passed, reason): passed=True if phase can run,
+            reason describes violations if blocked.
+        """
+        phase = self.phases.get(phase_name)
+        if not phase:
+            return True, ""
+
+        preconditions = phase.entropy_preconditions
+        if not preconditions:
+            return True, ""
+
+        # Only block on unmeasured dims if a not-yet-completed phase produces them
+        active_producible: set[str] = set()
+        for name, p in self.phases.items():
+            if name not in self._completed and p.post_verification:
+                active_producible.update(p.post_verification)
+
+        violations = self._entropy_state.check_preconditions(
+            preconditions,
+            producible_dimensions=active_producible,
+        )
+        if not violations:
+            return True, ""
+
+        # Format violation message
+        parts = []
+        for dim, (current, threshold) in violations.items():
+            if current < 0:
+                parts.append(f"{dim}: not yet measured (needs {threshold:.2f})")
+            else:
+                parts.append(f"{dim}: {current:.2f} > {threshold:.2f}")
+        reason = f"Gate blocked: {', '.join(parts)}"
+        return False, reason
 
     def _load_completed_checkpoints(self, session: Session, source_id: str) -> None:
         """Load previously completed checkpoints."""
@@ -590,112 +1072,34 @@ class Pipeline:
             self._completed.add(cp.phase_name)
             self._outputs[cp.phase_name] = cp.outputs or {}
 
-    def _is_complete(self, phases_to_run: list[str]) -> bool:
-        """Check if all phases are done."""
-        done = self._completed | self._failed | self._skipped
-        return all(p in done for p in phases_to_run)
-
-    def _get_ready_phases(self, phases_to_run: list[str]) -> set[str]:
-        """Get phases whose dependencies are satisfied."""
-        ready = set()
-        done = self._completed | self._skipped
-
-        for name in phases_to_run:
-            if name in self._completed or name in self._running or name in self._failed:
-                continue
-            if name in self._skipped:
-                continue
-
-            phase_def = get_phase_definition(name)
-            if not phase_def:
-                continue
-
-            # Check if phase has an implementation
-            if name not in self.phases:
-                logger.info(f"Phase {name} skipped: no implementation registered")
-                self._skipped.add(name)
-                continue
-
-            # Check dependencies
-            deps_met = all(d in done for d in phase_def.dependencies)
-
-            # Check if any dependency failed (can't run this phase)
-            failed_deps = [d for d in phase_def.dependencies if d in self._failed]
-            if failed_deps:
-                logger.warning(f"Phase {name} blocked: dependencies failed: {failed_deps}")
-                self._skipped.add(name)
-                continue
-
-            if deps_met:
-                ready.add(name)
-                # Clear from logged set if it was waiting before
-                self._logged_waiting.discard(name)
-            else:
-                # Only log once per phase when it starts waiting
-                if name not in self._logged_waiting:
-                    pending_deps = [d for d in phase_def.dependencies if d not in done]
-                    logger.debug(f"Phase {name} waiting for dependencies: {pending_deps}")
-                    self._logged_waiting.add(name)
-
-        return ready
-
 
 # Global pipeline instance
 _pipeline: Pipeline | None = None
 
 
-def get_pipeline() -> Pipeline:
-    """Get the global pipeline instance."""
+def get_pipeline(active_phases: list[str] | None = None) -> Pipeline:
+    """Get a pipeline instance with phases from the registry.
+
+    Args:
+        active_phases: List of phase names to activate. If None, uses
+            all registered phases (from @analysis_phase decorators).
+
+    Returns:
+        Configured Pipeline instance.
+    """
     global _pipeline
     if _pipeline is None:
+        registry = get_registry()
+        names = active_phases if active_phases is not None else list(registry.keys())
+
         _pipeline = Pipeline()
-        _register_builtin_phases(_pipeline)
+        for name in names:
+            cls = registry.get(name)
+            if cls:
+                _pipeline.register(cls())
+            else:
+                logger.warning(f"Phase '{name}' listed in config but not found in registry")
     return _pipeline
-
-
-def _register_builtin_phases(pipeline: Pipeline) -> None:
-    """Register all built-in phase implementations."""
-    from dataraum.pipeline.phases import (
-        BusinessCyclesPhase,
-        ColumnEligibilityPhase,
-        CorrelationsPhase,
-        CrossTableQualityPhase,
-        EntropyInterpretationPhase,
-        EntropyPhase,
-        GraphExecutionPhase,
-        ImportPhase,
-        QualitySummaryPhase,
-        RelationshipsPhase,
-        SemanticPhase,
-        SliceAnalysisPhase,
-        SlicingPhase,
-        StatisticalQualityPhase,
-        StatisticsPhase,
-        TemporalPhase,
-        TemporalSliceAnalysisPhase,
-        TypingPhase,
-        ValidationPhase,
-    )
-
-    pipeline.register(ImportPhase())
-    pipeline.register(TypingPhase())
-    pipeline.register(StatisticsPhase())
-    pipeline.register(ColumnEligibilityPhase())  # After statistics, before correlations
-    pipeline.register(StatisticalQualityPhase())
-    pipeline.register(RelationshipsPhase())
-    pipeline.register(CorrelationsPhase())
-    pipeline.register(TemporalPhase())
-    pipeline.register(SemanticPhase())
-    pipeline.register(SlicingPhase())
-    pipeline.register(SliceAnalysisPhase())
-    pipeline.register(QualitySummaryPhase())
-    pipeline.register(TemporalSliceAnalysisPhase())
-    pipeline.register(BusinessCyclesPhase())
-    pipeline.register(CrossTableQualityPhase())
-    pipeline.register(EntropyPhase())
-    pipeline.register(EntropyInterpretationPhase())
-    pipeline.register(GraphExecutionPhase())
-    pipeline.register(ValidationPhase())
 
 
 def run_pipeline(
@@ -704,8 +1108,10 @@ def run_pipeline(
     table_ids: list[str] | None = None,
     target_phase: str | None = None,
     config: PipelineConfig | None = None,
-    run_config: dict[str, Any] | None = None,
+    phase_configs: dict[str, dict[str, Any]] | None = None,
+    runtime_config: dict[str, Any] | None = None,
     run_id: str | None = None,
+    force_phase: bool = False,
 ) -> dict[str, PhaseResult]:
     """Run the pipeline.
 
@@ -717,8 +1123,10 @@ def run_pipeline(
         table_ids: Optional list of table IDs
         target_phase: Optional target phase (runs phase + dependencies)
         config: Pipeline configuration
-        run_config: Runtime configuration overrides
+        phase_configs: Per-phase config dicts keyed by phase name
+        runtime_config: Runtime overrides merged into every phase's config
         run_id: Optional run ID (generated if not provided)
+        force_phase: If True, force re-run of target_phase.
 
     Returns:
         Dict mapping phase names to their results
@@ -732,6 +1140,8 @@ def run_pipeline(
         source_id=source_id,
         table_ids=table_ids,
         target_phase=target_phase,
-        run_config=run_config,
+        phase_configs=phase_configs,
+        runtime_config=runtime_config,
         run_id=run_id,
+        force_phase=force_phase,
     )

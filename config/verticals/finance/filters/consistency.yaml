@@ -1,0 +1,43 @@
+# Finance-Specific Consistency Rules (Cross-Column)
+#
+# Domain-specific consistency checks for financial data.
+# Generic consistency rules (date ordering, statistical quality) are in config/filters/.
+
+---
+# Debit/Credit consistency checks
+graph_id: "consistency_debit_credit"
+graph_type: "filter"
+version: "1.0"
+
+metadata:
+  name: "Debit/Credit Consistency"
+  description: "Debit and credit columns should not both be positive"
+  category: "quality"
+  source: "system"
+  tags: ["consistency", "financial", "cross-column"]
+  applies_to:
+    column_pairs:
+      debit_pattern: ".*debit.*"
+      credit_pattern: ".*credit.*"
+
+output:
+  type: "classification"
+  categories:
+    clean: "Debit/credit values are consistent"
+    flag: "Debit/credit values may be inconsistent"
+
+dependencies:
+  not_both_positive:
+    level: 1
+    type: "predicate"
+    condition: "NOT ({debit_column} > 0 AND {credit_column} > 0)"
+    on_false: "flag"
+    reason: "Related debit and credit columns should not both be positive"
+    severity: "medium"
+
+  debit_credit_clean:
+    level: 2
+    type: "composite"
+    logic: "not_both_positive"
+    depends_on: ["not_both_positive"]
+    output_step: true

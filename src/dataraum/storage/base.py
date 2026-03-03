@@ -40,30 +40,17 @@ def init_database(engine: Engine) -> None:
     Args:
         engine: SQLAlchemy engine
     """
-    # Import all model modules to register them with SQLAlchemy Base metadata
-    # These imports ensure tables are created when init_database() is called
-    from dataraum.analysis.correlation import db_models as _correlation_models  # noqa: F401
-    from dataraum.analysis.cycles import db_models as _cycles_models  # noqa: F401
-    from dataraum.analysis.quality_summary import (
-        db_models as _quality_summary_models,  # noqa: F401
-    )
-    from dataraum.analysis.relationships import (
-        db_models as _relationships_models,  # noqa: F401
-    )
-    from dataraum.analysis.semantic import db_models as _semantic_models  # noqa: F401
-    from dataraum.analysis.slicing import db_models as _slicing_models  # noqa: F401
-    from dataraum.analysis.statistics import db_models as _statistics_models  # noqa: F401
-    from dataraum.analysis.temporal import db_models as _temporal_models  # noqa: F401
-    from dataraum.analysis.temporal_slicing import (
-        db_models as _temporal_slicing_models,  # noqa: F401
-    )
-    from dataraum.analysis.typing import db_models as _typing_models  # noqa: F401
-    from dataraum.analysis.validation import db_models as _validation_models  # noqa: F401
-    from dataraum.graphs import db_models as _graphs_models  # noqa: F401
-    from dataraum.llm import db_models as _llm_models  # noqa: F401
-    from dataraum.pipeline import db_models as _pipeline_models  # noqa: F401
-    from dataraum.query import db_models as _query_models  # noqa: F401
-    from dataraum.storage import models as _storage_models  # noqa: F401
+    # Core models not owned by any phase
+    from dataraum.entropy import decisions as _decisions  # noqa: F401
+    from dataraum.pipeline import db_models as _pipeline  # noqa: F401
+
+    # Phase-owned models: auto-discovered from registry
+    from dataraum.pipeline.registry import import_all_phase_models
+    from dataraum.query import db_models as _query  # noqa: F401
+    from dataraum.query import snippet_models as _snippets  # noqa: F401
+    from dataraum.storage import models as _storage  # noqa: F401
+
+    import_all_phase_models()
 
     with engine.begin() as conn:
         Base.metadata.create_all(conn)
@@ -78,29 +65,17 @@ def reset_database(engine: Engine) -> None:
     Args:
         engine: SQLAlchemy engine
     """
-    # Import all model modules to register them with SQLAlchemy Base metadata
-    from dataraum.analysis.correlation import db_models as _correlation_models  # noqa: F401
-    from dataraum.analysis.cycles import db_models as _cycles_models  # noqa: F401
-    from dataraum.analysis.quality_summary import (
-        db_models as _quality_summary_models,  # noqa: F401
-    )
-    from dataraum.analysis.relationships import (
-        db_models as _relationships_models,  # noqa: F401
-    )
-    from dataraum.analysis.semantic import db_models as _semantic_models  # noqa: F401
-    from dataraum.analysis.slicing import db_models as _slicing_models  # noqa: F401
-    from dataraum.analysis.statistics import db_models as _statistics_models  # noqa: F401
-    from dataraum.analysis.temporal import db_models as _temporal_models  # noqa: F401
-    from dataraum.analysis.temporal_slicing import (
-        db_models as _temporal_slicing_models,  # noqa: F401
-    )
-    from dataraum.analysis.typing import db_models as _typing_models  # noqa: F401
-    from dataraum.analysis.validation import db_models as _validation_models  # noqa: F401
-    from dataraum.graphs import db_models as _graphs_models  # noqa: F401
-    from dataraum.llm import db_models as _llm_models  # noqa: F401
-    from dataraum.pipeline import db_models as _pipeline_models  # noqa: F401
-    from dataraum.query import db_models as _query_models  # noqa: F401
-    from dataraum.storage import models as _storage_models  # noqa: F401
+    # Core models not owned by any phase
+    from dataraum.entropy import decisions as _decisions  # noqa: F401
+    from dataraum.pipeline import db_models as _pipeline  # noqa: F401
+
+    # Phase-owned models: auto-discovered from registry
+    from dataraum.pipeline.registry import import_all_phase_models
+    from dataraum.query import db_models as _query  # noqa: F401
+    from dataraum.query import snippet_models as _snippets  # noqa: F401
+    from dataraum.storage import models as _storage  # noqa: F401
+
+    import_all_phase_models()
 
     with engine.begin() as conn:
         Base.metadata.drop_all(conn)

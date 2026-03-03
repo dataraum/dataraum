@@ -19,6 +19,18 @@ from dataraum.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+_CONFIG_CACHE: dict[str, Any] | None = None
+
+
+def _load_config() -> dict[str, Any]:
+    """Load quality_summary config from YAML (cached)."""
+    global _CONFIG_CACHE
+    if _CONFIG_CACHE is None:
+        from dataraum.core.config import load_phase_config
+
+        _CONFIG_CACHE = load_phase_config("quality_summary")
+    return _CONFIG_CACHE
+
 
 class ColumnClassification(str, Enum):
     """Classification of column based on slice variance analysis."""
@@ -72,7 +84,7 @@ class SliceVarianceMetrics:
 class SliceFilterConfig:
     """Configuration for slice variance thresholds.
 
-    Loaded from config/pipeline.yaml under quality_summary.variance_filter
+    Loaded from config/phases/quality_summary.yaml under variance_filter.
     """
 
     # Null ratio spread threshold (10% = field is conditionally populated)
@@ -98,26 +110,27 @@ class SliceFilterConfig:
     enabled: bool = True
 
 
-def get_filter_config() -> SliceFilterConfig:
-    """Load filter config from pipeline.yaml or use defaults."""
-    try:
-        from dataraum.core.config import get_settings
+def get_filter_config(config_dict: dict[str, Any] | None = None) -> SliceFilterConfig:
+    """Load filter config.
 
-        settings = get_settings()
-        if hasattr(settings, "pipeline") and settings.pipeline:
-            cfg = settings.pipeline.get("quality_summary", {}).get("variance_filter", {})
-            return SliceFilterConfig(
-                null_spread_threshold=cfg.get("null_spread_threshold", 0.10),
-                distinct_ratio_threshold=cfg.get("distinct_ratio_threshold", 2.0),
-                outlier_spread_threshold=cfg.get("outlier_spread_threshold", 0.05),
-                benford_spread_threshold=cfg.get("benford_spread_threshold", 0.30),
-                row_ratio_threshold=cfg.get("row_ratio_threshold", 10.0),
-                empty_null_threshold=cfg.get("empty_null_threshold", 0.99),
-                enabled=cfg.get("enabled", True),
-            )
-    except Exception:
-        pass
-    return SliceFilterConfig()
+    Args:
+        config_dict: Pre-loaded config dict (from ctx.config). If None or missing
+            'variance_filter' key, loads from config file.
+    """
+    if config_dict is not None and "variance_filter" in config_dict:
+        cfg = config_dict
+    else:
+        cfg = _load_config()
+    vf = cfg.get("variance_filter", {})
+    return SliceFilterConfig(
+        null_spread_threshold=vf.get("null_spread_threshold", 0.10),
+        distinct_ratio_threshold=vf.get("distinct_ratio_threshold", 2.0),
+        outlier_spread_threshold=vf.get("outlier_spread_threshold", 0.05),
+        benford_spread_threshold=vf.get("benford_spread_threshold", 0.30),
+        row_ratio_threshold=vf.get("row_ratio_threshold", 10.0),
+        empty_null_threshold=vf.get("empty_null_threshold", 0.99),
+        enabled=vf.get("enabled", True),
+    )
 
 
 def compute_slice_variance(col_data: AggregatedColumnData) -> SliceVarianceMetrics:
@@ -261,20 +274,6 @@ def compute_slice_variance(col_data: AggregatedColumnData) -> SliceVarianceMetri
     return metrics
 
 
-def classify_column(col_data: AggregatedColumnData) -> ColumnClassification:
-    """Classify a column based on its slice variance.
-
-    Convenience wrapper around compute_slice_variance().
-
-    Args:
-        col_data: Aggregated column data
-
-    Returns:
-        ColumnClassification enum value
-    """
-    return compute_slice_variance(col_data).classification
-
-
 def filter_interesting_columns(
     columns_data: list[AggregatedColumnData],
 ) -> tuple[list[AggregatedColumnData], dict[str, SliceVarianceMetrics]]:
@@ -296,7 +295,7 @@ def filter_interesting_columns(
 
     if not config.enabled:
         # Filtering disabled - return all columns
-        logger.info("Slice variance filtering disabled, processing all columns")
+        logger.debug("Slice variance filtering disabled, processing all columns")
         return columns_data, {}
 
     all_metrics: dict[str, SliceVarianceMetrics] = {}
@@ -318,7 +317,7 @@ def filter_interesting_columns(
         if metrics.classification == ColumnClassification.INTERESTING:
             interesting_columns.append(col_data)
 
-    logger.info(
+    logger.debug(
         "slice_variance_filter_applied",
         total_columns=len(columns_data),
         empty=counts[ColumnClassification.EMPTY],
@@ -341,591 +340,11 @@ def filter_interesting_columns(
     return interesting_columns, all_metrics
 
 
-# =============================================================================
-# TEMPORAL VARIANCE FILTERING
-# =============================================================================
-# Filters for temporal analysis outputs:
-# - Temporal Slice Analyses (volume/coverage patterns over time)
-# - Temporal Column Profiles (date/timestamp characteristics)
-# - Temporal Drift Analyses (distribution changes between periods)
-
-
-@dataclass
-class TemporalSliceFilterConfig:
-    """Configuration for temporal slice variance thresholds."""
-
-    # Row count ratio threshold across periods (2x = volume volatility)
-    row_ratio_threshold: float = 2.0
-
-    # Coverage ratio spread threshold (10% = inconsistent data collection)
-    coverage_spread_threshold: float = 0.10
-
-    # Period-over-period change threshold (30% = significant swing)
-    pop_change_threshold: float = 0.30
-
-    # Minimum coverage to not be considered sparse
-    sparse_coverage_threshold: float = 0.10
-
-
-@dataclass
-class TemporalColumnFilterConfig:
-    """Configuration for temporal column profile thresholds."""
-
-    # Completeness ratio for major gaps
-    major_gap_threshold: float = 0.50
-
-    # Period-end spike ratio for fiscal behavior
-    period_end_spike_threshold: float = 1.5
-
-    # Largest gap in days to be significant
-    significant_gap_days: int = 7
-
-
-@dataclass
-class TemporalDriftFilterConfig:
-    """Configuration for temporal drift thresholds."""
-
-    # JS divergence threshold for significant drift
-    js_divergence_threshold: float = 0.30
-
-    # JS divergence value indicating complete replacement (ln(2))
-    js_complete_replacement: float = 0.693
-
-    # Tolerance for detecting complete replacement
-    js_replacement_tolerance: float = 0.01
-
-    # Column names where complete replacement is expected (e.g., batch numbers)
-    expected_replacement_columns: list[str] = field(default_factory=lambda: ["Stapelnummer"])
-
-
-@dataclass
-class TemporalSliceResult:
-    """Result of temporal slice analysis filtering."""
-
-    slice_name: str
-    is_interesting: bool
-    reasons: list[str] = field(default_factory=list)
-
-    # Metrics
-    row_ratio: float | None = None
-    coverage_spread: float | None = None
-    max_pop_change: float | None = None
-    has_volume_anomaly: bool = False
-
-    # Insights
-    insights: list[dict[str, Any]] = field(default_factory=list)
-
-
-@dataclass
-class TemporalColumnResult:
-    """Result of temporal column profile filtering."""
-
-    column_name: str
-    is_interesting: bool
-    reasons: list[str] = field(default_factory=list)
-
-    # Metrics
-    completeness_ratio: float | None = None
-    period_end_spike_ratio: float | None = None
-    gap_count: int = 0
-    largest_gap_days: int = 0
-    is_constant: bool = False
-
-    # Insights
-    insights: list[dict[str, Any]] = field(default_factory=list)
-
-
-@dataclass
-class TemporalDriftResult:
-    """Result of temporal drift analysis filtering."""
-
-    column_name: str
-    period_label: str
-    slice_name: str
-    is_interesting: bool
-    reasons: list[str] = field(default_factory=list)
-
-    # Metrics
-    js_divergence: float | None = None
-    has_significant_drift: bool = False
-    has_category_changes: bool = False
-    new_categories: list[str] = field(default_factory=list)
-    missing_categories: list[str] = field(default_factory=list)
-
-    # Insights
-    insights: list[dict[str, Any]] = field(default_factory=list)
-
-
-def is_interesting_temporal_slice(
-    slice_data: list[dict[str, Any]],
-    slice_name: str,
-    config: TemporalSliceFilterConfig | None = None,
-) -> TemporalSliceResult:
-    """Determine if a temporal slice has interesting patterns across periods.
-
-    Args:
-        slice_data: List of period records for this slice (from temporal_slice_analyses)
-            Expected keys: row_count, coverage_ratio, period_over_period_change,
-                          is_volume_anomaly, period_label
-        slice_name: Name of the slice (e.g., "herkunftskennzeichen_re")
-        config: Optional filter configuration
-
-    Returns:
-        TemporalSliceResult with is_interesting flag and reasons
-    """
-    if config is None:
-        config = TemporalSliceFilterConfig()
-
-    result = TemporalSliceResult(slice_name=slice_name, is_interesting=False)
-
-    if not slice_data:
-        return result
-
-    # Extract metrics across periods
-    row_counts: list[int] = [int(rc) for d in slice_data if (rc := d.get("row_count")) is not None]
-    coverages: list[float] = [
-        float(cv) for d in slice_data if (cv := d.get("coverage_ratio")) is not None
-    ]
-    pop_changes: list[float] = [
-        float(pc) for d in slice_data if (pc := d.get("period_over_period_change")) is not None
-    ]
-    anomalies: list[bool | None] = [d.get("is_volume_anomaly") for d in slice_data]
-
-    # 1. Volume volatility (row_ratio > threshold)
-    if row_counts and len(row_counts) >= 2:
-        min_rows = min(r for r in row_counts if r > 0) if any(r > 0 for r in row_counts) else 0
-        max_rows = max(row_counts)
-        if min_rows > 0:
-            result.row_ratio = max_rows / min_rows
-            if result.row_ratio > config.row_ratio_threshold:
-                result.is_interesting = True
-                result.reasons.append("row_ratio")
-                result.insights.append(
-                    {
-                        "pattern": f"volume varies {result.row_ratio:.1f}x across periods",
-                        "detail": f"min={min_rows}, max={max_rows}",
-                        "hypothesis": "Business seasonality or data collection issue",
-                    }
-                )
-        elif max_rows > 0:
-            # Goes from 0 to something = infinite ratio
-            result.row_ratio = float("inf")
-            result.is_interesting = True
-            result.reasons.append("row_ratio_infinite")
-            result.insights.append(
-                {
-                    "pattern": "slice appears/disappears across periods",
-                    "detail": f"Some periods have 0 rows, max={max_rows}",
-                    "hypothesis": "New transaction type introduced or discontinued",
-                }
-            )
-
-    # 2. Coverage inconsistency
-    if coverages and len(coverages) >= 2:
-        result.coverage_spread = max(coverages) - min(coverages)
-        if result.coverage_spread > config.coverage_spread_threshold:
-            result.is_interesting = True
-            result.reasons.append("coverage_spread")
-            result.insights.append(
-                {
-                    "pattern": f"coverage varies {result.coverage_spread:.1%} across periods",
-                    "detail": f"min={min(coverages):.1%}, max={max(coverages):.1%}",
-                    "hypothesis": "Data collection process maturing or inconsistent",
-                }
-            )
-
-        # Also flag sparse slices
-        if min(coverages) < config.sparse_coverage_threshold:
-            result.is_interesting = True
-            if "sparse_coverage" not in result.reasons:
-                result.reasons.append("sparse_coverage")
-                result.insights.append(
-                    {
-                        "pattern": f"sparse coverage in some periods ({min(coverages):.1%})",
-                        "hypothesis": "May be specialized use case or data quality issue",
-                    }
-                )
-
-    # 3. Significant period-over-period change
-    if pop_changes:
-        result.max_pop_change = max(abs(c) for c in pop_changes)
-        if result.max_pop_change > config.pop_change_threshold:
-            result.is_interesting = True
-            result.reasons.append("pop_change")
-            result.insights.append(
-                {
-                    "pattern": f"period-over-period change of {result.max_pop_change:.1%}",
-                    "hypothesis": "Significant business event or data migration",
-                }
-            )
-
-    # 4. Pre-flagged volume anomaly
-    if any(a for a in anomalies if a):
-        result.has_volume_anomaly = True
-        result.is_interesting = True
-        result.reasons.append("volume_anomaly")
-        result.insights.append(
-            {
-                "pattern": "pre-flagged volume anomaly",
-                "hypothesis": "Statistical outlier in transaction volume",
-            }
-        )
-
-    return result
-
-
-def is_interesting_temporal_column(
-    profile: dict[str, Any],
-    config: TemporalColumnFilterConfig | None = None,
-) -> TemporalColumnResult:
-    """Determine if a temporal column profile is interesting.
-
-    Args:
-        profile: Column profile record (from temporal_column_profiles)
-            Expected keys: column_name, completeness_ratio, min_timestamp, max_timestamp,
-                          profile_data (JSON with fiscal_calendar, completeness, etc.)
-        config: Optional filter configuration
-
-    Returns:
-        TemporalColumnResult with is_interesting flag and reasons
-    """
-    if config is None:
-        config = TemporalColumnFilterConfig()
-
-    column_name = profile.get("column_name", "unknown")
-    result = TemporalColumnResult(column_name=column_name, is_interesting=False)
-
-    # Extract core metrics
-    result.completeness_ratio = profile.get("completeness_ratio")
-    min_ts = profile.get("min_timestamp")
-    max_ts = profile.get("max_timestamp")
-
-    # Parse nested profile_data
-    profile_data = profile.get("profile_data", {}) or {}
-    fiscal_calendar = profile_data.get("fiscal_calendar", {}) or {}
-    completeness = profile_data.get("completeness", {}) or {}
-
-    result.period_end_spike_ratio = fiscal_calendar.get("period_end_spike_ratio")
-    result.gap_count = completeness.get("gap_count", 0) or 0
-    result.largest_gap_days = completeness.get("largest_gap_days", 0) or 0
-
-    # 1. Major gaps (completeness < 50%)
-    if (
-        result.completeness_ratio is not None
-        and result.completeness_ratio < config.major_gap_threshold
-    ):
-        result.is_interesting = True
-        result.reasons.append("major_gaps")
-        result.insights.append(
-            {
-                "pattern": f"completeness only {result.completeness_ratio:.1%}",
-                "hypothesis": "Field is rarely used or optional in this workflow",
-            }
-        )
-
-    # 2. Fiscal calendar behavior (period-end spike)
-    if (
-        result.period_end_spike_ratio is not None
-        and result.period_end_spike_ratio > config.period_end_spike_threshold
-    ):
-        result.is_interesting = True
-        result.reasons.append("period_end_spike")
-        result.insights.append(
-            {
-                "pattern": f"month-end concentration {result.period_end_spike_ratio:.1f}x",
-                "detail": "Transactions cluster at period boundaries",
-                "hypothesis": "Fiscal calendar behavior - month-end posting concentration",
-            }
-        )
-
-    # 3. Has temporal discontinuities (gaps)
-    if result.gap_count > 0:
-        result.is_interesting = True
-        result.reasons.append("has_gaps")
-        result.insights.append(
-            {
-                "pattern": f"{result.gap_count} gap(s) in temporal coverage",
-                "detail": f"largest gap: {result.largest_gap_days} days",
-                "hypothesis": "Data collection interruptions or system downtime",
-            }
-        )
-
-    # 4. Significant gap size
-    if result.largest_gap_days > config.significant_gap_days:
-        if "has_gaps" not in result.reasons:
-            result.is_interesting = True
-            result.reasons.append("significant_gap")
-        result.insights.append(
-            {
-                "pattern": f"gap of {result.largest_gap_days} days",
-                "hypothesis": "Extended data collection gap - holiday, migration, or system issue",
-            }
-        )
-
-    # 5. Effectively constant (single date)
-    if min_ts is not None and max_ts is not None and min_ts == max_ts:
-        result.is_constant = True
-        result.is_interesting = True
-        result.reasons.append("constant")
-        result.insights.append(
-            {
-                "pattern": "single timestamp value",
-                "detail": f"all records have timestamp: {min_ts}",
-                "hypothesis": "Default value or batch import artifact",
-            }
-        )
-
-    return result
-
-
-def is_interesting_drift(
-    drift: dict[str, Any],
-    config: TemporalDriftFilterConfig | None = None,
-) -> TemporalDriftResult:
-    """Determine if a temporal drift analysis is interesting.
-
-    Pre-filter: Automatically returns not interesting if both
-    has_significant_drift=0 AND has_category_changes=0.
-
-    Args:
-        drift: Drift analysis record (from temporal_drift_analyses)
-            Expected keys: column_name, period_label, slice_table_name,
-                          js_divergence, has_significant_drift, has_category_changes,
-                          new_categories_json, missing_categories_json
-        config: Optional filter configuration
-
-    Returns:
-        TemporalDriftResult with is_interesting flag and reasons
-    """
-    if config is None:
-        config = TemporalDriftFilterConfig()
-
-    column_name = drift.get("column_name", "unknown")
-    period_label = drift.get("period_label", "unknown")
-    slice_name = drift.get("slice_table_name", "unknown")
-
-    result = TemporalDriftResult(
-        column_name=column_name,
-        period_label=period_label,
-        slice_name=slice_name,
-        is_interesting=False,
-    )
-
-    # Extract metrics
-    result.js_divergence = drift.get("js_divergence")
-    result.has_significant_drift = bool(drift.get("has_significant_drift"))
-    result.has_category_changes = bool(drift.get("has_category_changes"))
-    result.new_categories = drift.get("new_categories_json") or []
-    result.missing_categories = drift.get("missing_categories_json") or []
-
-    # PRE-FILTER: Skip if both flags are 0
-    if not result.has_significant_drift and not result.has_category_changes:
-        return result  # Not interesting
-
-    # SPECIAL CASE: Expected complete replacement (e.g., Stapelnummer)
-    # JS divergence ≈ 0.693 (ln(2)) means complete distribution replacement
-    if result.js_divergence is not None:
-        is_complete_replacement = (
-            abs(result.js_divergence - config.js_complete_replacement)
-            < config.js_replacement_tolerance
-        )
-
-        if is_complete_replacement and column_name in config.expected_replacement_columns:
-            # This is EXPECTED, not interesting
-            result.insights.append(
-                {
-                    "pattern": "complete monthly replacement (expected)",
-                    "detail": f"JS divergence = {result.js_divergence:.3f} (ln(2))",
-                    "hypothesis": f"Column '{column_name}' values are expected to change completely each period (e.g., batch numbers)",
-                }
-            )
-            return result  # Not interesting
-
-    # 1. Significant JS divergence
-    if result.js_divergence is not None and result.js_divergence > config.js_divergence_threshold:
-        result.is_interesting = True
-        result.reasons.append("js_divergence")
-
-        # Determine severity
-        if (
-            abs(result.js_divergence - config.js_complete_replacement)
-            < config.js_replacement_tolerance
-        ):
-            result.insights.append(
-                {
-                    "pattern": "complete distribution replacement",
-                    "detail": f"JS divergence = {result.js_divergence:.3f} (≈ln(2))",
-                    "hypothesis": "Values completely changed between periods - data migration or business rule change",
-                }
-            )
-        else:
-            result.insights.append(
-                {
-                    "pattern": f"distribution shift ({result.js_divergence:.1%} divergence)",
-                    "hypothesis": "Value distribution changed between periods",
-                }
-            )
-
-    # 2. Category changes (new values appeared)
-    if result.new_categories:
-        result.is_interesting = True
-        result.reasons.append("new_categories")
-        result.insights.append(
-            {
-                "pattern": f"new values appeared: {result.new_categories[:5]}{'...' if len(result.new_categories) > 5 else ''}",
-                "hypothesis": "New options/codes introduced in this period",
-            }
-        )
-
-    # 3. Category changes (values disappeared)
-    if result.missing_categories:
-        result.is_interesting = True
-        result.reasons.append("missing_categories")
-        result.insights.append(
-            {
-                "pattern": f"values disappeared: {result.missing_categories[:5]}{'...' if len(result.missing_categories) > 5 else ''}",
-                "hypothesis": "Options/codes discontinued or data issue",
-            }
-        )
-
-    return result
-
-
-def filter_interesting_temporal_slices(
-    slice_analyses: dict[str, list[dict[str, Any]]],
-    config: TemporalSliceFilterConfig | None = None,
-) -> tuple[list[str], dict[str, TemporalSliceResult]]:
-    """Filter temporal slices to only interesting ones.
-
-    Args:
-        slice_analyses: Dict mapping slice_name -> list of period records
-        config: Optional filter configuration
-
-    Returns:
-        Tuple of:
-        - List of interesting slice names
-        - Dict mapping all slice names to their TemporalSliceResult
-    """
-    all_results: dict[str, TemporalSliceResult] = {}
-    interesting_slices: list[str] = []
-
-    for slice_name, periods in slice_analyses.items():
-        result = is_interesting_temporal_slice(periods, slice_name, config)
-        all_results[slice_name] = result
-
-        if result.is_interesting:
-            interesting_slices.append(slice_name)
-
-    logger.info(
-        "temporal_slice_filter_applied",
-        total_slices=len(slice_analyses),
-        interesting=len(interesting_slices),
-        filtered_out=len(slice_analyses) - len(interesting_slices),
-    )
-
-    return interesting_slices, all_results
-
-
-def filter_interesting_temporal_columns(
-    column_profiles: list[dict[str, Any]],
-    config: TemporalColumnFilterConfig | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, TemporalColumnResult]]:
-    """Filter temporal column profiles to only interesting ones.
-
-    Args:
-        column_profiles: List of column profile records
-        config: Optional filter configuration
-
-    Returns:
-        Tuple of:
-        - List of interesting profile records
-        - Dict mapping column names to their TemporalColumnResult
-    """
-    all_results: dict[str, TemporalColumnResult] = {}
-    interesting_profiles: list[dict[str, Any]] = []
-
-    for profile in column_profiles:
-        result = is_interesting_temporal_column(profile, config)
-        all_results[result.column_name] = result
-
-        if result.is_interesting:
-            interesting_profiles.append(profile)
-
-    logger.info(
-        "temporal_column_filter_applied",
-        total_columns=len(column_profiles),
-        interesting=len(interesting_profiles),
-        filtered_out=len(column_profiles) - len(interesting_profiles),
-    )
-
-    return interesting_profiles, all_results
-
-
-def filter_interesting_drift(
-    drift_analyses: list[dict[str, Any]],
-    config: TemporalDriftFilterConfig | None = None,
-) -> tuple[list[dict[str, Any]], list[TemporalDriftResult]]:
-    """Filter temporal drift analyses to only interesting ones.
-
-    Applies pre-filter (both flags=0 → skip) and expected replacement filter.
-
-    Args:
-        drift_analyses: List of drift analysis records
-        config: Optional filter configuration
-
-    Returns:
-        Tuple of:
-        - List of interesting drift records
-        - List of all TemporalDriftResult objects
-    """
-    all_results: list[TemporalDriftResult] = []
-    interesting_drifts: list[dict[str, Any]] = []
-
-    for drift in drift_analyses:
-        result = is_interesting_drift(drift, config)
-        all_results.append(result)
-
-        if result.is_interesting:
-            interesting_drifts.append(drift)
-
-    # Count pre-filtered
-    pre_filtered = sum(
-        1 for r in all_results if not r.has_significant_drift and not r.has_category_changes
-    )
-
-    logger.info(
-        "temporal_drift_filter_applied",
-        total_drifts=len(drift_analyses),
-        pre_filtered=pre_filtered,
-        interesting=len(interesting_drifts),
-        filtered_out=len(drift_analyses) - len(interesting_drifts),
-    )
-
-    return interesting_drifts, all_results
-
-
 __all__ = [
-    # Categorical slice filtering
     "ColumnClassification",
     "SliceVarianceMetrics",
     "SliceFilterConfig",
     "compute_slice_variance",
-    "classify_column",
     "filter_interesting_columns",
     "get_filter_config",
-    # Temporal filtering configs
-    "TemporalSliceFilterConfig",
-    "TemporalColumnFilterConfig",
-    "TemporalDriftFilterConfig",
-    # Temporal filtering results
-    "TemporalSliceResult",
-    "TemporalColumnResult",
-    "TemporalDriftResult",
-    # Temporal filtering functions
-    "is_interesting_temporal_slice",
-    "is_interesting_temporal_column",
-    "is_interesting_drift",
-    "filter_interesting_temporal_slices",
-    "filter_interesting_temporal_columns",
-    "filter_interesting_drift",
 ]

@@ -1,9 +1,7 @@
 """Derived column detection.
 
-Detects columns that are derived from other columns:
-- Arithmetic: col3 = col1 + col2, col1 - col2, col1 * col2, col1 / col2
-- String transforms: col2 = UPPER(col1), LOWER(col1)
-- Concatenation: col3 = col1 || col2
+Detects columns that are arithmetic derivations of other columns:
+- col3 = col1 + col2, col1 - col2, col1 * col2, col1 / col2
 
 Uses parallel processing for large tables to speed up detection.
 """
@@ -21,8 +19,11 @@ from dataraum.analysis.correlation.db_models import (
 )
 from dataraum.analysis.correlation.models import DerivedColumn
 from dataraum.analysis.statistics.db_models import StatisticalProfile
+from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.storage import Column, Table
+
+logger = get_logger(__name__)
 
 
 def _check_derived_triple(
@@ -106,22 +107,19 @@ def detect_derived_columns(
     table: Table,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
-    min_match_rate: float = 0.95,
+    min_match_rate: float = 0.80,
     max_workers: int = 4,
 ) -> Result[list[DerivedColumn]]:
-    """Detect columns that are derived from other columns.
+    """Detect columns that are arithmetic derivations of other columns.
 
-    Checks for:
-    - Arithmetic: col3 = col1 + col2, col1 - col2, col1 * col2, col1 / col2
-    - String transforms: col2 = UPPER(col1), LOWER(col1)
-    - Concatenation: col3 = col1 || col2
+    Checks: col3 = col1 + col2, col1 - col2, col1 * col2, col1 / col2.
 
     Uses parallel processing when there are many combinations to check.
 
     Args:
         table: Table to analyze
         duckdb_conn: DuckDB connection
-        session: AsyncSession
+        session: SQLAlchemy session
         min_match_rate: Minimum match rate to consider derived
         max_workers: Maximum parallel workers
 

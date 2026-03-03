@@ -4,11 +4,16 @@ Measures uncertainty in unit declarations for numeric columns.
 Columns with undeclared or low-confidence units in measure roles
 have higher entropy when used in calculations.
 
-Source: typing.detected_unit, typing.unit_confidence, semantic.semantic_role
+Supports cross-column unit inference: if a dimension column (e.g. 'currency')
+defines the unit for measure columns, entropy is reduced to 0.2 (inferred)
+instead of 0.8 (missing).
+
+Source: typing.detected_unit, typing.unit_confidence, semantic.semantic_role,
+        semantic.unit_source_column
 """
 
 from dataraum.entropy.config import get_entropy_config
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -19,6 +24,10 @@ class UnitEntropyDetector(EntropyDetector):
     Undeclared units on measure columns create high entropy when
     those columns are used in aggregations or calculations.
 
+    When a unit_source_column is identified (e.g., a 'currency' dimension
+    defines the unit for monetary measures), the score is reduced to
+    score_inferred (default 0.2) instead of score_no_unit (0.8).
+
     Source: typing.detected_unit, typing.unit_confidence, semantic.semantic_role
     Scores configurable in config/entropy/thresholds.yaml.
     """
@@ -27,6 +36,7 @@ class UnitEntropyDetector(EntropyDetector):
     layer = "semantic"
     dimension = "units"
     sub_dimension = "unit_declaration"
+    trust_level = DetectorTrust.SOFT
     required_analyses = ["typing", "semantic"]
     description = "Measures whether numeric columns have declared units"
 
@@ -50,8 +60,8 @@ class UnitEntropyDetector(EntropyDetector):
         score_no_unit = detector_config.get("score_no_unit", 0.8)
         score_low_confidence = detector_config.get("score_low_confidence", 0.5)
         score_declared = detector_config.get("score_declared", 0.1)
+        score_inferred = detector_config.get("score_inferred", 0.2)
         confidence_threshold = detector_config.get("confidence_threshold", 0.5)
-        reduction_declare_unit = detector_config.get("reduction_declare_unit", 0.8)
 
         typing = context.get_analysis("typing", {})
         semantic = context.get_analysis("semantic", {})
@@ -74,26 +84,43 @@ class UnitEntropyDetector(EntropyDetector):
             detected_unit = typing.get("detected_unit")
             unit_confidence = typing.get("unit_confidence", 0.0) or 0.0
 
-        # Determine score based on unit status
-        if not detected_unit:
-            score = score_no_unit
-            unit_status = "missing"
-        elif unit_confidence < confidence_threshold:
-            score = score_low_confidence
-            unit_status = "low_confidence"
+        # Check for cross-column unit inference (unit_source_column from semantic analysis)
+        if hasattr(semantic, "unit_source_column"):
+            unit_source_column = semantic.unit_source_column
         else:
+            unit_source_column = semantic.get("unit_source_column")
+
+        # Determine score based on unit status
+        if detected_unit and unit_confidence >= confidence_threshold:
             score = score_declared
             unit_status = "declared"
+        elif detected_unit and unit_confidence < confidence_threshold:
+            score = score_low_confidence
+            unit_status = "low_confidence"
+        elif unit_source_column == "dimensionless":
+            # Measure is inherently dimensionless (ratio, rate, index, etc.)
+            # Having no unit is correct — not a quality issue
+            score = score_declared
+            unit_status = "dimensionless"
+        elif unit_source_column:
+            # Unit is inferred from a dimension column — lower entropy than missing
+            score = score_inferred
+            unit_status = "inferred_from_dimension"
+        else:
+            score = score_no_unit
+            unit_status = "missing"
 
         # Build evidence
-        evidence = [
-            {
-                "detected_unit": detected_unit,
-                "unit_confidence": unit_confidence,
-                "semantic_role": semantic_role,
-                "unit_status": unit_status,
-            }
-        ]
+        evidence_dict = {
+            "detected_unit": detected_unit,
+            "unit_confidence": unit_confidence,
+            "semantic_role": semantic_role,
+            "unit_status": unit_status,
+        }
+        if unit_source_column:
+            evidence_dict["unit_source_column"] = unit_source_column
+
+        evidence = [evidence_dict]
 
         # Resolution options
         resolution_options: list[ResolutionOption] = []
@@ -101,16 +128,14 @@ class UnitEntropyDetector(EntropyDetector):
         if score > 0.3:  # Only suggest resolution for high-entropy columns
             resolution_options.append(
                 ResolutionOption(
-                    action="declare_unit",
+                    action="document_unit",
                     parameters={
                         "column": context.column_name,
                         "table": context.table_name,
                         "detected_unit": detected_unit,
                     },
-                    expected_entropy_reduction=reduction_declare_unit,
                     effort="low",
                     description=f"Declare the unit for measure column '{context.column_name}'",
-                    cascade_dimensions=["computational.derived_values"],
                 )
             )
 

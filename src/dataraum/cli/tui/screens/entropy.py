@@ -21,6 +21,7 @@ from textual.widgets import (
 from textual.widgets.tree import TreeNode
 
 from dataraum.cli.common import get_manager
+from dataraum.cli.tui.formatting import escape_markup, format_evidence_field
 
 
 class EntropyBar(Static):
@@ -78,8 +79,15 @@ class EntropyScreen(Screen[None]):
         # Store table-level entropy objects keyed by "table.(table)" key
         self._table_entropy_objects: dict[str, list[Any]] = {}
         self._selected_key: str | None = None
-        # Store compound risks keyed by column key ("table.column")
-        self._compound_risks_map: dict[str, list[Any]] = {}
+        # Table metadata for context enrichment
+        self._type_decisions: dict[str, Any] = {}  # column_id -> TypeDecision
+        self._semantic_annotations: dict[str, Any] = {}  # column_id -> SemanticAnnotation
+        self._stat_profiles: dict[str, Any] = {}  # column_id -> StatisticalProfile
+        self._table_entities: dict[str, Any] = {}  # table_id -> TableEntity
+        self._relationships: dict[str, list[Any]] = {}  # table_id -> [Relationship]
+        self._table_id_to_name: dict[str, str] = {}
+        self._typed_table_name_to_id: dict[str, str] = {}  # typed layer only
+        self._column_id_to_name: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         """Create the screen layout with tree and detail panel."""
@@ -100,6 +108,8 @@ class EntropyScreen(Screen[None]):
                     with TabbedContent(id="detail-tabs"):
                         with TabPane("Overview", id="tab-overview"):
                             yield Static("", id="overview-content")
+                        with TabPane("Context", id="tab-context"):
+                            yield Static("", id="context-content")
                         with TabPane("Evidence", id="tab-evidence"):
                             yield Static("", id="evidence-content")
                         with TabPane("Assumptions", id="tab-assumptions"):
@@ -117,7 +127,14 @@ class EntropyScreen(Screen[None]):
         self._interp_map.clear()
         self._entropy_objects_map.clear()
         self._table_entropy_objects.clear()
-        self._compound_risks_map.clear()
+        self._type_decisions.clear()
+        self._semantic_annotations.clear()
+        self._stat_profiles.clear()
+        self._table_entities.clear()
+        self._relationships.clear()
+        self._table_id_to_name.clear()
+        self._typed_table_name_to_id.clear()
+        self._column_id_to_name.clear()
         self._selected_key = None
         self._load_data()
 
@@ -129,12 +146,11 @@ class EntropyScreen(Screen[None]):
         from sqlalchemy import select
 
         from dataraum.entropy.db_models import (
-            CompoundRiskRecord,
-            EntropyInterpretationRecord,
             EntropyObjectRecord,
             EntropySnapshotRecord,
         )
-        from dataraum.storage import Source, Table
+        from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
+        from dataraum.storage import Column, Source, Table
 
         manager = get_manager(self.output_dir)
 
@@ -173,7 +189,8 @@ class EntropyScreen(Screen[None]):
                     )
 
                 interp_query = interp_query.order_by(
-                    EntropyInterpretationRecord.composite_score.desc()
+                    EntropyInterpretationRecord.table_name,
+                    EntropyInterpretationRecord.column_name,
                 )
                 interp_result = session.execute(interp_query)
                 interpretations = interp_result.scalars().all()
@@ -212,8 +229,11 @@ class EntropyScreen(Screen[None]):
                     select(Table).where(Table.source_id == source.source_id)
                 )
                 tables = tables_result.scalars().all()
-                table_id_to_name: dict[str, str] = {t.table_id: t.table_name for t in tables}
-                table_ids = list(table_id_to_name.keys())
+                self._table_id_to_name = {t.table_id: t.table_name for t in tables}
+                self._typed_table_name_to_id = {
+                    t.table_name: t.table_id for t in tables if t.layer == "typed"
+                }
+                table_ids = list(self._table_id_to_name.keys())
 
                 if table_ids:
                     table_obj_result = session.execute(
@@ -225,20 +245,74 @@ class EntropyScreen(Screen[None]):
                         .order_by(EntropyObjectRecord.score.desc())
                     )
                     for obj in table_obj_result.scalars().all():
-                        t_name = table_id_to_name.get(obj.table_id or "", "unknown")
+                        t_name = self._table_id_to_name.get(obj.table_id or "", "unknown")
                         table_key = f"{t_name}.(table)"
                         self._table_entropy_objects.setdefault(table_key, []).append(obj)
 
-                # Load compound risks keyed by column target
-                if table_ids:
-                    cr_result = session.execute(
-                        select(CompoundRiskRecord).where(CompoundRiskRecord.table_id.in_(table_ids))
+                # Batch load table metadata — strictly from typed layer
+                typed_table_ids = list(self._typed_table_name_to_id.values())
+
+                if typed_table_ids:
+                    col_result = session.execute(
+                        select(Column).where(Column.table_id.in_(typed_table_ids))
                     )
-                    for cr in cr_result.scalars().all():
-                        target = cr.target
-                        if target.startswith("column:"):
-                            col_key = target[7:]  # Remove "column:" prefix
-                            self._compound_risks_map.setdefault(col_key, []).append(cr)
+                    for col in col_result.scalars().all():
+                        self._column_id_to_name[col.column_id] = col.column_name
+
+                if column_ids:
+                    from dataraum.analysis.statistics.db_models import StatisticalProfile
+                    from dataraum.analysis.typing.db_models import TypeDecision
+
+                    td_result = session.execute(
+                        select(TypeDecision).where(TypeDecision.column_id.in_(column_ids))
+                    )
+                    for td in td_result.scalars().all():
+                        self._type_decisions[td.column_id] = td
+
+                    from dataraum.analysis.semantic.db_models import SemanticAnnotation
+
+                    sa_result = session.execute(
+                        select(SemanticAnnotation).where(
+                            SemanticAnnotation.column_id.in_(column_ids)
+                        )
+                    )
+                    for sa in sa_result.scalars().all():
+                        self._semantic_annotations[sa.column_id] = sa
+
+                    sp_result = session.execute(
+                        select(StatisticalProfile)
+                        .where(StatisticalProfile.column_id.in_(column_ids))
+                        .order_by(StatisticalProfile.profiled_at.desc())
+                    )
+                    for sp in sp_result.scalars().all():
+                        if sp.column_id not in self._stat_profiles:
+                            self._stat_profiles[sp.column_id] = sp
+
+                if typed_table_ids:
+                    from dataraum.analysis.relationships.db_models import Relationship
+                    from dataraum.analysis.semantic.db_models import TableEntity
+
+                    te_result = session.execute(
+                        select(TableEntity).where(TableEntity.table_id.in_(typed_table_ids))
+                    )
+                    for te in te_result.scalars().all():
+                        self._table_entities[te.table_id] = te
+
+                    from sqlalchemy import or_
+
+                    rel_result = session.execute(
+                        select(Relationship).where(
+                            or_(
+                                Relationship.from_table_id.in_(typed_table_ids),
+                                Relationship.to_table_id.in_(typed_table_ids),
+                            ),
+                            Relationship.detection_method == "llm",
+                        )
+                    )
+                    for rel in rel_result.scalars().all():
+                        self._relationships.setdefault(rel.from_table_id, []).append(rel)
+                        if rel.to_table_id != rel.from_table_id:
+                            self._relationships.setdefault(rel.to_table_id, []).append(rel)
 
                 # Update UI
                 self._update_summary(source.name, snapshot, interpretations)
@@ -281,24 +355,16 @@ class EntropyScreen(Screen[None]):
 
         # Compute quick stats
         total = len(interpretations)
-        high = sum(1 for i in interpretations if i.composite_score > 0.2)
-        investigate = sum(1 for i in interpretations if i.readiness == "investigate")
-        blocked = sum(1 for i in interpretations if i.readiness == "blocked")
         table_level = sum(1 for i in interpretations if not i.column_name)
 
         # Build status line with all stats
         parts = [
             f"[{color}]{snapshot.overall_readiness.upper()}[/{color}]",
-            f"Score: {snapshot.avg_composite_score:.3f}",
+            f"Score: {snapshot.avg_entropy_score:.3f}",
             f"Columns: {total - table_level}",
         ]
         if table_level:
             parts.append(f"Table-level: {table_level}")
-        parts.append(f"High: {high}")
-        if investigate:
-            parts.append(f"[yellow]Investigate: {investigate}[/yellow]")
-        if blocked:
-            parts.append(f"[red]Blocked: {blocked}[/red]")
 
         status = self.query_one("#summary-status", Static)
         status.update(" | ".join(parts))
@@ -318,18 +384,7 @@ class EntropyScreen(Screen[None]):
 
         # Build tree nodes
         for table_name, columns in tables.items():
-            # Get table-level status (highest severity)
-            table_status = "ready"
-            for col in columns:
-                if col.readiness == "blocked":
-                    table_status = "blocked"
-                    break
-                elif col.readiness == "investigate" and table_status != "blocked":
-                    table_status = "investigate"
-
-            table_color = {"ready": "green", "investigate": "yellow", "blocked": "red"}.get(
-                table_status, "white"
-            )
+            table_color = "white"
             table_label = f"[{table_color}]{table_name}[/{table_color}]"
             table_node = tree.root.add(table_label, data=f"{table_name}.(table)")
 
@@ -346,10 +401,11 @@ class EntropyScreen(Screen[None]):
                 if not col.column_name:
                     continue  # Already added as table-level node
 
-                col_color = {"ready": "green", "investigate": "yellow", "blocked": "red"}.get(
-                    col.readiness, "white"
-                )
-                col_label = f"[{col_color}]{col.column_name}[/{col_color}]"
+                col_label = col.column_name
+                if col.column_id:
+                    td = self._type_decisions.get(col.column_id)
+                    if td:
+                        col_label += f" [dim]{td.decided_type}[/dim]"
                 table_node.add_leaf(col_label, data=f"{table_name}.{col.column_name}")
 
             table_node.expand()
@@ -379,16 +435,16 @@ class EntropyScreen(Screen[None]):
         # Check interpretation map first
         if node.data in self._interp_map:
             self._update_detail_panel(self._interp_map[node.data])
-        elif node.data in self._table_entropy_objects:
-            # Table-level node with entropy objects but no interpretation
+        elif node.data.endswith(".(table)"):
+            # Table node — show whatever table-level data we have
             self._update_table_level_panel(node.data)
 
     def _update_table_level_panel(self, key: str) -> None:
         """Update detail panel for table-level entropy objects without interpretation."""
         header = self.query_one("#detail-header", Static)
-        header.update(
-            f"[bold]{key.replace('.(table)', '')}[/bold] | [dim]Table-level metrics[/dim]"
-        )
+        table_name = key.replace(".(table)", "")
+        context_hint = self._build_table_hint(table_name)
+        header.update(f"[bold]{table_name}[/bold]{context_hint} | [dim]Table-level metrics[/dim]")
 
         # Get table-level entropy objects
         objects = self._table_entropy_objects.get(key, [])
@@ -406,7 +462,8 @@ class EntropyScreen(Screen[None]):
         else:
             overview.update("[dim]No table-level measurements[/dim]")
 
-        # Update evidence tab
+        # Update context and evidence tabs
+        self._update_context_section(table_key=key)
         self._update_evidence_section(objects)
 
         # Clear assumptions/actions
@@ -420,17 +477,11 @@ class EntropyScreen(Screen[None]):
 
     def _update_detail_panel(self, interp: Any) -> None:
         """Update the detail panel with the selected interpretation."""
-        # Update header
+        # Update header with context hint
         header = self.query_one("#detail-header", Static)
         col_name = interp.column_name or "(table-level)"
-        readiness_color = {"ready": "green", "investigate": "yellow", "blocked": "red"}.get(
-            interp.readiness, "white"
-        )
-        header.update(
-            f"[bold]{interp.table_name}.{col_name}[/bold] | "
-            f"[{readiness_color}]{interp.readiness.upper()}[/{readiness_color}] | "
-            f"Score: {interp.composite_score:.3f}"
-        )
+        context_hint = self._build_header_hint(interp)
+        header.update(f"[bold]{interp.table_name}.{col_name}[/bold]{context_hint}")
 
         # Get entropy objects for this column or table-level
         if interp.column_id:
@@ -442,48 +493,203 @@ class EntropyScreen(Screen[None]):
         # Update all sections
         self._update_layer_bars(entropy_objects)
         self._update_overview_section(interp)
+        if interp.column_name:
+            self._update_context_section(interp=interp)
+        else:
+            self._update_context_section(table_key=f"{interp.table_name}.(table)")
         self._update_evidence_section(entropy_objects)
         self._update_assumptions_section(interp)
         self._update_actions_section(interp, entropy_objects)
 
     def _update_overview_section(self, interp: Any) -> None:
-        """Update the Overview section with explanation and compound risks."""
+        """Update the Overview section with explanation and blocked columns."""
+
         overview = self.query_one("#overview-content", Static)
         parts: list[str] = []
 
-        # LLM explanation
-        explanation = interp.explanation or "No explanation available"
+        # LLM explanation (escape to prevent markup injection)
+        explanation = escape_markup(interp.explanation or "No explanation available")
         parts.append(explanation)
-
-        # Compound risks for this column
-        col_key = f"{interp.table_name}.{interp.column_name}" if interp.column_name else ""
-        risks = self._compound_risks_map.get(col_key, [])
-        if risks:
-            parts.append("")
-            parts.append("[bold]Compound Risks[/bold]")
-            for risk in risks:
-                level_colors = {"critical": "red", "high": "yellow", "medium": "white"}
-                r_color = level_colors.get(risk.risk_level, "white")
-                parts.append(
-                    f"  [{r_color}]{risk.risk_level.upper()}[/{r_color}] "
-                    f"({risk.multiplier:.1f}x multiplier) "
-                    f"Score: {risk.combined_score:.3f}"
-                )
-                # Show contributing dimensions
-                dim_scores = risk.dimension_scores or {}
-                if risk.dimensions:
-                    dim_parts = []
-                    for dim in risk.dimensions:
-                        s = dim_scores.get(dim, 0.0)
-                        dim_parts.append(f"{dim}: {s:.2f}")
-                    parts.append(f"    Dimensions: {', '.join(dim_parts)}")
-                if risk.impact:
-                    parts.append(f"    Impact: {risk.impact}")
 
         overview.update("\n".join(parts))
 
+    def _build_header_hint(self, interp: Any) -> str:
+        """Build a [dim] context hint for the detail header."""
+        parts: list[str] = []
+        if interp.column_id:
+            td = self._type_decisions.get(interp.column_id)
+            if td:
+                parts.append(td.decided_type)
+            sa = self._semantic_annotations.get(interp.column_id)
+            if sa and sa.semantic_role:
+                parts.append(sa.semantic_role)
+        else:
+            parts = self._table_hint_parts(interp.table_name)
+        return f" [dim]({', '.join(parts)})[/dim]" if parts else ""
+
+    def _build_table_hint(self, table_name: str) -> str:
+        """Build a [dim] context hint for a table-level header."""
+        parts = self._table_hint_parts(table_name)
+        return f" [dim]({', '.join(parts)})[/dim]" if parts else ""
+
+    def _table_hint_parts(self, table_name: str) -> list[str]:
+        """Get hint parts for a table (entity type + fact/dimension)."""
+        table_id = self._resolve_typed_table_id(table_name)
+        if table_id:
+            te = self._table_entities.get(table_id)
+            if te:
+                parts = [te.detected_entity_type]
+                if te.is_fact_table:
+                    parts.append("Fact")
+                elif te.is_dimension_table:
+                    parts.append("Dimension")
+                return parts
+        return []
+
+    def _update_context_section(
+        self, interp: Any | None = None, table_key: str | None = None
+    ) -> None:
+        """Update the Context tab with type/semantics/stats or entity/relationships."""
+        content = self.query_one("#context-content", Static)
+        parts: list[str] = []
+
+        if interp and interp.column_id:
+            col_id = interp.column_id
+
+            # Type section
+            td = self._type_decisions.get(col_id)
+            if td:
+                parts.append("[bold]Type[/bold]")
+                parts.append(f"  Decided type: {td.decided_type}")
+                parts.append(f"  Source: {td.decision_source}")
+                if td.decision_reason:
+                    parts.append(f"  Reason: {td.decision_reason}")
+                if td.previous_type:
+                    parts.append(f"  Previous: {td.previous_type}")
+            else:
+                parts.append("[dim]No type decision available[/dim]")
+
+            parts.append("")
+
+            # Semantics section
+            sa = self._semantic_annotations.get(col_id)
+            if sa:
+                parts.append("[bold]Semantics[/bold]")
+                if sa.business_name:
+                    parts.append(f"  Business name: {sa.business_name}")
+                if sa.semantic_role:
+                    parts.append(f"  Role: {sa.semantic_role}")
+                if sa.entity_type:
+                    parts.append(f"  Entity type: {sa.entity_type}")
+                if sa.business_concept:
+                    parts.append(f"  Concept: {sa.business_concept}")
+                if sa.confidence is not None:
+                    parts.append(f"  Confidence: {sa.confidence:.2f}")
+                if sa.annotation_source:
+                    parts.append(f"  Source: {sa.annotation_source}")
+            else:
+                parts.append("[dim]No semantic annotation available[/dim]")
+
+            parts.append("")
+
+            # Statistics section
+            sp = self._stat_profiles.get(col_id)
+            if sp:
+                parts.append("[bold]Statistics[/bold]")
+                parts.append(f"  Total: {sp.total_count:,}")
+                null_str = f"{sp.null_count:,}"
+                if sp.null_ratio is not None:
+                    null_str += f" ({sp.null_ratio:.1%})"
+                parts.append(f"  Nulls: {null_str}")
+                if sp.distinct_count is not None:
+                    parts.append(f"  Distinct: {sp.distinct_count:,}")
+                if sp.cardinality_ratio is not None:
+                    parts.append(f"  Cardinality: {sp.cardinality_ratio:.3f}")
+                if sp.is_unique is not None:
+                    parts.append(f"  Unique: {'Yes' if sp.is_unique else 'No'}")
+                if sp.is_numeric is not None:
+                    parts.append(f"  Numeric: {'Yes' if sp.is_numeric else 'No'}")
+            else:
+                parts.append("[dim]No statistical profile available[/dim]")
+
+        elif table_key:
+            table_name = table_key.replace(".(table)", "")
+            table_id = self._resolve_typed_table_id(table_name)
+
+            if table_id:
+                # Entity section
+                te = self._table_entities.get(table_id)
+                if te:
+                    parts.append("[bold]Entity[/bold]")
+                    parts.append(f"  Type: {te.detected_entity_type}")
+                    if te.is_fact_table:
+                        parts.append("  Classification: Fact table")
+                    elif te.is_dimension_table:
+                        parts.append("  Classification: Dimension table")
+                    if te.description:
+                        parts.append(f"  Description: {te.description}")
+                    if te.confidence is not None:
+                        parts.append(f"  Confidence: {te.confidence:.2f}")
+                    if te.grain_columns:
+                        grain = te.grain_columns
+                        if isinstance(grain, list):
+                            names = [self._column_id_to_name.get(c, c[:8]) for c in grain]
+                            parts.append(f"  Grain: {', '.join(names)}")
+                        elif isinstance(grain, dict):
+                            parts.append(f"  Grain: {grain}")
+                    if te.detection_source:
+                        parts.append(f"  Source: {te.detection_source}")
+                else:
+                    parts.append("[dim]No entity information available[/dim]")
+
+                parts.append("")
+
+                # Relationships section
+                rels = self._relationships.get(table_id, [])
+                if rels:
+                    parts.append("[bold]Relationships[/bold]")
+                    for rel in rels[:10]:
+                        ft = self._table_id_to_name.get(rel.from_table_id, "?")
+                        tt = self._table_id_to_name.get(rel.to_table_id, "?")
+                        fc = self._column_id_to_name.get(rel.from_column_id, "?")
+                        tc = self._column_id_to_name.get(rel.to_column_id, "?")
+                        conf = f"{rel.confidence:.2f}" if rel.confidence else "?"
+                        parts.append(f"  {ft}.{fc} -> {tt}.{tc}")
+                        card = f", {rel.cardinality}" if rel.cardinality else ""
+                        method = f", {rel.detection_method}" if rel.detection_method else ""
+                        parts.append(
+                            f"    {rel.relationship_type}{card}, confidence: {conf}{method}"
+                        )
+                    if len(rels) > 10:
+                        parts.append(f"  [dim]... and {len(rels) - 10} more[/dim]")
+                else:
+                    parts.append("[dim]No relationships detected[/dim]")
+            else:
+                parts.append("[dim]No table metadata available[/dim]")
+
+        else:
+            parts.append("[dim]Select a column or table to view context[/dim]")
+
+        content.update("\n".join(parts))
+
+    def _resolve_typed_table_id(self, table_name: str) -> str | None:
+        """Look up the typed-layer table_id for a table_name."""
+        return self._typed_table_name_to_id.get(table_name)
+
+    @staticmethod
+    def _safe_markup(line: str) -> str:
+        """Return line as-is if valid Textual markup, escaped otherwise."""
+        from textual.content import Content
+
+        try:
+            Content.from_markup(line)
+            return line
+        except Exception:
+            return escape_markup(line)
+
     def _update_evidence_section(self, entropy_objects: Sequence[Any]) -> None:
         """Update the Evidence tab with full detector-specific evidence."""
+
         content = self.query_one("#evidence-content", Static)
 
         if not entropy_objects:
@@ -495,10 +701,12 @@ class EntropyScreen(Screen[None]):
         for obj in entropy_objects:
             # Section header per entropy object
             score_color = "red" if obj.score > 0.3 else "yellow" if obj.score > 0.15 else "green"
+            layer = escape_markup(str(obj.layer))
+            dim = escape_markup(str(obj.dimension))
+            sub = escape_markup(str(obj.sub_dimension))
             parts.append(
-                f"[bold]{obj.layer} > {obj.dimension} > {obj.sub_dimension}[/bold]  "
-                f"[{score_color}]{obj.score:.3f}[/{score_color}]  "
-                f"[dim]confidence: {obj.confidence:.2f}[/dim]"
+                f"[bold]{layer} > {dim} > {sub}[/bold]  "
+                f"[{score_color}]{obj.score:.3f}[/{score_color}]"
             )
 
             # All evidence fields
@@ -508,7 +716,7 @@ class EntropyScreen(Screen[None]):
 
             if evidence:
                 for key, value in evidence.items():
-                    parts.append(f"  {_format_evidence_field(key, value)}")
+                    parts.append(f"  {format_evidence_field(key, value)}")
             else:
                 parts.append("  [dim]No evidence data[/dim]")
 
@@ -517,22 +725,22 @@ class EntropyScreen(Screen[None]):
                 for opt in obj.resolution_options:
                     if not isinstance(opt, dict):
                         continue
-                    action = opt.get("action", "?")
-                    reduction = opt.get("expected_entropy_reduction", 0)
-                    effort = opt.get("effort", "?")
-                    cascade = opt.get("cascade_dimensions", [])
-                    parts.append(
-                        f"  [dim]-> {action}[/dim]  reduction: {reduction:.0%}, effort: {effort}"
-                    )
-                    if cascade:
-                        parts.append(f"     cascades: {', '.join(cascade)}")
+                    action = escape_markup(str(opt.get("action", "?")))
+                    effort = escape_markup(str(opt.get("effort", "?")))
+                    parts.append(f"  [dim]-> {action}[/dim]  effort: {effort}")
 
             parts.append("")  # Blank line between objects
 
-        content.update("\n".join(parts))
+        combined = "\n".join(parts)
+        try:
+            content.update(combined)
+        except Exception:
+            # Validate per-line — escape only the problematic lines
+            content.update("\n".join(self._safe_markup(p) for p in parts))
 
     def _update_assumptions_section(self, interp: Any) -> None:
         """Update the Assumptions section with expandable items."""
+
         container = self.query_one("#assumptions-list", Vertical)
         container.remove_children()
 
@@ -552,21 +760,21 @@ class EntropyScreen(Screen[None]):
             if not isinstance(a, dict):
                 continue
 
-            dim = a.get("dimension", "-")
-            text = a.get("assumption_text", "")
-            conf = a.get("confidence", "-")
-            impact = a.get("impact", "")
-            basis = a.get("basis", "")
+            dim = escape_markup(str(a.get("dimension", "-")))
+            text = escape_markup(str(a.get("assumption_text", "")))
+            conf = str(a.get("confidence", "-"))
+            impact = escape_markup(str(a.get("impact", "")))
+            basis = escape_markup(str(a.get("basis", "")))
 
-            conf_color = conf_colors.get(str(conf).lower(), "white")
+            conf_color = conf_colors.get(conf.lower(), "white")
 
-            title = f"[{conf_color}]{conf.upper()}[/{conf_color}] {dim}"
+            title = f"[{conf_color}]{escape_markup(conf.upper())}[/{conf_color}] {dim}"
 
             # Full content for expanded state
             content = (
                 f"[bold]Assumption:[/bold]\n{text}\n\n"
                 f"[bold]Impact:[/bold]\n{impact}\n\n"
-                f"[dim]Confidence: {conf} | Basis: {basis}[/dim]"
+                f"[dim]Confidence: {escape_markup(conf)} | Basis: {basis}[/dim]"
             )
 
             collapsible = Collapsible(
@@ -580,6 +788,7 @@ class EntropyScreen(Screen[None]):
         self, interp: Any, entropy_objects: Sequence[Any] | None = None
     ) -> None:
         """Update the Actions section with expandable items."""
+
         container = self.query_one("#actions-list", Vertical)
         container.remove_children()
 
@@ -593,21 +802,6 @@ class EntropyScreen(Screen[None]):
             container.mount(Static("[dim]No actions recommended[/dim]"))
             return
 
-        # Build cascade lookup from raw entropy objects' resolution_options
-        cascade_by_action: dict[str, list[str]] = {}
-        reduction_by_action: dict[str, float] = {}
-        if entropy_objects:
-            for obj in entropy_objects:
-                if not obj.resolution_options:
-                    continue
-                for opt in obj.resolution_options:
-                    if not isinstance(opt, dict):
-                        continue
-                    act = opt.get("action", "")
-                    if act and act not in cascade_by_action:
-                        cascade_by_action[act] = opt.get("cascade_dimensions", [])
-                        reduction_by_action[act] = opt.get("expected_entropy_reduction", 0.0)
-
         # Sort by priority
         priority_order = {"high": 0, "medium": 1, "low": 2}
         actions = sorted(
@@ -618,39 +812,34 @@ class EntropyScreen(Screen[None]):
         priority_colors = {"high": "red", "medium": "yellow", "low": "green"}
 
         for action in actions:
-            priority = action.get("priority", "medium")
-            action_name = action.get("action", "-")
-            description = action.get("description", "")
-            effort = action.get("effort", "-")
-            expected_impact = action.get("expected_impact", "")
+            priority = str(action.get("priority", "medium"))
+            action_name = str(action.get("action", "-"))
+            description = str(action.get("description", ""))
+            effort = str(action.get("effort", "-"))
+            expected_impact = str(action.get("expected_impact", ""))
             parameters = action.get("parameters", {})
 
-            p_color = priority_colors.get(str(priority).lower(), "white")
+            p_color = priority_colors.get(priority.lower(), "white")
 
-            # Title with reduction if available
-            reduction = reduction_by_action.get(action_name, 0.0)
-            reduction_str = f" {reduction:.0%}" if reduction else ""
             title = (
-                f"[{p_color}]{priority.upper()}[/{p_color}] {action_name} "
-                f"[dim](effort: {effort}{reduction_str})[/dim]"
+                f"[{p_color}]{escape_markup(priority.upper())}[/{p_color}] {escape_markup(action_name)} "
+                f"[dim](effort: {escape_markup(effort)})[/dim]"
             )
 
             # Full content for expanded state
-            content = f"[bold]Description:[/bold]\n{description}"
+            content = f"[bold]Description:[/bold]\n{escape_markup(description)}"
             if expected_impact:
-                content += f"\n\n[bold]Expected Impact:[/bold]\n{expected_impact}"
+                content += f"\n\n[bold]Expected Impact:[/bold]\n{escape_markup(expected_impact)}"
 
             # Parameters
             if parameters and isinstance(parameters, dict):
-                param_lines = [f"  {k}: {v}" for k, v in parameters.items()]
+                param_lines = [
+                    f"  {escape_markup(str(k))}: {escape_markup(str(v))}"
+                    for k, v in parameters.items()
+                ]
                 content += "\n\n[bold]Parameters:[/bold]\n" + "\n".join(param_lines)
 
-            # Cascade dimensions from raw resolution options
-            cascade = cascade_by_action.get(action_name, [])
-            if cascade:
-                content += "\n\n[bold]Cascades to:[/bold]\n  " + ", ".join(cascade)
-
-            content += f"\n\n[dim]Priority: {priority} | Effort: {effort}[/dim]"
+            content += f"\n\n[dim]Priority: {escape_markup(priority)} | Effort: {escape_markup(effort)}[/dim]"
 
             collapsible = Collapsible(
                 Static(content, classes="action-content"),
@@ -696,35 +885,3 @@ class EntropyScreen(Screen[None]):
             parts.append(f"[{color}]{short_label}: {avg_score:.2f}[/{color}]")
 
         container.update(" | ".join(parts) if parts else "[dim]No layer data[/dim]")
-
-
-def _format_evidence_field(key: str, value: Any) -> str:
-    """Format a single evidence field with human-readable label and value."""
-    # Human-readable key names
-    label = key.replace("_", " ").title()
-
-    if isinstance(value, float):
-        # Show as percentage if it looks like a ratio
-        if key.endswith(("_rate", "_ratio", "_confidence", "confidence")):
-            return f"[dim]{label}:[/dim] {value:.1%}"
-        return f"[dim]{label}:[/dim] {value:.3f}"
-    elif isinstance(value, bool):
-        return f"[dim]{label}:[/dim] {'yes' if value else 'no'}"
-    elif isinstance(value, int):
-        return f"[dim]{label}:[/dim] {value:,}"
-    elif isinstance(value, list):
-        if not value:
-            return f"[dim]{label}:[/dim] (none)"
-        # Show list items inline, truncated
-        items = [str(v) for v in value[:5]]
-        suffix = f" ... +{len(value) - 5}" if len(value) > 5 else ""
-        return f"[dim]{label}:[/dim] {', '.join(items)}{suffix}"
-    elif isinstance(value, dict):
-        # Show dict as key=value pairs
-        items = [f"{k}={v}" for k, v in list(value.items())[:3]]
-        return f"[dim]{label}:[/dim] {', '.join(items)}"
-    else:
-        val_str = str(value)
-        if len(val_str) > 80:
-            val_str = val_str[:77] + "..."
-        return f"[dim]{label}:[/dim] {val_str}"

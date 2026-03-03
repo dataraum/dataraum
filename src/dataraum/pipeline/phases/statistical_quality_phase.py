@@ -7,18 +7,22 @@ Runs advanced statistical quality checks on typed data:
 
 from __future__ import annotations
 
+from types import ModuleType
+
 from sqlalchemy import func, select
 
 from dataraum.analysis.statistics import assess_statistical_quality
-from dataraum.analysis.statistics.db_models import StatisticalQualityMetrics
+from dataraum.analysis.statistics.quality_db_models import StatisticalQualityMetrics
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
 
 
+@analysis_phase
 class StatisticalQualityPhase(BasePhase):
     """Statistical quality assessment phase.
 
@@ -36,11 +40,17 @@ class StatisticalQualityPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        return ["statistics"]
+        return ["column_eligibility"]
 
     @property
     def outputs(self) -> list[str]:
         return ["quality_metrics"]
+
+    @property
+    def db_models(self) -> list[ModuleType]:
+        from dataraum.analysis.statistics import quality_db_models
+
+        return [quality_db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all numeric columns already have quality metrics."""
@@ -53,7 +63,7 @@ class StatisticalQualityPhase(BasePhase):
         if not typed_tables:
             return f"No typed tables found for source {ctx.source_id}"
 
-        logger.info(f"StatQuality: Found {len(typed_tables)} typed tables")
+        logger.debug(f"StatQuality: Found {len(typed_tables)} typed tables")
 
         # Get all columns for typed tables
         typed_table_ids = [t.table_id for t in typed_tables]
@@ -65,7 +75,7 @@ class StatisticalQualityPhase(BasePhase):
         for col in all_columns:
             t = col.resolved_type or "NULL"
             type_counts[t] = type_counts.get(t, 0) + 1
-        logger.info(f"StatQuality: Column types in typed tables: {type_counts}")
+        logger.debug(f"StatQuality: Column types in typed tables: {type_counts}")
 
         # Filter to numeric columns only
         numeric_types = ["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]
@@ -74,7 +84,7 @@ class StatisticalQualityPhase(BasePhase):
         if not numeric_columns:
             return f"No numeric columns to assess (types: {numeric_types}, available: {list(type_counts.keys())})"
 
-        logger.info(f"StatQuality: Found {len(numeric_columns)} numeric columns")
+        logger.debug(f"StatQuality: Found {len(numeric_columns)} numeric columns")
 
         # Check which already have quality metrics
         assessed_stmt = select(StatisticalQualityMetrics.column_id).distinct()

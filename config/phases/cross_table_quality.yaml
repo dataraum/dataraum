@@ -1,0 +1,4 @@
+# Cross-table correlation analysis configuration
+min_correlation: 0.5           # Minimum |r| to report cross-table correlations
+redundancy_threshold: 0.99     # Correlation threshold for redundant column detection
+compute_vdp: false             # Skip expensive VDP multicollinearity analysis

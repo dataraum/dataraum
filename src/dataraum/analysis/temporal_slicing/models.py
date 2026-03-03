@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
 
@@ -25,267 +24,120 @@ class TemporalSliceConfig(BaseModel):
     period_end: date
     time_grain: TimeGrain = TimeGrain.MONTHLY
 
-    # Baseline window sizes (for rolling averages)
-    # Default: 30 days for daily, 5 weeks for weekly, 1 month for monthly
-    baseline_periods: int | None = None  # Auto-determined if None
-
     # Thresholds
-    completeness_threshold: float = 0.9  # coverage_ratio threshold
     drift_threshold: float = 0.1  # JS divergence threshold
+    completeness_threshold: float = 0.9  # coverage_ratio for "complete"
     volume_zscore_threshold: float = 2.5  # z-score for anomaly
-    last_day_ratio_threshold: float = 0.3  # for cutoff detection
+    last_day_ratio_threshold: float = 0.3  # early cutoff detection
 
-    def get_baseline_periods(self) -> int:
-        """Get baseline periods, using defaults if not specified."""
-        if self.baseline_periods is not None:
-            return self.baseline_periods
-        return {
-            TimeGrain.DAILY: 30,
-            TimeGrain.WEEKLY: 5,
-            TimeGrain.MONTHLY: 1,
-        }[self.time_grain]
+
+class CategoryShift(BaseModel):
+    """A significant change in category proportion."""
+
+    category: str
+    baseline_pct: float
+    period_pct: float
+    period: str
+
+
+class CategoryAppearance(BaseModel):
+    """A category that emerged (wasn't in baseline)."""
+
+    category: str
+    period: str
+    pct: float
+
+
+class CategoryDisappearance(BaseModel):
+    """A category that vanished (was in baseline, gone in period)."""
+
+    category: str
+    period: str
+    last_seen_pct: float
+
+
+class DriftEvidence(BaseModel):
+    """Evidence for interpreting what drifted."""
+
+    worst_period: str
+    worst_js: float
+    top_shifts: list[CategoryShift] = Field(default_factory=list)
+    emerged_categories: list[CategoryAppearance] = Field(default_factory=list)
+    vanished_categories: list[CategoryDisappearance] = Field(default_factory=list)
+    change_points: list[str] = Field(default_factory=list)
+
+
+class ColumnDriftResult(BaseModel):
+    """Result of drift analysis for one column."""
+
+    column_name: str
+    max_js_divergence: float
+    mean_js_divergence: float
+    periods_analyzed: int
+    periods_with_drift: int
+    drift_evidence: DriftEvidence | None = None
 
 
 class PeriodMetrics(BaseModel):
-    """Metrics for a single time period."""
+    """Per-period volume and day-level metrics."""
 
+    period_label: str
     period_start: date
     period_end: date
-    period_label: str  # e.g., "2024-01", "2024-W05"
-
-    # Volume metrics
     row_count: int
     expected_days: int
     observed_days: int
     coverage_ratio: float
-
-    # Day-level metrics for completeness check
-    last_day_volume: int | None = None
-    avg_day_volume: float | None = None
-    last_day_ratio: float | None = None
-    max_date_in_period: date | None = None
-    days_until_end: int | None = None
-
-    # Rolling statistics (computed across periods)
-    volume_rolling_avg: float | None = None
-    volume_rolling_std: float | None = None
+    last_day_ratio: float
+    rolling_avg: float | None = None
+    rolling_std: float | None = None
     z_score: float | None = None
     period_over_period_change: float | None = None
 
 
 class CompletenessResult(BaseModel):
-    """Result of period completeness analysis."""
+    """Completeness assessment for a period."""
 
     period_label: str
-    coverage_ratio: float
     is_complete: bool
-    days_missing_at_end: int
+    coverage_ratio: float
     has_early_cutoff: bool
-    has_volume_dropoff: bool
-    last_day_ratio: float | None = None
-    issues: list[str] = Field(default_factory=list)
-
-
-class DistributionDriftResult(BaseModel):
-    """Result of distribution drift analysis for a categorical column."""
-
-    column_name: str
-    period_label: str
-    previous_period_label: str | None = None
-
-    # Drift metrics
-    jensen_shannon_divergence: float | None = None
-    chi_square_statistic: float | None = None
-    chi_square_p_value: float | None = None
-
-    # Category changes
-    new_categories: list[str] = Field(default_factory=list)
-    missing_categories: list[str] = Field(default_factory=list)
-
-    # Flags
-    has_significant_drift: bool = False
-    has_category_changes: bool = False
-    issues: list[str] = Field(default_factory=list)
-
-
-class SliceTimeCell(BaseModel):
-    """A single cell in the slice × time matrix."""
-
-    slice_value: str
-    period_label: str
-    row_count: int
-    period_over_period_change: float | None = None
-
-
-class SliceTimeMatrix(BaseModel):
-    """Cross-slice temporal comparison matrix."""
-
-    slice_column: str
-    periods: list[str]
-    slices: list[str]
-
-    # Matrix data: slice_value -> period_label -> metrics
-    data: dict[str, dict[str, SliceTimeCell]]
-
-    # Per-slice trends
-    slice_trends: dict[str, float]  # slice_value -> trend percentage
-
-    # Global totals per period
-    period_totals: dict[str, int]
-
-    # Insights
-    hidden_trends: list[str] = Field(default_factory=list)
-    compensating_slices: list[tuple[str, str]] = Field(default_factory=list)
+    days_missing_at_end: int
 
 
 class VolumeAnomalyResult(BaseModel):
-    """Result of volume anomaly detection."""
+    """Volume anomaly detection for a period."""
 
     period_label: str
-    volume: int
-    rolling_avg: float
-    rolling_std: float
-    z_score: float
     is_anomaly: bool
     anomaly_type: str | None = None  # "spike", "drop", "gap"
+    z_score: float
     period_over_period_change: float | None = None
-    issues: list[str] = Field(default_factory=list)
 
 
-class TemporalAnalysisResult(BaseModel):
-    """Complete result of temporal slice analysis."""
+class PeriodAnalysisResult(BaseModel):
+    """Combined result of period-level analysis for a slice table."""
 
-    config: TemporalSliceConfig
     slice_table_name: str
     time_column: str
-
-    # Period-level metrics
-    period_metrics: list[PeriodMetrics]
-
-    # Level 1: Completeness
-    completeness_results: list[CompletenessResult]
-
-    # Level 2: Distribution drift (per categorical column)
-    drift_results: list[DistributionDriftResult]
-
-    # Level 3: Slice × Time matrix
-    slice_time_matrix: SliceTimeMatrix | None = None
-
-    # Level 4: Volume anomalies
-    volume_anomalies: list[VolumeAnomalyResult]
-
-    # Summary
     total_periods: int
     incomplete_periods: int
     anomaly_count: int
-    drift_detected: bool
-
-    # Investigation SQL
-    investigation_queries: list[dict[str, str]] = Field(default_factory=list)
-
-
-@dataclass
-class AggregatedTemporalData:
-    """Aggregated temporal data for quality summary.
-
-    Used to pass temporal findings to Phase 9 quality summary.
-    """
-
-    slice_column_name: str
-    time_column: str
-    total_periods: int
-
-    # Completeness summary
-    incomplete_period_count: int
-    avg_coverage_ratio: float
-    early_cutoff_count: int
-
-    # Drift summary
-    drift_detected_count: int
-
-    # Volume summary
-    volume_anomaly_count: int
-
-    # Optional fields with defaults
-    max_js_divergence: float | None = None
-    max_zscore: float | None = None
-    category_change_periods: list[str] = field(default_factory=list)
-    gap_periods: list[str] = field(default_factory=list)
-
-    # Slice comparison summary
-    declining_slices: list[str] = field(default_factory=list)
-    growing_slices: list[str] = field(default_factory=list)
-    hidden_trend_insights: list[str] = field(default_factory=list)
-
-
-@dataclass
-class PeriodTopology:
-    """Topology metrics for a single time period.
-
-    Uses TDA (via ripser) to extract persistence diagrams for the period's data,
-    then computes Betti numbers and entropy from the diagrams.
-    """
-
-    period_start: str
-    period_end: str
-    betti_0: int  # Connected components
-    betti_1: int  # Cycles
-    betti_2: int  # Voids
-    structural_complexity: int
-    persistent_entropy: float = 0.0  # Information complexity from TDA
-    row_count: int = 0
-    has_anomalies: bool = False
-
-
-@dataclass
-class TopologyDrift:
-    """Detected change in topology between periods.
-
-    Uses bottleneck distance to compare persistence diagrams between consecutive periods.
-    """
-
-    period_from: str
-    period_to: str
-    metric: str  # bottleneck_distance, betti_0, betti_1, complexity, entropy
-    value_from: float
-    value_to: float
-    change_pct: float
-    bottleneck_distance: float | None = None  # Actual TDA distance metric
-    is_significant: bool = False
-
-
-@dataclass
-class TemporalTopologyResult:
-    """Result of temporal topology analysis.
-
-    Uses TDA with bottleneck distance to detect structural drift over time.
-    """
-
-    table_name: str
-    time_column: str
-    periods_analyzed: int = 0
-    period_topologies: list[PeriodTopology] = field(default_factory=list)
-    topology_drifts: list[TopologyDrift] = field(default_factory=list)
-    trend_direction: str = "stable"  # increasing, decreasing, stable, volatile
-    avg_complexity: float = 0.0
-    avg_entropy: float = 0.0
-    complexity_variance: float = 0.0
-    max_bottleneck_distance: float = 0.0  # Maximum drift between consecutive periods
-    structural_anomaly_periods: list[str] = field(default_factory=list)
+    period_metrics: list[PeriodMetrics]
+    completeness_results: list[CompletenessResult]
+    volume_anomalies: list[VolumeAnomalyResult]
 
 
 __all__ = [
     "TimeGrain",
     "TemporalSliceConfig",
+    "CategoryShift",
+    "CategoryAppearance",
+    "CategoryDisappearance",
+    "DriftEvidence",
+    "ColumnDriftResult",
     "PeriodMetrics",
     "CompletenessResult",
-    "DistributionDriftResult",
-    "SliceTimeCell",
-    "SliceTimeMatrix",
     "VolumeAnomalyResult",
-    "TemporalAnalysisResult",
-    "AggregatedTemporalData",
-    "PeriodTopology",
-    "TopologyDrift",
-    "TemporalTopologyResult",
+    "PeriodAnalysisResult",
 ]

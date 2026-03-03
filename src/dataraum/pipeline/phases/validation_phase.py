@@ -6,16 +6,20 @@ to identify relevant columns and generate appropriate SQL.
 
 from __future__ import annotations
 
+from types import ModuleType
+
 from sqlalchemy import func, select
 
 from dataraum.analysis.validation import ValidationAgent
-from dataraum.analysis.validation.db_models import ValidationRunRecord
-from dataraum.llm import LLMCache, PromptRenderer, create_provider, load_llm_config
+from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
+from dataraum.pipeline.db_models import PhaseCheckpoint
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
 
+@analysis_phase
 class ValidationPhase(BasePhase):
     """LLM-powered validation phase.
 
@@ -23,7 +27,7 @@ class ValidationPhase(BasePhase):
     to the LLM. Can generate cross-table JOINs when validations require
     data from multiple tables.
 
-    Requires: semantic phase.
+    Requires: semantic, relationships, enriched_views, slicing.
     """
 
     @property
@@ -36,15 +40,17 @@ class ValidationPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        return ["semantic"]
+        return ["semantic", "relationships", "enriched_views", "slicing"]
 
     @property
     def outputs(self) -> list[str]:
         return ["validation_results"]
 
     @property
-    def is_llm_phase(self) -> bool:
-        return True
+    def db_models(self) -> list[ModuleType]:
+        from dataraum.analysis.validation import db_models
+
+        return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if validations have already been run for this source."""
@@ -56,15 +62,15 @@ class ValidationPhase(BasePhase):
         if not typed_tables:
             return "No typed tables found"
 
-        table_ids = [t.table_id for t in typed_tables]
-
-        # Check for existing validation runs
-        run_stmt = select(func.count(ValidationRunRecord.run_id)).where(
-            ValidationRunRecord.table_ids.contains(table_ids)
+        # Check for existing completed phase checkpoint
+        cp_stmt = select(func.count(PhaseCheckpoint.checkpoint_id)).where(
+            PhaseCheckpoint.source_id == ctx.source_id,
+            PhaseCheckpoint.phase_name == self.name,
+            PhaseCheckpoint.status == "completed",
         )
-        run_count = (ctx.session.execute(run_stmt)).scalar() or 0
+        cp_count = (ctx.session.execute(cp_stmt)).scalar() or 0
 
-        if run_count > 0:
+        if cp_count > 0:
             return "Validation already run for these tables"
 
         return None
@@ -87,9 +93,6 @@ class ValidationPhase(BasePhase):
         except FileNotFoundError as e:
             return PhaseResult.failed(f"LLM config not found: {e}")
 
-        # Check if validation is implicitly enabled (no specific feature flag)
-        # Validation uses semantic_analysis settings as baseline
-
         # Create provider
         provider_config = config.providers.get(config.active_provider)
         if not provider_config:
@@ -101,7 +104,6 @@ class ValidationPhase(BasePhase):
             return PhaseResult.failed(f"Failed to create LLM provider: {e}")
 
         # Create other components
-        cache = LLMCache()
         renderer = PromptRenderer()
 
         # Create validation agent
@@ -109,8 +111,14 @@ class ValidationPhase(BasePhase):
             config=config,
             provider=provider,
             prompt_renderer=renderer,
-            cache=cache,
         )
+
+        # Vertical is required for loading validation specs
+        vertical = ctx.config.get("vertical")
+        if not vertical:
+            return PhaseResult.failed(
+                "No vertical configured. Set 'vertical' in config/phases/validation.yaml."
+            )
 
         # Get optional category filter from config
         category = ctx.config.get("validation_category")
@@ -122,6 +130,7 @@ class ValidationPhase(BasePhase):
             table_ids=table_ids,
             category=category,
             persist=True,
+            vertical=vertical,
         )
 
         if not validation_result.success:

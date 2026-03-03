@@ -10,27 +10,6 @@ from pydantic import BaseModel, Field
 
 from dataraum.core.models.base import Result
 
-
-class LLMRequest(BaseModel):
-    """Request to LLM provider."""
-
-    prompt: str
-    max_tokens: int = 4000
-    temperature: float = 0.0
-    response_format: str = "json"  # "json" or "text"
-
-
-class LLMResponse(BaseModel):
-    """Response from LLM provider."""
-
-    content: str
-    model: str
-    input_tokens: int
-    output_tokens: int
-    cached: bool = False  # True if from our cache
-    provider_cached: bool = False  # True if provider cache hit
-
-
 # === Tool Use Models ===
 
 
@@ -72,6 +51,7 @@ class ConversationRequest(BaseModel):
     messages: list[Message]
     system: str | None = None
     tools: list[ToolDefinition] = Field(default_factory=list)
+    tool_choice: dict[str, str] | None = None  # e.g. {"type": "tool", "name": "..."}
     max_tokens: int = 4096
     temperature: float = 0.0
     model: str | None = None  # Override default model
@@ -89,28 +69,11 @@ class ConversationResponse(BaseModel):
 
 
 class LLMProvider(ABC):
-    """Abstract base for LLM providers.
-
-    All LLM providers (Anthropic, OpenAI, Local) must implement this interface.
-    """
+    """Abstract base for LLM providers."""
 
     @abstractmethod
-    def complete(self, request: LLMRequest) -> Result[LLMResponse]:
-        """Send completion request to provider.
-
-        Args:
-            request: The LLM request with prompt and parameters
-
-        Returns:
-            Result containing LLMResponse or error message
-        """
-        pass
-
     def converse(self, request: ConversationRequest) -> Result[ConversationResponse]:
         """Send a conversation request with optional tool use.
-
-        This is the preferred method for agentic interactions.
-        Default implementation raises NotImplementedError.
 
         Args:
             request: Conversation request with messages, tools, etc.
@@ -118,9 +81,7 @@ class LLMProvider(ABC):
         Returns:
             Result containing ConversationResponse or error message
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support conversation/tool use"
-        )
+        pass
 
     @abstractmethod
     def get_model_for_tier(self, tier: str) -> str:

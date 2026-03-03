@@ -18,27 +18,27 @@ Usage:
     )
 
     # Load graphs
-    loader = GraphLoader()
+    loader = GraphLoader(vertical="finance")
     loader.load_all()
     graph = loader.get_graph("dso")
 
     # Execute using agent (requires LLM infrastructure)
-    agent = GraphAgent(config, provider, renderer, cache)
-    context = ExecutionContext(
+    agent = GraphAgent(config, provider, renderer)
+    context = ExecutionContext.with_rich_context(
+        session=session,
         duckdb_conn=conn,
-        table_name="transactions",
+        table_ids=table_ids,
     )
-    result = await agent.execute(session, graph, context)
+    result = agent.execute(session, graph, context)
 """
 
 # Re-export DB models for convenience
 from dataraum.graphs.db_models import (
-    GeneratedCodeRecord,
     GraphExecutionRecord,
     StepResultRecord,
 )
 
-from .agent import ExecutionContext, GeneratedCode, GraphAgent, TableSchema
+from .agent import ExecutionContext, GeneratedCode, GraphAgent
 from .context import (
     ColumnContext,
     GraphExecutionContext,
@@ -49,8 +49,6 @@ from .context import (
 )
 from .entropy_behavior import (
     BehaviorMode,
-    CompoundRiskAction,
-    CompoundRiskBehavior,
     DimensionBehavior,
     EntropyAction,
     EntropyBehaviorConfig,
@@ -96,7 +94,7 @@ __all__ = [
     "GraphAgent",
     "ExecutionContext",
     "GeneratedCode",
-    "TableSchema",
+    # TableSchema removed — schema is now built as dict by _build_schema_info
     # Context builder
     "GraphExecutionContext",
     "TableContext",
@@ -109,8 +107,6 @@ __all__ = [
     "EntropyAction",
     "EntropyBehaviorConfig",
     "DimensionBehavior",
-    "CompoundRiskAction",
-    "CompoundRiskBehavior",
     "get_default_config",
     # Enums
     "GraphType",
@@ -144,7 +140,6 @@ __all__ = [
     "SchemaMapping",
     "DatasetSchemaMapping",
     # Persistence
-    "GeneratedCodeRecord",
     "GraphExecutionRecord",
     "StepResultRecord",
     "GraphExecutionRepository",

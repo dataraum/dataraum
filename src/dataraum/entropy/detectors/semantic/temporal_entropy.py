@@ -9,7 +9,7 @@ Source: semantic.semantic_role, typing.data_type
 """
 
 from dataraum.entropy.config import get_entropy_config
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -30,6 +30,7 @@ class TemporalEntropyDetector(EntropyDetector):
     layer = "semantic"
     dimension = "temporal"
     sub_dimension = "time_role"
+    trust_level = DetectorTrust.SOFT
     required_analyses = ["typing", "semantic"]
     description = "Measures whether temporal columns are properly identified"
 
@@ -59,7 +60,6 @@ class TemporalEntropyDetector(EntropyDetector):
         score_unmarked = detector_config.get("score_unmarked", 0.6)
         score_mismatch = detector_config.get("score_mismatch", 0.8)
         score_aligned = detector_config.get("score_aligned", 0.1)
-        reduction_mark_timestamp = detector_config.get("reduction_mark_timestamp", 0.6)
 
         typing = context.get_analysis("typing", {})
         semantic = context.get_analysis("semantic", {})
@@ -82,10 +82,24 @@ class TemporalEntropyDetector(EntropyDetector):
         # Check if column is marked as timestamp
         is_marked_timestamp = semantic_role == "timestamp"
 
+        # Get semantic confidence (if available) for score modulation
+        semantic_confidence: float | None = None
+        if hasattr(semantic, "confidence"):
+            semantic_confidence = semantic.confidence
+        elif isinstance(semantic, dict):
+            semantic_confidence = semantic.get("confidence")
+
         # Determine status and score
         if is_datetime_type and not is_marked_timestamp:
             # Date column not marked as timestamp - may confuse time-based queries
             score = score_unmarked
+            # Modulate by semantic confidence: high-confidence "not timestamp"
+            # analysis deserves lower entropy than low-confidence.
+            if semantic_confidence is not None and isinstance(semantic_confidence, (int, float)):
+                # Higher confidence that role is NOT timestamp → lower entropy
+                # score_unmarked * (1 - confidence * 0.5): at confidence=1.0, reduce by 50%
+                score = score_unmarked * (1.0 - semantic_confidence * 0.5)
+                score = max(score_aligned, score)  # Never below aligned score
             temporal_status = "unmarked"
         elif not is_datetime_type and is_marked_timestamp:
             # Marked as timestamp but not date type - data type mismatch
@@ -116,13 +130,12 @@ class TemporalEntropyDetector(EntropyDetector):
         if temporal_status == "unmarked":
             resolution_options.append(
                 ResolutionOption(
-                    action="mark_timestamp",
+                    action="document_timestamp_role",
                     parameters={
                         "column": context.column_name,
                         "table": context.table_name,
                         "data_type": data_type,
                     },
-                    expected_entropy_reduction=reduction_mark_timestamp,
                     effort="low",
                     description=f"Mark date column '{context.column_name}' as timestamp",
                 )
@@ -130,14 +143,13 @@ class TemporalEntropyDetector(EntropyDetector):
         elif temporal_status == "mismatch":
             resolution_options.append(
                 ResolutionOption(
-                    action="resolve_temporal_mismatch",
+                    action="transform_resolve_temporal_mismatch",
                     parameters={
                         "column": context.column_name,
                         "table": context.table_name,
                         "data_type": data_type,
                         "semantic_role": semantic_role,
                     },
-                    expected_entropy_reduction=reduction_mark_timestamp,
                     effort="medium",
                     description=f"Resolve type/role mismatch for '{context.column_name}'",
                 )

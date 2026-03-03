@@ -23,7 +23,7 @@ if ! uv run python -m mypy -i src --no-error-summary 2>/dev/null; then
 fi
 
 echo "Checking: pytest..."
-if ! uv run python -m pytest --testmon tests --tb=short -q 2>&1; then
+if ! uv run python -m pytest --testmon tests/unit tests/integration --tb=short -q 2>&1; then
     echo "❌ Tests failed. ALL tests must pass before declaring done." >&2
     exit 2
 fi

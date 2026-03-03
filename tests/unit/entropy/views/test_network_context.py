@@ -177,12 +177,18 @@ class TestPerColumnAssembly:
         """One column with two mapped objects -> one ColumnNetworkResult."""
         objects = [
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.8, target="column:t.c1",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.8,
+                target="column:t.c1",
             ),
             make_entropy_object(
-                layer="value", dimension="nulls", sub_dimension="root_b",
-                score=0.2, target="column:t.c1",
+                layer="value",
+                dimension="nulls",
+                sub_dimension="root_b",
+                score=0.2,
+                target="column:t.c1",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -199,13 +205,19 @@ class TestPerColumnAssembly:
         objects = [
             # Column 1: root_a high
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.9, target="column:t.c1",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.9,
+                target="column:t.c1",
             ),
             # Column 2: root_a low
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.1, target="column:t.c2",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.1,
+                target="column:t.c2",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -221,28 +233,37 @@ class TestPerColumnAssembly:
         """Column with only unmapped objects -> no ColumnNetworkResult, only DirectSignals."""
         objects = [
             make_entropy_object(
-                layer="semantic", dimension="dimensional",
+                layer="semantic",
+                dimension="dimensional",
                 sub_dimension="cross_column_patterns",
-                score=0.6, target="column:t.c1",
+                score=0.6,
+                target="column:t.c1",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
         assert result.total_columns == 0
         assert "column:t.c1" not in result.columns
         assert len(result.direct_signals) == 1
-        assert result.direct_signals[0].dimension_path == "semantic.dimensional.cross_column_patterns"
+        assert (
+            result.direct_signals[0].dimension_path == "semantic.dimensional.cross_column_patterns"
+        )
 
     def test_mixed_mapped_and_unmapped_within_column(self, small_network):
         """Mapped objects go to network, unmapped become direct signals."""
         objects = [
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.7, target="column:t.c1",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.7,
+                target="column:t.c1",
             ),
             make_entropy_object(
-                layer="semantic", dimension="dimensional",
+                layer="semantic",
+                dimension="dimensional",
                 sub_dimension="quality_assessment",
-                score=0.5, target="column:t.c1",
+                score=0.5,
+                target="column:t.c1",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -253,12 +274,18 @@ class TestPerColumnAssembly:
         """Column with all low evidence -> readiness='ready'."""
         objects = [
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.1, target="column:t.c1",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.1,
+                target="column:t.c1",
             ),
             make_entropy_object(
-                layer="value", dimension="nulls", sub_dimension="root_b",
-                score=0.1, target="column:t.c1",
+                layer="value",
+                dimension="nulls",
+                sub_dimension="root_b",
+                score=0.1,
+                target="column:t.c1",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -273,12 +300,18 @@ class TestPerColumnAssembly:
         """Column with high evidence -> intent readiness reflects P(high)."""
         objects = [
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.8, target="column:t.c1",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.8,
+                target="column:t.c1",
             ),
             make_entropy_object(
-                layer="value", dimension="nulls", sub_dimension="root_b",
-                score=0.7, target="column:t.c1",
+                layer="value",
+                dimension="nulls",
+                sub_dimension="root_b",
+                score=0.7,
+                target="column:t.c1",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -294,8 +327,11 @@ class TestPerColumnAssembly:
         """Table-level objects always become direct signals."""
         objects = [
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.8, target="table:sales",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.8,
+                target="table:sales",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -308,7 +344,9 @@ class TestPerColumnAssembly:
         evidence_data = [{"metric": "type_mismatch_ratio", "value": 0.3}]
         objects = [
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
                 score=0.75,
                 evidence=evidence_data,
                 detector_id="type_detector",
@@ -326,8 +364,11 @@ class TestPerColumnAssembly:
         """Column with high node should have top_priority_node populated."""
         objects = [
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.9, target="column:t.c1",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.9,
+                target="column:t.c1",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -339,8 +380,11 @@ class TestPerColumnAssembly:
         """High node should have non-zero impact_delta from priorities."""
         objects = [
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.9, target="column:t.c1",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.9,
+                target="column:t.c1",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -352,8 +396,11 @@ class TestPerColumnAssembly:
         """Low node should have zero impact_delta (no fix needed)."""
         objects = [
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.1, target="column:t.c1",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.1,
+                target="column:t.c1",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -373,21 +420,33 @@ class TestCrossColumnAggregation:
         objects = [
             # Column 1: high
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.9, target="column:t.c1",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.9,
+                target="column:t.c1",
             ),
             make_entropy_object(
-                layer="value", dimension="nulls", sub_dimension="root_b",
-                score=0.8, target="column:t.c1",
+                layer="value",
+                dimension="nulls",
+                sub_dimension="root_b",
+                score=0.8,
+                target="column:t.c1",
             ),
             # Column 2: low
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.1, target="column:t.c2",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.1,
+                target="column:t.c2",
             ),
             make_entropy_object(
-                layer="value", dimension="nulls", sub_dimension="root_b",
-                score=0.1, target="column:t.c2",
+                layer="value",
+                dimension="nulls",
+                sub_dimension="root_b",
+                score=0.1,
+                target="column:t.c2",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -398,10 +457,12 @@ class TestCrossColumnAggregation:
         c1_intent = result.columns["column:t.c1"].intents[0]
         c2_intent = result.columns["column:t.c2"].intents[0]
         assert agg.worst_p_high == pytest.approx(
-            max(c1_intent.p_high, c2_intent.p_high), abs=0.001,
+            max(c1_intent.p_high, c2_intent.p_high),
+            abs=0.001,
         )
         assert agg.mean_p_high == pytest.approx(
-            (c1_intent.p_high + c2_intent.p_high) / 2, abs=0.001,
+            (c1_intent.p_high + c2_intent.p_high) / 2,
+            abs=0.001,
         )
 
     def test_cross_column_fix_picks_most_affected(self, small_network):
@@ -409,21 +470,33 @@ class TestCrossColumnAggregation:
         objects = [
             # Both columns have root_a high
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.9, target="column:t.c1",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.9,
+                target="column:t.c1",
             ),
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.8, target="column:t.c2",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.8,
+                target="column:t.c2",
             ),
             # Only c1 has root_b high
             make_entropy_object(
-                layer="value", dimension="nulls", sub_dimension="root_b",
-                score=0.7, target="column:t.c1",
+                layer="value",
+                dimension="nulls",
+                sub_dimension="root_b",
+                score=0.7,
+                target="column:t.c1",
             ),
             make_entropy_object(
-                layer="value", dimension="nulls", sub_dimension="root_b",
-                score=0.1, target="column:t.c2",
+                layer="value",
+                dimension="nulls",
+                sub_dimension="root_b",
+                score=0.1,
+                target="column:t.c2",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -438,8 +511,11 @@ class TestCrossColumnAggregation:
         """total_intent_delta sums actual per-node impact, not worst_intent_p_high."""
         objects = [
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.9, target="column:t.c1",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.9,
+                target="column:t.c1",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -448,24 +524,34 @@ class TestCrossColumnAggregation:
         col = result.columns["column:t.c1"]
         ne = next(n for n in col.node_evidence if n.node_name == "root_a")
         assert result.top_fix.total_intent_delta == pytest.approx(
-            ne.impact_delta, abs=0.001,
+            ne.impact_delta,
+            abs=0.001,
         )
 
     def test_overall_readiness_from_worst_aggregate(self, small_network):
         """overall_readiness derives from worst aggregate intent."""
         objects = [
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.95, target="column:t.c1",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.95,
+                target="column:t.c1",
             ),
             make_entropy_object(
-                layer="value", dimension="nulls", sub_dimension="root_b",
-                score=0.95, target="column:t.c1",
+                layer="value",
+                dimension="nulls",
+                sub_dimension="root_b",
+                score=0.95,
+                target="column:t.c1",
             ),
             # Another column all low
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.1, target="column:t.c2",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.1,
+                target="column:t.c2",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -477,12 +563,18 @@ class TestCrossColumnAggregation:
         """columns_blocked + columns_investigate + columns_ready = total_columns."""
         objects = [
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.9, target="column:t.c1",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.9,
+                target="column:t.c1",
             ),
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.1, target="column:t.c2",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.1,
+                target="column:t.c2",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -495,12 +587,18 @@ class TestCrossColumnAggregation:
         """No CrossColumnFix when all nodes are low."""
         objects = [
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.1, target="column:t.c1",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.1,
+                target="column:t.c1",
             ),
             make_entropy_object(
-                layer="structural", dimension="types", sub_dimension="root_a",
-                score=0.1, target="column:t.c2",
+                layer="structural",
+                dimension="types",
+                sub_dimension="root_a",
+                score=0.1,
+                target="column:t.c2",
             ),
         ]
         result = _assemble_network_context(objects, small_network)
@@ -514,7 +612,9 @@ class TestCrossColumnAggregation:
 
 class TestAssembleFullNetwork:
     def _make_root_objects(
-        self, score: float = 0.7, target: str = "column:t.c1",
+        self,
+        score: float = 0.7,
+        target: str = "column:t.c1",
     ) -> list[EntropyObject]:
         """Create objects for all 8 root nodes targeting a single column."""
         roots = [
@@ -529,8 +629,11 @@ class TestAssembleFullNetwork:
         ]
         return [
             make_entropy_object(
-                layer=layer, dimension=dim, sub_dimension=sub,
-                score=score, target=target,
+                layer=layer,
+                dimension=dim,
+                sub_dimension=sub,
+                score=score,
+                target=target,
             )
             for layer, dim, sub in roots
         ]
@@ -546,10 +649,9 @@ class TestAssembleFullNetwork:
 
     def test_multiple_columns_aggregate_3_intents(self, full_network):
         """Multiple columns aggregate to 3 intent readiness entries."""
-        objects = (
-            self._make_root_objects(score=0.8, target="column:t.c1")
-            + self._make_root_objects(score=0.2, target="column:t.c2")
-        )
+        objects = self._make_root_objects(
+            score=0.8, target="column:t.c1"
+        ) + self._make_root_objects(score=0.2, target="column:t.c2")
         result = _assemble_network_context(objects, full_network)
         assert result.total_columns == 2
         agg_intent_names = {i.intent_name for i in result.intents}
@@ -557,10 +659,9 @@ class TestAssembleFullNetwork:
 
     def test_top_fix_identified_for_high_scores(self, full_network):
         """With high scores across columns, a top fix should be identified."""
-        objects = (
-            self._make_root_objects(score=0.8, target="column:t.c1")
-            + self._make_root_objects(score=0.9, target="column:t.c2")
-        )
+        objects = self._make_root_objects(
+            score=0.8, target="column:t.c1"
+        ) + self._make_root_objects(score=0.9, target="column:t.c2")
         result = _assemble_network_context(objects, full_network)
         assert result.top_fix is not None
         assert result.top_fix.columns_affected >= 1
@@ -568,14 +669,20 @@ class TestAssembleFullNetwork:
     def test_unmapped_dimensional_signal(self, full_network):
         """semantic.dimensional.cross_column_patterns has no network node."""
         objects = self._make_root_objects(score=0.3)
-        objects.append(make_entropy_object(
-            layer="semantic", dimension="dimensional",
-            sub_dimension="cross_column_patterns",
-            score=0.6, target="table:sales",
-        ))
+        objects.append(
+            make_entropy_object(
+                layer="semantic",
+                dimension="dimensional",
+                sub_dimension="cross_column_patterns",
+                score=0.6,
+                target="table:sales",
+            )
+        )
         result = _assemble_network_context(objects, full_network)
         assert result.total_direct_signals == 1
-        assert result.direct_signals[0].dimension_path == "semantic.dimensional.cross_column_patterns"
+        assert (
+            result.direct_signals[0].dimension_path == "semantic.dimensional.cross_column_patterns"
+        )
 
     def test_overall_readiness_blocked_when_high(self, full_network):
         """With very high scores, overall readiness should be blocked."""
@@ -609,8 +716,11 @@ class TestAssembleFullNetwork:
         ]
         objects = [
             make_entropy_object(
-                layer=layer, dimension=dim, sub_dimension=sub,
-                score=0.0, target="column:t.c1",
+                layer=layer,
+                dimension=dim,
+                sub_dimension=sub,
+                score=0.0,
+                target="column:t.c1",
             )
             for layer, dim, sub in partial_roots
         ]

@@ -84,4 +84,3 @@ concepts:
         assert ontology.name == "test_ontology"
         assert len(ontology.concepts) == 1
         assert ontology.concepts[0].name == "test_concept"
-

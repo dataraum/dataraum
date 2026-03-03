@@ -364,5 +364,3 @@ def mock_prompt_renderer() -> MagicMock:
     renderer = MagicMock()
     renderer.render_split.return_value = ("System prompt", "User prompt", 0.0)
     return renderer
-
-

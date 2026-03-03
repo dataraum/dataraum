@@ -82,9 +82,7 @@ class StubSoftDetector(EntropyDetector):
     required_analyses = ["semantic"]
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
-        return [
-            self.create_entropy_object(context, score=0.5)
-        ]
+        return [self.create_entropy_object(context, score=0.5)]
 
 
 class FailingDetector(EntropyDetector):

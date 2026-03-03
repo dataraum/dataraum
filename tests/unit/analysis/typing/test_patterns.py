@@ -149,5 +149,3 @@ class TestPatternConfig:
         # PatternConfig should not have column name matching
         assert not hasattr(config, "match_column_name")
         assert not hasattr(config, "get_column_name_patterns")
-
-

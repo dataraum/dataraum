@@ -291,7 +291,7 @@ class TestFormatEntropyForPrompt:
                 "overall_readiness": "ready",
                 "high_entropy_count": 0,
                 "critical_entropy_count": 0,
-                                "readiness_blockers": [],
+                "readiness_blockers": [],
             }
         )
         result = format_entropy_for_prompt(ctx)
@@ -321,7 +321,7 @@ class TestFormatEntropyForPrompt:
                 "overall_readiness": "blocked",
                 "high_entropy_count": 5,
                 "critical_entropy_count": 2,
-                                "readiness_blockers": ["orders.amount", "orders.currency"],
+                "readiness_blockers": ["orders.amount", "orders.currency"],
             }
         )
         result = format_entropy_for_prompt(ctx)
@@ -412,9 +412,7 @@ class TestFormatEntropyForPrompt:
             )
             for i, name in enumerate(["currency", "date", "method"], start=2)
         ]
-        table1 = TableContext(
-            table_id="tbl-1", table_name="fx_rates", columns=[interesting_col]
-        )
+        table1 = TableContext(table_id="tbl-1", table_name="fx_rates", columns=[interesting_col])
         table2 = TableContext(
             table_id="tbl-2", table_name="bank_transactions", columns=baseline_cols
         )
@@ -705,4 +703,3 @@ class TestFormatBusinessCycleSection:
         assert "customers.customer_id" in result
         assert "orders" in result
         assert "FK" in result
-

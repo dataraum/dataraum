@@ -89,9 +89,7 @@ class TestContractEvaluation:
         has a threshold of 0.3 for types, so it won't be GREEN. This is
         expected — it validates that the contract correctly detects issues.
         """
-        column_summaries = _build_column_summaries(
-            analyzed_small_finance, analyzed_table_ids
-        )
+        column_summaries = _build_column_summaries(analyzed_small_finance, analyzed_table_ids)
 
         evaluation = evaluate_contract(column_summaries, "exploratory_analysis")
 
@@ -107,9 +105,7 @@ class TestContractEvaluation:
         analyzed_table_ids: list[str],
     ):
         """Regulatory reporting should be the strictest contract."""
-        column_summaries = _build_column_summaries(
-            analyzed_small_finance, analyzed_table_ids
-        )
+        column_summaries = _build_column_summaries(analyzed_small_finance, analyzed_table_ids)
 
         evaluation = evaluate_contract(column_summaries, "regulatory_reporting")
 
@@ -126,9 +122,7 @@ class TestContractEvaluation:
         analyzed_table_ids: list[str],
     ):
         """evaluate_all_contracts should return evaluations for every contract."""
-        column_summaries = _build_column_summaries(
-            analyzed_small_finance, analyzed_table_ids
-        )
+        column_summaries = _build_column_summaries(analyzed_small_finance, analyzed_table_ids)
 
         evaluations = evaluate_all_contracts(column_summaries)
 
@@ -144,9 +138,7 @@ class TestContractEvaluation:
         analyzed_table_ids: list[str],
     ):
         """Stricter contracts should not be more confident than lenient ones."""
-        column_summaries = _build_column_summaries(
-            analyzed_small_finance, analyzed_table_ids
-        )
+        column_summaries = _build_column_summaries(analyzed_small_finance, analyzed_table_ids)
 
         evaluations = evaluate_all_contracts(column_summaries)
 
@@ -179,9 +171,7 @@ class TestBestContractSelection:
         which may cause all contracts to fail. This is valid behavior —
         the function correctly returns None when data quality is insufficient.
         """
-        column_summaries = _build_column_summaries(
-            analyzed_small_finance, analyzed_table_ids
-        )
+        column_summaries = _build_column_summaries(analyzed_small_finance, analyzed_table_ids)
 
         best_name, best_eval = find_best_contract(column_summaries)
 
@@ -200,9 +190,7 @@ class TestBestContractSelection:
         analyzed_table_ids: list[str],
     ):
         """The best contract should be the strictest one that still passes."""
-        column_summaries = _build_column_summaries(
-            analyzed_small_finance, analyzed_table_ids
-        )
+        column_summaries = _build_column_summaries(analyzed_small_finance, analyzed_table_ids)
 
         best_name, best_eval = find_best_contract(column_summaries)
         all_evals = evaluate_all_contracts(column_summaries)
@@ -228,9 +216,7 @@ class TestEvaluationDetails:
         analyzed_table_ids: list[str],
     ):
         """Evaluation should include per-dimension entropy scores."""
-        column_summaries = _build_column_summaries(
-            analyzed_small_finance, analyzed_table_ids
-        )
+        column_summaries = _build_column_summaries(analyzed_small_finance, analyzed_table_ids)
 
         evaluation = evaluate_contract(column_summaries, "exploratory_analysis")
 
@@ -247,9 +233,7 @@ class TestEvaluationDetails:
         analyzed_table_ids: list[str],
     ):
         """Evaluation should identify which dimension is worst."""
-        column_summaries = _build_column_summaries(
-            analyzed_small_finance, analyzed_table_ids
-        )
+        column_summaries = _build_column_summaries(analyzed_small_finance, analyzed_table_ids)
 
         evaluation = evaluate_contract(column_summaries, "exploratory_analysis")
 
@@ -268,9 +252,7 @@ class TestEvaluationDetails:
         analyzed_table_ids: list[str],
     ):
         """Non-compliant evaluation should have violations explaining why."""
-        column_summaries = _build_column_summaries(
-            analyzed_small_finance, analyzed_table_ids
-        )
+        column_summaries = _build_column_summaries(analyzed_small_finance, analyzed_table_ids)
 
         # Use the strictest contract to increase chance of violations
         evaluation = evaluate_contract(column_summaries, "regulatory_reporting")
@@ -288,9 +270,7 @@ class TestEvaluationDetails:
         analyzed_table_ids: list[str],
     ):
         """Evaluation should serialize to dict for API responses."""
-        column_summaries = _build_column_summaries(
-            analyzed_small_finance, analyzed_table_ids
-        )
+        column_summaries = _build_column_summaries(analyzed_small_finance, analyzed_table_ids)
 
         evaluation = evaluate_contract(column_summaries, "exploratory_analysis")
         result = evaluation.to_dict()

@@ -85,9 +85,9 @@ class TestEntropyDetection:
 
         # Query detected detector_ids
         detected_ids = set(
-            medium_metadata_session.execute(
-                select(EntropyObjectRecord.detector_id).distinct()
-            ).scalars().all()
+            medium_metadata_session.execute(select(EntropyObjectRecord.detector_id).distinct())
+            .scalars()
+            .all()
         )
 
         # Check coverage — most injected detectors should be found
@@ -114,9 +114,7 @@ class TestEntropyDetection:
             injected_pairs.add((table, inj.target_column))
 
         # Query entropy objects with scores
-        objects = medium_metadata_session.execute(
-            select(EntropyObjectRecord)
-        ).scalars().all()
+        objects = medium_metadata_session.execute(select(EntropyObjectRecord)).scalars().all()
 
         # Find objects matching injected pairs
         elevated = []
@@ -151,15 +149,13 @@ class TestEntropyDetection:
             pytest.skip("No high-severity injections in this run")
 
         detected_ids = set(
-            medium_metadata_session.execute(
-                select(EntropyObjectRecord.detector_id).distinct()
-            ).scalars().all()
+            medium_metadata_session.execute(select(EntropyObjectRecord.detector_id).distinct())
+            .scalars()
+            .all()
         )
 
         missing = high_sev_detectors - detected_ids
-        assert not missing, (
-            f"High-severity detectors not found in entropy objects: {missing}"
-        )
+        assert not missing, f"High-severity detectors not found in entropy objects: {missing}"
 
 
 # =============================================================================
@@ -193,19 +189,27 @@ class TestBayesianNetwork:
         """Medium pipeline avg_entropy_score should be higher than clean pipeline."""
         # Get clean snapshot score
         with output_manager.session_scope() as session:
-            clean_snapshot = session.execute(
-                select(EntropySnapshotRecord).where(
-                    EntropySnapshotRecord.source_id == pipeline_run.source_id
+            clean_snapshot = (
+                session.execute(
+                    select(EntropySnapshotRecord).where(
+                        EntropySnapshotRecord.source_id == pipeline_run.source_id
+                    )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
 
         # Get medium snapshot score
         with medium_output_manager.session_scope() as session:
-            medium_snapshot = session.execute(
-                select(EntropySnapshotRecord).where(
-                    EntropySnapshotRecord.source_id == medium_pipeline_run.source_id
+            medium_snapshot = (
+                session.execute(
+                    select(EntropySnapshotRecord).where(
+                        EntropySnapshotRecord.source_id == medium_pipeline_run.source_id
+                    )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
 
         assert clean_snapshot is not None, "No clean entropy snapshot"
         assert medium_snapshot is not None, "No medium entropy snapshot"
@@ -225,11 +229,15 @@ class TestBayesianNetwork:
         The 3 intent leaves (query_intent, aggregation_intent, reporting_intent)
         should show non-"low" states when upstream nodes have injected entropy.
         """
-        snapshot = medium_metadata_session.execute(
-            select(EntropySnapshotRecord).where(
-                EntropySnapshotRecord.source_id == medium_pipeline_run.source_id
+        snapshot = (
+            medium_metadata_session.execute(
+                select(EntropySnapshotRecord).where(
+                    EntropySnapshotRecord.source_id == medium_pipeline_run.source_id
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
 
         if snapshot is None or snapshot.snapshot_data is None:
             pytest.skip("No snapshot_data available to check intent nodes")

@@ -47,10 +47,7 @@ def forward_propagate(
             show_progress=False,
         )
         values = factor.values
-        results[node] = {
-            state: float(values[i])
-            for i, state in enumerate(network.states)
-        }
+        results[node] = {state: float(values[i]) for i, state in enumerate(network.states)}
 
     return results
 
@@ -98,9 +95,6 @@ def what_if_analysis(
             show_progress=False,
         )
         values = factor.values
-        results[node] = {
-            state: float(values[i])
-            for i, state in enumerate(network.states)
-        }
+        results[node] = {state: float(values[i]) for i, state in enumerate(network.states)}
 
     return results

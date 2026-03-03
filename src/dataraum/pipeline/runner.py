@@ -301,9 +301,11 @@ def _check_fingerprint_and_invalidate(
             old_fingerprint=old_fingerprint,
             new_fingerprint=new_fingerprint,
         )
-        checkpoints = session.execute(
-            select(PhaseCheckpoint).where(PhaseCheckpoint.source_id == source_id)
-        ).scalars().all()
+        checkpoints = (
+            session.execute(select(PhaseCheckpoint).where(PhaseCheckpoint.source_id == source_id))
+            .scalars()
+            .all()
+        )
         for cp in checkpoints:
             session.delete(cp)
 
@@ -355,9 +357,7 @@ def run(config: RunConfig) -> Result[RunResult]:
             source_id = str(
                 uuid4()
                 if not config.output_dir.name
-                else hashlib.md5(
-                    str(config.output_dir.resolve()).encode()
-                ).hexdigest()[:32]
+                else hashlib.md5(str(config.output_dir.resolve()).encode()).hexdigest()[:32]
             )
             # Check if we already have a source with this approach
             with manager.session_scope() as session:
@@ -475,7 +475,9 @@ def run(config: RunConfig) -> Result[RunResult]:
                     timings=checkpoint.timings if checkpoint else {},
                     # Entropy / gate info from checkpoint
                     post_verification_scores=(
-                        checkpoint.entropy_hard_scores if checkpoint and checkpoint.entropy_hard_scores else {}
+                        checkpoint.entropy_hard_scores
+                        if checkpoint and checkpoint.entropy_hard_scores
+                        else {}
                     ),
                     gate_status=checkpoint.gate_status or "" if checkpoint else "",
                 )
@@ -490,16 +492,18 @@ def run(config: RunConfig) -> Result[RunResult]:
                 EventType.GATE_BLOCKED,
                 EventType.GATE_RESOLVED,
             ):
-                gate_events_list.append({
-                    "event_type": evt.event_type.value,
-                    "phase": evt.phase,
-                    "gate_status": evt.gate_status,
-                    "violations": {
-                        k: {"current": v[0], "threshold": v[1]}
-                        for k, v in evt.violations.items()
-                    },
-                    "message": evt.message,
-                })
+                gate_events_list.append(
+                    {
+                        "event_type": evt.event_type.value,
+                        "phase": evt.phase,
+                        "gate_status": evt.gate_status,
+                        "violations": {
+                            k: {"current": v[0], "threshold": v[1]}
+                            for k, v in evt.violations.items()
+                        },
+                        "message": evt.message,
+                    }
+                )
 
         # Close connections
         manager.close()

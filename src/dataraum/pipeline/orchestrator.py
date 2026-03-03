@@ -366,40 +366,46 @@ class Pipeline:
                                 )
                                 if self.config.gate_mode in ("skip", "auto_fix"):
                                     logger.debug(f"Phase {name}: {gate_reason} (skipping gate)")
-                                    self._emit_event(PipelineEvent(
-                                        event_type=EventType.GATE_EVALUATED,
-                                        phase=name,
-                                        step=completed_step,
-                                        total=total_phases,
-                                        gate_status="skipped",
-                                        violations=gate_violations,
-                                        message=gate_reason,
-                                    ))
+                                    self._emit_event(
+                                        PipelineEvent(
+                                            event_type=EventType.GATE_EVALUATED,
+                                            phase=name,
+                                            step=completed_step,
+                                            total=total_phases,
+                                            gate_status="skipped",
+                                            violations=gate_violations,
+                                            message=gate_reason,
+                                        )
+                                    )
                                 elif self.config.gate_mode == "fail":
                                     logger.error(f"Phase {name}: {gate_reason}")
-                                    self._emit_event(PipelineEvent(
-                                        event_type=EventType.GATE_EVALUATED,
-                                        phase=name,
-                                        step=completed_step,
-                                        total=total_phases,
-                                        gate_status="blocked",
-                                        violations=gate_violations,
-                                        message=gate_reason,
-                                    ))
+                                    self._emit_event(
+                                        PipelineEvent(
+                                            event_type=EventType.GATE_EVALUATED,
+                                            phase=name,
+                                            step=completed_step,
+                                            total=total_phases,
+                                            gate_status="blocked",
+                                            violations=gate_violations,
+                                            message=gate_reason,
+                                        )
+                                    )
                                     self._failed.add(name)
                                     results[name] = PhaseResult.failed(gate_reason)
                                     continue
                                 else:  # pause
                                     logger.warning(f"Phase {name}: {gate_reason} (paused)")
-                                    self._emit_event(PipelineEvent(
-                                        event_type=EventType.GATE_BLOCKED,
-                                        phase=name,
-                                        step=completed_step,
-                                        total=total_phases,
-                                        gate_status="blocked",
-                                        violations=gate_violations,
-                                        message=gate_reason,
-                                    ))
+                                    self._emit_event(
+                                        PipelineEvent(
+                                            event_type=EventType.GATE_BLOCKED,
+                                            phase=name,
+                                            step=completed_step,
+                                            total=total_phases,
+                                            gate_status="blocked",
+                                            violations=gate_violations,
+                                            message=gate_reason,
+                                        )
+                                    )
                                     self._gate_blocked.add(name)
                                     results[name] = PhaseResult(
                                         status=PhaseStatus.GATE_BLOCKED,
@@ -408,14 +414,16 @@ class Pipeline:
                                     continue
                             elif phase.entropy_preconditions:
                                 # Gate passed with preconditions — emit pass event
-                                self._emit_event(PipelineEvent(
-                                    event_type=EventType.GATE_EVALUATED,
-                                    phase=name,
-                                    step=completed_step,
-                                    total=total_phases,
-                                    gate_status="passed",
-                                    scores=self._entropy_state.to_dict(),
-                                ))
+                                self._emit_event(
+                                    PipelineEvent(
+                                        event_type=EventType.GATE_EVALUATED,
+                                        phase=name,
+                                        step=completed_step,
+                                        total=total_phases,
+                                        gate_status="passed",
+                                        scores=self._entropy_state.to_dict(),
+                                    )
+                                )
 
                             # Ready — submit to executor immediately
                             self._running.add(name)
@@ -429,14 +437,16 @@ class Pipeline:
                                 self._outputs.copy(),
                             )
                             active_futures[future] = name
-                            self._emit_event(PipelineEvent(
-                                event_type=EventType.PHASE_STARTED,
-                                phase=name,
-                                step=completed_step,
-                                total=total_phases,
-                                message=f"Running {name}",
-                                parallel_phases=list(self._running),
-                            ))
+                            self._emit_event(
+                                PipelineEvent(
+                                    event_type=EventType.PHASE_STARTED,
+                                    phase=name,
+                                    step=completed_step,
+                                    total=total_phases,
+                                    message=f"Running {name}",
+                                    parallel_phases=list(self._running),
+                                )
+                            )
                         else:
                             # Not ready — re-queue at back
                             not_ready.append(name)
@@ -451,9 +461,7 @@ class Pipeline:
                     if not active_futures:
                         # Nothing running — check for gate-blocked phases that can
                         # be resolved via handler before declaring deadlock.
-                        gate_blocked_in_queue = [
-                            n for n in work_queue if n in self._gate_blocked
-                        ]
+                        gate_blocked_in_queue = [n for n in work_queue if n in self._gate_blocked]
                         if gate_blocked_in_queue and self.config.gate_handler:
                             from dataraum.pipeline.gates import build_gate
 
@@ -479,11 +487,13 @@ class Pipeline:
                                     entropy_state=self._entropy_state.to_dict(),
                                 )
                                 resolution = self.config.gate_handler.resolve(gate)
-                                self._emit_event(PipelineEvent(
-                                    event_type=EventType.GATE_RESOLVED,
-                                    phase=target,
-                                    message=str(resolution.action_taken.value),
-                                ))
+                                self._emit_event(
+                                    PipelineEvent(
+                                        event_type=EventType.GATE_RESOLVED,
+                                        phase=target,
+                                        message=str(resolution.action_taken.value),
+                                    )
+                                )
 
                                 if resolution.action_taken == GateActionType.SKIP:
                                     self._gate_blocked.discard(target)
@@ -501,9 +511,7 @@ class Pipeline:
                                             results.pop(name, None)
 
                                 # Track attempts, enforce max
-                                self._gate_attempts[target] = (
-                                    self._gate_attempts.get(target, 0) + 1
-                                )
+                                self._gate_attempts[target] = self._gate_attempts.get(target, 0) + 1
                                 if (
                                     self._gate_attempts.get(target, 0)
                                     >= self.config.max_fix_attempts
@@ -513,9 +521,7 @@ class Pipeline:
                                         error="Max fix attempts exceeded",
                                     )
                                     self._gate_blocked.discard(target)
-                                    work_queue = deque(
-                                        n for n in work_queue if n != target
-                                    )
+                                    work_queue = deque(n for n in work_queue if n != target)
 
                                 continue  # Re-loop to try submitting unblocked phases
                         break
@@ -546,9 +552,7 @@ class Pipeline:
                             completed_step += 1
 
                             # Update entropy state from phase outputs
-                            hard_scores = phase_result.outputs.get(
-                                "entropy_hard_scores"
-                            )
+                            hard_scores = phase_result.outputs.get("entropy_hard_scores")
                             if hard_scores and isinstance(hard_scores, dict):
                                 for dim, score in hard_scores.items():
                                     self._entropy_state.update_score(dim, score)
@@ -562,22 +566,26 @@ class Pipeline:
                                 for dim, score in post_scores.items():
                                     self._entropy_state.update_score(dim, score)
                                 if post_scores:
-                                    self._emit_event(PipelineEvent(
-                                        event_type=EventType.POST_VERIFICATION,
-                                        phase=name,
-                                        step=completed_step,
-                                        total=total_phases,
-                                        scores=post_scores,
-                                    ))
+                                    self._emit_event(
+                                        PipelineEvent(
+                                            event_type=EventType.POST_VERIFICATION,
+                                            phase=name,
+                                            step=completed_step,
+                                            total=total_phases,
+                                            scores=post_scores,
+                                        )
+                                    )
 
-                            self._emit_event(PipelineEvent(
-                                event_type=EventType.PHASE_COMPLETED,
-                                phase=name,
-                                step=completed_step,
-                                total=total_phases,
-                                duration_seconds=phase_result.duration_seconds,
-                                scores=self._entropy_state.to_dict(),
-                            ))
+                            self._emit_event(
+                                PipelineEvent(
+                                    event_type=EventType.PHASE_COMPLETED,
+                                    phase=name,
+                                    step=completed_step,
+                                    total=total_phases,
+                                    duration_seconds=phase_result.duration_seconds,
+                                    scores=self._entropy_state.to_dict(),
+                                )
+                            )
                             logger.debug(
                                 f"Phase {name} completed in {phase_result.duration_seconds:.1f}s"
                             )
@@ -587,24 +595,28 @@ class Pipeline:
                         elif phase_result.status == PhaseStatus.SKIPPED:
                             self._skipped.add(name)
                             completed_step += 1
-                            self._emit_event(PipelineEvent(
-                                event_type=EventType.PHASE_SKIPPED,
-                                phase=name,
-                                step=completed_step,
-                                total=total_phases,
-                                error=phase_result.error or "",
-                            ))
+                            self._emit_event(
+                                PipelineEvent(
+                                    event_type=EventType.PHASE_SKIPPED,
+                                    phase=name,
+                                    step=completed_step,
+                                    total=total_phases,
+                                    error=phase_result.error or "",
+                                )
+                            )
                             logger.debug(f"Phase {name} skipped: {phase_result.error}")
                         else:
                             self._failed.add(name)
                             completed_step += 1
-                            self._emit_event(PipelineEvent(
-                                event_type=EventType.PHASE_FAILED,
-                                phase=name,
-                                step=completed_step,
-                                total=total_phases,
-                                error=phase_result.error or "",
-                            ))
+                            self._emit_event(
+                                PipelineEvent(
+                                    event_type=EventType.PHASE_FAILED,
+                                    phase=name,
+                                    step=completed_step,
+                                    total=total_phases,
+                                    error=phase_result.error or "",
+                                )
+                            )
                             logger.error(f"Phase {name} failed: {phase_result.error}")
                             if phase_result.warnings:
                                 for warning in phase_result.warnings:
@@ -619,13 +631,15 @@ class Pipeline:
                     if self.config.fail_fast and self._failed:
                         break
 
-            self._emit_event(PipelineEvent(
-                event_type=EventType.PIPELINE_COMPLETED,
-                step=completed_step,
-                total=total_phases,
-                scores=self._entropy_state.to_dict(),
-                duration_seconds=time.time() - start_time,
-            ))
+            self._emit_event(
+                PipelineEvent(
+                    event_type=EventType.PIPELINE_COMPLETED,
+                    step=completed_step,
+                    total=total_phases,
+                    scores=self._entropy_state.to_dict(),
+                    duration_seconds=time.time() - start_time,
+                )
+            )
 
             # End pipeline metrics collection
             final_metrics = end_pipeline_metrics()
@@ -971,9 +985,7 @@ class Pipeline:
 
                 for table in tables:
                     columns = (
-                        session.execute(
-                            select(Column).where(Column.table_id == table.table_id)
-                        )
+                        session.execute(select(Column).where(Column.table_id == table.table_id))
                         .scalars()
                         .all()
                     )
@@ -1059,7 +1071,6 @@ class Pipeline:
         for cp in checkpoints:
             self._completed.add(cp.phase_name)
             self._outputs[cp.phase_name] = cp.outputs or {}
-
 
 
 # Global pipeline instance

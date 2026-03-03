@@ -148,5 +148,3 @@ class TestGetDefaultConfig:
         dimensions = [d.dimension for d in config.dimension_overrides]
         assert "semantic.units" in dimensions
         assert "structural.relations" in dimensions
-
-

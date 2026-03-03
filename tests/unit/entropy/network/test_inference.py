@@ -1,6 +1,5 @@
 """Tests for inference operations."""
 
-
 from dataraum.entropy.network.inference import (
     forward_propagate,
     what_if_analysis,
@@ -56,7 +55,8 @@ class TestForwardPropagate:
 
     def test_query_nodes_filters_output(self, full_network: EntropyNetwork):
         result = forward_propagate(
-            full_network, {"type_fidelity": "high"},
+            full_network,
+            {"type_fidelity": "high"},
             query_nodes=["join_path_determinism"],
         )
         assert list(result.keys()) == ["join_path_determinism"]
@@ -67,7 +67,8 @@ class TestForwardPropagate:
 
     def test_small_network_propagation(self, small_network: EntropyNetwork):
         result = forward_propagate(
-            small_network, {"root_a": "high", "root_b": "high"},
+            small_network,
+            {"root_a": "high", "root_b": "high"},
             query_nodes=["leaf_z"],
         )
         assert "leaf_z" in result
@@ -80,7 +81,8 @@ class TestWhatIfAnalysis:
     def test_fixing_node_reduces_intent_high(self, full_network: EntropyNetwork):
         # Baseline: type_fidelity is high
         baseline = forward_propagate(
-            full_network, {"type_fidelity": "high"},
+            full_network,
+            {"type_fidelity": "high"},
             query_nodes=["query_intent"],
         )
         # What-if: fix type_fidelity to low
@@ -110,5 +112,3 @@ class TestWhatIfAnalysis:
             intervention={"type_fidelity": "low"},
         )
         assert set(result.keys()) == {"query_intent", "aggregation_intent", "reporting_intent"}
-
-

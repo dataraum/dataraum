@@ -21,6 +21,7 @@ class TestModelConstruction:
         assert full_network is not None
         assert full_network.model.check_model()
 
+
 class TestNodeQueries:
     """Test node relationship queries."""
 
@@ -39,8 +40,10 @@ class TestNodeQueries:
     def test_get_children(self, full_network: EntropyNetwork):
         children = full_network.get_children("type_fidelity")
         expected = {
-            "join_path_determinism", "relationship_quality",
-            "query_intent", "reporting_intent",
+            "join_path_determinism",
+            "relationship_quality",
+            "query_intent",
+            "reporting_intent",
         }
         assert set(children) == expected
 
@@ -51,9 +54,14 @@ class TestNodeQueries:
     def test_get_root_nodes(self, full_network: EntropyNetwork):
         roots = full_network.get_root_nodes()
         expected = {
-            "type_fidelity", "null_ratio", "outlier_rate",
-            "naming_clarity", "unit_declaration", "time_role",
-            "temporal_drift", "benford_compliance",
+            "type_fidelity",
+            "null_ratio",
+            "outlier_rate",
+            "naming_clarity",
+            "unit_declaration",
+            "time_role",
+            "temporal_drift",
+            "benford_compliance",
         }
         assert set(roots) == expected
 
@@ -83,7 +91,9 @@ class TestInvalidConfig:
     def test_undefined_parent_raises(self):
         config = NetworkConfig(
             nodes={
-                "a": NodeConfig(name="a", layer="x", dimension="y", sub_dimension="z", prior=[0.5, 0.3, 0.2]),
+                "a": NodeConfig(
+                    name="a", layer="x", dimension="y", sub_dimension="z", prior=[0.5, 0.3, 0.2]
+                ),
             },
             edges=[
                 EdgeConfig(parent="nonexistent", child="a", strength=0.5),
@@ -95,7 +105,9 @@ class TestInvalidConfig:
     def test_undefined_child_raises(self):
         config = NetworkConfig(
             nodes={
-                "a": NodeConfig(name="a", layer="x", dimension="y", sub_dimension="z", prior=[0.5, 0.3, 0.2]),
+                "a": NodeConfig(
+                    name="a", layer="x", dimension="y", sub_dimension="z", prior=[0.5, 0.3, 0.2]
+                ),
             },
             edges=[
                 EdgeConfig(parent="a", child="nonexistent", strength=0.5),

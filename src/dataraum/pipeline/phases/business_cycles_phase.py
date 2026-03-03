@@ -43,11 +43,11 @@ class BusinessCyclesPhase(BasePhase):
     def dependencies(self) -> list[str]:
         # Depends on all phases that build_cycle_detection_context reads from
         return [
-            "semantic",        # column annotations, table entities
-            "temporal",        # temporal column profiles
+            "semantic",  # column annotations, table entities
+            "temporal",  # temporal column profiles
             "enriched_views",  # pre-joined fact-dimension views
-            "slicing",         # categorical dimensions (status columns)
-            "quality_summary", # column quality reports
+            "slicing",  # categorical dimensions (status columns)
+            "quality_summary",  # column quality reports
         ]
 
     @property

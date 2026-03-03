@@ -514,9 +514,7 @@ class EntropyPhase(BasePhase):
         for obj in all_domain_objects:
             if obj.target not in target_max or obj.score > target_max[obj.target]:
                 target_max[obj.target] = obj.score
-        avg_entropy = (
-            sum(target_max.values()) / len(target_max) if target_max else 0.0
-        )
+        avg_entropy = sum(target_max.values()) / len(target_max) if target_max else 0.0
 
         # Serialize Bayesian network state for downstream consumers
         snapshot_data: dict[str, Any] = {
@@ -555,7 +553,9 @@ class EntropyPhase(BasePhase):
         # For each hard sub_dimension, compute the mean score across all targets.
         registry = get_default_registry()
         hard_sub_dims = {
-            d.sub_dimension for d in registry.get_all_detectors() if d.trust_level == DetectorTrust.HARD
+            d.sub_dimension
+            for d in registry.get_all_detectors()
+            if d.trust_level == DetectorTrust.HARD
         }
         hard_scores_by_dim: dict[str, list[float]] = {}
         for obj in all_domain_objects:

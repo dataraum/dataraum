@@ -181,11 +181,13 @@ class CredentialChain:
         Returns a dict suitable for including in MCP tool responses.
         Claude uses this to guide the user without ever seeing secret values.
         """
-        url_template = BACKEND_URL_TEMPLATES.get(backend, f"{backend}://user:password@host/database")
+        url_template = BACKEND_URL_TEMPLATES.get(
+            backend, f"{backend}://user:password@host/database"
+        )
 
         env_var = f"DATARAUM_{source_name.upper()}_URL"
 
-        yaml_template = f"sources:\n  {source_name}: \"{url_template}\""
+        yaml_template = f'sources:\n  {source_name}: "{url_template}"'
 
         return {
             "ref": source_name,

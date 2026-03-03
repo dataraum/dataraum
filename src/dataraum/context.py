@@ -148,9 +148,7 @@ class Context:
             # Build column_id -> column_key mapping
             col_id_to_key: dict[str, str] = {}
             for tbl in tables:
-                cols_result = session.execute(
-                    select(Column).where(Column.table_id == tbl.table_id)
-                )
+                cols_result = session.execute(select(Column).where(Column.table_id == tbl.table_id))
                 for col in cols_result.scalars().all():
                     col_id_to_key[col.column_id] = f"{tbl.table_name}.{col.column_name}"
 
@@ -188,9 +186,7 @@ class Context:
             for eval_result in target_evals.values():
                 for v in eval_result.violations:
                     if v.dimension:
-                        violation_dims.setdefault(v.dimension, []).extend(
-                            v.affected_columns
-                        )
+                        violation_dims.setdefault(v.dimension, []).extend(v.affected_columns)
 
             return merge_actions(
                 interp_by_col,
@@ -357,8 +353,7 @@ class EntropyAccessor:
                         for dim_path, score in col_summary.dimension_scores.items():
                             dim_totals.setdefault(dim_path, []).append(score)
                     dimension_scores = {
-                        dim: sum(scores) / len(scores)
-                        for dim, scores in dim_totals.items()
+                        dim: sum(scores) / len(scores) for dim, scores in dim_totals.items()
                     }
             except Exception:
                 pass

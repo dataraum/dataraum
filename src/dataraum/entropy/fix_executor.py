@@ -180,8 +180,7 @@ class FixExecutor:
             # otherwise fall back to action_result
             if before_scores and after_scores:
                 improved = any(
-                    after_scores.get(d, 1.0) < before_scores.get(d, 1.0)
-                    for d in before_scores
+                    after_scores.get(d, 1.0) < before_scores.get(d, 1.0) for d in before_scores
                 )
             else:
                 improved = action_result.get("improved", False)

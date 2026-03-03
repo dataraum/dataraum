@@ -80,9 +80,7 @@ def build_cycle_detection_context(
     row_counts: dict[str, int | None] = {}
     for t in tables:
         try:
-            result = duckdb_conn.execute(
-                f'SELECT COUNT(*) FROM "{t.duckdb_path}"'
-            ).fetchone()
+            result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{t.duckdb_path}"').fetchone()
             row_counts[t.table_name] = result[0] if result else None
         except Exception:
             logger.warning("row_count_failed", table=t.table_name, duckdb_path=t.duckdb_path)
@@ -107,12 +105,14 @@ def build_cycle_detection_context(
                 col_info["business_description"] = ann.business_description
             columns.append(col_info)
 
-        table_info.append({
-            "table_id": t.table_id,
-            "table_name": t.table_name,
-            "row_count": row_counts.get(t.table_name),
-            "columns": columns,
-        })
+        table_info.append(
+            {
+                "table_id": t.table_id,
+                "table_name": t.table_name,
+                "row_count": row_counts.get(t.table_name),
+                "columns": columns,
+            }
+        )
 
     context["tables"] = table_info
 
@@ -137,13 +137,10 @@ def build_cycle_detection_context(
     ]
 
     # 3. Relationships (LLM-confirmed only)
-    rel_stmt = (
-        select(Relationship)
-        .where(
-            Relationship.from_table_id.in_(table_ids),
-            Relationship.to_table_id.in_(table_ids),
-            Relationship.detection_method == "llm",
-        )
+    rel_stmt = select(Relationship).where(
+        Relationship.from_table_id.in_(table_ids),
+        Relationship.to_table_id.in_(table_ids),
+        Relationship.detection_method == "llm",
     )
     relationships = session.execute(rel_stmt).scalars().all()
 
@@ -155,15 +152,17 @@ def build_cycle_detection_context(
         to_table = table_by_id.get(rel.to_table_id)
 
         if from_col and to_col and from_table and to_table:
-            rel_list.append({
-                "from_table": from_table.table_name,
-                "from_column": from_col.column_name,
-                "to_table": to_table.table_name,
-                "to_column": to_col.column_name,
-                "relationship_type": rel.relationship_type,
-                "cardinality": rel.cardinality,
-                "confidence": rel.confidence,
-            })
+            rel_list.append(
+                {
+                    "from_table": from_table.table_name,
+                    "from_column": from_col.column_name,
+                    "to_table": to_table.table_name,
+                    "to_column": to_col.column_name,
+                    "relationship_type": rel.relationship_type,
+                    "cardinality": rel.cardinality,
+                    "confidence": rel.confidence,
+                }
+            )
 
     context["relationships"] = rel_list
 
@@ -190,16 +189,18 @@ def build_cycle_detection_context(
         # Get value counts from statistical profile if available
         value_counts = _get_value_counts_for_column(session, sd.column_id)
 
-        slice_list.append({
-            "table_name": sd.table.table_name,
-            "column_name": sd.column.column_name,
-            "slice_type": sd.slice_type,
-            "values": sd.distinct_values or [],
-            "value_counts": value_counts,
-            "confidence": sd.confidence,
-            "business_context": sd.business_context,
-            "priority": sd.slice_priority,
-        })
+        slice_list.append(
+            {
+                "table_name": sd.table.table_name,
+                "column_name": sd.column.column_name,
+                "slice_type": sd.slice_type,
+                "values": sd.distinct_values or [],
+                "value_counts": value_counts,
+                "confidence": sd.confidence,
+                "business_context": sd.business_context,
+                "priority": sd.slice_priority,
+            }
+        )
 
     context["slice_definitions"] = slice_list
 
@@ -226,11 +227,8 @@ def build_cycle_detection_context(
     ]
 
     # 7. Quality signals (grades and key findings for columns with issues)
-    quality_stmt = (
-        select(ColumnQualityReport)
-        .where(ColumnQualityReport.source_table_name.in_(
-            [t.table_name for t in tables]
-        ))
+    quality_stmt = select(ColumnQualityReport).where(
+        ColumnQualityReport.source_table_name.in_([t.table_name for t in tables])
     )
     quality_reports = session.execute(quality_stmt).scalars().all()
 
@@ -240,22 +238,21 @@ def build_cycle_detection_context(
         if qr.quality_grade in ("A",):
             continue
         report_data = qr.report_data or {}
-        quality_signals.append({
-            "table_name": qr.source_table_name,
-            "column_name": qr.column_name,
-            "quality_grade": qr.quality_grade,
-            "quality_score": qr.overall_quality_score,
-            "summary": qr.summary,
-            "key_findings": report_data.get("key_findings", []),
-        })
+        quality_signals.append(
+            {
+                "table_name": qr.source_table_name,
+                "column_name": qr.column_name,
+                "quality_grade": qr.quality_grade,
+                "quality_score": qr.overall_quality_score,
+                "summary": qr.summary,
+                "key_findings": report_data.get("key_findings", []),
+            }
+        )
 
     context["quality_signals"] = quality_signals
 
     # 8. Enriched views (pre-joined table schemas)
-    enriched_stmt = (
-        select(EnrichedView)
-        .where(EnrichedView.fact_table_id.in_(table_ids))
-    )
+    enriched_stmt = select(EnrichedView).where(EnrichedView.fact_table_id.in_(table_ids))
     enriched_views = session.execute(enriched_stmt).scalars().all()
 
     enriched_list = []
@@ -266,12 +263,14 @@ def build_cycle_detection_context(
             for tid in (ev.dimension_table_ids or [])
             if tid in table_by_id
         ]
-        enriched_list.append({
-            "view_name": ev.view_name,
-            "fact_table": fact_table.table_name if fact_table else "unknown",
-            "dimension_tables": dim_tables,
-            "dimension_columns": ev.dimension_columns or [],
-        })
+        enriched_list.append(
+            {
+                "view_name": ev.view_name,
+                "fact_table": fact_table.table_name if fact_table else "unknown",
+                "dimension_tables": dim_tables,
+                "dimension_columns": ev.dimension_columns or [],
+            }
+        )
 
     context["enriched_views"] = enriched_list
 
@@ -311,12 +310,9 @@ def _get_value_counts_for_column(
     Returns:
         List of {value, count, percentage} dicts, or empty list.
     """
-    profile_stmt = (
-        select(StatisticalProfile)
-        .where(
-            StatisticalProfile.column_id == column_id,
-            StatisticalProfile.layer == "typed",
-        )
+    profile_stmt = select(StatisticalProfile).where(
+        StatisticalProfile.column_id == column_id,
+        StatisticalProfile.layer == "typed",
     )
     profile = session.execute(profile_stmt).scalars().first()
 
@@ -375,7 +371,9 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
     lines.append(f"- Confirmed relationships: {summary.get('total_relationships', 0)}")
     lines.append(f"- Fact tables: {summary.get('fact_tables', 0)}")
     lines.append(f"- Dimension tables: {summary.get('dimension_tables', 0)}")
-    lines.append(f"- Categorical dimensions (status/type columns): {summary.get('slice_dimensions_found', 0)}")
+    lines.append(
+        f"- Categorical dimensions (status/type columns): {summary.get('slice_dimensions_found', 0)}"
+    )
     lines.append(f"- Temporal columns: {summary.get('temporal_columns', 0)}")
     lines.append(f"- Graph pattern: {summary.get('graph_pattern', 'unknown')}")
     lines.append("")
@@ -384,8 +382,10 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
     lines.append("## TABLE CLASSIFICATIONS")
     for ent in context.get("entity_classifications", []):
         table_type = (
-            "FACT" if ent["is_fact_table"]
-            else "DIMENSION" if ent["is_dimension_table"]
+            "FACT"
+            if ent["is_fact_table"]
+            else "DIMENSION"
+            if ent["is_dimension_table"]
             else "OTHER"
         )
         table_info = context["tables"]
@@ -409,7 +409,9 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
         lines.append("dimensions. Status columns are strong cycle completion indicators.")
         lines.append("")
         for sd in slice_defs:
-            lines.append(f"### {sd['table_name']}.{sd['column_name']} (confidence: {sd['confidence']:.0%})")
+            lines.append(
+                f"### {sd['table_name']}.{sd['column_name']} (confidence: {sd['confidence']:.0%})"
+            )
             if sd.get("business_context"):
                 lines.append(f"  Context: {sd['business_context'][:200]}")
 
@@ -418,8 +420,7 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
             if value_counts:
                 total = sum(vc["count"] for vc in value_counts)
                 values_str = ", ".join(
-                    f"{vc['value']} ({vc['count']:,}, {vc['percentage']}%)"
-                    for vc in value_counts
+                    f"{vc['value']} ({vc['count']:,}, {vc['percentage']}%)" for vc in value_counts
                 )
                 lines.append(f"  Values ({total:,} total): {values_str}")
             elif sd.get("values"):
@@ -439,7 +440,11 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
             lines.append(f"- {ev['view_name']}: {ev['fact_table']} + [{dims}]")
             if ev.get("dimension_columns"):
                 cols = ", ".join(ev["dimension_columns"][:8])
-                extra = f" (+{len(ev['dimension_columns']) - 8} more)" if len(ev["dimension_columns"]) > 8 else ""
+                extra = (
+                    f" (+{len(ev['dimension_columns']) - 8} more)"
+                    if len(ev["dimension_columns"]) > 8
+                    else ""
+                )
                 lines.append(f"  Added columns: {cols}{extra}")
         lines.append("")
 
@@ -478,7 +483,9 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
     if quality:
         lines.append("## DATA QUALITY SIGNALS")
         for qs in quality:
-            lines.append(f"- {qs['table_name']}.{qs['column_name']}: grade {qs['quality_grade']} ({qs['quality_score']:.2f})")
+            lines.append(
+                f"- {qs['table_name']}.{qs['column_name']}: grade {qs['quality_grade']} ({qs['quality_score']:.2f})"
+            )
             lines.append(f"  {qs['summary'][:200]}")
             for finding in qs.get("key_findings", [])[:2]:
                 lines.append(f"  - {finding[:150]}")

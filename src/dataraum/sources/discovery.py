@@ -144,7 +144,9 @@ def _read_schema(
         # Estimate row count from file size (rough)
         row_count = None
         try:
-            count_result = conn.execute(f"SELECT count(*) FROM read_csv_auto('{path_str}')").fetchone()
+            count_result = conn.execute(
+                f"SELECT count(*) FROM read_csv_auto('{path_str}')"
+            ).fetchone()
             row_count = count_result[0] if count_result else None
         except Exception:
             pass

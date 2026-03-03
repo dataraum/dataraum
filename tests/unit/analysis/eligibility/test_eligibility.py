@@ -208,5 +208,3 @@ class TestFormatReason:
     def test_missing_key_returns_template(self):
         result = format_reason("Column has {missing_key}", {})
         assert result == "Column has {missing_key}"
-
-

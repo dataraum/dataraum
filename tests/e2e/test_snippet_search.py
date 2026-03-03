@@ -34,9 +34,7 @@ pytestmark = pytest.mark.e2e
 def snippet_count(output_manager: ConnectionManager) -> int:
     """Count snippets — must be > 0 for search mode to have anything to find."""
     with output_manager.session_scope() as session:
-        count = session.execute(
-            select(func.count()).select_from(SQLSnippetRecord)
-        ).scalar()
+        count = session.execute(select(func.count()).select_from(SQLSnippetRecord)).scalar()
         return count or 0
 
 
@@ -56,9 +54,7 @@ def search_mode_result(
 
     Session-scoped to avoid repeated LLM calls — all tests share this result.
     """
-    assert snippet_count > 0, (
-        "No snippets exist — graph phase must run before search mode tests"
-    )
+    assert snippet_count > 0, "No snippets exist — graph phase must run before search mode tests"
 
     with patch("dataraum.query.agent._MAX_FULL_INJECT", 0):
         with output_manager.session_scope() as session:

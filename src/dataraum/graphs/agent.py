@@ -193,7 +193,10 @@ class GraphAgent(LLMFeature):
         if generated_code is None:
             # Check snippet library for cached individual steps
             cached_snippets = self._lookup_snippets(
-                session, graph, schema_mapping_id, resolved_params,
+                session,
+                graph,
+                schema_mapping_id,
+                resolved_params,
             )
 
             # If ALL steps have cached snippets, assemble without LLM
@@ -217,7 +220,10 @@ class GraphAgent(LLMFeature):
             else:
                 # Generate SQL using LLM (with cached snippet hints)
                 gen_result = self._generate_sql(
-                    session, graph, context, resolved_params,
+                    session,
+                    graph,
+                    context,
+                    resolved_params,
                     cached_snippets=cached_snippets if cached_snippets else None,
                 )
                 if not gen_result.success or not gen_result.value:
@@ -282,11 +288,13 @@ class GraphAgent(LLMFeature):
             snippet = cached_snippets.get(step_id)
             if not snippet:
                 return None  # Missing a step, can't assemble
-            steps.append({
-                "step_id": step_id,
-                "sql": snippet["sql"],
-                "description": snippet["description"],
-            })
+            steps.append(
+                {
+                    "step_id": step_id,
+                    "sql": snippet["sql"],
+                    "description": snippet["description"],
+                }
+            )
             # Merge column_mappings from each snippet
             snippet_mappings = snippet.get("column_mappings")
             if isinstance(snippet_mappings, dict):
@@ -765,9 +773,7 @@ class GraphAgent(LLMFeature):
     ) -> dict[str, Any] | None:
         """DESCRIBE a single DuckDB table and return schema with sample values."""
         try:
-            columns_result = duckdb_conn.execute(
-                f'DESCRIBE "{table_name}"'
-            ).fetchall()
+            columns_result = duckdb_conn.execute(f'DESCRIBE "{table_name}"').fetchall()
 
             columns = []
             for col in columns_result:
@@ -776,7 +782,7 @@ class GraphAgent(LLMFeature):
 
                 sample_result = duckdb_conn.execute(
                     f'SELECT DISTINCT "{col_name}" FROM "{table_name}" '
-                    f"WHERE \"{col_name}\" IS NOT NULL LIMIT 5"
+                    f'WHERE "{col_name}" IS NOT NULL LIMIT 5'
                 ).fetchall()
                 samples = [str(r[0]) for r in sample_result]
 
@@ -788,9 +794,7 @@ class GraphAgent(LLMFeature):
                     }
                 )
 
-            count_result = duckdb_conn.execute(
-                f'SELECT COUNT(*) FROM "{table_name}"'
-            ).fetchone()
+            count_result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()
             row_count = count_result[0] if count_result else 0
 
             return {
@@ -1144,9 +1148,7 @@ class GraphAgent(LLMFeature):
 
             elif graph_step.step_type == StepType.FORMULA and graph_step.expression:
                 # Formula template snippet: keyed by normalized expression
-                normalized, sorted_fields, bindings = normalize_expression(
-                    graph_step.expression
-                )
+                normalized, sorted_fields, bindings = normalize_expression(graph_step.expression)
 
                 library.save_snippet(
                     snippet_type="formula",
@@ -1236,4 +1238,3 @@ class GraphAgent(LLMFeature):
             )
 
         return cached_steps
-

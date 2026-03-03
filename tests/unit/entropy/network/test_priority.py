@@ -1,6 +1,5 @@
 """Tests for network-aware priority ranking."""
 
-
 from dataraum.entropy.network.model import EntropyNetwork
 from dataraum.entropy.network.priority import (
     compute_cascade_paths,
@@ -97,7 +96,9 @@ class TestComputeNetworkPriorities:
     def test_small_network_priorities(self, small_network: EntropyNetwork):
         evidence = {"root_a": "high", "root_b": "medium"}
         priorities = compute_network_priorities(
-            small_network, evidence, intent_nodes=["leaf_z"],
+            small_network,
+            evidence,
+            intent_nodes=["leaf_z"],
         )
         assert len(priorities) > 0
         # root_a has stronger edge (0.8 vs 0.6) so should rank higher

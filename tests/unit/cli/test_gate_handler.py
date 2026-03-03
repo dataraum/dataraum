@@ -47,9 +47,13 @@ class TestSetLive:
 
         with (
             patch.object(handler, "_render_gate"),
-            patch.object(handler, "_prompt_user", return_value=GateResolution(
-                action_taken=GateActionType.SKIP,
-            )),
+            patch.object(
+                handler,
+                "_prompt_user",
+                return_value=GateResolution(
+                    action_taken=GateActionType.SKIP,
+                ),
+            ),
         ):
             handler.resolve(gate)
 
@@ -63,9 +67,13 @@ class TestSetLive:
 
         with (
             patch.object(handler, "_render_gate"),
-            patch.object(handler, "_prompt_user", return_value=GateResolution(
-                action_taken=GateActionType.SKIP,
-            )),
+            patch.object(
+                handler,
+                "_prompt_user",
+                return_value=GateResolution(
+                    action_taken=GateActionType.SKIP,
+                ),
+            ),
         ):
             result = handler.resolve(gate)
 

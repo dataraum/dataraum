@@ -87,9 +87,7 @@ class TestAddFileSource:
 
 
 class TestAddDatabaseSource:
-    def test_needs_credentials(
-        self, session: Session, credential_chain: CredentialChain
-    ) -> None:
+    def test_needs_credentials(self, session: Session, credential_chain: CredentialChain) -> None:
         manager = SourceManager(session=session, credential_chain=credential_chain)
         result = manager.add_database_source("accounting", "postgres")
 
@@ -162,7 +160,9 @@ class TestAddDatabaseSource:
         self, session: Session, credential_chain: CredentialChain, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("DATARAUM_NODB_URL", "postgres://u:p@host/db")
-        manager = SourceManager(session=session, credential_chain=credential_chain, duckdb_conn=None)
+        manager = SourceManager(
+            session=session, credential_chain=credential_chain, duckdb_conn=None
+        )
 
         result = manager.add_database_source("nodb", "postgres")
         assert not result.success
@@ -174,9 +174,7 @@ class TestAddDatabaseSource:
         manager = SourceManager(session=session, credential_chain=credential_chain)
         manager.add_database_source("pending_src", "mysql")
 
-        source = session.execute(
-            select(Source).where(Source.name == "pending_src")
-        ).scalar_one()
+        source = session.execute(select(Source).where(Source.name == "pending_src")).scalar_one()
         assert source.status == "needs_credentials"
         assert source.backend == "mysql"
 
@@ -211,7 +209,9 @@ class TestListSources:
         assert len(configured) == 1
         assert configured[0].name == "configured_src"
 
-    def test_excludes_archived(self, manager: SourceManager, session: Session, tmp_path: Path) -> None:
+    def test_excludes_archived(
+        self, manager: SourceManager, session: Session, tmp_path: Path
+    ) -> None:
         csv = tmp_path / "data.csv"
         csv.write_text("a\n1\n")
         manager.add_file_source("active", str(csv))
@@ -246,7 +246,9 @@ class TestRemoveSource:
         assert result.success
         assert "deleted" in result.unwrap()
 
-        source = session.execute(select(Source).where(Source.name == "purgeme")).scalar_one_or_none()
+        source = session.execute(
+            select(Source).where(Source.name == "purgeme")
+        ).scalar_one_or_none()
         assert source is None
 
     def test_remove_nonexistent(self, manager: SourceManager) -> None:
@@ -254,9 +256,7 @@ class TestRemoveSource:
         assert not result.success
         assert "not found" in (result.error or "").lower()
 
-    def test_credential_hint(
-        self, session: Session, credential_chain: CredentialChain
-    ) -> None:
+    def test_credential_hint(self, session: Session, credential_chain: CredentialChain) -> None:
         manager = SourceManager(session=session, credential_chain=credential_chain)
         manager.add_database_source("mydb_ch", "postgres")
 

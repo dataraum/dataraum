@@ -119,5 +119,3 @@ class TestOutlierDetection:
         # Verify the known outliers are detected
         assert 200 > upper_fence or 200 < lower_fence
         assert 250 > upper_fence or 250 < lower_fence
-
-

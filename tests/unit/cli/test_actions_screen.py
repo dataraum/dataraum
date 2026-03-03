@@ -142,9 +142,7 @@ class TestMergeActions:
         """Entropy objects for a column are attached to LLM actions."""
         screen = self._make_screen()
         interp = FakeInterp(
-            resolution_actions_json=[
-                {"action": "resolve_ambiguity", "effort": "medium"}
-            ]
+            resolution_actions_json=[{"action": "resolve_ambiguity", "effort": "medium"}]
         )
         eo = FakeEntropyObject(target="column:orders.amount")
 
@@ -163,16 +161,12 @@ class TestMergeActions:
         interp1 = FakeInterp(
             table_name="orders",
             column_name="amount",
-            resolution_actions_json=[
-                {"action": "standardize_format", "effort": "low"}
-            ],
+            resolution_actions_json=[{"action": "standardize_format", "effort": "low"}],
         )
         interp2 = FakeInterp(
             table_name="orders",
             column_name="price",
-            resolution_actions_json=[
-                {"action": "standardize_format", "effort": "low"}
-            ],
+            resolution_actions_json=[{"action": "standardize_format", "effort": "low"}],
         )
 
         result = screen._merge_actions(

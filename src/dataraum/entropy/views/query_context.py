@@ -209,9 +209,7 @@ def build_for_query(
         # Default contract
         contract_name = "exploratory_analysis"
         try:
-            contract_evaluation = evaluate_contract(
-                column_summaries, "exploratory_analysis"
-            )
+            contract_evaluation = evaluate_contract(column_summaries, "exploratory_analysis")
             confidence_level = contract_evaluation.confidence_level
         except ValueError:
             # Contract not configured - use heuristic

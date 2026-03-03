@@ -54,9 +54,7 @@ def profiled_result(simple_csv, duckdb_conn, session):
     infer_result = infer_type_candidates(raw_table, duckdb_conn, session)
     assert infer_result.success
 
-    resolve_result = resolve_types(
-        staged_table.table_id, duckdb_conn, session, min_confidence=0.85
-    )
+    resolve_result = resolve_types(staged_table.table_id, duckdb_conn, session, min_confidence=0.85)
     assert resolve_result.success
     resolution = resolve_result.unwrap()
 

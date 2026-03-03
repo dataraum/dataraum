@@ -103,35 +103,25 @@ class TestRunPostVerification:
     def test_post_verification_updates_entropy_state(self):
         """After post-verification, entropy_state should have scores."""
         pipeline = Pipeline()
-        phase = StubPhaseWithPostVerification(
-            "typing", post_verif=["type_fidelity"]
-        )
+        phase = StubPhaseWithPostVerification("typing", post_verif=["type_fidelity"])
         pipeline.register(phase)
         pipeline._entropy_state = PipelineEntropyState()
 
         mock_manager = MagicMock()
         mock_session = MagicMock()
-        mock_manager.session_scope.return_value.__enter__ = MagicMock(
-            return_value=mock_session
-        )
-        mock_manager.session_scope.return_value.__exit__ = MagicMock(
-            return_value=False
-        )
+        mock_manager.session_scope.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_manager.session_scope.return_value.__exit__ = MagicMock(return_value=False)
 
         # Mock: no tables found (empty source)
         mock_session.execute.return_value.scalars.return_value.all.return_value = []
 
-        scores = pipeline._run_post_verification(
-            phase, mock_manager, "src1", []
-        )
+        scores = pipeline._run_post_verification(phase, mock_manager, "src1", [])
         assert scores == {}
 
     def test_post_verification_aggregates_scores(self):
         """Post-verification should aggregate scores across columns."""
         pipeline = Pipeline()
-        phase = StubPhaseWithPostVerification(
-            "typing", post_verif=["type_fidelity"]
-        )
+        phase = StubPhaseWithPostVerification("typing", post_verif=["type_fidelity"])
         pipeline.register(phase)
 
         # Create mock table and columns
@@ -149,12 +139,8 @@ class TestRunPostVerification:
 
         mock_manager = MagicMock()
         mock_session = MagicMock()
-        mock_manager.session_scope.return_value.__enter__ = MagicMock(
-            return_value=mock_session
-        )
-        mock_manager.session_scope.return_value.__exit__ = MagicMock(
-            return_value=False
-        )
+        mock_manager.session_scope.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_manager.session_scope.return_value.__exit__ = MagicMock(return_value=False)
 
         # First query returns tables, second returns columns
         call_count = 0
@@ -178,9 +164,7 @@ class TestRunPostVerification:
             "dataraum.entropy.hard_snapshot.take_hard_snapshot",
             side_effect=[snap1, snap2],
         ):
-            scores = pipeline._run_post_verification(
-                phase, mock_manager, "src1", ["tbl1"]
-            )
+            scores = pipeline._run_post_verification(phase, mock_manager, "src1", ["tbl1"])
 
         assert "type_fidelity" in scores
         # Mean of 0.2 and 0.4 = 0.3
@@ -189,17 +173,13 @@ class TestRunPostVerification:
     def test_post_verification_failure_returns_empty(self):
         """Post-verification errors should not crash the pipeline."""
         pipeline = Pipeline()
-        phase = StubPhaseWithPostVerification(
-            "typing", post_verif=["type_fidelity"]
-        )
+        phase = StubPhaseWithPostVerification("typing", post_verif=["type_fidelity"])
         pipeline.register(phase)
 
         mock_manager = MagicMock()
         mock_manager.session_scope.side_effect = RuntimeError("DB error")
 
-        scores = pipeline._run_post_verification(
-            phase, mock_manager, "src1", []
-        )
+        scores = pipeline._run_post_verification(phase, mock_manager, "src1", [])
         assert scores == {}
 
     def test_no_post_verification_returns_empty(self):
@@ -208,7 +188,5 @@ class TestRunPostVerification:
         phase = StubPhaseWithPostVerification("import", post_verif=[])
         pipeline.register(phase)
 
-        scores = pipeline._run_post_verification(
-            phase, MagicMock(), "src1", []
-        )
+        scores = pipeline._run_post_verification(phase, MagicMock(), "src1", [])
         assert scores == {}

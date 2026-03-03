@@ -259,9 +259,7 @@ def format_actions_report(
     # Summary
     lines.append("## Summary")
     lines.append(f"- **{len(actions)}** resolution actions ranked by combined score")
-    lines.append(
-        "- Score combines: detector reduction + column breadth + network causal impact"
-    )
+    lines.append("- Score combines: detector reduction + column breadth + network causal impact")
 
     if actions:
         top = actions[0]
@@ -298,9 +296,7 @@ def format_actions_report(
             )
             if column_deltas:
                 # Show top columns by delta
-                sorted_deltas = sorted(
-                    column_deltas.items(), key=lambda x: -x[1]
-                )
+                sorted_deltas = sorted(column_deltas.items(), key=lambda x: -x[1])
                 for col, delta in sorted_deltas[:5]:
                     lines.append(f"  - {col}: {delta:.3f}")
                 if len(sorted_deltas) > 5:
@@ -341,8 +337,7 @@ def format_actions_report(
 
     # Quick wins: low effort + high score
     quick_wins = [
-        a for a in actions
-        if a.get("effort") == "low" and a.get("priority_score", 0) > 0.5
+        a for a in actions if a.get("effort") == "low" and a.get("priority_score", 0) > 0.5
     ]
     if quick_wins:
         lines.append("## Quick Wins (High Score, Low Effort)")

@@ -50,9 +50,7 @@ class TestEnvProvider:
 class TestFileProvider:
     def test_resolve_from_file(self, tmp_path: Path) -> None:
         cred_file = tmp_path / "credentials.yaml"
-        cred_file.write_text(
-            yaml.dump({"sources": {"accounting": "postgres://u:p@host/db"}})
-        )
+        cred_file.write_text(yaml.dump({"sources": {"accounting": "postgres://u:p@host/db"}}))
 
         provider = FileProvider(cred_file)
         result = provider.resolve("accounting")

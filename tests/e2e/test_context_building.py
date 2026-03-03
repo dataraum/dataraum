@@ -140,9 +140,7 @@ class TestQualityContext:
         """Some columns should have quality grades."""
         all_cols = [c for t in execution_context.tables for c in t.columns]
         with_grade = [c for c in all_cols if c.quality_grade]
-        assert len(with_grade) > 0, (
-            f"No columns have quality_grade out of {len(all_cols)}"
-        )
+        assert len(with_grade) > 0, f"No columns have quality_grade out of {len(all_cols)}"
 
     def test_quality_grades_valid(self, execution_context: GraphExecutionContext) -> None:
         """Quality grades should be valid letter grades."""
@@ -151,8 +149,7 @@ class TestQualityContext:
             for col in table.columns:
                 if col.quality_grade:
                     assert col.quality_grade in valid, (
-                        f"{col.table_name}.{col.column_name}: "
-                        f"invalid grade '{col.quality_grade}'"
+                        f"{col.table_name}.{col.column_name}: invalid grade '{col.quality_grade}'"
                     )
 
 

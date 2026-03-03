@@ -138,9 +138,7 @@ def get_multi_table_schema_for_llm(
 
     # Attach slice values to table schemas
     for table in tables:
-        table_schema = next(
-            (s for s in table_schemas if s["table_id"] == table.table_id), None
-        )
+        table_schema = next((s for s in table_schemas if s["table_id"] == table.table_id), None)
         if not table_schema:
             continue
         for col in table.columns:
@@ -153,9 +151,7 @@ def get_multi_table_schema_for_llm(
                     col_schema["distinct_values"] = column_slices[col.column_id]
 
     # Fetch enriched views for these tables
-    enriched_stmt = select(EnrichedView).where(
-        EnrichedView.fact_table_id.in_(table_ids)
-    )
+    enriched_stmt = select(EnrichedView).where(EnrichedView.fact_table_id.in_(table_ids))
     enriched_views = session.execute(enriched_stmt).scalars().all()
 
     formatted_views = []
@@ -166,13 +162,15 @@ def get_multi_table_schema_for_llm(
             for tid in (ev.dimension_table_ids or [])
             if tid in table_id_to_name
         ]
-        formatted_views.append({
-            "view_name": ev.view_name,
-            "duckdb_path": ev.view_name,
-            "fact_table": fact_name,
-            "dimension_tables": dim_names,
-            "dimension_columns": ev.dimension_columns or [],
-        })
+        formatted_views.append(
+            {
+                "view_name": ev.view_name,
+                "duckdb_path": ev.view_name,
+                "fact_table": fact_name,
+                "dimension_tables": dim_names,
+                "dimension_columns": ev.dimension_columns or [],
+            }
+        )
 
     return {
         "tables": table_schemas,
@@ -240,7 +238,9 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
 
     for table in schema.get("tables", []):
         row_count_attr = f' row_count="{table["row_count"]}"' if table.get("row_count") else ""
-        lines.append(f'<table name="{table["table_name"]}" duckdb_path="{table["duckdb_path"]}"{row_count_attr}>')
+        lines.append(
+            f'<table name="{table["table_name"]}" duckdb_path="{table["duckdb_path"]}"{row_count_attr}>'
+        )
         lines.append("<columns>")
 
         for col in table.get("columns", []):

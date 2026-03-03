@@ -178,5 +178,4 @@ class QueryDocument:
         }
 
 
-
 __all__ = ["QueryDocument", "SQLStep", "QueryAssumptionData"]

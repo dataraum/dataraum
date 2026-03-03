@@ -43,13 +43,9 @@ class EntropyNetwork:
         node_names = set(config.nodes.keys())
         for edge in config.edges:
             if edge.parent not in node_names:
-                raise ValueError(
-                    f"Edge references undefined parent node: '{edge.parent}'"
-                )
+                raise ValueError(f"Edge references undefined parent node: '{edge.parent}'")
             if edge.child not in node_names:
-                raise ValueError(
-                    f"Edge references undefined child node: '{edge.child}'"
-                )
+                raise ValueError(f"Edge references undefined child node: '{edge.child}'")
 
         # Create DiscreteBayesianNetwork
         self._model = DiscreteBayesianNetwork(edge_tuples)
@@ -119,7 +115,4 @@ class EntropyNetwork:
 
     def get_intent_nodes(self) -> list[str]:
         """Get intent nodes (nodes in the 'intent' layer)."""
-        return [
-            name for name, node in self._config.nodes.items()
-            if node.layer == "intent"
-        ]
+        return [name for name, node in self._config.nodes.items() if node.layer == "intent"]

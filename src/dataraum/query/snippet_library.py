@@ -274,10 +274,7 @@ class SnippetLibrary:
         for s in snippets:
             graphs.setdefault(s.source, []).append(s)
 
-        return [
-            SnippetGraph(source=src, snippets=snips)
-            for src, snips in sorted(graphs.items())
-        ]
+        return [SnippetGraph(source=src, snippets=snips) for src, snips in sorted(graphs.items())]
 
     def find_all_graphs(
         self,
@@ -301,10 +298,7 @@ class SnippetLibrary:
         for s in all_snippets:
             graphs.setdefault(s.source, []).append(s)
 
-        return [
-            SnippetGraph(source=src, snippets=snips)
-            for src, snips in sorted(graphs.items())
-        ]
+        return [SnippetGraph(source=src, snippets=snips) for src, snips in sorted(graphs.items())]
 
     def get_search_vocabulary(
         self,
@@ -329,34 +323,26 @@ class SnippetLibrary:
             SQLSnippetRecord.schema_mapping_id == schema_mapping_id,
             SQLSnippetRecord.standard_field.isnot(None),
         )
-        standard_fields = sorted(
-            r[0] for r in self.session.execute(sf_stmt).all()
-        )
+        standard_fields = sorted(r[0] for r in self.session.execute(sf_stmt).all())
 
         st_stmt = select(distinct(SQLSnippetRecord.statement)).where(
             SQLSnippetRecord.schema_mapping_id == schema_mapping_id,
             SQLSnippetRecord.statement.isnot(None),
         )
-        statements = sorted(
-            r[0] for r in self.session.execute(st_stmt).all()
-        )
+        statements = sorted(r[0] for r in self.session.execute(st_stmt).all())
 
         agg_stmt = select(distinct(SQLSnippetRecord.aggregation)).where(
             SQLSnippetRecord.schema_mapping_id == schema_mapping_id,
             SQLSnippetRecord.aggregation.isnot(None),
         )
-        aggregations = sorted(
-            r[0] for r in self.session.execute(agg_stmt).all()
-        )
+        aggregations = sorted(r[0] for r in self.session.execute(agg_stmt).all())
 
         src_stmt = select(distinct(SQLSnippetRecord.source)).where(
             SQLSnippetRecord.schema_mapping_id == schema_mapping_id,
         )
-        graph_ids = sorted({
-            r[0].split(":", 1)[1]
-            for r in self.session.execute(src_stmt).all()
-            if ":" in r[0]
-        })
+        graph_ids = sorted(
+            {r[0].split(":", 1)[1] for r in self.session.execute(src_stmt).all() if ":" in r[0]}
+        )
 
         return {
             "standard_fields": standard_fields,
@@ -401,17 +387,11 @@ class SnippetLibrary:
         # Find sources by field conditions (OR across categories)
         conditions = []
         if standard_fields:
-            conditions.append(
-                SQLSnippetRecord.standard_field.in_(standard_fields)
-            )
+            conditions.append(SQLSnippetRecord.standard_field.in_(standard_fields))
         if statements:
-            conditions.append(
-                SQLSnippetRecord.statement.in_(statements)
-            )
+            conditions.append(SQLSnippetRecord.statement.in_(statements))
         if aggregations:
-            conditions.append(
-                SQLSnippetRecord.aggregation.in_(aggregations)
-            )
+            conditions.append(SQLSnippetRecord.aggregation.in_(aggregations))
 
         if conditions:
             from sqlalchemy import distinct, or_
@@ -505,7 +485,12 @@ class SnippetLibrary:
             existing.column_hash = column_hash
             existing.updated_at = datetime.now(UTC)
             record = existing
-            logger.debug("snippet_updated", snippet_id=record.snippet_id, snippet_type=snippet_type, field=standard_field)
+            logger.debug(
+                "snippet_updated",
+                snippet_id=record.snippet_id,
+                snippet_type=snippet_type,
+                field=standard_field,
+            )
         else:
             # Create new snippet
             record = SQLSnippetRecord(
@@ -528,7 +513,12 @@ class SnippetLibrary:
                 updated_at=datetime.now(UTC),
             )
             self.session.add(record)
-            logger.debug("snippet_created", snippet_id=record.snippet_id, snippet_type=snippet_type, field=standard_field)
+            logger.debug(
+                "snippet_created",
+                snippet_id=record.snippet_id,
+                snippet_type=snippet_type,
+                field=standard_field,
+            )
 
         return record
 
@@ -651,9 +641,7 @@ class SnippetLibrary:
             func.count(SQLSnippetRecord.snippet_id),
         ).group_by(SQLSnippetRecord.snippet_type)
         if schema_mapping_id:
-            type_query = type_query.where(
-                SQLSnippetRecord.schema_mapping_id == schema_mapping_id
-            )
+            type_query = type_query.where(SQLSnippetRecord.schema_mapping_id == schema_mapping_id)
         snippets_by_type: dict[str, int] = {
             row[0]: row[1] for row in self.session.execute(type_query).all()
         }

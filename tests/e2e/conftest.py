@@ -112,9 +112,7 @@ def _pipeline_completed(output_dir: Path) -> bool:
     engine = create_engine(f"sqlite:///{db_path}")
     try:
         with engine.connect() as conn:
-            row = conn.execute(
-                text("SELECT status FROM pipeline_runs LIMIT 1")
-            ).fetchone()
+            row = conn.execute(text("SELECT status FROM pipeline_runs LIMIT 1")).fetchone()
             return row is not None and row[0] == "completed"
     finally:
         engine.dispose()
@@ -220,9 +218,7 @@ def pipeline_run(
     Cached: skips if .e2e/clean/pipeline/metadata.db exists.
     Use --e2e-fresh to force a re-run.
     """
-    return _run_pipeline_cached(
-        testdata_csvs, pipeline_output_dir, "e2e_testdata", e2e_fresh
-    )
+    return _run_pipeline_cached(testdata_csvs, pipeline_output_dir, "e2e_testdata", e2e_fresh)
 
 
 # =============================================================================

@@ -378,7 +378,6 @@ class TestQueryAgentIntegration:
             question="What was total revenue from completed orders?",
             execution_id="test-exec-123",
             execution_context=sample_execution_context,
-
         )
 
         assert result.success
@@ -416,7 +415,6 @@ class TestQueryAgentIntegration:
             question="What is the meaning of life?",
             execution_id="test-exec-456",
             execution_context=sample_execution_context,
-
         )
 
         assert not result.success
@@ -454,7 +452,6 @@ class TestQueryAgentIntegration:
             question="Test question",
             execution_id="test-exec-789",
             execution_context=sample_execution_context,
-
         )
 
         assert not result.success
@@ -484,7 +481,6 @@ class TestQueryAgentIntegration:
             question="Test question",
             execution_id="test-exec-fail",
             execution_context=sample_execution_context,
-
         )
 
         assert not result.success
@@ -508,7 +504,6 @@ class TestQueryAgentIntegration:
             question="Test question",
             execution_id="test-exec-render-fail",
             execution_context=sample_execution_context,
-
         )
 
         assert not result.success
@@ -547,9 +542,7 @@ class TestQueryAgentSnippets:
         assert "SUM(amount)" in discovery.snippets[0]["sql"]
         assert discovery.snippets[0]["graph_id"] == "revenue"
 
-    def test_discover_snippets_empty_when_no_snippets(
-        self, mock_agent, session: Session
-    ):
+    def test_discover_snippets_empty_when_no_snippets(self, mock_agent, session: Session):
         """Test that _discover_snippets returns empty for no snippets."""
         discovery = mock_agent._discover_snippets(
             session=session,
@@ -560,9 +553,7 @@ class TestQueryAgentSnippets:
         assert discovery.mode == "full"
         assert len(discovery.snippets) == 0
 
-    def test_track_snippet_usage_exact_reuse(
-        self, mock_agent, session: Session
-    ):
+    def test_track_snippet_usage_exact_reuse(self, mock_agent, session: Session):
         """Test that _track_snippet_usage records exact reuse correctly."""
         from sqlalchemy import select
 
@@ -619,9 +610,7 @@ class TestQueryAgentSnippets:
         assert usages[0].execution_type == "query"
         assert usages[0].snippet_id == snippet.snippet_id
 
-    def test_track_snippet_usage_newly_generated(
-        self, mock_agent, session: Session
-    ):
+    def test_track_snippet_usage_newly_generated(self, mock_agent, session: Session):
         """Test that _track_snippet_usage records newly generated steps."""
         from sqlalchemy import select
 
@@ -655,9 +644,7 @@ class TestQueryAgentSnippets:
         assert usages[0].usage_type == "newly_generated"
         assert usages[0].snippet_id is None
 
-    def test_save_novel_snippets(
-        self, mock_agent, session: Session
-    ):
+    def test_save_novel_snippets(self, mock_agent, session: Session):
         """Test that _save_novel_snippets saves new query steps."""
         from sqlalchemy import select
 
@@ -695,9 +682,7 @@ class TestQueryAgentSnippets:
         assert "SUM(amount)" in snippets[0].sql
         assert snippets[0].column_mappings == {"revenue": "amount"}
 
-    def test_save_novel_snippets_skips_existing(
-        self, mock_agent, session: Session
-    ):
+    def test_save_novel_snippets_skips_existing(self, mock_agent, session: Session):
         """Test that _save_novel_snippets skips steps that came from snippets."""
         from sqlalchemy import select
 
@@ -770,9 +755,7 @@ class TestQueryAgentSnippets:
         # All snippets share the same graph_id
         assert all(s["graph_id"] == "dso" for s in discovery.snippets)
 
-    def test_usage_tracked_without_provided_snippets(
-        self, mock_agent, session: Session
-    ):
+    def test_usage_tracked_without_provided_snippets(self, mock_agent, session: Session):
         """Test that usage is tracked even when no snippets were provided (first-time)."""
         from sqlalchemy import select
 
@@ -852,7 +835,9 @@ class TestResolveSnippetReferences:
         )
 
         resolved = mock_agent._resolve_snippet_references(
-            analysis, snippet_id_index, session,
+            analysis,
+            snippet_id_index,
+            session,
         )
 
         # SQL should be replaced with authoritative version
@@ -901,7 +886,9 @@ class TestResolveSnippetReferences:
         )
 
         resolved = mock_agent._resolve_snippet_references(
-            analysis, snippet_id_index, session,
+            analysis,
+            snippet_id_index,
+            session,
         )
 
         # SQL should be the LLM's adapted version
@@ -928,7 +915,9 @@ class TestResolveSnippetReferences:
         )
 
         resolved = mock_agent._resolve_snippet_references(
-            analysis, {}, session,
+            analysis,
+            {},
+            session,
         )
 
         assert resolved.steps[0].snippet_id is None
@@ -953,7 +942,9 @@ class TestResolveSnippetReferences:
         )
 
         resolved = mock_agent._resolve_snippet_references(
-            analysis, {}, session,
+            analysis,
+            {},
+            session,
         )
 
         assert resolved.steps[0].snippet_id is None
@@ -1027,7 +1018,9 @@ class TestResolveSnippetReferences:
         )
 
         resolved = mock_agent._resolve_snippet_references(
-            analysis, snippet_id_index, session,
+            analysis,
+            snippet_id_index,
+            session,
         )
 
         assert len(resolved.steps) == 4

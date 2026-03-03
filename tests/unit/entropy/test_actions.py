@@ -50,12 +50,14 @@ def _make_column_result(
     return ColumnNetworkResult(
         target=target,
         node_evidence=evidence,
-        intents=[IntentReadiness(
-            intent_name="aggregation_intent",
-            posterior={"low": 0.3, "medium": 0.4, "high": 0.3},
-            p_high=0.3,
-            readiness=readiness,
-        )],
+        intents=[
+            IntentReadiness(
+                intent_name="aggregation_intent",
+                posterior={"low": 0.3, "medium": 0.4, "high": 0.3},
+                p_high=0.3,
+                readiness=readiness,
+            )
+        ],
         nodes_observed=len(evidence),
         nodes_high=sum(1 for ne in evidence if ne.state == "high"),
         worst_intent_p_high=0.3,
@@ -117,12 +119,14 @@ class TestNetworkEnrichesExistingActions:
     def test_network_adds_impact_to_llm_action(self):
         # LLM produces declare_unit action
         interp = FakeInterp(
-            resolution_actions_json=[{
-                "action": "declare_unit",
-                "description": "Add unit declaration",
-                "effort": "low",
-                "expected_impact": "Reduces semantic.units entropy",
-            }],
+            resolution_actions_json=[
+                {
+                    "action": "declare_unit",
+                    "description": "Add unit declaration",
+                    "effort": "low",
+                    "expected_impact": "Reduces semantic.units entropy",
+                }
+            ],
         )
 
         # Network also sees unit_declaration node with resolution_option "declare_unit"
@@ -130,19 +134,23 @@ class TestNetworkEnrichesExistingActions:
             node_name="unit_declaration",
             state="high",
             impact_delta=0.25,
-            resolution_options=[{
-                "action": "declare_unit",
-                "description": "Add unit declaration",
-                "effort": "low",
-                "parameters": {},
-                "expected_entropy_reduction": 0.3,
-                "cascade_dimensions": [],
-            }],
+            resolution_options=[
+                {
+                    "action": "declare_unit",
+                    "description": "Add unit declaration",
+                    "effort": "low",
+                    "parameters": {},
+                    "expected_entropy_reduction": 0.3,
+                    "cascade_dimensions": [],
+                }
+            ],
         )
         network_ctx = _make_network_context(
-            columns={"column:orders.amount": _make_column_result(
-                node_evidence=[ne],
-            )},
+            columns={
+                "column:orders.amount": _make_column_result(
+                    node_evidence=[ne],
+                )
+            },
         )
 
         result = merge_actions(
@@ -165,26 +173,44 @@ class TestNetworkEnrichesExistingActions:
             node_name="unit_declaration",
             state="high",
             impact_delta=0.25,
-            resolution_options=[{"action": "declare_unit", "description": "", "effort": "low",
-                                 "parameters": {}, "expected_entropy_reduction": 0.3,
-                                 "cascade_dimensions": []}],
+            resolution_options=[
+                {
+                    "action": "declare_unit",
+                    "description": "",
+                    "effort": "low",
+                    "parameters": {},
+                    "expected_entropy_reduction": 0.3,
+                    "cascade_dimensions": [],
+                }
+            ],
         )
         ne2 = _make_node_evidence(
             node_name="unit_declaration",
             state="medium",
             impact_delta=0.10,
-            resolution_options=[{"action": "declare_unit", "description": "", "effort": "low",
-                                 "parameters": {}, "expected_entropy_reduction": 0.3,
-                                 "cascade_dimensions": []}],
+            resolution_options=[
+                {
+                    "action": "declare_unit",
+                    "description": "",
+                    "effort": "low",
+                    "parameters": {},
+                    "expected_entropy_reduction": 0.3,
+                    "cascade_dimensions": [],
+                }
+            ],
         )
-        network_ctx = _make_network_context(columns={
-            "column:orders.amount": _make_column_result(
-                target="column:orders.amount", node_evidence=[ne1],
-            ),
-            "column:orders.price": _make_column_result(
-                target="column:orders.price", node_evidence=[ne2],
-            ),
-        })
+        network_ctx = _make_network_context(
+            columns={
+                "column:orders.amount": _make_column_result(
+                    target="column:orders.amount",
+                    node_evidence=[ne1],
+                ),
+                "column:orders.price": _make_column_result(
+                    target="column:orders.price",
+                    node_evidence=[ne2],
+                ),
+            }
+        )
 
         result = merge_actions(
             interp_by_col={},
@@ -203,13 +229,22 @@ class TestNetworkEnrichesExistingActions:
             node_name="unit_declaration",
             state="low",
             impact_delta=0.0,
-            resolution_options=[{"action": "declare_unit", "description": "", "effort": "low",
-                                 "parameters": {}, "expected_entropy_reduction": 0.3,
-                                 "cascade_dimensions": []}],
+            resolution_options=[
+                {
+                    "action": "declare_unit",
+                    "description": "",
+                    "effort": "low",
+                    "parameters": {},
+                    "expected_entropy_reduction": 0.3,
+                    "cascade_dimensions": [],
+                }
+            ],
         )
-        network_ctx = _make_network_context(columns={
-            "column:orders.amount": _make_column_result(node_evidence=[ne]),
-        })
+        network_ctx = _make_network_context(
+            columns={
+                "column:orders.amount": _make_column_result(node_evidence=[ne]),
+            }
+        )
 
         result = merge_actions(
             interp_by_col={},
@@ -235,18 +270,22 @@ class TestNetworkCreatesNewActions:
             node_name="outlier_rate",
             state="high",
             impact_delta=0.20,
-            resolution_options=[{
-                "action": "transform_winsorize",
-                "description": "Cap extreme values at percentile boundaries",
-                "effort": "medium",
-                "parameters": {"percentile": 0.99},
-                "expected_entropy_reduction": 0.4,
-                "cascade_dimensions": ["statistical.outliers"],
-            }],
+            resolution_options=[
+                {
+                    "action": "transform_winsorize",
+                    "description": "Cap extreme values at percentile boundaries",
+                    "effort": "medium",
+                    "parameters": {"percentile": 0.99},
+                    "expected_entropy_reduction": 0.4,
+                    "cascade_dimensions": ["statistical.outliers"],
+                }
+            ],
         )
-        network_ctx = _make_network_context(columns={
-            "column:orders.amount": _make_column_result(node_evidence=[ne]),
-        })
+        network_ctx = _make_network_context(
+            columns={
+                "column:orders.amount": _make_column_result(node_evidence=[ne]),
+            }
+        )
 
         result = merge_actions(
             interp_by_col={},
@@ -273,9 +312,11 @@ class TestNetworkCreatesNewActions:
             impact_delta=0.20,
             resolution_options=[],
         )
-        network_ctx = _make_network_context(columns={
-            "column:orders.amount": _make_column_result(node_evidence=[ne]),
-        })
+        network_ctx = _make_network_context(
+            columns={
+                "column:orders.amount": _make_column_result(node_evidence=[ne]),
+            }
+        )
 
         result = merge_actions(
             interp_by_col={},
@@ -298,12 +339,14 @@ class TestNetworkImpactPriorityScoring:
     def test_network_impact_increases_score(self):
         """Action with network impact should score higher than LLM-only action."""
         interp = FakeInterp(
-            resolution_actions_json=[{
-                "action": "declare_unit",
-                "description": "Add unit declaration",
-                "effort": "low",
-                "expected_impact": "Reduces semantic.units entropy",
-            }],
+            resolution_actions_json=[
+                {
+                    "action": "declare_unit",
+                    "description": "Add unit declaration",
+                    "effort": "low",
+                    "expected_impact": "Reduces semantic.units entropy",
+                }
+            ],
         )
 
         # LLM-only (no network)
@@ -318,13 +361,22 @@ class TestNetworkImpactPriorityScoring:
             node_name="unit_declaration",
             state="high",
             impact_delta=0.50,
-            resolution_options=[{"action": "declare_unit", "description": "", "effort": "low",
-                                 "parameters": {}, "expected_entropy_reduction": 0.3,
-                                 "cascade_dimensions": []}],
+            resolution_options=[
+                {
+                    "action": "declare_unit",
+                    "description": "",
+                    "effort": "low",
+                    "parameters": {},
+                    "expected_entropy_reduction": 0.3,
+                    "cascade_dimensions": [],
+                }
+            ],
         )
-        network_ctx = _make_network_context(columns={
-            "column:orders.amount": _make_column_result(node_evidence=[ne]),
-        })
+        network_ctx = _make_network_context(
+            columns={
+                "column:orders.amount": _make_column_result(node_evidence=[ne]),
+            }
+        )
 
         result_with_net = merge_actions(
             interp_by_col={"orders.amount": interp},
@@ -346,18 +398,22 @@ class TestNetworkImpactPriorityScoring:
             node_name="outlier_rate",
             state="high",
             impact_delta=0.40,
-            resolution_options=[{
-                "action": "winsorize",
-                "description": "Cap outliers",
-                "effort": "low",  # effort_factor = 1.0
-                "parameters": {},
-                "expected_entropy_reduction": 0.0,
-                "cascade_dimensions": [],
-            }],
+            resolution_options=[
+                {
+                    "action": "winsorize",
+                    "description": "Cap outliers",
+                    "effort": "low",  # effort_factor = 1.0
+                    "parameters": {},
+                    "expected_entropy_reduction": 0.0,
+                    "cascade_dimensions": [],
+                }
+            ],
         )
-        network_ctx = _make_network_context(columns={
-            "column:orders.amount": _make_column_result(node_evidence=[ne]),
-        })
+        network_ctx = _make_network_context(
+            columns={
+                "column:orders.amount": _make_column_result(node_evidence=[ne]),
+            }
+        )
 
         result = merge_actions(
             interp_by_col={},
@@ -376,30 +432,36 @@ class TestNetworkImpactPriorityScoring:
         """Action with high network impact should rank above one without."""
         # Action A: from LLM interpretation, no network impact
         interp = FakeInterp(
-            resolution_actions_json=[{
-                "action": "action_a",
-                "description": "LLM suggested fix",
-                "effort": "low",
-                "expected_impact": "Some improvement",
-            }],
+            resolution_actions_json=[
+                {
+                    "action": "action_a",
+                    "description": "LLM suggested fix",
+                    "effort": "low",
+                    "expected_impact": "Some improvement",
+                }
+            ],
         )
         # Action B: from network only, high impact
         ne = _make_node_evidence(
             node_name="some_node",
             state="high",
             impact_delta=0.80,
-            resolution_options=[{
-                "action": "action_b",
-                "description": "Network fix",
-                "effort": "low",
-                "parameters": {},
-                "expected_entropy_reduction": 0.1,
-                "cascade_dimensions": [],
-            }],
+            resolution_options=[
+                {
+                    "action": "action_b",
+                    "description": "Network fix",
+                    "effort": "low",
+                    "parameters": {},
+                    "expected_entropy_reduction": 0.1,
+                    "cascade_dimensions": [],
+                }
+            ],
         )
-        network_ctx = _make_network_context(columns={
-            "column:orders.amount": _make_column_result(node_evidence=[ne]),
-        })
+        network_ctx = _make_network_context(
+            columns={
+                "column:orders.amount": _make_column_result(node_evidence=[ne]),
+            }
+        )
 
         result = merge_actions(
             interp_by_col={"orders.amount": interp},
@@ -440,15 +502,29 @@ class TestBuildNetworkImpact:
             state="high",
             impact_delta=0.30,
             resolution_options=[
-                {"action": "winsorize", "description": "Cap outliers", "effort": "low",
-                 "parameters": {}, "expected_entropy_reduction": 0.3, "cascade_dimensions": []},
-                {"action": "remove_outliers", "description": "Remove rows", "effort": "high",
-                 "parameters": {}, "expected_entropy_reduction": 0.5, "cascade_dimensions": []},
+                {
+                    "action": "winsorize",
+                    "description": "Cap outliers",
+                    "effort": "low",
+                    "parameters": {},
+                    "expected_entropy_reduction": 0.3,
+                    "cascade_dimensions": [],
+                },
+                {
+                    "action": "remove_outliers",
+                    "description": "Remove rows",
+                    "effort": "high",
+                    "parameters": {},
+                    "expected_entropy_reduction": 0.5,
+                    "cascade_dimensions": [],
+                },
             ],
         )
-        ctx = _make_network_context(columns={
-            "column:orders.amount": _make_column_result(node_evidence=[ne]),
-        })
+        ctx = _make_network_context(
+            columns={
+                "column:orders.amount": _make_column_result(node_evidence=[ne]),
+            }
+        )
 
         result = _build_network_impact(ctx)
         assert "winsorize" in result
@@ -468,11 +544,13 @@ class TestViolationLinking:
 
     def test_dimension_violation_links_to_action(self):
         interp = FakeInterp(
-            resolution_actions_json=[{
-                "action": "fix_types",
-                "description": "Fix type inconsistencies",
-                "effort": "low",
-            }],
+            resolution_actions_json=[
+                {
+                    "action": "fix_types",
+                    "description": "Fix type inconsistencies",
+                    "effort": "low",
+                }
+            ],
         )
         result = merge_actions(
             interp_by_col={"orders.amount": interp},
@@ -485,11 +563,13 @@ class TestViolationLinking:
     def test_overall_violation_links_to_action(self):
         """Overall violations (keyed as 'overall') should link when columns overlap."""
         interp = FakeInterp(
-            resolution_actions_json=[{
-                "action": "fix_types",
-                "description": "Fix type inconsistencies",
-                "effort": "low",
-            }],
+            resolution_actions_json=[
+                {
+                    "action": "fix_types",
+                    "description": "Fix type inconsistencies",
+                    "effort": "low",
+                }
+            ],
         )
         result = merge_actions(
             interp_by_col={"orders.amount": interp},
@@ -502,11 +582,13 @@ class TestViolationLinking:
     def test_blocking_condition_links_to_action(self):
         """Blocking conditions (e.g. blocked_columns) should link when columns overlap."""
         interp = FakeInterp(
-            resolution_actions_json=[{
-                "action": "fix_types",
-                "description": "Fix type inconsistencies",
-                "effort": "low",
-            }],
+            resolution_actions_json=[
+                {
+                    "action": "fix_types",
+                    "description": "Fix type inconsistencies",
+                    "effort": "low",
+                }
+            ],
         )
         result = merge_actions(
             interp_by_col={"orders.amount": interp},
@@ -518,11 +600,13 @@ class TestViolationLinking:
 
     def test_no_link_when_columns_dont_overlap(self):
         interp = FakeInterp(
-            resolution_actions_json=[{
-                "action": "fix_types",
-                "description": "Fix type inconsistencies",
-                "effort": "low",
-            }],
+            resolution_actions_json=[
+                {
+                    "action": "fix_types",
+                    "description": "Fix type inconsistencies",
+                    "effort": "low",
+                }
+            ],
         )
         result = merge_actions(
             interp_by_col={"orders.amount": interp},
@@ -535,11 +619,13 @@ class TestViolationLinking:
     def test_multiple_violation_types_link(self):
         """An action can fix violations from multiple sources."""
         interp = FakeInterp(
-            resolution_actions_json=[{
-                "action": "fix_types",
-                "description": "Fix type inconsistencies",
-                "effort": "low",
-            }],
+            resolution_actions_json=[
+                {
+                    "action": "fix_types",
+                    "description": "Fix type inconsistencies",
+                    "effort": "low",
+                }
+            ],
         )
         result = merge_actions(
             interp_by_col={"orders.amount": interp},
@@ -571,18 +657,22 @@ class TestScoreDerivedPriority:
             node_name="unit_declaration",
             state="high",
             impact_delta=2.0,
-            resolution_options=[{
-                "action": "declare_unit",
-                "description": "Add unit",
-                "effort": "low",
-                "parameters": {},
-                "expected_entropy_reduction": 0.5,
-                "cascade_dimensions": [],
-            }],
+            resolution_options=[
+                {
+                    "action": "declare_unit",
+                    "description": "Add unit",
+                    "effort": "low",
+                    "parameters": {},
+                    "expected_entropy_reduction": 0.5,
+                    "cascade_dimensions": [],
+                }
+            ],
         )
-        network_ctx = _make_network_context(columns={
-            "column:orders.amount": _make_column_result(node_evidence=[ne]),
-        })
+        network_ctx = _make_network_context(
+            columns={
+                "column:orders.amount": _make_column_result(node_evidence=[ne]),
+            }
+        )
 
         result = merge_actions(
             interp_by_col={},
@@ -601,18 +691,22 @@ class TestScoreDerivedPriority:
             node_name="unit_declaration",
             state="high",
             impact_delta=0.50,
-            resolution_options=[{
-                "action": "declare_unit",
-                "description": "Add unit",
-                "effort": "low",
-                "parameters": {},
-                "expected_entropy_reduction": 0.0,
-                "cascade_dimensions": [],
-            }],
+            resolution_options=[
+                {
+                    "action": "declare_unit",
+                    "description": "Add unit",
+                    "effort": "low",
+                    "parameters": {},
+                    "expected_entropy_reduction": 0.0,
+                    "cascade_dimensions": [],
+                }
+            ],
         )
-        network_ctx = _make_network_context(columns={
-            "column:orders.amount": _make_column_result(node_evidence=[ne]),
-        })
+        network_ctx = _make_network_context(
+            columns={
+                "column:orders.amount": _make_column_result(node_evidence=[ne]),
+            }
+        )
 
         result = merge_actions(
             interp_by_col={},
@@ -631,18 +725,22 @@ class TestScoreDerivedPriority:
             node_name="unit_declaration",
             state="medium",
             impact_delta=0.10,
-            resolution_options=[{
-                "action": "declare_unit",
-                "description": "Add unit",
-                "effort": "high",  # effort_factor = 4.0
-                "parameters": {},
-                "expected_entropy_reduction": 0.0,
-                "cascade_dimensions": [],
-            }],
+            resolution_options=[
+                {
+                    "action": "declare_unit",
+                    "description": "Add unit",
+                    "effort": "high",  # effort_factor = 4.0
+                    "parameters": {},
+                    "expected_entropy_reduction": 0.0,
+                    "cascade_dimensions": [],
+                }
+            ],
         )
-        network_ctx = _make_network_context(columns={
-            "column:orders.amount": _make_column_result(node_evidence=[ne]),
-        })
+        network_ctx = _make_network_context(
+            columns={
+                "column:orders.amount": _make_column_result(node_evidence=[ne]),
+            }
+        )
 
         result = merge_actions(
             interp_by_col={},
@@ -659,13 +757,15 @@ class TestScoreDerivedPriority:
     def test_llm_priority_field_is_ignored(self):
         """LLM resolution_actions_json with 'priority' field should be ignored."""
         interp = FakeInterp(
-            resolution_actions_json=[{
-                "action": "document_unit",
-                "description": "Add unit declaration",
-                "priority": "high",  # This should be ignored
-                "effort": "high",
-                "expected_impact": "Reduces semantic.units entropy",
-            }],
+            resolution_actions_json=[
+                {
+                    "action": "document_unit",
+                    "description": "Add unit declaration",
+                    "priority": "high",  # This should be ignored
+                    "effort": "high",
+                    "expected_impact": "Reduces semantic.units entropy",
+                }
+            ],
         )
 
         result = merge_actions(

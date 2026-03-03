@@ -74,7 +74,6 @@ class EntropyObjectRecord(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
-
 # Indexes for common queries
 Index("idx_entropy_target", EntropyObjectRecord.target)
 Index("idx_entropy_layer_dimension", EntropyObjectRecord.layer, EntropyObjectRecord.dimension)

@@ -105,7 +105,10 @@ def compute_network_priorities(
         remaining_evidence = {k: v for k, v in evidence.items() if k != node}
 
         intervened = what_if_analysis(
-            network, remaining_evidence, intervention, target_nodes=intent_nodes,
+            network,
+            remaining_evidence,
+            intervention,
+            target_nodes=intent_nodes,
         )
 
         # Compute per-intent deltas
@@ -125,13 +128,15 @@ def compute_network_priorities(
 
         cascade_path = compute_cascade_paths(network, node)
 
-        priorities.append(PriorityResult(
-            node=node,
-            current_state=state,
-            impact_delta=round(max_delta, 4),
-            affected_intents=affected_intents,
-            cascade_path=cascade_path,
-        ))
+        priorities.append(
+            PriorityResult(
+                node=node,
+                current_state=state,
+                impact_delta=round(max_delta, 4),
+                affected_intents=affected_intents,
+                cascade_path=cascade_path,
+            )
+        )
 
     # Sort by impact_delta descending
     priorities.sort(key=lambda p: p.impact_delta, reverse=True)

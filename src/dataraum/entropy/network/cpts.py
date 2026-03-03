@@ -225,12 +225,23 @@ def generate_all_cpds(config: NetworkConfig) -> list[TabularCPD]:
             cpds.append(make_root_cpd(name, node.prior, states))
         elif len(parents) == 1:
             parent_name, strength = parents[0]
-            cpds.append(make_single_parent_cpd(
-                name, parent_name, strength, states, config.cpt_generation,
-            ))
+            cpds.append(
+                make_single_parent_cpd(
+                    name,
+                    parent_name,
+                    strength,
+                    states,
+                    config.cpt_generation,
+                )
+            )
         else:
-            cpds.append(make_multi_parent_cpd(
-                name, parents, states, config.cpt_generation,
-            ))
+            cpds.append(
+                make_multi_parent_cpd(
+                    name,
+                    parents,
+                    states,
+                    config.cpt_generation,
+                )
+            )
 
     return cpds

@@ -17,7 +17,7 @@ class TestSQLSnippetRecord:
             statement="income_statement",
             aggregation="sum",
             schema_mapping_id="schema_abc",
-            sql="SELECT SUM(\"Betrag\") AS value FROM typed_transactions WHERE \"Kontoart\" IN ('Erlöse')",
+            sql='SELECT SUM("Betrag") AS value FROM typed_transactions WHERE "Kontoart" IN (\'Erlöse\')',
             description="Sum of revenue from income statement",
             source="graph:dso",
         )
@@ -137,7 +137,9 @@ class TestSQLSnippetRecord:
         }
 
         session.add(SQLSnippetRecord(parameter_value="30", sql="SELECT 30 AS value", **common_args))
-        session.add(SQLSnippetRecord(parameter_value="365", sql="SELECT 365 AS value", **common_args))
+        session.add(
+            SQLSnippetRecord(parameter_value="365", sql="SELECT 365 AS value", **common_args)
+        )
         session.flush()  # Should not raise
 
     def test_column_mappings_json(self, session):

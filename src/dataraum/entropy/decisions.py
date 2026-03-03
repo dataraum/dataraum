@@ -68,9 +68,7 @@ class DecisionRecord(Base):
 
     __tablename__ = "decisions"
 
-    decision_id: Mapped[str] = mapped_column(
-        String, primary_key=True, default=lambda: str(uuid4())
-    )
+    decision_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
 
     # Context
     run_id: Mapped[str | None] = mapped_column(String, index=True)

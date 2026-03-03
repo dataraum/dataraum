@@ -38,9 +38,7 @@ class TestGraphExecution:
 
     def test_graph_steps_have_values(self, metadata_session: Session) -> None:
         """Each execution's step results should have values populated."""
-        steps = metadata_session.execute(
-            select(StepResultRecord)
-        ).scalars().all()
+        steps = metadata_session.execute(select(StepResultRecord)).scalars().all()
         assert len(steps) > 0, "No step results found"
 
         with_value = [
@@ -80,11 +78,15 @@ class TestValidation:
 
     def test_clean_data_passes_double_entry(self, metadata_session: Session) -> None:
         """The double_entry_balance validation should pass on clean data."""
-        results = metadata_session.execute(
-            select(ValidationResultRecord).where(
-                ValidationResultRecord.validation_id.contains("double_entry")
+        results = (
+            metadata_session.execute(
+                select(ValidationResultRecord).where(
+                    ValidationResultRecord.validation_id.contains("double_entry")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if results:
             # At least one double_entry validation should pass
             passed = [r for r in results if r.passed]
@@ -95,11 +97,13 @@ class TestValidation:
 
     def test_validation_has_sql(self, metadata_session: Session) -> None:
         """Validation results should have sql_used populated."""
-        results = metadata_session.execute(
-            select(ValidationResultRecord).where(
-                ValidationResultRecord.sql_used.isnot(None)
+        results = (
+            metadata_session.execute(
+                select(ValidationResultRecord).where(ValidationResultRecord.sql_used.isnot(None))
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(results) > 0, "No validation results have sql_used populated"
 
 
@@ -111,9 +115,7 @@ class TestValidation:
 class TestBusinessCycles:
     """Verify the business_cycles phase detected cycles in clean data."""
 
-    def test_cycles_detected(
-        self, pipeline_run: RunResult, metadata_session: Session
-    ) -> None:
+    def test_cycles_detected(self, pipeline_run: RunResult, metadata_session: Session) -> None:
         """DetectedBusinessCycle entries should exist."""
         count = metadata_session.execute(
             select(func.count())
@@ -126,11 +128,15 @@ class TestBusinessCycles:
         self, pipeline_run: RunResult, metadata_session: Session
     ) -> None:
         """Detected cycles should have tables_involved and stages populated."""
-        cycles = metadata_session.execute(
-            select(DetectedBusinessCycle).where(
-                DetectedBusinessCycle.source_id == pipeline_run.source_id
+        cycles = (
+            metadata_session.execute(
+                select(DetectedBusinessCycle).where(
+                    DetectedBusinessCycle.source_id == pipeline_run.source_id
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(cycles) > 0
 
         for cycle in cycles:
@@ -141,9 +147,7 @@ class TestBusinessCycles:
                 f"Cycle '{cycle.cycle_name}' has no stages"
             )
 
-    def test_known_cycle_types(
-        self, pipeline_run: RunResult, metadata_session: Session
-    ) -> None:
+    def test_known_cycle_types(self, pipeline_run: RunResult, metadata_session: Session) -> None:
         """At least one cycle should match the vocabulary (is_known_type=True)."""
         count = metadata_session.execute(
             select(func.count())
@@ -153,6 +157,4 @@ class TestBusinessCycles:
                 DetectedBusinessCycle.is_known_type.is_(True),
             )
         ).scalar()
-        assert count is not None and count > 0, (
-            "No detected cycles matched the known vocabulary"
-        )
+        assert count is not None and count > 0, "No detected cycles matched the known vocabulary"

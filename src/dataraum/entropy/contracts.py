@@ -108,9 +108,7 @@ class BlockingCondition:
         elif self.condition_type == "critical_entropy_count_exceeds":
             threshold = int(self.parameters.get("threshold", 0))
             # Count columns with blocked readiness (network-derived)
-            critical_count = sum(
-                1 for s in column_summaries.values() if s.readiness == "blocked"
-            )
+            critical_count = sum(1 for s in column_summaries.values() if s.readiness == "blocked")
             return critical_count > threshold
 
         # Unknown condition type - don't block
@@ -590,9 +588,7 @@ def evaluate_contract(
     # Check if any column has blocked readiness (from Bayesian network).
     # This ensures contract evaluation is consistent with overall readiness:
     # if readiness=BLOCKED, no contract should pass.
-    blocked_columns = [
-        key for key, s in column_summaries.items() if s.readiness == "blocked"
-    ]
+    blocked_columns = [key for key, s in column_summaries.items() if s.readiness == "blocked"]
     if blocked_columns:
         violations.append(
             Violation(

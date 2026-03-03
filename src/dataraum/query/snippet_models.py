@@ -49,9 +49,7 @@ class SQLSnippetRecord(Base):
         ),
     )
 
-    snippet_id: Mapped[str] = mapped_column(
-        String, primary_key=True, default=lambda: str(uuid4())
-    )
+    snippet_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
 
     # Discriminator: extract | constant | formula | query
     snippet_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
@@ -111,15 +109,11 @@ class SnippetUsageRecord(Base):
 
     __tablename__ = "snippet_usage"
 
-    usage_id: Mapped[str] = mapped_column(
-        String, primary_key=True, default=lambda: str(uuid4())
-    )
+    usage_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
 
     # --- Execution link ---
     execution_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    execution_type: Mapped[str] = mapped_column(
-        String, nullable=False
-    )  # "graph" | "query"
+    execution_type: Mapped[str] = mapped_column(String, nullable=False)  # "graph" | "query"
 
     # --- Snippet link ---
     snippet_id: Mapped[str | None] = mapped_column(

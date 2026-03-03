@@ -106,4 +106,3 @@ class TestQueryDocument:
         assert d["final_sql"] == "FINAL SQL"
         assert d["column_mappings"]["a"] == "b"
         assert len(d["assumptions"]) == 1
-

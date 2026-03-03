@@ -86,7 +86,10 @@ class BusinessCycleAgent(LLMFeature):
         try:
             # 1. Build rich context from all pipeline metadata
             context = build_cycle_detection_context(
-                session, duckdb_conn, table_ids, vertical=vertical,
+                session,
+                duckdb_conn,
+                table_ids,
+                vertical=vertical,
             )
             context_str = format_context_for_prompt(context)
 
@@ -130,8 +133,7 @@ class BusinessCycleAgent(LLMFeature):
             # 4. Parse structured output
             if not response.tool_calls:
                 return Result.fail(
-                    "LLM did not call submit_analysis tool. "
-                    "No structured output received."
+                    "LLM did not call submit_analysis tool. No structured output received."
                 )
 
             tool_call = response.tool_calls[0]
@@ -139,7 +141,11 @@ class BusinessCycleAgent(LLMFeature):
                 return Result.fail(f"Unexpected tool call: {tool_call.name}")
 
             analysis = self._parse_output(
-                tool_call.input, context, start_time, model=model, vertical=vertical,
+                tool_call.input,
+                context,
+                start_time,
+                model=model,
+                vertical=vertical,
             )
 
             # 5. Persist to database

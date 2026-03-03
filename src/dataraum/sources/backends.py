@@ -65,7 +65,9 @@ def validate_backend(
         Result containing table names and column previews, or error.
     """
     if backend not in SUPPORTED_BACKENDS:
-        return Result.fail(f"Unsupported backend: {backend}. Supported: {', '.join(sorted(SUPPORTED_BACKENDS))}")
+        return Result.fail(
+            f"Unsupported backend: {backend}. Supported: {', '.join(sorted(SUPPORTED_BACKENDS))}"
+        )
 
     attach_type = BACKEND_ATTACH_TYPES[backend]
     extension = BACKEND_EXTENSIONS[backend]

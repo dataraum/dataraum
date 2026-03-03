@@ -42,9 +42,7 @@ class HealthReport:
     overall_health: float | None = None
 
 
-def compute_cycle_health(
-    session: Session, source_id: str, *, vertical: str
-) -> HealthReport:
+def compute_cycle_health(session: Session, source_id: str, *, vertical: str) -> HealthReport:
     """Compute health scores for all detected cycles in a source.
 
     Combines cycle completion rates (from LLM detection) with validation
@@ -74,14 +72,10 @@ def compute_cycle_health(
     # 3. Query validation results for those tables
     validation_results: list[ValidationResultRecord] = []
     if all_table_ids:
-        validation_results = list(
-            session.scalars(select(ValidationResultRecord)).all()
-        )
+        validation_results = list(session.scalars(select(ValidationResultRecord)).all())
         # Filter to results that share table_ids with our cycles
         validation_results = [
-            vr
-            for vr in validation_results
-            if set(vr.table_ids or []) & all_table_ids
+            vr for vr in validation_results if set(vr.table_ids or []) & all_table_ids
         ]
 
     # 4. Compute per-cycle health scores
@@ -102,8 +96,7 @@ def compute_cycle_health(
         matched_results = [
             vr
             for vr in validation_results
-            if vr.validation_id in relevant_spec_ids
-            and set(vr.table_ids or []) & cycle_table_ids
+            if vr.validation_id in relevant_spec_ids and set(vr.table_ids or []) & cycle_table_ids
         ]
 
         validations_run = len(matched_results)

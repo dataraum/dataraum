@@ -14,9 +14,7 @@ def _make_gate(**kwargs):
         "gate_id": "gate_statistics",
         "gate_type": "structural",
         "blocked_phase": "statistics",
-        "violations": [
-            GateViolation(dimension="type_fidelity", score=0.6, threshold=0.5)
-        ],
+        "violations": [GateViolation(dimension="type_fidelity", score=0.6, threshold=0.5)],
         "suggested_actions": [
             GateAction(
                 index=1,

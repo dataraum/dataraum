@@ -294,10 +294,68 @@ class SlicingPhase(BasePhase):
             # Format: "{fk_col}__{dim_col}" — we resolve column_id via the FK prefix part.
             # Stats are queried directly from DuckDB since no StatisticalProfile records
             # exist for enriched dim columns (they are not registered as Column records).
+            # Batch all stats into 2 queries (one pass for counts, one for top values)
+            # instead of N queries per column to avoid scanning the enriched view 40+ times.
             table_ev = ev_by_fact.get(table.table_id)
             if table_ev and table_ev.dimension_columns:
                 ev_view_name = table_ev.view_name  # e.g. "enriched_kontobuchungen"
-                for dim_col_name in table_ev.dimension_columns:
+                dim_col_names = list(table_ev.dimension_columns)
+
+                # Batch stats query: one scan for all dim columns
+                dim_stats: dict[str, dict[str, Any]] = {}
+                try:
+                    select_parts = ["COUNT(*) AS total_count"]
+                    for dcn in dim_col_names:
+                        q = f'"{dcn}"'
+                        safe = dcn.replace('"', "")
+                        select_parts.append(f"COUNT(DISTINCT {q}) AS d_{safe}")
+                        select_parts.append(f"COUNT(*) - COUNT({q}) AS n_{safe}")
+                    stats_row = ctx.duckdb_conn.execute(
+                        f'SELECT {", ".join(select_parts)} FROM "{ev_view_name}"'
+                    ).fetchone()
+                    if stats_row:
+                        total = stats_row[0] or 0
+                        for i, dcn in enumerate(dim_col_names):
+                            distinct_c = stats_row[1 + i * 2] or 0
+                            null_c = stats_row[2 + i * 2] or 0
+                            dim_stats[dcn] = {
+                                "total_count": total,
+                                "null_count": null_c,
+                                "null_ratio": round(null_c / total, 4) if total else 0.0,
+                                "distinct_count": distinct_c,
+                                "cardinality_ratio": round(distinct_c / total, 4) if total else 0.0,
+                            }
+                except Exception:
+                    pass
+
+                # Batch top values query: one UNION ALL for all low-cardinality dim columns
+                low_card_cols = [
+                    dcn
+                    for dcn in dim_col_names
+                    if dim_stats.get(dcn, {}).get("distinct_count", 999) <= 20
+                ]
+                top_values_by_col: dict[str, list[dict[str, Any]]] = {}
+                if low_card_cols:
+                    try:
+                        union_parts = [
+                            f"SELECT '{dcn}' AS col_name, \"{dcn}\"::VARCHAR AS val,"
+                            f' COUNT(*) AS cnt FROM "{ev_view_name}"'
+                            f' WHERE "{dcn}" IS NOT NULL GROUP BY "{dcn}"'
+                            for dcn in low_card_cols
+                        ]
+                        top_rows = ctx.duckdb_conn.execute(
+                            " UNION ALL ".join(union_parts) + " ORDER BY col_name, cnt DESC"
+                        ).fetchall()
+                        for col_name, val, cnt in top_rows:
+                            top_values_by_col.setdefault(col_name, [])
+                            if len(top_values_by_col[col_name]) < 10:
+                                top_values_by_col[col_name].append(
+                                    {"value": str(val), "count": cnt}
+                                )
+                    except Exception:
+                        pass
+
+                for dim_col_name in dim_col_names:
                     fk_prefix = dim_col_name.split("__")[0] if "__" in dim_col_name else None
                     fk_col_id = col_id_by_name.get(fk_prefix) if fk_prefix else None
                     dim_entry: dict[str, Any] = {
@@ -306,42 +364,10 @@ class SlicingPhase(BasePhase):
                         "is_enriched_dimension": True,
                         "fk_column_name": fk_prefix,
                     }
-                    # Query stats from the enriched view in DuckDB
-                    try:
-                        quoted = f'"{dim_col_name}"'
-                        stats_row = ctx.duckdb_conn.execute(f"""
-                            SELECT
-                                COUNT(*) AS total_count,
-                                COUNT(*) - COUNT({quoted}) AS null_count,
-                                COUNT(DISTINCT {quoted}) AS distinct_count
-                            FROM "{ev_view_name}"
-                        """).fetchone()
-                        if stats_row:
-                            total = stats_row[0] or 0
-                            null_c = stats_row[1] or 0
-                            distinct_c = stats_row[2] or 0
-                            dim_entry["total_count"] = total
-                            dim_entry["null_count"] = null_c
-                            dim_entry["null_ratio"] = round(null_c / total, 4) if total else 0.0
-                            dim_entry["distinct_count"] = distinct_c
-                            dim_entry["cardinality_ratio"] = (
-                                round(distinct_c / total, 4) if total else 0.0
-                            )
-                        # Fetch top values (only if cardinality is low enough to be useful)
-                        if dim_entry.get("distinct_count", 999) <= 20:
-                            top_rows = ctx.duckdb_conn.execute(f"""
-                                SELECT {quoted}, COUNT(*) AS cnt
-                                FROM "{ev_view_name}"
-                                WHERE {quoted} IS NOT NULL
-                                GROUP BY {quoted}
-                                ORDER BY cnt DESC
-                                LIMIT 10
-                            """).fetchall()
-                            dim_entry["top_values"] = [
-                                {"value": str(r[0]), "count": r[1]} for r in top_rows
-                            ]
-                    except Exception:
-                        pass  # Skip stats if query fails
+                    if dim_col_name in dim_stats:
+                        dim_entry.update(dim_stats[dim_col_name])
+                    if dim_col_name in top_values_by_col:
+                        dim_entry["top_values"] = top_values_by_col[dim_col_name]
                     columns_list.append(dim_entry)
                     column_count += 1
 

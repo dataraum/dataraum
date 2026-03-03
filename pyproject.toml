@@ -43,6 +43,7 @@ dependencies = [
     "rich>=13.0.0",
     "networkx>=3.6",
     "pgmpy>=0.1.25",
+    "torch>=2.0.0",
     "anthropic>=0.76.0",
     # TUI
     "textual>=0.50.0",
@@ -87,8 +88,14 @@ e2e = [
     "dataraum-testdata @ git+https://github.com/dataraum/dataraum-testdata.git",
 ]
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.uv.sources]
 dataraum-testdata = { path = "../dataraum-testdata", editable = true }
+torch = [{ index = "pytorch-cpu" }]
 
 [build-system]
 requires = ["hatchling"]

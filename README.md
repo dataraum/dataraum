@@ -34,7 +34,7 @@ Then in Claude Desktop, point the `analyze` tool at your data:
 
 > Analyze the CSV files in /path/to/my/data
 
-The server runs a 19-phase analysis pipeline and makes 9 tools available:
+The server runs a 20-phase analysis pipeline and makes 9 tools available:
 
 | Tool | Description |
 |------|-------------|
@@ -117,7 +117,7 @@ uv run ruff format --check src/
 ## Documentation
 
 - [Architecture](docs/architecture.md) — system design and pipeline overview
-- [Pipeline](docs/pipeline.md) — 19-phase pipeline reference
+- [Pipeline](docs/pipeline.md) — 20-phase pipeline reference
 - [Entropy](docs/entropy.md) — uncertainty quantification system
 - [Data Model](docs/data-model.md) — metadata schema
 - [CLI Reference](docs/cli.md) — command-line interface

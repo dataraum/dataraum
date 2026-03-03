@@ -62,7 +62,6 @@ dev = [
 [project.scripts]
 dataraum = "dataraum.cli:app"
 dataraum-mcp = "dataraum.mcp.server:main"
-dataraum-api = "dataraum.api.server:main"
 
 [project.urls]
 Homepage = "https://github.com/dataraum/dataraum-context"

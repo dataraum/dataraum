@@ -239,7 +239,9 @@ def load_column_analysis(
 
         slice_table_names: list[str] = []
         for sd in slice_defs:
-            sd_col_name = col_name_map.get(sd.column_id)
+            # Prefer sd.column_name (enriched FK-prefixed name used by slice_runner
+            # to derive table names), fall back to column_id lookup for older records.
+            sd_col_name = sd.column_name or col_name_map.get(sd.column_id)
             if sd_col_name and sd.distinct_values:
                 for value in sd.distinct_values:
                     slice_table_names.append(_get_slice_table_name(sd_col_name, value))

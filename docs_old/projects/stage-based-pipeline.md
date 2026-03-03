@@ -1,693 +1,1019 @@
-# Stage-Based Pipeline Redesign
+# Pipeline Redesign: Reactive Scheduling with Exit Quality Checks
 
-**Status:** Proposal
-**Size:** XL (8+ files, 500+ lines changed)
+**Status:** Draft
+**Size:** XL
 **Branch:** `refactor/stage-pipeline` (from `refactor/streamline`)
 
-## Problem Statement
+---
 
-The current pipeline orchestrator interleaves entropy gate checking with phase scheduling in a single `while work_queue or active_futures` loop. This creates three unsolvable problems:
+## The Fundamental Problem
 
-1. **No natural pause points.** The Rich `Live` display owns the terminal via a background refresh thread. When a gate fires, the orchestrator calls `gate_handler.resolve()` from inside the scheduling loop — but `Live` is still running, so `Prompt.ask()` output gets overwritten. Stopping/starting `Live` externally is fragile and breaks its internal state.
+The current orchestrator (~1000 lines) mixes five concerns in a single `while` loop:
 
-2. **Two conflicting dependency systems.** Metadata dependencies (`dependencies: list[str]`) control execution order within the ThreadPoolExecutor. Entropy preconditions (`entropy_preconditions: dict[str, float]`) control quality gates. Both are evaluated in the same loop, creating "not yet measured" confusion when a dimension's producer phase hasn't run yet because it's queued alongside the phase that needs its score.
+1. **Scheduling** — which phases are ready to run
+2. **Execution** — running phases in a thread pool
+3. **Quality measurement** — post-verification detectors
+4. **Gate handling** — blocking, presenting, resolving
+5. **Display** — Rich Live, progress callbacks, event emission
 
-3. **Log pollution.** structlog writes to stderr, Rich writes to stdout. In interactive mode, structlog `[warning]` lines from phase execution leak through and corrupt the Live display. Suppressing them requires either silencing all warnings (losing useful diagnostics) or capturing stderr (complex and fragile).
+This creates unsolvable problems: Live display conflicts with gate prompts, gate checking interleaves with scheduling, "not yet measured" confusion when producers and consumers are queued together.
 
-### What the user sees today
-
-```
-$ dataraum run ./testdata --gate-mode pause
-2024-01-15 10:23:45 [warning  ] low_cardinality_detected   column=region ...
-Pipeline [3/19]  Running: statistics, correlations
-  entropy: type_fidelity=0.234
-2024-01-15 10:23:46 [warning  ] null_ratio_high            column=amount ...
-  gate: semantic — BLOCKED
-```
-
-Mixed structlog + Rich output. No prompt. No interaction. Pipeline exits.
-
-### What the user should see
-
-```
-$ dataraum run ./testdata --gate-mode pause
-Stage 1/5: Foundation ✓ (2.1s)
-  import ✓  typing ✓
-  type_fidelity: 0.234
-
-Stage 2/5: Profiling ✓ (4.3s)
-  statistics ✓  column_eligibility ✓  relationships ✓  correlations ✓  temporal ✓
-  join_path_determinism: 0.612
-
-━━━ GATE: Semantic Readiness ━━━━━━━━━━━━━━━━━━━━━━
-  join_path_determinism: 0.612 (max 0.500)
-    ↳ orders.customer_id → customers.id: ambiguous (3 candidates)
-
-  [1] fix: deduplicate join path orders→customers (87%)
-  [2] skip: continue with warnings
-  [3] inspect: show affected rows
-
-  Or ask a question about this gate: _
-```
-
-Clean output. Natural pause. Full interaction.
+Previous iterations tried to fix this with "stages" (grouping phases between predefined gate points). That papered over the real issue: the orchestrator has no clear model for when to pause, how events propagate, and how to resume. Stages are an artificial grouping — the phase contracts already encode everything the scheduler needs.
 
 ---
 
-## Design Principles
+## Entry Criteria vs. Exit Criteria
 
-1. **Stages own the terminal.** The CLI runs a sequential `for stage in stages` loop. Between stages, the CLI owns stdout — no Live, no threads, just Rich panels and Prompt.ask().
-2. **Within a stage, phases run in parallel.** ThreadPoolExecutor + metadata dependencies, exactly as today. No entropy checks inside a stage.
-3. **Gates fire between stages, not between phases.** Each stage declares an exit gate (entropy thresholds). The gate is checked after all phases in the stage complete.
-4. **structlog captured during execution.** Phase threads write to a StringIO buffer. After the stage completes, warnings are summarized in the CLI output (not streamed live).
-5. **The orchestrator doesn't know about the terminal.** It runs stages, returns results. The CLI decides how to display them.
+A fundamental design choice that changes everything:
+
+**Entry criteria (current model):** Block the CONSUMER if quality isn't good enough. The user learns about the problem when `statistics` can't start because `type_fidelity` is too high. But `typing` already ran — the problem existed the moment it finished. The user is told at the wrong time.
+
+**Exit criteria (proposed model):** Check the PRODUCER on the way out. After `typing` completes, measure `type_fidelity`. If it's bad, present the issue immediately — with impact assessment ("this will block statistics, semantic, and eventually graph_execution"). The user decides: fix now, or defer and accept the risk.
+
+In software quality gates, this is normal: you close a phase and verify its output before dependents proceed. We adopt the same model:
+
+1. Phase completes
+2. Post-verification measures quality
+3. If issues found: present with downstream impact, let user fix or defer
+4. If fixed: re-measure, close cleanly
+5. If deferred: close with caveats, dependents proceed on whatever quality exists
+
+**No blocked state. No deadlock detection.** Every phase runs when its dependencies are met. Quality is the producer's responsibility. The risk of deferral is the user's choice.
+
+**What about cost protection?** If `type_fidelity` is 0.90 (90% of casts failed), running `semantic` (expensive LLM) is burning money. But the user already expressed their quality expectations through the selected contract. A `regulatory_reporting` contract (threshold 0.1) would flag this immediately. An `exploratory_analysis` contract (threshold 0.5) would too. If the user chose a contract that allows 0.90 — that's their explicit choice. For a safety net beyond contracts, a single global policy ("never run LLM phases if type_fidelity > 0.8") is sufficient — not per-phase magic numbers.
 
 ---
 
-## Stage Model
+## Mental Model: Manufacturing Inspection Line
 
-### Stage Definition
+The pipeline is a manufacturing line. The workpiece is the metadata database. Each phase adds metadata. After each station, the inspector checks quality. If insufficient, the line stops for rework. The key difference from CI/CD: the workpiece is mutable and rework is in-place.
+
+```
+[Assembly]  →  [Exit Check]  →  [Rework?]  →  [Assembly]  →  [Exit Check]  →  ...
+ (phase)       (detectors)      (fix/defer)    (phase)        (detectors)
+```
+
+- **The workpiece is mutable.** Unlike CI/CD (rebuild from scratch on failure), the metadata database can be fixed in-place. Re-running 20 phases is expensive; fixing one type annotation and resuming is cheap.
+- **Inspection measures the process.** Entropy detectors measure uncertainty in the metadata extraction process ("how confident are we in these type inferences?"), not just whether values are correct. This is the SPC (Statistical Process Control) philosophy.
+- **Passing defects downstream is more expensive than stopping now.** Running semantic analysis on garbage types wastes LLM tokens. The exit check warns the user before this happens.
+- **Rework is targeted.** A fix addresses the specific issue. It doesn't restart the line.
+
+### Prior art
+
+| Domain | Pattern | What maps | What doesn't |
+|--------|---------|-----------|--------------|
+| **Manufacturing SPC** | Control charts, stop-the-line (andon cord) | Entropy scores = control charts. Gates = control limits. Fix-and-continue = andon. | SPC monitors continuous production; we run once per source. |
+| **Cooper's Stage-Gate** | Go/Kill/Hold/Recycle decisions between stages | Go = proceed. Hold = pause for fix. Recycle = re-run after fix. | Stage-Gate is project management with human judgment; ours is mostly automated. |
+| **CI/CD quality gates** | SonarQube blocks deployment if metrics fail | Threshold checking, pass/fail | CI/CD restarts from scratch. No in-place fix. |
+| **Great Expectations** | Declarative data assertions, validation results | Detectors ≈ expectation suites | No pause/fix/resume lifecycle. |
+| **Dagster asset checks** | `blocking=True` prevents downstream materialization | Blocking = our gate concept | No interactive fix loop. |
+| **MLOps model gates** | Performance must exceed threshold before deployment | Validate artifacts before proceeding | Binary decision only; no structured remediation. |
+
+**What makes our pattern distinct:** the combination of (1) automated measurement, (2) pipeline pause (not restart), (3) structured fix actions, and (4) resume from where you stopped. No single framework provides all four.
+
+---
+
+## What Is a Gate
+
+A gate is an **exit quality check** after a phase (or batch of parallel phases) completes. It is not a blocking entry barrier — it's a producer-side verification with user-facing impact assessment.
+
+A gate presents:
+
+1. **What happened** — which dimensions changed, current scores
+2. **Why it matters** — which contract thresholds are violated, with gap size
+3. **What to do** — suggested fixes from the action registry, ranked by confidence
+
+### Resolution options
+
+| Action | What happens | When to use |
+|--------|-------------|-------------|
+| **Fix** | Apply a targeted action. Re-run detector. Re-check. | The issue is fixable and worth fixing now. |
+| **Defer** | Record the issue as a caveat. Continue. Downstream phases run on whatever quality exists. | The issue should be tracked but not fixed now. |
+| **Abort** | Stop the pipeline. Return partial results. | The data quality is fundamentally unusable. |
+
+Note: "Skip" and "Defer" are the same thing — continue with a warning. The deferred issue appears in the final report.
+
+### When gates fire
+
+Gates fire at **natural pauses** — when a wave of parallel phases completes and no phases are currently running. The scheduler accumulates exit check issues from each completing phase and presents them as a batch at the natural pause. This means:
+
+- If relationships, correlations, and temporal complete around the same time, the user sees ALL issues from that wave at once
+- The user can prioritize: fix the one that violates the contract, defer the one that's within tolerance
+- No per-phase interruption during parallel execution
+
+### What gates are NOT
+
+- Not entry barriers. Phases are not "blocked" — they run when deps are met.
+- Not comprehensive quality reports. That happens in the entropy phase.
+- Not artificial "stages." The pause points emerge from the DAG structure.
+
+---
+
+## How Fixes Work
+
+A fix is a **targeted state change** that improves a specific quality dimension.
+
+### The fix loop
+
+```
+Phase completes → post-verification detects quality issue → issue accumulated
+  ↓
+Natural pause (no phases running) → scheduler yields EXIT_CHECK with all issues
+  ↓
+Caller presents issues ranked by contract violation severity
+  e.g., "type_fidelity: 0.65 — contract 'executive_dashboard' requires ≤ 0.20"
+  ↓
+Caller looks up available fixes from the action registry
+  e.g., [1] override_type: cast to DECIMAL(10,2)  [2] defer  [3] abort
+  ↓
+User (or auto_fix policy) chooses
+  ↓
+Fix executor runs:
+  1. Snapshot BEFORE — run detector, record score
+  2. Apply change — update DB (e.g., TypeDecision.decided_type = DECIMAL)
+  3. Snapshot AFTER — run detector, record new score
+  4. Persist decision record (who, what, why, before→after)
+  ↓
+Caller sends resolution to scheduler
+  ↓
+Scheduler updates scores, resumes scheduling
+  → If fixed: downstream phases proceed with improved quality
+  → If deferred: downstream phases proceed anyway, issue recorded as caveat
+```
+
+### Fix actions — current and planned
+
+**The fix registry should grow with the pipeline, not be limited to entropy dimensions.**
+
+| Fix action | Category | When discovered | Blocking dimension |
+|------------|----------|----------------|--------------------|
+| `override_type` | TRANSFORM | After typing | type_fidelity |
+| `confirm_relationship` | ANNOTATE | After relationships | join_path_determinism |
+| `add_business_name` | ANNOTATE | After semantic | naming_clarity |
+| `declare_unit` | ANNOTATE | After semantic | unit_declaration |
+| `declare_null_meaning` | ANNOTATE | After statistics | null_ratio |
+| `create_filtered_view` | TRANSFORM | After entropy | outlier_rate |
+| `override_eligibility` | ANNOTATE | After column_eligibility | *(new)* |
+| `override_temporal_column` | ANNOTATE | After temporal | *(new)* |
+| `override_slice` | ANNOTATE | After slicing | *(new)* |
+| `declare_constraint_exception` | ANNOTATE | After validation | *(new)* |
+| `override_field_mapping` | ANNOTATE | After graph_execution | *(new)* |
+
+Current: 6 actions. Planned: 11+. Each phase knows best what can go wrong and what the fix is.
+
+### Deferred issues
+
+Not every issue needs immediate attention. Issues that the user defers — or that the contract doesn't flag — appear in the final quality report and the context document as caveats. The consumer (query agent) can factor these into its confidence.
+
+---
+
+## Discover on the Way, Fix on the Way
+
+### The problem with "entropy at the end"
+
+The current pipeline runs 17 phases, then runs entropy detection as phase 18, then LLM interpretation as phase 19. Quality issues discovered at phase 18 are too late — all the expensive LLM phases (semantic, slicing, quality_summary, validation, business_cycles) already ran on potentially bad data.
+
+### The solution: incremental measurement via post-verification
+
+Each phase declares which entropy dimensions it affects. After a phase completes, the scheduler runs those specific detectors and updates the quality scores. Issues are discovered **at the point they occur**, not at the end.
+
+### Detector availability — the true dependency map
+
+All 11 detectors are pure computation on pre-assembled metadata (zero SQL queries). Their real dependencies:
+
+| After this phase | Detectors that can run | Scores updated |
+|---|---|---|
+| typing | TypeFidelityDetector | type_fidelity |
+| statistics | NullRatioDetector | null_ratio |
+| relationships | JoinPathDeterminismDetector, RelationshipEntropyDetector | join_path_determinism, relationship_quality |
+| semantic | OutlierRateDetector¹, BenfordDetector¹, BusinessMeaningDetector, UnitEntropyDetector, TemporalEntropyDetector | outlier_rate, benford_law, business_meaning, unit_entropy, temporal_entropy |
+| temporal_slice_analysis | TemporalDriftDetector¹ | temporal_drift |
+| quality_summary | DimensionalEntropyDetector | cross_column_patterns |
+
+¹ Uses `semantic_role` to filter inapplicable columns (e.g., skip primary keys for outlier detection). Needs semantic for precision, not for core computation.
+
+### Exit checks are contract-driven
+
+After a phase completes and post-verification updates scores, the scheduler checks those scores against the **selected contract** — the same contract that evaluates the final pipeline output. No per-phase thresholds. No magic numbers in phase code.
+
+Example: the user selected `executive_dashboard` (thresholds: `structural.types ≤ 0.20`, `structural.relations ≤ 0.20`, `semantic.business_meaning ≤ 0.20`, ...). After typing completes:
+
+1. Post-verification runs `TypeFidelityDetector` → `type_fidelity = 0.65`
+2. Scheduler checks `executive_dashboard.dimension_thresholds["structural.types"]` → 0.20
+3. Violation: 0.65 > 0.20. Issue created with gap size (0.45), affected columns, suggested fix (`override_type`).
+4. At the next natural pause, the issue is presented to the user.
+
+This eliminates a second configuration layer. The contract is the single source of truth for "what quality level is acceptable." The same thresholds that evaluate the final report also drive incremental exit checks throughout the pipeline.
+
+### The comprehensive entropy phase still runs
+
+The entropy phase (all 12 detectors + Bayesian network) still runs as a normal phase. It provides:
+- Cross-dimensional correlations (are type issues correlated with null issues?)
+- Intent-level probabilities (is this data safe for aggregation?)
+- Prioritized action recommendations
+- The complete quality picture for the context document
+
+But it's no longer the first time quality is measured — it's the final comprehensive assessment after incremental checks throughout.
+
+---
+
+## The Phase Contract
+
+If you deleted the orchestrator and rebuilt it from just the Phase protocol, what do you need?
+
+### Remove: `outputs`
+
+The `outputs` property (`list[str]`) is declared on every phase but never read by the orchestrator. It's dead documentation. The only cross-phase data passing via `previous_outputs` is one case: import → typing passes `raw_tables`. This should be a DB query.
+
+**Remove `outputs` from Phase protocol. Remove `previous_outputs` and `get_output` from PhaseContext.** Phases communicate through the database (SQLAlchemy models, DuckDB tables). This is already true for 19 of 20 phases.
+
+### Remove: `entropy_preconditions`
+
+The `entropy_preconditions` property (`dict[str, float]`) is a second configuration layer with hardcoded magic numbers that duplicates what contracts already provide. Only 3 of 20 phases declare it. The thresholds are opinions embedded in phase code (`{"type_fidelity": 0.3}`) that can't be adjusted without editing Python.
+
+Contracts already define per-dimension thresholds, per-use-case, in YAML. The user selects a contract. The scheduler checks post-verification scores against that contract. One quality dial, not two.
+
+**Remove `entropy_preconditions` from Phase protocol. Remove `check_preconditions` from `PipelineEntropyState`. Remove `_check_gate()` from the orchestrator.** The contract replaces all of this.
+
+### The minimal Phase protocol
 
 ```python
-@dataclass(frozen=True)
-class Stage:
-    name: str                              # e.g., "foundation"
-    display_name: str                      # e.g., "Foundation"
-    phases: list[str]                      # Phase names in this stage
-    exit_gate: dict[str, float] | None     # Entropy thresholds to check after stage
-                                           # e.g., {"type_fidelity": 0.5}
-    order: int                             # Execution order (1-based)
+class Phase(Protocol):
+    name: str
+    description: str
+    dependencies: list[str]
+    post_verification: list[str]               # dimensions to measure on exit
+    run(ctx: PhaseContext) -> PhaseResult
+    should_skip(ctx: PhaseContext) -> str | None
 ```
 
-### Stage Configuration (pipeline.yaml)
+Five properties. One method. One conditional. That's the entire contract between a phase and the scheduler. The phase declares what it needs to run (`dependencies`), what quality it affects (`post_verification`), and how to execute (`run`). The scheduler handles scheduling, measurement, and quality evaluation — using the user-selected contract for thresholds.
 
-```yaml
-stages:
-  - name: foundation
-    display_name: Foundation
-    order: 1
-    phases: [import, typing]
-    exit_gate:
-      type_fidelity: 0.50
+## The Scheduler: Rebuilt from Phase Contracts
 
-  - name: profiling
-    display_name: Profiling & Structure
-    order: 2
-    phases: [statistics, column_eligibility, relationships, correlations, temporal, statistical_quality]
-    exit_gate:
-      join_path_determinism: 0.50
-      type_fidelity: 0.30
-
-  - name: semantic
-    display_name: Semantic Analysis
-    order: 3
-    phases: [semantic]
-    exit_gate:
-      naming_clarity: 0.40
-
-  - name: views
-    display_name: Views & Quality
-    order: 4
-    phases: [enriched_views, slicing, slice_analysis, temporal_slice_analysis, quality_summary, entropy, entropy_interpretation, validation, business_cycles]
-    exit_gate: null  # No gate — proceed to final stage
-
-  - name: computation
-    display_name: Business Intelligence
-    order: 5
-    phases: [graph_execution]
-    exit_gate: null  # Final stage, no exit gate
-```
-
-### Why these 5 stages
-
-| Stage | Phases | Gate After | Rationale |
-|-------|--------|------------|-----------|
-| **Foundation** | import, typing | type_fidelity ≤ 0.50 | Types must be clean before statistics. `typing` produces `type_fidelity` via post-verification. |
-| **Profiling & Structure** | statistics, column_eligibility, relationships, correlations, temporal, statistical_quality | join_path_determinism ≤ 0.50, type_fidelity ≤ 0.30 | Structural analysis must be clean before semantic interpretation. `relationships` produces `join_path_determinism`. Tighter type_fidelity gate (0.30 vs 0.50) catches regressions. |
-| **Semantic** | semantic | naming_clarity ≤ 0.40 | Naming must be clear before graph execution. `semantic` produces `naming_clarity`. |
-| **Views & Quality** | enriched_views through business_cycles (9 phases) | none | These phases build on clean semantic foundation. No new entropy dimensions gated. |
-| **Computation** | graph_execution | none | Final aggregation. Entry was gated by Stage 3's exit gate on naming_clarity. |
-
-### Mapping from current `entropy_preconditions`
-
-The current phase-level preconditions map directly to stage exit gates:
-
-- `statistics.entropy_preconditions = {"type_fidelity": 0.5}` → Stage 1 exit gate
-- `semantic.entropy_preconditions = {"type_fidelity": 0.3, "join_path_determinism": 0.5}` → Stage 2 exit gate
-- `graph_execution.entropy_preconditions = {"type_fidelity": 0.3, "naming_clarity": 0.4}` → Stage 3 exit gate
-
-The `entropy_preconditions` property on phases becomes documentation-only — the stage config is the source of truth for gating.
-
----
-
-## New Orchestrator Design
-
-### Current: Single Loop
-
-```
-Pipeline.run():
-    while work_queue or active_futures:
-        pop phase → check deps → check gate → submit to pool
-        collect futures → post-verify → update entropy state
-        if gate_blocked and handler: resolve gate
-```
-
-### New: Two-Level Loop
-
-```
-Pipeline.run_stages(stages):
-    for stage in stages:
-        result = self._run_stage(stage)     # ThreadPoolExecutor inside
-        if result.failed:
-            return PipelineResult(failed)
-
-        if stage.exit_gate:
-            gate_result = self._check_exit_gate(stage)
-            yield StageResult(stage, result, gate_result)
-            # Caller decides what to do with gate_result
-```
-
-### Key change: `run_stages()` is a generator
-
-The orchestrator **yields** after each stage, giving the caller (CLI or MCP) control. The caller inspects the `StageResult`, handles any gate, then calls `next()` to continue.
+### Core loop: submit, complete, check, pause at natural breaks
 
 ```python
-class Pipeline:
-    def run_stages(
-        self,
-        stages: list[Stage],
-        manager: ConnectionManager,
-        source_id: str,
-        phase_configs: dict[str, dict],
-        runtime_config: dict[str, Any],
-    ) -> Generator[StageResult, GateResolution | None, PipelineResult]:
-        """Run pipeline stage by stage, yielding after each for gate handling.
+class PipelineScheduler:
+    """Reactive scheduler. No stages. No blocking. Exit checks at natural pauses."""
 
-        The caller sends a GateResolution back (or None to continue).
-        Returns the final PipelineResult when all stages complete.
-        """
-        for stage in stages:
-            # Run all phases in this stage (parallel, metadata deps only)
-            stage_result = self._run_stage(stage, manager, source_id, phase_configs, runtime_config)
+    def __init__(self, phases: dict[str, Phase], contract: ContractProfile, max_workers: int = 4):
+        self.phases = phases
+        self.contract = contract
+        self.max_workers = max_workers
+        self.state: dict[str, PhaseStatus] = {n: PhaseStatus.PENDING for n in phases}
+        self.scores: dict[str, float] = {}
+        self.deferred: list[Issue] = []
 
-            # Check exit gate
-            gate = None
-            if stage.exit_gate and stage_result.all_completed:
-                violations = self._entropy_state.check_preconditions(stage.exit_gate)
-                if violations:
-                    gate = build_gate(
-                        gate_id=f"stage_{stage.name}",
-                        gate_type="stage",
-                        blocked_phase=stage.name,  # Stage name, not phase
-                        violations=violations,
-                        entropy_state=self._entropy_state.to_dict(),
-                        manager=manager,
-                        source_id=source_id,
+    def run(self, ctx_factory) -> Generator[PipelineEvent, Resolution | None, PipelineResult]:
+        pool = ThreadPoolExecutor(max_workers=self.max_workers)
+        futures: dict[Future, str] = {}
+        pending_issues: list[Issue] = []
+
+        yield PipelineEvent(event_type=EventType.PIPELINE_STARTED)
+
+        while True:
+            # ── Find phases whose deps are met ──
+            ready = [
+                name for name, status in self.state.items()
+                if status == PhaseStatus.PENDING and self._deps_met(name)
+            ]
+
+            # ── Submit ready phases ──
+            for name in ready:
+                if len(futures) >= self.max_workers:
+                    break
+                self.state[name] = PhaseStatus.RUNNING
+                futures[pool.submit(self._execute, name, ctx_factory)] = name
+                yield PipelineEvent(event_type=EventType.PHASE_STARTED, phase=name)
+
+            # ── Wait for completions ──
+            if futures:
+                done, _ = wait(futures, timeout=0.5, return_when=FIRST_COMPLETED)
+                for f in done:
+                    name = futures.pop(f)
+                    result = f.result()
+                    self.state[name] = result.status
+
+                    # Post-verification: exit quality check
+                    new_scores = self._post_verify(name, ctx_factory)
+                    self.scores.update(new_scores)
+
+                    # Assess downstream impact
+                    issues = self._assess_impact(name, new_scores)
+                    pending_issues.extend(issues)
+
+                    yield PipelineEvent(
+                        event_type=EventType.PHASE_COMPLETED,
+                        phase=name, scores=dict(self.scores),
                     )
 
-            # Yield to caller with stage results + optional gate
-            resolution = yield StageResult(
-                stage=stage,
-                phase_results=stage_result.phase_results,
-                gate=gate,
-                entropy_scores=self._entropy_state.to_dict(),
-                duration_seconds=stage_result.duration_seconds,
-            )
-
-            # Process resolution if gate was fired
-            if gate and resolution:
-                if resolution.action_taken == GateActionType.FIX:
-                    # Fix was applied, re-verify
-                    new_violations = self._entropy_state.check_preconditions(stage.exit_gate)
-                    if new_violations:
-                        # Fix didn't fully resolve — caller can retry or skip
-                        pass
-                elif resolution.action_taken == GateActionType.SKIP:
-                    pass  # Continue to next stage
-                # FIX_ALL, INSPECT, QUESTION handled similarly
-
-        # All stages complete
-        return self._build_pipeline_result()
-```
-
-### `_run_stage()` — Parallel phase execution within a stage
-
-This is the existing scheduling loop, simplified by removing gate checks:
-
-```python
-def _run_stage(self, stage: Stage, manager, source_id, phase_configs, runtime_config) -> _StageExecResult:
-    """Run all phases in a stage using ThreadPoolExecutor.
-
-    Phases are ordered by metadata dependencies only.
-    No entropy gate checks inside this method.
-    """
-    phases_to_run = [self.phases[name] for name in stage.phases if name not in self._completed]
-    work_queue = deque(sorted(phases_to_run, key=lambda p: self._phase_priority.get(p.name, 0), reverse=True))
-    active_futures: dict[Future, str] = {}
-    phase_results = []
-
-    with ThreadPoolExecutor(max_workers=self.config.max_parallel) as pool:
-        while work_queue or active_futures:
-            # Schedule ready phases
-            not_ready = deque()
-            while work_queue:
-                phase = work_queue.popleft()
-                deps_met = all(
-                    d in self._completed or d in self._skipped
-                    for d in phase.dependencies
-                    if d in {p.name for p in phases_to_run}  # Only check intra-stage deps
+            # ── Natural pause: nothing running, issues accumulated ──
+            if not futures and pending_issues:
+                resolution = yield PipelineEvent(
+                    event_type=EventType.EXIT_CHECK,
+                    violations=self._format_issues(pending_issues),
+                    scores=dict(self.scores),
                 )
-                if deps_met:
-                    future = pool.submit(self._run_phase, phase.name, manager, source_id, phase_configs, runtime_config)
-                    active_futures[future] = phase.name
-                    self._running.add(phase.name)
-                else:
-                    not_ready.append(phase)
-            work_queue = not_ready
+                self._apply_resolution(resolution, pending_issues)
+                pending_issues.clear()
+                continue
 
-            # Collect completed futures
-            if active_futures:
-                done, _ = wait(active_futures.keys(), timeout=0.5, return_when=FIRST_COMPLETED)
-                for future in done:
-                    phase_name = active_futures.pop(future)
-                    result = future.result()
-                    self._running.discard(phase_name)
-                    # ... handle result, post-verify, update entropy state
-                    phase_results.append(result)
+            # ── Done ──
+            if not futures and not ready:
+                break
 
-    return _StageExecResult(phase_results=phase_results, ...)
+        pool.shutdown(wait=False)
+        return self._build_result()
 ```
 
-### What's removed from the orchestrator
+### `_assess_impact`: check new scores against the contract
 
-- `_check_gate()` calls inside the scheduling loop
-- `_gate_blocked` / `_gate_attempts` tracking
-- Gate handler invocation
-- `_notify_progress()` / `ProgressCallback` (already removed)
-- `progress_callback` parameter
-- Gate resolution retry logic
-- The `while True` outer loop that re-queues gate-blocked phases
-
-### What stays
-
-- `_run_phase()` with retry/backoff for SQLite contention
-- `_execute_phase()` with PhaseContext construction
-- `_run_post_verification()` after phase completion
-- `PipelineEntropyState` updates
-- `_compute_phase_priority()` for scheduling order
-- Checkpoint saving/loading
-- Event emission (`_emit_event`)
-- All phase implementations unchanged
-
----
-
-## New CLI Runner
-
-### Current flow (run.py)
+This is the key function. After a phase completes and post-verification runs, check which newly-measured dimensions violate the selected contract:
 
 ```python
-def run(...):
-    # 50 lines of arg validation
-    # 30 lines of contract selection
-    # 70 lines of Live display setup (closures, mutable state)
-    # 10 lines of RunConfig
-    with Live(...) as live:
-        result = run_pipeline(config)   # Blocks until done. No interaction.
-    # 160 lines of result display
-```
-
-### New flow
-
-```python
-def run(...):
-    setup_logging(verbosity=verbose, log_format=log_format)
-    validate_args(...)
-    config = build_run_config(...)
-
-    # Contract selection (before pipeline starts)
-    if is_interactive and contract is None:
-        contract = prompt_contract_selection(console)
-
-    # Create pipeline generator
-    pipeline_gen = create_and_run_pipeline(config)
-
-    # Stage-by-stage execution with CLI control
-    for stage_result in pipeline_gen:
-        # Display stage summary (no Live needed — stage is done)
-        render_stage_result(console, stage_result)
-
-        # Handle gate if fired
-        if stage_result.gate:
-            resolution = gate_handler.resolve(stage_result.gate)
-            pipeline_gen.send(resolution)
-
-    # Final summary
-    pipeline_result = pipeline_gen.value  # Generator return value
-    render_pipeline_summary(console, pipeline_result)
-```
-
-### Key insight: No `Live` display needed
-
-The stage-based model eliminates the need for Rich `Live`:
-
-1. **During stage execution** (2-10 seconds): Show a simple spinner with `console.status()` — this is non-interactive and doesn't conflict with anything.
-2. **Between stages**: Print completed results. This is plain `console.print()` — no refresh thread, no terminal ownership conflict.
-3. **At gate prompts**: Full terminal control. Rich panels + `Prompt.ask()` work perfectly because nothing else is writing to the terminal.
-
-```python
-def run_interactive(console, pipeline_gen, gate_handler):
-    """Run pipeline interactively, stage by stage."""
-    for stage_result in pipeline_gen:
-        # Stage header
-        console.print(f"\n[bold]Stage {stage_result.stage.order}/{total}: {stage_result.stage.display_name}[/bold]")
-
-        # Phase results (compact)
-        for pr in stage_result.phase_results:
-            icon = {"completed": "✓", "failed": "✗", "skipped": "○"}[pr.status]
-            console.print(f"  {icon} {pr.phase_name} ({pr.duration:.1f}s)")
-
-        # Entropy scores produced
-        if stage_result.entropy_scores:
-            for dim, score in stage_result.entropy_scores.items():
-                bar = render_entropy_bar(score)
-                console.print(f"  {dim}: {score:.3f} {bar}")
-
-        # Gate resolution
-        if stage_result.gate:
-            resolution = gate_handler.resolve(stage_result.gate)
-            pipeline_gen.send(resolution)
-```
-
-### Spinner during stage execution
-
-For the period while phases are running (typically 2-10s per stage), use `console.status()`:
-
-```python
-def create_and_run_pipeline(config) -> Generator[StageResult, ...]:
-    """Wrapper that shows a spinner during each stage."""
-    pipeline = create_pipeline(config)
-    stages = load_stages(config)
-
-    gen = pipeline.run_stages(stages, ...)
-    for stage_result in gen:
-        yield stage_result
-```
-
-The spinner runs in the CLI layer, not inside the orchestrator. The orchestrator is a pure generator — no terminal awareness.
-
-### Event callbacks still work
-
-The orchestrator still emits `PipelineEvent`s via `_emit_event()`. The CLI can optionally subscribe to update the spinner text:
-
-```python
-with console.status("Running...") as status:
-    def on_event(event):
-        if event.event_type == EventType.PHASE_STARTED:
-            status.update(f"Running {event.phase}...")
-
-    pipeline.event_callback = on_event
-    stage_result = next(gen)  # Blocks until stage completes
-```
-
-This is safe because `console.status()` is designed for concurrent updates (unlike `Live`).
-
----
-
-## Log Capture Strategy
-
-### Problem
-
-structlog output from phase threads leaks into the terminal during interactive mode. Currently:
-- Phase code calls `logger.warning("null_ratio_high", column="amount")`
-- structlog renders to stderr immediately
-- Rich renders to stdout
-- User sees interleaved garbage
-
-### Solution: Per-stage log buffer
-
-```python
-import io
-import logging
-
-class LogCapture:
-    """Redirect structlog output to a buffer during stage execution."""
-
-    def __init__(self):
-        self._buffer = io.StringIO()
-        self._handler = logging.StreamHandler(self._buffer)
-        self._original_handlers = []
-
-    def __enter__(self):
-        root = logging.getLogger()
-        self._original_handlers = root.handlers[:]
-        root.handlers = [self._handler]
-        return self
-
-    def __exit__(self, *exc):
-        root = logging.getLogger()
-        root.handlers = self._original_handlers
-
-    def get_warnings(self) -> list[str]:
-        """Extract warning-level messages from buffer."""
-        return [line for line in self._buffer.getvalue().splitlines() if line.strip()]
-```
-
-Usage in CLI:
-
-```python
-for stage_result in pipeline_gen:
-    render_stage_result(console, stage_result)
-
-    # Show captured warnings (summarized, not raw)
-    if stage_result.captured_warnings:
-        console.print(f"  [yellow]{len(stage_result.captured_warnings)} warnings[/yellow]")
-        if verbose >= 1:
-            for w in stage_result.captured_warnings:
-                console.print(f"    {w}")
-```
-
-### Alternative: Leave logging as-is for non-interactive
-
-- **Interactive mode** (`is_interactive=True`): Capture logs, show summary after stage
-- **Non-interactive** (`--quiet` or piped): Let structlog write normally to stderr
-- **JSON mode** (`--log-format json`): No Rich output at all, pure structlog JSON to stderr
-
-This means the log capture is CLI-only, not an orchestrator concern.
-
----
-
-## StageResult and PipelineResult
-
-```python
-@dataclass(frozen=True)
-class StageResult:
-    """Result of a single stage execution, yielded to the caller."""
-    stage: Stage
-    phase_results: list[PhaseRunResult]
-    gate: Gate | None                     # None = no gate or gate passed
-    entropy_scores: dict[str, float]      # Current entropy state after stage
-    duration_seconds: float
-    captured_warnings: list[str]          # structlog warnings from this stage
-
-    @property
-    def all_completed(self) -> bool:
-        return all(pr.status == "completed" for pr in self.phase_results)
-
-    @property
-    def has_failures(self) -> bool:
-        return any(pr.status == "failed" for pr in self.phase_results)
-
-@dataclass
-class PipelineResult:
-    """Final result after all stages complete."""
-    success: bool
-    stages: list[StageResult]
-    final_entropy_scores: dict[str, float]
-    total_duration_seconds: float
-    source_id: str
-    output_dir: Path
-    # ... existing RunResult fields
-```
-
----
-
-## MCP Integration
-
-The MCP server uses the same generator, but doesn't need interactive gate resolution:
-
-```python
-async def _analyze(output_dir, path, name, event_callback, gate_mode):
-    config = RunConfig(source_path=path, gate_mode=gate_mode, ...)
-
-    gen = create_and_run_pipeline(config)
-    for stage_result in gen:
-        if event_callback:
-            event_callback(PipelineEvent(
-                event_type=EventType.STAGE_COMPLETED,
-                phase=stage_result.stage.name,
-                step=stage_result.stage.order,
-                total=len(stages),
+def _assess_impact(self, completed: str, new_scores: dict[str, float]) -> list[Issue]:
+    """Check if new scores violate the selected contract's thresholds."""
+    issues = []
+    for dim, score in new_scores.items():
+        threshold = self.contract.dimension_thresholds.get(dim)
+        if threshold is not None and score > threshold:
+            issues.append(Issue(
+                dimension=dim,
+                score=score,
+                threshold=threshold,
+                caused_by=completed,
+                contract=self.contract.name,
+                suggested_fix=self._lookup_fix(dim),
             ))
-
-        if stage_result.gate:
-            if gate_mode == "skip":
-                gen.send(GateResolution(action_taken=GateActionType.SKIP))
-            elif gate_mode == "auto_fix":
-                # Auto-fix logic
-                gen.send(resolution)
-            elif gate_mode == "fail":
-                return format_gate_failure(stage_result)
-
-    return format_pipeline_result(gen.value)
+    return issues
 ```
 
-The MCP handler doesn't use `console.status()` or any Rich rendering — it just iterates the generator and sends resolutions.
+No iteration over phases. No per-phase thresholds. The contract is the single authority on what's acceptable.
+
+### `_apply_resolution`: fix or defer
+
+```python
+def _apply_resolution(self, resolution: Resolution | None, issues: list[Issue]):
+    if resolution is None or resolution.action == Action.DEFER:
+        self.deferred.extend(issues)
+    elif resolution.action == Action.FIX:
+        # Fix executor already ran. Update scores from the fix result.
+        self.scores.update(resolution.updated_scores)
+        # Re-assess against contract: did the fix resolve all issues?
+        remaining = [
+            i for i in issues
+            if self.scores.get(i.dimension, 1.0) > self.contract.dimension_thresholds.get(i.dimension, 0.0)
+        ]
+        self.deferred.extend(remaining)
+    elif resolution.action == Action.ABORT:
+        for name in self.state:
+            if self.state[name] == PhaseStatus.PENDING:
+                self.state[name] = PhaseStatus.SKIPPED
+```
+
+### That's ~100 lines of scheduling logic.
+
+The rest is cleanly separated:
+
+| Concern | Where | Est. lines |
+|---------|-------|-----------|
+| Scheduling + exit checks | `PipelineScheduler.run()` | ~100 |
+| Phase execution + retry | `PipelineScheduler._execute()` | ~50 |
+| Post-verification + contract check | `_post_verify()`, `_assess_impact()` | ~40 |
+| Checkpoint save/restore | `CheckpointManager` (separate) | ~80 |
+| CLI display + interaction | `cli/commands/run.py` | ~200 |
+| Gate rendering + fix execution | `cli/gate_handler.py` | ~150 |
+| MCP adapter | `mcp/server.py` | ~50 |
+
+Total: ~670 lines across clean modules vs. ~1200 tangled today.
 
 ---
 
-## Migration Path
+## The Caller: How CLI Drives the Scheduler
 
-### Phase A: Stage model + YAML config
+The generator IS the event system. No event queues, no callbacks. The generator yields events, the caller handles them. `yield`/`send` for gates.
 
-**Files changed:**
-- `src/dataraum/pipeline/stages.py` — NEW: `Stage` dataclass, `load_stages()` from YAML
-- `config/pipeline.yaml` — ADD: `stages:` section alongside existing `pipeline:` section
+```python
+def run_pipeline_interactive(console, phases, contract, config):
+    scheduler = PipelineScheduler(phases, contract=contract, max_workers=config.max_parallel)
+    gen = scheduler.run(ctx_factory)
 
-**Acceptance:** `load_stages()` returns 5 Stage objects with correct phase lists. Existing pipeline still works unchanged.
+    event = next(gen)
+    while True:
+        try:
+            if event.event_type == EventType.EXIT_CHECK:
+                # Natural pause — nothing running, full terminal control
+                render_exit_check(console, event)
+                resolution = prompt_resolution(console, event)
+                if resolution.action == Action.FIX:
+                    execute_fix(resolution, config)
+                event = gen.send(resolution)
 
-### Phase B: Generator orchestrator
+            elif event.event_type == EventType.PHASE_STARTED:
+                update_spinner(event.phase)
+                event = next(gen)
 
-**Files changed:**
-- `src/dataraum/pipeline/orchestrator.py` — ADD: `run_stages()` generator method, `_run_stage()` method. Keep existing `run()` method working (dual path).
+            elif event.event_type == EventType.PHASE_COMPLETED:
+                render_phase_result(console, event)
+                event = next(gen)
 
-**Acceptance:** `pipeline.run_stages(stages, ...)` yields StageResults with correct phase results. Existing `pipeline.run()` still works for backward compatibility.
+            else:
+                event = next(gen)
 
-### Phase C: New CLI runner
+        except StopIteration as e:
+            render_final_report(console, e.value)
+            break
+```
 
-**Files changed:**
-- `src/dataraum/cli/commands/run.py` — REWRITE: Replace Live-based execution with stage-by-stage loop using `console.status()` for spinners and `console.print()` for results.
-- `src/dataraum/cli/gate_handler.py` — SIMPLIFY: Remove `set_live()`, `_live` field. The handler no longer needs to manage Live lifecycle — it always has full terminal control when called.
+### The batch resolution UX
 
-**Acceptance:** `dataraum run ./testdata --gate-mode pause` shows stage-by-stage output with interactive gate prompts. No Rich Live used.
+When parallel phases complete, their issues accumulate. At the natural pause, the user sees everything at once:
 
-### Phase D: Log capture
+```
+  ✓ relationships (1.8s)
+  ✓ correlations (1.2s)
+  ✓ temporal (0.9s)
 
-**Files changed:**
-- `src/dataraum/cli/log_capture.py` — NEW: `LogCapture` context manager
-- `src/dataraum/cli/commands/run.py` — USE: Wrap stage execution with LogCapture in interactive mode
+  Exit check [executive_dashboard] — 2 issues found:
 
-**Acceptance:** No structlog output visible during interactive pipeline runs. Warnings shown as summary after each stage.
+  1. structural.relations: 0.62 (contract requires ≤ 0.20, gap: 0.42)
+     ↳ orders.customer_id → customers.id: 3 ambiguous candidates
+     → [fix] confirm_relationship (87% confidence)
 
-### Phase E: Remove old code path
+  2. semantic.temporal: 0.55 (contract requires ≤ 0.20, gap: 0.35)
+     ↳ orders.created_at: role ambiguous (timestamp vs. date)
+     → [fix] override_temporal_column
 
-**Files changed:**
-- `src/dataraum/pipeline/orchestrator.py` — REMOVE: old `run()` method, gate-checking inside scheduling loop
-- `src/dataraum/pipeline/runner.py` — UPDATE: Use `run_stages()` instead of `run()`
+  Fix [1,2], defer all, or abort? _
+```
 
-**Acceptance:** `grep -r "def run(" src/dataraum/pipeline/orchestrator.py` shows only `run_stages()`. All tests pass.
+The user sees issues **ranked by gap size** (how far from the contract threshold). Both violate the same contract — the user decides which to fix now vs. defer. If they'd chosen `exploratory_analysis` (threshold 0.50), issue 2 wouldn't even appear.
 
-### Phase F: MCP adapter
+### Why this solves the terminal problem
 
-**Files changed:**
-- `src/dataraum/mcp/server.py` — UPDATE: `_analyze()` uses stage generator
+At `EXIT_CHECK`, the generator is **suspended**. The thread pool is idle (no phases running, no futures pending). Nothing writes to stdout or stderr. The CLI has exclusive terminal ownership — render panels, prompt, execute fixes, re-render. Then `gen.send(resolution)` resumes the scheduler.
 
-**Acceptance:** MCP `analyze` tool works with stage-based pipeline. Task progress shows stage-level updates.
+No `Live` display. No `set_live()`/`stop_live()`. No log capture during gates (nothing running = no logs).
+
+During phase execution, the generator is inside `wait(futures, timeout=0.5)`. The CLI shows a spinner. Phase events arrive between `wait()` cycles.
+
+### MCP caller: same generator, automatic resolution
+
+```python
+def run_pipeline_mcp(phases, contract, config, gate_mode, progress_callback):
+    scheduler = PipelineScheduler(phases, contract=contract, max_workers=config.max_parallel)
+    gen = scheduler.run(ctx_factory)
+
+    event = next(gen)
+    while True:
+        try:
+            if event.event_type == EventType.EXIT_CHECK:
+                if gate_mode == "skip":
+                    event = gen.send(Resolution(action=Action.DEFER))
+                elif gate_mode == "fail":
+                    event = gen.send(Resolution(action=Action.ABORT))
+                elif gate_mode == "auto_fix":
+                    event = gen.send(auto_resolve(event))
+            else:
+                if progress_callback:
+                    progress_callback(event)
+                event = next(gen)
+        except StopIteration as e:
+            return e.value
+```
 
 ---
 
-## Files
+## What About Stages?
 
-### DO change
+There are no stages. The display groups phases by the natural pauses (exit checks). If no issues are found, all phases run in one continuous stream. If issues are found after typing, the user sees a pause after "Foundation." If more issues after semantic, another pause.
+
+The CLI can label these groups from a simple lookup (phase name → display label) or auto-generate from the phase that triggered the exit check. No `PhaseGroup` dataclass. No YAML stage config. The rhythm emerges from the data quality, not from configuration.
+
+---
+
+## Log Capture
+
+During phase execution (between events), structlog output from worker threads can leak to the terminal. Two options:
+
+1. **Buffer during execution, show after.** Redirect structlog to a StringIO buffer while phases run. After each phase completes, include captured warnings in the event. CLI shows them in the phase result display.
+
+2. **Suppress in interactive mode.** In interactive mode, structlog goes to a file. In non-interactive mode (`--quiet` or piped), it goes to stderr as normal.
+
+This is a CLI concern, not a scheduler concern. The scheduler never touches the terminal.
+
+---
+
+## The Final Report
+
+After all phases complete, the pipeline produces a quality report:
+
+1. **Per-phase results** — status, duration, metrics, warnings
+2. **Entropy scores** — all dimensions, accumulated throughout the run via post-verification
+3. **Deferred issues** — quality problems that were skipped at gates
+4. **Gate decisions** — what was fixed, what was skipped, with before/after scores
+5. **Contract evaluation** — the selected contract evaluated against final scores
+6. **Context document** — the pre-computed metadata served to the query agent
+
+The graph agent (graph_execution phase) prepares the computation foundation: business metrics mapped to concrete columns. The query agent then uses the full context document (including entropy scores, quality caveats, and computed metrics) to answer user questions.
+
+---
+
+## Migration: Clean Rewrite
+
+No dual path. No backward compatibility shim. The phase implementations don't change. The storage layer doesn't change. The entropy detectors don't change. We rewrite the orchestration layer.
+
+### What to delete
+
+| File | Why |
+|------|-----|
+| `orchestrator.py` scheduling loop (~300 lines) | Replaced by `PipelineScheduler` |
+| `orchestrator.py` gate checking (~200 lines) | Gates emerge from scheduling state |
+| `orchestrator.py` progress callbacks (~100 lines) | Events are yields, not callbacks |
+| `runner.py` (~150 lines) | Thin wrapper around scheduler |
+| `cli/commands/run.py` Live display (~200 lines) | Replaced by event-driven rendering |
+| `cli/gate_handler.py` Live management (~100 lines) | Handler always has full terminal |
+
+### What to write
+
+| File | Purpose | Lines (est.) |
+|------|---------|-------------|
+| `pipeline/scheduler.py` | `PipelineScheduler` with reactive loop | ~150 |
+| `pipeline/runner.py` | Thin wrapper: build config → create scheduler → return result | ~80 |
+| `cli/commands/run.py` | Event-driven rendering with gate prompts | ~250 |
+| `cli/gate_handler.py` | Gate rendering + fix execution (simplified) | ~150 |
+
+### What changes minimally
 
 | File | Change |
 |------|--------|
-| `src/dataraum/pipeline/orchestrator.py` | Add `run_stages()` generator, `_run_stage()`. Eventually remove old `run()`. |
-| `src/dataraum/pipeline/runner.py` | Update `run()` to use stages. Update `RunConfig` if needed. |
-| `src/dataraum/cli/commands/run.py` | Rewrite: stage-by-stage loop, no Live, console.status() spinner. |
-| `src/dataraum/cli/gate_handler.py` | Simplify: remove `set_live()`, `_live`. Handler always has full terminal. |
-| `src/dataraum/mcp/server.py` | Update `_analyze()` to iterate stage generator. |
-| `config/pipeline.yaml` | Add `stages:` configuration section. |
-| `tests/unit/pipeline/test_orchestrator.py` | Add tests for `run_stages()` generator. |
-| `tests/unit/pipeline/test_gate_checking.py` | Update for stage-level gate checking. |
-| `tests/unit/cli/test_gate_handler.py` | Remove Live-related tests. |
-| `tests/unit/cli/test_interactive_run.py` | Update for stage-based CLI. |
-| `tests/unit/mcp/test_progress.py` | Update for stage-level events. |
+| `pipeline/base.py` | Remove `entropy_preconditions` from Phase protocol, remove `outputs`/`previous_outputs`/`get_output` |
+| `pipeline/phases/base.py` | Remove `entropy_preconditions` property from BasePhase |
+| `pipeline/phases/semantic_phase.py` | Remove `entropy_preconditions` override |
+| `pipeline/phases/statistics_phase.py` | Remove `entropy_preconditions` override |
+| `pipeline/phases/graph_execution_phase.py` | Remove `entropy_preconditions` override |
+| `pipeline/phases/typing_phase.py` | Remove `get_output("import", "raw_tables")` → DB query |
+| `pipeline/entropy_state.py` | Remove `check_preconditions()` (contract evaluation replaces it) |
+| `pipeline/gates.py` | Simplify — gate violations come from contract, not from preconditions; replace `_DIMENSION_TO_ACTIONS` with `ActionRegistry.improves_dimensions` lookup |
+| `pipeline/db_models.py` | Replace `PhaseCheckpoint` with `PhaseLog` (observability only), simplify `PipelineRun` |
+| `pipeline/cleanup.py` | Remove checkpoint deletion (no longer exists); cleanup_phase stays for output deletion |
+| `pipeline/status.py` | Derive status from `should_skip` + DB state, not from checkpoints |
+| `entropy/fix_executor.py` | Add `improves_dimensions` to `ActionDefinition` |
+| `mcp/server.py` | Update `_analyze()` to use new scheduler (~20 lines) |
 
-### DO create
-
-| File | Purpose |
-|------|---------|
-| `src/dataraum/pipeline/stages.py` | `Stage` dataclass, `load_stages()`, stage YAML schema |
-| `src/dataraum/cli/log_capture.py` | `LogCapture` context manager for buffering structlog |
-| `tests/unit/pipeline/test_stages.py` | Tests for stage loading and validation |
-
-### DO NOT change
+### What stays unchanged
 
 | File | Reason |
 |------|--------|
-| `src/dataraum/pipeline/phases/*.py` | All phase implementations stay exactly as-is |
-| `src/dataraum/pipeline/base.py` | PhaseContext, PhaseResult unchanged |
-| `src/dataraum/pipeline/events.py` | EventType, PipelineEvent unchanged (may add STAGE_COMPLETED) |
-| `src/dataraum/pipeline/gates.py` | Gate, GateHandler protocol unchanged |
-| `src/dataraum/pipeline/entropy_state.py` | PipelineEntropyState unchanged |
-| `src/dataraum/pipeline/registry.py` | Phase registry unchanged |
-| `src/dataraum/entropy/*.py` | All entropy modules unchanged |
-| `src/dataraum/analysis/*.py` | All analysis modules unchanged |
-| `src/dataraum/storage/*.py` | All storage modules unchanged |
+| `pipeline/phases/*.py` (other 15) | Phase logic untouched — only remove dead property |
+| `pipeline/events.py` | EventType, PipelineEvent |
+| `entropy/*.py` | All detectors, processor, fix executor |
+| `entropy/contracts.py` | Contract evaluation — now also used during pipeline, not just at end |
+| `analysis/*.py` | All analysis modules |
+| `storage/*.py` | All storage modules |
+
+### Migration steps
+
+1. **Write `PipelineScheduler`** — the reactive loop with contract-driven exit checks. Test with mock phases.
+2. **Write CLI driver** — event-driven rendering with batch resolution UX. Test with mock scheduler.
+3. **Add `Fix` model + replay** — fix persistence, `after_phase`, replay on re-run. Test with FixExecutor.
+4. **Wire together** — replace `orchestrator.run()` call sites with scheduler.
+5. **Delete old orchestrator code** — scheduling loop, gate interleaving, progress callbacks, PhaseCheckpoint.
+6. **Migrate PhaseCheckpoint → PhaseLog** — DB migration, update status/CLI queries.
+
+Each step: tests green.
 
 ---
 
-## Verification
+## Dimension Name Mapping
 
-### Unit tests
+The pipeline has three naming layers for entropy dimensions. The scheduler bridges them.
 
-```bash
-# After each phase:
-uv run pytest --testmon tests/unit -q
+### The three layers
 
-# Stage-specific:
-uv run pytest tests/unit/pipeline/test_stages.py -v
-uv run pytest tests/unit/pipeline/test_orchestrator.py -v -k "stage"
-uv run pytest tests/unit/cli/test_interactive_run.py -v
+| Layer | Format | Example | Where used |
+|-------|--------|---------|------------|
+| **sub_dimension** (flat) | `snake_case` | `type_fidelity` | `post_verification`, `PipelineEntropyState`, detector `sub_dimension` |
+| **dimension_path** (full) | `layer.dimension.sub_dimension` | `structural.types.type_fidelity` | `EntropyObject.dimension_path`, `ColumnSummary.dimension_scores` |
+| **contract dimension** (2-part) | `layer.dimension` | `structural.types` | `ContractProfile.dimension_thresholds` |
+
+### How the bridge works today
+
+Each detector already declares all three parts:
+
+```python
+class TypeFidelityDetector(BaseDetector):
+    layer = "structural"
+    dimension = "types"
+    sub_dimension = "type_fidelity"
+    # → dimension_path = "structural.types.type_fidelity"
 ```
 
-### Manual interactive test
+Contract evaluation in `_get_dimension_score()` uses **prefix matching**: contract dimension `structural.types` matches any `ColumnSummary` key starting with `structural.types.` — which finds `structural.types.type_fidelity`.
 
-```bash
-# Happy path — all gates pass:
-dataraum run .e2e/medium/testdata/ -o /tmp/stage-test --gate-mode pause
+### What the scheduler needs
 
-# Expected: 5 stages, no gate fires, clean output
+The scheduler receives flat names from `post_verification` (e.g., `type_fidelity`) and needs to check them against contract thresholds (keyed by `structural.types`). Two options:
 
-# Gate trigger — force bad data:
-dataraum run .e2e/bad_types/ -o /tmp/stage-test --gate-mode pause
+**Option A: Build a lookup from detector registry.** At scheduler init, iterate all detectors and build `sub_dimension → contract_dimension` mapping:
 
-# Expected: Gate fires after Stage 1, Rich panel with options, user can fix/skip
-
-# Non-interactive:
-dataraum run .e2e/medium/testdata/ -o /tmp/stage-test | cat
-
-# Expected: No Rich formatting, no prompts, clean text output
+```python
+# Built once at startup from detector classes:
+DIMENSION_MAP = {
+    "type_fidelity": "structural.types",
+    "null_ratio": "value.nulls",
+    "outlier_rate": "value.outliers",
+    "join_path_determinism": "structural.relations",
+    "relationship_quality": "structural.relations",
+    "business_meaning": "semantic.business_meaning",
+    "unit_declaration": "semantic.units",
+    "temporal_entropy": "semantic.temporal",
+    "cross_column_patterns": "semantic.dimensional",
+    "temporal_drift": "semantic.temporal",
+    "benford_law": "value.outliers",
+}
 ```
 
-### What "done" looks like
+**Option B: Store scores by full path, let contract evaluation handle it.** After post-verification, store scores as `dimension_path` (3-part) instead of `sub_dimension` (flat). Then pass them directly to contract evaluation, which already does prefix matching.
 
-1. `dataraum run` shows stage-by-stage progress with spinners
-2. Gates fire between stages, not during phase execution
-3. Gate prompts work without terminal corruption
-4. No structlog output visible in interactive mode (unless `-v`)
-5. MCP `analyze` tool reports stage-level progress
-6. All existing tests pass
-7. All phase implementations unchanged
+**Recommendation: Option B.** It reuses the existing contract evaluation logic with zero new mapping code. The scheduler stores `{"structural.types.type_fidelity": 0.65}` instead of `{"type_fidelity": 0.65}`. The detector already knows its own `dimension_path`. This change is in `_post_verify()` — use `detector.dimension_path` as the score key instead of `detector.sub_dimension`.
+
+The `post_verification` property on phases still declares flat names (for filtering which detectors to run). The dimension path is resolved at runtime from the detector that matches.
 
 ---
 
-## Open Questions
+## How Fixes Are Proposed at Exit Checks
 
-1. **Should `entropy_preconditions` on phases be removed or kept as documentation?** Keeping them preserves the phase's self-description of what it needs. Removing them eliminates the dual-system confusion. Recommendation: Keep as `@property` on phases but don't evaluate them in the orchestrator — the stage config is authoritative.
+### The current gap
 
-2. **Should stages be configurable per run?** e.g., `--stage semantic` to run only up to the semantic stage. This maps to the existing `--phase` flag but at stage granularity. Recommendation: Yes, add `--stage` flag. Keep `--phase` for backward compatibility.
+Today, gate-time fix proposals use a **static map** (`_DIMENSION_TO_ACTIONS` in `gates.py`):
 
-3. **What happens when a fix changes entropy scores mid-stage?** If a fix is applied at a gate and the user wants to re-verify, should the stage re-run? Recommendation: The gate handler can call `_run_post_verification()` after a fix and yield an updated StageResult. No need to re-run the full stage.
+```python
+"type_fidelity": ["override_type"],
+"naming_clarity": ["add_business_name"],
+...
+```
 
-4. **Generator vs. callback for MCP?** The generator model is natural for CLI but awkward for async MCP. Alternative: Convert generator to async iterator for MCP, or use a simple loop wrapper that auto-resolves gates. Recommendation: Simple wrapper function that iterates the generator and applies gate_mode policy.
+This is crude. Meanwhile, the `get_actions` MCP tool has a **rich 3-channel merge** that combines LLM interpretation, Bayesian network impact analysis, and contract violations into prioritized, per-column actions. But this only runs after the full entropy phase — far too late for incremental exit checks.
+
+### The proposal: lightweight action lookup at exit checks, full merge at the end
+
+Exit checks happen early in the pipeline (after typing, after relationships, after semantic). At that point, neither the LLM interpretation nor the Bayesian network has run yet. So the full `merge_actions()` pipeline isn't available. But we don't need it — the exit check is about a specific dimension violation on specific columns.
+
+**At exit check time, the scheduler has:**
+1. The violated contract dimension (e.g., `structural.types`)
+2. The score and threshold (e.g., 0.65 vs. 0.20)
+3. The producing phase (e.g., `typing`)
+4. The affected columns (from the detector's per-column scores)
+
+**What it needs:** which fix actions are available, with affected columns.
+
+### Dimension-to-fix mapping via the ActionRegistry
+
+The `ActionRegistry` already exists and maps action types to `ActionDefinition` objects. Extend it: each action declares which dimensions it can improve.
+
+```python
+@dataclass
+class ActionDefinition:
+    action_type: str
+    category: ActionCategory          # TRANSFORM | ANNOTATE
+    description: str
+    hard_verifiable: bool
+    parameters_schema: dict[str, Any]
+    executor: Callable
+    improves_dimensions: list[str]    # NEW: ["structural.types"]
+```
+
+At exit check time:
+
+```python
+def _lookup_fixes(self, dimension: str) -> list[ActionDefinition]:
+    """Find actions that claim to improve this dimension."""
+    return [
+        action for action in self.registry.values()
+        if dimension in action.improves_dimensions
+    ]
+```
+
+This replaces the static `_DIMENSION_TO_ACTIONS` map. When new actions are added (via Python or YAML recipes), they self-declare which dimensions they improve. No central map to maintain.
+
+### Affected columns come from the detector
+
+Post-verification already runs detectors per-column. The exit check knows which columns violated the contract threshold. The fix proposal can be column-specific:
+
+```
+Exit check [executive_dashboard] — 1 issue:
+
+  structural.types: 0.65 (contract requires ≤ 0.20, gap: 0.45)
+
+  Affected columns:
+    orders.amount       — 35% parse failures (VARCHAR → DECIMAL)
+    orders.discount     — 12% parse failures (VARCHAR → FLOAT)
+    payments.tax_rate   — 8% parse failures (VARCHAR → DECIMAL)
+
+  Available fix: override_type
+    [1] Fix orders.amount → DECIMAL(10,2)
+    [2] Fix orders.discount → FLOAT
+    [3] Fix payments.tax_rate → DECIMAL(10,4)
+    [4] Fix all 3 columns
+    [5] Defer
+
+  Choose: _
+```
+
+### YAML recipes extend this naturally
+
+From `docs_old/projects/fixes.md`: the long-term vision is declarative YAML recipes with `verify_with` declaring which dimensions they improve:
+
+```yaml
+declare_unit:
+  category: annotate
+  primitive: metadata_write
+  model: TypeCandidate
+  resolve_via: column_id
+  writes:
+    detected_unit: "{unit}"
+    unit_confidence: 1.0
+  parameters:
+    unit: { type: str, description: "The unit (e.g., EUR, kg)" }
+  verify_with: [unit_declaration]    # ← maps to semantic.units
+```
+
+The `verify_with` field is the same as `improves_dimensions` — it declares which detector dimensions this recipe improves. When recipes migrate from Python executors to YAML, the dimension mapping comes along for free.
+
+### The full merge still runs at the end
+
+After the comprehensive entropy phase, the full 3-channel merge (`merge_actions()`) runs as before:
+- LLM interpretation generates contextual, per-column actions
+- Bayesian network ranks by causal impact
+- Contract violations highlight remaining gaps
+
+This produces the rich `get_actions` output for the MCP tool and the final report. The incremental exit checks handled the obvious structural issues early; the final merge handles nuanced semantic and cross-column patterns.
+
+---
+
+## Checkpoints, Invalidation, and Resumption
+
+### The current checkpoint model
+
+Today: `PipelineRun` (run-level record) + `PhaseCheckpoint` (one per phase per source). On resume, the orchestrator loads all "completed" checkpoints for a source_id and skips those phases. `--force` deletes a phase's checkpoint + outputs via `cleanup.py`, forcing re-execution.
+
+### Why checkpoints are redundant in the new model
+
+The pipeline's resumption state is already encoded in the **database itself**. Each phase writes to specific tables (TypeDecision, SemanticAnnotation, Relationship, etc.). Each phase already has `should_skip(ctx)` — it queries whether its outputs exist. Typing checks for typed tables. Statistics checks for StatisticalProfile rows. Semantic checks for SemanticAnnotation rows. This is the idempotency mechanism.
+
+In the new model:
+- **Resumption** = phase's `should_skip(ctx)` returns a reason → phase already ran, skip it
+- **Force re-run** = `cleanup_phase(name)` deletes outputs → `should_skip` returns None → phase runs
+- **Scheduler state** = derived at startup: run `should_skip` for all phases, mark those with outputs as COMPLETED
+
+No `PhaseCheckpoint` needed for scheduling. The DB outputs ARE the checkpoint.
+
+### What checkpoints provided beyond resumption
+
+| Feature | Checkpoint field | New home |
+|---------|-----------------|----------|
+| Timing/duration | `duration_seconds`, `started_at`, `completed_at` | `PhaseLog` — append-only observability record |
+| Records processed | `records_processed`, `records_created` | `PhaseLog` |
+| Gate status | `gate_status`, `gate_reason` | Removed — no gates in the new model |
+| Entropy scores at completion | `entropy_hard_scores` | Scheduler's `self.scores`, persisted in `PipelineRun.final_entropy_state` |
+| Phase outputs (JSON) | `outputs` | Removed — `outputs` removed from Phase protocol |
+| Detailed metrics | `tables_processed`, `db_queries`, etc. | `PhaseLog` |
+
+### The replacement: PhaseLog (observability only)
+
+```python
+class PhaseLog(Base):
+    """Append-only log of phase executions. Does not drive scheduling."""
+    log_id: str           # UUID
+    run_id: str           # FK → PipelineRun
+    source_id: str
+    phase_name: str
+    status: str           # completed, failed, skipped
+    started_at: datetime
+    completed_at: datetime
+    duration_seconds: float
+    records_processed: int
+    records_created: int
+    error: str | None
+    warnings: JSON
+    entropy_scores: JSON  # scores after post-verification
+    fix_decisions: JSON   # fixes applied at exit check (if any)
+```
+
+Multiple logs per phase per source (one per run). Useful for: CLI status display, run history, performance tracking, debugging. Not used for scheduling decisions.
+
+### `PipelineRun` stays, simplified
+
+```python
+class PipelineRun(Base):
+    run_id: str
+    source_id: str
+    status: str              # running, completed, failed
+    contract_name: str       # selected contract
+    started_at: datetime
+    completed_at: datetime
+    final_entropy_state: JSON
+    deferred_issues: JSON    # issues deferred at exit checks
+    config: JSON             # for reproducibility
+```
+
+No `phases_completed`/`phases_failed` counters (derived from PhaseLog). No `gate_mode` (gates are now contract-driven). No `target_phase` (handled by scheduler, not stored).
+
+---
+
+## Invalidation: Delete and Go Back
+
+### How `--force` works today
+
+```
+dataraum run ./data --phase statistics --force
+  → cleanup_phase("statistics")  # deletes StatisticalProfile, QualityMetrics, etc.
+  → delete PhaseCheckpoint for statistics
+  → re-run statistics and its dependents
+```
+
+### How it works in the new model
+
+Same mechanism, but simpler — no checkpoint to delete:
+
+```
+dataraum run ./data --phase statistics --force
+  → cleanup_phase("statistics")  # deletes phase outputs from DB
+  → statistics.should_skip(ctx) returns None  # no outputs found
+  → scheduler runs statistics
+```
+
+### Fix-induced invalidation
+
+When a fix modifies typing outputs (e.g., `override_type` changes a `TypeDecision`), downstream phases have stale data. The question: should the scheduler automatically invalidate and re-run them?
+
+**Yes, but only for the directly affected chain.** Each phase's `dependencies` list already encodes the graph. When a fix targets a phase's outputs:
+
+```python
+def _invalidate_downstream(self, fixed_phase: str):
+    """Delete outputs of phases that depend on the fixed phase."""
+    to_invalidate = self._transitive_dependents(fixed_phase)
+    for phase_name in to_invalidate:
+        if self.state[phase_name] == PhaseStatus.COMPLETED:
+            cleanup_phase(phase_name, self.source_id, session, cursor)
+            self.state[phase_name] = PhaseStatus.PENDING
+```
+
+This is the same `cleanup_phase()` already used by `--force`. No new mechanism needed.
+
+**Example:** User applies `override_type` fix at the exit check after typing. The scheduler:
+1. Runs the fix → TypeDecision updated
+2. Post-verifies → type_fidelity improves
+3. Checks which completed phases depend on typing: `[statistics, column_eligibility, ...]`
+4. Calls `cleanup_phase()` for each → their outputs deleted → `should_skip` returns None
+5. Scheduler re-queues them as PENDING
+6. Next scheduling cycle picks them up
+
+### When NOT to invalidate
+
+Not every fix warrants invalidation. An `add_business_name` fix after semantic only changes a `SemanticAnnotation.business_name` field. Downstream phases that depend on semantic (enriched_views, slicing, etc.) might not be affected — the business name is metadata for the context document, not an input to their computation.
+
+**Heuristic:** Only auto-invalidate when the fix's `improves_dimensions` includes a dimension that a downstream phase's `post_verification` produces. This means the fix changes something that a downstream phase measured and reported on. Otherwise, just record the fix and let the final entropy phase re-evaluate.
+
+**For v1:** Auto-invalidate all transitive dependents. It's aggressive but correct. Optimization (selective invalidation) comes later.
+
+---
+
+## Fix Application: Per-Phase, Not Global
+
+### Why fixes are per-phase
+
+All current fixes modify a specific phase's output:
+
+| Fix | Modifies | Phase whose output changes |
+|-----|----------|---------------------------|
+| `override_type` | `TypeDecision.decided_type` | typing |
+| `declare_unit` | `TypeCandidate.detected_unit` | typing |
+| `add_business_name` | `SemanticAnnotation.business_name` | semantic |
+| `declare_null_meaning` | `SemanticAnnotation.business_description` | semantic |
+| `confirm_relationship` | `Relationship.is_confirmed` | relationships |
+| `create_filtered_view` | DuckDB view | enriched_views |
+
+If the producing phase re-runs, it overwrites the fixed value. So the fix must be replayed **after** the phase runs. This makes fixes inherently per-phase.
+
+### The `Fix` model (from `docs_old/projects/fixes.md`)
+
+```python
+class Fix(Base):
+    fix_id: str              # UUID
+    source_id: str           # FK → Source
+    action_type: str         # maps to ActionRegistry
+    target: str              # "column:orders.amount"
+    parameters: JSON         # {"target_type": "DECIMAL(10,2)"}
+    after_phase: str         # "typing" — replay after this phase completes
+    status: str              # active | applied | failed | superseded
+    created_at: datetime
+    last_applied_at: datetime | None
+    last_applied_run_id: str | None
+```
+
+The key addition: **`after_phase`** — which phase this fix should be replayed after. Derived from the exit check where the fix was originally applied.
+
+### Replay on re-run
+
+When the scheduler completes a phase:
+
+```python
+def _replay_fixes(self, phase_name: str):
+    """Replay active fixes that belong to this phase."""
+    fixes = load_fixes(source_id=self.source_id, after_phase=phase_name, status="active")
+    for fix in fixes:
+        result = self.fix_executor.execute(fix)
+        if result.success:
+            fix.status = "applied"
+            fix.last_applied_at = now()
+        else:
+            fix.status = "failed"
+            fix.error = result.error
+```
+
+This happens in the scheduler between phase completion and post-verification:
+
+```
+Phase completes
+  → Replay active fixes for this phase
+  → Post-verify (detectors run on fixed state)
+  → Check contract
+  → If violations remain: present at next natural pause
+  → If all pass: continue silently
+```
+
+If a replayed fix still resolves the issue (scores pass contract), no exit check fires. The user never sees it. If a fix fails (e.g., schema changed), it's marked failed and the exit check fires as if it's a new issue.
+
+### Are there overarching fixes?
+
+Today: no. All 6 fixes target one column in one phase's output. But the `Fix` model supports it:
+
+**Table-level fixes** — e.g., "declare this table as a DIMENSION table" would modify `TableEntity.entity_type` (semantic phase output). Target: `"table:journal_entries"`. Still per-phase (`after_phase: "semantic"`).
+
+**Cross-phase fixes** — e.g., "exclude this column from all analysis" would need to modify column_eligibility output AND potentially invalidate statistics, semantic, etc. This is really two fixes: one `override_eligibility` (after column_eligibility) + auto-invalidation of dependents.
+
+**Global policy fixes** — e.g., "all currency columns should be DECIMAL(10,2)" would apply to multiple targets across the same phase. This is a **recipe** (from `docs_old/projects/fixes.md`) that expands to N individual fixes, one per matching column, all with `after_phase: "typing"`.
+
+So: the execution unit is always per-phase. But the **specification** can be broader (a recipe that generates multiple per-phase fixes). The `Fix` model holds individual, per-phase fix instances. The recipe layer (future) generates them.
+
+---
+
+## `should_skip` Audit
+
+For DB-derived resumption to work, every phase must reliably detect whether its outputs exist. Audit result:
+
+**20/20 phases implement `should_skip`.** All use DB queries. 19/20 are reliable.
+
+### Phases that need migration (currently check PhaseCheckpoint)
+
+These 3 phases use `PhaseCheckpoint` existence as their skip signal. They need to check their own output tables instead:
+
+| Phase | Currently checks | Should check | Model to query |
+|-------|-----------------|--------------|----------------|
+| `business_cycles` | `PhaseCheckpoint.status = "completed"` | `DetectedBusinessCycle` records for source_id | `COUNT(*) FROM detected_business_cycles WHERE source_id = ?` |
+| `validation` | `PhaseCheckpoint.status = "completed"` | `ValidationResultRecord` records for source's tables | `COUNT(*) FROM validation_results` joined through table_ids |
+| `quality_summary` | `PhaseCheckpoint.status = "completed"` | `ColumnQualityReport` records for source's slices | `COUNT(*) FROM column_quality_reports` joined through slice definitions |
+
+All three write their own DB records — migration is straightforward.
+
+### One weak implementation
+
+`slice_analysis` compares a count heuristic (sum of `distinct_values` across slice definitions) against existing `Table` records with `layer="slice"`. This doesn't verify tables were actually created in DuckDB. Should be tightened to check actual table existence.
+
+### All other 16 phases: reliable
+
+They query their own output tables (TypeDecision, SemanticAnnotation, StatisticalProfile, etc.) and compare counts against expected totals. No changes needed.
+
+---
+
+## Concurrent Source Safety
+
+### How it works today
+
+`PipelineRun` has `status: str` (running/completed/failed). Before starting a run, the orchestrator creates a `PipelineRun` record with `status = "running"`. If another run starts on the same source, it can check for an existing running record.
+
+### The new model keeps this
+
+`PipelineRun` stays. It still has `status`. The lock mechanism is unchanged:
+
+```python
+# At scheduler startup:
+existing = session.query(PipelineRun).filter(
+    PipelineRun.source_id == source_id,
+    PipelineRun.status == "running",
+).first()
+if existing:
+    raise PipelineAlreadyRunning(f"Run {existing.run_id} is in progress")
+
+# Create new run:
+run = PipelineRun(run_id=..., source_id=..., status="running", contract_name=...)
+session.add(run)
+session.commit()  # lock acquired
+```
+
+On completion: `run.status = "completed"`. On failure: `run.status = "failed"`. On crash: stale "running" record — the CLI can detect this (`started_at` too old) and offer cleanup.
+
+What changed is only that `PipelineRun` no longer has `PhaseCheckpoint` children driving resumption. Resumption comes from `should_skip`. But `PipelineRun` itself — the run record, the status field, the concurrency guard — stays exactly as it is.

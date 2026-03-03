@@ -56,8 +56,7 @@ class TestDetectorTrustLevels:
         registry = get_default_registry()
         for d in registry.get_all_detectors():
             assert d.is_verifier == (d.trust_level == DetectorTrust.HARD), (
-                f"{d.detector_id}: is_verifier={d.is_verifier} "
-                f"but trust_level={d.trust_level}"
+                f"{d.detector_id}: is_verifier={d.is_verifier} but trust_level={d.trust_level}"
             )
 
     def test_default_trust_is_soft(self):

@@ -179,9 +179,7 @@ class QueryAgent(LLMFeature):
                 )
                 confidence_level = contract_evaluation.confidence_level
             elif auto_contract:
-                best_name, best_eval = find_best_contract(
-                    execution_context.column_summaries
-                )
+                best_name, best_eval = find_best_contract(execution_context.column_summaries)
                 if best_name and best_eval:
                     contract = best_name
                     contract_evaluation = best_eval
@@ -275,7 +273,9 @@ class QueryAgent(LLMFeature):
         # Resolve snippet_id references: validate, fetch authoritative SQL for reuse
         if snippet_id_index:
             analysis_output = self._resolve_snippet_references(
-                analysis_output, snippet_id_index, session,
+                analysis_output,
+                snippet_id_index,
+                session,
             )
 
         # Execute with step-by-step model (if steps exist) or simple execution
@@ -431,9 +431,7 @@ class QueryAgent(LLMFeature):
                 f"Tool search mode: {total_count} snippets, "
                 f"vocabulary has {sum(len(v) for v in vocabulary.values())} terms"
             )
-            return DiscoveryResult(
-                snippets=[], vocabulary=vocabulary, mode="tool_search"
-            )
+            return DiscoveryResult(snippets=[], vocabulary=vocabulary, mode="tool_search")
 
     @staticmethod
     def _flatten_graphs(graphs: list[Any]) -> list[dict[str, Any]]:
@@ -442,15 +440,17 @@ class QueryAgent(LLMFeature):
         for graph in graphs:
             for snippet in graph.snippets:
                 step_id = snippet.standard_field or snippet.snippet_id[:8]
-                results.append({
-                    "step_id": step_id,
-                    "sql": snippet.sql,
-                    "description": snippet.description,
-                    "snippet_id": snippet.snippet_id,
-                    "snippet_type": snippet.snippet_type,
-                    "source": snippet.source,
-                    "graph_id": graph.graph_id,
-                })
+                results.append(
+                    {
+                        "step_id": step_id,
+                        "sql": snippet.sql,
+                        "description": snippet.description,
+                        "snippet_id": snippet.snippet_id,
+                        "snippet_type": snippet.snippet_type,
+                        "source": snippet.source,
+                        "graph_id": graph.graph_id,
+                    }
+                )
         return results
 
     @staticmethod
@@ -500,9 +500,15 @@ class QueryAgent(LLMFeature):
         if search_vocabulary:
             # Format vocabulary with labels matching the tool's property names
             formatted_vocab = {
-                "concepts (→ search_snippets.concepts)": search_vocabulary.get("standard_fields", []),
-                "statements (→ search_snippets.statements)": search_vocabulary.get("statements", []),
-                "aggregations (→ search_snippets.concepts)": search_vocabulary.get("aggregations", []),
+                "concepts (→ search_snippets.concepts)": search_vocabulary.get(
+                    "standard_fields", []
+                ),
+                "statements (→ search_snippets.statements)": search_vocabulary.get(
+                    "statements", []
+                ),
+                "aggregations (→ search_snippets.concepts)": search_vocabulary.get(
+                    "aggregations", []
+                ),
                 "graph_ids (→ search_snippets.graph_ids)": search_vocabulary.get("graph_ids", []),
             }
             vocab_json = json.dumps(formatted_vocab, indent=2)
@@ -630,15 +636,11 @@ class QueryAgent(LLMFeature):
             if determine_usage_type(step.sql, authoritative_sql) == "exact_reuse":
                 # Exact reuse — replace with authoritative SQL
                 resolved_steps.append(step.model_copy(update={"sql": authoritative_sql}))
-                logger.debug(
-                    f"Step '{step.step_id}': exact reuse of snippet '{step.snippet_id}'"
-                )
+                logger.debug(f"Step '{step.step_id}': exact reuse of snippet '{step.snippet_id}'")
             else:
                 # Adaptation — keep LLM SQL, snippet_id tracks provenance
                 resolved_steps.append(step)
-                logger.debug(
-                    f"Step '{step.step_id}': adapted from snippet '{step.snippet_id}'"
-                )
+                logger.debug(f"Step '{step.step_id}': adapted from snippet '{step.snippet_id}'")
 
         return analysis_output.model_copy(update={"steps": resolved_steps})
 
@@ -706,7 +708,9 @@ class QueryAgent(LLMFeature):
         graph_ids = tool_input.get("graph_ids") or []
 
         if not concepts and not statements and not graph_ids:
-            return json.dumps({"error": "No search keys provided. Use concepts, statements, or graph_ids."})
+            return json.dumps(
+                {"error": "No search keys provided. Use concepts, statements, or graph_ids."}
+            )
 
         library = SnippetLibrary(session)
         graphs = library.find_graphs_by_keys(
@@ -719,21 +723,23 @@ class QueryAgent(LLMFeature):
 
         result = []
         for graph in graphs:
-            result.append({
-                "graph_id": graph.graph_id,
-                "source": graph.source,
-                "source_type": graph.source_type,
-                "snippets": [
-                    {
-                        "step_id": s.standard_field or s.snippet_id[:8],
-                        "snippet_id": s.snippet_id,
-                        "sql": s.sql,
-                        "description": s.description,
-                        "snippet_type": s.snippet_type,
-                    }
-                    for s in graph.snippets
-                ],
-            })
+            result.append(
+                {
+                    "graph_id": graph.graph_id,
+                    "source": graph.source,
+                    "source_type": graph.source_type,
+                    "snippets": [
+                        {
+                            "step_id": s.standard_field or s.snippet_id[:8],
+                            "snippet_id": s.snippet_id,
+                            "sql": s.sql,
+                            "description": s.description,
+                            "snippet_type": s.snippet_type,
+                        }
+                        for s in graph.snippets
+                    ],
+                }
+            )
 
         return json.dumps(result, indent=2)
 
@@ -855,10 +861,7 @@ class QueryAgent(LLMFeature):
 
         # Build conversation
         messages = [Message(role="user", content=user_prompt)]
-        tool_choice = (
-            None if use_search_tool
-            else {"type": "tool", "name": "analyze_query"}
-        )
+        tool_choice = None if use_search_tool else {"type": "tool", "name": "analyze_query"}
         model = self.provider.get_model_for_tier("balanced")
         max_turns = 3
 
@@ -882,9 +885,7 @@ class QueryAgent(LLMFeature):
             if not response.tool_calls:
                 if response.content:
                     try:
-                        output = QueryAnalysisOutput.model_validate(
-                            json.loads(response.content)
-                        )
+                        output = QueryAnalysisOutput.model_validate(json.loads(response.content))
                         return Result.ok(output)
                     except Exception:
                         pass
@@ -900,15 +901,24 @@ class QueryAgent(LLMFeature):
                     session=session,
                 )
 
-                messages.append(Message(
-                    role="assistant", content="", tool_calls=[tool_call],
-                ))
-                messages.append(Message(
-                    role="user",
-                    content=[ToolResult(
-                        tool_use_id=tool_call.id, content=search_result,
-                    )],
-                ))
+                messages.append(
+                    Message(
+                        role="assistant",
+                        content="",
+                        tool_calls=[tool_call],
+                    )
+                )
+                messages.append(
+                    Message(
+                        role="user",
+                        content=[
+                            ToolResult(
+                                tool_use_id=tool_call.id,
+                                content=search_result,
+                            )
+                        ],
+                    )
+                )
 
                 # After search, force analyze_query on next turn
                 tool_choice = {"type": "tool", "name": "analyze_query"}
@@ -1054,7 +1064,6 @@ class QueryAgent(LLMFeature):
         lines.append("2. Resolve the data quality issues first")
 
         return "\n".join(lines)
-
 
     def _record_execution(
         self,

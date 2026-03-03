@@ -167,9 +167,7 @@ class TestMultiSourcePipeline:
             # Verify raw tables exist with prefixed names
             raw_tables = (
                 session.execute(
-                    select(Table).where(
-                        Table.source_id == harness.source_id, Table.layer == "raw"
-                    )
+                    select(Table).where(Table.source_id == harness.source_id, Table.layer == "raw")
                 )
                 .scalars()
                 .all()
@@ -205,9 +203,7 @@ class TestMultiSourcePipeline:
                     .join(Column)
                     .where(Column.table_id == typed_table.table_id)
                 ).scalar_one()
-                assert stat_count > 0, (
-                    f"No statistics for typed table {typed_table.table_name}"
-                )
+                assert stat_count > 0, f"No statistics for typed table {typed_table.table_name}"
 
     def test_csv_plus_parquet_through_statistics(
         self,
@@ -248,13 +244,9 @@ class TestMultiSourcePipeline:
             assert "analytics__metrics" in typed_names
 
             # Verify Parquet table columns exist with expected names
-            analytics_table = next(
-                t for t in typed_tables if t.table_name == "analytics__metrics"
-            )
+            analytics_table = next(t for t in typed_tables if t.table_name == "analytics__metrics")
             cols = (
-                session.execute(
-                    select(Column).where(Column.table_id == analytics_table.table_id)
-                )
+                session.execute(select(Column).where(Column.table_id == analytics_table.table_id))
                 .scalars()
                 .all()
             )
@@ -376,9 +368,7 @@ class TestMultiSourcePipeline:
         with harness.session_factory() as session:
             raw_tables = (
                 session.execute(
-                    select(Table).where(
-                        Table.source_id == harness.source_id, Table.layer == "raw"
-                    )
+                    select(Table).where(Table.source_id == harness.source_id, Table.layer == "raw")
                 )
                 .scalars()
                 .all()

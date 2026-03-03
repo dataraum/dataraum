@@ -33,9 +33,7 @@ class DetectedBusinessCycle(Base):
     """
 
     __tablename__ = "detected_business_cycles"
-    __table_args__ = (
-        Index("idx_detected_cycles_source", "source_id"),
-    )
+    __table_args__ = (Index("idx_detected_cycles_source", "source_id"),)
 
     cycle_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     source_id: Mapped[str] = mapped_column(

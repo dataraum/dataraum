@@ -83,16 +83,24 @@ class TestSnippetSearchByConcept:
 
         # Two graphs with 'revenue' but different key combos (no upsert collision)
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(rev)",
-            description="Revenue (sum)", schema_mapping_id="s1",
-            source="graph:dso", standard_field="revenue",
-            statement="income_statement", aggregation="sum",
+            snippet_type="extract",
+            sql="SELECT SUM(rev)",
+            description="Revenue (sum)",
+            schema_mapping_id="s1",
+            source="graph:dso",
+            standard_field="revenue",
+            statement="income_statement",
+            aggregation="sum",
         )
         library.save_snippet(
-            snippet_type="extract", sql="SELECT AVG(rev)",
-            description="Revenue (avg)", schema_mapping_id="s1",
-            source="graph:trend", standard_field="revenue",
-            statement="income_statement", aggregation="average",
+            snippet_type="extract",
+            sql="SELECT AVG(rev)",
+            description="Revenue (avg)",
+            schema_mapping_id="s1",
+            source="graph:trend",
+            standard_field="revenue",
+            statement="income_statement",
+            aggregation="average",
         )
         session.flush()
 
@@ -130,16 +138,24 @@ class TestSnippetSearchByGraphId:
 
         # Two independent graphs with non-overlapping keys
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(ar)",
-            description="AR", schema_mapping_id="s1",
-            source="graph:dso", standard_field="accounts_receivable",
-            statement="balance_sheet", aggregation="end_of_period",
+            snippet_type="extract",
+            sql="SELECT SUM(ar)",
+            description="AR",
+            schema_mapping_id="s1",
+            source="graph:dso",
+            standard_field="accounts_receivable",
+            statement="balance_sheet",
+            aggregation="end_of_period",
         )
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(margin)",
-            description="Margin", schema_mapping_id="s1",
-            source="graph:gross_margin", standard_field="gross_margin",
-            statement="income_statement", aggregation="sum",
+            snippet_type="extract",
+            sql="SELECT SUM(margin)",
+            description="Margin",
+            schema_mapping_id="s1",
+            source="graph:gross_margin",
+            standard_field="gross_margin",
+            statement="income_statement",
+            aggregation="sum",
         )
         session.flush()
 
@@ -160,16 +176,24 @@ class TestSnippetSearchCombined:
 
         # Two independent graphs
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(ar)",
-            description="AR", schema_mapping_id="s1",
-            source="graph:dso", standard_field="accounts_receivable",
-            statement="balance_sheet", aggregation="end_of_period",
+            snippet_type="extract",
+            sql="SELECT SUM(ar)",
+            description="AR",
+            schema_mapping_id="s1",
+            source="graph:dso",
+            standard_field="accounts_receivable",
+            statement="balance_sheet",
+            aggregation="end_of_period",
         )
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(margin)",
-            description="Margin", schema_mapping_id="s1",
-            source="graph:gross_margin", standard_field="gross_margin",
-            statement="income_statement", aggregation="sum",
+            snippet_type="extract",
+            sql="SELECT SUM(margin)",
+            description="Margin",
+            schema_mapping_id="s1",
+            source="graph:gross_margin",
+            standard_field="gross_margin",
+            statement="income_statement",
+            aggregation="sum",
         )
         session.flush()
 

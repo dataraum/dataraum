@@ -230,9 +230,7 @@ def _build_column_result(
         if node_name:
             node_to_obj[node_name] = obj
 
-    node_to_delta: dict[str, float] = {
-        pr.node: pr.impact_delta for pr in priorities
-    }
+    node_to_delta: dict[str, float] = {pr.node: pr.impact_delta for pr in priorities}
 
     node_evidence: list[ColumnNodeEvidence] = []
     for node_name, state in evidence.items():
@@ -245,9 +243,7 @@ def _build_column_result(
             impact_delta=node_to_delta.get(node_name, 0.0),
             evidence=list(source_obj.evidence) if source_obj else [],
             resolution_options=(
-                _serialize_resolution_options(source_obj.resolution_options)
-                if source_obj
-                else []
+                _serialize_resolution_options(source_obj.resolution_options) if source_obj else []
             ),
             detector_id=source_obj.detector_id if source_obj else "",
         )
@@ -261,30 +257,31 @@ def _build_column_result(
         if intent_name in posteriors:
             post = posteriors[intent_name]
         elif intent_name in evidence:
-            post = {
-                s: (1.0 if s == evidence[intent_name] else 0.0)
-                for s in network.states
-            }
+            post = {s: (1.0 if s == evidence[intent_name] else 0.0) for s in network.states}
         else:
             continue
 
         p_high = post.get("high", 0.0)
         dominant = max(post, key=lambda s: post[s])
         readiness = _readiness_from_p_high(p_high, disc.medium_upper, disc.low_upper)
-        intents.append(IntentReadiness(
-            intent_name=intent_name,
-            posterior=post,
-            dominant_state=dominant,
-            p_high=p_high,
-            readiness=readiness,
-        ))
+        intents.append(
+            IntentReadiness(
+                intent_name=intent_name,
+                posterior=post,
+                dominant_state=dominant,
+                p_high=p_high,
+                readiness=readiness,
+            )
+        )
 
     # Summary stats
     nodes_observed = len(evidence)
     nodes_high = sum(1 for s in evidence.values() if s == "high")
     worst_intent_p_high = max((i.p_high for i in intents), default=0.0)
     readiness = _readiness_from_p_high(
-        worst_intent_p_high, disc.medium_upper, disc.low_upper,
+        worst_intent_p_high,
+        disc.medium_upper,
+        disc.low_upper,
     )
 
     # When every observed detector says "low", no actual issue was found.
@@ -337,9 +334,7 @@ def _aggregate_intents(
 
     for col_result in columns.values():
         for intent in col_result.intents:
-            intent_data.setdefault(intent.intent_name, []).append(
-                (intent.p_high, intent.readiness)
-            )
+            intent_data.setdefault(intent.intent_name, []).append((intent.p_high, intent.readiness))
 
     aggregates: list[AggregateIntentReadiness] = []
     for intent_name, entries in intent_data.items():
@@ -352,18 +347,22 @@ def _aggregate_intents(
         columns_investigate = readinesses.count("investigate")
         columns_ready = readinesses.count("ready")
         overall_readiness = _readiness_from_p_high(
-            worst_p_high, disc_medium_upper, disc_low_upper,
+            worst_p_high,
+            disc_medium_upper,
+            disc_low_upper,
         )
 
-        aggregates.append(AggregateIntentReadiness(
-            intent_name=intent_name,
-            worst_p_high=worst_p_high,
-            mean_p_high=mean_p_high,
-            columns_blocked=columns_blocked,
-            columns_investigate=columns_investigate,
-            columns_ready=columns_ready,
-            overall_readiness=overall_readiness,
-        ))
+        aggregates.append(
+            AggregateIntentReadiness(
+                intent_name=intent_name,
+                worst_p_high=worst_p_high,
+                mean_p_high=mean_p_high,
+                columns_blocked=columns_blocked,
+                columns_investigate=columns_investigate,
+                columns_ready=columns_ready,
+                overall_readiness=overall_readiness,
+            )
+        )
 
     return aggregates
 
@@ -406,9 +405,7 @@ def _compute_cross_column_fix(
             stats["columns_affected"] += 1
             # Use the node's actual causal impact from network priorities
             stats["total_delta"] += node_ev.impact_delta
-            stats["worst_columns"].append(
-                (node_ev.impact_delta, target)
-            )
+            stats["worst_columns"].append((node_ev.impact_delta, target))
             if node_ev.resolution_options and not stats["resolution_options"]:
                 stats["resolution_options"] = node_ev.resolution_options
 
@@ -481,7 +478,10 @@ def _assemble_network_context(
 
     for target, target_objects in column_targets.items():
         col_result, col_signals = _build_column_result(
-            target, target_objects, network, path_map,
+            target,
+            target_objects,
+            network,
+            path_map,
         )
         all_direct_signals.extend(col_signals)
         if col_result is not None:
@@ -509,15 +509,9 @@ def _assemble_network_context(
 
     # Step 8: Summary stats
     total_columns = len(columns)
-    columns_blocked = sum(
-        1 for c in columns.values() if c.readiness == "blocked"
-    )
-    columns_investigate = sum(
-        1 for c in columns.values() if c.readiness == "investigate"
-    )
-    columns_ready = sum(
-        1 for c in columns.values() if c.readiness == "ready"
-    )
+    columns_blocked = sum(1 for c in columns.values() if c.readiness == "blocked")
+    columns_investigate = sum(1 for c in columns.values() if c.readiness == "investigate")
+    columns_ready = sum(1 for c in columns.values() if c.readiness == "ready")
 
     # Overall readiness derived from per-column readiness (which already
     # accounts for the all-evidence-low override in _build_column_result).
@@ -624,20 +618,14 @@ def format_network_context(ctx: EntropyForNetwork) -> str:
             f"{ctx.total_direct_signals} direct signals."
         )
     else:
-        lines.append(
-            f"0 columns analyzed. {ctx.total_direct_signals} direct signals."
-        )
+        lines.append(f"0 columns analyzed. {ctx.total_direct_signals} direct signals.")
     lines.append("")
 
     # 2. Intent Readiness (aggregated)
     if ctx.intents:
         lines.append("### Intent Readiness")
-        lines.append(
-            "| Intent | Worst P(high) | Mean | Blocked | Investigate | Ready |"
-        )
-        lines.append(
-            "|--------|---------------|------|---------|-------------|-------|"
-        )
+        lines.append("| Intent | Worst P(high) | Mean | Blocked | Investigate | Ready |")
+        lines.append("|--------|---------------|------|---------|-------------|-------|")
         for ai in ctx.intents:
             lines.append(
                 f"| {ai.intent_name} | {ai.worst_p_high:.3f} | "
@@ -659,24 +647,16 @@ def format_network_context(ctx: EntropyForNetwork) -> str:
             lines.append(f"  Worst: {cols_str}")
         if tf.resolution_options:
             best = tf.resolution_options[0]
-            lines.append(
-                f"  Action: **{best['action']}** — {best.get('description', '')}"
-            )
+            lines.append(f"  Action: **{best['action']}** — {best.get('description', '')}")
         lines.append("")
 
     # 4. At-Risk Columns (blocked + investigate), capped at 10
-    at_risk = [
-        (target, col)
-        for target, col in ctx.columns.items()
-        if col.readiness != "ready"
-    ]
+    at_risk = [(target, col) for target, col in ctx.columns.items() if col.readiness != "ready"]
     # Sort by worst_intent_p_high descending
     at_risk.sort(key=lambda x: x[1].worst_intent_p_high, reverse=True)
 
     if at_risk:
-        lines.append(
-            f"### At-Risk Columns ({len(at_risk)} of {ctx.total_columns})"
-        )
+        lines.append(f"### At-Risk Columns ({len(at_risk)} of {ctx.total_columns})")
         for target, col in at_risk[:10]:
             high_nodes = sorted(
                 [ne for ne in col.node_evidence if ne.state != "low"],
@@ -684,13 +664,9 @@ def format_network_context(ctx: EntropyForNetwork) -> str:
                 reverse=True,
             )
             nodes_str = ", ".join(
-                f"{ne.node_name}={ne.state}(impact={ne.impact_delta:.3f})"
-                for ne in high_nodes
+                f"{ne.node_name}={ne.state}(impact={ne.impact_delta:.3f})" for ne in high_nodes
             )
-            lines.append(
-                f"- **{target}** ({col.readiness}, "
-                f"P(high)={col.worst_intent_p_high:.3f})"
-            )
+            lines.append(f"- **{target}** ({col.readiness}, P(high)={col.worst_intent_p_high:.3f})")
             if nodes_str:
                 lines.append(f"  {nodes_str}")
             # Show fix from column's top priority
@@ -699,10 +675,7 @@ def format_network_context(ctx: EntropyForNetwork) -> str:
                 for ne in col.node_evidence:
                     if ne.node_name == col.top_priority_node and ne.resolution_options:
                         best = ne.resolution_options[0]
-                        lines.append(
-                            f"  Fix: {best['action']} — "
-                            f"{best.get('description', '')}"
-                        )
+                        lines.append(f"  Fix: {best['action']} — {best.get('description', '')}")
                         break
         if len(at_risk) > 10:
             lines.append(f"  ... and {len(at_risk) - 10} more")
@@ -712,20 +685,14 @@ def format_network_context(ctx: EntropyForNetwork) -> str:
     healthy_count = ctx.columns_ready
     if healthy_count > 0:
         lines.append("### Healthy Columns")
-        lines.append(
-            f"{healthy_count} columns have low entropy across all "
-            f"network dimensions."
-        )
+        lines.append(f"{healthy_count} columns have low entropy across all network dimensions.")
         lines.append("")
 
     # 6. Direct Signals
     if ctx.direct_signals:
         lines.append("### Direct Signals (not in network)")
         for ds in ctx.direct_signals:
-            lines.append(
-                f"- **{ds.dimension_path}** "
-                f"(score={ds.score:.2f}, target={ds.target})"
-            )
+            lines.append(f"- **{ds.dimension_path}** (score={ds.score:.2f}, target={ds.target})")
             if ds.evidence:
                 ev = ds.evidence[0]
                 source = ev.get("source", "") if isinstance(ev, dict) else ""

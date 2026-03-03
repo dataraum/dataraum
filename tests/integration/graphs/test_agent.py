@@ -168,7 +168,6 @@ class TestGraphAgentCaching:
         assert key1 != key2
 
 
-
 class TestGraphAgentExecution:
     """Tests for GraphAgent SQL execution."""
 
@@ -463,9 +462,7 @@ class TestGraphAgentSnippets:
         snippets = list(session.execute(select(SQLSnippetRecord)).scalars().all())
         assert len(snippets) >= 1
 
-        extract_snippet = next(
-            (s for s in snippets if s.snippet_type == "extract"), None
-        )
+        extract_snippet = next((s for s in snippets if s.snippet_type == "extract"), None)
         assert extract_snippet is not None
         assert extract_snippet.standard_field == "test_field"
         assert extract_snippet.statement == "test_table"
@@ -575,15 +572,11 @@ class TestGraphAgentSnippets:
         assert result.success
 
         # Verify usage record was created
-        usages = list(
-            session.execute(select(SnippetUsageRecord)).scalars().all()
-        )
+        usages = list(session.execute(select(SnippetUsageRecord)).scalars().all())
         assert len(usages) >= 1
 
         # Should be an exact_reuse since snippet was assembled without LLM
-        exact_reuse = next(
-            (u for u in usages if u.usage_type == "exact_reuse"), None
-        )
+        exact_reuse = next((u for u in usages if u.usage_type == "exact_reuse"), None)
         assert exact_reuse is not None
         assert exact_reuse.execution_type == "graph"
         assert exact_reuse.snippet_id == snippet.snippet_id
@@ -629,9 +622,7 @@ class TestGraphAgentSnippets:
         )
 
         # Access internal _lookup_snippets to verify column_mappings are returned
-        cached = agent._lookup_snippets(
-            session, sample_graph, "test-mapping", {}
-        )
+        cached = agent._lookup_snippets(session, sample_graph, "test-mapping", {})
 
         assert "value" in cached
         assert cached["value"]["column_mappings"] == {"test_field": "amount"}
@@ -695,13 +686,10 @@ class TestGraphAgentSnippets:
         assert result.success
 
         # Verify usage records were created
-        usages = list(
-            session.execute(select(SnippetUsageRecord)).scalars().all()
-        )
+        usages = list(session.execute(select(SnippetUsageRecord)).scalars().all())
         assert len(usages) >= 1
 
         # All steps should be newly_generated
         newly_generated = [u for u in usages if u.usage_type == "newly_generated"]
         assert len(newly_generated) >= 1
         assert newly_generated[0].execution_type == "graph"
-

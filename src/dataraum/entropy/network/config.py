@@ -144,11 +144,13 @@ def _parse_config(raw: dict[str, Any]) -> NetworkConfig:
     # Edges
     edges: list[EdgeConfig] = []
     for edge_raw in raw.get("edges", []):
-        edges.append(EdgeConfig(
-            parent=edge_raw[0],
-            child=edge_raw[1],
-            strength=float(edge_raw[2]),
-        ))
+        edges.append(
+            EdgeConfig(
+                parent=edge_raw[0],
+                child=edge_raw[1],
+                strength=float(edge_raw[2]),
+            )
+        )
 
     # CPT generation params
     cpt_raw = raw.get("cpt_generation", {})

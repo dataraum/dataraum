@@ -136,5 +136,3 @@ def sample_entropy_object() -> EntropyObject:
         ],
         detector_id="type_fidelity",
     )
-
-

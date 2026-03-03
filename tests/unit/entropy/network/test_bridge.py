@@ -1,6 +1,5 @@
 """Tests for bridge module (EntropyObject <-> network evidence)."""
 
-
 from dataraum.entropy.models import EntropyObject
 from dataraum.entropy.network.bridge import (
     build_dimension_path_to_node_map,
@@ -63,12 +62,16 @@ class TestEntropyObjectsToEvidence:
     def test_maps_known_objects(self, full_network: EntropyNetwork):
         objects = [
             EntropyObject(
-                layer="structural", dimension="types",
-                sub_dimension="type_fidelity", score=0.8,
+                layer="structural",
+                dimension="types",
+                sub_dimension="type_fidelity",
+                score=0.8,
             ),
             EntropyObject(
-                layer="value", dimension="nulls",
-                sub_dimension="null_ratio", score=0.1,
+                layer="value",
+                dimension="nulls",
+                sub_dimension="null_ratio",
+                score=0.1,
             ),
         ]
         evidence = entropy_objects_to_evidence(objects, full_network)
@@ -78,8 +81,10 @@ class TestEntropyObjectsToEvidence:
     def test_unmapped_objects_skipped(self, full_network: EntropyNetwork):
         objects = [
             EntropyObject(
-                layer="unknown", dimension="unknown",
-                sub_dimension="unknown", score=0.5,
+                layer="unknown",
+                dimension="unknown",
+                sub_dimension="unknown",
+                score=0.5,
             ),
         ]
         evidence = entropy_objects_to_evidence(objects, full_network)
@@ -93,8 +98,10 @@ class TestEntropyObjectsToEvidence:
         """Score right at the boundary should use config thresholds."""
         objects = [
             EntropyObject(
-                layer="structural", dimension="types",
-                sub_dimension="type_fidelity", score=0.3,  # At low_upper boundary
+                layer="structural",
+                dimension="types",
+                sub_dimension="type_fidelity",
+                score=0.3,  # At low_upper boundary
             ),
         ]
         evidence = entropy_objects_to_evidence(objects, full_network)
@@ -103,8 +110,10 @@ class TestEntropyObjectsToEvidence:
     def test_medium_score(self, full_network: EntropyNetwork):
         objects = [
             EntropyObject(
-                layer="value", dimension="outliers",
-                sub_dimension="outlier_rate", score=0.45,
+                layer="value",
+                dimension="outliers",
+                sub_dimension="outlier_rate",
+                score=0.45,
             ),
         ]
         evidence = entropy_objects_to_evidence(objects, full_network)

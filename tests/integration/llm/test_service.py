@@ -55,6 +55,7 @@ def test_prompt_renderer_renders_template(mock_anthropic_key):
         "relationship_candidates": "No candidates detected",
         "column_annotations": "No annotations available",
         "within_table_correlations": "No correlations detected",
+        "required_standard_fields": "",
     }
 
     rendered, temperature = renderer.render("semantic_analysis", context)

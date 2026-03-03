@@ -165,7 +165,9 @@ class InteractiveCLIHandler:
         Returns FixResult on success, None if context not available.
         """
         if not self._manager:
-            self.console.print("  [yellow]Cannot execute fix: no pipeline context available[/yellow]")
+            self.console.print(
+                "  [yellow]Cannot execute fix: no pipeline context available[/yellow]"
+            )
             return None
 
         from dataraum.entropy.fix_executor import (

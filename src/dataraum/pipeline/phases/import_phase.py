@@ -92,9 +92,7 @@ class ImportPhase(BasePhase):
         registered_sources = ctx.config.get("registered_sources")
 
         if not source_path and not registered_sources:
-            return PhaseResult.failed(
-                "No source_path or registered_sources provided in config"
-            )
+            return PhaseResult.failed("No source_path or registered_sources provided in config")
 
         if registered_sources and not source_path:
             result = self._load_registered_sources(ctx, registered_sources)
@@ -430,13 +428,9 @@ class ImportPhase(BasePhase):
             src_path = src.get("path")
 
             if src_type in ("csv", "parquet", "file") and src_path:
-                result = self._load_file_source(
-                    ctx, source, src_name, Path(src_path), src_type
-                )
+                result = self._load_file_source(ctx, source, src_name, Path(src_path), src_type)
             elif src.get("backend"):
-                result = self._load_database_source(
-                    ctx, source, src_name, src
-                )
+                result = self._load_database_source(ctx, source, src_name, src)
             else:
                 warnings.append(f"Skipping source '{src_name}': unsupported type '{src_type}'")
                 continue
@@ -584,11 +578,11 @@ class ImportPhase(BasePhase):
             )
 
         try:
-            ctx.duckdb_conn.execute(
-                f'ALTER TABLE "{duckdb_name}" RENAME TO "{prefixed_name}"'
-            )
+            ctx.duckdb_conn.execute(f'ALTER TABLE "{duckdb_name}" RENAME TO "{prefixed_name}"')
         except Exception as e:
-            logger.warning("duckdb_rename_failed", table=duckdb_name, target=prefixed_name, error=str(e))
+            logger.warning(
+                "duckdb_rename_failed", table=duckdb_name, target=prefixed_name, error=str(e)
+            )
 
         # Update the SQLAlchemy Table record
         table_record = ctx.session.execute(
@@ -635,8 +629,7 @@ class ImportPhase(BasePhase):
             # Attach the database
             attach_alias = f"_src_{source_name}"
             ctx.duckdb_conn.execute(
-                f"ATTACH '{credential.url}' AS \"{attach_alias}\" "
-                f"(TYPE {backend}, READ_ONLY)"
+                f"ATTACH '{credential.url}' AS \"{attach_alias}\" (TYPE {backend}, READ_ONLY)"
             )
 
             # Discover tables if not specified
@@ -699,14 +692,10 @@ class ImportPhase(BasePhase):
             ctx.duckdb_conn.execute(f'DETACH "{attach_alias}"')
 
         except Exception as e:
-            return PhaseResult.failed(
-                f"Failed to connect to database source '{source_name}': {e}"
-            )
+            return PhaseResult.failed(f"Failed to connect to database source '{source_name}': {e}")
 
         if not table_ids:
-            return PhaseResult.failed(
-                f"No tables loaded from database source '{source_name}'"
-            )
+            return PhaseResult.failed(f"No tables loaded from database source '{source_name}'")
 
         return PhaseResult.success(
             outputs={"raw_tables": table_ids},

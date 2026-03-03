@@ -87,7 +87,13 @@ class SourceManager:
 
         # Determine source type from extension
         suffix = file_path.suffix.lower()
-        type_map = {".csv": "csv", ".tsv": "csv", ".parquet": "parquet", ".json": "json", ".jsonl": "json"}
+        type_map = {
+            ".csv": "csv",
+            ".tsv": "csv",
+            ".parquet": "parquet",
+            ".json": "json",
+            ".jsonl": "json",
+        }
         source_type = type_map.get(suffix, "file")
 
         # Get column preview via DuckDB
@@ -301,14 +307,10 @@ class SourceManager:
 
     def _get_source(self, name: str) -> Source | None:
         """Look up a source by name (including archived)."""
-        return self._session.execute(
-            select(Source).where(Source.name == name)
-        ).scalar_one_or_none()
+        return self._session.execute(select(Source).where(Source.name == name)).scalar_one_or_none()
 
 
-def _read_file_preview(
-    conn: duckdb.DuckDBPyConnection, path: Path
-) -> tuple[list[str], int | None]:
+def _read_file_preview(conn: duckdb.DuckDBPyConnection, path: Path) -> tuple[list[str], int | None]:
     """Read column names and row count from a file."""
     path_str = str(path)
     suffix = path.suffix.lower()

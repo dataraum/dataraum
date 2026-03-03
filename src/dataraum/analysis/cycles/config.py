@@ -41,10 +41,7 @@ def get_cycle_types(vertical: str) -> dict[str, Any]:
     return result
 
 
-
-def map_to_canonical_type(
-    cycle_type: str, vertical: str
-) -> tuple[str | None, bool]:
+def map_to_canonical_type(cycle_type: str, vertical: str) -> tuple[str | None, bool]:
     """Map an LLM-returned cycle_type to a canonical vocabulary type.
 
     Handles aliases (e.g., "ar_cycle" -> "accounts_receivable") and

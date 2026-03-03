@@ -53,7 +53,9 @@ def _get_slice_table_names(source_id: str, session: Session) -> list[str]:
     return list(session.execute(stmt).scalars().all())
 
 
-def _cleanup_typing(session: Session, source_id: str, table_ids: list[str], column_ids: list[str]) -> int:
+def _cleanup_typing(
+    session: Session, source_id: str, table_ids: list[str], column_ids: list[str]
+) -> int:
     """Clean up typing phase output."""
     from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
 
@@ -223,7 +225,9 @@ def _cleanup_statistical_quality(
         return 0
     return _exec_delete(
         session,
-        delete(StatisticalQualityMetrics).where(StatisticalQualityMetrics.column_id.in_(column_ids)),
+        delete(StatisticalQualityMetrics).where(
+            StatisticalQualityMetrics.column_id.in_(column_ids)
+        ),
     )
 
 

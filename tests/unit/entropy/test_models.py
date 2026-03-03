@@ -1,6 +1,5 @@
 """Tests for entropy models."""
 
-
 from dataraum.entropy.models import (
     EntropyObject,
     ResolutionOption,

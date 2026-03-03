@@ -481,9 +481,7 @@ class EntropyScreen(Screen[None]):
         header = self.query_one("#detail-header", Static)
         col_name = interp.column_name or "(table-level)"
         context_hint = self._build_header_hint(interp)
-        header.update(
-            f"[bold]{interp.table_name}.{col_name}[/bold]{context_hint}"
-        )
+        header.update(f"[bold]{interp.table_name}.{col_name}[/bold]{context_hint}")
 
         # Get entropy objects for this column or table-level
         if interp.column_id:
@@ -729,9 +727,7 @@ class EntropyScreen(Screen[None]):
                         continue
                     action = escape_markup(str(opt.get("action", "?")))
                     effort = escape_markup(str(opt.get("effort", "?")))
-                    parts.append(
-                        f"  [dim]-> {action}[/dim]  effort: {effort}"
-                    )
+                    parts.append(f"  [dim]-> {action}[/dim]  effort: {effort}")
 
             parts.append("")  # Blank line between objects
 

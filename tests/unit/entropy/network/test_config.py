@@ -22,14 +22,20 @@ class TestNetworkConfigLoading:
     def test_states_are_low_medium_high(self, full_config: NetworkConfig):
         assert full_config.states == ["low", "medium", "high"]
 
+
 class TestRootNodePriors:
     """Test that root nodes have valid priors."""
 
     def test_root_nodes_have_priors(self, full_config: NetworkConfig):
         root_names = [
-            "type_fidelity", "null_ratio", "outlier_rate",
-            "naming_clarity", "unit_declaration", "time_role",
-            "temporal_drift", "benford_compliance",
+            "type_fidelity",
+            "null_ratio",
+            "outlier_rate",
+            "naming_clarity",
+            "unit_declaration",
+            "time_role",
+            "temporal_drift",
+            "benford_compliance",
         ]
         for name in root_names:
             node = full_config.nodes[name]
@@ -64,12 +70,8 @@ class TestEdgeValidation:
     def test_all_edge_endpoints_reference_defined_nodes(self, full_config: NetworkConfig):
         node_names = set(full_config.nodes.keys())
         for edge in full_config.edges:
-            assert edge.parent in node_names, (
-                f"Edge parent '{edge.parent}' not in defined nodes"
-            )
-            assert edge.child in node_names, (
-                f"Edge child '{edge.child}' not in defined nodes"
-            )
+            assert edge.parent in node_names, f"Edge parent '{edge.parent}' not in defined nodes"
+            assert edge.child in node_names, f"Edge child '{edge.child}' not in defined nodes"
 
     def test_child_nodes_have_no_priors(self, full_config: NetworkConfig):
         """Nodes that are only children (no prior) should not have explicit priors."""
@@ -80,9 +82,7 @@ class TestEdgeValidation:
         for name in pure_children:
             node = full_config.nodes[name]
             if node.prior is not None:
-                raise AssertionError(
-                    f"Pure child node '{name}' should not have an explicit prior"
-                )
+                raise AssertionError(f"Pure child node '{name}' should not have an explicit prior")
 
 
 class TestNodeConfig:

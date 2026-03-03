@@ -35,6 +35,7 @@ class TestQueryAssumption:
         assert assumption.promoted_at is None
         assert assumption.assumption_id is not None  # Auto-generated
 
+
 class TestGraphExecutionWithEntropy:
     """Tests for entropy-related fields in GraphExecution."""
 

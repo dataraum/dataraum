@@ -782,9 +782,7 @@ class SemanticAgent(LLMFeature):
                 concept_map = {c.name: c.temporal_behavior for c in ontology_def.concepts}
                 for annotation in annotations:
                     if annotation.business_concept:
-                        annotation.temporal_behavior = concept_map.get(
-                            annotation.business_concept
-                        )
+                        annotation.temporal_behavior = concept_map.get(annotation.business_concept)
 
             # Parse relationships (cardinality is computed post-hoc from actual data)
             for rel in analysis.relationships:

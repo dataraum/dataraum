@@ -584,9 +584,7 @@ def _generate_statistical_quality_issues(
 
     # High outlier ratio (Modified Z-Score)
     if outlier_detection and outlier_detection.zscore_outlier_ratio > 0.05:
-        severity = (
-            "warning" if outlier_detection.zscore_outlier_ratio < 0.10 else "critical"
-        )
+        severity = "warning" if outlier_detection.zscore_outlier_ratio < 0.10 else "critical"
         issues.append(
             {
                 "issue_type": "outliers_zscore",

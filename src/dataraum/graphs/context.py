@@ -508,9 +508,7 @@ def build_execution_context(
     from dataraum.analysis.validation.db_models import ValidationResultRecord
 
     validation_contexts: list[ValidationContext] = []
-    val_stmt = select(ValidationResultRecord).order_by(
-        ValidationResultRecord.executed_at.desc()
-    )
+    val_stmt = select(ValidationResultRecord).order_by(ValidationResultRecord.executed_at.desc())
     table_id_set = set(table_ids)
     seen_validation_ids: set[str] = set()
     for val_rec in session.execute(val_stmt).scalars().all():
@@ -832,9 +830,7 @@ def _column_network_to_dict(result: Any) -> dict[str, Any]:
     Returns:
         Dict compatible with existing entropy_scores consumers
     """
-    high_dims = [
-        ne.dimension_path for ne in result.node_evidence if ne.state != "low"
-    ]
+    high_dims = [ne.dimension_path for ne in result.node_evidence if ne.state != "low"]
     resolution_hints = []
     for ne in sorted(result.node_evidence, key=lambda x: x.impact_delta, reverse=True):
         if ne.resolution_options and ne.state != "low":
@@ -1183,7 +1179,9 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
     if context.available_slices:
         lines.append("")
         lines.append("## AVAILABLE SLICES")
-        lines.append("Recommended dimensions for filtering/grouping (use these EXACT values in SQL):")
+        lines.append(
+            "Recommended dimensions for filtering/grouping (use these EXACT values in SQL):"
+        )
         for slice_ctx in context.available_slices[:5]:  # Show top 5
             context_str = f" - {slice_ctx.business_context}" if slice_ctx.business_context else ""
             lines.append(
@@ -1235,9 +1233,7 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
                         if stage.completion_rate is not None
                         else ""
                     )
-                    lines.append(
-                        f"  {stage.stage_order}. {stage.stage_name}{indicator}{progress}"
-                    )
+                    lines.append(f"  {stage.stage_order}. {stage.stage_name}{indicator}{progress}")
 
             # Entity flows
             if cycle.entity_flows:
@@ -1254,7 +1250,7 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
             if cycle.status_column or cycle.completion_rate is not None:
                 parts = []
                 if cycle.status_column and cycle.completion_value:
-                    parts.append(f"{cycle.status_column} = \"{cycle.completion_value}\"")
+                    parts.append(f'{cycle.status_column} = "{cycle.completion_value}"')
                 if cycle.completion_rate is not None:
                     parts.append(f"{cycle.completion_rate:.0%} complete")
                 if parts:

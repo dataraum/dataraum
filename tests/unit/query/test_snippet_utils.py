@@ -43,9 +43,7 @@ class TestNormalizeExpression:
 
     def test_division_preserved(self):
         """Non-commutative: a / b stays as a / b."""
-        normalized, fields, bindings = normalize_expression(
-            "accounts_receivable / revenue"
-        )
+        normalized, fields, bindings = normalize_expression("accounts_receivable / revenue")
         assert fields == ["accounts_receivable", "revenue"]
         # accounts_receivable → {A}, revenue → {B}
         # Division is not commutative, so order preserved: {A} / {B}

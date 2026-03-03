@@ -42,12 +42,16 @@ def main(output_dir: Path) -> None:
     try:
         with manager.session_scope() as session:
             source = session.execute(select(Source)).scalar_one()
-            tables = session.execute(
-                select(Table).where(
-                    Table.source_id == source.source_id,
-                    Table.layer == "typed",
+            tables = (
+                session.execute(
+                    select(Table).where(
+                        Table.source_id == source.source_id,
+                        Table.layer == "typed",
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             table_ids = [t.table_id for t in tables]
 
             console.print(f"Source: [cyan]{source.name}[/cyan]")
@@ -64,12 +68,14 @@ def main(output_dir: Path) -> None:
 
             # 2. Build network
             network = EntropyNetwork()
-            console.print(f"Network: {len(network.node_names)} nodes, "
-                          f"{len(network.model.edges())} edges\n")
+            console.print(
+                f"Network: {len(network.node_names)} nodes, {len(network.model.edges())} edges\n"
+            )
 
             # 3. Show dimension path coverage
             all_paths = {obj.dimension_path for obj in all_objects}
             from dataraum.entropy.network.bridge import build_dimension_path_to_node_map
+
             path_map = build_dimension_path_to_node_map(network)
             mapped = all_paths & set(path_map.keys())
             unmapped = all_paths - set(path_map.keys())
@@ -78,10 +84,16 @@ def main(output_dir: Path) -> None:
             coverage_table.add_column("Status")
             coverage_table.add_column("Count")
             coverage_table.add_column("Paths")
-            coverage_table.add_row("Mapped", str(len(mapped)),
-                                   ", ".join(sorted(mapped)[:5]) + ("..." if len(mapped) > 5 else ""))
-            coverage_table.add_row("Unmapped", str(len(unmapped)),
-                                   ", ".join(sorted(unmapped)[:5]) + ("..." if len(unmapped) > 5 else ""))
+            coverage_table.add_row(
+                "Mapped",
+                str(len(mapped)),
+                ", ".join(sorted(mapped)[:5]) + ("..." if len(mapped) > 5 else ""),
+            )
+            coverage_table.add_row(
+                "Unmapped",
+                str(len(unmapped)),
+                ", ".join(sorted(unmapped)[:5]) + ("..." if len(unmapped) > 5 else ""),
+            )
             console.print(coverage_table)
             console.print()
 
@@ -109,7 +121,9 @@ def main(output_dir: Path) -> None:
                         score_by_node[node_name] = obj.score
                 for node, state in sorted(evidence.items()):
                     raw = score_by_node.get(node, "?")
-                    ev_table.add_row(node, state, f"{raw:.3f}" if isinstance(raw, float) else str(raw))
+                    ev_table.add_row(
+                        node, state, f"{raw:.3f}" if isinstance(raw, float) else str(raw)
+                    )
                 console.print(ev_table)
 
                 # Forward propagation
@@ -153,8 +167,10 @@ def main(output_dir: Path) -> None:
                             f"{k}: {v:.3f}" for k, v in p.affected_intents.items()
                         )
                         pri_table.add_row(
-                            p.node, p.current_state,
-                            f"{p.impact_delta:.4f}", intents_str,
+                            p.node,
+                            p.current_state,
+                            f"{p.impact_delta:.4f}",
+                            intents_str,
                         )
                     console.print(pri_table)
                 else:
@@ -171,26 +187,34 @@ def main(output_dir: Path) -> None:
             # Backward diagnosis: what causes high aggregation risk?
             if "aggregation_intent" not in global_evidence:
                 diag = backward_diagnose(
-                    network, {"aggregation_intent": "high"},
+                    network,
+                    {"aggregation_intent": "high"},
                 )
-                diag_table = RichTable(title="Root Cause Diagnosis (if aggregation_intent were high)")
+                diag_table = RichTable(
+                    title="Root Cause Diagnosis (if aggregation_intent were high)"
+                )
                 diag_table.add_column("Root Node")
                 diag_table.add_column("P(low)")
                 diag_table.add_column("P(medium)")
                 diag_table.add_column("P(high)")
                 for node in sorted(diag.keys()):
                     d = diag[node]
-                    diag_table.add_row(node, f"{d['low']:.3f}", f"{d['medium']:.3f}", f"{d['high']:.3f}")
+                    diag_table.add_row(
+                        node, f"{d['low']:.3f}", f"{d['medium']:.3f}", f"{d['high']:.3f}"
+                    )
                 console.print(diag_table)
 
             # What-if: fix the highest-priority node globally
             global_priorities = compute_network_priorities(network, global_evidence)
             if global_priorities:
                 top = global_priorities[0]
-                console.print(f"\n[bold]What-if: Fix [cyan]{top.node}[/cyan] from {top.current_state} → low[/bold]")
+                console.print(
+                    f"\n[bold]What-if: Fix [cyan]{top.node}[/cyan] from {top.current_state} → low[/bold]"
+                )
                 remaining = {k: v for k, v in global_evidence.items() if k != top.node}
                 wi = what_if_analysis(
-                    network, remaining,
+                    network,
+                    remaining,
                     intervention={top.node: "low"},
                 )
                 for intent, dist in sorted(wi.items()):
@@ -242,17 +266,15 @@ def main(output_dir: Path) -> None:
                     console.print(f"  Worst: {', '.join(tf.example_columns)}")
 
             # Show a few at-risk columns
-            at_risk = [
-                (t, c) for t, c in net_ctx.columns.items()
-                if c.readiness != "ready"
-            ]
+            at_risk = [(t, c) for t, c in net_ctx.columns.items() if c.readiness != "ready"]
             if at_risk:
                 at_risk.sort(key=lambda x: x[1].worst_intent_p_high, reverse=True)
                 console.print(f"\nAt-risk columns ({len(at_risk)}):")
                 for target, col in at_risk[:5]:
                     high_nodes = ", ".join(
                         f"{ne.node_name}={ne.state}({ne.score:.2f})"
-                        for ne in col.node_evidence if ne.state != "low"
+                        for ne in col.node_evidence
+                        if ne.state != "low"
                     )
                     console.print(
                         f"  {target} ({col.readiness}, "

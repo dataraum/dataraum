@@ -109,9 +109,7 @@ class TestQueryAgent:
     ) -> None:
         """SQL snippets should exist from graph execution (graph phase ran before query)."""
         with output_manager.session_scope() as session:
-            count = session.execute(
-                select(func.count()).select_from(SQLSnippetRecord)
-            ).scalar()
+            count = session.execute(select(func.count()).select_from(SQLSnippetRecord)).scalar()
             assert count is not None and count > 0, (
                 "No SQL snippets exist — expected snippets from graph execution"
             )

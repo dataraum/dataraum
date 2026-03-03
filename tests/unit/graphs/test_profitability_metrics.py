@@ -59,7 +59,9 @@ class TestProfitabilityMetricsLoad:
         graph = loader.get_graph(graph_id)
         assert graph is not None
         output_steps = [s for s in graph.steps.values() if s.output_step]
-        assert len(output_steps) == 1, f"{graph_id}: expected 1 output_step, got {len(output_steps)}"
+        assert len(output_steps) == 1, (
+            f"{graph_id}: expected 1 output_step, got {len(output_steps)}"
+        )
 
     @pytest.mark.parametrize("graph_id", PROFITABILITY_GRAPH_IDS)
     def test_requires_technical_quality_filter(self, loader: GraphLoader, graph_id: str) -> None:

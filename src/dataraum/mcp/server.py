@@ -268,9 +268,7 @@ def create_server(output_dir: Path | None = None) -> Server:
             ),
             Tool(
                 name="remove_source",
-                description=(
-                    "Archive a data source. Does not delete analysis history by default."
-                ),
+                description=("Archive a data source. Does not delete analysis history by default."),
                 inputSchema={
                     "type": "object",
                     "required": ["name"],
@@ -346,9 +344,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                     text = await asyncio.to_thread(
                         _analyze, output_dir, path, source_name, callback, gate_mode_arg
                     )
-                    return CallToolResult(
-                        content=[TextContent(type="text", text=text)]
-                    )
+                    return CallToolResult(content=[TextContent(type="text", text=text)])
 
                 return await experimental.run_task(
                     _work,
@@ -503,9 +499,7 @@ def _get_pipeline_progress(manager: Any) -> str | None:
         # Determine currently running phases from dependency graph
         completed_names: set[str] = set()
         cp_result = session.execute(
-            select(PhaseCheckpoint.phase_name).where(
-                PhaseCheckpoint.run_id == running_run.run_id
-            )
+            select(PhaseCheckpoint.phase_name).where(PhaseCheckpoint.run_id == running_run.run_id)
         )
         for row in cp_result:
             completed_names.add(row[0])
@@ -524,10 +518,7 @@ def _get_pipeline_progress(manager: Any) -> str | None:
             labels = [_PHASE_LABELS.get(p, p) for p in running_phases]
             current_detail = f" Current: {', '.join(labels)}."
 
-        return (
-            f"Phase {completed_count} of {total_phases} complete."
-            f"{current_detail}"
-        )
+        return f"Phase {completed_count} of {total_phases} complete.{current_detail}"
 
 
 def _analyze(
@@ -652,14 +643,10 @@ def _get_context(output_dir: Path) -> str:
                         f"- Validated (used at least once): {stats['validated_snippets']}",
                     ]
                     if stats.get("snippets_by_type"):
-                        parts = [
-                            f"{t}: {c}" for t, c in stats["snippets_by_type"].items()
-                        ]
+                        parts = [f"{t}: {c}" for t, c in stats["snippets_by_type"].items()]
                         kb_lines.append(f"- By type: {', '.join(parts)}")
                     if stats.get("cache_hit_rate", 0) > 0:
-                        kb_lines.append(
-                            f"- Cache hit rate: {stats['cache_hit_rate']:.1%}"
-                        )
+                        kb_lines.append(f"- Cache hit rate: {stats['cache_hit_rate']:.1%}")
                     result += "\n".join(kb_lines)
             except Exception:
                 pass  # Snippet stats are non-critical
@@ -759,8 +746,7 @@ def _get_entropy(output_dir: Path, table_name: str | None = None) -> str:
                     for dim_path, score in summary.dimension_scores.items():
                         dim_totals.setdefault(dim_path, []).append(score)
                 dimension_scores = {
-                    dim: sum(scores) / len(scores)
-                    for dim, scores in dim_totals.items()
+                    dim: sum(scores) / len(scores) for dim, scores in dim_totals.items()
                 }
 
             result = format_entropy_summary(
@@ -1100,9 +1086,11 @@ def _discover_sources(output_dir: Path, scan_path: str, recursive: bool) -> str:
         manager = get_manager_for_directory(output_dir)
         try:
             with manager.session_scope() as session:
-                sources = session.execute(
-                    select(Source.name).where(Source.archived_at.is_(None))
-                ).scalars().all()
+                sources = (
+                    session.execute(select(Source.name).where(Source.archived_at.is_(None)))
+                    .scalars()
+                    .all()
+                )
                 existing_names = list(sources)
         finally:
             manager.close()
@@ -1235,11 +1223,14 @@ def _remove_source(output_dir: Path, name: str, purge: bool) -> str:
 
             session.commit()
 
-            return json.dumps({
-                "removed": name,
-                "analysis_preserved": not purge,
-                "message": result.unwrap(),
-            }, indent=2)
+            return json.dumps(
+                {
+                    "removed": name,
+                    "analysis_preserved": not purge,
+                    "message": result.unwrap(),
+                },
+                indent=2,
+            )
     finally:
         manager.close()
 

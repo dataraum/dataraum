@@ -114,19 +114,13 @@ class OutlierRateDetector(EntropyDetector):
         elif outlier_ratio < impact_minimal:
             score = (outlier_ratio / impact_minimal) * score_at_minimal
         elif outlier_ratio < impact_moderate:
-            score = (
-                score_at_minimal
-                + (outlier_ratio - impact_minimal)
-                / (impact_moderate - impact_minimal)
-                * (score_at_moderate - score_at_minimal)
-            )
+            score = score_at_minimal + (outlier_ratio - impact_minimal) / (
+                impact_moderate - impact_minimal
+            ) * (score_at_moderate - score_at_minimal)
         elif outlier_ratio < impact_significant:
-            score = (
-                score_at_moderate
-                + (outlier_ratio - impact_moderate)
-                / (impact_significant - impact_moderate)
-                * (score_at_significant - score_at_moderate)
-            )
+            score = score_at_moderate + (outlier_ratio - impact_moderate) / (
+                impact_significant - impact_moderate
+            ) * (score_at_significant - score_at_moderate)
         else:
             score = min(
                 1.0,

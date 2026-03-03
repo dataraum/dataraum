@@ -348,10 +348,7 @@ class ActionsScreen(Screen[None]):
 
             for action in actions:
                 cols = len(action.affected_columns)
-                node_label = (
-                    f"{action.action} "
-                    f"[dim]({cols} col{'s' if cols != 1 else ''})[/dim]"
-                )
+                node_label = f"{action.action} [dim]({cols} col{'s' if cols != 1 else ''})[/dim]"
                 priority_node.add_leaf(node_label, data=f"action:{action.action}")
 
             priority_node.expand()

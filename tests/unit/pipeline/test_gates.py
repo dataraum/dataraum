@@ -58,9 +58,7 @@ class TestGate:
             gate_id="gate_statistics",
             gate_type="structural",
             blocked_phase="statistics",
-            violations=[
-                GateViolation(dimension="type_fidelity", score=0.6, threshold=0.5)
-            ],
+            violations=[GateViolation(dimension="type_fidelity", score=0.6, threshold=0.5)],
             suggested_actions=[
                 GateAction(
                     index=1,
@@ -215,7 +213,9 @@ class TestBuildGate:
             entropy_state={},
         )
         fix_actions = [a for a in gate.suggested_actions if a.action_type == GateActionType.FIX]
-        fix_all_actions = [a for a in gate.suggested_actions if a.action_type == GateActionType.FIX_ALL]
+        fix_all_actions = [
+            a for a in gate.suggested_actions if a.action_type == GateActionType.FIX_ALL
+        ]
         assert len(fix_actions) == 2  # declare_null_meaning + create_filtered_view
         assert len(fix_all_actions) == 1
         # Skip is still last

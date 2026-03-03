@@ -25,9 +25,7 @@ class TestDiscoverSources:
 
         parquet = tmp_path / "data.parquet"
         conn = duckdb.connect()
-        conn.execute(
-            f"COPY (SELECT 1 AS id, 'test' AS name) TO '{parquet}' (FORMAT PARQUET)"
-        )
+        conn.execute(f"COPY (SELECT 1 AS id, 'test' AS name) TO '{parquet}' (FORMAT PARQUET)")
         conn.close()
 
         result = discover_sources(tmp_path)

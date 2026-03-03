@@ -112,10 +112,16 @@ class TestMultiParentCPD:
         config_with_shift = CptGenerationConfig(pessimistic_shift=0.2, min_probability=0.01)
 
         cpd_no_shift = make_multi_parent_cpd(
-            "child", [("p1", 0.5), ("p2", 0.5)], STATES, config_no_shift,
+            "child",
+            [("p1", 0.5), ("p2", 0.5)],
+            STATES,
+            config_no_shift,
         )
         cpd_with_shift = make_multi_parent_cpd(
-            "child", [("p1", 0.5), ("p2", 0.5)], STATES, config_with_shift,
+            "child",
+            [("p1", 0.5), ("p2", 0.5)],
+            STATES,
+            config_with_shift,
         )
 
         # P(high) should be larger with pessimistic shift for most columns

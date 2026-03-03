@@ -82,9 +82,7 @@ def get_validation_specs_by_tags(tags: list[str], vertical: str) -> list[Validat
     return [spec for spec in all_specs.values() if set(spec.tags) & tag_set]
 
 
-def get_validation_specs_for_cycles(
-    cycle_types: list[str], vertical: str
-) -> list[ValidationSpec]:
+def get_validation_specs_for_cycles(cycle_types: list[str], vertical: str) -> list[ValidationSpec]:
     """Get validation specs relevant to detected cycle types.
 
     Returns specs that either:

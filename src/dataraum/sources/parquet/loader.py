@@ -29,13 +29,8 @@ def _describe_parquet(
 
     Returns list of (column_name, duckdb_type, nullable).
     """
-    rows = conn.execute(
-        f"DESCRIBE SELECT * FROM read_parquet('{file_path}')"
-    ).fetchall()
-    return [
-        (row[0], row[1], row[2] == "YES")
-        for row in rows
-    ]
+    rows = conn.execute(f"DESCRIBE SELECT * FROM read_parquet('{file_path}')").fetchall()
+    return [(row[0], row[1], row[2] == "YES") for row in rows]
 
 
 class ParquetLoader(LoaderBase):

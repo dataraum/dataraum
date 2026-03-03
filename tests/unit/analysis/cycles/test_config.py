@@ -50,7 +50,8 @@ class TestGetCycleTypes:
         assert "journal_entry_cycle" in types["order_to_cash"]["feeds_into"]
         # journal_entry_cycle is a hub — many cycles feed into it
         feeders = [
-            name for name, defn in types.items()
+            name
+            for name, defn in types.items()
             if "journal_entry_cycle" in defn.get("feeds_into", [])
         ]
         assert len(feeders) >= 5

@@ -447,17 +447,24 @@ class TestSnippetLibraryStats:
 
         # Record usages: 2 reused, 1 newly generated
         library.record_usage(
-            execution_id="exec_1", execution_type="graph",
-            usage_type="exact_reuse", snippet_id=s1.snippet_id,
-            match_confidence=1.0, sql_match_ratio=1.0,
+            execution_id="exec_1",
+            execution_type="graph",
+            usage_type="exact_reuse",
+            snippet_id=s1.snippet_id,
+            match_confidence=1.0,
+            sql_match_ratio=1.0,
         )
         library.record_usage(
-            execution_id="exec_1", execution_type="graph",
-            usage_type="exact_reuse", snippet_id=s2.snippet_id,
-            match_confidence=1.0, sql_match_ratio=1.0,
+            execution_id="exec_1",
+            execution_type="graph",
+            usage_type="exact_reuse",
+            snippet_id=s2.snippet_id,
+            match_confidence=1.0,
+            sql_match_ratio=1.0,
         )
         library.record_usage(
-            execution_id="exec_1", execution_type="graph",
+            execution_id="exec_1",
+            execution_type="graph",
             usage_type="newly_generated",
         )
         session.flush()
@@ -477,13 +484,19 @@ class TestSnippetLibraryStats:
         library = SnippetLibrary(session)
 
         library.save_snippet(
-            snippet_type="extract", sql="SELECT 1", description="test",
-            schema_mapping_id="schema_abc", source="graph:test",
+            snippet_type="extract",
+            sql="SELECT 1",
+            description="test",
+            schema_mapping_id="schema_abc",
+            source="graph:test",
             standard_field="revenue",
         )
         library.save_snippet(
-            snippet_type="extract", sql="SELECT 2", description="test",
-            schema_mapping_id="schema_xyz", source="graph:test",
+            snippet_type="extract",
+            sql="SELECT 2",
+            description="test",
+            schema_mapping_id="schema_xyz",
+            source="graph:test",
             standard_field="revenue",
         )
         session.flush()
@@ -503,19 +516,28 @@ class TestSnippetLibraryInvalidation:
         library = SnippetLibrary(session)
 
         s1 = library.save_snippet(
-            snippet_type="extract", sql="SELECT 1", description="test",
-            schema_mapping_id="schema_abc", source="graph:test",
+            snippet_type="extract",
+            sql="SELECT 1",
+            description="test",
+            schema_mapping_id="schema_abc",
+            source="graph:test",
             standard_field="revenue",
         )
         s2 = library.save_snippet(
-            snippet_type="extract", sql="SELECT 2", description="test",
-            schema_mapping_id="schema_abc", source="graph:test",
+            snippet_type="extract",
+            sql="SELECT 2",
+            description="test",
+            schema_mapping_id="schema_abc",
+            source="graph:test",
             standard_field="cost",
         )
         # Different schema - should not be affected
         s3 = library.save_snippet(
-            snippet_type="extract", sql="SELECT 3", description="test",
-            schema_mapping_id="schema_xyz", source="graph:test",
+            snippet_type="extract",
+            sql="SELECT 3",
+            description="test",
+            schema_mapping_id="schema_xyz",
+            source="graph:test",
             standard_field="revenue",
         )
         session.flush()
@@ -546,18 +568,28 @@ class TestSnippetLibraryFindAllForSchema:
         library = SnippetLibrary(session)
 
         library.save_snippet(
-            snippet_type="extract", sql="SELECT 1", description="rev",
-            schema_mapping_id="schema_abc", source="graph:test",
+            snippet_type="extract",
+            sql="SELECT 1",
+            description="rev",
+            schema_mapping_id="schema_abc",
+            source="graph:test",
             standard_field="revenue",
         )
         library.save_snippet(
-            snippet_type="constant", sql="SELECT 30", description="days",
-            schema_mapping_id="schema_abc", source="graph:test",
-            standard_field="days", parameter_value="30",
+            snippet_type="constant",
+            sql="SELECT 30",
+            description="days",
+            schema_mapping_id="schema_abc",
+            source="graph:test",
+            standard_field="days",
+            parameter_value="30",
         )
         library.save_snippet(
-            snippet_type="extract", sql="SELECT 2", description="other",
-            schema_mapping_id="schema_xyz", source="graph:test",
+            snippet_type="extract",
+            sql="SELECT 2",
+            description="other",
+            schema_mapping_id="schema_xyz",
+            source="graph:test",
             standard_field="revenue",
         )
         session.flush()
@@ -570,14 +602,21 @@ class TestSnippetLibraryFindAllForSchema:
         library = SnippetLibrary(session)
 
         library.save_snippet(
-            snippet_type="extract", sql="SELECT 1", description="rev",
-            schema_mapping_id="schema_abc", source="graph:test",
+            snippet_type="extract",
+            sql="SELECT 1",
+            description="rev",
+            schema_mapping_id="schema_abc",
+            source="graph:test",
             standard_field="revenue",
         )
         library.save_snippet(
-            snippet_type="constant", sql="SELECT 30", description="days",
-            schema_mapping_id="schema_abc", source="graph:test",
-            standard_field="days", parameter_value="30",
+            snippet_type="constant",
+            sql="SELECT 30",
+            description="days",
+            schema_mapping_id="schema_abc",
+            source="graph:test",
+            standard_field="days",
+            parameter_value="30",
         )
         session.flush()
 
@@ -594,21 +633,33 @@ class TestSnippetGraphs:
         library = SnippetLibrary(session)
 
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(ar) AS value FROM t",
-            description="AR", schema_mapping_id="s1", source="graph:dso",
-            standard_field="accounts_receivable", statement="balance_sheet",
+            snippet_type="extract",
+            sql="SELECT SUM(ar) AS value FROM t",
+            description="AR",
+            schema_mapping_id="s1",
+            source="graph:dso",
+            standard_field="accounts_receivable",
+            statement="balance_sheet",
             aggregation="end_of_period",
         )
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(rev) AS value FROM t",
-            description="Revenue", schema_mapping_id="s1", source="graph:dso",
-            standard_field="revenue", statement="income_statement",
+            snippet_type="extract",
+            sql="SELECT SUM(rev) AS value FROM t",
+            description="Revenue",
+            schema_mapping_id="s1",
+            source="graph:dso",
+            standard_field="revenue",
+            statement="income_statement",
             aggregation="sum",
         )
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(cost) AS value FROM t",
-            description="Cost", schema_mapping_id="s1", source="graph:margin",
-            standard_field="cost", statement="income_statement",
+            snippet_type="extract",
+            sql="SELECT SUM(cost) AS value FROM t",
+            description="Cost",
+            schema_mapping_id="s1",
+            source="graph:margin",
+            standard_field="cost",
+            statement="income_statement",
             aggregation="sum",
         )
         session.flush()
@@ -626,13 +677,19 @@ class TestSnippetGraphs:
         library = SnippetLibrary(session)
 
         library.save_snippet(
-            snippet_type="extract", sql="SELECT 1", description="a",
-            schema_mapping_id="s1", source="graph:alpha",
+            snippet_type="extract",
+            sql="SELECT 1",
+            description="a",
+            schema_mapping_id="s1",
+            source="graph:alpha",
             standard_field="a",
         )
         library.save_snippet(
-            snippet_type="query", sql="SELECT 2", description="b",
-            schema_mapping_id="s1", source="query:exec_123",
+            snippet_type="query",
+            sql="SELECT 2",
+            description="b",
+            schema_mapping_id="s1",
+            source="query:exec_123",
             standard_field="b",
         )
         session.flush()
@@ -653,20 +710,31 @@ class TestSnippetGraphs:
         library = SnippetLibrary(session)
 
         library.save_snippet(
-            snippet_type="extract", sql="SELECT 1", description="rev",
-            schema_mapping_id="s1", source="graph:dso",
-            standard_field="revenue", statement="income_statement",
+            snippet_type="extract",
+            sql="SELECT 1",
+            description="rev",
+            schema_mapping_id="s1",
+            source="graph:dso",
+            standard_field="revenue",
+            statement="income_statement",
             aggregation="sum",
         )
         library.save_snippet(
-            snippet_type="extract", sql="SELECT 2", description="ar",
-            schema_mapping_id="s1", source="graph:dso",
-            standard_field="accounts_receivable", statement="balance_sheet",
+            snippet_type="extract",
+            sql="SELECT 2",
+            description="ar",
+            schema_mapping_id="s1",
+            source="graph:dso",
+            standard_field="accounts_receivable",
+            statement="balance_sheet",
             aggregation="end_of_period",
         )
         library.save_snippet(
-            snippet_type="constant", sql="SELECT 30", description="days",
-            schema_mapping_id="s1", source="graph:dso",
+            snippet_type="constant",
+            sql="SELECT 30",
+            description="days",
+            schema_mapping_id="s1",
+            source="graph:dso",
             standard_field="days_in_period",
         )
         session.flush()
@@ -687,14 +755,22 @@ class TestSnippetGraphs:
         library = SnippetLibrary(session)
 
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(ar) AS value FROM t",
-            description="AR", schema_mapping_id="s1", source="graph:dso",
-            standard_field="accounts_receivable", statement="balance_sheet",
+            snippet_type="extract",
+            sql="SELECT SUM(ar) AS value FROM t",
+            description="AR",
+            schema_mapping_id="s1",
+            source="graph:dso",
+            standard_field="accounts_receivable",
+            statement="balance_sheet",
         )
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(rev) AS value FROM t",
-            description="Revenue", schema_mapping_id="s1", source="graph:dso",
-            standard_field="revenue", statement="income_statement",
+            snippet_type="extract",
+            sql="SELECT SUM(rev) AS value FROM t",
+            description="Revenue",
+            schema_mapping_id="s1",
+            source="graph:dso",
+            standard_field="revenue",
+            statement="income_statement",
         )
         session.flush()
 
@@ -712,14 +788,22 @@ class TestSnippetGraphs:
         library = SnippetLibrary(session)
 
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(rev) AS value FROM t",
-            description="Revenue", schema_mapping_id="s1", source="graph:revenue",
-            standard_field="revenue", statement="income_statement",
+            snippet_type="extract",
+            sql="SELECT SUM(rev) AS value FROM t",
+            description="Revenue",
+            schema_mapping_id="s1",
+            source="graph:revenue",
+            standard_field="revenue",
+            statement="income_statement",
         )
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(ar) AS value FROM t",
-            description="AR", schema_mapping_id="s1", source="graph:dso",
-            standard_field="accounts_receivable", statement="balance_sheet",
+            snippet_type="extract",
+            sql="SELECT SUM(ar) AS value FROM t",
+            description="AR",
+            schema_mapping_id="s1",
+            source="graph:dso",
+            standard_field="accounts_receivable",
+            statement="balance_sheet",
         )
         session.flush()
 
@@ -736,18 +820,27 @@ class TestSnippetGraphs:
         library = SnippetLibrary(session)
 
         library.save_snippet(
-            snippet_type="extract", sql="SELECT 1", description="a",
-            schema_mapping_id="s1", source="graph:dso",
+            snippet_type="extract",
+            sql="SELECT 1",
+            description="a",
+            schema_mapping_id="s1",
+            source="graph:dso",
             standard_field="revenue",
         )
         library.save_snippet(
-            snippet_type="constant", sql="SELECT 30", description="days",
-            schema_mapping_id="s1", source="graph:dso",
+            snippet_type="constant",
+            sql="SELECT 30",
+            description="days",
+            schema_mapping_id="s1",
+            source="graph:dso",
             standard_field="days_in_period",
         )
         library.save_snippet(
-            snippet_type="extract", sql="SELECT 2", description="cost",
-            schema_mapping_id="s1", source="graph:margin",
+            snippet_type="extract",
+            sql="SELECT 2",
+            description="cost",
+            schema_mapping_id="s1",
+            source="graph:margin",
             standard_field="cost",
         )
         session.flush()
@@ -766,14 +859,22 @@ class TestSnippetGraphs:
         library = SnippetLibrary(session)
 
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(rev)", description="Rev",
-            schema_mapping_id="s1", source="graph:revenue",
-            standard_field="revenue", statement="income_statement",
+            snippet_type="extract",
+            sql="SELECT SUM(rev)",
+            description="Rev",
+            schema_mapping_id="s1",
+            source="graph:revenue",
+            standard_field="revenue",
+            statement="income_statement",
         )
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(ar)", description="AR",
-            schema_mapping_id="s1", source="graph:dso",
-            standard_field="accounts_receivable", statement="balance_sheet",
+            snippet_type="extract",
+            sql="SELECT SUM(ar)",
+            description="AR",
+            schema_mapping_id="s1",
+            source="graph:dso",
+            standard_field="accounts_receivable",
+            statement="balance_sheet",
         )
         session.flush()
 
@@ -793,18 +894,27 @@ class TestSnippetGraphs:
         library = SnippetLibrary(session)
 
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(ar)", description="AR",
-            schema_mapping_id="s1", source="graph:dso",
+            snippet_type="extract",
+            sql="SELECT SUM(ar)",
+            description="AR",
+            schema_mapping_id="s1",
+            source="graph:dso",
             standard_field="accounts_receivable",
         )
         library.save_snippet(
-            snippet_type="extract", sql="SELECT SUM(rev)", description="Rev",
-            schema_mapping_id="s1", source="graph:dso",
+            snippet_type="extract",
+            sql="SELECT SUM(rev)",
+            description="Rev",
+            schema_mapping_id="s1",
+            source="graph:dso",
             standard_field="revenue",
         )
         library.save_snippet(
-            snippet_type="formula", sql="SELECT ar/rev*30", description="DSO",
-            schema_mapping_id="s1", source="graph:dso",
+            snippet_type="formula",
+            sql="SELECT ar/rev*30",
+            description="DSO",
+            schema_mapping_id="s1",
+            source="graph:dso",
             normalized_expression="({A}/{B})*{C}",
         )
         session.flush()
@@ -823,8 +933,11 @@ class TestSnippetGraphs:
         library = SnippetLibrary(session)
 
         library.save_snippet(
-            snippet_type="extract", sql="SELECT 1", description="test",
-            schema_mapping_id="s1", source="graph:test",
+            snippet_type="extract",
+            sql="SELECT 1",
+            description="test",
+            schema_mapping_id="s1",
+            source="graph:test",
             standard_field="revenue",
         )
         session.flush()
@@ -842,9 +955,12 @@ class TestSnippetGraphs:
         # Create 3 separate graphs
         for name in ["alpha", "beta", "gamma"]:
             library.save_snippet(
-                snippet_type="extract", sql=f"SELECT {name}",
-                description=name, schema_mapping_id="s1",
-                source=f"graph:{name}", standard_field=name,
+                snippet_type="extract",
+                sql=f"SELECT {name}",
+                description=name,
+                schema_mapping_id="s1",
+                source=f"graph:{name}",
+                standard_field=name,
                 statement="income_statement",
             )
         session.flush()

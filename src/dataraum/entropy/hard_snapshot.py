@@ -163,15 +163,10 @@ def load_column_analysis(
         analysis_results["semantic"] = semantic_dict
 
     # Relationships (LLM-confirmed only)
-    col = session.execute(
-        select(Column).where(Column.column_id == column_id)
-    ).scalar_one_or_none()
+    col = session.execute(select(Column).where(Column.column_id == column_id)).scalar_one_or_none()
     if col:
         rels_stmt = select(Relationship).where(
-            (
-                (Relationship.from_column_id == column_id)
-                | (Relationship.to_column_id == column_id)
-            )
+            ((Relationship.from_column_id == column_id) | (Relationship.to_column_id == column_id))
             & (Relationship.detection_method == "llm")
         )
         rels = session.execute(rels_stmt).scalars().all()
@@ -180,9 +175,11 @@ def load_column_analysis(
             table_ids_needed = {r.from_table_id for r in rels} | {r.to_table_id for r in rels}
             table_names_map: dict[str, str] = {}
             if table_ids_needed:
-                tables = session.execute(
-                    select(Table).where(Table.table_id.in_(table_ids_needed))
-                ).scalars().all()
+                tables = (
+                    session.execute(select(Table).where(Table.table_id.in_(table_ids_needed)))
+                    .scalars()
+                    .all()
+                )
                 table_names_map = {t.table_id: t.table_name for t in tables}
 
             rel_dicts = []
@@ -201,11 +198,13 @@ def load_column_analysis(
                 )
             analysis_results["relationships"] = rel_dicts
 
-    # Correlation (derived columns)
-    dc = session.execute(
-        select(DerivedColumn).where(DerivedColumn.derived_column_id == column_id)
-    ).scalar_one_or_none()
-    if dc and col:
+    # Correlation (derived columns) — a column may have multiple DerivedColumn rows
+    dcs = (
+        session.execute(select(DerivedColumn).where(DerivedColumn.derived_column_id == column_id))
+        .scalars()
+        .all()
+    )
+    if dcs and col:
         analysis_results["correlation"] = {
             "derived_columns": [
                 {
@@ -215,6 +214,7 @@ def load_column_analysis(
                     "derivation_type": dc.derivation_type,
                     "source_column_ids": dc.source_column_ids or [],
                 }
+                for dc in dcs
             ]
         }
 
@@ -226,18 +226,14 @@ def load_column_analysis(
         col_name = col.column_name
         # Find slice tables for this table
         slice_defs = (
-            session.execute(
-                select(SliceDefinition).where(SliceDefinition.table_id == table_id)
-            )
+            session.execute(select(SliceDefinition).where(SliceDefinition.table_id == table_id))
             .scalars()
             .all()
         )
         col_name_map = {c.column_id: c.column_name for c in [col]}
         # Load all columns in the table for name resolution
         all_cols = (
-            session.execute(select(Column).where(Column.table_id == table_id))
-            .scalars()
-            .all()
+            session.execute(select(Column).where(Column.table_id == table_id)).scalars().all()
         )
         col_name_map = {c.column_id: c.column_name for c in all_cols}
 

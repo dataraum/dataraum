@@ -46,7 +46,10 @@ class TestForwardDirection:
     def test_preserves_original_metrics(self):
         candidates = [
             _make_candidate(
-                "trial_balance", "chart_of_accounts", "account_id", "id",
+                "trial_balance",
+                "chart_of_accounts",
+                "account_id",
+                "id",
                 cardinality="one-to-many",
                 left_ri=1.0,
                 right_ri=0.85,
@@ -68,7 +71,10 @@ class TestReverseDirection:
     def test_flips_one_to_many_to_many_to_one(self):
         candidates = [
             _make_candidate(
-                "trial_balance", "chart_of_accounts", "account_id", "id",
+                "trial_balance",
+                "chart_of_accounts",
+                "account_id",
+                "id",
                 cardinality="one-to-many",
             )
         ]
@@ -80,7 +86,10 @@ class TestReverseDirection:
     def test_flips_many_to_one_to_one_to_many(self):
         candidates = [
             _make_candidate(
-                "payments", "invoices", "invoice_id", "id",
+                "payments",
+                "invoices",
+                "invoice_id",
+                "id",
                 cardinality="many-to-one",
             )
         ]
@@ -92,7 +101,10 @@ class TestReverseDirection:
     def test_swaps_left_right_ri(self):
         candidates = [
             _make_candidate(
-                "trial_balance", "chart_of_accounts", "account_id", "id",
+                "trial_balance",
+                "chart_of_accounts",
+                "account_id",
+                "id",
                 left_ri=1.0,
                 right_ri=0.85,
             )
@@ -106,7 +118,10 @@ class TestReverseDirection:
     def test_omits_introduces_duplicates(self):
         candidates = [
             _make_candidate(
-                "trial_balance", "chart_of_accounts", "account_id", "id",
+                "trial_balance",
+                "chart_of_accounts",
+                "account_id",
+                "id",
                 introduces_duplicates=True,
             )
         ]
@@ -119,9 +134,7 @@ class TestReverseDirection:
 class TestSymmetricCardinalities:
     @pytest.mark.parametrize("card", ["one-to-one", "many-to-many"])
     def test_symmetric_cardinality_unchanged_in_reverse(self, card: str):
-        candidates = [
-            _make_candidate("a", "b", "col_a", "col_b", cardinality=card)
-        ]
+        candidates = [_make_candidate("a", "b", "col_a", "col_b", cardinality=card)]
         lookup = _build_candidate_metrics_lookup(candidates)
 
         assert lookup[("a", "col_a", "b", "col_b")]["cardinality"] == card
@@ -134,9 +147,7 @@ class TestEdgeCases:
         assert _build_candidate_metrics_lookup(None) == {}
 
     def test_missing_optional_fields_no_error(self):
-        candidates = [
-            _make_candidate("a", "b", "col_a", "col_b", cardinality="one-to-many")
-        ]
+        candidates = [_make_candidate("a", "b", "col_a", "col_b", cardinality="one-to-many")]
         lookup = _build_candidate_metrics_lookup(candidates)
         forward = lookup[("a", "col_a", "b", "col_b")]
         reverse = lookup[("b", "col_b", "a", "col_a")]
@@ -151,7 +162,10 @@ class TestEdgeCases:
         """Mutating one direction must not affect the other."""
         candidates = [
             _make_candidate(
-                "a", "b", "col_a", "col_b",
+                "a",
+                "b",
+                "col_a",
+                "col_b",
                 cardinality="one-to-many",
                 left_ri=1.0,
                 right_ri=0.5,

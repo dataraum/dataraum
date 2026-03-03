@@ -42,9 +42,7 @@ def two_csv_sources(tmp_path: Path) -> tuple[Path, Path]:
     """Create two CSV files in separate directories simulating two sources."""
     dir_a = tmp_path / "bookings"
     dir_a.mkdir()
-    (dir_a / "orders.csv").write_text(
-        "order_id,customer,amount\n1,Alice,100\n2,Bob,200\n"
-    )
+    (dir_a / "orders.csv").write_text("order_id,customer,amount\n1,Alice,100\n2,Bob,200\n")
 
     dir_b = tmp_path / "products"
     dir_b.mkdir()
@@ -78,18 +76,14 @@ def sqlite_source(tmp_path: Path) -> Path:
     """Create a SQLite database with test tables."""
     db_path = tmp_path / "warehouse.db"
     conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "CREATE TABLE customers (id INTEGER, name TEXT, email TEXT, active INTEGER)"
-    )
+    conn.execute("CREATE TABLE customers (id INTEGER, name TEXT, email TEXT, active INTEGER)")
     conn.execute(
         "INSERT INTO customers VALUES (1, 'Alice', 'alice@example.com', 1), "
         "(2, 'Bob', 'bob@example.com', 1), "
         "(3, 'Charlie', 'charlie@example.com', 0)"
     )
     conn.execute("CREATE TABLE regions (region_id INTEGER, region_name TEXT)")
-    conn.execute(
-        "INSERT INTO regions VALUES (1, 'North'), (2, 'South')"
-    )
+    conn.execute("INSERT INTO regions VALUES (1, 'North'), (2, 'South')")
     conn.commit()
     conn.close()
     return db_path
@@ -151,30 +145,26 @@ class TestMultiSourceImport:
         assert len(result.outputs["raw_tables"]) == 2
 
         # Verify tables have prefixed names
-        tables = session.execute(
-            select(Table).where(Table.source_id == source_id, Table.layer == "raw")
-        ).scalars().all()
+        tables = (
+            session.execute(select(Table).where(Table.source_id == source_id, Table.layer == "raw"))
+            .scalars()
+            .all()
+        )
         table_names = {t.table_name for t in tables}
         assert "bookings__orders" in table_names
         assert "products__catalog" in table_names
 
         # Verify DuckDB has the renamed tables
-        duckdb_tables = {
-            row[0] for row in duckdb_conn.execute("SHOW TABLES").fetchall()
-        }
+        duckdb_tables = {row[0] for row in duckdb_conn.execute("SHOW TABLES").fetchall()}
         assert "bookings__orders" in duckdb_tables
         assert "products__catalog" in duckdb_tables
 
         # Verify data is intact
-        rows = duckdb_conn.execute(
-            'SELECT count(*) FROM "bookings__orders"'
-        ).fetchone()
+        rows = duckdb_conn.execute('SELECT count(*) FROM "bookings__orders"').fetchone()
         assert rows is not None
         assert rows[0] == 2
 
-        rows = duckdb_conn.execute(
-            'SELECT count(*) FROM "products__catalog"'
-        ).fetchone()
+        rows = duckdb_conn.execute('SELECT count(*) FROM "products__catalog"').fetchone()
         assert rows is not None
         assert rows[0] == 3
 
@@ -207,9 +197,7 @@ class TestMultiSourceImport:
 
         # 3 columns from orders + 3 columns from catalog = 6 total
         total_cols = session.execute(
-            select(func.count(Column.column_id))
-            .join(Table)
-            .where(Table.source_id == source_id)
+            select(func.count(Column.column_id)).join(Table).where(Table.source_id == source_id)
         ).scalar_one()
         assert total_cols == 6
 
@@ -324,9 +312,11 @@ class TestMultiSourceImport:
         session.commit()
 
         assert result.status == PhaseStatus.COMPLETED
-        tables = session.execute(
-            select(Table).where(Table.source_id == source_id, Table.layer == "raw")
-        ).scalars().all()
+        tables = (
+            session.execute(select(Table).where(Table.source_id == source_id, Table.layer == "raw"))
+            .scalars()
+            .all()
+        )
         # No prefix — legacy mode uses the file stem directly
         assert tables[0].table_name == "orders"
 
@@ -461,23 +451,25 @@ class TestParquetSource:
         assert len(result.outputs["raw_tables"]) == 1
 
         # Verify prefixed table name
-        tables = session.execute(
-            select(Table).where(Table.source_id == source_id, Table.layer == "raw")
-        ).scalars().all()
+        tables = (
+            session.execute(select(Table).where(Table.source_id == source_id, Table.layer == "raw"))
+            .scalars()
+            .all()
+        )
         assert len(tables) == 1
         assert tables[0].table_name == "analytics__metrics"
 
         # Verify data accessible in DuckDB
-        rows = duckdb_conn.execute(
-            'SELECT count(*) FROM "analytics__metrics"'
-        ).fetchone()
+        rows = duckdb_conn.execute('SELECT count(*) FROM "analytics__metrics"').fetchone()
         assert rows is not None
         assert rows[0] == 3
 
         # Verify columns have native types (not VARCHAR like CSV)
-        columns = session.execute(
-            select(Column).where(Column.table_id == tables[0].table_id)
-        ).scalars().all()
+        columns = (
+            session.execute(select(Column).where(Column.table_id == tables[0].table_id))
+            .scalars()
+            .all()
+        )
         col_types = {c.column_name: c.raw_type for c in columns}
         assert col_types["metric_id"] != "VARCHAR"  # Should be INTEGER/BIGINT
         assert col_types["value"] != "VARCHAR"  # Should be DOUBLE/FLOAT
@@ -528,30 +520,30 @@ class TestSQLiteSource:
         assert len(result.outputs["raw_tables"]) == 2
 
         # Verify prefixed table names
-        tables = session.execute(
-            select(Table).where(Table.source_id == source_id, Table.layer == "raw")
-        ).scalars().all()
+        tables = (
+            session.execute(select(Table).where(Table.source_id == source_id, Table.layer == "raw"))
+            .scalars()
+            .all()
+        )
         table_names = {t.table_name for t in tables}
         assert table_names == {"warehouse__customers", "warehouse__regions"}
 
         # Verify data accessible in DuckDB
-        rows = duckdb_conn.execute(
-            'SELECT count(*) FROM "warehouse__customers"'
-        ).fetchone()
+        rows = duckdb_conn.execute('SELECT count(*) FROM "warehouse__customers"').fetchone()
         assert rows is not None
         assert rows[0] == 3
 
-        rows = duckdb_conn.execute(
-            'SELECT count(*) FROM "warehouse__regions"'
-        ).fetchone()
+        rows = duckdb_conn.execute('SELECT count(*) FROM "warehouse__regions"').fetchone()
         assert rows is not None
         assert rows[0] == 2
 
         # Verify Column records created
         for table in tables:
-            cols = session.execute(
-                select(Column).where(Column.table_id == table.table_id)
-            ).scalars().all()
+            cols = (
+                session.execute(select(Column).where(Column.table_id == table.table_id))
+                .scalars()
+                .all()
+            )
             assert len(cols) > 0
 
     def test_sqlite_table_filter(
@@ -594,9 +586,11 @@ class TestSQLiteSource:
         assert result.status == PhaseStatus.COMPLETED
         assert len(result.outputs["raw_tables"]) == 1
 
-        tables = session.execute(
-            select(Table).where(Table.source_id == source_id, Table.layer == "raw")
-        ).scalars().all()
+        tables = (
+            session.execute(select(Table).where(Table.source_id == source_id, Table.layer == "raw"))
+            .scalars()
+            .all()
+        )
         assert len(tables) == 1
         assert tables[0].table_name == "warehouse__customers"
 
@@ -639,9 +633,11 @@ class TestSourceCombinations:
         assert result.status == PhaseStatus.COMPLETED, f"Failed: {result.error}"
         assert len(result.outputs["raw_tables"]) == 2
 
-        tables = session.execute(
-            select(Table).where(Table.source_id == source_id, Table.layer == "raw")
-        ).scalars().all()
+        tables = (
+            session.execute(select(Table).where(Table.source_id == source_id, Table.layer == "raw"))
+            .scalars()
+            .all()
+        )
         table_names = {t.table_name for t in tables}
         assert "bookings__orders" in table_names
         assert "analytics__metrics" in table_names
@@ -694,9 +690,11 @@ class TestSourceCombinations:
         # 2 CSV + 1 Parquet + 2 SQLite tables = 5 total
         assert len(result.outputs["raw_tables"]) == 5
 
-        tables = session.execute(
-            select(Table).where(Table.source_id == source_id, Table.layer == "raw")
-        ).scalars().all()
+        tables = (
+            session.execute(select(Table).where(Table.source_id == source_id, Table.layer == "raw"))
+            .scalars()
+            .all()
+        )
         table_names = {t.table_name for t in tables}
         assert table_names == {
             "bookings__orders",
@@ -713,26 +711,20 @@ class TestSourceCombinations:
         # All tables have columns
         for table in tables:
             col_count = session.execute(
-                select(func.count(Column.column_id)).where(
-                    Column.table_id == table.table_id
-                )
+                select(func.count(Column.column_id)).where(Column.table_id == table.table_id)
             ).scalar_one()
             assert col_count > 0, f"Table {table.table_name} has no columns"
 
         # Verify total column count:
         # orders(3) + catalog(3) + metrics(3) + customers(4) + regions(2) = 15
         total_cols = session.execute(
-            select(func.count(Column.column_id))
-            .join(Table)
-            .where(Table.source_id == source_id)
+            select(func.count(Column.column_id)).join(Table).where(Table.source_id == source_id)
         ).scalar_one()
         assert total_cols == 15
 
         # All 5 DuckDB tables queryable
         for name in table_names:
-            count = duckdb_conn.execute(
-                f'SELECT count(*) FROM "{name}"'
-            ).fetchone()
+            count = duckdb_conn.execute(f'SELECT count(*) FROM "{name}"').fetchone()
             assert count is not None
             assert count[0] > 0, f"DuckDB table {name} is empty"
 
@@ -773,19 +765,17 @@ class TestSourceCombinations:
         assert result.status == PhaseStatus.COMPLETED, f"Failed: {result.error}"
         assert len(result.outputs["raw_tables"]) == 2
 
-        tables = session.execute(
-            select(Table).where(Table.source_id == source_id, Table.layer == "raw")
-        ).scalars().all()
+        tables = (
+            session.execute(select(Table).where(Table.source_id == source_id, Table.layer == "raw"))
+            .scalars()
+            .all()
+        )
         table_names = {t.table_name for t in tables}
         # Prefix prevents collision
         assert table_names == {"alpha__data", "beta__data"}
 
         # Different row counts prove they're distinct tables
-        alpha_count = duckdb_conn.execute(
-            'SELECT count(*) FROM "alpha__data"'
-        ).fetchone()
-        beta_count = duckdb_conn.execute(
-            'SELECT count(*) FROM "beta__data"'
-        ).fetchone()
+        alpha_count = duckdb_conn.execute('SELECT count(*) FROM "alpha__data"').fetchone()
+        beta_count = duckdb_conn.execute('SELECT count(*) FROM "beta__data"').fetchone()
         assert alpha_count is not None and alpha_count[0] == 2
         assert beta_count is not None and beta_count[0] == 1

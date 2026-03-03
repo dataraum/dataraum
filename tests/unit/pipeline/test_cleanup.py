@@ -146,12 +146,16 @@ class TestCleanupBusinessCycles:
         assert count >= 2  # cycle + checkpoint
 
         # Other source's cycle should remain
-        remaining = session.query(DetectedBusinessCycle).filter_by(source_id=other_source.source_id).all()
+        remaining = (
+            session.query(DetectedBusinessCycle).filter_by(source_id=other_source.source_id).all()
+        )
         assert len(remaining) == 1
 
 
 class TestCleanupCheckpoint:
-    def test_always_deletes_checkpoint(self, session: Session, duck: duckdb.DuckDBPyConnection) -> None:
+    def test_always_deletes_checkpoint(
+        self, session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
         """Cleanup always deletes PhaseCheckpoint for the phase+source, even if no other data."""
         source = _make_source(session)
         _make_checkpoint(session, source.source_id, "statistics")

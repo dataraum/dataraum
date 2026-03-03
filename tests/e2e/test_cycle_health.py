@@ -25,9 +25,7 @@ class TestCycleHealth:
         self, pipeline_run: RunResult, metadata_session: Session
     ) -> None:
         """Health report should contain scores for detected cycles."""
-        report = compute_cycle_health(
-            metadata_session, pipeline_run.source_id, vertical="finance"
-        )
+        report = compute_cycle_health(metadata_session, pipeline_run.source_id, vertical="finance")
 
         assert report.source_id == pipeline_run.source_id
         assert len(report.cycle_scores) > 0, "No cycle health scores produced"
@@ -36,15 +34,10 @@ class TestCycleHealth:
         self, pipeline_run: RunResult, metadata_session: Session
     ) -> None:
         """Each cycle should have a composite score (or at least one signal)."""
-        report = compute_cycle_health(
-            metadata_session, pipeline_run.source_id, vertical="finance"
-        )
+        report = compute_cycle_health(metadata_session, pipeline_run.source_id, vertical="finance")
 
         for score in report.cycle_scores:
-            has_signal = (
-                score.completion_rate is not None
-                or score.validation_pass_rate is not None
-            )
+            has_signal = score.completion_rate is not None or score.validation_pass_rate is not None
             assert has_signal, (
                 f"Cycle '{score.cycle_name}' ({score.canonical_type}) "
                 f"has neither completion_rate nor validation_pass_rate"
@@ -56,9 +49,7 @@ class TestCycleHealth:
         self, pipeline_run: RunResult, metadata_session: Session
     ) -> None:
         """Composite scores should be between 0 and 1."""
-        report = compute_cycle_health(
-            metadata_session, pipeline_run.source_id, vertical="finance"
-        )
+        report = compute_cycle_health(metadata_session, pipeline_run.source_id, vertical="finance")
 
         for score in report.cycle_scores:
             if score.composite_score is not None:
@@ -70,9 +61,7 @@ class TestCycleHealth:
         self, pipeline_run: RunResult, metadata_session: Session
     ) -> None:
         """Overall health should be between 0 and 1 when cycles exist."""
-        report = compute_cycle_health(
-            metadata_session, pipeline_run.source_id, vertical="finance"
-        )
+        report = compute_cycle_health(metadata_session, pipeline_run.source_id, vertical="finance")
 
         if report.cycle_scores:
             assert report.overall_health is not None

@@ -103,9 +103,7 @@ class TestGateHandlerAtDeadlock:
 
     def test_skip_resolution_unblocks_phase(self):
         """SKIP resolution should remove phase from gate_blocked."""
-        handler = RecordingHandler(
-            GateResolution(action_taken=GateActionType.SKIP)
-        )
+        handler = RecordingHandler(GateResolution(action_taken=GateActionType.SKIP))
         pipeline = self._setup_pipeline(handler)
 
         # Verify the gate is blocked before
@@ -130,9 +128,7 @@ class TestGateHandlerAtDeadlock:
 
     def test_fix_resolution_rechecks_gates(self):
         """FIX resolution should trigger re-checking of all gates."""
-        handler = RecordingHandler(
-            GateResolution(action_taken=GateActionType.FIX)
-        )
+        handler = RecordingHandler(GateResolution(action_taken=GateActionType.FIX))
         pipeline = self._setup_pipeline(handler)
 
         # After fix, if scores improve, gate should pass
@@ -157,9 +153,7 @@ class TestGateHandlerAtDeadlock:
 
     def test_handler_receives_correct_gate_data(self):
         """Handler should receive a properly constructed Gate."""
-        handler = RecordingHandler(
-            GateResolution(action_taken=GateActionType.SKIP)
-        )
+        handler = RecordingHandler(GateResolution(action_taken=GateActionType.SKIP))
 
         from dataraum.pipeline.gates import build_gate
 

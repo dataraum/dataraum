@@ -118,7 +118,9 @@ def run(
     try:
         resolved_gate_mode = GateMode(gate_mode)
     except ValueError:
-        console.print(f"[red]Error: Invalid gate mode: {gate_mode}. Use: skip, pause, fail, auto_fix[/red]")
+        console.print(
+            f"[red]Error: Invalid gate mode: {gate_mode}. Use: skip, pause, fail, auto_fix[/red]"
+        )
         raise typer.Exit(1) from None
 
     # Validate --force flag
@@ -222,9 +224,7 @@ def run(
 
             # Latest entropy scores
             if s["latest_scores"]:
-                scores_str = ", ".join(
-                    f"{d}={v:.3f}" for d, v in s["latest_scores"].items()
-                )
+                scores_str = ", ".join(f"{d}={v:.3f}" for d, v in s["latest_scores"].items())
                 lines.append(f"  entropy: {scores_str}")
 
             # Latest gate info
@@ -349,7 +349,9 @@ def run(
                             cur = v.get("current", 0)
                             thr = v.get("threshold", 0)
                             if cur < 0:
-                                parts.append(f"{dim} [red]✗[/red] (not yet measured, needs {thr:.2f})")
+                                parts.append(
+                                    f"{dim} [red]✗[/red] (not yet measured, needs {thr:.2f})"
+                                )
                             else:
                                 parts.append(f"{dim} [red]✗[/red] ({cur:.2f} > {thr:.2f})")
                         if parts:
@@ -384,13 +386,17 @@ def run(
 
         # Gate Summary
         if run_result.gate_events:
-            total_gates = sum(1 for g in run_result.gate_events if g.get("event_type") == "gate_evaluated")
+            total_gates = sum(
+                1 for g in run_result.gate_events if g.get("event_type") == "gate_evaluated"
+            )
             passed_gates = sum(
-                1 for g in run_result.gate_events
+                1
+                for g in run_result.gate_events
                 if g.get("event_type") == "gate_evaluated" and g.get("gate_status") == "passed"
             )
             blocked_gates = sum(
-                1 for g in run_result.gate_events
+                1
+                for g in run_result.gate_events
                 if g.get("event_type") in ("gate_evaluated", "gate_blocked")
                 and g.get("gate_status") in ("blocked", "skipped")
             )

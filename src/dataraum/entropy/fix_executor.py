@@ -37,6 +37,9 @@ class ActionDefinition:
     hard_verifiable: bool  # Whether before/after hard scores can be compared
     parameters_schema: dict[str, str] = field(default_factory=dict)  # param_name -> description
 
+    # Full dimension paths this action improves (e.g., ["structural.types.type_fidelity"])
+    improves_dimensions: list[str] = field(default_factory=list)
+
     # The actual executor function
     # Signature: (session, duckdb_conn, target, parameters) -> dict[str, Any]
     executor: Callable[..., dict[str, Any]] | None = None

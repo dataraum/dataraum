@@ -307,6 +307,7 @@ def get_seed_actions() -> list[ActionDefinition]:
                 "target_type": "The new type (e.g., DECIMAL(10,2))",
                 "reason": "Why this override was applied",
             },
+            improves_dimensions=["structural.types.type_fidelity"],
             executor=execute_override_type,
         ),
         ActionDefinition(
@@ -315,6 +316,7 @@ def get_seed_actions() -> list[ActionDefinition]:
             description="Declare or update a column's unit",
             hard_verifiable=False,
             parameters_schema={"unit": "The unit (e.g., EUR, kg)"},
+            improves_dimensions=["semantic.units.unit_declaration"],
             executor=execute_declare_unit,
         ),
         ActionDefinition(
@@ -323,6 +325,7 @@ def get_seed_actions() -> list[ActionDefinition]:
             description="Add a human-readable business name to a column",
             hard_verifiable=False,
             parameters_schema={"business_name": "The business name"},
+            improves_dimensions=["semantic.business_meaning.naming_clarity"],
             executor=execute_add_business_name,
         ),
         ActionDefinition(
@@ -331,6 +334,7 @@ def get_seed_actions() -> list[ActionDefinition]:
             description="Document what null values mean for a column",
             hard_verifiable=False,
             parameters_schema={"meaning": "What nulls mean"},
+            improves_dimensions=["value.nulls.null_ratio"],
             executor=execute_declare_null_meaning,
         ),
         ActionDefinition(
@@ -339,6 +343,10 @@ def get_seed_actions() -> list[ActionDefinition]:
             description="Confirm an auto-detected relationship",
             hard_verifiable=False,
             parameters_schema={"relationship_id": "The relationship ID"},
+            improves_dimensions=[
+                "structural.relations.relationship_quality",
+                "structural.relations.join_path_determinism",
+            ],
             executor=execute_confirm_relationship,
         ),
         ActionDefinition(
@@ -350,6 +358,10 @@ def get_seed_actions() -> list[ActionDefinition]:
                 "filter_sql": "SQL WHERE clause",
                 "view_name": "Name for the view",
             },
+            improves_dimensions=[
+                "value.nulls.null_ratio",
+                "value.outliers.outlier_rate",
+            ],
             executor=execute_create_filtered_view,
         ),
     ]

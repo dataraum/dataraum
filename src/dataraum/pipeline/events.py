@@ -23,6 +23,7 @@ class EventType(str, Enum):
     GATE_BLOCKED = "gate_blocked"
     GATE_RESOLVED = "gate_resolved"
     FIX_APPLIED = "fix_applied"
+    EXIT_CHECK = "exit_check"
     PIPELINE_STARTED = "pipeline_started"
     PIPELINE_COMPLETED = "pipeline_completed"
 

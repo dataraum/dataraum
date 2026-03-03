@@ -126,3 +126,53 @@ class PhaseCheckpoint(Base):
 Index("idx_checkpoint_run_phase", PhaseCheckpoint.run_id, PhaseCheckpoint.phase_name)
 # Composite index for source-based checkpoint queries
 Index("idx_checkpoint_source_phase", PhaseCheckpoint.source_id, PhaseCheckpoint.phase_name)
+
+
+class PhaseLog(Base):
+    """Append-only observability log for phase executions.
+
+    Unlike PhaseCheckpoint (which tracks resume state), PhaseLog provides
+    a historical record of every phase execution for observability.
+    """
+
+    __tablename__ = "phase_logs"
+
+    log_id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid4())
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("pipeline_runs.run_id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    phase_name: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)  # completed | failed | skipped
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    error: Mapped[str | None] = mapped_column(String)
+    entropy_scores: Mapped[dict[str, float] | None] = mapped_column(JSON)
+
+
+class Fix(Base):
+    """Persistent, replayable fix record.
+
+    Fixes are applied after specific phases complete. They are replayed
+    on subsequent pipeline runs to maintain data corrections.
+    """
+
+    __tablename__ = "fixes"
+
+    fix_id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid4())
+    )
+    source_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    action_type: Mapped[str] = mapped_column(String, nullable=False)
+    target: Mapped[str] = mapped_column(String, nullable=False)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    after_phase: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(UTC)
+    )
+    last_applied_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_applied_run_id: Mapped[str | None] = mapped_column(String)

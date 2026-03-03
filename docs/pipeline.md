@@ -1,6 +1,6 @@
 # Pipeline
 
-The DataRaum pipeline extracts metadata from CSV and Parquet files through 19 phases (20 exist, 1 de-configured by default). Each phase produces structured metadata stored in SQLite (metadata) and DuckDB (data). Phases declare their dependencies and execute in topological order with parallel execution where possible.
+The DataRaum pipeline extracts metadata from CSV and Parquet files through 20 phases (21 exist, 1 de-configured by default). Each phase produces structured metadata stored in SQLite (metadata) and DuckDB (data). Phases declare their dependencies and execute in topological order with parallel execution where possible.
 
 ## Running the Pipeline
 
@@ -50,16 +50,17 @@ ctx = Context("./pipeline_output")
 | — | ~~cross_table_quality~~ | Cross-table correlation analysis (de-configured) | — | — |
 | 10 | **enriched_views** | Fact + dimension joined views | — | — |
 | 11 | **slicing** | Identify slice dimensions for analysis | Yes | — |
-| 12 | **slice_analysis** | Execute slicing SQL, build slice tables | — | — |
-| 13 | **temporal_slice_analysis** | Distribution drift across slices over time | — | — |
-| 14 | **quality_summary** | Synthesize quality report per table | Yes | — |
-| 15 | **entropy** | Measure uncertainty across 4 dimensions | — | — |
-| 16 | **entropy_interpretation** | LLM interpretation of entropy scores | Yes | — |
-| 17 | **business_cycles** | Detect business processes across tables | Yes | — |
-| 18 | **validation** | Domain-specific validation checks | Yes | — |
-| 19 | **graph_execution** | Execute metric calculation graphs | Yes | type_fidelity ≤ 0.3, naming_clarity ≤ 0.4 |
+| 12 | **slicing_view** | Create enriched views projected to slice-relevant columns | — | — |
+| 13 | **slice_analysis** | Execute slicing SQL, build slice tables | — | — |
+| 14 | **temporal_slice_analysis** | Distribution drift across slices over time | — | — |
+| 15 | **quality_summary** | Synthesize quality report per table | Yes | — |
+| 16 | **entropy** | Measure uncertainty across 4 dimensions | — | — |
+| 17 | **entropy_interpretation** | LLM interpretation of entropy scores | Yes | — |
+| 18 | **business_cycles** | Detect business processes across tables | Yes | — |
+| 19 | **validation** | Domain-specific validation checks | Yes | — |
+| 20 | **graph_execution** | Execute metric calculation graphs | Yes | type_fidelity ≤ 0.3, naming_clarity ≤ 0.4 |
 
-7 of 19 active phases require an LLM.
+7 of 20 active phases require an LLM.
 
 ## Phase Categories
 
@@ -69,7 +70,7 @@ ctx = Context("./pipeline_output")
 ### Profiling Layer (Phases 3–8)
 Statistical profiling, temporal analysis, correlation detection, relationship discovery, and quality checks. These phases are purely computational — no LLM calls.
 
-### Enrichment Layer (Phases 9–15)
+### Enrichment Layer (Phases 9–14)
 LLM-powered semantic analysis assigns business meaning to columns. Enriched views join fact and dimension tables. Slicing identifies meaningful data segments for deeper analysis.
 
 ### Quality Layer (Phases 15–17)

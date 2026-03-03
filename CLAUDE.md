@@ -65,6 +65,20 @@ Do NOT:
 - Understand WHAT the test expects and WHY
 - Only modify the test if you can articulate why the test's expectation is incorrect
 
+## Branching & Pull Requests
+
+All work happens on feature branches, never directly on `main`.
+
+### Branch naming
+Use `type/description` where type is one of: `feat`, `fix`, `refactor`, `docs`, `chore`, `test`.
+Examples: `feat/bayesian-network`, `fix/cpt-ordering`, `refactor/streamline`.
+
+### Workflow
+1. **Before starting work**: if on `main`, ask the user before creating a feature branch.
+2. **During work**: commit after each verified phase (tests green).
+3. **When done**: create a PR to `main` via `gh pr create` (only when the user asks).
+4. **Never push directly to `main`.**
+
 ## Work Decomposition Protocol
 
 ### Task Sizing
@@ -72,9 +86,9 @@ Before starting any work item, classify it:
 
 | Size | Definition | Approach |
 |------|-----------|----------|
-| **S** | 1-3 files, <50 lines changed | Direct implementation, no plan needed |
-| **M** | 3-8 files, <200 lines changed | Use Plan Mode, single session |
-| **L** | 8+ files or 200+ lines | Linear document linked to issue, phased execution |
+| **S** | 1-3 files, <50 lines changed | Feature branch, direct implementation, no plan needed |
+| **M** | 3-8 files, <200 lines changed | Feature branch, Plan Mode, single session |
+| **L** | 8+ files or 200+ lines | Feature branch, Linear document linked to issue, phased execution |
 | **XL** | Spans multiple modules or repos | Plan approval required, integration branch, phased PRs |
 
 ### For M/L/XL tasks: mandatory plan structure
@@ -90,7 +104,7 @@ Plans live as Linear documents (linked to the relevant Linear issue) and must in
 - Each phase MUST leave ALL tests green — no half-done states
 - Commit after each verified phase
 - Never start phase N+1 until phase N passes all checks
-- For L/XL: use integration branch, PR per phase into it
+- For L/XL: use a long-lived feature branch, PR per phase into it
 
 ### Boundaries — Scope Creep Prevention
 Every plan must declare:

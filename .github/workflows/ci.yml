@@ -7,7 +7,7 @@ on:
         branches: [main]
 
 env:
-    UV_NO_SOURCES: "1"
+    UV_NO_SOURCES_PACKAGE: dataraum-testdata
 
 jobs:
     check:

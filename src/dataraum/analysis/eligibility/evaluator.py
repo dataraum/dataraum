@@ -53,7 +53,7 @@ def evaluate_rules(
         "total_count": metrics.get("total_count"),
         # Thresholds
         "max_null_ratio": config.thresholds.max_null_ratio,
-        "eliminate_single_value": config.thresholds.eliminate_single_value,
+        "warn_single_value": config.thresholds.warn_single_value,
         "warn_null_ratio": config.thresholds.warn_null_ratio,
     }
 

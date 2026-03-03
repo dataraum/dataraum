@@ -14,7 +14,7 @@ class EligibilityThresholds:
     """Thresholds for eligibility evaluation."""
 
     max_null_ratio: float
-    eliminate_single_value: bool
+    warn_single_value: bool
     warn_null_ratio: float
 
 
@@ -47,7 +47,7 @@ class EligibilityConfig:
         thresholds_data = data["thresholds"]
         thresholds = EligibilityThresholds(
             max_null_ratio=thresholds_data["max_null_ratio"],
-            eliminate_single_value=thresholds_data["eliminate_single_value"],
+            warn_single_value=thresholds_data["warn_single_value"],
             warn_null_ratio=thresholds_data["warn_null_ratio"],
         )
 

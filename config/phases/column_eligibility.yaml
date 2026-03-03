@@ -10,16 +10,16 @@ thresholds:
   # Default 1.0 means only 100% null columns are dropped
   max_null_ratio: 1.0
 
-  # Eliminate columns with single value (no variance)
-  # Set to false to keep constant columns
-  eliminate_single_value: true
+  # Warn on columns with single value (no variance)
+  # Set to false to skip warning on constant columns
+  warn_single_value: true
 
   # Column gets WARN status if null_ratio exceeds this
   warn_null_ratio: 0.5
 
 # Rules evaluated in order, first match wins
 # Available metrics: null_ratio, distinct_count, cardinality_ratio
-# Available thresholds: max_null_ratio, eliminate_single_value, warn_null_ratio
+# Available thresholds: max_null_ratio, warn_single_value, warn_null_ratio
 rules:
   # Elimination rules - column dropped from typed table
   - id: "all_null"
@@ -28,7 +28,7 @@ rules:
     reason: "Column has {null_ratio:.0%} null values - no usable data"
 
   - id: "single_value"
-    condition: "distinct_count == 1 and eliminate_single_value"
+    condition: "distinct_count == 1 and warn_single_value"
     status: "WARN"
     reason: "Column has single value - no variance for statistical analysis"
 

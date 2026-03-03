@@ -17,14 +17,14 @@ from dataraum.analysis.eligibility.evaluator import (
 def _make_config(
     max_null_ratio: float = 1.0,
     warn_null_ratio: float = 0.5,
-    eliminate_single_value: bool = True,
+    warn_single_value: bool = True,
 ) -> EligibilityConfig:
     """Create a config with standard rules for testing."""
     return EligibilityConfig(
         version="1.0",
         thresholds=EligibilityThresholds(
             max_null_ratio=max_null_ratio,
-            eliminate_single_value=eliminate_single_value,
+            warn_single_value=warn_single_value,
             warn_null_ratio=warn_null_ratio,
         ),
         rules=[
@@ -36,7 +36,7 @@ def _make_config(
             ),
             EligibilityRule(
                 id="single_value",
-                condition="distinct_count == 1 and eliminate_single_value",
+                condition="distinct_count == 1 and warn_single_value",
                 status="WARN",
                 reason="Column has single value - no variance for statistical analysis",
             ),
@@ -62,12 +62,12 @@ class TestEvaluateCondition:
         assert not evaluate_condition("null_ratio >= 1.0", {"null_ratio": 0.5})
 
     def test_and_condition(self):
-        ctx = {"distinct_count": 1, "eliminate_single_value": True}
-        assert evaluate_condition("distinct_count == 1 and eliminate_single_value", ctx)
+        ctx = {"distinct_count": 1, "warn_single_value": True}
+        assert evaluate_condition("distinct_count == 1 and warn_single_value", ctx)
 
     def test_and_condition_false(self):
-        ctx = {"distinct_count": 1, "eliminate_single_value": False}
-        assert not evaluate_condition("distinct_count == 1 and eliminate_single_value", ctx)
+        ctx = {"distinct_count": 1, "warn_single_value": False}
+        assert not evaluate_condition("distinct_count == 1 and warn_single_value", ctx)
 
     def test_none_value_returns_false(self):
         assert not evaluate_condition("null_ratio >= 1.0", {"null_ratio": None})

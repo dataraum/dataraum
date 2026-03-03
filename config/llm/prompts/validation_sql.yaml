@@ -92,6 +92,7 @@ user_prompt: |
   5. If the required columns don't exist, set can_validate=false
   6. If enriched views are available, prefer them over manual JOINs
   7. Use the generate_validation_sql tool to provide your response
+  7. Use the generate_validation_sql tool to provide your response
   </instructions>
 
 # Input variable definitions

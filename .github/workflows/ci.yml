@@ -52,8 +52,8 @@ jobs:
                   echo "3.14" > .python-version
                   uv sync --group dev
 
-            - name: Run unit tests
-              run: uv run pytest tests/unit -q
+            - name: Run tests
+              run: uv run pytest tests/unit tests/integration -q
 
     docs:
         runs-on: ubuntu-latest

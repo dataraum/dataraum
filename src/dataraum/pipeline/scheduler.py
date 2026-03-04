@@ -121,6 +121,7 @@ class PipelineScheduler:
             phases, PhaseStatus.PENDING
         )
         self._scores: dict[str, float] = {}
+        self._column_details: dict[str, dict[str, float]] = {}
         self._pending_issues: list[ExitCheckIssue] = []
         self._deferred_issues: list[ExitCheckIssue] = []
         self._step = 0
@@ -229,10 +230,12 @@ class PipelineScheduler:
                         EventType.EXIT_CHECK,
                         total=total,
                         violations=violations,
+                        column_details=dict(self._column_details),
                     )
                     if resolution is not None:
                         self._apply_resolution(resolution)
                     self._pending_issues.clear()
+                    self._column_details = {}
 
         except PipelineAborted as e:
             return PipelineResult(
@@ -394,6 +397,7 @@ class PipelineScheduler:
         )
 
         scores_by_dim: dict[str, list[float]] = defaultdict(list)
+        column_scores: dict[str, dict[str, float]] = defaultdict(dict)
         for table in typed_tables:
             columns = (
                 self.session.execute(
@@ -403,14 +407,16 @@ class PipelineScheduler:
                 .all()
             )
             for col in columns:
+                target = f"column:{table.table_name}.{col.column_name}"
                 snapshot = take_hard_snapshot(
-                    target=f"column:{table.table_name}.{col.column_name}",
+                    target=target,
                     session=self.session,
                     duckdb_conn=self.duckdb_conn,
                     dimensions=dims,
                 )
                 for sub_dim, score in snapshot.scores.items():
                     scores_by_dim[sub_dim].append(score)
+                    column_scores[sub_dim][target] = score
 
         # Build sub_dimension -> dimension_path mapping
         registry = get_default_registry()
@@ -427,6 +433,12 @@ class PipelineScheduler:
             result[path] = mean_score
             self._scores[path] = mean_score
 
+        # Store per-column details keyed by dimension_path
+        self._column_details = {
+            sub_dim_to_path.get(sd, sd): targets
+            for sd, targets in column_scores.items()
+        }
+
         return result
 
     def _assess_impact(
@@ -440,12 +452,15 @@ class PipelineScheduler:
         for dimension_path, score in scores.items():
             threshold = self._match_threshold(dimension_path)
             if threshold is not None and score > threshold:
+                col_scores = self._column_details.get(dimension_path, {})
+                affected = [t for t, s in col_scores.items() if s > threshold]
                 issues.append(
                     ExitCheckIssue(
                         dimension_path=dimension_path,
                         score=score,
                         threshold=threshold,
                         producing_phase=phase_name,
+                        affected_targets=affected,
                     )
                 )
         return issues

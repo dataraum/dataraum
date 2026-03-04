@@ -699,6 +699,70 @@ class TestFixResolution:
         assert len(fixes) == 0
 
 
+class TestColumnDetails:
+    def test_assess_impact_populates_affected_targets(self, session: Session, duckdb_conn):
+        """_assess_impact uses _column_details to populate affected_targets."""
+        run_id = _make_run(session)
+        phase = MockPhase("alpha")
+        scheduler = PipelineScheduler(
+            phases={"alpha": phase},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            contract_thresholds={"structural.types": 0.3},
+        )
+
+        # Pre-populate _column_details as _post_verify would
+        scheduler._column_details = {
+            "structural.types.type_fidelity": {
+                "column:orders.amount": 0.95,
+                "column:orders.discount": 0.88,
+                "column:orders.id": 0.10,  # Below threshold
+            }
+        }
+
+        scores = {"structural.types.type_fidelity": 0.65}
+        issues = scheduler._assess_impact(scores, "alpha")
+
+        assert len(issues) == 1
+        issue = issues[0]
+        # Only columns exceeding threshold (0.3) should be affected
+        assert "column:orders.amount" in issue.affected_targets
+        assert "column:orders.discount" in issue.affected_targets
+        assert "column:orders.id" not in issue.affected_targets
+
+    def test_column_details_cleared_after_exit_check(self, session: Session, duckdb_conn):
+        """_column_details is cleared after EXIT_CHECK emission."""
+        run_id = _make_run(session)
+        phase = MockPhase("alpha", post_verification_dims=["type_fidelity"])
+        scheduler = PipelineScheduler(
+            phases={"alpha": phase},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            contract_thresholds={"structural.types": 0.3},
+        )
+
+        def mock_post_verify(phase_name):
+            scheduler._column_details = {
+                "structural.types.type_fidelity": {
+                    "column:orders.amount": 0.95,
+                }
+            }
+            return {"structural.types.type_fidelity": 0.8}
+
+        with patch.object(scheduler, "_post_verify", side_effect=mock_post_verify):
+            events, result = _drive(
+                scheduler.run(),
+                resolutions={0: Resolution(action=ResolutionAction.DEFER)},
+            )
+
+        # After the exit check is processed, _column_details should be empty
+        assert scheduler._column_details == {}
+
+
 class TestThresholdMatching:
     def test_most_specific_prefix_wins(self, session: Session, duckdb_conn):
         """When multiple prefixes match, most specific wins."""

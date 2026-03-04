@@ -39,6 +39,7 @@ class PipelineEvent:
     duration_seconds: float = 0.0
     error: str = ""
     parallel_phases: list[str] = field(default_factory=list)
+    column_details: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 # Callback type for structured events

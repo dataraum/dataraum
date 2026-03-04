@@ -12,6 +12,7 @@ from typing import Annotated
 import typer
 from rich.console import Console
 from rich.status import Status
+from sqlalchemy.orm import Session
 
 from dataraum.cli.common import console, setup_logging
 from dataraum.cli.gate_handler import handle_exit_check, render_fix_result
@@ -188,7 +189,7 @@ def run(
                 pass
 
     # Setup pipeline and drive it
-    gen, action_registry = _setup_pipeline(
+    gen, action_registry, session = _setup_pipeline(
         source_path=source_path,
         output_dir=output,
         source_name=name,
@@ -209,6 +210,7 @@ def run(
             quiet=quiet,
         )
 
+    session.commit()
     raise typer.Exit(0 if result.success else 1)
 
 
@@ -223,11 +225,12 @@ def _setup_pipeline(
 ) -> tuple[
     Generator[PipelineEvent, Resolution | None, PipelineResult],
     ActionRegistry | None,
+    Session,
 ]:
     """Create PipelineScheduler and return its generator.
 
     Returns:
-        Tuple of (generator, action_registry).
+        Tuple of (generator, action_registry, session).
     """
     from typing import Any
     from uuid import uuid4
@@ -341,7 +344,7 @@ def _setup_pipeline(
         runtime_config=runtime_config,
     )
 
-    return scheduler.run(), action_registry
+    return scheduler.run(), action_registry, session
 
 
 @dataclass

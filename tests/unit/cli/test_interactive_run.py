@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Generator
 from io import StringIO
 
@@ -16,6 +17,11 @@ from dataraum.pipeline.scheduler import (
     Resolution,
     ResolutionAction,
 )
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from text."""
+    return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
 
 
 def _mock_generator(
@@ -372,3 +378,149 @@ class TestSummaryDisplay:
         assert "skipped" in rendered
         assert "2" in rendered  # 2 completed
         assert "1" in rendered  # 1 failed
+
+    def test_contract_evaluation_in_summary(self):
+        """Summary shows pass/fail per dimension when contract is provided."""
+        output = StringIO()
+        console = Console(file=output, force_terminal=True, width=100)
+
+        events = [
+            PipelineEvent(event_type=EventType.PIPELINE_STARTED, step=1, total=0),
+            PipelineEvent(event_type=EventType.PIPELINE_COMPLETED, step=2, total=0),
+        ]
+
+        result_data = _ok_result(
+            final_scores={
+                "structural.types.type_fidelity": 0.18,
+                "structural.relations.join_det": 0.45,
+            },
+        )
+
+        _drive_pipeline(
+            gen=_mock_generator(events, result_data),
+            console=console,
+            gate_mode=GateMode.SKIP,
+            contract_name="aggregation_safe",
+            contract_thresholds={
+                "structural.types.type_fidelity": 0.30,
+                "structural.relations.join_det": 0.20,
+            },
+        )
+
+        rendered = _strip_ansi(output.getvalue())
+        assert "aggregation_safe" in rendered
+        assert "1/2" in rendered
+        assert "50%" in rendered
+
+    def test_fixes_in_summary(self):
+        """Summary shows accumulated fix decisions."""
+        output = StringIO()
+        console = Console(file=output, force_terminal=True, width=100)
+
+        events = [
+            PipelineEvent(event_type=EventType.PIPELINE_STARTED, step=1, total=1),
+            PipelineEvent(
+                event_type=EventType.FIX_APPLIED,
+                step=2,
+                total=1,
+                message="override_type on column:orders.amount",
+                before_scores={"structural.types": 0.65},
+                after_scores={"structural.types": 0.18},
+            ),
+            PipelineEvent(event_type=EventType.PIPELINE_COMPLETED, step=3, total=1),
+        ]
+
+        _drive_pipeline(
+            gen=_mock_generator(events, _ok_result()),
+            console=console,
+            gate_mode=GateMode.SKIP,
+        )
+
+        rendered = _strip_ansi(output.getvalue())
+        assert "Fixes Applied (1):" in rendered
+        assert "override_type" in rendered
+        assert "0.65" in rendered
+        assert "0.18" in rendered
+
+
+    def test_unmeasured_contracted_dimensions_shown(self):
+        """Contracted dimensions not in final_scores shown as 'not measured'."""
+        output = StringIO()
+        console = Console(file=output, force_terminal=True, width=100)
+
+        events = [
+            PipelineEvent(event_type=EventType.PIPELINE_STARTED, step=1, total=0),
+            PipelineEvent(event_type=EventType.PIPELINE_COMPLETED, step=2, total=0),
+        ]
+
+        result_data = _ok_result(
+            final_scores={
+                "structural.types.type_fidelity": 0.18,
+            },
+        )
+
+        _drive_pipeline(
+            gen=_mock_generator(events, result_data),
+            console=console,
+            gate_mode=GateMode.SKIP,
+            contract_name="test_contract",
+            contract_thresholds={
+                "structural.types.type_fidelity": 0.30,
+                "semantic.meaning.naming_clarity": 0.40,
+            },
+        )
+
+        rendered = _strip_ansi(output.getvalue())
+        assert "not measured" in rendered
+        # Dimension name is truncated to 28 chars in display
+        assert "naming_clar" in rendered
+        # 1 passing out of 2 total (1 measured + 1 not measured)
+        assert "1/2" in rendered
+        assert "1 not measured" in rendered
+
+
+class TestParallelSpinner:
+    def test_parallel_phases_tracked(self):
+        """Multiple PHASE_STARTED before PHASE_COMPLETED tracks running set."""
+        output = StringIO()
+        console = Console(file=output, force_terminal=True, width=100)
+
+        events = [
+            PipelineEvent(event_type=EventType.PIPELINE_STARTED, step=1, total=2),
+            PipelineEvent(
+                event_type=EventType.PHASE_STARTED, phase="typing", step=2, total=2
+            ),
+            PipelineEvent(
+                event_type=EventType.PHASE_STARTED,
+                phase="statistics",
+                step=3,
+                total=2,
+            ),
+            PipelineEvent(
+                event_type=EventType.PHASE_COMPLETED,
+                phase="typing",
+                step=4,
+                total=2,
+                duration_seconds=1.0,
+            ),
+            PipelineEvent(
+                event_type=EventType.PHASE_COMPLETED,
+                phase="statistics",
+                step=5,
+                total=2,
+                duration_seconds=1.5,
+            ),
+            PipelineEvent(event_type=EventType.PIPELINE_COMPLETED, step=6, total=2),
+        ]
+
+        result = _drive_pipeline(
+            gen=_mock_generator(events, _ok_result()),
+            console=console,
+            gate_mode=GateMode.SKIP,
+        )
+
+        assert result.success
+        rendered = output.getvalue()
+        # Both phases should appear as completed
+        assert "typing" in rendered
+        assert "statistics" in rendered

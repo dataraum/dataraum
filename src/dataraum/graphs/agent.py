@@ -741,8 +741,8 @@ class GraphAgent(LLMFeature):
     ) -> dict[str, Any]:
         """Build multi-table schema information from rich context and DuckDB.
 
-        Iterates over all tables in the execution context and enriched views,
-        querying DuckDB for column types and sample values.
+        When enriched views exist, only includes those (they are pre-joined
+        supersets of typed tables). Falls back to typed tables otherwise.
 
         Returns:
             Dict with 'tables' list, each containing name, columns (with
@@ -751,18 +751,19 @@ class GraphAgent(LLMFeature):
         tables: list[dict[str, Any]] = []
 
         if context.rich_context is not None:
-            # Typed tables from rich context
-            for table_ctx in context.rich_context.tables:
-                duckdb_name = table_ctx.duckdb_name or table_ctx.table_name
-                table_info = self._describe_table(context.duckdb_conn, duckdb_name)
-                if table_info:
-                    tables.append(table_info)
-
-            # Enriched views (pre-joined fact + dimension)
-            for ev in context.rich_context.enriched_views:
-                table_info = self._describe_table(context.duckdb_conn, ev.view_name)
-                if table_info:
-                    tables.append(table_info)
+            if context.rich_context.enriched_views:
+                # Prefer enriched views — pre-joined with dimension columns
+                for ev in context.rich_context.enriched_views:
+                    table_info = self._describe_table(context.duckdb_conn, ev.view_name)
+                    if table_info:
+                        tables.append(table_info)
+            else:
+                # Fallback: typed tables when no enriched views exist
+                for table_ctx in context.rich_context.tables:
+                    duckdb_name = table_ctx.duckdb_name or table_ctx.table_name
+                    table_info = self._describe_table(context.duckdb_conn, duckdb_name)
+                    if table_info:
+                        tables.append(table_info)
 
         return {"tables": tables}
 

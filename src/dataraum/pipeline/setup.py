@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -39,6 +39,8 @@ class PipelineSetup:
     source_id: str
     run_id: str
     action_registry: ActionRegistry | None
+    contract_name: str | None = None
+    contract_thresholds: dict[str, float] = field(default_factory=dict)
 
 
 def setup_pipeline(
@@ -146,6 +148,7 @@ def setup_pipeline(
             "target_phase": target_phase,
             "force_phase": force_phase,
             "source_set_fingerprint": fingerprint,
+            "contract": contract,
         },
     )
     session.add(run_record)
@@ -187,6 +190,8 @@ def setup_pipeline(
         source_id=source_id,
         run_id=run_id,
         action_registry=action_registry,
+        contract_name=contract,
+        contract_thresholds=thresholds,
     )
 
 

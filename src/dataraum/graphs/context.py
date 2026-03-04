@@ -1194,18 +1194,40 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
                     vals += f" +{len(slice_ctx.distinct_values) - 20} more"
                 lines.append(f"    Values: [{vals}]")
 
-    # Enriched views
+    # Enriched views — enhanced with slice context
     if context.enriched_views:
         lines.append("")
         lines.append("## ENRICHED VIEWS")
-        lines.append("Pre-joined fact + dimension views (prefer over manual JOINs):")
+        lines.append("Pre-joined fact + dimension views. Use these for all SQL queries.")
+
+        # Index slices by base table name for lookup
+        slices_by_table: dict[str, list[SliceContext]] = {}
+        for s in context.available_slices:
+            slices_by_table.setdefault(s.table_name, []).append(s)
+
         for ev in context.enriched_views:
             verified = " (grain verified)" if ev.is_grain_verified else ""
+            lines.append(f"\n### {ev.view_name}{verified}")
+            lines.append(f"Fact table: {ev.fact_table}")
             dims = ", ".join(ev.dimension_columns[:10]) if ev.dimension_columns else "none"
             if len(ev.dimension_columns) > 10:
                 dims += f" +{len(ev.dimension_columns) - 10} more"
-            lines.append(f"  - {ev.view_name} (fact: {ev.fact_table}){verified}")
-            lines.append(f"    Added columns: {dims}")
+            lines.append(f"Joined columns: {dims}")
+
+            # Add slice dimensions for this enriched view
+            view_slices = slices_by_table.get(ev.fact_table, [])
+            if view_slices:
+                lines.append("")
+                lines.append("Categorical dimensions (use for filtering):")
+                for s in view_slices:
+                    lines.append(f"  - **{s.column_name}** ({s.value_count} values)")
+                    if s.business_context:
+                        lines.append(f"    {s.business_context}")
+                    if s.distinct_values:
+                        vals = ", ".join(f'"{v}"' for v in s.distinct_values[:20])
+                        if len(s.distinct_values) > 20:
+                            vals += f" +{len(s.distinct_values) - 20} more"
+                        lines.append(f"    Values: [{vals}]")
 
     # Business cycles
     if context.business_cycles:

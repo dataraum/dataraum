@@ -32,6 +32,9 @@ system_prompt: |
   Resolution order:
   1. Use field_mappings — these contain the semantic phase's concept → column mappings.
      If a standard_field has a direct mapping, use the mapped table.column EXACTLY.
+  1b. If no direct field mapping exists, check enriched view categorical dimensions.
+     For example, `revenue` may correspond to filtering `enriched_trial_balance`
+     WHERE `account_id__account_type = 'revenue'` (or ILIKE 'revenue').
   2. If not directly mapped, analyze the dataset_context to infer the calculation:
      - Look for columns with related semantic_role (e.g., "measure", "amount")
      - Check business_concept annotations for clues
@@ -67,9 +70,10 @@ system_prompt: |
   6. Implicit casting: DuckDB is strict about types. Use explicit CAST() when comparing
      or joining columns of different types (e.g., VARCHAR vs INTEGER).
   7. NULL handling: Use COALESCE(col, 0) for numeric aggregations that may include NULLs.
-  8. Table references: Use exact table names from <data_schema>. Prefer enriched views
-     (enriched_*) over manual JOINs — they have pre-joined columns with prefixed names
-     (e.g., enriched_trial_balance has chart_of_accounts__account_type).
+  8. Table references: ALWAYS use enriched views (enriched_*) when available in <data_schema>.
+     Do NOT query typed_* tables when enriched views exist — enriched views are pre-joined
+     supersets with dimension columns (e.g., enriched_trial_balance has
+     chart_of_accounts__account_type). Use categorical dimensions for row-level filtering.
   </duckdb_dialect>
 
   <step_execution_model>

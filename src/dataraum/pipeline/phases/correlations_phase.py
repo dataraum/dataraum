@@ -43,6 +43,10 @@ class CorrelationsPhase(BasePhase):
         return ["column_eligibility"]
 
     @property
+    def post_verification(self) -> list[str]:
+        return ["formula_match"]
+
+    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.correlation import db_models
 

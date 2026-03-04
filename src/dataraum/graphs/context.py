@@ -412,7 +412,7 @@ def build_execution_context(
         if slice_col and slice_tbl:
             slice_contexts.append(
                 SliceContext(
-                    column_name=slice_col.column_name,
+                    column_name=slice_def.column_name or slice_col.column_name,
                     table_name=slice_tbl.table_name,
                     priority=slice_def.slice_priority,
                     value_count=slice_def.value_count or 0,

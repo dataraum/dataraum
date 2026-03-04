@@ -214,7 +214,8 @@ class TemporalSliceAnalysisPhase(BasePhase):
             if not slice_col:
                 continue
 
-            sanitized_col_name = _sanitize_name(slice_col.column_name)
+            effective_col_name = slice_def.column_name or slice_col.column_name
+            sanitized_col_name = _sanitize_name(effective_col_name)
             prefix = f"slice_{sanitized_col_name}_"
             slice_infos = []
             for st in all_slice_tables:
@@ -225,7 +226,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
                             slice_table_name=st.table_name,
                             source_table_id=slice_def.table_id,
                             source_table_name="",
-                            slice_column_name=slice_col.column_name,
+                            slice_column_name=effective_col_name,
                             slice_value=st.table_name[len(prefix) :],
                             row_count=st.row_count or 0,
                         )

@@ -36,12 +36,14 @@ class MockPhase(BasePhase):
         should_fail: bool = False,
         skip_reason: str | None = None,
         post_verification_dims: list[str] | None = None,
+        outputs: dict | None = None,
     ):
         self._name = name
         self._dependencies = dependencies or []
         self._should_fail = should_fail
         self._skip_reason = skip_reason
         self._post_verification = post_verification_dims or []
+        self._outputs = outputs
         self.run_count = 0
 
     @property
@@ -64,7 +66,9 @@ class MockPhase(BasePhase):
         self.run_count += 1
         if self._should_fail:
             return PhaseResult.failed("Intentional failure")
-        return PhaseResult.success(records_processed=10, records_created=5)
+        return PhaseResult.success(
+            records_processed=10, records_created=5, outputs=self._outputs
+        )
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         return self._skip_reason
@@ -571,6 +575,35 @@ class TestPipelineResult:
         assert "C" in result.phases_skipped
         assert result.error is None
         assert result.deferred_issues == []
+
+
+class TestEntropyScoresInResult:
+    def test_entropy_hard_scores_in_final_scores(self, session: Session, duckdb_conn):
+        """Entropy phase outputs flow into PipelineResult.final_scores."""
+        run_id = _make_run(session)
+        a = MockPhase("A")
+        b = MockPhase(
+            "B",
+            dependencies=["A"],
+            outputs={
+                "entropy_hard_scores": {
+                    "structural.types": 0.12,
+                    "semantic.business_meaning": 0.45,
+                }
+            },
+        )
+        scheduler = PipelineScheduler(
+            phases={"A": a, "B": b},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+        )
+        _, result = _drive(scheduler.run())
+
+        assert result.success
+        assert result.final_scores["structural.types"] == pytest.approx(0.12)
+        assert result.final_scores["semantic.business_meaning"] == pytest.approx(0.45)
 
 
 class TestDependencyValidation:

@@ -239,6 +239,7 @@ class PipelineScheduler:
         """
         phase = self.phases[phase_name]
         started_at = datetime.now(UTC)
+        logger.info("phase.start", phase=phase_name)
 
         if self.session_factory is not None:
             with self.session_factory() as phase_session:
@@ -257,6 +258,13 @@ class PipelineScheduler:
         else:
             ctx = self._build_context(phase_name)
             result = phase.run(ctx)
+
+        logger.info(
+            "phase.done",
+            phase=phase_name,
+            status=result.status.value,
+            duration=result.duration_seconds,
+        )
 
         return result, started_at
 
@@ -305,6 +313,10 @@ class PipelineScheduler:
             summary=result.summary,
         )
 
+        # Merge entropy scores from phase outputs (e.g. entropy phase)
+        if result.outputs and "entropy_hard_scores" in result.outputs:
+            self._scores.update(result.outputs["entropy_hard_scores"])
+
         # Replay active fixes for this phase
         self._replay_fixes(phase_name)
 
@@ -318,8 +330,11 @@ class PipelineScheduler:
                 scores=scores,
             )
 
-        # Assess contract impact
-        issues = self._assess_impact(scores, phase_name)
+        # Assess contract impact on newly produced scores
+        phase_scores = dict(scores)
+        if result.outputs and "entropy_hard_scores" in result.outputs:
+            phase_scores.update(result.outputs["entropy_hard_scores"])
+        issues = self._assess_impact(phase_scores, phase_name)
         self._pending_issues.extend(issues)
 
     def _run_sequential(

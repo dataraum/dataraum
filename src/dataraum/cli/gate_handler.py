@@ -66,7 +66,7 @@ def _interactive_resolution(
         Resolution based on user's choice.
     """
     try:
-        _render_violations(console, event.violations)
+        _render_violations(console, event.violations, event.column_details)
 
         # Build fix options from registry
         fix_options: list[tuple[int, str, str, str]] = []  # (idx, action_type, target, label)
@@ -134,29 +134,54 @@ def _interactive_resolution(
 def _render_violations(
     console: Console,
     violations: dict[str, tuple[float, float]],
+    column_details: dict[str, dict[str, float]] | None = None,
 ) -> None:
     """Render violations as a Rich panel with table.
 
     Args:
         console: Rich console for output.
         violations: dimension_path -> (score, threshold).
+        column_details: dimension_path -> {target -> score}. Optional.
     """
     table = Table(show_header=True, box=None, padding=(0, 2))
     table.add_column("Dimension", style="bold")
     table.add_column("Score", justify="right")
     table.add_column("Threshold", justify="right", style="dim")
+    table.add_column("Gap", justify="right")
     table.add_column("Bar")
 
-    for dim_path, (score, threshold) in violations.items():
+    # Sort violations by gap size (score - threshold), descending
+    sorted_violations = sorted(
+        violations.items(),
+        key=lambda item: item[1][0] - item[1][1],
+        reverse=True,
+    )
+
+    for dim_path, (score, threshold) in sorted_violations:
         filled = round(score * 10)
         bar = "\u2593" * filled + "\u2591" * (10 - filled)
         score_style = "red" if score > threshold else "green"
+        gap = score - threshold
         table.add_row(
             dim_path,
             f"[{score_style}]{score:.2f}[/{score_style}]",
             f"{threshold:.2f}",
+            f"[red]+{gap:.2f}[/red]",
             bar,
         )
+
+        # Show top-3 worst columns if column_details available
+        if column_details:
+            col_scores = column_details.get(dim_path, {})
+            worst = sorted(col_scores.items(), key=lambda x: x[1], reverse=True)[:3]
+            for target, col_score in worst:
+                table.add_row(
+                    f"  [dim]{target}[/dim]",
+                    f"[dim]{col_score:.2f}[/dim]",
+                    "",
+                    "",
+                    "",
+                )
 
     console.print()
     console.print(

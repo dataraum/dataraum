@@ -152,3 +152,61 @@ class TestRenderViolations:
         assert "type_fidelity" in rendered
         assert "unit_declaration" in rendered
         assert "0.62" in rendered
+
+    def test_renders_gap_column(self):
+        """Gap column shows the difference between score and threshold."""
+        output = StringIO()
+        console = Console(file=output, force_terminal=True, width=120)
+        violations = {"dim.a": (0.75, 0.30)}
+        _render_violations(console, violations)
+        rendered = output.getvalue()
+        assert "+0.45" in rendered
+
+    def test_sorts_by_gap_descending(self):
+        """Violations sorted by gap size, largest first."""
+        output = StringIO()
+        console = Console(file=output, force_terminal=True, width=120)
+        violations = {
+            "dim.small_gap": (0.40, 0.30),
+            "dim.big_gap": (0.90, 0.20),
+        }
+        _render_violations(console, violations)
+        rendered = output.getvalue()
+        # big_gap should appear before small_gap
+        assert rendered.index("big_gap") < rendered.index("small_gap")
+
+    def test_renders_column_details(self):
+        """Per-column details rendered as indented sub-rows."""
+        output = StringIO()
+        console = Console(file=output, force_terminal=True, width=120)
+        violations = {"structural.types.type_fidelity": (0.65, 0.20)}
+        column_details = {
+            "structural.types.type_fidelity": {
+                "column:orders.amount": 0.95,
+                "column:orders.discount": 0.88,
+            }
+        }
+        _render_violations(console, violations, column_details)
+        rendered = output.getvalue()
+        assert "orders.amount" in rendered
+        assert "orders.discount" in rendered
+
+    def test_column_details_limited_to_top_3(self):
+        """Only top-3 worst columns shown per dimension."""
+        output = StringIO()
+        console = Console(file=output, force_terminal=True, width=120)
+        violations = {"dim.a": (0.80, 0.20)}
+        column_details = {
+            "dim.a": {
+                "column:t.c1": 0.95,
+                "column:t.c2": 0.90,
+                "column:t.c3": 0.85,
+                "column:t.c4": 0.80,  # 4th worst — should not appear
+            }
+        }
+        _render_violations(console, violations, column_details)
+        rendered = output.getvalue()
+        assert "t.c1" in rendered
+        assert "t.c2" in rendered
+        assert "t.c3" in rendered
+        assert "t.c4" not in rendered

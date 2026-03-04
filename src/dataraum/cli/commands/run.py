@@ -7,11 +7,13 @@ import warnings
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic
 from typing import Annotated
 
 import typer
 from rich.console import Console
-from rich.status import Status
+from rich.live import Live
+from rich.text import Text
 
 from dataraum.cli.common import console, setup_logging
 from dataraum.cli.gate_handler import handle_exit_check, render_fix_result
@@ -250,6 +252,41 @@ class _RunStats:
     )  # (message, before_scores, after_scores)
 
 
+_BRAILLE_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+@dataclass
+class _PhaseTracker:
+    """Live-renderable tracker for running pipeline phases.
+
+    Implements ``__rich__()`` so Rich ``Live`` can render it directly.
+    Each call updates the spinner frame and elapsed times.
+    """
+
+    _running: dict[str, float] = field(default_factory=dict)
+    _frame: int = 0
+
+    def start(self, phase: str) -> None:
+        """Mark *phase* as running."""
+        self._running[phase] = monotonic()
+
+    def stop(self, phase: str) -> None:
+        """Remove *phase* from the running set."""
+        self._running.pop(phase, None)
+
+    def __rich__(self) -> Text:
+        if not self._running:
+            return Text("")
+        self._frame += 1
+        char = _BRAILLE_FRAMES[self._frame % len(_BRAILLE_FRAMES)]
+        now = monotonic()
+        lines: list[str] = []
+        for phase in sorted(self._running):
+            elapsed = now - self._running[phase]
+            lines.append(f"  {char} {phase} ({elapsed:.0f}s)")
+        return Text("\n".join(lines))
+
+
 def _drive_pipeline(
     gen: Generator[PipelineEvent, Resolution | None, PipelineResult],
     console: Console,
@@ -274,96 +311,72 @@ def _drive_pipeline(
         PipelineResult from the generator.
     """
     result: PipelineResult | None = None
-    status: Status | None = None
     stats = _RunStats()
-    running_phases: set[str] = set()
+    tracker = _PhaseTracker()
+    live: Live | None = None
 
     if not quiet:
-        status = Status("Starting pipeline...", console=console, spinner="dots")
-        status.start()
-
-    def _update_spinner() -> None:
-        if status and running_phases:
-            names = ", ".join(sorted(running_phases))
-            status.update(f"[bold]{names}[/bold]...")
+        live = Live(tracker, console=console, transient=True)
+        live.start()
 
     try:
         event = next(gen)
         while True:
             match event.event_type:
                 case EventType.PIPELINE_STARTED:
-                    if status:
+                    if not quiet:
                         contract_info = (
                             f", contract: {contract_name}" if contract_name else ""
                         )
-                        status.update(
+                        console.print(
                             f"Pipeline started ({event.total} phases{contract_info})"
                         )
 
                 case EventType.PHASE_STARTED:
-                    running_phases.add(event.phase)
-                    _update_spinner()
+                    tracker.start(event.phase)
 
                 case EventType.PHASE_COMPLETED:
-                    running_phases.discard(event.phase)
-                    if status:
-                        status.stop()
+                    tracker.stop(event.phase)
                     if not quiet:
                         _print_phase_completed(console, event)
                     stats.total_duration += event.duration_seconds
                     for w in event.warnings:
                         stats.all_warnings.append((event.phase, w))
-                    if status:
-                        status.start()
-                        _update_spinner()
 
                 case EventType.PHASE_FAILED:
-                    running_phases.discard(event.phase)
-                    if status:
-                        status.stop()
+                    tracker.stop(event.phase)
                     if not quiet:
                         console.print(
                             f"  [red]\u2717[/red] {event.phase}: {event.error}"
                         )
                     stats.phase_errors.append((event.phase, event.error or "unknown error"))
-                    if status:
-                        status.start()
-                        _update_spinner()
 
                 case EventType.PHASE_SKIPPED:
-                    if status:
-                        status.stop()
                     if not quiet:
                         console.print(
                             f"  [yellow]\u25cb[/yellow] {event.phase}: {event.message}"
                         )
-                    if status:
-                        status.start()
 
                 case EventType.POST_VERIFICATION:
                     if not quiet and event.scores:
                         _print_post_verification(console, event)
 
                 case EventType.FIX_APPLIED:
-                    if status:
-                        status.stop()
                     if not quiet:
                         render_fix_result(console, event)
                     stats.fixes_applied.append(
                         (event.message, event.before_scores, event.after_scores)
                     )
-                    if status:
-                        status.start()
 
                 case EventType.EXIT_CHECK:
-                    if status:
-                        status.stop()
+                    if live:
+                        live.stop()
                     resolution = handle_exit_check(
                         console, event, gate_mode, action_registry
                     )
                     event = gen.send(resolution)
-                    if status:
-                        status.start()
+                    if live:
+                        live.start()
                     continue
 
                 case EventType.PIPELINE_COMPLETED:
@@ -374,8 +387,8 @@ def _drive_pipeline(
     except StopIteration as e:
         result = e.value
     finally:
-        if status:
-            status.stop()
+        if live:
+            live.stop()
 
     if result is None:
         # Should not happen, but be defensive

@@ -238,7 +238,6 @@ User-facing documentation lives in `docs/` and is published via [Zensical](https
 | Location | Purpose | Published |
 |----------|---------|-----------|
 | `docs/*.md` | User-facing guides (pipeline, entropy, CLI, MCP setup, etc.) | Yes — in site nav |
-| `docs_old/projects/` | Design specs and project plans | No — not published |
 
 **Local preview:** `uv run zensical serve`
 **Build:** `uv run zensical build --clean`
@@ -247,7 +246,7 @@ User-facing documentation lives in `docs/` and is published via [Zensical](https
 
 - **New user-facing feature or behavior change** → update the relevant `docs/*.md` page
 - **Internal implementation detail** → use docstrings in source code
-- **Design decision or project plan** → update `docs_old/projects/` or create a Linear document
+- **Design decision or project plan** → create a Linear document
 
 ### Docstring Convention
 
@@ -278,11 +277,6 @@ Rules:
 ## Current Work
 
 Check [Linear](https://linear.app/dataraum) for active issues, plans, and project documents. Linear MCP is available.
-
-Active project specs live in `docs_old/projects/` — read these before working on the relevant area:
-- `docs_old/projects/fixes.md` — Data fix persistence, recipes, decision ledger
-- `docs_old/projects/progressive-delivery.md` — SEP-1686 tasks, streaming pipeline results
-- `docs_old/projects/release.md` — CI, PyPI, MCP registry, docs site
 
 ## Architecture
 

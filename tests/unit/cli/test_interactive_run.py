@@ -8,7 +8,7 @@ from io import StringIO
 
 from rich.console import Console
 
-from dataraum.cli.commands.run import _drive_pipeline
+from dataraum.cli.commands.run import _drive_pipeline, _PhaseTracker
 from dataraum.pipeline.events import EventType, PipelineEvent
 from dataraum.pipeline.runner import GateMode
 from dataraum.pipeline.scheduler import (
@@ -524,3 +524,43 @@ class TestParallelSpinner:
         # Both phases should appear as completed
         assert "typing" in rendered
         assert "statistics" in rendered
+
+
+class TestPhaseTracker:
+    def test_empty_when_no_phases(self):
+        """__rich__() returns empty Text when nothing is running."""
+        tracker = _PhaseTracker()
+        result = tracker.__rich__()
+        assert str(result) == ""
+
+    def test_shows_running_phase(self):
+        """After start(), output contains the phase name."""
+        tracker = _PhaseTracker()
+        tracker.start("typing")
+        result = str(tracker.__rich__())
+        assert "typing" in result
+
+    def test_stop_removes_phase(self):
+        """start() then stop() returns to empty state."""
+        tracker = _PhaseTracker()
+        tracker.start("typing")
+        tracker.stop("typing")
+        result = tracker.__rich__()
+        assert str(result) == ""
+
+    def test_multiple_phases_sorted(self):
+        """Multiple running phases are rendered in sorted order."""
+        tracker = _PhaseTracker()
+        tracker.start("z_phase")
+        tracker.start("a_phase")
+        result = str(tracker.__rich__())
+        assert result.index("a_phase") < result.index("z_phase")
+
+    def test_spinner_animates(self):
+        """Consecutive __rich__() calls produce different spinner chars."""
+        tracker = _PhaseTracker()
+        tracker.start("typing")
+        first = str(tracker.__rich__())
+        second = str(tracker.__rich__())
+        # The spinner character should differ between frames
+        assert first[2] != second[2]  # char at position after "  "

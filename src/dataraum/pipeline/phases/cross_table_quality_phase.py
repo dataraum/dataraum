@@ -149,4 +149,5 @@ class CrossTableQualityPhase(BasePhase):
             outputs=outputs,
             records_processed=len(relationships),
             records_created=total_correlations,
+            summary=f"{analyzed_count} relationships analyzed, {total_correlations} cross-table correlations",
         )

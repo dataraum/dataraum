@@ -174,4 +174,5 @@ class SliceAnalysisPhase(BasePhase):
             },
             records_processed=len(slice_defs),
             records_created=analysis_result.slices_registered,
+            summary=f"{analysis_result.slices_registered} slices registered, {analysis_result.statistics_computed} profiled",
         )

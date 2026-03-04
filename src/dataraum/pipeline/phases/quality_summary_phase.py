@@ -289,4 +289,5 @@ class QualitySummaryPhase(BasePhase):
             outputs=outputs,
             records_processed=len(slice_definitions),
             records_created=total_reports,
+            summary=f"{total_reports} quality reports across {total_columns} columns",
         )

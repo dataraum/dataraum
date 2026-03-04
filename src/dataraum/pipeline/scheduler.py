@@ -298,6 +298,8 @@ class PipelineScheduler:
             records_processed=result.records_processed,
             records_created=result.records_created,
             warnings=result.warnings,
+            outputs=result.outputs,
+            summary=result.summary,
         )
 
         # Replay active fixes for this phase

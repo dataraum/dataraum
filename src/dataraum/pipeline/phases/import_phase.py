@@ -244,6 +244,7 @@ class ImportPhase(BasePhase):
             records_processed=total_rows,
             records_created=len(table_ids),
             warnings=warnings,
+            summary=f"{len(table_ids)} tables, {total_rows:,} rows",
         )
 
     def _load_single_file(
@@ -278,6 +279,7 @@ class ImportPhase(BasePhase):
             records_processed=staged_table.row_count,
             records_created=1,
             warnings=result.warnings,
+            summary=f"1 table, {staged_table.row_count:,} rows",
         )
 
     def _load_parquet(
@@ -328,6 +330,7 @@ class ImportPhase(BasePhase):
                 records_processed=total_rows,
                 records_created=len(table_ids),
                 warnings=warnings,
+                summary=f"{len(table_ids)} tables, {total_rows:,} rows",
             )
         else:
             result = loader._load_single_file(
@@ -347,6 +350,7 @@ class ImportPhase(BasePhase):
                 records_processed=staged_table.row_count,
                 records_created=1,
                 warnings=result.warnings,
+                summary=f"1 table, {staged_table.row_count:,} rows",
             )
 
     def _check_column_limit(self, ctx: PhaseContext) -> str | None:
@@ -432,6 +436,7 @@ class ImportPhase(BasePhase):
             records_processed=total_rows,
             records_created=len(table_ids),
             warnings=warnings,
+            summary=f"{len(table_ids)} tables, {total_rows:,} rows",
         )
 
     def _load_file_source(
@@ -493,6 +498,7 @@ class ImportPhase(BasePhase):
             records_processed=total_rows,
             records_created=len(table_ids),
             warnings=warnings,
+            summary=f"{len(table_ids)} tables, {total_rows:,} rows",
         )
 
     def _load_single_file_with_prefix(
@@ -576,6 +582,7 @@ class ImportPhase(BasePhase):
             records_processed=staged_table.row_count,
             records_created=1,
             warnings=result.warnings,
+            summary=f"1 table, {staged_table.row_count:,} rows",
         )
 
     def _load_database_source(
@@ -681,4 +688,5 @@ class ImportPhase(BasePhase):
             records_processed=total_rows,
             records_created=len(table_ids),
             warnings=warnings,
+            summary=f"{len(table_ids)} tables, {total_rows:,} rows",
         )

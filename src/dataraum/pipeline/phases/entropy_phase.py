@@ -573,6 +573,7 @@ class EntropyPhase(BasePhase):
             },
             records_processed=len(all_columns),
             records_created=total_entropy_objects + 1,
+            summary=f"{overall_readiness:.0%} readiness, {critical_entropy_count} critical columns",
         )
 
 

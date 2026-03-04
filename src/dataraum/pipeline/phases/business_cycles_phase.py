@@ -149,4 +149,5 @@ class BusinessCyclesPhase(BasePhase):
             },
             records_processed=len(table_ids),
             records_created=len(analysis.cycles),
+            summary=f"{len(analysis.cycles)} cycles, {len(analysis.detected_processes)} processes",
         )

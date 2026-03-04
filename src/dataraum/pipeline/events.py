@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class EventType(str, Enum):
@@ -45,6 +46,8 @@ class PipelineEvent:
     records_processed: int = 0
     records_created: int = 0
     warnings: list[str] = field(default_factory=list)
+    outputs: dict[str, Any] = field(default_factory=dict)
+    summary: str = ""
     # FIX_APPLIED only: before/after scores keyed by dimension
     before_scores: dict[str, float] = field(default_factory=dict)
     after_scores: dict[str, float] = field(default_factory=dict)

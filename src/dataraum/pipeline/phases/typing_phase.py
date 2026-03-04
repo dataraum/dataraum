@@ -288,4 +288,5 @@ class TypingPhase(BasePhase):
             records_processed=total_rows_processed,
             records_created=total_typed_created,
             warnings=warnings,
+            summary=f"{len(typed_tables)} tables typed, {len(type_decisions)} type decisions",
         )

@@ -154,4 +154,5 @@ class StatisticsPhase(BasePhase):
             records_processed=total_columns_processed,
             records_created=total_profiles_created,
             warnings=warnings if warnings else None,
+            summary=f"{total_profiles_created} profiles across {len(profiled_tables)} tables",
         )

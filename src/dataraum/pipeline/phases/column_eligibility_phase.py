@@ -214,4 +214,5 @@ class ColumnEligibilityPhase(BasePhase):
             records_processed=sum(counts.values()),
             records_created=sum(counts.values()),
             warnings=warnings if warnings else None,
+            summary=f"{counts['ELIGIBLE']} eligible, {counts['WARN']} warned, {counts['INELIGIBLE']} dropped",
         )

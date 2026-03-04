@@ -147,4 +147,5 @@ class ValidationPhase(BasePhase):
             },
             records_processed=run_result.total_checks,
             records_created=run_result.total_checks,
+            summary=f"{run_result.passed_checks} passed, {run_result.failed_checks} failed",
         )

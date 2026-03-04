@@ -249,16 +249,19 @@ class SemanticPhase(BasePhase):
 
         enrichment = enrich_result.unwrap()
 
+        annotations_count = len(enrichment.annotations)
+        entities_count = len(enrichment.entity_detections)
+        relationships_count = len(enrichment.relationships)
+
         return PhaseResult.success(
             outputs={
-                "annotations": len(enrichment.annotations),
-                "entities": len(enrichment.entity_detections),
-                "confirmed_relationships": len(enrichment.relationships),
+                "annotations": annotations_count,
+                "entities": entities_count,
+                "confirmed_relationships": relationships_count,
                 "tables_analyzed": [t.table_name for t in typed_tables],
                 "tier1_annotations": column_annotations is not None,
             },
             records_processed=len(unannotated_columns),
-            records_created=len(enrichment.annotations)
-            + len(enrichment.entity_detections)
-            + len(enrichment.relationships),
+            records_created=annotations_count + entities_count + relationships_count,
+            summary=f"{annotations_count} annotations, {entities_count} entities, {relationships_count} relationships",
         )

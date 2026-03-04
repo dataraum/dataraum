@@ -205,6 +205,7 @@ class SlicingPhase(BasePhase):
             },
             records_processed=len(unsliced_tables),
             records_created=len(slicing.recommendations),
+            summary=f"{len(slicing.recommendations)} definitions, {len(slicing.slice_queries)} queries",
         )
 
     def _build_context_data(self, ctx: PhaseContext, tables: list[Table]) -> dict[str, Any]:

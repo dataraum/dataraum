@@ -788,9 +788,11 @@ class EntropyInterpretationPhase(BasePhase):
         if all_errors:
             outputs["batch_errors"] = all_errors
 
+        interp_count = len(all_interpretations) + table_interp_count
         return PhaseResult.success(
             outputs=outputs,
             records_processed=total_columns,
             records_created=records_created,
             warnings=all_errors if all_errors else None,
+            summary=f"{interp_count} interpretations, {total_actions} resolution actions",
         )

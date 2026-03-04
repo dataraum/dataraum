@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -229,6 +229,9 @@ class _RunStats:
     phase_details: list[tuple[str, int, int, float]] = field(
         default_factory=list
     )  # (name, processed, created, duration)
+    phase_outputs: dict[str, dict[str, Any]] = field(
+        default_factory=dict
+    )  # phase_name -> outputs
 
 
 def _drive_pipeline(
@@ -288,6 +291,8 @@ def _drive_pipeline(
                             event.records_created,
                             event.duration_seconds,
                         ))
+                    if event.outputs:
+                        stats.phase_outputs[event.phase] = event.outputs
                     if status:
                         status.start()
 
@@ -378,6 +383,10 @@ def _print_phase_completed(console: Console, event: PipelineEvent) -> None:
 
     console.print(parts[0])
 
+    # Show phase summary if present
+    if event.summary:
+        console.print(f"    [dim]{event.summary}[/dim]")
+
     # Show warnings inline
     for warning in event.warnings:
         console.print(f"    [yellow]! {warning}[/yellow]")
@@ -442,6 +451,21 @@ def _print_summary(
             console.print(
                 f"  {name:<24} {duration:>5.1f}s  [dim]{detail}[/dim]"
             )
+
+    # Discoveries (phase outputs detail)
+    if stats.phase_outputs:
+        from dataraum.pipeline.base import PhaseResult
+
+        console.print()
+        console.print("[bold]Discoveries[/bold]")
+        console.print("-" * 60)
+        for phase_name, outputs in stats.phase_outputs.items():
+            detail = PhaseResult(
+                status=PhaseResult.success().status, outputs=outputs
+            ).detail()
+            if detail:
+                console.print(f"  [bold]{phase_name}[/bold]")
+                console.print(detail)
 
     # Warnings
     if stats.all_warnings:

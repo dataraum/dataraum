@@ -59,6 +59,7 @@ class PhaseResult:
     duration_seconds: float = 0.0
     error: str | None = None
     warnings: list[str] = field(default_factory=list)
+    summary: str = ""
 
     # Metrics for observability
     records_processed: int = 0
@@ -71,6 +72,7 @@ class PhaseResult:
         records_processed: int = 0,
         records_created: int = 0,
         warnings: list[str] | None = None,
+        summary: str = "",
     ) -> PhaseResult:
         """Create a successful result.
 
@@ -82,7 +84,26 @@ class PhaseResult:
             records_processed=records_processed,
             records_created=records_created,
             warnings=warnings or [],
+            summary=summary,
         )
+
+    def detail(self) -> str:
+        """Render outputs as a human-readable multi-line string for verbose display."""
+        if not self.outputs:
+            return ""
+        lines: list[str] = []
+        for key, value in self.outputs.items():
+            if isinstance(value, list):
+                n = len(value)
+                preview = ", ".join(str(v) for v in value[:5])
+                if n > 5:
+                    preview += ", ..."
+                lines.append(f"  {key}: {n} items — {preview}")
+            elif isinstance(value, dict):
+                lines.append(f"  {key}: {value}")
+            else:
+                lines.append(f"  {key}: {value}")
+        return "\n".join(lines)
 
     @classmethod
     def failed(cls, error: str, duration: float = 0.0) -> PhaseResult:

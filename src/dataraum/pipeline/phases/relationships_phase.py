@@ -141,4 +141,5 @@ class RelationshipsPhase(BasePhase):
             },
             records_processed=len(table_ids) * (len(table_ids) - 1) // 2,  # pairs analyzed
             records_created=len(candidates),
+            summary=f"{len(candidates)} candidates ({len(high_confidence)} high-confidence)",
         )

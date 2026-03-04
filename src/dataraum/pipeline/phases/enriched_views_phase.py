@@ -293,6 +293,7 @@ class EnrichedViewsPhase(BasePhase):
             },
             records_processed=len(fact_entities),
             records_created=views_created,
+            summary=f"{views_created} enriched views created ({len(fact_entities)} fact tables)",
         )
 
     def _get_llm_recommendations(

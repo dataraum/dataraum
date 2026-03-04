@@ -181,4 +181,5 @@ class StatisticalQualityPhase(BasePhase):
             records_processed=total_columns_assessed,
             records_created=total_columns_assessed,
             warnings=warnings if warnings else None,
+            summary=f"{total_columns_assessed} columns assessed, {benford_violations} Benford violations, {outlier_columns} outlier columns",
         )

@@ -132,4 +132,5 @@ class CorrelationsPhase(BasePhase):
             records_processed=len(analyzed_tables),
             records_created=total_derived,
             warnings=warnings if warnings else None,
+            summary=f"{total_derived} derived columns across {len(analyzed_tables)} tables",
         )

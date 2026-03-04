@@ -237,4 +237,5 @@ class GraphExecutionPhase(BasePhase):
             },
             records_processed=len(metric_graphs),
             records_created=len(calculated_metrics),
+            summary=f"{len(calculated_metrics)} metrics calculated, {len(skipped_metrics)} skipped",
         )

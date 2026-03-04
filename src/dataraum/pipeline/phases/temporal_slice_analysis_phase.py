@@ -8,6 +8,7 @@ Drift-only analysis on slices:
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import date, datetime
 from types import ModuleType
 
@@ -135,141 +136,33 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 records_created=0,
             )
 
-        # Find temporal column - from config or auto-detect.
-        # The temporal phase already identified temporal columns and stored
-        # TemporalColumnProfile records with min/max timestamps. We reuse
-        # that data instead of re-querying DuckDB.
-        time_column = ctx.config.get("time_column")
-        time_profile: TemporalColumnProfile | None = None
-
-        # Load all temporal profiles for this source's typed columns
-        column_ids = list(
-            (ctx.session.execute(select(Column.column_id).where(Column.table_id.in_(table_ids))))
-            .scalars()
-            .all()
+        # Resolve time column per table. Each typed table may have different
+        # temporal columns (or none at all). We scope selection to each table
+        # to avoid cross-table type mismatches (e.g. "date" is DATE in one
+        # table but VARCHAR in another).
+        table_time_columns = self._resolve_time_columns_per_table(
+            ctx, table_ids, typed_tables
         )
 
-        all_temporal_profiles: list[TemporalColumnProfile] = []
-        if column_ids:
-            temp_stmt = select(TemporalColumnProfile).where(
-                TemporalColumnProfile.column_id.in_(column_ids)
-            )
-            all_temporal_profiles = list((ctx.session.execute(temp_stmt)).scalars().all())
-
-        # Build column lookup: column_id → Column
-        col_by_id: dict[str, Column] = {}
-        if all_temporal_profiles:
-            profile_col_ids = [tc.column_id for tc in all_temporal_profiles]
-            col_stmt = select(Column).where(Column.column_id.in_(profile_col_ids))
-            for col in (ctx.session.execute(col_stmt)).scalars().all():
-                col_by_id[col.column_id] = col
-
-        # Verify configured time column exists in temporal profiles
-        if time_column:
-            for tc in all_temporal_profiles:
-                matched_col = col_by_id.get(tc.column_id)
-                if matched_col and matched_col.column_name == time_column:
-                    time_profile = tc
-                    break
-
-            if not time_profile:
-                logger.debug(
-                    "configured_time_column_not_found",
-                    configured_column=time_column,
-                    message="Falling back to auto-detection",
-                )
-                time_column = None
-
-        # Auto-detect: prefer semantic annotation (LLM-identified primary time column),
-        # fall back to lowest null ratio among temporal profiles.
-        if not time_column and all_temporal_profiles:
-            # Check if the semantic phase identified a primary time column for any table
-            entity_stmt = select(TableEntity).where(
-                TableEntity.table_id.in_(table_ids),
-                TableEntity.time_column.isnot(None),
-            )
-            entities_with_time = list((ctx.session.execute(entity_stmt)).scalars().all())
-
-            # Match semantic time_column against actual temporal profiles
-            for entity in entities_with_time:
-                for tc in all_temporal_profiles:
-                    tc_col = col_by_id.get(tc.column_id)
-                    if (
-                        tc_col
-                        and tc_col.column_name == entity.time_column
-                        and tc_col.table_id == entity.table_id
-                    ):
-                        time_column = entity.time_column
-                        time_profile = tc
-                        logger.debug(
-                            "time_column_from_semantic",
-                            time_column=time_column,
-                            table_id=entity.table_id,
-                        )
-                        break
-                if time_column:
-                    break
-
-        # Fallback: pick the temporal column with the lowest null ratio
-        if not time_column and all_temporal_profiles:
-            from dataraum.analysis.statistics.db_models import StatisticalProfile
-
-            best_profile = None
-            best_null_ratio = 1.0
-
-            for tc in all_temporal_profiles:
-                stat_stmt = (
-                    select(StatisticalProfile)
-                    .where(StatisticalProfile.column_id == tc.column_id)
-                    .order_by(StatisticalProfile.profiled_at.desc())
-                    .limit(1)
-                )
-                stat = (ctx.session.execute(stat_stmt)).scalar_one_or_none()
-                null_ratio = stat.null_ratio if stat and stat.null_ratio is not None else 1.0
-
-                if null_ratio < best_null_ratio:
-                    best_null_ratio = null_ratio
-                    best_profile = tc
-
-            if best_profile:
-                best_col = col_by_id.get(best_profile.column_id)
-                if best_col:
-                    time_column = best_col.column_name
-                    time_profile = best_profile
-
-        if not time_column:
+        if not table_time_columns:
             return PhaseResult.success(
                 outputs={
-                    "message": "No temporal column found or specified",
+                    "message": "No temporal column found for any table",
                     "drift_summaries": 0,
                 },
                 records_processed=0,
                 records_created=0,
             )
 
-        # Get time period boundaries
-        period_start = ctx.config.get("period_start")
-        period_end = ctx.config.get("period_end")
+        # Global config overrides
+        cfg_period_start = ctx.config.get("period_start")
+        cfg_period_end = ctx.config.get("period_end")
         time_grain = ctx.config.get("time_grain", "monthly")
 
-        if isinstance(period_start, str):
-            period_start = date.fromisoformat(period_start)
-        if isinstance(period_end, str):
-            period_end = date.fromisoformat(period_end)
-
-        # Derive time range from the temporal profile (already computed by temporal phase)
-        if (not period_start or not period_end) and time_profile:
-            if not period_start:
-                ts = time_profile.min_timestamp
-                period_start = date(ts.year, ts.month, 1)
-            if not period_end:
-                ts = time_profile.max_timestamp
-                period_end = ts.date() if isinstance(ts, datetime) else ts
-
-        if not period_start:
-            period_start = date(date.today().year - 1, 1, 1)
-        if not period_end:
-            period_end = date.today()
+        if isinstance(cfg_period_start, str):
+            cfg_period_start = date.fromisoformat(cfg_period_start)
+        if isinstance(cfg_period_end, str):
+            cfg_period_end = date.fromisoformat(cfg_period_end)
 
         # Convert time_grain string to enum
         grain_map = {
@@ -279,30 +172,41 @@ class TemporalSliceAnalysisPhase(BasePhase):
         }
         grain = grain_map.get(time_grain, TimeGrain.MONTHLY)
 
+        # Pre-load slice tables once (shared across all slice definitions)
+        slice_tables_stmt = select(Table).where(
+            Table.layer == "slice",
+            Table.source_id == ctx.source_id,
+        )
+        all_slice_tables = list((ctx.session.execute(slice_tables_stmt)).scalars().all())
+
         total_drift_summaries = 0
         total_period_analyses = 0
-        errors = []
-
-        # Pre-compute which typed tables have the time column
-        tables_with_time_col: set[str] = set()
-        for tt in typed_tables:
-            col_check = select(Column).where(
-                Column.table_id == tt.table_id,
-                Column.column_name == time_column,
-            )
-            if ctx.session.execute(col_check).scalar_one_or_none():
-                tables_with_time_col.add(tt.table_id)
+        errors: list[str] = []
+        time_columns_used: set[str] = set()
 
         for slice_def in slice_definitions:
-            if slice_def.table_id not in tables_with_time_col:
+            tc_entry = table_time_columns.get(slice_def.table_id)
+            if not tc_entry:
                 continue
 
-            # Get slice tables for this definition
-            slice_tables_stmt = select(Table).where(
-                Table.layer == "slice",
-                Table.source_id == ctx.source_id,
-            )
-            slice_tables = (ctx.session.execute(slice_tables_stmt)).scalars().all()
+            time_column, time_profile = tc_entry
+            time_columns_used.add(time_column)
+
+            # Derive period boundaries from this table's temporal profile
+            period_start = cfg_period_start
+            period_end = cfg_period_end
+
+            if not period_start:
+                ts = time_profile.min_timestamp
+                period_start = date(ts.year, ts.month, 1)
+            if not period_end:
+                ts = time_profile.max_timestamp
+                period_end = ts.date() if isinstance(ts, datetime) else ts
+
+            if not period_start:
+                period_start = date(date.today().year - 1, 1, 1)
+            if not period_end:
+                period_end = date.today()
 
             # Build slice info list
             slice_column_stmt = select(Column).where(Column.column_id == slice_def.column_id)
@@ -313,7 +217,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
             sanitized_col_name = _sanitize_name(slice_col.column_name)
             prefix = f"slice_{sanitized_col_name}_"
             slice_infos = []
-            for st in slice_tables:
+            for st in all_slice_tables:
                 if st.table_name.lower().startswith(prefix):
                     slice_infos.append(
                         SliceTableInfo(
@@ -381,13 +285,11 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 except Exception as e:
                     errors.append(f"Analysis error for {si.slice_table_name}: {e}")
 
-        outputs = {
+        outputs: dict[str, object] = {
             "drift_summaries": total_drift_summaries,
             "period_analyses": total_period_analyses,
-            "time_column": time_column,
+            "time_columns": sorted(time_columns_used),
             "time_grain": time_grain,
-            "period_start": str(period_start),
-            "period_end": str(period_end),
         }
 
         if errors:
@@ -397,4 +299,106 @@ class TemporalSliceAnalysisPhase(BasePhase):
             outputs=outputs,
             records_processed=len(slice_definitions),
             records_created=total_drift_summaries + total_period_analyses,
+            summary=f"{total_drift_summaries} drift summaries, {total_period_analyses} period analyses",
         )
+
+    def _resolve_time_columns_per_table(
+        self,
+        ctx: PhaseContext,
+        table_ids: list[str],
+        typed_tables: Sequence[Table],
+    ) -> dict[str, tuple[str, TemporalColumnProfile]]:
+        """Resolve the best time column for each typed table independently.
+
+        Returns:
+            Mapping of table_id → (column_name, TemporalColumnProfile) for
+            tables that have a usable temporal column.
+        """
+        configured_time_column = ctx.config.get("time_column")
+        temporal_types = {"DATE", "TIMESTAMP", "TIMESTAMPTZ"}
+
+        # Load all columns and temporal profiles for these tables
+        col_stmt = select(Column).where(Column.table_id.in_(table_ids))
+        all_columns = list((ctx.session.execute(col_stmt)).scalars().all())
+
+        col_by_id: dict[str, Column] = {c.column_id: c for c in all_columns}
+
+        # Load temporal profiles
+        column_ids = [c.column_id for c in all_columns]
+        all_temporal_profiles: list[TemporalColumnProfile] = []
+        if column_ids:
+            temp_stmt = select(TemporalColumnProfile).where(
+                TemporalColumnProfile.column_id.in_(column_ids)
+            )
+            all_temporal_profiles = list((ctx.session.execute(temp_stmt)).scalars().all())
+
+        # Group temporal profiles by table_id, filtering to proper temporal types
+        profiles_by_table: dict[str, list[TemporalColumnProfile]] = {}
+        for tp in all_temporal_profiles:
+            col = col_by_id.get(tp.column_id)
+            if col and col.resolved_type in temporal_types:
+                profiles_by_table.setdefault(col.table_id, []).append(tp)
+
+        # Load semantic time_column annotations
+        entity_stmt = select(TableEntity).where(
+            TableEntity.table_id.in_(table_ids),
+            TableEntity.time_column.isnot(None),
+        )
+        semantic_time_by_table: dict[str, str] = {}
+        for entity in (ctx.session.execute(entity_stmt)).scalars().all():
+            if entity.time_column is not None:
+                semantic_time_by_table[entity.table_id] = entity.time_column
+
+        # Resolve per table
+        result: dict[str, tuple[str, TemporalColumnProfile]] = {}
+
+        for tt in typed_tables:
+            table_profiles = profiles_by_table.get(tt.table_id, [])
+            if not table_profiles:
+                continue
+
+            chosen_col: str | None = None
+            chosen_profile: TemporalColumnProfile | None = None
+
+            # Priority 1: config-specified time_column
+            if configured_time_column:
+                for tp in table_profiles:
+                    col = col_by_id.get(tp.column_id)
+                    if col and col.column_name == configured_time_column:
+                        chosen_col = configured_time_column
+                        chosen_profile = tp
+                        break
+
+            # Priority 2: semantic annotation
+            if not chosen_col:
+                semantic_name = semantic_time_by_table.get(tt.table_id)
+                if semantic_name:
+                    for tp in table_profiles:
+                        col = col_by_id.get(tp.column_id)
+                        if col and col.column_name == semantic_name:
+                            chosen_col = semantic_name
+                            chosen_profile = tp
+                            logger.debug(
+                                "time_column_from_semantic",
+                                time_column=semantic_name,
+                                table_id=tt.table_id,
+                            )
+                            break
+
+            if chosen_col and chosen_profile:
+                result[tt.table_id] = (chosen_col, chosen_profile)
+            elif table_profiles:
+                profile_col_names = [
+                    col_by_id[tp.column_id].column_name
+                    for tp in table_profiles
+                    if tp.column_id in col_by_id
+                ]
+                logger.warning(
+                    "no_time_column_resolved",
+                    table_id=tt.table_id,
+                    table_name=tt.table_name,
+                    candidate_columns=profile_col_names,
+                    hint="Set time_column in config or add a semantic annotation",
+                )
+
+        return result

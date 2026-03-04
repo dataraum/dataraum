@@ -177,4 +177,5 @@ class TemporalPhase(BasePhase):
             records_processed=len(temporal_columns),
             records_created=total_profiles,
             warnings=warnings if warnings else None,
+            summary=f"{total_profiles} profiles ({seasonality_count} seasonal, {trend_count} trending)",
         )

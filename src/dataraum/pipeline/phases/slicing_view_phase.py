@@ -291,6 +291,7 @@ class SlicingViewPhase(BasePhase):
             outputs={"slicing_views": views_created},
             records_processed=len(fact_table_ids),
             records_created=views_created,
+            summary=f"{views_created} slicing views created",
         )
 
     def _build_slicing_view_sql(

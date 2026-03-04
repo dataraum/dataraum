@@ -161,6 +161,12 @@ class TestSinglePhase:
         assert EventType.PHASE_STARTED in types
         assert EventType.PHASE_COMPLETED in types
 
+        # PHASE_COMPLETED carries metadata from PhaseResult
+        completed = [e for e in events if e.event_type == EventType.PHASE_COMPLETED][0]
+        assert completed.records_processed == 10
+        assert completed.records_created == 5
+        assert completed.duration_seconds > 0
+
     def test_phase_skipped(self, session: Session, duckdb_conn):
         """should_skip returns reason → SKIPPED event, PhaseLog(status='skipped')."""
         run_id = _make_run(session)

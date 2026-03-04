@@ -239,13 +239,10 @@ class ImportPhase(BasePhase):
             return PhaseResult.failed("No CSV files were successfully loaded")
 
         # Note: commit handled by session_scope() in scheduler
-
-
         return PhaseResult.success(
             outputs={"raw_tables": table_ids},
             records_processed=total_rows,
             records_created=len(table_ids),
-
             warnings=warnings,
         )
 
@@ -275,14 +272,11 @@ class ImportPhase(BasePhase):
 
         staged_table = result.unwrap()
 
-
         # Note: commit handled by session_scope() in scheduler
-
         return PhaseResult.success(
             outputs={"raw_tables": [str(staged_table.table_id)]},
             records_processed=staged_table.row_count,
             records_created=1,
-
             warnings=result.warnings,
         )
 
@@ -329,12 +323,10 @@ class ImportPhase(BasePhase):
             if not table_ids:
                 return PhaseResult.failed("No Parquet files were successfully loaded")
 
-    
             return PhaseResult.success(
                 outputs={"raw_tables": table_ids},
                 records_processed=total_rows,
                 records_created=len(table_ids),
-    
                 warnings=warnings,
             )
         else:
@@ -349,13 +341,11 @@ class ImportPhase(BasePhase):
                 return PhaseResult.failed(result.error or "Failed to load Parquet file")
 
             staged_table = result.unwrap()
-    
 
             return PhaseResult.success(
                 outputs={"raw_tables": [str(staged_table.table_id)]},
                 records_processed=staged_table.row_count,
                 records_created=1,
-    
                 warnings=result.warnings,
             )
 
@@ -437,12 +427,10 @@ class ImportPhase(BasePhase):
         if not table_ids:
             return PhaseResult.failed("No tables were loaded from any registered source")
 
-
         return PhaseResult.success(
             outputs={"raw_tables": table_ids},
             records_processed=total_rows,
             records_created=len(table_ids),
-
             warnings=warnings,
         )
 

@@ -385,10 +385,7 @@ def _drive_pipeline(
                     if status:
                         status.stop()
                     if not quiet:
-                        console.print(
-                            f"  [green]\u2713[/green] {event.phase}"
-                            f" ({event.duration_seconds:.1f}s)"
-                        )
+                        _print_phase_completed(console, event)
                     if status:
                         status.start()
 
@@ -413,7 +410,8 @@ def _drive_pipeline(
                         status.start()
 
                 case EventType.POST_VERIFICATION:
-                    pass  # Silent unless --verbose
+                    if not quiet and event.scores:
+                        _print_post_verification(console, event)
 
                 case EventType.FIX_APPLIED:
                     if status:
@@ -461,6 +459,38 @@ def _drive_pipeline(
         _print_summary(console, result)
 
     return result
+
+
+def _print_phase_completed(console: Console, event: PipelineEvent) -> None:
+    """Print phase completion with metadata."""
+    parts = [f"  [green]\u2713[/green] {event.phase} ({event.duration_seconds:.1f}s)"]
+
+    # Add record counts if present
+    details: list[str] = []
+    if event.records_processed:
+        details.append(f"{event.records_processed:,} processed")
+    if event.records_created:
+        details.append(f"{event.records_created:,} created")
+    if details:
+        parts[0] += f" [dim]— {', '.join(details)}[/dim]"
+
+    console.print(parts[0])
+
+    # Show warnings inline
+    for warning in event.warnings:
+        console.print(f"    [yellow]! {warning}[/yellow]")
+
+
+def _print_post_verification(console: Console, event: PipelineEvent) -> None:
+    """Print post-verification entropy scores."""
+    for dim, score in sorted(event.scores.items()):
+        if score < 0.2:
+            color = "green"
+        elif score < 0.5:
+            color = "yellow"
+        else:
+            color = "red"
+        console.print(f"    [{color}]\u25c6[/{color}] {dim}: [{color}]{score:.2f}[/{color}]")
 
 
 def _print_summary(console: Console, result: PipelineResult) -> None:

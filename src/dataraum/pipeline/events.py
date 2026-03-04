@@ -41,6 +41,10 @@ class PipelineEvent:
     parallel_phases: list[str] = field(default_factory=list)
     # EXIT_CHECK / POST_VERIFICATION: dimension_path -> {target -> score}
     column_details: dict[str, dict[str, float]] = field(default_factory=dict)
+    # PHASE_COMPLETED: observability metrics from PhaseResult
+    records_processed: int = 0
+    records_created: int = 0
+    warnings: list[str] = field(default_factory=list)
     # FIX_APPLIED only: before/after scores keyed by dimension
     before_scores: dict[str, float] = field(default_factory=dict)
     after_scores: dict[str, float] = field(default_factory=dict)

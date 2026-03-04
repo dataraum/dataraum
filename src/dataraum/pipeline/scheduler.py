@@ -201,6 +201,9 @@ class PipelineScheduler:
                         phase=phase_name,
                         total=total,
                         duration_seconds=result.duration_seconds,
+                        records_processed=result.records_processed,
+                        records_created=result.records_created,
+                        warnings=result.warnings,
                     )
 
                     # 3. Replay active fixes for this phase

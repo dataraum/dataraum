@@ -208,8 +208,8 @@ def render_fix_result(console: Console, event: PipelineEvent) -> None:
 
     # Show success with before/after deltas
     parts = [f"  [green]\u2713[/green] {event.message}"]
-    before = event.column_details.get("before", {})
-    after = event.column_details.get("after", {})
+    before = event.before_scores
+    after = event.after_scores
     for dim in sorted(set(before) | set(after)):
         b = before.get(dim, 0.0)
         a = after.get(dim, 0.0)

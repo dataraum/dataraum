@@ -39,7 +39,11 @@ class PipelineEvent:
     duration_seconds: float = 0.0
     error: str = ""
     parallel_phases: list[str] = field(default_factory=list)
+    # EXIT_CHECK / POST_VERIFICATION: dimension_path -> {target -> score}
     column_details: dict[str, dict[str, float]] = field(default_factory=dict)
+    # FIX_APPLIED only: before/after scores keyed by dimension
+    before_scores: dict[str, float] = field(default_factory=dict)
+    after_scores: dict[str, float] = field(default_factory=dict)
 
 
 # Callback type for structured events

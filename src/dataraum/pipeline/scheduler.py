@@ -522,10 +522,8 @@ class PipelineScheduler:
                             EventType.FIX_APPLIED,
                             message=f"{fix_request.action_type} on {fix_request.target}",
                             scores=result.after_scores,
-                            column_details={
-                                "before": result.before_scores,
-                                "after": result.after_scores,
-                            },
+                            before_scores=result.before_scores,
+                            after_scores=result.after_scores,
                         )
                     )
                 else:

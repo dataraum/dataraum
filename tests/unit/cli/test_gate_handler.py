@@ -222,10 +222,8 @@ class TestRenderFixResult:
             event_type=EventType.FIX_APPLIED,
             message="override_type on column:orders.amount",
             scores={"type_fidelity": 0.10},
-            column_details={
-                "before": {"type_fidelity": 0.80},
-                "after": {"type_fidelity": 0.10},
-            },
+            before_scores={"type_fidelity": 0.80},
+            after_scores={"type_fidelity": 0.10},
         )
         render_fix_result(console, event)
         rendered = output.getvalue()

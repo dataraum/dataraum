@@ -744,6 +744,8 @@ class TestFixResolution:
         assert "orders.amount" in fix_applied[0].message
         assert fix_applied[0].error == ""
         assert fix_applied[0].scores == {"type_fidelity": 0.10}
+        assert fix_applied[0].before_scores == {"type_fidelity": 0.80}
+        assert fix_applied[0].after_scores == {"type_fidelity": 0.10}
 
     def test_fix_failure_emits_fix_applied_with_error(self, session: Session, duckdb_conn):
         """Failed fix emits FIX_APPLIED event with error message."""

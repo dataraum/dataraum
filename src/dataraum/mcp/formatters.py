@@ -376,12 +376,6 @@ def format_pipeline_result(result: RunResult) -> str:
         lines.append(f"**Duration:** {seconds:.1f}s")
     lines.append("")
 
-    # Tables
-    if result.total_tables_processed > 0:
-        lines.append(f"**Tables:** {result.total_tables_processed}")
-        lines.append(f"**Rows:** {result.total_rows_processed:,}")
-        lines.append("")
-
     # Phase summary
     lines.append("## Phases")
     lines.append(

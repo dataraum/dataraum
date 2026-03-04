@@ -82,8 +82,6 @@ class RunConfig:
     # Gate configuration
     gate_mode: GateMode = GateMode.SKIP
     contract: str | None = None  # Target contract name
-    max_fix_attempts: int = 3
-    gate_handler: Any | None = None  # GateHandler implementation
 
 
 @dataclass
@@ -94,20 +92,9 @@ class PhaseRunResult:
     status: str  # completed, failed, skipped
     duration_seconds: float = 0.0
     error: str | None = None
-    records_processed: int = 0
-    records_created: int = 0
 
-    # Detailed metrics
-    tables_processed: int = 0
-    columns_processed: int = 0
-    rows_processed: int = 0
-    db_queries: int = 0
-    db_writes: int = 0
-    timings: dict[str, float] = field(default_factory=dict)
-
-    # Entropy / gate info
+    # Entropy scores from post-verification
     post_verification_scores: dict[str, float] = field(default_factory=dict)
-    gate_status: str = ""  # "passed" | "blocked" | "skipped" | ""
 
 
 @dataclass
@@ -128,9 +115,8 @@ class RunResult:
     output_dir: Path | None = None
     error: str | None = None  # Overall error (exception during setup, etc.)
 
-    # Entropy / gate summary
+    # Entropy scores
     final_entropy_scores: dict[str, float] = field(default_factory=dict)
-    gate_events: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def phases_completed(self) -> int:
@@ -147,16 +133,6 @@ class RunResult:
         """Count of skipped phases."""
         return sum(1 for p in self.phases if p.status == "skipped")
 
-    @property
-    def total_tables_processed(self) -> int:
-        """Total tables processed across all phases."""
-        return max(p.tables_processed for p in self.phases) if self.phases else 0
-
-    @property
-    def total_rows_processed(self) -> int:
-        """Total rows processed across all phases."""
-        return max(p.rows_processed for p in self.phases) if self.phases else 0
-
     def get_failed_phases(self) -> list[PhaseRunResult]:
         """Get all failed phases with their errors."""
         return [p for p in self.phases if p.status == "failed"]
@@ -169,15 +145,6 @@ class RunResult:
         """Get the N slowest phases by duration."""
         sorted_phases = sorted(self.phases, key=lambda p: p.duration_seconds, reverse=True)
         return [(p.phase_name, p.duration_seconds) for p in sorted_phases[:n]]
-
-    def get_bottleneck_operations(self, n: int = 5) -> list[tuple[str, str, float]]:
-        """Get the N slowest operations across all phases."""
-        all_ops: list[tuple[str, str, float]] = []
-        for phase in self.phases:
-            for op_name, duration in phase.timings.items():
-                all_ops.append((phase.phase_name, op_name, duration))
-        sorted_ops = sorted(all_ops, key=lambda x: x[2], reverse=True)
-        return sorted_ops[:n]
 
 
 

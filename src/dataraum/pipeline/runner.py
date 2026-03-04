@@ -23,33 +23,24 @@ Usage:
 
 from __future__ import annotations
 
-import hashlib
-import json
 import sys
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
-from uuid import uuid4
 
 from sqlalchemy import select
 
-from dataraum.core.config import load_phase_config, load_pipeline_config
-from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
-from dataraum.pipeline.base import Phase
-from dataraum.pipeline.db_models import PhaseLog, PipelineRun
+from dataraum.pipeline.db_models import PhaseLog
 from dataraum.pipeline.events import EventCallback, EventType, PipelineEvent  # noqa: F401
-from dataraum.pipeline.registry import get_all_dependencies, get_registry
 from dataraum.pipeline.scheduler import (
     PipelineResult,
-    PipelineScheduler,
     Resolution,
     ResolutionAction,
 )
-from dataraum.storage import Source
+from dataraum.pipeline.setup import setup_pipeline
 
 logger = get_logger(__name__)
 
@@ -146,103 +137,6 @@ class RunResult:
         return [(p.phase_name, p.duration_seconds) for p in sorted_phases[:n]]
 
 
-
-def _compute_source_set_fingerprint(sources: list[dict[str, Any]]) -> str:
-    """Compute a SHA-256 fingerprint of the registered source set.
-
-    Changes in source configuration (name, type, path, backend) will
-    produce a different fingerprint, triggering a full pipeline re-run.
-    """
-    # Sort by name for deterministic ordering
-    normalized = sorted(
-        (s["name"], s["source_type"], json.dumps(s.get("connection_config", {}), sort_keys=True))
-        for s in sources
-    )
-    return hashlib.sha256(json.dumps(normalized).encode()).hexdigest()[:16]
-
-
-def _resolve_registered_sources(manager: ConnectionManager) -> list[dict[str, Any]] | None:
-    """Query registered sources from the output database.
-
-    Returns:
-        List of source dicts suitable for the import phase, or None if no sources registered.
-    """
-    with manager.session_scope() as session:
-        stmt = (
-            select(Source)
-            .where(
-                Source.status.in_(["configured", "validated"]),
-                Source.archived_at.is_(None),
-            )
-            .order_by(Source.name)
-        )
-        sources = session.execute(stmt).scalars().all()
-
-        if not sources:
-            return None
-
-        result = []
-        for s in sources:
-            entry: dict[str, Any] = {
-                "name": s.name,
-                "source_type": s.source_type,
-                "connection_config": s.connection_config or {},
-            }
-            # File sources have path in connection_config
-            if s.connection_config and "path" in s.connection_config:
-                entry["path"] = s.connection_config["path"]
-            # Database sources have backend
-            if s.backend:
-                entry["backend"] = s.backend
-            if s.credential_ref:
-                entry["credential_ref"] = s.credential_ref
-            # Include table filter if present
-            if s.connection_config and "tables" in s.connection_config:
-                entry["tables"] = s.connection_config["tables"]
-
-            result.append(entry)
-
-        return result
-
-
-def _check_fingerprint_changed(
-    manager: ConnectionManager,
-    source_id: str,
-    new_fingerprint: str,
-) -> bool:
-    """Check if the source set fingerprint changed.
-
-    The scheduler's should_skip() handles resume via DB queries, so we
-    don't need to invalidate anything here — just detect the change.
-
-    Returns:
-        True if fingerprint changed (full re-run needed), False otherwise.
-    """
-    with manager.session_scope() as session:
-        stmt = (
-            select(PipelineRun)
-            .where(PipelineRun.source_id == source_id)
-            .order_by(PipelineRun.started_at.desc())
-            .limit(1)
-        )
-        last_run = session.execute(stmt).scalar_one_or_none()
-
-        if last_run is None:
-            return True  # No previous run, will do full run
-
-        old_fingerprint = (last_run.config or {}).get("source_set_fingerprint")
-        if old_fingerprint == new_fingerprint:
-            return False
-
-        logger.debug(
-            "source_set_changed",
-            source_id=source_id,
-            old_fingerprint=old_fingerprint,
-            new_fingerprint=new_fingerprint,
-        )
-        return True
-
-
 def run(config: RunConfig) -> Result[RunResult]:
     """Run the pipeline with the given configuration.
 
@@ -259,73 +153,16 @@ def run(config: RunConfig) -> Result[RunResult]:
     source_id = ""
 
     try:
-        # Setup connection manager
-        config.output_dir.mkdir(parents=True, exist_ok=True)
-        conn_config = ConnectionConfig.for_directory(config.output_dir)
-        manager = ConnectionManager(conn_config)
-        manager.initialize()
-
-        # Determine mode: single-path (legacy) or multi-source
-        multi_source_mode = config.source_path is None
-        registered_sources: list[dict[str, Any]] | None = None
-
-        if multi_source_mode:
-            registered_sources = _resolve_registered_sources(manager)
-            if not registered_sources:
-                return Result.ok(
-                    RunResult(
-                        success=False,
-                        source_id="",
-                        duration_seconds=time.time() - start_time,
-                        error="No registered sources found. Use add_source first.",
-                    ),
-                    warnings=["No registered sources found"],
-                )
-
-        # Resolve source_id
-        if multi_source_mode:
-            source_id = str(
-                uuid4()
-                if not config.output_dir.name
-                else hashlib.md5(str(config.output_dir.resolve()).encode()).hexdigest()[:32]
-            )
-            with manager.session_scope() as session:
-                existing = session.execute(
-                    select(Source).where(Source.name == "multi_source")
-                ).scalar_one_or_none()
-                if existing:
-                    source_id = existing.source_id
-        else:
-            assert config.source_path is not None
-            source_name = config.source_name or config.source_path.stem
-            with manager.session_scope() as session:
-                existing_source = session.execute(
-                    select(Source).where(Source.name == source_name)
-                ).scalar_one_or_none()
-
-                if existing_source:
-                    source_id = existing_source.source_id
-                    logger.debug(
-                        "using_existing_source",
-                        source_name=source_name,
-                        source_id=source_id,
-                    )
-                else:
-                    source_id = str(uuid4())
-                    logger.debug(
-                        "creating_new_source",
-                        source_name=source_name,
-                        source_id=source_id,
-                    )
-
-        # Fingerprint check for multi-source mode
-        if multi_source_mode and registered_sources:
-            fingerprint = _compute_source_set_fingerprint(registered_sources)
-            changed = _check_fingerprint_changed(manager, source_id, fingerprint)
-            if changed:
-                logger.debug("source_set_fingerprint_changed", fingerprint=fingerprint)
-        else:
-            fingerprint = None
+        setup = setup_pipeline(
+            source_path=config.source_path,
+            output_dir=config.output_dir,
+            source_name=config.source_name,
+            target_phase=config.target_phase,
+            force_phase=config.force_phase,
+            contract=config.contract,
+        )
+        source_id = setup.source_id
+        session = setup.session
 
         logger.debug(
             "pipeline_run_started",
@@ -335,92 +172,8 @@ def run(config: RunConfig) -> Result[RunResult]:
             target_phase=config.target_phase,
         )
 
-        # Load pipeline configuration from YAML
-        pipeline_yaml_config = load_pipeline_config()
-
-        # Load per-phase configs
-        active_phase_names = pipeline_yaml_config.get("phases", [])
-        phase_configs = {name: load_phase_config(name) for name in active_phase_names}
-
-        # Build runtime config passed to every phase
-        if multi_source_mode and registered_sources:
-            runtime_config: dict[str, Any] = {
-                "source_name": "multi_source",
-                "registered_sources": registered_sources,
-                "source_set_fingerprint": fingerprint,
-            }
-        else:
-            assert config.source_path is not None
-            runtime_config = {
-                "source_path": str(config.source_path),
-                "source_name": config.source_name or config.source_path.stem,
-            }
-
-        # Build phase dict from registry
-        registry = get_registry()
-        phases: dict[str, Phase] = {name: cls() for name, cls in registry.items()}
-
-        # Filter phases if target_phase is set
-        if config.target_phase:
-            deps = get_all_dependencies(config.target_phase)
-            keep = deps | {config.target_phase}
-            phases = {n: p for n, p in phases.items() if n in keep}
-
-        # Load contract thresholds
-        thresholds: dict[str, float] = {}
-        if config.contract:
-            from dataraum.entropy.contracts import get_contract
-
-            contract_obj = get_contract(config.contract)
-            if contract_obj:
-                thresholds = contract_obj.dimension_thresholds
-
-        # Create PipelineRun record
-        session = manager.get_session()
-        duckdb_conn = manager._duckdb_conn  # noqa: SLF001
-        run_id = str(uuid4())
-        run_record = PipelineRun(
-            run_id=run_id,
-            source_id=source_id,
-            status="running",
-            config={
-                "target_phase": config.target_phase,
-                "force_phase": config.force_phase,
-                "source_set_fingerprint": fingerprint,
-            },
-        )
-        session.add(run_record)
-        session.flush()
-
-        # Force-clean target phase before scheduling
-        if config.force_phase and config.target_phase:
-            from dataraum.pipeline.cleanup import cleanup_phase
-
-            assert duckdb_conn is not None
-            cleanup_phase(config.target_phase, source_id, session, duckdb_conn)
-            session.flush()
-
-        # Create fix executor
-        from dataraum.entropy.fix_executor import FixExecutor, get_default_action_registry
-
-        action_registry = get_default_action_registry()
-        fix_executor = FixExecutor(action_registry)
-
-        # Create scheduler
-        scheduler = PipelineScheduler(
-            phases=phases,
-            source_id=source_id,
-            run_id=run_id,
-            session=session,
-            duckdb_conn=duckdb_conn,
-            contract_thresholds=thresholds,
-            fix_executor=fix_executor,
-            phase_configs=phase_configs,
-            runtime_config=runtime_config,
-        )
-
         # Drive the generator — collect events, auto-defer gates
-        gen = scheduler.run()
+        gen = setup.scheduler.run()
         collected_events: list[PipelineEvent] = []
         pipeline_result: PipelineResult | None = None
 
@@ -459,7 +212,7 @@ def run(config: RunConfig) -> Result[RunResult]:
         duration = time.time() - start_time
 
         # Read phase logs for detailed results
-        logs_stmt = select(PhaseLog).where(PhaseLog.run_id == run_id)
+        logs_stmt = select(PhaseLog).where(PhaseLog.run_id == setup.run_id)
         phase_logs = {
             log.phase_name: log for log in session.execute(logs_stmt).scalars().all()
         }
@@ -487,7 +240,7 @@ def run(config: RunConfig) -> Result[RunResult]:
 
         # Commit session and close connections
         session.commit()
-        manager.close()
+        setup.manager.close()
 
         logger.debug(
             "pipeline_run_completed",
@@ -568,7 +321,7 @@ def _print_run_result(run_result: RunResult, config: RunConfig, warnings: list[s
         print("Phase Results")
         print("-" * 60)
         for phase in run_result.phases:
-            status_icon = {"completed": "✓", "failed": "✗", "skipped": "○"}.get(phase.status, "?")
+            status_icon = {"completed": "\u2713", "failed": "\u2717", "skipped": "\u25cb"}.get(phase.status, "?")
             duration_str = f" ({phase.duration_seconds:.1f}s)" if phase.duration_seconds > 0 else ""
             print(f"  {status_icon} {phase.phase_name}: {phase.status}{duration_str}")
             if phase.error:

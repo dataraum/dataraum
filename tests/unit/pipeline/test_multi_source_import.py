@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.phases.import_phase import ImportPhase
-from dataraum.pipeline.runner import _compute_source_set_fingerprint
+from dataraum.pipeline.setup import _compute_source_set_fingerprint
 
 
 class TestColumnLimit:

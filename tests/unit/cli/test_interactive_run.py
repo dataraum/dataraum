@@ -366,8 +366,8 @@ class TestSummaryDisplay:
         )
 
         rendered = output.getvalue()
-        assert "Completed" in rendered
-        assert "Failed" in rendered
-        assert "Skipped" in rendered
+        assert "completed" in rendered
+        assert "failed" in rendered
+        assert "skipped" in rendered
         assert "2" in rendered  # 2 completed
         assert "1" in rendered  # 1 failed

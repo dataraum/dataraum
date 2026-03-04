@@ -12,7 +12,6 @@ from typing import Annotated
 import typer
 from rich.console import Console
 from rich.status import Status
-from sqlalchemy.orm import Session
 
 from dataraum.cli.common import console, setup_logging
 from dataraum.cli.gate_handler import handle_exit_check, render_fix_result
@@ -20,6 +19,7 @@ from dataraum.entropy.fix_executor import ActionRegistry
 from dataraum.pipeline.events import EventType, PipelineEvent
 from dataraum.pipeline.runner import GateMode
 from dataraum.pipeline.scheduler import PipelineResult, Resolution
+from dataraum.pipeline.setup import setup_pipeline
 
 
 def run(
@@ -188,8 +188,8 @@ def run(
             except (KeyboardInterrupt, EOFError):
                 pass
 
-    # Setup pipeline and drive it
-    gen, action_registry, session = _setup_pipeline(
+    # Setup pipeline using shared logic
+    setup = setup_pipeline(
         source_path=source_path,
         output_dir=output,
         source_name=name,
@@ -197,6 +197,8 @@ def run(
         force_phase=force,
         contract=contract,
     )
+
+    gen = setup.scheduler.run()
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=RuntimeWarning, module="numpy")
@@ -206,145 +208,12 @@ def run(
             gen=gen,
             console=console,
             gate_mode=resolved_gate_mode,
-            action_registry=action_registry,
+            action_registry=setup.action_registry,
             quiet=quiet,
         )
 
-    session.commit()
+    setup.session.commit()
     raise typer.Exit(0 if result.success else 1)
-
-
-def _setup_pipeline(
-    *,
-    source_path: Path | None,
-    output_dir: Path,
-    source_name: str | None,
-    target_phase: str | None,
-    force_phase: bool,
-    contract: str | None,
-) -> tuple[
-    Generator[PipelineEvent, Resolution | None, PipelineResult],
-    ActionRegistry | None,
-    Session,
-]:
-    """Create PipelineScheduler and return its generator.
-
-    Returns:
-        Tuple of (generator, action_registry, session).
-    """
-    from typing import Any
-    from uuid import uuid4
-
-    from sqlalchemy import select
-
-    from dataraum.core.config import load_phase_config, load_pipeline_config
-    from dataraum.core.connections import ConnectionConfig, ConnectionManager
-    from dataraum.entropy.fix_executor import (
-        FixExecutor,
-        get_default_action_registry,
-    )
-    from dataraum.pipeline.base import Phase
-    from dataraum.pipeline.db_models import PipelineRun
-    from dataraum.pipeline.registry import get_all_dependencies, get_registry
-    from dataraum.pipeline.scheduler import PipelineScheduler
-    from dataraum.storage import Source
-
-    # 1. Initialize storage
-    output_dir.mkdir(parents=True, exist_ok=True)
-    conn_config = ConnectionConfig.for_directory(output_dir)
-    manager = ConnectionManager(conn_config)
-    manager.initialize()
-
-    session = manager.get_session()
-    duckdb_conn = manager._duckdb_conn  # noqa: SLF001
-
-    # 2. Resolve source_id
-    source_id: str
-    if source_path is not None:
-        resolved_name = source_name or source_path.stem
-        existing = session.execute(
-            select(Source).where(Source.name == resolved_name)
-        ).scalar_one_or_none()
-        source_id = existing.source_id if existing else str(uuid4())
-    else:
-        existing = session.execute(
-            select(Source).where(Source.name == "multi_source")
-        ).scalar_one_or_none()
-        source_id = existing.source_id if existing else str(uuid4())
-
-    # 3. Load pipeline and phase configs
-    pipeline_yaml_config = load_pipeline_config()
-    active_phase_names = pipeline_yaml_config.get("phases", [])
-    phase_configs = {name: load_phase_config(name) for name in active_phase_names}
-
-    # Build runtime config
-    runtime_config: dict[str, Any]
-    if source_path is not None:
-        runtime_config = {
-            "source_path": str(source_path),
-            "source_name": source_name or source_path.stem,
-        }
-    else:
-        runtime_config = {
-            "source_name": "multi_source",
-        }
-
-    # 4. Load phases from registry
-    registry = get_registry()
-    phases: dict[str, Phase] = {name: cls() for name, cls in registry.items()}
-
-    # 5. Filter phases if --phase set
-    if target_phase:
-        deps = get_all_dependencies(target_phase)
-        keep = deps | {target_phase}
-        phases = {n: p for n, p in phases.items() if n in keep}
-
-    # 6. Create PipelineRun record
-    run_id = str(uuid4())
-    run_record = PipelineRun(
-        run_id=run_id,
-        source_id=source_id,
-        status="running",
-        config={"target_phase": target_phase, "force_phase": force_phase},
-    )
-    session.add(run_record)
-    session.flush()
-
-    # 6b. Force-clean target phase before scheduling
-    if force_phase and target_phase:
-        from dataraum.pipeline.cleanup import cleanup_phase
-
-        assert duckdb_conn is not None
-        cleanup_phase(target_phase, source_id, session, duckdb_conn)
-        session.flush()
-
-    # 7. Load contract thresholds
-    thresholds: dict[str, float] = {}
-    if contract:
-        from dataraum.entropy.contracts import get_contract
-
-        contract_obj = get_contract(contract)
-        if contract_obj:
-            thresholds = contract_obj.dimension_thresholds
-
-    # 8. Create fix executor
-    action_registry = get_default_action_registry()
-    fix_executor = FixExecutor(action_registry)
-
-    # 9. Create scheduler and return generator
-    scheduler = PipelineScheduler(
-        phases=phases,
-        source_id=source_id,
-        run_id=run_id,
-        session=session,
-        duckdb_conn=duckdb_conn,
-        contract_thresholds=thresholds,
-        fix_executor=fix_executor,
-        phase_configs=phase_configs,
-        runtime_config=runtime_config,
-    )
-
-    return scheduler.run(), action_registry, session
 
 
 @dataclass
@@ -505,7 +374,7 @@ def _print_phase_completed(console: Console, event: PipelineEvent) -> None:
     if event.records_created:
         details.append(f"{event.records_created:,} created")
     if details:
-        parts[0] += f" [dim]— {', '.join(details)}[/dim]"
+        parts[0] += f" [dim]\u2014 {', '.join(details)}[/dim]"
 
     console.print(parts[0])
 

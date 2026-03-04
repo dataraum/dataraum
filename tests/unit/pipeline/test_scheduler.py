@@ -942,3 +942,155 @@ class TestThresholdMatching:
             contract_thresholds={"semantic.units": 0.3},
         )
         assert scheduler._match_threshold("structural.types.type_fidelity") is None
+
+
+class TestParallelExecution:
+    """Tests for ThreadPoolExecutor-based parallel phase execution."""
+
+    def test_parallel_diamond_with_session_factory(self, session: Session, duckdb_conn, engine):
+        """With session_factory, B and C in diamond run via ThreadPoolExecutor."""
+        from contextlib import contextmanager
+
+        from sqlalchemy.orm import sessionmaker
+
+        factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+        @contextmanager
+        def session_scope():
+            s = factory()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        run_id = _make_run(session)
+        a = MockPhase("A")
+        b = MockPhase("B", dependencies=["A"])
+        c = MockPhase("C", dependencies=["A"])
+        d = MockPhase("D", dependencies=["B", "C"])
+
+        scheduler = PipelineScheduler(
+            phases={"A": a, "B": b, "C": c, "D": d},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            session_factory=session_scope,
+        )
+
+        events, result = _drive(scheduler.run())
+
+        assert result.success is True
+        assert set(result.phases_completed) == {"A", "B", "C", "D"}
+
+        # B and C should both have STARTED events before D
+        started = [e.phase for e in events if e.event_type == EventType.PHASE_STARTED]
+        assert started[0] == "A"
+        assert started[-1] == "D"
+        assert set(started[1:3]) == {"B", "C"}
+
+    def test_sequential_fallback_without_session_factory(self, session: Session, duckdb_conn):
+        """Without session_factory, falls back to sequential even with multiple ready."""
+        run_id = _make_run(session)
+        a = MockPhase("A")
+        b = MockPhase("B", dependencies=["A"])
+        c = MockPhase("C", dependencies=["A"])
+
+        scheduler = PipelineScheduler(
+            phases={"A": a, "B": b, "C": c},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            # No session_factory → sequential
+        )
+
+        events, result = _drive(scheduler.run())
+
+        assert result.success is True
+        assert a.run_count == 1
+        assert b.run_count == 1
+        assert c.run_count == 1
+
+    def test_parallel_phase_failure(self, session: Session, duckdb_conn, engine):
+        """A failing phase in parallel wave doesn't crash other phases."""
+        from contextlib import contextmanager
+
+        from sqlalchemy.orm import sessionmaker
+
+        factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+        @contextmanager
+        def session_scope():
+            s = factory()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        run_id = _make_run(session)
+        a = MockPhase("A")
+        b = MockPhase("B", dependencies=["A"], should_fail=True)
+        c = MockPhase("C", dependencies=["A"])
+
+        scheduler = PipelineScheduler(
+            phases={"A": a, "B": b, "C": c},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            session_factory=session_scope,
+        )
+
+        events, result = _drive(scheduler.run())
+
+        assert result.success is False
+        assert "B" in result.phases_failed
+        assert "C" in result.phases_completed
+
+    def test_single_ready_phase_runs_sequentially(self, session: Session, duckdb_conn, engine):
+        """Single phase in wave uses sequential path even with session_factory."""
+        from contextlib import contextmanager
+
+        from sqlalchemy.orm import sessionmaker
+
+        factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+        @contextmanager
+        def session_scope():
+            s = factory()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        run_id = _make_run(session)
+        a = MockPhase("A")
+        b = MockPhase("B", dependencies=["A"])
+
+        scheduler = PipelineScheduler(
+            phases={"A": a, "B": b},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            session_factory=session_scope,
+        )
+
+        events, result = _drive(scheduler.run())
+
+        # Both phases run successfully — each was the only phase in its wave
+        assert result.success is True
+        assert result.phases_completed == ["A", "B"]

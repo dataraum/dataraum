@@ -6,11 +6,11 @@ Contract-driven approach that uses entropy thresholds and fix replay.
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from collections.abc import Generator
+from collections.abc import Callable, Generator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
-from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import select
@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.entropy.fix_executor import FixExecutor, FixRequest, FixResult
-from dataraum.pipeline.base import Phase, PhaseContext, PhaseStatus
+from dataraum.pipeline.base import Phase, PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.cleanup import cleanup_phase
 from dataraum.pipeline.db_models import Fix, PhaseLog
 from dataraum.pipeline.events import EventType, PipelineEvent
@@ -138,6 +138,10 @@ class PipelineScheduler:
     def run(self) -> Generator[PipelineEvent, Resolution | None, PipelineResult]:
         """Execute the pipeline as a generator.
 
+        Phases in the same dependency wave run concurrently when a
+        session_factory is available.  Post-processing (phase log writes,
+        fix replay, post-verification) always runs on the main thread.
+
         Yields:
             PipelineEvent for each lifecycle event.
 
@@ -152,11 +156,11 @@ class PipelineScheduler:
 
         try:
             while ready := self._ready_phases():
+                # 1. Check should_skip on main thread
+                to_run: list[str] = []
                 for phase_name in ready:
                     phase = self.phases[phase_name]
                     ctx = self._build_context(phase_name)
-
-                    # 1. Check should_skip
                     skip_reason = phase.should_skip(ctx)
                     if skip_reason:
                         self._state[phase_name] = PhaseStatus.SKIPPED
@@ -167,67 +171,18 @@ class PipelineScheduler:
                             total=total,
                             message=skip_reason,
                         )
-                        continue
+                    else:
+                        to_run.append(phase_name)
 
-                    # 2. Execute
-                    yield self._event(
-                        EventType.PHASE_STARTED, phase=phase_name, total=total
-                    )
-                    started_at = datetime.now(UTC)
-                    result = phase.run(ctx)
+                if not to_run:
+                    continue
 
-                    if result.status == PhaseStatus.FAILED:
-                        self._state[phase_name] = PhaseStatus.FAILED
-                        self._write_phase_log(
-                            phase_name,
-                            "failed",
-                            started_at=started_at,
-                            duration=result.duration_seconds,
-                            error=result.error,
-                        )
-                        yield self._event(
-                            EventType.PHASE_FAILED,
-                            phase=phase_name,
-                            total=total,
-                            error=result.error or "",
-                            duration_seconds=result.duration_seconds,
-                        )
-                        continue
-
-                    self._state[phase_name] = PhaseStatus.COMPLETED
-                    self._write_phase_log(
-                        phase_name,
-                        "completed",
-                        started_at=started_at,
-                        duration=result.duration_seconds,
-                        outputs=result.outputs or None,
-                    )
-                    yield self._event(
-                        EventType.PHASE_COMPLETED,
-                        phase=phase_name,
-                        total=total,
-                        duration_seconds=result.duration_seconds,
-                        records_processed=result.records_processed,
-                        records_created=result.records_created,
-                        warnings=result.warnings,
-                    )
-
-                    # 3. Replay active fixes for this phase
-                    self._replay_fixes(phase_name)
-
-                    # 4. Post-verify (run hard detectors)
-                    scores = self._post_verify(phase_name)
-                    if scores:
-                        yield self._event(
-                            EventType.POST_VERIFICATION,
-                            phase=phase_name,
-                            total=total,
-                            scores=scores,
-                        )
-
-                    # 5. Assess contract impact
-                    issues = self._assess_impact(scores, phase_name)
-                    self._pending_issues.extend(issues)
+                # 2. Execute phases
+                use_parallel = len(to_run) > 1 and self.session_factory is not None
+                if use_parallel:
+                    yield from self._run_parallel(to_run, total)
+                else:
+                    yield from self._run_sequential(to_run, total)
 
                 # Natural pause — all ready phases in this wave done
                 if self._pending_issues:
@@ -268,6 +223,138 @@ class PipelineScheduler:
             final_scores=dict(self._scores),
             deferred_issues=list(self._deferred_issues),
         )
+
+    def _run_phase(self, phase_name: str) -> tuple[PhaseResult, datetime]:
+        """Execute a single phase, optionally with its own session.
+
+        When session_factory is available, creates a per-phase session that
+        auto-commits on exit (safe for threaded use). Falls back to the
+        shared session when session_factory is None (unit tests).
+
+        Returns:
+            Tuple of (PhaseResult, started_at timestamp).
+        """
+        phase = self.phases[phase_name]
+        started_at = datetime.now(UTC)
+
+        if self.session_factory is not None:
+            with self.session_factory() as phase_session:
+                config: dict[str, Any] = {}
+                config.update(self._phase_configs.get(phase_name, {}))
+                config.update(self._runtime_config)
+                ctx = PhaseContext(
+                    session=phase_session,
+                    duckdb_conn=self.duckdb_conn,
+                    source_id=self.source_id,
+                    config=config,
+                    session_factory=self.session_factory,
+                    manager=self.manager,
+                )
+                result = phase.run(ctx)
+        else:
+            ctx = self._build_context(phase_name)
+            result = phase.run(ctx)
+
+        return result, started_at
+
+    def _post_process_phase(
+        self, phase_name: str, result: PhaseResult, started_at: datetime, total: int
+    ) -> Generator[PipelineEvent]:
+        """Post-process a completed phase on the main thread.
+
+        Writes phase log, yields events, replays fixes, runs post-verification.
+        """
+        if result.status == PhaseStatus.FAILED:
+            self._state[phase_name] = PhaseStatus.FAILED
+            self._write_phase_log(
+                phase_name,
+                "failed",
+                started_at=started_at,
+                duration=result.duration_seconds,
+                error=result.error,
+            )
+            yield self._event(
+                EventType.PHASE_FAILED,
+                phase=phase_name,
+                total=total,
+                error=result.error or "",
+                duration_seconds=result.duration_seconds,
+            )
+            return
+
+        self._state[phase_name] = PhaseStatus.COMPLETED
+        self._write_phase_log(
+            phase_name,
+            "completed",
+            started_at=started_at,
+            duration=result.duration_seconds,
+            outputs=result.outputs or None,
+        )
+        yield self._event(
+            EventType.PHASE_COMPLETED,
+            phase=phase_name,
+            total=total,
+            duration_seconds=result.duration_seconds,
+            records_processed=result.records_processed,
+            records_created=result.records_created,
+            warnings=result.warnings,
+        )
+
+        # Replay active fixes for this phase
+        self._replay_fixes(phase_name)
+
+        # Post-verify (run hard detectors)
+        scores = self._post_verify(phase_name)
+        if scores:
+            yield self._event(
+                EventType.POST_VERIFICATION,
+                phase=phase_name,
+                total=total,
+                scores=scores,
+            )
+
+        # Assess contract impact
+        issues = self._assess_impact(scores, phase_name)
+        self._pending_issues.extend(issues)
+
+    def _run_sequential(
+        self, phase_names: list[str], total: int
+    ) -> Generator[PipelineEvent]:
+        """Run phases sequentially (single phase or no session_factory)."""
+        for phase_name in phase_names:
+            yield self._event(EventType.PHASE_STARTED, phase=phase_name, total=total)
+            result, started_at = self._run_phase(phase_name)
+            yield from self._post_process_phase(phase_name, result, started_at, total)
+
+    def _run_parallel(
+        self, phase_names: list[str], total: int
+    ) -> Generator[PipelineEvent]:
+        """Run phases concurrently via ThreadPoolExecutor.
+
+        PHASE_STARTED events are yielded for all phases before execution.
+        Results are post-processed on the main thread as they complete.
+        """
+        # Yield STARTED for all phases in this wave
+        for phase_name in phase_names:
+            yield self._event(EventType.PHASE_STARTED, phase=phase_name, total=total)
+
+        max_workers = min(len(phase_names), 4)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(self._run_phase, name): name
+                for name in phase_names
+            }
+            for future in as_completed(futures):
+                phase_name = futures[future]
+                try:
+                    result, started_at = future.result()
+                except Exception as exc:
+                    # Phase raised an unhandled exception
+                    result = PhaseResult.failed(str(exc))
+                    started_at = datetime.now(UTC)
+                yield from self._post_process_phase(
+                    phase_name, result, started_at, total
+                )
 
     # ------------------------------------------------------------------
     # Private helpers

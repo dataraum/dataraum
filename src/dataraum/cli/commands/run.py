@@ -310,6 +310,7 @@ def _setup_pipeline(
     if force_phase and target_phase:
         from dataraum.pipeline.cleanup import cleanup_phase
 
+        assert duckdb_conn is not None
         cleanup_phase(target_phase, source_id, session, duckdb_conn)
         session.flush()
 

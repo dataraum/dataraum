@@ -397,6 +397,7 @@ def run(config: RunConfig) -> Result[RunResult]:
         if config.force_phase and config.target_phase:
             from dataraum.pipeline.cleanup import cleanup_phase
 
+            assert duckdb_conn is not None
             cleanup_phase(config.target_phase, source_id, session, duckdb_conn)
             session.flush()
 

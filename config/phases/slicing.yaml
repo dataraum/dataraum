@@ -5,5 +5,10 @@
 # E.g. 0.01 = a value must represent at least 1% of the table's rows.
 min_row_fraction: 0.01
 
+# Maximum number of slice values per dimension after min_row_fraction filtering.
+# When more values survive, the top-N by row count are kept.
+# Quality analysis benefits from moderate cardinality (3-10 values).
+max_slices_per_dimension: 10
+
 # Maximum number of slice dimension recommendations across all tables
 max_recommendations: 6

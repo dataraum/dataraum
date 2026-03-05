@@ -38,9 +38,13 @@ class DetectorContext:
     table_name: str = ""
     column_id: str | None = None
     column_name: str = ""
+    view_name: str = ""
 
     # SQLAlchemy session for detector-driven data loading
     session: Session | None = None
+
+    # DuckDB connection for data queries
+    duckdb_conn: Any = None
 
     # Analysis results from other modules (keyed by module name)
     # e.g., {"typing": TypeCandidate, "statistics": ColumnProfile, ...}
@@ -52,7 +56,9 @@ class DetectorContext:
     @property
     def target_ref(self) -> str:
         """Get the target reference string."""
-        if self.column_name:
+        if self.view_name:
+            return f"view:{self.view_name}"
+        elif self.column_name:
             return f"column:{self.table_name}.{self.column_name}"
         elif self.table_name:
             return f"table:{self.table_name}"
@@ -349,8 +355,10 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
     registry.register(DimensionalEntropyDetector())
 
     from dataraum.entropy.detectors.semantic.column_quality import ColumnQualityDetector
+    from dataraum.entropy.detectors.semantic.dimension_coverage import DimensionCoverageDetector
 
     registry.register(ColumnQualityDetector())
+    registry.register(DimensionCoverageDetector())
 
     # Computational layer detectors
     from dataraum.entropy.detectors.computational.derived_values import (

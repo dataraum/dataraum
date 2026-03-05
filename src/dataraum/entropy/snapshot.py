@@ -42,6 +42,29 @@ class Snapshot:
         return self.scores.get(sub_dimension)
 
 
+def _resolve_view_target(
+    session: Session,
+    target: str,
+) -> tuple[str, str, str] | None:
+    """Parse view target string and resolve to (view_id, view_name, fact_table_id).
+
+    Supports format: "view:{view_name}"
+
+    Returns None if target cannot be resolved.
+    """
+    from dataraum.analysis.views.db_models import EnrichedView
+
+    ref = target.split(":", 1)[1] if ":" in target else target
+
+    view = session.execute(
+        select(EnrichedView).where(EnrichedView.view_name == ref)
+    ).scalar_one_or_none()
+    if not view:
+        return None
+
+    return view.view_id, view.view_name, view.fact_table_id
+
+
 def _resolve_table_target(
     session: Session,
     target: str,
@@ -130,6 +153,8 @@ def _run_detectors(
             table_name=context.table_name,
             column_id=context.column_id,
             column_name=context.column_name,
+            view_name=context.view_name,
+            duckdb_conn=context.duckdb_conn,
             # Copy pre-populated analysis_results (for test/legacy paths)
             analysis_results=dict(context.analysis_results),
         )
@@ -185,9 +210,26 @@ def take_snapshot(
         Snapshot with scores from all applicable detectors
     """
     registry = get_default_registry()
+    is_view_target = target.startswith("view:")
     is_table_target = target.startswith("table:")
 
-    if is_table_target:
+    if is_view_target:
+        resolved_view = _resolve_view_target(session, target)
+        if resolved_view is None:
+            logger.warning(f"Cannot resolve view target for snapshot: {target}")
+            return Snapshot(scores={}, detectors_run=[])
+
+        view_id, view_name, fact_table_id = resolved_view
+
+        context = DetectorContext(
+            session=session,
+            table_id=fact_table_id,
+            view_name=view_name,
+            duckdb_conn=duckdb_conn,
+        )
+
+        detectors = [d for d in registry.get_all_detectors() if d.scope == "view"]
+    elif is_table_target:
         resolved = _resolve_table_target(session, target)
         if resolved is None:
             logger.warning(f"Cannot resolve table target for snapshot: {target}")
@@ -199,6 +241,7 @@ def take_snapshot(
             session=session,
             table_id=table_id,
             table_name=table_name,
+            duckdb_conn=duckdb_conn,
         )
 
         detectors = [d for d in registry.get_all_detectors() if d.scope == "table"]
@@ -216,6 +259,7 @@ def take_snapshot(
             column_id=column_id,
             table_name=table_name,
             column_name=column_name,
+            duckdb_conn=duckdb_conn,
         )
 
         detectors = [d for d in registry.get_all_detectors() if d.scope == "column"]

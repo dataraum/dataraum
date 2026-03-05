@@ -60,6 +60,10 @@ class EnrichedViewsPhase(BasePhase):
         return "Create enriched views joining fact + dimension tables"
 
     @property
+    def post_verification(self) -> list[str]:
+        return ["dimension_coverage"]
+
+    @property
     def dependencies(self) -> list[str]:
         return ["semantic"]
 

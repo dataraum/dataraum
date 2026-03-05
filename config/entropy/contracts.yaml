@@ -24,6 +24,7 @@ contracts:
       semantic.units: 0.4
       semantic.temporal: 0.5
       semantic.dimensional: 0.5  # Cross-column patterns and business rules
+      semantic.coverage: 0.5    # Dimension column NULL rates on enriched views
       value.nulls: 0.5
       value.outliers: 0.5
       computational.derived_values: 0.5
@@ -50,6 +51,7 @@ contracts:
       semantic.units: 0.3         # Units affect feature scaling
       semantic.temporal: 0.4      # Temporal patterns are features
       semantic.dimensional: 0.4   # Cross-column patterns for feature engineering
+      semantic.coverage: 0.4     # NULLs in dimensions affect feature quality
       value.nulls: 0.3           # Nulls affect model quality
       value.outliers: 0.3        # Outliers affect training
       computational.derived_values: 0.4
@@ -76,6 +78,7 @@ contracts:
       semantic.units: 0.3
       semantic.temporal: 0.4
       semantic.dimensional: 0.35  # Cross-column patterns affect operational reports
+      semantic.coverage: 0.35    # Ops reports need reliable dimension columns
       value.nulls: 0.4
       value.outliers: 0.4
       computational.derived_values: 0.3
@@ -101,6 +104,7 @@ contracts:
       semantic.units: 0.2         # Unit consistency is critical — can't sum kg + lbs
       semantic.temporal: 0.5      # Temporal less critical for aggregation
       semantic.dimensional: 0.4   # Cross-column patterns moderately important
+      semantic.coverage: 0.4     # Dims used for GROUP BY need coverage
       value.nulls: 0.25          # Nulls directly distort COUNT/AVG
       value.outliers: 0.3        # Outliers skew averages
       computational.derived_values: 0.3
@@ -126,6 +130,7 @@ contracts:
       semantic.units: 0.2
       semantic.temporal: 0.2
       semantic.dimensional: 0.25  # Cross-column patterns must be documented for executives
+      semantic.coverage: 0.25    # Execs need complete dimension data
       value.nulls: 0.3
       value.outliers: 0.3
       computational.derived_values: 0.2
@@ -151,6 +156,7 @@ contracts:
       semantic.units: 0.1
       semantic.temporal: 0.1
       semantic.dimensional: 0.1  # All cross-column business rules must be documented
+      semantic.coverage: 0.1    # Near-zero tolerance for dimension NULLs
       value.nulls: 0.1
       value.outliers: 0.2      # Slightly more tolerance for outliers
       computational.derived_values: 0.1

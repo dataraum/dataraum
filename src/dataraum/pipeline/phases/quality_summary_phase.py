@@ -133,7 +133,7 @@ class QualitySummaryPhase(BasePhase):
 
     @property
     def post_verification(self) -> list[str]:
-        return ["cross_column_patterns"]
+        return ["cross_column_patterns", "column_quality"]
 
     @property
     def db_models(self) -> list[ModuleType]:

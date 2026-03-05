@@ -569,6 +569,34 @@ class PipelineScheduler:
                 for sub_dim, score in snapshot.scores.items():
                     scores_by_dim[sub_dim].append(score)
 
+        # View-scoped pass
+        view_sub_dims = {d.sub_dimension for d in registry.get_all_detectors() if d.scope == "view"}
+        view_dims = [d for d in dims if d in view_sub_dims]
+
+        if view_dims:
+            from dataraum.analysis.views.db_models import EnrichedView
+
+            enriched_views = (
+                self.session.execute(
+                    select(EnrichedView).where(
+                        EnrichedView.fact_table_id.in_([t.table_id for t in typed_tables])
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            for ev in enriched_views:
+                target = f"view:{ev.view_name}"
+                snapshot = take_snapshot(
+                    target=target,
+                    session=self.session,
+                    duckdb_conn=self.duckdb_conn,
+                    dimensions=view_dims,
+                )
+                for sub_dim, score in snapshot.scores.items():
+                    scores_by_dim[sub_dim].append(score)
+
         # Build sub_dimension -> dimension_path mapping
         sub_dim_to_path = {
             d.sub_dimension: d.dimension_path

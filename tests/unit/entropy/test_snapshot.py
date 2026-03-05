@@ -411,3 +411,104 @@ class TestTakeSnapshotTableScope:
 
         assert snap.scores == {}
         assert snap.detectors_run == []
+
+
+# --- View-scope stub ---
+
+
+class StubViewDetector(EntropyDetector):
+    """A stub view-scoped detector for testing."""
+
+    detector_id = "stub_view"
+    layer = "semantic"
+    dimension = "coverage"
+    sub_dimension = "dimension_coverage"
+    scope = "view"
+
+    required_analyses = ["enriched_view"]
+
+    def load_data(self, context: DetectorContext) -> None:
+        context.analysis_results["enriched_view"] = MagicMock(
+            dimension_columns=["dim__col"], view_name="enriched_orders"
+        )
+
+    def detect(self, context: DetectorContext) -> list[EntropyObject]:
+        return [self.create_entropy_object(context, score=0.4)]
+
+
+# --- View-scope take_snapshot ---
+
+
+class TestTakeSnapshotViewScope:
+    def test_view_target_resolves(self):
+        """View target runs view-scoped detectors."""
+        registry = DetectorRegistry()
+        registry.register(StubViewDetector())
+        registry.register(PreloadingStubTypingDetector())  # column-scoped
+
+        with (
+            patch(
+                "dataraum.entropy.snapshot._resolve_view_target",
+                return_value=("v1", "enriched_orders", "tbl1"),
+            ),
+            patch(
+                "dataraum.entropy.snapshot.get_default_registry",
+                return_value=registry,
+            ),
+        ):
+            snap = take_snapshot("view:enriched_orders", session=MagicMock())
+
+        assert "dimension_coverage" in snap.scores
+        assert "stub_view" in snap.detectors_run
+
+    def test_view_target_skips_column_detectors(self):
+        """View targets only run scope='view' detectors, not column."""
+        registry = DetectorRegistry()
+        registry.register(StubViewDetector())
+        registry.register(PreloadingStubTypingDetector())  # column-scoped
+
+        with (
+            patch(
+                "dataraum.entropy.snapshot._resolve_view_target",
+                return_value=("v1", "enriched_orders", "tbl1"),
+            ),
+            patch(
+                "dataraum.entropy.snapshot.get_default_registry",
+                return_value=registry,
+            ),
+        ):
+            snap = take_snapshot("view:enriched_orders", session=MagicMock())
+
+        assert "stub_typing" not in snap.detectors_run
+
+    def test_column_target_skips_view_detectors(self):
+        """Column targets skip scope='view' detectors."""
+        registry = DetectorRegistry()
+        registry.register(PreloadingStubTypingDetector())
+        registry.register(StubViewDetector())
+
+        with (
+            patch(
+                "dataraum.entropy.snapshot._resolve_column_target",
+                return_value=("tbl1", "col1", "orders", "amount"),
+            ),
+            patch(
+                "dataraum.entropy.snapshot.get_default_registry",
+                return_value=registry,
+            ),
+        ):
+            snap = take_snapshot("column:orders.amount", session=MagicMock())
+
+        assert "stub_typing" in snap.detectors_run
+        assert "stub_view" not in snap.detectors_run
+
+    def test_unresolvable_view_target(self):
+        """Unresolvable view target returns empty snapshot."""
+        with patch(
+            "dataraum.entropy.snapshot._resolve_view_target",
+            return_value=None,
+        ):
+            snap = take_snapshot("view:missing", session=MagicMock())
+
+        assert snap.scores == {}
+        assert snap.detectors_run == []

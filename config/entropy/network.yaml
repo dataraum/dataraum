@@ -49,6 +49,12 @@ nodes:
     sub_dimension: benford_compliance
     prior: [0.6, 0.25, 0.15]
 
+  dimension_coverage:
+    layer: semantic
+    dimension: coverage
+    sub_dimension: dimension_coverage
+    prior: [0.5, 0.3, 0.2]
+
   # Observable children (2) - have detectors but also real causal parents
   join_path_determinism:
     layer: structural
@@ -95,6 +101,9 @@ edges:
   - [null_ratio, aggregation_safety, 0.7]
   - [outlier_rate, aggregation_safety, 0.6]
   - [unit_declaration, aggregation_safety, 0.9]
+  # dimension_coverage -> intent leaves
+  - [dimension_coverage, query_intent, 0.5]
+  - [dimension_coverage, reporting_intent, 0.6]
   # -> query_intent (6 parents)
   - [type_fidelity, query_intent, 0.7]
   - [join_path_determinism, query_intent, 0.8]

@@ -31,6 +31,7 @@ class Snapshot:
 
     scores: dict[str, float]  # sub_dimension -> score
     detectors_run: list[str]  # detector_ids that were executed
+    objects: tuple[EntropyObject, ...] = ()  # full EntropyObject instances
     measured_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def score_for(self, sub_dimension: str) -> float | None:
@@ -554,6 +555,7 @@ def _run_detectors(
     """Run a list of detectors against a context and return a Snapshot."""
     scores: dict[str, float] = {}
     detectors_run: list[str] = []
+    all_objects: list[EntropyObject] = []
 
     for detector in detectors:
         if not detector.can_run(context):
@@ -561,6 +563,7 @@ def _run_detectors(
         try:
             objects: list[EntropyObject] = detector.detect(context)
             detectors_run.append(detector.detector_id)
+            all_objects.extend(objects)
             for obj in objects:
                 scores[obj.sub_dimension] = obj.score
         except Exception:
@@ -569,7 +572,7 @@ def _run_detectors(
                 exc_info=True,
             )
 
-    return Snapshot(scores=scores, detectors_run=detectors_run)
+    return Snapshot(scores=scores, detectors_run=detectors_run, objects=tuple(all_objects))
 
 
 def take_snapshot(

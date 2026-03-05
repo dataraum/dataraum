@@ -41,6 +41,10 @@ class TestSnapshot:
         after = datetime.now(UTC)
         assert before <= snap.measured_at <= after
 
+    def test_objects_default_empty(self):
+        snap = Snapshot(scores={}, detectors_run=[])
+        assert snap.objects == ()
+
     def test_frozen(self):
         snap = Snapshot(scores={"a": 1.0}, detectors_run=[])
         with pytest.raises(AttributeError):
@@ -215,6 +219,37 @@ class TestTakeSnapshot:
         assert "type_fidelity" in snap.scores
         # FailingDetector was skipped
         assert "failing_detector" not in snap.detectors_run
+
+    def test_take_snapshot_returns_objects(self):
+        """Snapshot.objects contains the full EntropyObject instances."""
+        registry = DetectorRegistry()
+        registry.register(StubTypingDetector())
+        registry.register(StubSemanticDetector())
+
+        analysis = {"typing": {"parse_success_rate": 0.95}, "semantic": {"role": "measure"}}
+
+        with (
+            patch(
+                "dataraum.entropy.snapshot._resolve_column_target",
+                return_value=("tbl1", "col1", "orders", "amount"),
+            ),
+            patch(
+                "dataraum.entropy.snapshot.load_column_analysis",
+                return_value=analysis,
+            ),
+            patch(
+                "dataraum.entropy.snapshot.get_default_registry",
+                return_value=registry,
+            ),
+        ):
+            snap = take_snapshot("column:orders.amount", session=MagicMock())
+
+        assert len(snap.objects) == 2
+        sub_dims = {obj.sub_dimension for obj in snap.objects}
+        assert sub_dims == {"type_fidelity", "naming_clarity"}
+        # Each object is a full EntropyObject
+        for obj in snap.objects:
+            assert isinstance(obj, EntropyObject)
 
     def test_detector_missing_analysis_skipped(self):
         """Detectors whose required analyses are missing are skipped."""

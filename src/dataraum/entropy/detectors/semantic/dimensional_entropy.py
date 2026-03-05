@@ -19,6 +19,9 @@ from dataclasses import dataclass, field
 from math import log2
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from dataraum.core.logging import get_logger
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
@@ -199,12 +202,219 @@ class DimensionalEntropyDetector(EntropyDetector):
         """Load slice variance data for this table."""
         if context.session is None or context.table_id is None:
             return
-        from dataraum.entropy.detectors.loaders import load_slice_variance
 
-        result = load_slice_variance(context.session, context.table_id, context.table_name)
+        result = self._load_slice_variance(
+            context.session, context.table_id, context.table_name
+        )
         if result is not None:
             context.analysis_results["slice_variance"] = result["slice_variance"]
             context.analysis_results["drift_summaries"] = result["drift_summaries"]
+
+    @staticmethod
+    def _load_slice_variance(
+        session: Session,
+        table_id: str,
+        table_name: str,
+    ) -> dict[str, Any] | None:
+        """Load table-scoped slice variance data.
+
+        Returns dict with slice_variance and drift_summaries keys,
+        or None if no slice profiles exist.
+        """
+        from dataraum.analysis.quality_summary.db_models import ColumnSliceProfile
+        from dataraum.analysis.slicing.db_models import SliceDefinition
+        from dataraum.analysis.slicing.slice_runner import _get_slice_table_name
+        from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
+        from dataraum.storage import Column, Table
+
+        # Get columns for this typed table
+        table_columns = list(
+            session.execute(select(Column).where(Column.table_id == table_id)).scalars().all()
+        )
+        table_column_ids = [c.column_id for c in table_columns]
+
+        # Check for slicing_view table (FK-based scoping)
+        sv_table = session.execute(
+            select(Table).where(
+                Table.table_name == f"slicing_{table_name}",
+                Table.layer == "slicing_view",
+            )
+        ).scalar_one_or_none()
+
+        if sv_table:
+            sv_cols = (
+                session.execute(select(Column).where(Column.table_id == sv_table.table_id))
+                .scalars()
+                .all()
+            )
+            lookup_column_ids = [c.column_id for c in sv_cols]
+        else:
+            lookup_column_ids = table_column_ids
+
+        # Load column slice profiles
+        profiles = list(
+            session.execute(
+                select(ColumnSliceProfile).where(
+                    ColumnSliceProfile.source_column_id.in_(lookup_column_ids)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        if not profiles:
+            return None
+
+        # Build slice_data: slice_value -> column_name -> metrics
+        slice_data: dict[str, dict[str, dict[str, Any]]] = {}
+        columns_data: dict[str, dict[str, Any]] = {}
+
+        for profile in profiles:
+            slice_val = profile.slice_value
+            col_name = profile.column_name
+
+            if slice_val not in slice_data:
+                slice_data[slice_val] = {}
+
+            slice_data[slice_val][col_name] = {
+                "null_ratio": profile.null_ratio,
+                "distinct_count": profile.distinct_count,
+                "row_count": profile.row_count,
+                "quality_score": profile.quality_score,
+                "has_issues": profile.has_issues,
+            }
+
+            if col_name not in columns_data:
+                columns_data[col_name] = {
+                    "classification": profile.variance_classification or "stable",
+                    "null_ratios": [],
+                    "distinct_counts": [],
+                    "exceeded_thresholds": [],
+                }
+            if profile.null_ratio is not None:
+                columns_data[col_name]["null_ratios"].append(profile.null_ratio)
+            if profile.distinct_count is not None:
+                columns_data[col_name]["distinct_counts"].append(profile.distinct_count)
+
+        # Calculate variance metrics per column
+        for col_metrics in columns_data.values():
+            null_ratios = col_metrics.get("null_ratios", [])
+            distinct_counts = col_metrics.get("distinct_counts", [])
+
+            if null_ratios and len(null_ratios) > 1:
+                col_metrics["null_spread"] = max(null_ratios) - min(null_ratios)
+            else:
+                col_metrics["null_spread"] = 0.0
+
+            if distinct_counts and len(distinct_counts) > 1 and min(distinct_counts) > 0:
+                col_metrics["distinct_ratio"] = max(distinct_counts) / min(distinct_counts)
+            else:
+                col_metrics["distinct_ratio"] = 1.0
+
+            if col_metrics["null_spread"] > 0.1 or col_metrics["distinct_ratio"] > 2.0:
+                col_metrics["classification"] = "interesting"
+                if col_metrics["null_spread"] > 0.1:
+                    col_metrics["exceeded_thresholds"].append("null_spread")
+                if col_metrics["distinct_ratio"] > 2.0:
+                    col_metrics["exceeded_thresholds"].append("distinct_ratio")
+
+        # Load drift summaries for slice tables
+        col_name_by_id = {c.column_id: c.column_name for c in table_columns}
+        slice_defs = list(
+            session.execute(
+                select(SliceDefinition).where(SliceDefinition.table_id == table_id)
+            )
+            .scalars()
+            .all()
+        )
+
+        slice_table_names: list[str] = []
+        for sd in slice_defs:
+            sd_col_name = sd.column_name or col_name_by_id.get(sd.column_id)
+            if sd_col_name and sd.distinct_values:
+                for value in sd.distinct_values:
+                    slice_table_names.append(
+                        _get_slice_table_name(table_name, sd_col_name, value)
+                    )
+
+        drift_summaries: list[Any] = []
+        if slice_table_names:
+            drift_summaries = list(
+                session.execute(
+                    select(ColumnDriftSummary).where(
+                        ColumnDriftSummary.slice_table_name.in_(slice_table_names)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        # Build temporal_drift from drift summaries
+        temporal_drift: list[dict[str, Any]] = []
+        for ds in drift_summaries:
+            if ds.max_js_divergence > 0:
+                evidence = ds.drift_evidence_json or {}
+                change_points = evidence.get("change_points", [])
+                temporal_drift.append(
+                    {
+                        "column_name": ds.column_name,
+                        "js_divergence": ds.max_js_divergence,
+                        "has_significant_drift": ds.periods_with_drift > 0,
+                        "has_category_changes": bool(
+                            evidence.get("emerged_categories")
+                            or evidence.get("vanished_categories")
+                        ),
+                        "change_points": change_points,
+                    }
+                )
+
+        # Load temporal analyses
+        temporal_columns: dict[str, dict[str, Any]] = {}
+        if slice_table_names:
+            from dataraum.analysis.temporal_slicing.db_models import TemporalSliceAnalysis
+
+            period_analyses = list(
+                session.execute(
+                    select(TemporalSliceAnalysis).where(
+                        TemporalSliceAnalysis.slice_table_name.in_(slice_table_names)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            for ta in period_analyses:
+                col_name = ta.time_column
+                if col_name not in temporal_columns:
+                    temporal_columns[col_name] = {
+                        "is_interesting": False,
+                        "reasons": [],
+                        "coverage_ratio": ta.coverage_ratio,
+                        "last_day_ratio": ta.last_day_ratio,
+                        "is_volume_anomaly": bool(ta.is_volume_anomaly),
+                    }
+                if (
+                    (ta.coverage_ratio is not None and ta.coverage_ratio < 0.5)
+                    or (ta.last_day_ratio is not None and ta.last_day_ratio > 1.5)
+                    or ta.is_volume_anomaly
+                ):
+                    temporal_columns[col_name]["is_interesting"] = True
+                    if ta.coverage_ratio is not None and ta.coverage_ratio < 0.5:
+                        temporal_columns[col_name]["reasons"].append("low_coverage")
+                    if ta.last_day_ratio is not None and ta.last_day_ratio > 1.5:
+                        temporal_columns[col_name]["reasons"].append("period_end_spike")
+                    if ta.is_volume_anomaly:
+                        temporal_columns[col_name]["reasons"].append("volume_anomaly")
+
+        return {
+            "slice_variance": {
+                "columns": columns_data,
+                "slice_data": slice_data,
+                "temporal_columns": temporal_columns,
+                "temporal_drift": temporal_drift,
+            },
+            "drift_summaries": drift_summaries,
+        }
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect cross-column pattern entropy.

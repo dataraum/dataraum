@@ -7,12 +7,15 @@ The detector now uses:
 - Ontology bonus: business_concept presence reduces entropy
 """
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from dataraum.entropy.detectors import (
     BusinessMeaningDetector,
     DetectorContext,
 )
+from dataraum.entropy.detectors.semantic.dimensional_entropy import DimensionalEntropyDetector
 
 
 class TestBusinessMeaningDetector:
@@ -346,3 +349,66 @@ class TestBusinessMeaningDetector:
         assert detector.layer == "semantic"
         assert detector.dimension == "business_meaning"
         assert detector.required_analyses == ["semantic"]
+
+
+class TestDimensionalEntropyDetectorLoadSliceVariance:
+    """Tests for DimensionalEntropyDetector._load_slice_variance."""
+
+    def test_returns_none_when_no_profiles(self):
+        session = MagicMock()
+
+        cols_result = MagicMock()
+        cols_result.scalars.return_value.all.return_value = []
+
+        sv_result = MagicMock()
+        sv_result.scalar_one_or_none.return_value = None
+
+        profiles_result = MagicMock()
+        profiles_result.scalars.return_value.all.return_value = []
+
+        session.execute.side_effect = [cols_result, sv_result, profiles_result]
+
+        result = DimensionalEntropyDetector._load_slice_variance(session, "tbl1", "orders")
+        assert result is None
+
+    def test_returns_slice_variance_data(self):
+        session = MagicMock()
+
+        col = MagicMock()
+        col.column_id = "col1"
+        col.column_name = "amount"
+
+        cols_result = MagicMock()
+        cols_result.scalars.return_value.all.return_value = [col]
+
+        sv_result = MagicMock()
+        sv_result.scalar_one_or_none.return_value = None
+
+        profile = MagicMock()
+        profile.slice_value = "2024-Q1"
+        profile.column_name = "amount"
+        profile.null_ratio = 0.05
+        profile.distinct_count = 50
+        profile.row_count = 1000
+        profile.quality_score = 0.9
+        profile.has_issues = False
+        profile.variance_classification = "stable"
+        profile.source_column_id = "col1"
+
+        profiles_result = MagicMock()
+        profiles_result.scalars.return_value.all.return_value = [profile]
+
+        slice_defs_result = MagicMock()
+        slice_defs_result.scalars.return_value.all.return_value = []
+
+        session.execute.side_effect = [
+            cols_result,
+            sv_result,
+            profiles_result,
+            slice_defs_result,
+        ]
+
+        result = DimensionalEntropyDetector._load_slice_variance(session, "tbl1", "orders")
+        assert result is not None
+        assert "slice_variance" in result
+        assert "amount" in result["slice_variance"]["columns"]

@@ -134,6 +134,11 @@ class ValidationPhase(BasePhase):
 
         run_result = validation_result.unwrap()
 
+        # Surface failed validations as warnings for CLI display
+        warnings = [
+            f"{r.validation_id}: {r.message}" for r in run_result.results if not r.passed
+        ]
+
         return PhaseResult.success(
             outputs={
                 "total_checks": run_result.total_checks,
@@ -147,5 +152,6 @@ class ValidationPhase(BasePhase):
             },
             records_processed=run_result.total_checks,
             records_created=run_result.total_checks,
+            warnings=warnings,
             summary=f"{run_result.passed_checks} passed, {run_result.failed_checks} failed",
         )

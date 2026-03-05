@@ -341,20 +341,20 @@ def take_hard_snapshot(
         analysis_results=analysis_results,
     )
 
-    # Get hard detectors
+    # Get detectors (all are machine-verifiable)
     registry = get_default_registry()
-    hard_detectors = registry.get_hard_detectors()
+    detectors = registry.get_all_detectors()
 
     # Filter by dimensions if specified
     if dimensions:
         dim_set = set(dimensions)
-        hard_detectors = [d for d in hard_detectors if d.sub_dimension in dim_set]
+        detectors = [d for d in detectors if d.sub_dimension in dim_set]
 
     # Run each detector
     scores: dict[str, float] = {}
     detectors_run: list[str] = []
 
-    for detector in hard_detectors:
+    for detector in detectors:
         if not detector.can_run(context):
             continue
         try:

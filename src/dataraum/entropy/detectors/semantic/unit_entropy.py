@@ -36,7 +36,7 @@ class UnitEntropyDetector(EntropyDetector):
     layer = "semantic"
     dimension = "units"
     sub_dimension = "unit_declaration"
-    trust_level = DetectorTrust.SOFT
+    trust_level = DetectorTrust.HARD
     required_analyses = ["typing", "semantic"]
     description = "Measures whether numeric columns have declared units"
 

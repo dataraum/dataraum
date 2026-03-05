@@ -4,14 +4,9 @@ from dataraum.entropy.detectors import (
     DetectorTrust,
     get_default_registry,
 )
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.models import EntropyObject
 from dataraum.pipeline.base import PhaseStatus
 
-# --- Trust Level Classification ---
-
-
-EXPECTED_HARD = {
+ALL_DETECTOR_IDS = {
     "type_fidelity",
     "join_path_determinism",
     "relationship_entropy",
@@ -20,9 +15,6 @@ EXPECTED_HARD = {
     "benford",
     "temporal_drift",
     "derived_value",
-}
-
-EXPECTED_SOFT = {
     "business_meaning",
     "unit_entropy",
     "temporal_entropy",
@@ -31,48 +23,28 @@ EXPECTED_SOFT = {
 
 
 class TestDetectorTrustLevels:
-    """Verify each detector has the correct trust level."""
+    """All detectors are machine-verifiable (HARD)."""
 
-    def test_hard_detectors(self):
-        registry = get_default_registry()
-        hard_ids = {d.detector_id for d in registry.get_hard_detectors()}
-        assert hard_ids == EXPECTED_HARD
-
-    def test_soft_detectors(self):
-        registry = get_default_registry()
-        soft_ids = {d.detector_id for d in registry.get_soft_detectors()}
-        assert soft_ids == EXPECTED_SOFT
-
-    def test_all_detectors_classified(self):
-        """Every registered detector must be either HARD or SOFT."""
+    def test_all_detectors_are_hard(self):
         registry = get_default_registry()
         for d in registry.get_all_detectors():
-            assert d.trust_level in (DetectorTrust.HARD, DetectorTrust.SOFT), (
-                f"{d.detector_id} has unknown trust level: {d.trust_level}"
+            assert d.trust_level == DetectorTrust.HARD, (
+                f"{d.detector_id} should be HARD but is {d.trust_level}"
             )
 
-    def test_is_verifier_matches_hard(self):
+    def test_all_detectors_are_verifiers(self):
         registry = get_default_registry()
         for d in registry.get_all_detectors():
-            assert d.is_verifier == (d.trust_level == DetectorTrust.HARD), (
-                f"{d.detector_id}: is_verifier={d.is_verifier} but trust_level={d.trust_level}"
-            )
+            assert d.is_verifier, f"{d.detector_id} should be a verifier"
 
-    def test_default_trust_is_soft(self):
-        """A detector with no explicit trust_level defaults to SOFT."""
+    def test_all_expected_detectors_registered(self):
+        registry = get_default_registry()
+        registered = {d.detector_id for d in registry.get_all_detectors()}
+        assert registered == ALL_DETECTOR_IDS
 
-        class BareDetector(EntropyDetector):
-            detector_id = "bare"
-            layer = "test"
-            dimension = "test"
-            sub_dimension = "test"
-
-            def detect(self, context: DetectorContext) -> list[EntropyObject]:
-                return []
-
-        d = BareDetector()
-        assert d.trust_level == DetectorTrust.SOFT
-        assert d.is_verifier is False
+    def test_no_soft_detectors(self):
+        registry = get_default_registry()
+        assert registry.get_soft_detectors() == []
 
 
 # --- PhaseStatus ---

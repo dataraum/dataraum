@@ -57,7 +57,7 @@ class SemanticPhase(BasePhase):
 
     @property
     def post_verification(self) -> list[str]:
-        return ["naming_clarity", "unit_declaration"]
+        return ["naming_clarity", "unit_declaration", "time_role"]
 
     @property
     def db_models(self) -> list[ModuleType]:

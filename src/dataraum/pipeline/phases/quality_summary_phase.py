@@ -132,6 +132,10 @@ class QualitySummaryPhase(BasePhase):
         return ["slice_analysis", "temporal_slice_analysis"]
 
     @property
+    def post_verification(self) -> list[str]:
+        return ["cross_column_patterns"]
+
+    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.quality_summary import db_models
 

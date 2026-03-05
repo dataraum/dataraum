@@ -68,6 +68,10 @@ class TemporalSliceAnalysisPhase(BasePhase):
         return ["slice_analysis", "temporal"]
 
     @property
+    def post_verification(self) -> list[str]:
+        return ["temporal_drift"]
+
+    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.temporal_slicing import db_models
 

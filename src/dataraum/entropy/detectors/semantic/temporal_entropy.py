@@ -30,7 +30,7 @@ class TemporalEntropyDetector(EntropyDetector):
     layer = "semantic"
     dimension = "temporal"
     sub_dimension = "time_role"
-    trust_level = DetectorTrust.SOFT
+    trust_level = DetectorTrust.HARD
     required_analyses = ["typing", "semantic"]
     description = "Measures whether temporal columns are properly identified"
 

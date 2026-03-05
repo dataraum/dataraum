@@ -34,7 +34,7 @@ class BusinessMeaningDetector(EntropyDetector):
     layer = "semantic"
     dimension = "business_meaning"
     sub_dimension = "naming_clarity"
-    trust_level = DetectorTrust.SOFT
+    trust_level = DetectorTrust.HARD
     required_analyses = ["semantic"]
     description = "Measures clarity of business meaning and description"
 

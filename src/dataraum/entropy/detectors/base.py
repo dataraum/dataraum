@@ -92,8 +92,8 @@ class EntropyDetector(ABC):
     dimension: str = ""  # types, relations, units, etc.
     sub_dimension: str = ""  # type_fidelity, naming_clarity, etc.
 
-    # Trust level: HARD = machine-verifiable, SOFT = LLM/heuristic
-    trust_level: DetectorTrust = DetectorTrust.SOFT
+    # Trust level: all current detectors are machine-verifiable (HARD)
+    trust_level: DetectorTrust = DetectorTrust.HARD
 
     # What analysis modules this detector requires
     required_analyses: list[str] = []

@@ -21,7 +21,7 @@ from typing import Any
 
 from dataraum.core.logging import get_logger
 from dataraum.entropy.config import get_entropy_config
-from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
+from dataraum.entropy.detectors.base import DetectorContext, DetectorTrust, EntropyDetector
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 logger = get_logger(__name__)
@@ -191,6 +191,7 @@ class DimensionalEntropyDetector(EntropyDetector):
     layer = "semantic"
     dimension = "dimensional"
     sub_dimension = "cross_column_patterns"
+    trust_level = DetectorTrust.HARD
     required_analyses = ["slice_variance"]  # temporal_variance is optional
     description = "Detects cross-column business rules from slice and temporal variance patterns"
 

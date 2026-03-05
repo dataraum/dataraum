@@ -71,14 +71,14 @@ class StubHardDetector(EntropyDetector):
         ]
 
 
-class StubSoftDetector(EntropyDetector):
-    """A stub soft detector that should be skipped."""
+class StubSemanticDetector(EntropyDetector):
+    """A stub semantic detector."""
 
-    detector_id = "stub_soft"
+    detector_id = "stub_semantic"
     layer = "semantic"
     dimension = "business_meaning"
     sub_dimension = "naming_clarity"
-    trust_level = DetectorTrust.SOFT
+    trust_level = DetectorTrust.HARD
     required_analyses = ["semantic"]
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
@@ -117,11 +117,11 @@ class NullDetector(EntropyDetector):
 
 
 class TestTakeHardSnapshot:
-    def test_runs_only_hard_detectors(self):
-        """Only hard detectors should be run, soft detectors skipped."""
+    def test_runs_all_detectors(self):
+        """All registered detectors are run."""
         registry = DetectorRegistry()
         registry.register(StubHardDetector())
-        registry.register(StubSoftDetector())
+        registry.register(StubSemanticDetector())
 
         analysis = {"typing": {"parse_success_rate": 0.95}, "semantic": {"role": "measure"}}
 
@@ -142,9 +142,9 @@ class TestTakeHardSnapshot:
             snap = take_hard_snapshot("column:orders.amount", session=MagicMock())
 
         assert "type_fidelity" in snap.scores
-        assert "naming_clarity" not in snap.scores
+        assert "naming_clarity" in snap.scores
         assert "stub_hard" in snap.detectors_run
-        assert "stub_soft" not in snap.detectors_run
+        assert "stub_semantic" in snap.detectors_run
 
     def test_dimensions_filter(self):
         """When dimensions is specified, only matching detectors run."""

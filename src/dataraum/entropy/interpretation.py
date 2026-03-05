@@ -383,7 +383,7 @@ class EntropyInterpreter:
 
             # Extract tool call result
             if not response.tool_calls:
-                last_error = f"LLM did not use the interpret_entropy tool. Response: {(response.content or '')[:200]}"
+                last_error = f"LLM did not use the interpret_entropy tool. Response: {(response.content or '')[:500]}"
                 continue
 
             # Parse tool response using Pydantic model
@@ -643,7 +643,7 @@ class EntropyInterpreter:
             response = result.value
 
             if not response.tool_calls:
-                last_error = f"LLM did not use the interpret_table_entropy tool. Response: {(response.content or '')[:200]}"
+                last_error = f"LLM did not use the interpret_table_entropy tool. Response: {(response.content or '')[:500]}"
                 continue
 
             tool_call = response.tool_calls[0]

@@ -397,7 +397,7 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
         grain = f", grain: {', '.join(ent['grain_columns'])}" if ent.get("grain_columns") else ""
         lines.append(f"- {ent['table_name']} ({table_type}{row_str}{grain}): {ent['entity_type']}")
         if ent.get("description"):
-            lines.append(f"  {ent['description'][:200]}")
+            lines.append(f"  {ent['description'][:500]}")
     lines.append("")
 
     # Pre-identified categorical dimensions (= cycle indicators)
@@ -413,7 +413,7 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
                 f"### {sd['table_name']}.{sd['column_name']} (confidence: {sd['confidence']:.0%})"
             )
             if sd.get("business_context"):
-                lines.append(f"  Context: {sd['business_context'][:200]}")
+                lines.append(f"  Context: {sd['business_context'][:500]}")
 
             # Show values with counts if available
             value_counts = sd.get("value_counts", [])
@@ -486,9 +486,9 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
             lines.append(
                 f"- {qs['table_name']}.{qs['column_name']}: grade {qs['quality_grade']} ({qs['quality_score']:.2f})"
             )
-            lines.append(f"  {qs['summary'][:200]}")
+            lines.append(f"  {qs['summary'][:500]}")
             for finding in qs.get("key_findings", [])[:2]:
-                lines.append(f"  - {finding[:150]}")
+                lines.append(f"  - {finding[:500]}")
         lines.append("")
 
     # Column semantics by table
@@ -505,6 +505,6 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
                 parts.append(f"entity={col['entity_type']}")
             lines.append(f"  - {', '.join(parts)}")
             if col.get("business_description"):
-                lines.append(f"    {col['business_description'][:120]}")
+                lines.append(f"    {col['business_description'][:500]}")
 
     return "\n".join(lines)

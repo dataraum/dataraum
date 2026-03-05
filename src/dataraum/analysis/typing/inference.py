@@ -369,10 +369,11 @@ def _test_type_cast(
         failed_examples = []
         if success_rate < 1.0:
             failed_query = f"""
-                SELECT "{col_name}"
+                SELECT DISTINCT "{col_name}"
                 FROM {table_name}
                 WHERE "{col_name}" IS NOT NULL
                 AND {cast_expr} IS NULL
+                ORDER BY "{col_name}"
                 LIMIT 5
             """
             failed_examples = [row[0] for row in duckdb_conn.execute(failed_query).fetchall()]

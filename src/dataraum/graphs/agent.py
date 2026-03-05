@@ -449,7 +449,7 @@ class GraphAgent(LLMFeature):
                     response_data = json.loads(response.content)
                     output = GraphSQLGenerationOutput.model_validate(response_data)
                 except Exception:
-                    return Result.fail(f"LLM did not use tool. Response: {response.content[:200]}")
+                    return Result.fail(f"LLM did not use tool. Response: {response.content[:500]}")
             else:
                 return Result.fail("LLM did not use the generate_sql tool")
         else:

@@ -209,6 +209,11 @@ def _build_drift_evidence(
             if curr_js > threshold and (curr_js - prev_js) > threshold:
                 change_points.append(per_period[i][0])
 
+    # Sort emerged by percentage (most significant first) before truncating
+    unique_emerged.sort(key=lambda e: e.pct, reverse=True)
+    # Sort vanished by last-seen percentage (most significant first) before truncating
+    unique_vanished.sort(key=lambda v: v.last_seen_pct, reverse=True)
+
     return DriftEvidence(
         worst_period=worst_label,
         worst_js=round(worst_js, 4),

@@ -441,7 +441,7 @@ def _find_affected_columns(
         if score is not None and score > threshold:
             affected.append(key)
 
-    return affected
+    return sorted(affected)
 
 
 def evaluate_contract(
@@ -503,7 +503,7 @@ def evaluate_contract(
                     f"too uncertain for {contract.display_name}. "
                     f"Affected: {col_list}"
                 ),
-                affected_columns=affected[:10],  # Limit to 10
+                affected_columns=affected,
             )
 
             if severity == "blocking":
@@ -533,7 +533,7 @@ def evaluate_contract(
                         f"{label} approaching limit ({actual_score:.2f}/{max_score:.2f}) "
                         f"for {contract.display_name}. Affected: {col_list}"
                     ),
-                    affected_columns=affected[:10],
+                    affected_columns=affected,
                 )
             )
             dimensions_passing += 1
@@ -588,8 +588,12 @@ def evaluate_contract(
     # Check if any column has blocked readiness (from Bayesian network).
     # This ensures contract evaluation is consistent with overall readiness:
     # if readiness=BLOCKED, no contract should pass.
-    blocked_columns = [key for key, s in column_summaries.items() if s.readiness == "blocked"]
+    blocked_columns = sorted(
+        key for key, s in column_summaries.items() if s.readiness == "blocked"
+    )
     if blocked_columns:
+        col_list = ", ".join(blocked_columns[:5])
+        extra = f" (+{len(blocked_columns) - 5} more)" if len(blocked_columns) > 5 else ""
         violations.append(
             Violation(
                 violation_type="blocking_condition",
@@ -597,9 +601,9 @@ def evaluate_contract(
                 condition="blocked_columns",
                 details=(
                     f"{len(blocked_columns)} column(s) have blocked readiness: "
-                    + ", ".join(blocked_columns[:5])
+                    f"{col_list}{extra}"
                 ),
-                affected_columns=blocked_columns[:10],
+                affected_columns=blocked_columns,
             )
         )
 

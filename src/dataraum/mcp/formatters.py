@@ -173,14 +173,14 @@ def format_query_result(result: QueryResult) -> str:
             lines.append("| " + " | ".join(["---"] * len(result.columns)) + " |")
             # Rows
             for row in result.data[:20]:
-                values = [str(row.get(c, ""))[:30] for c in result.columns]
+                values = [str(row.get(c, ""))[:100] for c in result.columns]
                 lines.append("| " + " | ".join(values) + " |")
         else:
-            lines.append(f"(Showing first 5 of {len(result.data)} rows)")
+            lines.append(f"(Showing first 20 of {len(result.data)} rows)")
             lines.append("| " + " | ".join(result.columns) + " |")
             lines.append("| " + " | ".join(["---"] * len(result.columns)) + " |")
-            for row in result.data[:5]:
-                values = [str(row.get(c, ""))[:30] for c in result.columns]
+            for row in result.data[:20]:
+                values = [str(row.get(c, ""))[:100] for c in result.columns]
                 lines.append("| " + " | ".join(values) + " |")
         lines.append("")
 
@@ -344,7 +344,7 @@ def format_actions_report(
         for a in quick_wins[:3]:
             lines.append(
                 f"- **{a['action']}** (score={a.get('priority_score', 0):.3f}): "
-                f"{a.get('description', '')[:100]}"
+                f"{a.get('description', '')[:200]}"
             )
         lines.append("")
 

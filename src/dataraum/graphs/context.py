@@ -852,7 +852,7 @@ def _column_network_to_dict(result: Any) -> dict[str, Any]:
             {"name": i.intent_name, "p_high": i.p_high, "readiness": i.readiness}
             for i in result.intents
         ],
-        "resolution_hints": resolution_hints[:3],
+        "resolution_hints": resolution_hints,
     }
 
 
@@ -1182,7 +1182,7 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
         lines.append(
             "Recommended dimensions for filtering/grouping (use these EXACT values in SQL):"
         )
-        for slice_ctx in context.available_slices[:5]:  # Show top 5
+        for slice_ctx in context.available_slices:
             context_str = f" - {slice_ctx.business_context}" if slice_ctx.business_context else ""
             lines.append(
                 f"  - {slice_ctx.table_name}.{slice_ctx.column_name} "
@@ -1209,9 +1209,7 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
             verified = " (grain verified)" if ev.is_grain_verified else ""
             lines.append(f"\n### {ev.view_name}{verified}")
             lines.append(f"Fact table: {ev.fact_table}")
-            dims = ", ".join(ev.dimension_columns[:10]) if ev.dimension_columns else "none"
-            if len(ev.dimension_columns) > 10:
-                dims += f" +{len(ev.dimension_columns) - 10} more"
+            dims = ", ".join(ev.dimension_columns) if ev.dimension_columns else "none"
             lines.append(f"Joined columns: {dims}")
 
             # Add slice dimensions for this enriched view
@@ -1279,9 +1277,7 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
                     lines.append(f"\nCompletion: {', '.join(parts)}")
 
             # Tables involved
-            tables_str = ", ".join(cycle.tables_involved[:5])
-            if len(cycle.tables_involved) > 5:
-                tables_str += f" +{len(cycle.tables_involved) - 5} more"
+            tables_str = ", ".join(cycle.tables_involved)
             lines.append(f"Tables: {tables_str}")
 
     return "\n".join(lines)

@@ -265,7 +265,7 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
                 if sem.get("temporal_behavior"):
                     col_line += f' temporal_behavior="{sem["temporal_behavior"]}"'
                 if sem.get("business_description"):
-                    desc = sem["business_description"][:120]
+                    desc = sem["business_description"][:500]
                     col_line += f' description="{desc}"'
 
             # Distinct values from slicing phase (categorical columns)

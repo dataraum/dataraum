@@ -215,6 +215,7 @@ def detect_outliers_iqr(
             WHERE TRY_CAST("{col_name}" AS DOUBLE) IS NOT NULL
             AND (TRY_CAST("{col_name}" AS DOUBLE) < lower_fence
                  OR TRY_CAST("{col_name}" AS DOUBLE) > upper_fence)
+            ORDER BY ABS(TRY_CAST("{col_name}" AS DOUBLE) - (lower_fence + upper_fence) / 2.0) DESC
             LIMIT 10
         """
 

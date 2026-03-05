@@ -2,7 +2,7 @@
 
 This module provides concurrent-ready connection management:
 - SQLAlchemy sync sessions (thread-safe with ThreadPoolExecutor)
-- DuckDB with read cursors and serialized writes
+- DuckDB cursors for reads and writes
 - WAL mode for SQLite to enable concurrent reads with writes
 
 Usage:
@@ -16,13 +16,9 @@ Usage:
     with manager.session_scope() as session:
         # Use session...
 
-    # Read from DuckDB (concurrent-safe via cursor)
+    # DuckDB operations (via cursor)
     with manager.duckdb_cursor() as cursor:
         result = cursor.execute("SELECT * FROM table").fetchdf()
-
-    # Write to DuckDB (serialized via mutex)
-    with manager.duckdb_write() as conn:
-        conn.execute("INSERT INTO table VALUES (...)")
 
     manager.close()
 """
@@ -117,14 +113,12 @@ class ConnectionManager:
 
     Provides:
     - SQLAlchemy sync session factory (thread-safe)
-    - DuckDB read access via cursors (concurrent-safe)
-    - DuckDB write access via mutex (serialized)
+    - DuckDB access via cursors (concurrent-safe)
     - Proper cleanup on close
 
     Thread Safety:
     - SQLAlchemy sessions: One session per thread via session_scope()
-    - DuckDB reads: Use cursor() which is thread-safe for reads
-    - DuckDB writes: Serialized via _write_lock mutex
+    - DuckDB: Use cursor() which is thread-safe
 
     Usage:
         manager = ConnectionManager(config)
@@ -136,9 +130,6 @@ class ConnectionManager:
         with manager.duckdb_cursor() as cursor:
             df = cursor.execute("SELECT ...").fetchdf()
 
-        with manager.duckdb_write() as conn:
-            conn.execute("INSERT ...")
-
         manager.close()
     """
 
@@ -146,7 +137,6 @@ class ConnectionManager:
     _engine: Engine | None = field(default=None, init=False, repr=False)
     _session_factory: sessionmaker[Session] | None = field(default=None, init=False, repr=False)
     _duckdb_conn: duckdb.DuckDBPyConnection | None = field(default=None, init=False, repr=False)
-    _write_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _init_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _initialized: bool = field(default=False, init=False, repr=False)
 
@@ -324,29 +314,6 @@ class ConnectionManager:
             yield cursor
         finally:
             cursor.close()
-
-    @contextmanager
-    def duckdb_write(self) -> Generator[duckdb.DuckDBPyConnection]:
-        """Get exclusive write access to DuckDB.
-
-        Uses mutex to serialize all write operations.
-        Use this for INSERT, UPDATE, DELETE, CREATE TABLE, etc.
-
-        Yields:
-            DuckDB connection with exclusive write access
-
-        Raises:
-            RuntimeError: If manager not initialized
-
-        Example:
-            with manager.duckdb_write() as conn:
-                conn.execute("INSERT INTO table VALUES (...)")
-        """
-        self._ensure_initialized()
-        assert self._duckdb_conn is not None
-
-        with self._write_lock:
-            yield self._duckdb_conn
 
     @property
     def engine(self) -> Engine:

@@ -1,4 +1,4 @@
-"""Tests for snapshot: take_snapshot, Snapshot, load_column_analysis."""
+"""Tests for snapshot: take_snapshot, Snapshot."""
 
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
@@ -116,6 +116,37 @@ class NullDetector(EntropyDetector):
         return [self.create_entropy_object(context, score=0.1)]
 
 
+# --- Stub that pre-populates analysis_results via load_data ---
+
+
+class PreloadingStubTypingDetector(StubTypingDetector):
+    """Stub typing detector that populates analysis_results in load_data."""
+
+    def load_data(self, context: DetectorContext) -> None:
+        context.analysis_results["typing"] = {"parse_success_rate": 0.95}
+
+
+class PreloadingStubSemanticDetector(StubSemanticDetector):
+    """Stub semantic detector that populates analysis_results in load_data."""
+
+    def load_data(self, context: DetectorContext) -> None:
+        context.analysis_results["semantic"] = {"role": "measure"}
+
+
+class PreloadingNullDetector(NullDetector):
+    """Stub null detector that populates analysis_results in load_data."""
+
+    def load_data(self, context: DetectorContext) -> None:
+        context.analysis_results["statistics"] = {"null_ratio": 0.1}
+
+
+class PreloadingFailingDetector(FailingDetector):
+    """Failing detector that still loads data."""
+
+    def load_data(self, context: DetectorContext) -> None:
+        context.analysis_results["statistics"] = {"null_ratio": 0.1}
+
+
 # --- take_snapshot ---
 
 
@@ -123,19 +154,13 @@ class TestTakeSnapshot:
     def test_runs_all_detectors(self):
         """All registered detectors are run."""
         registry = DetectorRegistry()
-        registry.register(StubTypingDetector())
-        registry.register(StubSemanticDetector())
-
-        analysis = {"typing": {"parse_success_rate": 0.95}, "semantic": {"role": "measure"}}
+        registry.register(PreloadingStubTypingDetector())
+        registry.register(PreloadingStubSemanticDetector())
 
         with (
             patch(
                 "dataraum.entropy.snapshot._resolve_column_target",
                 return_value=("tbl1", "col1", "orders", "amount"),
-            ),
-            patch(
-                "dataraum.entropy.snapshot.load_column_analysis",
-                return_value=analysis,
             ),
             patch(
                 "dataraum.entropy.snapshot.get_default_registry",
@@ -152,19 +177,13 @@ class TestTakeSnapshot:
     def test_dimensions_filter(self):
         """When dimensions is specified, only matching detectors run."""
         registry = DetectorRegistry()
-        registry.register(StubTypingDetector())  # type_fidelity
-        registry.register(NullDetector())  # null_ratio
-
-        analysis = {"typing": {"parse_success_rate": 0.95}, "statistics": {"null_ratio": 0.1}}
+        registry.register(PreloadingStubTypingDetector())  # type_fidelity
+        registry.register(PreloadingNullDetector())  # null_ratio
 
         with (
             patch(
                 "dataraum.entropy.snapshot._resolve_column_target",
                 return_value=("tbl1", "col1", "orders", "amount"),
-            ),
-            patch(
-                "dataraum.entropy.snapshot.load_column_analysis",
-                return_value=analysis,
             ),
             patch(
                 "dataraum.entropy.snapshot.get_default_registry",
@@ -194,19 +213,13 @@ class TestTakeSnapshot:
     def test_detector_failure_doesnt_crash(self):
         """A failing detector is logged and skipped, not propagated."""
         registry = DetectorRegistry()
-        registry.register(StubTypingDetector())
-        registry.register(FailingDetector())
-
-        analysis = {"typing": {"parse_success_rate": 0.95}, "statistics": {"null_ratio": 0.1}}
+        registry.register(PreloadingStubTypingDetector())
+        registry.register(PreloadingFailingDetector())
 
         with (
             patch(
                 "dataraum.entropy.snapshot._resolve_column_target",
                 return_value=("tbl1", "col1", "orders", "amount"),
-            ),
-            patch(
-                "dataraum.entropy.snapshot.load_column_analysis",
-                return_value=analysis,
             ),
             patch(
                 "dataraum.entropy.snapshot.get_default_registry",
@@ -223,19 +236,13 @@ class TestTakeSnapshot:
     def test_take_snapshot_returns_objects(self):
         """Snapshot.objects contains the full EntropyObject instances."""
         registry = DetectorRegistry()
-        registry.register(StubTypingDetector())
-        registry.register(StubSemanticDetector())
-
-        analysis = {"typing": {"parse_success_rate": 0.95}, "semantic": {"role": "measure"}}
+        registry.register(PreloadingStubTypingDetector())
+        registry.register(PreloadingStubSemanticDetector())
 
         with (
             patch(
                 "dataraum.entropy.snapshot._resolve_column_target",
                 return_value=("tbl1", "col1", "orders", "amount"),
-            ),
-            patch(
-                "dataraum.entropy.snapshot.load_column_analysis",
-                return_value=analysis,
             ),
             patch(
                 "dataraum.entropy.snapshot.get_default_registry",
@@ -254,18 +261,12 @@ class TestTakeSnapshot:
     def test_detector_missing_analysis_skipped(self):
         """Detectors whose required analyses are missing are skipped."""
         registry = DetectorRegistry()
-        registry.register(StubTypingDetector())  # requires "typing"
-
-        analysis = {"statistics": {"null_ratio": 0.1}}  # no "typing"
+        registry.register(StubTypingDetector())  # requires "typing", no load_data override
 
         with (
             patch(
                 "dataraum.entropy.snapshot._resolve_column_target",
                 return_value=("tbl1", "col1", "orders", "amount"),
-            ),
-            patch(
-                "dataraum.entropy.snapshot.load_column_analysis",
-                return_value=analysis,
             ),
             patch(
                 "dataraum.entropy.snapshot.get_default_registry",
@@ -276,6 +277,37 @@ class TestTakeSnapshot:
 
         assert snap.scores == {}
         assert snap.detectors_run == []
+
+    def test_pre_populated_context_still_works(self):
+        """Detectors with pre-populated analysis_results (no load_data) still work.
+
+        This tests backward compatibility — if analysis_results are already
+        present on the context (e.g., in tests), detectors don't need load_data.
+        """
+        registry = DetectorRegistry()
+        registry.register(StubTypingDetector())  # no load_data override
+
+        # Stub that pre-populates typing in analysis_results
+        class TypingPreloader(StubTypingDetector):
+            def load_data(self, context: DetectorContext) -> None:
+                context.analysis_results["typing"] = {"parse_success_rate": 0.95}
+
+        registry.unregister("stub_typing")
+        registry.register(TypingPreloader())
+
+        with (
+            patch(
+                "dataraum.entropy.snapshot._resolve_column_target",
+                return_value=("tbl1", "col1", "orders", "amount"),
+            ),
+            patch(
+                "dataraum.entropy.snapshot.get_default_registry",
+                return_value=registry,
+            ),
+        ):
+            snap = take_snapshot("column:orders.amount", session=MagicMock())
+
+        assert "type_fidelity" in snap.scores
 
 
 # --- Table-scope stub ---
@@ -292,6 +324,9 @@ class StubTableDetector(EntropyDetector):
 
     required_analyses = ["slice_variance"]
 
+    def load_data(self, context: DetectorContext) -> None:
+        context.analysis_results["slice_variance"] = {"columns": {}, "slice_data": {}}
+
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         return [self.create_entropy_object(context, score=0.6)]
 
@@ -304,18 +339,12 @@ class TestTakeSnapshotTableScope:
         """Table target runs table-scoped detectors."""
         registry = DetectorRegistry()
         registry.register(StubTableDetector())
-        registry.register(StubTypingDetector())  # column-scoped
-
-        analysis = {"slice_variance": {"columns": {}, "slice_data": {}}}
+        registry.register(PreloadingStubTypingDetector())  # column-scoped
 
         with (
             patch(
                 "dataraum.entropy.snapshot._resolve_table_target",
                 return_value=("tbl1", "orders"),
-            ),
-            patch(
-                "dataraum.entropy.snapshot.load_table_analysis",
-                return_value=analysis,
             ),
             patch(
                 "dataraum.entropy.snapshot.get_default_registry",
@@ -333,18 +362,12 @@ class TestTakeSnapshotTableScope:
         """Table targets only run scope='table' detectors."""
         registry = DetectorRegistry()
         registry.register(StubTableDetector())
-        registry.register(NullDetector())  # column-scoped
-
-        analysis = {"slice_variance": {"columns": {}, "slice_data": {}}}
+        registry.register(PreloadingNullDetector())  # column-scoped
 
         with (
             patch(
                 "dataraum.entropy.snapshot._resolve_table_target",
                 return_value=("tbl1", "orders"),
-            ),
-            patch(
-                "dataraum.entropy.snapshot.load_table_analysis",
-                return_value=analysis,
             ),
             patch(
                 "dataraum.entropy.snapshot.get_default_registry",
@@ -359,19 +382,13 @@ class TestTakeSnapshotTableScope:
     def test_column_target_skips_table_detectors(self):
         """Column targets skip scope='table' detectors."""
         registry = DetectorRegistry()
-        registry.register(StubTypingDetector())
+        registry.register(PreloadingStubTypingDetector())
         registry.register(StubTableDetector())
-
-        analysis = {"typing": {"parse_success_rate": 0.95}, "slice_variance": {}}
 
         with (
             patch(
                 "dataraum.entropy.snapshot._resolve_column_target",
                 return_value=("tbl1", "col1", "orders", "amount"),
-            ),
-            patch(
-                "dataraum.entropy.snapshot.load_column_analysis",
-                return_value=analysis,
             ),
             patch(
                 "dataraum.entropy.snapshot.get_default_registry",

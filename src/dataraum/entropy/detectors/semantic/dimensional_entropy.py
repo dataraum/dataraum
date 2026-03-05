@@ -195,6 +195,17 @@ class DimensionalEntropyDetector(EntropyDetector):
     required_analyses = ["slice_variance"]  # temporal_variance is optional
     description = "Detects cross-column business rules from slice and temporal variance patterns"
 
+    def load_data(self, context: DetectorContext) -> None:
+        """Load slice variance data for this table."""
+        if context.session is None or context.table_id is None:
+            return
+        from dataraum.entropy.detectors.loaders import load_slice_variance
+
+        result = load_slice_variance(context.session, context.table_id, context.table_name)
+        if result is not None:
+            context.analysis_results["slice_variance"] = result["slice_variance"]
+            context.analysis_results["drift_summaries"] = result["drift_summaries"]
+
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect cross-column pattern entropy.
 

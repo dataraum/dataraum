@@ -32,6 +32,25 @@ class TemporalDriftDetector(EntropyDetector):
     # IDs naturally differ across periods (JS divergence = ln(2) guaranteed).
     _SKIP_ROLES = frozenset({"key", "foreign_key", "identifier"})
 
+    def load_data(self, context: DetectorContext) -> None:
+        """Load drift summaries and semantic annotation for this column."""
+        if (
+            context.session is None
+            or context.column_id is None
+            or context.table_id is None
+        ):
+            return
+        from dataraum.entropy.detectors.loaders import load_drift_summaries, load_semantic
+
+        drift = load_drift_summaries(
+            context.session, context.column_id, context.table_id, context.table_name
+        )
+        if drift is not None:
+            context.analysis_results["drift_summaries"] = drift
+        sem = load_semantic(context.session, context.column_id)
+        if sem is not None:
+            context.analysis_results["semantic"] = sem
+
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect temporal drift entropy for a column.
 

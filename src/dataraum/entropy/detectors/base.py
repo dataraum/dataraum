@@ -9,14 +9,19 @@ Each detector focuses on a specific sub-dimension of entropy and
 produces EntropyObject instances with scores, evidence, and resolution options.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dataraum.entropy.models import (
     EntropyObject,
     ResolutionOption,
 )
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 
 @dataclass
@@ -33,6 +38,9 @@ class DetectorContext:
     table_name: str = ""
     column_id: str | None = None
     column_name: str = ""
+
+    # SQLAlchemy session for detector-driven data loading
+    session: Session | None = None
 
     # Analysis results from other modules (keyed by module name)
     # e.g., {"typing": TypeCandidate, "statistics": ColumnProfile, ...}
@@ -93,6 +101,14 @@ class EntropyDetector(ABC):
             config: Detector-specific configuration overrides
         """
         self.config = config or {}
+
+    def load_data(self, context: DetectorContext) -> None:  # noqa: B027
+        """Load analysis data into context.analysis_results.
+
+        Override in subclasses to query DB via context.session and populate
+        context.analysis_results[key]. Default is a no-op so pre-populated
+        contexts (e.g. in tests) still work.
+        """
 
     @abstractmethod
     def detect(self, context: DetectorContext) -> list[EntropyObject]:

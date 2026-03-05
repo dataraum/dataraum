@@ -26,6 +26,16 @@ class NullRatioDetector(EntropyDetector):
     required_analyses = ["statistics"]
     description = "Measures uncertainty from null/missing values"
 
+    def load_data(self, context: DetectorContext) -> None:
+        """Load statistical profile for this column."""
+        if context.session is None or context.column_id is None:
+            return
+        from dataraum.entropy.detectors.loaders import load_statistics
+
+        result = load_statistics(context.session, context.column_id)
+        if result is not None:
+            context.analysis_results["statistics"] = result
+
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect null ratio entropy.
 

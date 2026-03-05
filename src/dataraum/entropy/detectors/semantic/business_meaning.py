@@ -37,6 +37,16 @@ class BusinessMeaningDetector(EntropyDetector):
     required_analyses = ["semantic"]
     description = "Measures clarity of business meaning and description"
 
+    def load_data(self, context: DetectorContext) -> None:
+        """Load semantic annotation for this column."""
+        if context.session is None or context.column_id is None:
+            return
+        from dataraum.entropy.detectors.loaders import load_semantic
+
+        result = load_semantic(context.session, context.column_id)
+        if result is not None:
+            context.analysis_results["semantic"] = result
+
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect business meaning entropy.
 

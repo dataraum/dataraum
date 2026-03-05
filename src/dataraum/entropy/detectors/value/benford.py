@@ -35,6 +35,19 @@ class BenfordDetector(EntropyDetector):
     # Only measure columns benefit from Benford analysis
     _APPLICABLE_ROLES = frozenset({"measure"})
 
+    def load_data(self, context: DetectorContext) -> None:
+        """Load statistics and semantic annotation for this column."""
+        if context.session is None or context.column_id is None:
+            return
+        from dataraum.entropy.detectors.loaders import load_semantic, load_statistics
+
+        stats = load_statistics(context.session, context.column_id)
+        if stats is not None:
+            context.analysis_results["statistics"] = stats
+        sem = load_semantic(context.session, context.column_id)
+        if sem is not None:
+            context.analysis_results["semantic"] = sem
+
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect Benford's Law compliance entropy.
 

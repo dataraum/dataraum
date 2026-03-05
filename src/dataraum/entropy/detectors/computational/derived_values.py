@@ -30,6 +30,16 @@ class DerivedValueDetector(EntropyDetector):
     required_analyses = ["correlation"]
     description = "Measures reliability of detected derived column formulas"
 
+    def load_data(self, context: DetectorContext) -> None:
+        """Load correlation (derived column) data for this column."""
+        if context.session is None or context.column_id is None:
+            return
+        from dataraum.entropy.detectors.loaders import load_correlation
+
+        result = load_correlation(context.session, context.column_id, context.column_name)
+        if result is not None:
+            context.analysis_results["correlation"] = result
+
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect derived value entropy.
 

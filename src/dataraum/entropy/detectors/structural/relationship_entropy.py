@@ -39,6 +39,16 @@ class RelationshipEntropyDetector(EntropyDetector):
     required_analyses = ["relationships"]
     description = "Measures relationship quality from evaluation metrics"
 
+    def load_data(self, context: DetectorContext) -> None:
+        """Load relationships for this column."""
+        if context.session is None or context.column_id is None or context.table_id is None:
+            return
+        from dataraum.entropy.detectors.loaders import load_relationships
+
+        result = load_relationships(context.session, context.column_id, context.table_id)
+        if result is not None:
+            context.analysis_results["relationships"] = result
+
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect relationship quality entropy.
 

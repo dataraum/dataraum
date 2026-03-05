@@ -39,6 +39,19 @@ class UnitEntropyDetector(EntropyDetector):
     required_analyses = ["typing", "semantic"]
     description = "Measures whether numeric columns have declared units"
 
+    def load_data(self, context: DetectorContext) -> None:
+        """Load typing and semantic data for this column."""
+        if context.session is None or context.column_id is None:
+            return
+        from dataraum.entropy.detectors.loaders import load_semantic, load_typing
+
+        typing_result = load_typing(context.session, context.column_id)
+        if typing_result is not None:
+            context.analysis_results["typing"] = typing_result
+        sem = load_semantic(context.session, context.column_id)
+        if sem is not None:
+            context.analysis_results["semantic"] = sem
+
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         """Detect unit declaration entropy.
 

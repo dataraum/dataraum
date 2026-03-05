@@ -23,6 +23,32 @@ class TestPattern:
         assert not pattern.matches("01-15-2024")
         assert not pattern.matches("not a date")
 
+    def test_pattern_matches_date_dd_mon_yy(self):
+        """Test DD-Mon-YY date pattern matching."""
+        pattern = Pattern(
+            name="dd_mon_yy",
+            pattern=r"^\d{1,2}-[A-Za-z]{3}-\d{2}$",
+            inferred_type=DataType.DATE,
+        )
+        assert pattern.matches("01-Apr-25")
+        assert pattern.matches("28-Feb-25")
+        assert pattern.matches("1-Mar-25")
+        assert not pattern.matches("01-Apr-2025")
+        assert not pattern.matches("2024-01-15")
+        assert not pattern.matches("01/15/24")
+
+    def test_pattern_matches_date_dd_mon_yyyy(self):
+        """Test DD-Mon-YYYY date pattern matching."""
+        pattern = Pattern(
+            name="dd_mon_yyyy",
+            pattern=r"^\d{1,2}-[A-Za-z]{3}-\d{4}$",
+            inferred_type=DataType.DATE,
+        )
+        assert pattern.matches("01-Apr-2025")
+        assert pattern.matches("15-Jan-2024")
+        assert not pattern.matches("01-Apr-25")
+        assert not pattern.matches("2024-01-15")
+
     def test_pattern_matches_integer(self):
         """Test integer pattern matching."""
         pattern = Pattern(
@@ -128,6 +154,24 @@ class TestPatternConfig:
         matches = config.match_value("-123")
         assert len(matches) == 1
         assert matches[0].name == "integer"
+
+    def test_config_loads_dd_mon_patterns(self):
+        """Test that DD-Mon-YY/YYYY patterns load from config and match values."""
+        from dataraum.analysis.typing.patterns import load_pattern_config
+
+        config = load_pattern_config()
+        pattern_names = {p.name for p in config.get_patterns()}
+        assert "dd_mon_yy" in pattern_names
+        assert "dd_mon_yyyy" in pattern_names
+
+        # Verify matching against actual financial date formats
+        matches = config.match_value("01-Apr-25")
+        match_names = {m.name for m in matches}
+        assert "dd_mon_yy" in match_names
+
+        matches = config.match_value("15-Jan-2024")
+        match_names = {m.name for m in matches}
+        assert "dd_mon_yyyy" in match_names
 
     def test_no_column_name_patterns(self):
         """Test that PatternConfig does not support column name patterns.

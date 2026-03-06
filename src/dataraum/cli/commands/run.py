@@ -128,7 +128,7 @@ def run(
         resolved_gate_mode = GateMode(gate_mode)
     except ValueError:
         console.print(
-            f"[red]Error: Invalid gate mode: {gate_mode}. Use: skip, pause, fail[/red]"
+            f"[red]Error: Invalid gate mode: {gate_mode}. Use: skip, fail[/red]"
         )
         raise typer.Exit(1) from None
 
@@ -151,14 +151,6 @@ def run(
 
     # TTY detection for interactive features
     is_interactive = sys.stdin.isatty() and not quiet
-
-    # Warn if pause requested in non-interactive mode
-    if resolved_gate_mode == GateMode.PAUSE and not is_interactive:
-        console.print(
-            "[yellow]Warning: --gate-mode pause requires an interactive terminal. "
-            "Falling back to skip.[/yellow]"
-        )
-        resolved_gate_mode = GateMode.SKIP
 
     # Interactive contract selection (if TTY and no --contract specified)
     if is_interactive and contract is None:

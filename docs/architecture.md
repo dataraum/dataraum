@@ -227,7 +227,7 @@ Source (CSV/Parquet)
 Context document → MCP / CLI / Python API → AI consumer
 ```
 
-At each gate (⊘), the pipeline checks detector scores against thresholds. Gate behavior depends on `--gate-mode` (skip, pause, fail).
+At each gate (⊘), the pipeline checks detector scores against thresholds. Gate behavior depends on `--gate-mode` (skip, fail).
 
 ## Interfaces
 

@@ -28,7 +28,7 @@ dataraum run SOURCE [OPTIONS]
 - `-n, --name TEXT` - Name for the data source (default: derived from path)
 - `-p, --phase TEXT` - Run only this phase and its dependencies
 - `-f, --force` - Force re-run of target phase, deleting previous results (requires `--phase`)
-- `-g, --gate-mode {skip|pause|fail|auto_fix}` - How to handle entropy gates (default: `skip` for non-TTY, `pause` for interactive)
+- `-g, --gate-mode {skip|fail}` - How to handle entropy gates (default: `skip`)
 - `--contract TEXT` - Target contract name for gate evaluation
 - `-q, --quiet` - Suppress progress output
 
@@ -44,14 +44,8 @@ dataraum run /path/to/file.csv --output ./my_output
 # Run only up to the statistics phase
 dataraum run /path/to/data --phase statistics
 
-# Interactive gate handling — pause at entropy violations
-dataraum run /path/to/data --gate-mode pause
-
-# Gate with contract evaluation
-dataraum run /path/to/data --gate-mode pause --contract aggregation_safe
-
-# Auto-fix mode for MCP-driven pipelines
-dataraum run /path/to/data --gate-mode auto_fix
+# Gate with contract evaluation (fail on violations)
+dataraum run /path/to/data --gate-mode fail --contract aggregation_safe
 ```
 
 ### Re-running a Single Phase

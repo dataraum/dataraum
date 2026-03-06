@@ -50,7 +50,6 @@ class GateMode(str, Enum):
     """How the pipeline handles entropy gates."""
 
     SKIP = "skip"  # Log warning, continue (backward compatible)
-    PAUSE = "pause"  # Return GateBlockedResult, pipeline state saved
     FAIL = "fail"  # Treat as pipeline failure
 
 
@@ -302,7 +301,7 @@ def _resolve_exit_check(gate_mode: GateMode, event: PipelineEvent) -> Resolution
     """
     if gate_mode == GateMode.FAIL:
         return Resolution(action=ResolutionAction.ABORT)
-    # SKIP and PAUSE (non-interactive — can't prompt) both defer in programmatic context.
+    # SKIP always defers in programmatic context.
     return Resolution(action=ResolutionAction.DEFER)
 
 

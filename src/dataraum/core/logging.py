@@ -109,11 +109,9 @@ class _ProxyLogger:
             self._stderr_print(level, event, phase, kv)
 
     @staticmethod
-    def _build_text(
-        level: str, event: str, phase: str, kv: dict[str, Any]
-    ) -> _RichText:
+    def _build_text(level: str, event: str, phase: str, kv: dict[str, Any]) -> _RichText:
         icon = _LEVEL_ICONS.get(level, "")
-        text = _RichText(f" {icon} " if icon else "  ")
+        text = _RichText(f"  {icon}" if icon else "  ")
         level_style = _LEVEL_STYLES.get(level, "")
 
         if phase:
@@ -127,9 +125,7 @@ class _ProxyLogger:
         return text
 
     @staticmethod
-    def _stderr_print(
-        level: str, event: str, phase: str, kv: dict[str, Any]
-    ) -> None:
+    def _stderr_print(level: str, event: str, phase: str, kv: dict[str, Any]) -> None:
         parts: list[str] = []
         if level and level not in ("info", "debug"):
             parts.append(f"[{level}]")
@@ -150,9 +146,7 @@ class _ProxyLoggerFactory:
         return _ProxyLogger()
 
 
-def _passthrough_renderer(
-    logger: Any, method_name: str, event_dict: EventDict
-) -> EventDict:
+def _passthrough_renderer(logger: Any, method_name: str, event_dict: EventDict) -> EventDict:
     """Final processor that passes the structured dict to the logger as-is."""
     return event_dict
 

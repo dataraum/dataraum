@@ -18,7 +18,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dataraum.storage import Base
 
@@ -44,6 +44,7 @@ class EnrichedView(Base):
     view_table_id: Mapped[str | None] = mapped_column(
         ForeignKey("tables.table_id", ondelete="SET NULL")
     )
+    view_table = relationship("Table", foreign_keys=[view_table_id])
 
     view_name: Mapped[str] = mapped_column(String, nullable=False)
     view_sql: Mapped[str] = mapped_column(Text, nullable=False)

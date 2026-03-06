@@ -1,11 +1,22 @@
 """Merge resolution actions from multiple sources into a unified, prioritized list.
 
-Used by MCP server and API to produce actionable steps for improving data quality.
+Used by MCP server, CLI, and API to produce actionable steps for improving data quality.
 """
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import TYPE_CHECKING, Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from dataraum.entropy.contracts import evaluate_all_contracts
+from dataraum.entropy.db_models import EntropyObjectRecord
+from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
+from dataraum.entropy.views.network_context import build_for_network
+from dataraum.entropy.views.query_context import network_to_column_summaries
+from dataraum.storage import Column, Source, Table
 
 if TYPE_CHECKING:
     from dataraum.entropy.views.network_context import EntropyForNetwork
@@ -187,3 +198,90 @@ def merge_actions(
     )
 
     return result
+
+
+def load_actions(session: Session, source: Source) -> list[dict[str, Any]]:
+    """Load and merge all resolution actions for a source.
+
+    Queries entropy interpretations, entropy objects, Bayesian network context,
+    and contract violations, then merges them via merge_actions().
+
+    Args:
+        session: Database session
+        source: Source model instance
+
+    Returns:
+        Sorted list of merged action dicts (same format as merge_actions output)
+    """
+    # Get typed tables
+    tables_result = session.execute(
+        select(Table).where(
+            Table.source_id == source.source_id,
+            Table.layer == "typed",
+        )
+    )
+    tables = tables_result.scalars().all()
+    if not tables:
+        return []
+
+    table_ids = [t.table_id for t in tables]
+
+    # Build column_id -> column_key mapping
+    col_id_to_key: dict[str, str] = {}
+    for tbl in tables:
+        cols_result = session.execute(select(Column).where(Column.table_id == tbl.table_id))
+        for col in cols_result.scalars().all():
+            col_id_to_key[col.column_id] = f"{tbl.table_name}.{col.column_name}"
+
+    # Build column summaries and network context
+    network_context = build_for_network(session, table_ids)
+    column_summaries = network_to_column_summaries(network_context)
+
+    # Get LLM interpretations with resolution actions (column-level and table-level)
+    interp_result = session.execute(
+        select(EntropyInterpretationRecord).where(
+            EntropyInterpretationRecord.source_id == source.source_id,
+        )
+    )
+    interp_by_col: dict[str, Any] = {}
+    for interp in interp_result.scalars().all():
+        if interp.column_name:
+            col_key = f"{interp.table_name}.{interp.column_name}"
+        else:
+            col_key = interp.table_name
+        interp_by_col[col_key] = interp
+
+    # Get entropy objects for evidence
+    entropy_objects_by_col: dict[str, list[Any]] = defaultdict(list)
+    if table_ids:
+        eo_result = session.execute(
+            select(EntropyObjectRecord)
+            .where(EntropyObjectRecord.table_id.in_(table_ids))
+            .order_by(EntropyObjectRecord.score.desc())
+        )
+        for obj in eo_result.scalars().all():
+            col_key = col_id_to_key.get(obj.column_id, "") if obj.column_id else ""
+            if col_key:
+                entropy_objects_by_col[col_key].append(obj)
+
+    # Get contract violations
+    evaluations = evaluate_all_contracts(column_summaries)
+    all_column_keys = list(column_summaries.keys())
+    violation_dims: dict[str, list[str]] = {}
+    for eval_result in evaluations.values():
+        for v in eval_result.violations:
+            if v.dimension:
+                violation_dims.setdefault(v.dimension, []).extend(v.affected_columns)
+            elif v.violation_type == "overall":
+                violation_dims.setdefault("overall", []).extend(all_column_keys)
+            elif v.affected_columns:
+                key = v.condition or v.violation_type
+                violation_dims.setdefault(key, []).extend(v.affected_columns)
+
+    # Merge actions from all sources
+    return merge_actions(
+        interp_by_col=interp_by_col,
+        entropy_objects_by_col=entropy_objects_by_col,
+        violation_dims=violation_dims,
+        network_context=network_context,
+    )

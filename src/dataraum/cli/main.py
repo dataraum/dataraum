@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typer
 
-from dataraum.cli.commands import query, run, status
+from dataraum.cli.commands import fix, query, run, status
 
 app = typer.Typer(
     name="dataraum",
@@ -16,6 +16,7 @@ app = typer.Typer(
 app.command()(run.run)
 app.command()(status.status)
 app.command()(query.query)
+app.command()(fix.fix)
 
 
 def main() -> None:

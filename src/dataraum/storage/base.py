@@ -41,6 +41,7 @@ def init_database(engine: Engine) -> None:
         engine: SQLAlchemy engine
     """
     # Core models not owned by any phase
+    from dataraum.documentation import db_models as _fixes  # noqa: F401
     from dataraum.pipeline import db_models as _pipeline  # noqa: F401
 
     # Phase-owned models: auto-discovered from registry
@@ -65,6 +66,7 @@ def reset_database(engine: Engine) -> None:
         engine: SQLAlchemy engine
     """
     # Core models not owned by any phase
+    from dataraum.documentation import db_models as _fixes  # noqa: F401
     from dataraum.pipeline import db_models as _pipeline  # noqa: F401
 
     # Phase-owned models: auto-discovered from registry

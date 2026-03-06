@@ -232,6 +232,15 @@ class SemanticPhase(BasePhase):
             detection_method="candidate",
         )
 
+        # Load domain fixes from the fix ledger (if any)
+        from dataraum.documentation.ledger import format_fixes_for_prompt, get_active_fixes
+
+        fixes = get_active_fixes(ctx.session, ctx.source_id)
+        domain_fixes = format_fixes_for_prompt(fixes) if fixes else ""
+
+        if fixes:
+            logger.info("domain_fixes_loaded", count=len(fixes))
+
         # Run semantic enrichment with tier 1 annotations as context
         enrich_result = enrich_semantic(
             session=ctx.session,
@@ -242,6 +251,7 @@ class SemanticPhase(BasePhase):
             duckdb_conn=ctx.duckdb_conn,
             column_annotations=column_annotations,
             required_standard_fields=required_standard_fields,
+            domain_fixes=domain_fixes,
         )
 
         if not enrich_result.success:

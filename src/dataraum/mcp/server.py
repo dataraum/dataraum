@@ -822,18 +822,11 @@ def _get_actions(
     table_name: str | None = None,
 ) -> str:
     """Get prioritized resolution actions."""
-    from collections import defaultdict
-
     from sqlalchemy import select
 
     from dataraum.core.connections import get_manager_for_directory
-    from dataraum.entropy.actions import merge_actions
-    from dataraum.entropy.contracts import evaluate_all_contracts
-    from dataraum.entropy.db_models import EntropyObjectRecord
-    from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
-    from dataraum.entropy.views.network_context import build_for_network
-    from dataraum.entropy.views.query_context import network_to_column_summaries
-    from dataraum.storage import Column, Source, Table
+    from dataraum.entropy.actions import load_actions
+    from dataraum.storage import Source
 
     try:
         manager = get_manager_for_directory(output_dir)
@@ -851,82 +844,11 @@ def _get_actions(
 
             source = sources[0]
 
-            # Get tables
-            tables_result = session.execute(
-                select(Table).where(
-                    Table.source_id == source.source_id,
-                    Table.layer == "typed",
-                )
-            )
-            tables = tables_result.scalars().all()
+            # Load all actions
+            actions = load_actions(session, source)
 
-            if not tables:
+            if not actions:
                 return "Error: No tables found. Run pipeline first."
-
-            table_ids = [t.table_id for t in tables]
-
-            # Build column_id -> column_key mapping
-            col_id_to_key: dict[str, str] = {}
-            for tbl in tables:
-                cols_result = session.execute(select(Column).where(Column.table_id == tbl.table_id))
-                for col in cols_result.scalars().all():
-                    col_id_to_key[col.column_id] = f"{tbl.table_name}.{col.column_name}"
-
-            # Build column summaries and network context
-            network_context = build_for_network(session, table_ids)
-            column_summaries = network_to_column_summaries(network_context)
-
-            # Get LLM interpretations with resolution actions
-            interp_result = session.execute(
-                select(EntropyInterpretationRecord).where(
-                    EntropyInterpretationRecord.source_id == source.source_id,
-                    EntropyInterpretationRecord.column_name.isnot(None),
-                )
-            )
-            interp_by_col: dict[str, Any] = {}
-            for interp in interp_result.scalars().all():
-                col_key = f"{interp.table_name}.{interp.column_name}"
-                interp_by_col[col_key] = interp
-
-            # Get entropy objects for evidence
-            entropy_objects_by_col: dict[str, list[Any]] = defaultdict(list)
-            if table_ids:
-                eo_result = session.execute(
-                    select(EntropyObjectRecord)
-                    .where(EntropyObjectRecord.table_id.in_(table_ids))
-                    .order_by(EntropyObjectRecord.score.desc())
-                )
-                for obj in eo_result.scalars().all():
-                    col_key = col_id_to_key.get(obj.column_id, "") if obj.column_id else ""
-                    if col_key:
-                        entropy_objects_by_col[col_key].append(obj)
-
-            # Get contract violations and map to affected columns.
-            # Dimension violations link by dimension key; overall and blocking
-            # violations link by violation type or condition name so that
-            # actions touching the same columns get fixes_violations populated.
-            evaluations = evaluate_all_contracts(column_summaries)
-            all_column_keys = list(column_summaries.keys())
-            violation_dims: dict[str, list[str]] = {}
-            for eval_result in evaluations.values():
-                for v in eval_result.violations:
-                    if v.dimension:
-                        violation_dims.setdefault(v.dimension, []).extend(v.affected_columns)
-                    elif v.violation_type == "overall":
-                        # Overall violations affect all columns
-                        violation_dims.setdefault("overall", []).extend(all_column_keys)
-                    elif v.affected_columns:
-                        # Blocking conditions with affected columns (e.g. blocked_columns)
-                        key = v.condition or v.violation_type
-                        violation_dims.setdefault(key, []).extend(v.affected_columns)
-
-            # Merge actions from all sources (including network causal impact)
-            actions = merge_actions(
-                interp_by_col=interp_by_col,
-                entropy_objects_by_col=entropy_objects_by_col,
-                violation_dims=violation_dims,
-                network_context=network_context,
-            )
 
             # Apply filters
             if priority:
@@ -935,7 +857,10 @@ def _get_actions(
                 actions = [
                     a
                     for a in actions
-                    if any(col.startswith(f"{table_name}.") for col in a["affected_columns"])
+                    if any(
+                        col == table_name or col.startswith(f"{table_name}.")
+                        for col in a["affected_columns"]
+                    )
                 ]
 
             return format_actions_report(source.name, actions, priority, table_name)

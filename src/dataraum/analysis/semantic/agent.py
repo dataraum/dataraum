@@ -105,6 +105,7 @@ class SemanticAgent(LLMFeature):
         relationship_candidates: list[dict[str, Any]] | None = None,
         column_annotations: ColumnAnnotationOutput | None = None,
         required_standard_fields: list[str] | None = None,
+        domain_fixes: str = "",
     ) -> Result[SemanticEnrichmentResult]:
         """Analyze semantic meaning of tables and columns.
 
@@ -124,6 +125,8 @@ class SemanticAgent(LLMFeature):
                 low-confidence annotations.
             required_standard_fields: Standard field concepts required by active
                 metric graphs. Prioritizes mapping these to actual columns.
+            domain_fixes: Formatted domain fixes from the fix ledger.
+                When provided, included as authoritative context.
 
         Returns:
             Result containing SemanticEnrichmentResult or error
@@ -184,6 +187,7 @@ class SemanticAgent(LLMFeature):
             ),
             "column_annotations": self._format_column_annotations(column_annotations),
             "required_standard_fields": self._format_required_fields(required_standard_fields),
+            "domain_fixes": domain_fixes,
         }
 
         # Render prompt with system/user split

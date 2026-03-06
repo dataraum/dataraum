@@ -238,8 +238,8 @@ class TestExitCheckSkipMode:
 
         assert result.success
         rendered = output.getvalue().lower()
-        assert "type_fidelity" in rendered
-        assert "0.62" in rendered
+        # Skip mode suppresses inline violation panel (shown in final summary instead)
+        assert "post-verification" not in rendered
 
 
 class TestExitCheckFailMode:

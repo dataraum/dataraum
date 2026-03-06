@@ -32,20 +32,21 @@ def handle_exit_check(
     Returns:
         Resolution telling the scheduler what to do.
     """
-    render_violations(
-        console,
-        event.violations,
-        event.column_details,
-        all_scores=event.scores or None,
-        contract_thresholds=contract_thresholds,
-        phase_name=event.phase,
-    )
-
     match gate_mode:
         case GateMode.SKIP:
+            # Skip mode: suppress inline panel, violations appear in final summary
             return Resolution(action=ResolutionAction.DEFER)
 
         case GateMode.FAIL:
+            # Fail mode: show violations so user understands why pipeline aborts
+            render_violations(
+                console,
+                event.violations,
+                event.column_details,
+                all_scores=event.scores or None,
+                contract_thresholds=contract_thresholds,
+                phase_name=event.phase,
+            )
             console.print("  [red]Aborting — gate mode is fail[/red]")
             return Resolution(action=ResolutionAction.ABORT)
 

@@ -136,6 +136,7 @@ def _cleanup_correlations(
 def _cleanup_semantic(
     session: Session, source_id: str, table_ids: list[str], column_ids: list[str]
 ) -> int:
+    from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 
     count = 0
@@ -147,6 +148,14 @@ def _cleanup_semantic(
     if table_ids:
         count += _exec_delete(
             session, delete(TableEntity).where(TableEntity.table_id.in_(table_ids))
+        )
+        # Delete LLM-confirmed relationships created by the semantic phase
+        count += _exec_delete(
+            session,
+            delete(Relationship).where(
+                Relationship.detection_method == "llm",
+                Relationship.from_table_id.in_(table_ids) | Relationship.to_table_id.in_(table_ids),
+            ),
         )
     return count
 

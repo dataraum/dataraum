@@ -96,6 +96,28 @@ class SemanticPhase(BasePhase):
         annotated_count = ctx.session.execute(annotated_stmt).scalar() or 0
 
         if annotated_count >= total_columns:
+            # All annotated — but are fixes newer than last semantic run?
+            from dataraum.documentation.ledger import get_active_fixes
+            from dataraum.pipeline.db_models import PhaseLog
+
+            fixes = get_active_fixes(ctx.session, ctx.source_id)
+            if fixes:
+                latest_fix = max(f.created_at for f in fixes)
+
+                last_semantic = ctx.session.execute(
+                    select(PhaseLog)
+                    .where(
+                        PhaseLog.source_id == ctx.source_id,
+                        PhaseLog.phase_name == "semantic",
+                        PhaseLog.status == "completed",
+                    )
+                    .order_by(PhaseLog.completed_at.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+
+                if last_semantic and latest_fix > last_semantic.completed_at:
+                    return None  # Don't skip — fixes are newer
+
             return "All columns already have semantic annotations"
 
         return None

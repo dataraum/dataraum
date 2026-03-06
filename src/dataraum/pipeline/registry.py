@@ -69,6 +69,25 @@ def import_all_phase_models() -> None:
                 seen.add(mod_name)
 
 
+def get_downstream_phases(phase_name: str) -> set[str]:
+    """Get all phases that transitively depend on the given phase.
+
+    Args:
+        phase_name: Name of the phase whose dependents to find.
+
+    Returns:
+        Set of all phase names that transitively depend on phase_name.
+    """
+    registry = get_registry()
+    downstream: set[str] = set()
+    for name in registry:
+        if name == phase_name:
+            continue
+        if phase_name in get_all_dependencies(name):
+            downstream.add(name)
+    return downstream
+
+
 def get_all_dependencies(phase_name: str) -> set[str]:
     """Get all transitive dependencies for a phase.
 

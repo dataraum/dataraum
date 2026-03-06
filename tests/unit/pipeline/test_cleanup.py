@@ -9,7 +9,7 @@ import duckdb
 import pytest
 from sqlalchemy.orm import Session
 
-from dataraum.pipeline.cleanup import _CLEANUP_MAP, cleanup_phase
+from dataraum.pipeline.cleanup import _CLEANUP_MAP, cleanup_phase, cleanup_phase_cascade
 from dataraum.pipeline.db_models import PhaseLog, PipelineRun
 from dataraum.storage.models import Column, Source, Table
 
@@ -199,3 +199,44 @@ class TestCleanupTyping:
 
         # Raw table should remain
         assert session.get(Table, raw_table.table_id) is not None
+
+
+class TestCleanupPhaseCascade:
+    def test_cascade_cleans_target_and_downstream(
+        self, session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """cleanup_phase_cascade cleans the target phase + all downstream phases."""
+        source = _make_source(session)
+        _make_table(session, source.source_id, layer="typed")
+
+        # Create phase logs for semantic and some downstream phases
+        _make_phase_log(session, source.source_id, "semantic")
+        _make_phase_log(session, source.source_id, "enriched_views")
+        _make_phase_log(session, source.source_id, "entropy")
+        session.flush()
+
+        cleaned = cleanup_phase_cascade("semantic", source.source_id, session, duck)
+        session.flush()
+
+        # Should include semantic and downstream phases
+        assert "semantic" in cleaned
+        assert "enriched_views" in cleaned
+        assert "entropy" in cleaned
+
+        # Phase logs should be deleted
+        remaining = (
+            session.query(PhaseLog)
+            .filter_by(source_id=source.source_id, phase_name="semantic")
+            .all()
+        )
+        assert len(remaining) == 0
+
+    def test_cascade_returns_phases_in_reverse_dep_order(
+        self, session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Phases with more dependencies (further downstream) are cleaned first."""
+        source = _make_source(session)
+        cleaned = cleanup_phase_cascade("semantic", source.source_id, session, duck)
+
+        # semantic should be last (fewest deps of the target set)
+        assert cleaned[-1] == "semantic"

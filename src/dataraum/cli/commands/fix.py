@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
+import typer
 from rich.table import Table as RichTable
 
 from dataraum.cli.common import OutputDirArg, console
@@ -15,6 +17,10 @@ if TYPE_CHECKING:
 
 def fix(
     output_dir: OutputDirArg = Path("./pipeline_output"),
+    rerun: Annotated[
+        bool,
+        typer.Option("--rerun", help="Re-run semantic + downstream phases after fixing"),
+    ] = False,
 ) -> None:
     """Review data quality actions and document domain knowledge.
 
@@ -22,11 +28,15 @@ def fix(
     agent to elicit domain knowledge from the user. Fixes are stored
     in the fix_ledger and used as context on semantic re-runs.
 
+    Use --rerun to automatically re-run semantic + all downstream phases
+    after documenting fixes, with an entropy impact report.
+
     Examples:
 
         dataraum fix ./pipeline_output
+
+        dataraum fix --rerun ./pipeline_output
     """
-    import typer
     from sqlalchemy import select
 
     from dataraum.cli.common import get_manager
@@ -53,6 +63,8 @@ def fix(
             if not doc_actions:
                 console.print("[green]No document actions pending.[/green]")
                 return
+
+            fixes_logged = False
 
             while True:
                 # Filter out actions already fully covered by fixes
@@ -220,7 +232,12 @@ def fix(
                     )
 
                 session.commit()
+                fixes_logged = True
                 console.print("[green]Fix logged successfully.[/green]")
+
+            # After fix session, optionally re-run pipeline
+            if rerun and fixes_logged:
+                _rerun_pipeline(session, source, output_dir, manager)
 
     finally:
         manager.close()
@@ -479,6 +496,191 @@ def _build_agent_context(session: Any, action: dict[str, Any], source_id: str) -
         sections.append("\n".join(net_lines))
 
     return "\n\n".join(sections)
+
+
+def _rerun_pipeline(
+    session: Any, source: Any, output_dir: Path, manager: Any,
+) -> None:
+    """Re-run semantic + downstream phases and show entropy impact."""
+    from dataraum.entropy.actions import load_actions
+    from dataraum.pipeline.cleanup import cleanup_phase_cascade
+    from dataraum.pipeline.setup import setup_pipeline
+
+    source_id = source.source_id
+    duckdb_conn = manager._duckdb_conn  # noqa: SLF001
+
+    # 1. Snapshot current entropy state
+    before_scores = _snapshot_entropy(session, source_id)
+    before_actions = load_actions(session, source)
+
+    # 2. Clean semantic + all downstream phases
+    console.print()
+    console.print("[bold]Re-running semantic + downstream phases...[/bold]")
+    cleaned = cleanup_phase_cascade("semantic", source_id, session, duckdb_conn)
+    session.commit()
+    console.print(f"  Cleaned {len(cleaned)} phases: {', '.join(cleaned)}")
+
+    # 3. Resolve source path from Source.connection_config
+    source_path = _get_source_path(source)
+
+    # 4. Re-run pipeline
+    setup = setup_pipeline(
+        source_path=source_path,
+        output_dir=output_dir,
+    )
+
+    gen = setup.scheduler.run()
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning, module="numpy")
+        warnings.filterwarnings("ignore", category=RuntimeWarning, module="scipy")
+        result = _drive_pipeline_quiet(gen)
+
+    # Update PipelineRun status
+    from dataraum.pipeline.db_models import PipelineRun
+
+    run_record = setup.session.get(PipelineRun, setup.run_id)
+    if run_record:
+        run_record.status = "completed" if result.success else "failed"
+        setup.session.commit()
+
+    if result.success:
+        console.print("[green]Re-run completed successfully.[/green]")
+    else:
+        console.print(f"[red]Re-run completed with failures: {result.error or ''}[/red]")
+
+    # 5. Snapshot after and show delta
+    # Use the setup session since manager.session_scope() may be different
+    with manager.session_scope() as after_session:
+        after_scores = _snapshot_entropy(after_session, source_id)
+        # Need to re-query source in this session
+        from dataraum.storage import Source
+
+        after_source = after_session.get(Source, source_id)
+        after_actions = load_actions(after_session, after_source) if after_source else []
+
+    _print_entropy_delta(before_scores, after_scores, before_actions, after_actions)
+
+
+def _get_source_path(source: Any) -> Path | None:
+    """Get source path from Source.connection_config."""
+    if source.connection_config and "path" in source.connection_config:
+        return Path(source.connection_config["path"])
+    return None
+
+
+def _snapshot_entropy(session: Any, source_id: str) -> dict[str, float]:
+    """Snapshot current entropy scores by dimension path."""
+    from sqlalchemy import func, select
+
+    from dataraum.entropy.db_models import EntropyObjectRecord
+
+    stmt = (
+        select(
+            EntropyObjectRecord.layer,
+            EntropyObjectRecord.dimension,
+            EntropyObjectRecord.sub_dimension,
+            func.avg(EntropyObjectRecord.score),
+        )
+        .where(EntropyObjectRecord.source_id == source_id)
+        .group_by(
+            EntropyObjectRecord.layer,
+            EntropyObjectRecord.dimension,
+            EntropyObjectRecord.sub_dimension,
+        )
+    )
+    rows = session.execute(stmt).all()
+    return {
+        f"{layer}.{dim}.{sub}": float(avg)
+        for layer, dim, sub, avg in rows
+    }
+
+
+def _drive_pipeline_quiet(
+    gen: Any,
+) -> Any:
+    """Drive pipeline generator with minimal output (for fix --rerun)."""
+    from dataraum.pipeline.events import EventType
+    from dataraum.pipeline.scheduler import PipelineResult, Resolution, ResolutionAction
+
+    result: PipelineResult | None = None
+    try:
+        event = next(gen)
+        while True:
+            match event.event_type:
+                case EventType.PHASE_COMPLETED:
+                    console.print(
+                        f"  [green]\u2713[/green] {event.phase} ({event.duration_seconds:.1f}s)"
+                    )
+                case EventType.PHASE_FAILED:
+                    console.print(
+                        f"  [red]\u2717[/red] {event.phase}: {event.error}"
+                    )
+                case EventType.PHASE_SKIPPED:
+                    console.print(
+                        f"  [yellow]\u25cb[/yellow] {event.phase}: {event.message}"
+                    )
+                case EventType.EXIT_CHECK:
+                    # Auto-defer in re-run mode
+                    event = gen.send(Resolution(action=ResolutionAction.DEFER))
+                    continue
+            event = next(gen)
+    except StopIteration as e:
+        result = e.value
+
+    if result is None:
+        result = PipelineResult(
+            success=False,
+            phases_completed=[],
+            phases_failed=[],
+            phases_skipped=[],
+            phases_blocked=[],
+            final_scores={},
+            deferred_issues=[],
+            error="Generator ended without returning a result",
+        )
+
+    return result
+
+
+def _print_entropy_delta(
+    before: dict[str, float],
+    after: dict[str, float],
+    before_actions: list[dict[str, Any]],
+    after_actions: list[dict[str, Any]],
+) -> None:
+    """Show entropy score changes and action resolution."""
+    console.print()
+    console.print("[bold]Entropy Impact[/bold]")
+    console.print("=" * 60)
+
+    # Score deltas
+    all_dims = sorted(set(before) | set(after))
+    has_changes = False
+    for dim in all_dims:
+        b = before.get(dim, 0.0)
+        a = after.get(dim, 0.0)
+        delta = a - b
+        if abs(delta) < 0.005:
+            continue
+        has_changes = True
+        arrow = "\u2193" if delta < 0 else "\u2191"
+        color = "green" if delta < 0 else "red"
+        console.print(
+            f"  {dim[:40]:40s}  {b:.3f} \u2192 {a:.3f}  [{color}]{arrow}{abs(delta):.3f}[/{color}]"
+        )
+
+    if not has_changes:
+        console.print("  [dim]No significant entropy changes[/dim]")
+
+    # Action resolution summary
+    before_doc = [a for a in before_actions if a["action"].startswith("document_")]
+    after_doc = [a for a in after_actions if a["action"].startswith("document_")]
+    resolved = len(before_doc) - len(after_doc)
+    if resolved > 0:
+        console.print(f"\n  [green]Actions resolved: {resolved}[/green]")
+    console.print(f"  Actions remaining: {len(after_doc)}")
+    console.print()
 
 
 def _create_document_agent() -> DocumentAgent:

@@ -223,11 +223,13 @@ class ConnectionManager:
     def _import_all_models(self) -> None:
         """Import all DB model modules to register them with SQLAlchemy."""
         # Core models not owned by any phase
+        from dataraum.documentation import db_models as _fixes  # noqa: F401
         from dataraum.pipeline import db_models as _pipeline  # noqa: F401
 
         # Phase-owned models: auto-discovered from registry
         from dataraum.pipeline.registry import import_all_phase_models
         from dataraum.query import db_models as _query  # noqa: F401
+        from dataraum.query import snippet_models as _snippets  # noqa: F401
         from dataraum.storage import models as _storage  # noqa: F401
 
         import_all_phase_models()

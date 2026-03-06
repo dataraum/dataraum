@@ -382,6 +382,45 @@ def _drop_duckdb_tables(
             logger.debug(f"Could not drop DuckDB {kind} {path}")
 
 
+def cleanup_phase_cascade(
+    phase_name: str,
+    source_id: str,
+    session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> list[str]:
+    """Clean a phase and all downstream phases.
+
+    Cleans in reverse dependency order (leaves first) to avoid FK issues.
+
+    Args:
+        phase_name: Root phase to clean.
+        source_id: Source identifier to scope deletions.
+        session: Active SQLAlchemy session (caller manages transaction).
+        duckdb_conn: DuckDB connection for dropping tables.
+
+    Returns:
+        List of cleaned phase names in cleanup order.
+    """
+    from dataraum.pipeline.registry import get_all_dependencies, get_downstream_phases
+
+    downstream = get_downstream_phases(phase_name)
+    all_phases = {phase_name} | downstream
+
+    # Topological reverse sort: phases with more dependencies go first
+    # (they are "further downstream" and should be cleaned before their parents)
+    def _dep_count(name: str) -> int:
+        return len(get_all_dependencies(name))
+
+    sorted_phases = sorted(all_phases, key=_dep_count, reverse=True)
+
+    cleaned: list[str] = []
+    for phase in sorted_phases:
+        cleanup_phase(phase, source_id, session, duckdb_conn)
+        cleaned.append(phase)
+
+    return cleaned
+
+
 def cleanup_phase(
     phase_name: str,
     source_id: str,

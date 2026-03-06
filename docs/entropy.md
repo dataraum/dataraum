@@ -139,6 +139,17 @@ Via MCP:
 > Show high priority actions for the orders table
 ```
 
+Via CLI — the `fix` command walks you through `document_*` actions interactively:
+```bash
+# Document domain knowledge (units, naming, business rules)
+dataraum fix ./pipeline_output
+
+# Document fixes and re-run the pipeline in one step
+dataraum fix --rerun ./pipeline_output
+```
+
+The `--rerun` flag re-runs semantic analysis + all downstream phases after you document fixes, and prints an entropy impact report showing score changes.
+
 ### Action Priority
 
 Actions are scored based on:

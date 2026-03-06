@@ -23,7 +23,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 │                                                                             │
 │   12 Detectors (8 hard, 4 soft) ──▶  Contracts (6 built-in)                 │
 │   Bayesian Network              ──▶  Actions (prioritized fixes)            │
-│   Gates (entropy preconditions) ──▶  Fix Executor + Decision Ledger        │
+│   Gates (entropy preconditions) ──▶  Fix Ledger (domain knowledge)         │
 │   LLM Interpretation            ──▶  Confidence Levels (traffic light)      │
 └─────────────────────────────────────────────────────────────────────────────┘
                                        ↑
@@ -164,11 +164,10 @@ src/dataraum/
 │   ├── contracts/         # Use-case threshold evaluation
 │   ├── network/           # Bayesian causal network
 │   ├── snapshot.py        # Snapshot: run detectors, before/after measurement
-│   ├── decisions.py       # Decision dataclass + DecisionRecord DB model
-│   ├── fix_executor.py    # ActionRegistry, FixExecutor, FixRequest/FixResult
-│   ├── action_executors.py # 6 seed action executors
+│   ├── actions.py         # Merge resolution actions from all sources
 │   ├── context.py         # Entropy context builder
 │   └── interpretation.py  # LLM entropy interpretation
+├── documentation/           # Fix ledger + document agent
 ├── graphs/                # Metric calculation graphs
 ├── query/                 # Natural language query execution
 ├── pipeline/              # Pipeline orchestrator

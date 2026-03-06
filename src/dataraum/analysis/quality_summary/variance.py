@@ -6,6 +6,11 @@ so only INTERESTING columns go to LLM processing.
 
 Based on the principle: if a metric is the same across all slices,
 it tells you nothing about slice-specific behavior. The variance IS the signal.
+
+TODO(DAT-81): Replace spread heuristics (max - min) with eta-squared (η²)
+for a more principled informativeness measure. See Neyman (1934) on
+stratified sampling and ANOVA effect sizes. Current spread checks are a
+rough proxy that works for 3-10 slices but breaks down with more values.
 """
 
 from __future__ import annotations

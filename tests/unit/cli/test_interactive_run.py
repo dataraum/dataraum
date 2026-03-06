@@ -237,7 +237,9 @@ class TestExitCheckSkipMode:
         )
 
         assert result.success
-        assert "deferred" in output.getvalue().lower()
+        rendered = output.getvalue().lower()
+        assert "type_fidelity" in rendered
+        assert "0.62" in rendered
 
 
 class TestExitCheckFailMode:

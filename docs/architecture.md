@@ -12,7 +12,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           CONSUMERS                                         │
 │                                                                             │
-│   Claude Code ──── MCP Server (10 tools)                                     │
+│   Claude Code ──── MCP Server (9 tools)                                      │
 │   Claude Desktop ─┘                       ContextDocument (pre-assembled)   │
 │   Python ──────── Context API                                               │
 │   Terminal ────── CLI + TUI (3 commands)                                     │
@@ -97,7 +97,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 
 | Layer | Technology | Purpose |
 |-------|------------|---------|
-| **AI Interface** | MCP Server | 10 tools for AI agents (Claude Code, Claude Desktop) |
+| **AI Interface** | MCP Server | 9 tools for AI agents (Claude Code, Claude Desktop) |
 | **CLI** | Typer + Rich | 3 commands for terminal use |
 | **TUI** | Textual | Interactive terminal dashboards |
 | **Python API** | `Context` class | Programmatic access for notebooks and scripts |
@@ -122,7 +122,7 @@ AI doesn't discover metadata at runtime via tools. It receives a pre-assembled c
 
 ### Minimal Tool Surface
 
-10 MCP tools: 7 core (`analyze`, `get_context`, `get_entropy`, `evaluate_contract`, `query`, `get_actions`, `apply_fix`) + 3 source management (`discover_sources`, `add_source`, `remove_source`). Rich context upfront instead of many discovery tools.
+9 MCP tools: 6 core (`analyze`, `get_context`, `get_entropy`, `evaluate_contract`, `query`, `get_actions`) + 3 source management (`discover_sources`, `add_source`, `remove_source`). Rich context upfront instead of many discovery tools.
 
 ### Entropy Over Binary Quality
 
@@ -227,11 +227,11 @@ Source (CSV/Parquet)
 Context document → MCP / CLI / Python API → AI consumer
 ```
 
-At each gate (⊘), the pipeline checks detector scores against thresholds. Gate behavior depends on `--gate-mode` (skip, pause, fail, auto_fix). Fixes applied at gates are recorded in the decision ledger.
+At each gate (⊘), the pipeline checks detector scores against thresholds. Gate behavior depends on `--gate-mode` (skip, pause, fail).
 
 ## Interfaces
 
-### MCP Server (10 tools)
+### MCP Server (9 tools)
 
 Primary interface for AI agents. Tools return markdown formatted for LLM consumption.
 
@@ -243,7 +243,6 @@ Primary interface for AI agents. Tools return markdown formatted for LLM consump
 | `evaluate_contract` | Contract compliance check |
 | `query` | Natural language data queries |
 | `get_actions` | Prioritized quality fixes |
-| `apply_fix` | Execute a fix action with verification |
 | `discover_sources` | Scan workspace for data files |
 | `add_source` | Register a file or database source |
 | `remove_source` | Archive a data source |

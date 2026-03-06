@@ -118,7 +118,6 @@ See the plugin repo's README for installation and configuration instructions. Th
 | `evaluate_contract` | `contract_name` | Quality evaluation against a contract |
 | `query` | `question`, `contract_name?` | Natural language query with confidence level |
 | `get_actions` | `priority?`, `table_name?` | Prioritized resolution actions |
-| `apply_fix` | `action_type`, `target`, `parameters?` | Execute a fix action with verification and decision recording |
 
 ### Source management tools
 
@@ -127,16 +126,6 @@ See the plugin repo's README for installation and configuration instructions. Th
 | `discover_sources` | `path?`, `recursive?` | Scan workspace for data files (CSV, Parquet, JSON, XLSX) |
 | `add_source` | `name`, `path?`, `backend?`, `tables?`, `credential_ref?` | Register a file or database source |
 | `remove_source` | `name`, `purge_results?` | Archive a data source |
-
-### apply_fix
-
-Executes a fix action to improve data quality. Returns JSON with success status, before/after verification, and a decision record for audit.
-
-```
-> Apply the override_type fix to column:orders.amount with target_type DECIMAL(10,2)
-```
-
-Built-in action types: `override_type`, `declare_unit`, `add_business_name`, `declare_null_meaning`, `confirm_relationship`, `create_filtered_view`. See [Entropy: Fix Execution](entropy.md#fix-execution) for details.
 
 ### Contract names
 

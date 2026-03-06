@@ -295,8 +295,7 @@ Check [Linear](https://linear.app/dataraum) for active issues, plans, and projec
 src/dataraum/
 ├── analysis/       # Data analysis (typing, statistics, correlations, relationships,
 │                   #   semantic, temporal, slicing, cycles, validation, quality_summary)
-├── entropy/        # Uncertainty quantification (detectors, context, interpretation,
-│                   #   decisions, fix_executor, action_executors)
+├── entropy/        # Uncertainty quantification (detectors, context, interpretation)
 ├── graphs/         # Calculation graphs, context assembly
 ├── pipeline/       # Pipeline orchestrator (19 phases), gates, events
 ├── sources/        # Data source loaders (CSV, Parquet)

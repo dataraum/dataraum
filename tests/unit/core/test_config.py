@@ -1,13 +1,19 @@
 """Tests for central config resolution."""
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from dataraum.core.config import (
+    _get_config_root,
     get_config_dir,
     get_config_file,
     load_phase_config,
     load_pipeline_config,
     load_yaml_config,
+    reset_config_root,
+    set_config_root,
 )
 
 
@@ -136,3 +142,59 @@ class TestLoadPipelineConfig:
             assert phase_section not in data, (
                 f"Phase section '{phase_section}' should not be in pipeline.yaml"
             )
+
+
+class TestSetConfigRoot:
+    """Tests for set_config_root() and reset_config_root()."""
+
+    def teardown_method(self) -> None:
+        """Reset config root after each test."""
+        reset_config_root()
+
+    def test_set_config_root_overrides(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "custom_config"
+        config_dir.mkdir()
+        (config_dir / "test.yaml").write_text("key: custom\n")
+
+        set_config_root(config_dir)
+        assert _get_config_root() == config_dir
+
+    def test_set_config_root_affects_load_yaml(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "test.yaml").write_text("custom_key: custom_value\n")
+
+        set_config_root(config_dir)
+        data = load_yaml_config("test.yaml")
+        assert data["custom_key"] == "custom_value"
+
+    def test_set_config_root_affects_load_phase_config(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        phases_dir = config_dir / "phases"
+        phases_dir.mkdir(parents=True)
+        (phases_dir / "typing.yaml").write_text("min_confidence: 0.5\n")
+
+        set_config_root(config_dir)
+        data = load_phase_config("typing")
+        assert data["min_confidence"] == 0.5
+
+    def test_reset_config_root_reverts(self, tmp_path: Path) -> None:
+        original = _get_config_root()
+
+        set_config_root(tmp_path)
+        assert _get_config_root() == tmp_path
+
+        reset_config_root()
+        assert _get_config_root() == original
+
+    def test_set_config_root_can_be_called_twice(self, tmp_path: Path) -> None:
+        dir_a = tmp_path / "a"
+        dir_b = tmp_path / "b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+
+        set_config_root(dir_a)
+        assert _get_config_root() == dir_a
+
+        set_config_root(dir_b)
+        assert _get_config_root() == dir_b

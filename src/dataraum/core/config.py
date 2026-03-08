@@ -24,6 +24,10 @@ from typing import Any
 
 import yaml
 
+# Module-level override set by set_config_root(). Takes priority over
+# env var and auto-detection when not None.
+_config_root_override: Path | None = None
+
 
 def _find_config_dir() -> Path:
     """Find the config directory by walking up from the package location.
@@ -45,12 +49,38 @@ def _find_config_dir() -> Path:
 def _get_config_root() -> Path:
     """Get the config root directory.
 
-    Checks DATARAUM_CONFIG_PATH env var first, falls back to auto-detection.
+    Priority: set_config_root() override > DATARAUM_CONFIG_PATH env var > auto-detection.
     """
+    if _config_root_override is not None:
+        return _config_root_override
     env_path = os.environ.get("DATARAUM_CONFIG_PATH")
     if env_path:
         return Path(env_path)
     return _find_config_dir()
+
+
+def set_config_root(path: Path) -> None:
+    """Override the config root for the current process.
+
+    Used by setup_pipeline() to switch to per-source config after copying
+    the global config to {output_dir}/config/.
+
+    Args:
+        path: Absolute path to the config root directory.
+    """
+    global _config_root_override  # noqa: PLW0603
+    _config_root_override = path
+    _get_config_root.cache_clear()
+
+
+def reset_config_root() -> None:
+    """Clear the config root override, reverting to default resolution.
+
+    Primarily for testing. Clears both the override and the lru_cache.
+    """
+    global _config_root_override  # noqa: PLW0603
+    _config_root_override = None
+    _get_config_root.cache_clear()
 
 
 def get_config_file(relative_path: str) -> Path:

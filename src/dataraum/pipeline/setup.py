@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,12 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dataraum.core.config import load_phase_config, load_pipeline_config
+from dataraum.core.config import (
+    _get_config_root,
+    load_phase_config,
+    load_pipeline_config,
+    set_config_root,
+)
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import Phase
@@ -69,14 +75,17 @@ def setup_pipeline(
     manager = ConnectionManager(conn_config)
     manager.initialize()
 
-    # 2. Determine mode: single-path or multi-source
+    # 2. Per-source config: copy global config to output_dir on first run
+    _ensure_source_config(output_dir)
+
+    # 3. Determine mode: single-path or multi-source
     multi_source_mode = source_path is None
     registered_sources: list[dict[str, Any]] | None = None
 
     if multi_source_mode:
         registered_sources = _resolve_registered_sources(manager)
 
-    # 3. Resolve source_id
+    # 4. Resolve source_id
     source_id = _resolve_source_id(
         manager=manager,
         source_path=source_path,
@@ -85,7 +94,7 @@ def setup_pipeline(
         output_dir=output_dir,
     )
 
-    # 4. Fingerprint check for multi-source mode
+    # 5. Fingerprint check for multi-source mode
     fingerprint: str | None = None
     if multi_source_mode and registered_sources:
         fingerprint = _compute_source_set_fingerprint(registered_sources)
@@ -93,12 +102,12 @@ def setup_pipeline(
         if changed:
             logger.debug("source_set_fingerprint_changed", fingerprint=fingerprint)
 
-    # 5. Load pipeline and phase configs
+    # 6. Load pipeline and phase configs (from source-specific copy)
     pipeline_yaml_config = load_pipeline_config()
     active_phase_names = pipeline_yaml_config.get("phases", [])
     phase_configs = {name: load_phase_config(name) for name in active_phase_names}
 
-    # 6. Build runtime config
+    # 7. Build runtime config
     runtime_config: dict[str, Any]
     if multi_source_mode and registered_sources:
         runtime_config = {
@@ -115,17 +124,17 @@ def setup_pipeline(
             "source_name": source_name or source_path.stem,
         }
 
-    # 7. Load phases from registry
+    # 8. Load phases from registry
     registry = get_registry()
     phases: dict[str, Phase] = {name: cls() for name, cls in registry.items()}
 
-    # 8. Filter phases if --phase set
+    # 9. Filter phases if --phase set
     if target_phase:
         deps = get_all_dependencies(target_phase)
         keep = deps | {target_phase}
         phases = {n: p for n, p in phases.items() if n in keep}
 
-    # 9. Load contract thresholds
+    # 10. Load contract thresholds
     thresholds: dict[str, float] = {}
     if contract:
         from dataraum.entropy.contracts import get_contract
@@ -134,7 +143,7 @@ def setup_pipeline(
         if contract_obj:
             thresholds = contract_obj.dimension_thresholds
 
-    # 10. Create PipelineRun record
+    # 11. Create PipelineRun record
     session = manager.get_session()
     duckdb_conn = manager._duckdb_conn  # noqa: SLF001
     run_id = str(uuid4())
@@ -154,7 +163,7 @@ def setup_pipeline(
     # Phase sessions (via session_factory) need write access; holding an
     # uncommitted write transaction here would block them for busy_timeout.
 
-    # 11. Force-clean target phase before scheduling
+    # 12. Force-clean target phase before scheduling
     if force_phase and target_phase:
         from dataraum.pipeline.cleanup import cleanup_phase
 
@@ -162,7 +171,7 @@ def setup_pipeline(
         cleanup_phase(target_phase, source_id, session, duckdb_conn)
         session.commit()
 
-    # 12. Create scheduler
+    # 13. Create scheduler
     scheduler = PipelineScheduler(
         phases=phases,
         source_id=source_id,
@@ -307,3 +316,29 @@ def _check_fingerprint_changed(
             new_fingerprint=new_fingerprint,
         )
         return True
+
+
+def _ensure_source_config(output_dir: Path) -> None:
+    """Copy global config to output_dir/config/ on first run, then activate it.
+
+    On first run, copies the entire global config tree so that fix handlers
+    can write per-source config modifications. Subsequent runs reuse the
+    existing copy (preserving user's fixes).
+
+    Args:
+        output_dir: Pipeline output directory.
+    """
+    source_config = output_dir / "config"
+    if not source_config.exists():
+        global_config = _get_config_root()
+        shutil.copytree(global_config, source_config)
+        logger.debug(
+            "source_config_copied",
+            source=str(global_config),
+            destination=str(source_config),
+        )
+    else:
+        logger.debug("source_config_reused", path=str(source_config))
+
+    # Switch config root so all load_phase_config() etc. read from source copy
+    set_config_root(source_config)

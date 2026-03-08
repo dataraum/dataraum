@@ -13,14 +13,22 @@ class TestPhasePostVerificationAnnotations:
         phase = cls()
         assert phase.post_verification == ["type_fidelity"]
 
-    def test_statistics_phase_declares_null_and_outlier(self):
+    def test_statistics_phase_declares_null_ratio(self):
         from dataraum.pipeline.registry import get_phase_class
 
         cls = get_phase_class("statistics")
         assert cls is not None
         phase = cls()
-        assert "null_ratio" in phase.post_verification
+        assert phase.post_verification == ["null_ratio"]
+
+    def test_statistical_quality_phase_declares_outlier_and_benford(self):
+        from dataraum.pipeline.registry import get_phase_class
+
+        cls = get_phase_class("statistical_quality")
+        assert cls is not None
+        phase = cls()
         assert "outlier_rate" in phase.post_verification
+        assert "benford_compliance" in phase.post_verification
 
     def test_relationships_phase_declares_join_quality(self):
         from dataraum.pipeline.registry import get_phase_class

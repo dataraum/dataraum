@@ -117,11 +117,20 @@ class OutlierRateDetector(EntropyDetector):
                 upper_fence = outlier_detection.get("iqr_upper_fence")
                 zscore_ratio = outlier_detection.get("zscore_outlier_ratio", 0.0)
         else:
-            # No outlier detection available - check for direct ratio
+            # No nested outlier_detection — check for direct ratio fields
             outlier_ratio = stats.get("iqr_outlier_ratio", 0.0)
+            if not outlier_ratio:
+                # Column was not assessed (e.g. non-numeric). Return empty
+                # to avoid diluting the dimension average with false zeros.
+                return []
             outlier_count = stats.get("iqr_outlier_count", 0)
             lower_fence = stats.get("iqr_lower_fence")
             upper_fence = stats.get("iqr_upper_fence")
+
+        # Use the worse of IQR and modified Z-score (MAD-based) outlier ratios.
+        # Both are percentages on the same scale; the modified Z-score is more
+        # robust for non-normal data (Iglewicz & Hoaglin 1993, Leys et al. 2013).
+        outlier_ratio = max(outlier_ratio, zscore_ratio or 0.0)
 
         # Calculate entropy using piecewise-linear mapping aligned with impact thresholds
         # 0% → 0.0, impact_minimal → score_at_minimal, impact_moderate → score_at_moderate,

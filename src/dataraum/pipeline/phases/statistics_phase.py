@@ -45,7 +45,7 @@ class StatisticsPhase(BasePhase):
 
     @property
     def post_verification(self) -> list[str]:
-        return ["null_ratio", "outlier_rate"]
+        return ["null_ratio"]
 
     @property
     def db_models(self) -> list[ModuleType]:

@@ -54,6 +54,10 @@ class StatisticalQualityPhase(BasePhase):
         return [quality_db_models]
 
     @property
+    def post_verification(self) -> list[str]:
+        return ["outlier_rate", "benford_compliance"]
+
+    @property
     def fix_handlers(self) -> dict[str, Callable[[FixInput, dict[str, Any]], FixResult]]:
         return {"transform_exclude_outliers": _handle_exclude_outliers}
 

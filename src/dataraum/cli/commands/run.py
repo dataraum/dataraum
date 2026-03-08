@@ -359,6 +359,12 @@ def _drive_pipeline(
                                 stats.first_scores[dim] = event.before_scores.get(
                                     dim, event.scores[dim]
                                 )
+                        if not quiet:
+                            parts = []
+                            for dim, score in sorted(event.scores.items()):
+                                color = "red" if score > 0.3 else "yellow" if score > 0.1 else "green"
+                                parts.append(f"[{color}]{dim}={score:.2f}[/{color}]")
+                            console.print(f"    post-verify [{event.phase}]: {', '.join(parts)}")
 
                 case EventType.EXIT_CHECK:
                     if live:

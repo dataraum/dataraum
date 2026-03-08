@@ -16,6 +16,7 @@ phases:
   - correlations
   - temporal
   - semantic
+  - quality_review
   - enriched_views
   - slicing
   - slicing_view

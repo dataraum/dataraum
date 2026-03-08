@@ -69,7 +69,7 @@ class EnrichedViewsPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        return ["semantic"]
+        return ["quality_review"]
 
     @property
     def db_models(self) -> list[ModuleType]:

@@ -16,7 +16,7 @@ from dataraum.cli.gate_handler import (
 )
 from dataraum.pipeline.events import EventType, PipelineEvent
 from dataraum.pipeline.runner import GateMode
-from dataraum.pipeline.scheduler import Resolution, ResolutionAction
+from dataraum.pipeline.scheduler import ResolutionAction
 
 
 def _strip_ansi(text: str) -> str:

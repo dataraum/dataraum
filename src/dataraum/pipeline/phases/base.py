@@ -10,7 +10,7 @@ import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from types import ModuleType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
@@ -70,7 +70,7 @@ class BasePhase(ABC):
         return []
 
     @property
-    def fix_handlers(self) -> dict[str, Callable[[FixInput, dict], FixResult]]:
+    def fix_handlers(self) -> dict[str, Callable[[FixInput, dict[str, Any]], FixResult]]:
         """Map action_name to a handler function that applies the fix.
 
         Each handler receives a FixInput (structured user decision) and the

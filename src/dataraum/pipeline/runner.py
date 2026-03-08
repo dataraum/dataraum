@@ -51,6 +51,7 @@ class GateMode(str, Enum):
 
     SKIP = "skip"  # Log warning, continue (backward compatible)
     FAIL = "fail"  # Treat as pipeline failure
+    PAUSE = "pause"  # Pause for interactive resolution (CLI only)
 
 
 @dataclass
@@ -174,6 +175,10 @@ def run(config: RunConfig) -> Result[RunResult]:
             source_id=source_id,
             target_phase=config.target_phase,
         )
+
+        # PAUSE mode forces sequential execution for determinism
+        if config.gate_mode == GateMode.PAUSE:
+            setup.scheduler.force_sequential = True
 
         # Drive the generator — collect events, auto-defer gates
         gen = setup.scheduler.run()
@@ -301,7 +306,8 @@ def _resolve_exit_check(gate_mode: GateMode, event: PipelineEvent) -> Resolution
     """
     if gate_mode == GateMode.FAIL:
         return Resolution(action=ResolutionAction.ABORT)
-    # SKIP always defers in programmatic context.
+    # SKIP and PAUSE both defer in programmatic context.
+    # PAUSE is interactive — handled by the CLI gate handler, not here.
     return Resolution(action=ResolutionAction.DEFER)
 
 

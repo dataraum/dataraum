@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.db_models import PhaseLog, PipelineRun
 from dataraum.pipeline.events import EventType
+from dataraum.pipeline.fixes import ConfigPatch, FixInput, FixResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.scheduler import (
     PipelineScheduler,
@@ -36,6 +37,7 @@ class MockPhase(BasePhase):
         skip_reason: str | None = None,
         post_verification_dims: list[str] | None = None,
         outputs: dict | None = None,
+        fix_handlers_map: dict | None = None,
     ):
         self._name = name
         self._dependencies = dependencies or []
@@ -43,6 +45,7 @@ class MockPhase(BasePhase):
         self._skip_reason = skip_reason
         self._post_verification = post_verification_dims or []
         self._outputs = outputs
+        self._fix_handlers = fix_handlers_map or {}
         self.run_count = 0
 
     @property
@@ -71,6 +74,10 @@ class MockPhase(BasePhase):
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         return self._skip_reason
+
+    @property
+    def fix_handlers(self):
+        return self._fix_handlers
 
 
 def _make_run(session: Session, source_id: str = "src-1") -> str:
@@ -976,3 +983,417 @@ class TestPostVerifyWithTableDimension:
         # Both dimension paths present in result
         assert "structural.types.type_fidelity" in scores
         assert "semantic.dimensional.cross_column_patterns" in scores
+
+
+class TestFixResolution:
+    """Tests for ResolutionAction.FIX — the inline fix flow."""
+
+    def _make_fix_handler(self, rerun_phase: str = "typing"):
+        """Create a mock fix handler that records calls and returns a FixResult."""
+        calls = []
+
+        def handler(fix_input: FixInput, config: dict) -> FixResult:
+            calls.append((fix_input, config))
+            return FixResult(
+                config_patches=[
+                    ConfigPatch(
+                        config_path="phases/typing.yaml",
+                        operation="set",
+                        key_path=["overrides", "amount"],
+                        value={"resolved_type": "DECIMAL"},
+                        reason="Test fix",
+                    )
+                ],
+                requires_rerun=rerun_phase,
+                summary="Applied type override",
+            )
+
+        return handler, calls
+
+    def test_fix_calls_handler_and_resets_phase(self, session: Session, duckdb_conn):
+        """FIX resolution calls handler, applies patches, resets affected phase."""
+        run_id = _make_run(session)
+        handler, calls = self._make_fix_handler(rerun_phase="alpha")
+
+        alpha = MockPhase(
+            "alpha",
+            post_verification_dims=["type_fidelity"],
+            fix_handlers_map={"override_type": handler},
+        )
+        beta = MockPhase("beta", dependencies=["alpha"])
+
+        scheduler = PipelineScheduler(
+            phases={"alpha": alpha, "beta": beta},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            contract_thresholds={"structural.types": 0.3},
+        )
+
+        # First pass: alpha runs, post-verify finds violation, EXIT_CHECK fires
+        # We send FIX resolution, which should call handler and reset alpha
+        fix_input = FixInput(
+            action_name="override_type",
+            parameters={"resolved_type": "DECIMAL"},
+            affected_columns=["orders.amount"],
+        )
+
+        # Mock _post_verify to return high score on first call, low on second
+        post_verify_count = 0
+
+        def mock_post_verify(phase_name):
+            nonlocal post_verify_count
+            post_verify_count += 1
+            if post_verify_count == 1:
+                return {"structural.types.type_fidelity": 0.8}
+            # After fix, score drops below threshold
+            return {"structural.types.type_fidelity": 0.1}
+
+        with (
+            patch.object(scheduler, "_post_verify", side_effect=mock_post_verify),
+            patch("dataraum.pipeline.scheduler.cleanup_phase"),
+            patch("dataraum.pipeline.scheduler.apply_config_patch") as mock_apply,
+        ):
+            events, result = _drive(
+                scheduler.run(),
+                resolutions={0: Resolution(
+                    action=ResolutionAction.FIX,
+                    fix_inputs=[fix_input],
+                )},
+            )
+
+        # Handler was called
+        assert len(calls) == 1
+        assert calls[0][0].action_name == "override_type"
+
+        # Config patch was applied
+        mock_apply.assert_called_once()
+
+        # Alpha ran twice (original + re-run after fix)
+        assert alpha.run_count == 2
+
+        # Pipeline succeeded (score now below threshold)
+        assert result.success is True
+
+    def test_fix_handler_not_found_continues(self, session: Session, duckdb_conn):
+        """Unknown action_name in FIX resolution logs warning, doesn't crash."""
+        run_id = _make_run(session)
+        alpha = MockPhase("alpha", post_verification_dims=["type_fidelity"])
+
+        scheduler = PipelineScheduler(
+            phases={"alpha": alpha},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            contract_thresholds={"structural.types": 0.3},
+        )
+
+        fix_input = FixInput(action_name="nonexistent_action")
+
+        with patch.object(
+            scheduler, "_post_verify", return_value={"structural.types.type_fidelity": 0.8}
+        ):
+            events, result = _drive(
+                scheduler.run(),
+                resolutions={0: Resolution(
+                    action=ResolutionAction.FIX,
+                    fix_inputs=[fix_input],
+                )},
+            )
+
+        # Pipeline completes (no fix happened, no re-run, violation cleared)
+        assert result.success is True
+        assert alpha.run_count == 1
+
+    def test_fix_invalidates_downstream(self, session: Session, duckdb_conn):
+        """FIX resets affected phase and all downstream to PENDING."""
+        run_id = _make_run(session)
+        handler, _ = self._make_fix_handler(rerun_phase="alpha")
+
+        alpha = MockPhase(
+            "alpha",
+            post_verification_dims=["type_fidelity"],
+            fix_handlers_map={"override_type": handler},
+        )
+        beta = MockPhase("beta", dependencies=["alpha"])
+        gamma = MockPhase("gamma", dependencies=["beta"])
+
+        scheduler = PipelineScheduler(
+            phases={"alpha": alpha, "beta": beta, "gamma": gamma},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            contract_thresholds={"structural.types": 0.3},
+        )
+
+        post_verify_count = 0
+
+        def mock_post_verify(phase_name):
+            nonlocal post_verify_count
+            post_verify_count += 1
+            if post_verify_count == 1:
+                return {"structural.types.type_fidelity": 0.8}
+            return {"structural.types.type_fidelity": 0.1}
+
+        fix_input = FixInput(action_name="override_type")
+
+        with (
+            patch.object(scheduler, "_post_verify", side_effect=mock_post_verify),
+            patch("dataraum.pipeline.scheduler.cleanup_phase"),
+            patch("dataraum.pipeline.scheduler.apply_config_patch"),
+        ):
+            events, result = _drive(
+                scheduler.run(),
+                resolutions={0: Resolution(
+                    action=ResolutionAction.FIX,
+                    fix_inputs=[fix_input],
+                )},
+            )
+
+        # Alpha ran twice (original + re-run after fix).
+        # Beta and gamma were still PENDING when fix happened, so they
+        # only run once (after the fixed alpha re-completes).
+        assert alpha.run_count == 2
+        assert beta.run_count == 1
+        assert gamma.run_count == 1
+        assert result.success is True
+
+    def test_fix_multiple_attempts(self, session: Session, duckdb_conn):
+        """If fix doesn't resolve violation, EXIT_CHECK fires again."""
+        run_id = _make_run(session)
+        handler, calls = self._make_fix_handler(rerun_phase="alpha")
+
+        alpha = MockPhase(
+            "alpha",
+            post_verification_dims=["type_fidelity"],
+            fix_handlers_map={"override_type": handler},
+        )
+
+        scheduler = PipelineScheduler(
+            phases={"alpha": alpha},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            contract_thresholds={"structural.types": 0.3},
+        )
+
+        # Score stays high — fix doesn't help, second attempt defers
+        def mock_post_verify(phase_name):
+            return {"structural.types.type_fidelity": 0.8}
+
+        fix_input = FixInput(action_name="override_type")
+
+        with (
+            patch.object(scheduler, "_post_verify", side_effect=mock_post_verify),
+            patch("dataraum.pipeline.scheduler.cleanup_phase"),
+            patch("dataraum.pipeline.scheduler.apply_config_patch"),
+        ):
+            events, result = _drive(
+                scheduler.run(),
+                resolutions={
+                    0: Resolution(
+                        action=ResolutionAction.FIX,
+                        fix_inputs=[fix_input],
+                    ),
+                    1: Resolution(action=ResolutionAction.DEFER),
+                },
+            )
+
+        # Handler called once (first EXIT_CHECK)
+        assert len(calls) == 1
+
+        # Alpha ran twice (original + re-run)
+        assert alpha.run_count == 2
+
+        # Two EXIT_CHECKs total
+        exit_checks = [e for e in events if e.event_type == EventType.EXIT_CHECK]
+        assert len(exit_checks) == 2
+
+        # Deferred on second attempt
+        assert len(result.deferred_issues) == 1
+        assert result.success is True
+
+
+class TestForceSequential:
+    """Tests for force_sequential parameter."""
+
+    def test_force_sequential_prevents_parallel(self, session: Session, duckdb_conn, engine):
+        """With force_sequential=True, multiple ready phases run sequentially."""
+        from contextlib import contextmanager
+
+        from sqlalchemy.orm import sessionmaker
+
+        factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+        @contextmanager
+        def session_scope():
+            s = factory()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        run_id = _make_run(session)
+        a = MockPhase("A")
+        b = MockPhase("B", dependencies=["A"])
+        c = MockPhase("C", dependencies=["A"])
+
+        scheduler = PipelineScheduler(
+            phases={"A": a, "B": b, "C": c},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            session_factory=session_scope,
+            force_sequential=True,
+        )
+
+        events, result = _drive(scheduler.run())
+
+        assert result.success is True
+        assert a.run_count == 1
+        assert b.run_count == 1
+        assert c.run_count == 1
+
+        # B and C ran sequentially (both completed)
+        completed = [e.phase for e in events if e.event_type == EventType.PHASE_COMPLETED]
+        assert set(completed) == {"A", "B", "C"}
+
+
+class TestFindFixHandler:
+    """Tests for _find_fix_handler helper."""
+
+    def test_finds_handler_on_correct_phase(self, session: Session, duckdb_conn):
+        """Handler is found on the phase that declares it."""
+        run_id = _make_run(session)
+        handler = lambda fi, cfg: FixResult()  # noqa: E731
+
+        alpha = MockPhase("alpha", fix_handlers_map={"override_type": handler})
+        beta = MockPhase("beta", dependencies=["alpha"])
+
+        scheduler = PipelineScheduler(
+            phases={"alpha": alpha, "beta": beta},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+        )
+
+        found_handler, found_phase = scheduler._find_fix_handler("override_type")
+        assert found_handler is handler
+        assert found_phase == "alpha"
+
+    def test_returns_none_for_unknown_action(self, session: Session, duckdb_conn):
+        """Unknown action returns (None, "")."""
+        run_id = _make_run(session)
+        alpha = MockPhase("alpha")
+
+        scheduler = PipelineScheduler(
+            phases={"alpha": alpha},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+        )
+
+        found_handler, found_phase = scheduler._find_fix_handler("nonexistent")
+        assert found_handler is None
+        assert found_phase == ""
+
+
+class TestExitCheckFixableActions:
+    """Tests for fixable_actions on EXIT_CHECK events."""
+
+    def test_exit_check_includes_fixable_actions(self, session: Session, duckdb_conn):
+        """EXIT_CHECK event carries fixable_actions from detector registry."""
+        from dataraum.entropy.detectors.base import DetectorRegistry, EntropyDetector
+
+        run_id = _make_run(session)
+        phase = MockPhase("alpha", post_verification_dims=["type_fidelity"])
+        scheduler = PipelineScheduler(
+            phases={"alpha": phase},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            contract_thresholds={"structural.types": 0.3},
+        )
+
+        # Create detector with fixable_actions
+        class FixableDetector(EntropyDetector):
+            detector_id = "test_fixable"
+            layer = "structural"
+            dimension = "types"
+            sub_dimension = "type_fidelity"
+            scope = "column"
+            required_analyses: list[str] = []
+
+            @property
+            def fixable_actions(self):
+                return {"override_type": "typing"}
+
+            def detect(self, ctx):
+                return []
+
+        registry = DetectorRegistry()
+        registry.register(FixableDetector())
+
+        with (
+            patch.object(
+                scheduler, "_post_verify",
+                return_value={"structural.types.type_fidelity": 0.8},
+            ),
+            patch(
+                "dataraum.entropy.detectors.base.get_default_registry",
+                return_value=registry,
+            ),
+        ):
+            events, result = _drive(
+                scheduler.run(),
+                resolutions={0: Resolution(action=ResolutionAction.DEFER)},
+            )
+
+        exit_checks = [e for e in events if e.event_type == EventType.EXIT_CHECK]
+        assert len(exit_checks) == 1
+        fa = exit_checks[0].fixable_actions
+        assert "structural.types.type_fidelity" in fa
+        assert fa["structural.types.type_fidelity"] == [
+            {"action_name": "override_type", "phase_name": "typing"}
+        ]
+
+    def test_exit_check_empty_fixable_actions(self, session: Session, duckdb_conn):
+        """EXIT_CHECK with no fixable detectors has empty fixable_actions."""
+        run_id = _make_run(session)
+        phase = MockPhase("alpha", post_verification_dims=["type_fidelity"])
+        scheduler = PipelineScheduler(
+            phases={"alpha": phase},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            contract_thresholds={"structural.types": 0.3},
+        )
+
+        with patch.object(
+            scheduler, "_post_verify",
+            return_value={"structural.types.type_fidelity": 0.8},
+        ):
+            events, result = _drive(
+                scheduler.run(),
+                resolutions={0: Resolution(action=ResolutionAction.DEFER)},
+            )
+
+        exit_checks = [e for e in events if e.event_type == EventType.EXIT_CHECK]
+        assert len(exit_checks) == 1
+        # Default detectors have no fixable_actions
+        assert exit_checks[0].fixable_actions == {} or all(
+            v == [] for v in exit_checks[0].fixable_actions.values()
+        )

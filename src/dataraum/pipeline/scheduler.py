@@ -21,6 +21,7 @@ from dataraum.pipeline.base import Phase, PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.cleanup import cleanup_phase
 from dataraum.pipeline.db_models import PhaseLog
 from dataraum.pipeline.events import EventType, PipelineEvent
+from dataraum.pipeline.fixes import FixInput, FixResult, apply_config_patch
 
 logger = get_logger(__name__)
 
@@ -46,6 +47,7 @@ class ResolutionAction(str, Enum):
 
     DEFER = "defer"
     ABORT = "abort"
+    FIX = "fix"
 
 
 @dataclass
@@ -53,6 +55,7 @@ class Resolution:
     """Caller's response to an EXIT_CHECK event."""
 
     action: ResolutionAction
+    fix_inputs: list[FixInput] = field(default_factory=list)
 
 
 @dataclass
@@ -97,6 +100,7 @@ class PipelineScheduler:
         runtime_config: dict[str, Any] | None = None,
         session_factory: Callable[[], Any] | None = None,
         manager: Any | None = None,
+        force_sequential: bool = False,
     ) -> None:
         # Validate that all declared dependencies reference known phases
         for name, phase in phases.items():
@@ -116,6 +120,7 @@ class PipelineScheduler:
         self._runtime_config = runtime_config or {}
         self.session_factory = session_factory
         self.manager = manager
+        self.force_sequential = force_sequential
 
         # Internal state
         self._state: dict[str, PhaseStatus] = dict.fromkeys(
@@ -174,7 +179,11 @@ class PipelineScheduler:
                     continue
 
                 # 2. Execute phases
-                use_parallel = len(to_run) > 1 and self.session_factory is not None
+                use_parallel = (
+                    len(to_run) > 1
+                    and self.session_factory is not None
+                    and not self.force_sequential
+                )
                 if use_parallel:
                     yield from self._run_parallel(to_run, total)
                 else:
@@ -186,12 +195,14 @@ class PipelineScheduler:
                         issue.dimension_path: (issue.score, issue.threshold)
                         for issue in self._pending_issues
                     }
+                    fixable = self._gather_fixable_actions(self._pending_issues)
                     resolution = yield self._event(
                         EventType.EXIT_CHECK,
                         total=total,
                         violations=violations,
                         scores=dict(self._scores),
                         column_details=dict(self._column_details),
+                        fixable_actions=fixable,
                     )
                     if resolution is not None:
                         fix_events = self._apply_resolution(resolution)
@@ -624,7 +635,100 @@ class PipelineScheduler:
             self._deferred_issues.extend(self._pending_issues)
         elif resolution.action == ResolutionAction.ABORT:
             raise PipelineAborted("Pipeline aborted by user")
+        elif resolution.action == ResolutionAction.FIX:
+            self._apply_fixes(resolution.fix_inputs)
         return []
+
+    def _apply_fixes(self, fix_inputs: list[FixInput]) -> None:
+        """Apply fix inputs: call handlers, patch config, cleanup, reset.
+
+        After this method returns the scheduler loop naturally re-runs
+        the reset phases, triggering fresh post-verification.
+        """
+        from dataraum.core.config import _get_config_root
+
+        config_root = _get_config_root()
+        phases_to_rerun: set[str] = set()
+
+        for fix_input in fix_inputs:
+            handler, phase_name = self._find_fix_handler(fix_input.action_name)
+            if handler is None:
+                logger.warning(
+                    "fix_handler_not_found",
+                    action=fix_input.action_name,
+                )
+                continue
+
+            config = self._phase_configs.get(phase_name, {})
+            fix_result: FixResult = handler(fix_input, config)
+
+            for patch in fix_result.config_patches:
+                apply_config_patch(config_root, patch)
+
+            if fix_result.requires_rerun:
+                phases_to_rerun.add(fix_result.requires_rerun)
+
+            logger.info(
+                "fix_applied",
+                action=fix_input.action_name,
+                phase=phase_name,
+                patches=len(fix_result.config_patches),
+                rerun=fix_result.requires_rerun,
+                summary=fix_result.summary,
+            )
+
+        # Cleanup and reset affected phases + all downstream
+        for phase_name in phases_to_rerun:
+            if phase_name in self.phases:
+                cleanup_phase(
+                    phase_name, self.source_id, self.session, self.duckdb_conn
+                )
+                self._state[phase_name] = PhaseStatus.PENDING
+                self._invalidate_downstream(phase_name)
+
+    def _find_fix_handler(
+        self, action_name: str
+    ) -> tuple[Callable[[FixInput, dict], FixResult] | None, str]:
+        """Find the fix handler for an action by scanning phase fix_handlers.
+
+        Returns:
+            Tuple of (handler_function, phase_name) or (None, "") if not found.
+        """
+        for phase_name, phase in self.phases.items():
+            if action_name in phase.fix_handlers:
+                return phase.fix_handlers[action_name], phase_name
+        return None, ""
+
+    def _gather_fixable_actions(
+        self, issues: list[ExitCheckIssue]
+    ) -> dict[str, list[dict[str, str]]]:
+        """Gather fixable actions for EXIT_CHECK event display.
+
+        Consults the detector registry to find which violations have
+        config-level fix handlers available.
+
+        Returns:
+            dim_path -> [{"action_name": str, "phase_name": str}]
+        """
+        from dataraum.entropy.detectors.base import get_default_registry
+
+        registry = get_default_registry()
+        result: dict[str, list[dict[str, str]]] = {}
+
+        # Build dim_path -> detector lookup
+        detector_by_path = {
+            d.dimension_path: d for d in registry.get_all_detectors()
+        }
+
+        for issue in issues:
+            detector = detector_by_path.get(issue.dimension_path)
+            if detector and detector.fixable_actions:
+                result[issue.dimension_path] = [
+                    {"action_name": action, "phase_name": phase}
+                    for action, phase in detector.fixable_actions.items()
+                ]
+
+        return result
 
     def _invalidate_downstream(self, phase_name: str) -> None:
         """Reset downstream phases to PENDING so they re-run.

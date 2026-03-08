@@ -127,7 +127,7 @@ def run(
     try:
         resolved_gate_mode = GateMode(gate_mode)
     except ValueError:
-        console.print(f"[red]Error: Invalid gate mode: {gate_mode}. Use: skip, fail[/red]")
+        console.print(f"[red]Error: Invalid gate mode: {gate_mode}. Use: skip, pause, fail[/red]")
         raise typer.Exit(1) from None
 
     # Validate --force flag
@@ -197,6 +197,10 @@ def run(
         force_phase=force,
         contract=contract,
     )
+
+    # PAUSE mode forces sequential execution for determinism
+    if resolved_gate_mode == GateMode.PAUSE:
+        setup.scheduler.force_sequential = True
 
     gen = setup.scheduler.run()
 

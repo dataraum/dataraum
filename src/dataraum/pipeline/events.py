@@ -49,6 +49,9 @@ class PipelineEvent:
     summary: str = ""
     # POST_VERIFICATION: scores before this phase ran (for delta display)
     before_scores: dict[str, float] = field(default_factory=dict)
+    # EXIT_CHECK: available fix actions per violating dimension
+    # dim_path -> [{"action_name": str, "phase_name": str}]
+    fixable_actions: dict[str, list[dict[str, str]]] = field(default_factory=dict)
 
 
 # Callback type for structured events

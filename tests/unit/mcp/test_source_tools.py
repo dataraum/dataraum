@@ -10,15 +10,15 @@ from dataraum.mcp.server import create_server
 
 class TestToolRegistration:
     def test_handler_functions_importable(self) -> None:
-        """Verify the new tool handler functions exist and are callable."""
-        from dataraum.mcp.server import _add_source, _discover_sources, _remove_source
+        """Verify the tool handler functions exist and are callable."""
+        from dataraum.mcp.server import _add_source, _discover_sources, _get_quality
 
         assert callable(_discover_sources)
         assert callable(_add_source)
-        assert callable(_remove_source)
+        assert callable(_get_quality)
 
     def test_server_creates_successfully(self) -> None:
-        """Server creates without error with new tools registered."""
+        """Server creates without error with tools registered."""
         server = create_server(output_dir=Path("/tmp/test_output"))
         assert server is not None
 
@@ -87,29 +87,17 @@ class TestAddSourceTool:
         assert "credential_instructions" in parsed
 
 
-class TestRemoveSourceTool:
-    def test_remove_existing(self, tmp_path: Path) -> None:
-        from dataraum.mcp.server import _add_source, _remove_source
+class TestGetQualityTool:
+    def test_no_data_returns_error(self, tmp_path: Path) -> None:
+        from dataraum.mcp.server import _get_quality
 
-        csv = tmp_path / "data.csv"
-        csv.write_text("a\n1\n")
-        output_dir = tmp_path / "output"
+        result = _get_quality(tmp_path / "nonexistent")
+        assert "No analyzed data" in result
 
-        # Add then remove
-        _add_source(output_dir, {"name": "to_remove", "path": str(csv)})
-        result = _remove_source(output_dir, "to_remove", False)
-        parsed = json.loads(result)
+    def test_include_filters_sections(self, tmp_path: Path) -> None:
+        """Verify include parameter is accepted (integration tested separately)."""
+        from dataraum.mcp.server import _get_quality
 
-        assert parsed["removed"] == "to_remove"
-        assert parsed["analysis_preserved"] is True
-
-    def test_remove_nonexistent(self, tmp_path: Path) -> None:
-        from dataraum.mcp.server import _remove_source
-
-        output_dir = tmp_path / "output"
-        # Create the output dir so the manager can be created
-        output_dir.mkdir(parents=True)
-
-        result = _remove_source(output_dir, "ghost", False)
-        # Should be an error (either no database or source not found)
-        assert "Error" in result or "No analyzed data" in result
+        # No database = early error, but proves the function accepts the param
+        result = _get_quality(tmp_path / "nonexistent", include=["entropy"])
+        assert "No analyzed data" in result

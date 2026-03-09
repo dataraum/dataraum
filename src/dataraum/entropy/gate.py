@@ -22,11 +22,20 @@ logger = get_logger(__name__)
 
 
 @dataclass
+class SkippedDetector:
+    """A detector that was eligible but could not run."""
+
+    detector_id: str
+    reason: str  # e.g. "missing analyses: typing, statistics"
+
+
+@dataclass
 class GateResult:
     """Result of measuring entropy at a quality gate."""
 
     scores: dict[str, float] = field(default_factory=dict)
     column_details: dict[str, dict[str, float]] = field(default_factory=dict)
+    skipped_detectors: list[SkippedDetector] = field(default_factory=list)
 
 
 @dataclass
@@ -67,15 +76,24 @@ def measure_at_gate(
 
     registry = get_default_registry()
 
-    # Find all runnable detectors
-    runnable = [
-        d
-        for d in registry.get_all_detectors()
-        if all(a in available_analyses for a in d.required_analyses)
-    ]
+    # Partition detectors into runnable vs skipped
+    all_detectors = registry.get_all_detectors()
+    runnable = []
+    skipped: list[SkippedDetector] = []
+    for d in all_detectors:
+        missing = [a for a in d.required_analyses if a not in available_analyses]
+        if missing:
+            skipped.append(
+                SkippedDetector(
+                    detector_id=d.detector_id,
+                    reason=f"missing analyses: {', '.join(str(a) for a in missing)}",
+                )
+            )
+        else:
+            runnable.append(d)
 
     if not runnable:
-        return GateResult()
+        return GateResult(skipped_detectors=skipped)
 
     # Partition by scope
     col_detectors = [d for d in runnable if d.scope == "column"]
@@ -180,7 +198,11 @@ def measure_at_gate(
         path = sub_dim_to_path.get(sd, sd)
         result_column_details[path] = targets
 
-    return GateResult(scores=result_scores, column_details=result_column_details)
+    return GateResult(
+        scores=result_scores,
+        column_details=result_column_details,
+        skipped_detectors=skipped,
+    )
 
 
 def match_threshold(

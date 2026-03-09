@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from dataraum.entropy.dimensions import AnalysisKey
 from dataraum.entropy.gate import (
     GateResult,
+    SkippedDetector,
     assess_contracts,
     match_threshold,
 )
@@ -1473,3 +1474,169 @@ class TestExitCheckFixableActions:
         assert exit_checks[0].fixable_actions == {} or all(
             v == [] for v in exit_checks[0].fixable_actions.values()
         )
+
+
+class TestSkippedDetectors:
+    """Tests for surfacing skipped detectors on POST_VERIFICATION."""
+
+    def test_post_verification_carries_skipped_detectors(
+        self, session: Session, duckdb_conn
+    ):
+        """Skipped detectors appear on POST_VERIFICATION event."""
+        run_id = _make_run(session)
+        alpha = MockPhase(
+            "alpha",
+            produces_analyses_keys={AnalysisKey.TYPING},
+            is_quality_gate=True,
+        )
+
+        scheduler = PipelineScheduler(
+            phases={"alpha": alpha},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            contract_thresholds={"structural.types": 0.3},
+        )
+
+        gate = GateResult(
+            scores={"structural.types.type_fidelity": 0.1},
+            skipped_detectors=[
+                SkippedDetector(
+                    detector_id="outlier_rate",
+                    reason="missing analyses: statistics, semantic",
+                ),
+            ],
+        )
+        with patch(
+            "dataraum.pipeline.scheduler.measure_at_gate",
+            return_value=gate,
+        ):
+            events, result = _drive(scheduler.run())
+
+        post_verifications = [
+            e for e in events if e.event_type == EventType.POST_VERIFICATION
+        ]
+        assert len(post_verifications) == 1
+        skipped = post_verifications[0].skipped_detectors
+        assert len(skipped) == 1
+        assert skipped[0]["detector_id"] == "outlier_rate"
+        assert "statistics" in skipped[0]["reason"]
+
+    def test_no_skipped_detectors_empty_list(self, session: Session, duckdb_conn):
+        """No skipped detectors produces empty list."""
+        run_id = _make_run(session)
+        alpha = MockPhase(
+            "alpha",
+            produces_analyses_keys={AnalysisKey.TYPING},
+            is_quality_gate=True,
+        )
+
+        scheduler = PipelineScheduler(
+            phases={"alpha": alpha},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+        )
+
+        gate = GateResult(
+            scores={"structural.types.type_fidelity": 0.1},
+            skipped_detectors=[],
+        )
+        with patch(
+            "dataraum.pipeline.scheduler.measure_at_gate",
+            return_value=gate,
+        ):
+            events, result = _drive(scheduler.run())
+
+        post_verifications = [
+            e for e in events if e.event_type == EventType.POST_VERIFICATION
+        ]
+        assert len(post_verifications) == 1
+        assert post_verifications[0].skipped_detectors == []
+
+
+class TestAnalysisCoverageValidation:
+    """Tests for _validate_analysis_coverage at scheduler startup."""
+
+    def test_warns_on_uncovered_detector(self, session: Session, duckdb_conn):
+        """Warning logged when detector needs analyses no phase produces."""
+        from dataraum.entropy.detectors.base import DetectorRegistry, EntropyDetector
+
+        class NeedsStats(EntropyDetector):
+            detector_id = "needs_stats"
+            layer = "value"
+            dimension = "outliers"
+            sub_dimension = "outlier_rate"
+            scope = "column"
+            required_analyses = [AnalysisKey.STATISTICS]
+
+            def detect(self, ctx):
+                return []
+
+        detector_reg = DetectorRegistry()
+        detector_reg.register(NeedsStats())
+
+        run_id = _make_run(session)
+        # Phase only produces TYPING — not STATISTICS
+        alpha = MockPhase("alpha", produces_analyses_keys={AnalysisKey.TYPING})
+
+        with (
+            patch(
+                "dataraum.entropy.detectors.base.get_default_registry",
+                return_value=detector_reg,
+            ),
+            patch("dataraum.pipeline.scheduler.logger") as mock_logger,
+        ):
+            PipelineScheduler(
+                phases={"alpha": alpha},
+                source_id="src-1",
+                run_id=run_id,
+                session=session,
+                duckdb_conn=duckdb_conn,
+            )
+
+        mock_logger.warning.assert_called_once()
+        call_kwargs = mock_logger.warning.call_args
+        assert call_kwargs[0][0] == "detector_analysis_gap"
+        assert call_kwargs[1]["detector"] == "needs_stats"
+        assert "statistics" in call_kwargs[1]["missing"]
+
+    def test_no_warning_when_covered(self, session: Session, duckdb_conn):
+        """No warning when all detector analyses are covered."""
+        from dataraum.entropy.detectors.base import DetectorRegistry, EntropyDetector
+
+        class NeedsTyping(EntropyDetector):
+            detector_id = "needs_typing"
+            layer = "structural"
+            dimension = "types"
+            sub_dimension = "type_fidelity"
+            scope = "column"
+            required_analyses = [AnalysisKey.TYPING]
+
+            def detect(self, ctx):
+                return []
+
+        detector_reg = DetectorRegistry()
+        detector_reg.register(NeedsTyping())
+
+        run_id = _make_run(session)
+        alpha = MockPhase("alpha", produces_analyses_keys={AnalysisKey.TYPING})
+
+        with (
+            patch(
+                "dataraum.entropy.detectors.base.get_default_registry",
+                return_value=detector_reg,
+            ),
+            patch("dataraum.pipeline.scheduler.logger") as mock_logger,
+        ):
+            PipelineScheduler(
+                phases={"alpha": alpha},
+                source_id="src-1",
+                run_id=run_id,
+                session=session,
+                duckdb_conn=duckdb_conn,
+            )
+
+        mock_logger.warning.assert_not_called()

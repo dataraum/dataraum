@@ -14,7 +14,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from dataraum.core.logging import get_logger
 from dataraum.pipeline.fixes import ConfigPatch, FixInput, FixResult
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -53,6 +56,43 @@ class FixRegistry:
         """Return action_name -> phase_name for all registered handlers."""
         return {name: entry.phase_name for name, entry in self._handlers.items()}
 
+    def validate(self) -> list[str]:
+        """Cross-validate against detector and phase registries.
+
+        Checks:
+        1. Every fixable_action declared by a detector has a registered handler.
+        2. Every handler's phase_name refers to a registered pipeline phase.
+
+        Returns:
+            List of warning messages (empty if all valid).
+        """
+        from dataraum.entropy.detectors.base import get_default_registry
+        from dataraum.pipeline.registry import get_registry
+
+        warnings: list[str] = []
+
+        # Check: every detector fixable_action has a handler
+        detector_registry = get_default_registry()
+        for detector in detector_registry.get_all_detectors():
+            for action in detector.fixable_actions:
+                action_str = str(action)
+                if action_str not in self._handlers:
+                    warnings.append(
+                        f"Detector '{detector.detector_id}' declares fixable "
+                        f"action '{action_str}' but no handler is registered"
+                    )
+
+        # Check: every handler's phase_name is a registered phase
+        phase_registry = get_registry()
+        for action_name, entry in self._handlers.items():
+            if entry.phase_name not in phase_registry:
+                warnings.append(
+                    f"Fix handler '{action_name}' targets phase "
+                    f"'{entry.phase_name}' which is not registered"
+                )
+
+        return warnings
+
 
 # ---------------------------------------------------------------------------
 # Default registry with built-in handlers
@@ -62,11 +102,13 @@ _default_registry: FixRegistry | None = None
 
 
 def get_default_fix_registry() -> FixRegistry:
-    """Return the singleton fix registry, populating on first call."""
+    """Return the singleton fix registry, populating and validating on first call."""
     global _default_registry
     if _default_registry is None:
         _default_registry = FixRegistry()
         _register_builtin_handlers(_default_registry)
+        for warning in _default_registry.validate():
+            logger.warning("fix_registry_validation", message=warning)
     return _default_registry
 
 

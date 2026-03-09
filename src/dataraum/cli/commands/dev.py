@@ -1,15 +1,58 @@
-"""Inspect command - show graph definitions and execution context."""
+"""Dev subcommand - developer utilities for pipeline debugging."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Annotated
 
+import typer
 from rich.table import Table as RichTable
 
-from dataraum.cli.common import OutputDirArg, VerticalOption, console, get_manager
+from dataraum.cli.common import OutputDirArg, VerticalOption, console
+
+app = typer.Typer(
+    name="dev",
+    help="Developer utilities (phases, inspect, reset).",
+    no_args_is_help=True,
+)
 
 
+@app.command()
+def phases(
+    reset: Annotated[
+        str | None,
+        typer.Option("--reset", help="Reset a specific phase (delete its data and checkpoint)"),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Pipeline output directory"),
+    ] = None,
+) -> None:
+    """List available pipeline phases and their dependencies."""
+    if reset:
+        _reset_phase(reset, output_dir)
+        return
+
+    from dataraum.pipeline.registry import get_registry
+
+    console.print("\n[bold]Pipeline Phases[/bold]\n")
+
+    table = RichTable(show_header=True, header_style="bold")
+    table.add_column("Phase")
+    table.add_column("Description")
+    table.add_column("Dependencies")
+
+    registry = get_registry()
+    for name, cls in registry.items():
+        instance = cls()
+        deps = ", ".join(instance.dependencies) if instance.dependencies else "-"
+        table.add_row(name, instance.description, deps)
+
+    console.print(table)
+    console.print()
+
+
+@app.command()
 def inspect(
     output_dir: OutputDirArg = Path("./pipeline_output"),
     vertical: VerticalOption = "finance",
@@ -18,10 +61,13 @@ def inspect(
 
     Shows loaded graphs, applicable filters, and execution context.
     """
+    from typing import Any
+
     from sqlalchemy import select
 
     from dataraum.analysis.semantic.db_models import SemanticAnnotation
     from dataraum.analysis.typing.db_models import TypeDecision
+    from dataraum.cli.common import get_manager
     from dataraum.graphs import GraphLoader
     from dataraum.storage import Column, Source, Table
 
@@ -29,7 +75,6 @@ def inspect(
 
     try:
         with manager.session_scope() as session:
-            # Check for sources
             sources_result = session.execute(select(Source))
             sources = sources_result.scalars().all()
 
@@ -37,7 +82,6 @@ def inspect(
                 console.print("[yellow]No sources found. Run the pipeline first.[/yellow]")
                 return
 
-            # Check for tables
             tables_result = session.execute(select(Table))
             tables = tables_result.scalars().all()
 
@@ -47,17 +91,13 @@ def inspect(
 
             console.print("\n[bold]Graph Loader Status[/bold]\n")
 
-            # Load graphs
             loader = GraphLoader(vertical=vertical)
             graphs = loader.load_all()
-
             console.print(f"Loaded {len(graphs)} graphs")
 
-            # Separate by type
             filters = loader.get_filter_graphs()
             metrics = loader.get_metric_graphs()
 
-            # Filter graphs table
             if filters:
                 console.print(f"\n[cyan]Filter Graphs ({len(filters)}):[/cyan]")
                 filter_table = RichTable(show_header=True, header_style="bold")
@@ -79,7 +119,6 @@ def inspect(
 
                 console.print(filter_table)
 
-            # Metric graphs table
             if metrics:
                 console.print(f"\n[cyan]Metric Graphs ({len(metrics)}):[/cyan]")
                 metric_table = RichTable(show_header=True, header_style="bold")
@@ -94,31 +133,27 @@ def inspect(
 
                 console.print(metric_table)
 
-            # Load errors
             errors = loader.get_load_errors()
             if errors:
                 console.print(f"\n[red]Load Errors ({len(errors)}):[/red]")
                 for err in errors:
                     console.print(f"  - {err}")
 
-            # Build column metadata for filter matching
             console.print("\n[bold]Dataset Filter Coverage[/bold]\n")
 
-            columns_metadata = []
-            for table in tables:
+            columns_metadata: list[dict[str, Any]] = []
+            for table_obj in tables:
                 cols_result = session.execute(
-                    select(Column).where(Column.table_id == table.table_id)
+                    select(Column).where(Column.table_id == table_obj.table_id)
                 )
                 columns = cols_result.scalars().all()
 
                 for col in columns:
-                    # Get type decision
                     type_result = session.execute(
                         select(TypeDecision).where(TypeDecision.column_id == col.column_id)
                     )
                     type_dec = type_result.scalar_one_or_none()
 
-                    # Get semantic annotation
                     sem_result = session.execute(
                         select(SemanticAnnotation).where(
                             SemanticAnnotation.column_id == col.column_id
@@ -129,14 +164,13 @@ def inspect(
                     columns_metadata.append(
                         {
                             "column_name": col.column_name,
-                            "table_name": table.table_name,
+                            "table_name": table_obj.table_name,
                             "data_type": type_dec.decided_type if type_dec else None,
                             "semantic_role": sem_ann.semantic_role if sem_ann else None,
                             "has_profile": True,
                         }
                     )
 
-            # Get filter summary
             summary = loader.get_quality_filter_summary(columns_metadata)
 
             console.print(f"Total unique filters: {summary['total_filters']}")
@@ -144,7 +178,6 @@ def inspect(
             if summary["filter_ids"]:
                 console.print(f"Filters applied: {', '.join(summary['filter_ids'])}")
 
-            # Show columns with filters
             filters_by_col = loader.get_filters_for_dataset(columns_metadata)
             columns_with_filters: list[tuple[str, str, list[Any]]] = [
                 (
@@ -172,7 +205,6 @@ def inspect(
                 if len(columns_with_filters) > 15:
                     console.print(f"  ... and {len(columns_with_filters) - 15} more")
 
-            # Execution context sample
             console.print("\n[bold]Execution Context (Sample)[/bold]\n")
 
             if tables:
@@ -203,5 +235,87 @@ def inspect(
                     console.print(f"  [dim]... ({len(lines) - 15} more lines)[/dim]")
 
             console.print()
+    finally:
+        manager.close()
+
+
+@app.command()
+def reset(
+    output_dir: Annotated[
+        Path,
+        typer.Argument(help="Output directory to reset"),
+    ] = Path("./pipeline_output"),
+    force: Annotated[
+        bool,
+        typer.Option("--force", "-f", help="Skip confirmation prompt"),
+    ] = False,
+) -> None:
+    """Reset pipeline output by deleting databases.
+
+    Removes metadata.db and data.duckdb from the output directory.
+    """
+    metadata_db = output_dir / "metadata.db"
+    duckdb_file = output_dir / "data.duckdb"
+
+    files_to_delete = []
+    if metadata_db.exists():
+        files_to_delete.append(metadata_db)
+    if duckdb_file.exists():
+        files_to_delete.append(duckdb_file)
+    for wal_file in output_dir.glob("*.db-wal"):
+        files_to_delete.append(wal_file)
+    for shm_file in output_dir.glob("*.db-shm"):
+        files_to_delete.append(shm_file)
+
+    if not files_to_delete:
+        console.print(f"[yellow]No database files found in {output_dir}[/yellow]")
+        return
+
+    console.print("\n[bold]Files to delete:[/bold]")
+    for f in files_to_delete:
+        size_kb = f.stat().st_size / 1024
+        console.print(f"  {f.name} ({size_kb:.1f} KB)")
+
+    if not force:
+        confirm = typer.confirm("\nDelete these files?")
+        if not confirm:
+            console.print("[yellow]Cancelled[/yellow]")
+            raise typer.Exit(0)
+
+    for f in files_to_delete:
+        f.unlink()
+        console.print(f"[green]Deleted {f.name}[/green]")
+
+    console.print("\n[green]Reset complete. Run 'dataraum run' to start fresh.[/green]")
+
+
+def _reset_phase(phase_name: str, output_dir: Path | None) -> None:
+    """Reset a specific phase for the most recent source."""
+    from sqlalchemy import select
+
+    from dataraum.cli.common import get_manager
+    from dataraum.pipeline.registry import get_phase_class
+    from dataraum.pipeline.status import reset_phase
+    from dataraum.storage import Source
+
+    if not get_phase_class(phase_name):
+        console.print(f"[red]Unknown phase: {phase_name}[/red]")
+        raise typer.Exit(1)
+
+    manager = get_manager(output_dir or Path("./pipeline_output"))
+    try:
+        with manager.session_scope() as session:
+            source = session.execute(
+                select(Source).order_by(Source.created_at.desc()).limit(1)
+            ).scalar_one_or_none()
+            if not source:
+                console.print("[red]No sources found[/red]")
+                raise typer.Exit(1)
+
+            deleted = reset_phase(session, source.source_id, phase_name)
+            console.print(
+                f"Reset phase [bold]{phase_name}[/bold] "
+                f"for source [bold]{source.name}[/bold]: {deleted} rows deleted"
+            )
     finally:
         manager.close()

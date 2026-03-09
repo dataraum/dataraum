@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
+
+from dataraum.entropy.dimensions import _StrValueMixin
 
 if TYPE_CHECKING:
     import duckdb
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
     from dataraum.pipeline.fixes import FixInput, FixResult
 
 
-class PhaseStatus(str, Enum):
+class PhaseStatus(_StrValueMixin):
     """Status of a pipeline phase."""
 
     PENDING = "pending"

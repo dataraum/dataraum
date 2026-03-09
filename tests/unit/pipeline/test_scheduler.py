@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from dataraum.entropy.dimensions import AnalysisKey
 from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.db_models import PhaseLog, PipelineRun
 from dataraum.pipeline.events import EventType
@@ -35,7 +36,7 @@ class MockPhase(BasePhase):
         dependencies: list[str] | None = None,
         should_fail: bool = False,
         skip_reason: str | None = None,
-        produces_analyses_keys: set[str] | None = None,
+        produces_analyses_keys: set[AnalysisKey] | None = None,
         outputs: dict | None = None,
         fix_handlers_map: dict | None = None,
         is_quality_gate: bool = False,
@@ -63,7 +64,7 @@ class MockPhase(BasePhase):
         return self._dependencies
 
     @property
-    def produces_analyses(self) -> set[str]:
+    def produces_analyses(self) -> set[AnalysisKey]:
         return self._produces_analyses
 
     @property
@@ -315,7 +316,7 @@ class TestContractExitCheck:
     def test_no_contract_no_exit_check(self, session: Session, duckdb_conn):
         """Without contract thresholds, no EXIT_CHECK events."""
         run_id = _make_run(session)
-        phase = MockPhase("alpha", produces_analyses_keys={"typing"})
+        phase = MockPhase("alpha", produces_analyses_keys={AnalysisKey.TYPING})
         scheduler = PipelineScheduler(
             phases={"alpha": phase},
             source_id="src-1",
@@ -334,7 +335,7 @@ class TestContractExitCheck:
     def test_exit_check_fires(self, session: Session, duckdb_conn):
         """Post-verify score exceeds contract → EXIT_CHECK yielded."""
         run_id = _make_run(session)
-        phase = MockPhase("alpha", produces_analyses_keys={"typing"})
+        phase = MockPhase("alpha", produces_analyses_keys={AnalysisKey.TYPING})
         scheduler = PipelineScheduler(
             phases={"alpha": phase},
             source_id="src-1",
@@ -355,7 +356,7 @@ class TestContractExitCheck:
     def test_exit_check_defer(self, session: Session, duckdb_conn):
         """Resolution(DEFER) → issues in deferred_issues."""
         run_id = _make_run(session)
-        phase = MockPhase("alpha", produces_analyses_keys={"typing"})
+        phase = MockPhase("alpha", produces_analyses_keys={AnalysisKey.TYPING})
         scheduler = PipelineScheduler(
             phases={"alpha": phase},
             source_id="src-1",
@@ -379,7 +380,7 @@ class TestContractExitCheck:
     def test_exit_check_abort(self, session: Session, duckdb_conn):
         """Resolution(ABORT) → PipelineResult(success=False)."""
         run_id = _make_run(session)
-        phase = MockPhase("alpha", produces_analyses_keys={"typing"})
+        phase = MockPhase("alpha", produces_analyses_keys={AnalysisKey.TYPING})
         scheduler = PipelineScheduler(
             phases={"alpha": phase},
             source_id="src-1",
@@ -627,7 +628,7 @@ class TestColumnDetails:
     def test_exit_check_event_carries_column_details(self, session: Session, duckdb_conn):
         """EXIT_CHECK event has column_details populated from _post_verify."""
         run_id = _make_run(session)
-        phase = MockPhase("alpha", produces_analyses_keys={"typing"})
+        phase = MockPhase("alpha", produces_analyses_keys={AnalysisKey.TYPING})
         scheduler = PipelineScheduler(
             phases={"alpha": phase},
             source_id="src-1",
@@ -661,7 +662,7 @@ class TestColumnDetails:
     def test_column_details_cleared_after_exit_check(self, session: Session, duckdb_conn):
         """_column_details is cleared after EXIT_CHECK emission."""
         run_id = _make_run(session)
-        phase = MockPhase("alpha", produces_analyses_keys={"typing"})
+        phase = MockPhase("alpha", produces_analyses_keys={AnalysisKey.TYPING})
         scheduler = PipelineScheduler(
             phases={"alpha": phase},
             source_id="src-1",
@@ -903,7 +904,7 @@ class TestAutoPostVerifyWithTableDimension:
         run_id = _make_run(session)
         phase = MockPhase(
             "alpha",
-            produces_analyses_keys={"typing", "slice_variance"},
+            produces_analyses_keys={AnalysisKey.TYPING, AnalysisKey.SLICE_VARIANCE},
         )
         scheduler = PipelineScheduler(
             phases={"alpha": phase},
@@ -1036,7 +1037,7 @@ class TestFixResolution:
 
         alpha = MockPhase(
             "alpha",
-            produces_analyses_keys={"typing"},
+            produces_analyses_keys={AnalysisKey.TYPING},
             fix_handlers_map={"override_type": handler},
         )
         beta = MockPhase("beta", dependencies=["alpha"])
@@ -1108,7 +1109,7 @@ class TestFixResolution:
         """Unknown action_name in FIX resolution logs warning, doesn't crash."""
         _ensure_source(session)
         run_id = _make_run(session)
-        alpha = MockPhase("alpha", produces_analyses_keys={"typing"})
+        alpha = MockPhase("alpha", produces_analyses_keys={AnalysisKey.TYPING})
 
         scheduler = PipelineScheduler(
             phases={"alpha": alpha},
@@ -1144,7 +1145,7 @@ class TestFixResolution:
 
         alpha = MockPhase(
             "alpha",
-            produces_analyses_keys={"typing"},
+            produces_analyses_keys={AnalysisKey.TYPING},
             fix_handlers_map={"override_type": handler},
         )
         beta = MockPhase("beta", dependencies=["alpha"])
@@ -1199,7 +1200,7 @@ class TestFixResolution:
 
         alpha = MockPhase(
             "alpha",
-            produces_analyses_keys={"typing"},
+            produces_analyses_keys={AnalysisKey.TYPING},
             fix_handlers_map={"override_type": handler},
         )
 
@@ -1247,6 +1248,57 @@ class TestFixResolution:
         # Deferred on second attempt
         assert len(result.deferred_issues) == 1
         assert result.success is True
+
+
+class TestFixClearsAutoDerive:
+    """Tests that fix re-runs clear auto-derive state."""
+
+    def test_fix_clears_measured_sub_dims_and_scores(self, session: Session, duckdb_conn):
+        """_apply_fixes clears _measured_sub_dims and _scores so detectors re-run."""
+        from dataraum.entropy.dimensions import SubDimension
+
+        _ensure_source(session)
+        run_id = _make_run(session)
+
+        handler = lambda fi, cfg: FixResult(  # noqa: E731
+            config_patches=[],
+            requires_rerun="alpha",
+            summary="test",
+        )
+
+        alpha = MockPhase(
+            "alpha",
+            produces_analyses_keys={AnalysisKey.TYPING},
+            fix_handlers_map={"override_type": handler},
+        )
+
+        scheduler = PipelineScheduler(
+            phases={"alpha": alpha},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+        )
+
+        # Simulate state after initial measurement pass
+        scheduler._measured_sub_dims = {SubDimension.TYPE_FIDELITY, SubDimension.NULL_RATIO}
+        scheduler._scores = {
+            "structural.types.type_fidelity": 0.8,
+            "value.nulls.null_ratio": 0.1,
+        }
+        scheduler._column_details = {"structural.types.type_fidelity": {"col:a": 0.8}}
+
+        fix_input = FixInput(action_name="override_type")
+        with (
+            patch("dataraum.pipeline.scheduler.cleanup_phase"),
+            patch("dataraum.pipeline.scheduler.apply_config_patch"),
+            patch("dataraum.core.config.load_phase_config", return_value={}),
+        ):
+            scheduler._apply_fixes([fix_input])
+
+        assert scheduler._measured_sub_dims == set()
+        assert scheduler._scores == {}
+        assert scheduler._column_details == {}
 
 
 class TestForceSequential:
@@ -1352,7 +1404,7 @@ class TestExitCheckFixableActions:
         dummy_handler = lambda fi, cfg: None  # noqa: E731
         phase = MockPhase(
             "typing",
-            produces_analyses_keys={"typing"},
+            produces_analyses_keys={AnalysisKey.TYPING},
             fix_handlers_map={"override_type": dummy_handler},
         )
         scheduler = PipelineScheduler(
@@ -1409,7 +1461,7 @@ class TestExitCheckFixableActions:
     def test_exit_check_empty_fixable_actions(self, session: Session, duckdb_conn):
         """EXIT_CHECK with no fixable detectors has empty fixable_actions."""
         run_id = _make_run(session)
-        phase = MockPhase("alpha", produces_analyses_keys={"typing"})
+        phase = MockPhase("alpha", produces_analyses_keys={AnalysisKey.TYPING})
         scheduler = PipelineScheduler(
             phases={"alpha": phase},
             source_id="src-1",

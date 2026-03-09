@@ -10,14 +10,13 @@ from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
-from dataraum.entropy.dimensions import AnalysisKey, SubDimension
+from dataraum.entropy.dimensions import AnalysisKey, SubDimension, _StrValueMixin
 from dataraum.pipeline.base import Phase, PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.cleanup import cleanup_phase
 from dataraum.pipeline.db_models import PhaseLog
@@ -43,7 +42,7 @@ class ExitCheckIssue:
     affected_targets: list[str] = field(default_factory=list)
 
 
-class ResolutionAction(str, Enum):
+class ResolutionAction(_StrValueMixin):
     """How the caller wants to resolve an exit check."""
 
     DEFER = "defer"
@@ -588,7 +587,7 @@ class PipelineScheduler:
         # lookup against snapshot scores which are plain strings).
         sub_dim_to_path: dict[str, str] = {
             str(d.sub_dimension): d.dimension_path
-            for d in registry.get_all_detectors()
+            for d in newly_runnable
         }
 
         # Average per dimension
@@ -735,6 +734,10 @@ class PipelineScheduler:
             # Clear all measured sub-dimensions so auto-derive re-runs
             # detectors when the re-run phases complete. Scores and
             # column details are stale and must be re-measured too.
+            # _accumulated_analyses is NOT cleared: phases that are NOT
+            # reset still hold their contributions, and reset phases will
+            # re-add theirs when they re-complete. Each AnalysisKey has
+            # exactly one producer (enforced by tests).
             self._measured_sub_dims.clear()
             self._scores.clear()
             self._column_details.clear()

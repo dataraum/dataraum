@@ -26,7 +26,6 @@ from __future__ import annotations
 import sys
 import time
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +33,7 @@ from sqlalchemy import select
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
+from dataraum.entropy.dimensions import _StrValueMixin
 from dataraum.pipeline.db_models import PhaseLog
 from dataraum.pipeline.events import EventCallback, EventType, PipelineEvent  # noqa: F401
 from dataraum.pipeline.scheduler import (
@@ -46,7 +46,7 @@ from dataraum.pipeline.setup import setup_pipeline
 logger = get_logger(__name__)
 
 
-class GateMode(str, Enum):
+class GateMode(_StrValueMixin):
     """How the pipeline handles entropy gates."""
 
     SKIP = "skip"  # Log warning, continue (backward compatible)

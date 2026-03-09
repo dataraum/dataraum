@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
 
+from dataraum.entropy.dimensions import _StrValueMixin
 
-class EventType(str, Enum):
+
+class EventType(_StrValueMixin):
     """Types of events emitted during pipeline execution."""
 
     PHASE_STARTED = "phase_started"

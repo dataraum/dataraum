@@ -13,7 +13,7 @@ Scoring formula (additive):
 
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, FixAction, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -37,6 +37,11 @@ class BusinessMeaningDetector(EntropyDetector):
     sub_dimension = SubDimension.NAMING_CLARITY
     required_analyses = [AnalysisKey.SEMANTIC]
     description = "Measures clarity of business meaning and description"
+
+    @property
+    def fixable_actions(self) -> set[FixAction]:
+        """Documenting business meaning directly lowers the score."""
+        return {FixAction.DOCUMENT_BUSINESS_MEANING}
 
     def load_data(self, context: DetectorContext) -> None:
         """Load semantic annotation for this column."""
@@ -158,42 +163,25 @@ class BusinessMeaningDetector(EntropyDetector):
         # Resolution options based on missing data (not semantic judgment)
         resolution_options: list[ResolutionOption] = []
 
+        missing_fields = []
         if not raw_metrics["has_description"]:
-            resolution_options.append(
-                ResolutionOption(
-                    action="document_description",
-                    parameters={
-                        "column": context.column_name,
-                        "table": context.table_name,
-                    },
-                    effort="low",
-                    description="Add a business description for this column",
-                )
-            )
-
+            missing_fields.append("description")
         if not raw_metrics["has_business_name"]:
-            resolution_options.append(
-                ResolutionOption(
-                    action="document_business_name",
-                    parameters={
-                        "column": context.column_name,
-                        "table": context.table_name,
-                    },
-                    effort="low",
-                    description="Add a human-readable business name",
-                )
-            )
-
+            missing_fields.append("business_name")
         if not raw_metrics["has_entity_type"]:
+            missing_fields.append("entity_type")
+
+        if missing_fields:
             resolution_options.append(
                 ResolutionOption(
-                    action="document_entity_type",
+                    action="document_business_meaning",
                     parameters={
                         "column": context.column_name,
                         "table": context.table_name,
+                        "missing_fields": missing_fields,
                     },
                     effort="low",
-                    description="Classify the entity type for this column",
+                    description=f"Document missing: {', '.join(missing_fields)}",
                 )
             )
 

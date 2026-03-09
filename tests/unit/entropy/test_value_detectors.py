@@ -187,7 +187,7 @@ class TestOutlierRateDetector:
         # Should have resolution options
         actions = [opt.action for opt in results[0].resolution_options]
         assert "transform_winsorize" in actions
-        assert "transform_exclude_outliers" in actions
+        assert "accept_finding" in actions
 
     def test_high_outliers(self, detector: OutlierRateDetector):
         """Test high entropy for 20%+ outliers (piecewise scoring reaches 1.0)."""
@@ -681,6 +681,7 @@ class TestBenfordDetector:
             column_name="amount",
             analysis_results={
                 "statistics": {
+                    "total_count": 1000,
                     "quality": {
                         "benford_compliant": True,
                         "benford_analysis": {
@@ -709,6 +710,7 @@ class TestBenfordDetector:
             column_name="amount",
             analysis_results={
                 "statistics": {
+                    "total_count": 1000,
                     "quality": {
                         "benford_compliant": False,
                         "benford_analysis": {
@@ -732,12 +734,13 @@ class TestBenfordDetector:
         assert "investigate_benford_deviation" in actions
 
     def test_non_compliant_severe_chi_square(self, detector: BenfordDetector):
-        """Non-compliant column with very low p-value uses chi-square severity gradient."""
+        """Non-compliant column with very low p-value uses Cramér's V severity."""
         context = DetectorContext(
             table_name="orders",
             column_name="amount",
             analysis_results={
                 "statistics": {
+                    "total_count": 1000,
                     "quality": {
                         "benford_compliant": False,
                         "benford_analysis": {
@@ -754,9 +757,10 @@ class TestBenfordDetector:
         )
         results = detector.detect(context)
         assert len(results) == 1
-        # p_value=0.001 < 0.01 → chi-sq severity: log10(50)/3.0 = 0.566
-        # score = 0.7 + 0.3 * 0.566 = 0.870
-        assert results[0].score == pytest.approx(0.870, abs=0.01)
+        # p_value=0.001 < 0.01 → Cramér's V severity
+        # V = sqrt(50 / (1000 * 8)) = 0.0791, severity = 0.0791 / 0.5 = 0.158
+        # score = 0.7 + 0.3 * 0.158 = 0.747
+        assert results[0].score == pytest.approx(0.747, abs=0.01)
 
     def test_extreme_chi_square_caps_at_1(self, detector: BenfordDetector):
         """Extreme chi-square values cap score at 1.0."""
@@ -765,6 +769,7 @@ class TestBenfordDetector:
             column_name="amount",
             analysis_results={
                 "statistics": {
+                    "total_count": 1000,
                     "quality": {
                         "benford_compliant": False,
                         "benford_analysis": {
@@ -781,7 +786,8 @@ class TestBenfordDetector:
         )
         results = detector.detect(context)
         assert len(results) == 1
-        # log10(2000)/3.0 = 1.1 → capped at 1.0 → score = 0.7 + 0.3*1.0 = 1.0
+        # V = sqrt(2000 / (1000 * 8)) = 0.5 → severity = 0.5/0.5 = 1.0
+        # score = 0.7 + 0.3 * 1.0 = 1.0
         assert results[0].score == pytest.approx(1.0, abs=0.01)
 
     def test_boolean_only_fallback(self, detector: BenfordDetector):
@@ -791,6 +797,7 @@ class TestBenfordDetector:
             column_name="amount",
             analysis_results={
                 "statistics": {
+                    "total_count": 1000,
                     "quality": {
                         "benford_compliant": False,
                     },

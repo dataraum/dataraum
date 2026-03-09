@@ -10,7 +10,7 @@ from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, FixAction, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -33,6 +33,11 @@ class JoinPathDeterminismDetector(EntropyDetector):
     sub_dimension = SubDimension.JOIN_PATH_DETERMINISM
     required_analyses = [AnalysisKey.RELATIONSHIPS]
     description = "Measures ambiguity in join paths (not just connectivity)"
+
+    @property
+    def fixable_actions(self) -> set[FixAction]:
+        """Resolving join ambiguity specifies the preferred path."""
+        return {FixAction.RESOLVE_JOIN_AMBIGUITY}
 
     def load_data(self, context: DetectorContext) -> None:
         """Load relationships for this column."""
@@ -128,7 +133,7 @@ class JoinPathDeterminismDetector(EntropyDetector):
         if path_status == "orphan":
             resolution_options.append(
                 ResolutionOption(
-                    action="document_relationship",
+                    action="confirm_relationship",
                     parameters={"table": context.table_name, "type": "foreign_key"},
                     effort="medium",
                     description="Declare a relationship to connect this table to the schema",
@@ -137,7 +142,7 @@ class JoinPathDeterminismDetector(EntropyDetector):
         elif path_status == "ambiguous":
             resolution_options.append(
                 ResolutionOption(
-                    action="document_join_path",
+                    action="resolve_join_ambiguity",
                     parameters={
                         "table": context.table_name,
                         "ambiguous_targets": ambiguous_tables,

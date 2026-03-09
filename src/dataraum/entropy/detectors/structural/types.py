@@ -19,6 +19,12 @@ class TypeFidelityDetector(EntropyDetector):
     Source: typing/TypeCandidate.parse_success_rate
     Formula: entropy = 1.0 - parse_success_rate
 
+    Special case: when the typing phase falls back to VARCHAR because no
+    candidate passed min_confidence (decision_source="fallback"), the
+    parse_success_rate is 1.0 (VARCHAR parses everything). This is
+    misleading — the column couldn't be typed. In this case we use a
+    configurable fallback score (default 0.5) instead.
+
     Thresholds configurable in config/entropy/thresholds.yaml.
     """
 
@@ -55,22 +61,31 @@ class TypeFidelityDetector(EntropyDetector):
         # Get configurable thresholds
         suggest_override = detector_config.get("suggest_override_threshold", 0.3)
         suggest_quarantine = detector_config.get("suggest_quarantine_threshold", 0.1)
+        score_fallback = detector_config.get("score_fallback", 0.5)
 
         typing_result = context.get_analysis("typing", {})
 
-        # Extract parse success rate
-        # Can come as TypeCandidate or dict
+        # Extract parse success rate and decision metadata
         if hasattr(typing_result, "parse_success_rate"):
             parse_success_rate = typing_result.parse_success_rate
             detected_type = getattr(typing_result, "data_type", None)
             failed_examples = getattr(typing_result, "failed_examples", [])
+            decision_source = getattr(typing_result, "decision_source", None)
         else:
             parse_success_rate = typing_result.get("parse_success_rate", 1.0)
             detected_type = typing_result.get("detected_type")
             failed_examples = typing_result.get("failed_examples", [])
+            decision_source = typing_result.get("decision_source")
 
-        # Calculate entropy: lower parse success = higher entropy
-        score = 1.0 - parse_success_rate
+        # Calculate entropy
+        is_fallback = decision_source == "fallback"
+        if is_fallback:
+            # VARCHAR fallback: typing couldn't determine the type.
+            # parse_success_rate=1.0 is meaningless — use configurable score.
+            score = score_fallback
+        else:
+            # Normal case: lower parse success = higher entropy
+            score = 1.0 - parse_success_rate
 
         # Build evidence
         evidence = [
@@ -78,6 +93,8 @@ class TypeFidelityDetector(EntropyDetector):
                 "parse_success_rate": parse_success_rate,
                 "detected_type": str(detected_type) if detected_type else None,
                 "failure_count": len(failed_examples) if failed_examples else 0,
+                "decision_source": decision_source,
+                "is_fallback": is_fallback,
             }
         ]
 
@@ -88,21 +105,33 @@ class TypeFidelityDetector(EntropyDetector):
         resolution_options: list[ResolutionOption] = []
 
         if score > suggest_override:
-            # Significant parse failures - suggest manual type override
             resolution_options.append(
                 ResolutionOption(
                     action="document_type_override",
                     parameters={
                         "column": context.column_name,
-                        "suggested_type": "VARCHAR",  # Fallback to string
+                        "suggested_type": "VARCHAR",
                     },
                     effort="low",
                     description="Override detected type with VARCHAR to preserve all values",
                 )
             )
 
+        if is_fallback:
+            # Fallback columns always need type review
+            resolution_options.append(
+                ResolutionOption(
+                    action="document_type_override",
+                    parameters={
+                        "column": context.column_name,
+                        "suggested_type": str(detected_type) if detected_type else "VARCHAR",
+                    },
+                    effort="low",
+                    description="Review and confirm type for column where inference was inconclusive",
+                )
+            )
+
         if score > suggest_quarantine and failed_examples:
-            # Some failures - suggest data cleanup
             resolution_options.append(
                 ResolutionOption(
                     action="transform_quarantine_values",

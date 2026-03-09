@@ -81,6 +81,15 @@ class SubDimension(_StrValueMixin):
 
 
 class FixAction(_StrValueMixin):
-    """Actions that detectors can flag as fixable."""
+    """Actions that detectors can flag as fixable.
 
-    TRANSFORM_EXCLUDE_OUTLIERS = "transform_exclude_outliers"
+    Each action here has a registered handler in FixRegistry that produces
+    ConfigPatch objects describing what to change.  Document-only resolution
+    options (no handler) stay as plain strings in ResolutionOption.action.
+    """
+
+    ACCEPT_FINDING = "accept_finding"
+    DOCUMENT_BUSINESS_MEANING = "document_business_meaning"
+    DECLARE_UNIT = "declare_unit"
+    CONFIRM_RELATIONSHIP = "confirm_relationship"
+    RESOLVE_JOIN_AMBIGUITY = "resolve_join_ambiguity"

@@ -38,8 +38,8 @@ class OutlierRateDetector(EntropyDetector):
 
     @property
     def fixable_actions(self) -> set[FixAction]:
-        """Outlier exclusion is handled by the statistical_quality phase."""
-        return {FixAction.TRANSFORM_EXCLUDE_OUTLIERS}
+        """Accept-finding lowers the score to a floor for reviewed outliers."""
+        return {FixAction.ACCEPT_FINDING}
 
     def load_data(self, context: DetectorContext) -> None:
         """Load statistics and semantic annotation for this column."""
@@ -90,6 +90,10 @@ class OutlierRateDetector(EntropyDetector):
         suggest_winsorize = detector_config.get("suggest_winsorize_threshold", 0.2)
         suggest_exclude = detector_config.get("suggest_exclude_threshold", 0.5)
         cv_attenuation_threshold = detector_config.get("cv_attenuation_threshold", 2.0)
+        score_accepted = self.config.get("score_accepted") or detector_config.get("score_accepted", 0.2)
+        accepted_columns: list[str] = (
+            self.config.get("accepted_columns") or detector_config.get("accepted_columns", [])
+        )
         stats = context.get_analysis("statistics", {})
 
         # Extract outlier information
@@ -229,18 +233,6 @@ class OutlierRateDetector(EntropyDetector):
             # High outliers - suggest review or removal
             resolution_options.append(
                 ResolutionOption(
-                    action="transform_exclude_outliers",
-                    parameters={
-                        "column": context.column_name,
-                        "method": "iqr",
-                        "multiplier": 1.5,
-                    },
-                    effort="low",
-                    description="Exclude IQR-based outliers from aggregations",
-                )
-            )
-            resolution_options.append(
-                ResolutionOption(
                     action="investigate_outliers",
                     parameters={
                         "column": context.column_name,
@@ -249,6 +241,26 @@ class OutlierRateDetector(EntropyDetector):
                     description="Manual review of outlier values for data quality issues",
                 )
             )
+
+        if score > 0:
+            # Accept finding: user reviewed, outliers are expected for this column
+            resolution_options.append(
+                ResolutionOption(
+                    action="accept_finding",
+                    parameters={
+                        "column": context.column_name,
+                        "detector_id": self.detector_id,
+                    },
+                    effort="low",
+                    description="Accept outlier findings as expected for this column",
+                )
+            )
+
+        # Apply acceptance floor if this column was previously accepted
+        target_key = f"{context.table_name}.{context.column_name}"
+        if target_key in accepted_columns:
+            score = score_accepted
+            evidence[0]["accepted"] = True
 
         return [
             self.create_entropy_object(

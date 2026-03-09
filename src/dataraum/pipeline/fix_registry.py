@@ -6,6 +6,18 @@ action it handles, which config file it writes, and which phase to re-run.
 Detectors declare fixable_actions (what they can propose).
 Handlers register here (how to apply the fix).
 The scheduler and gate handler query this registry — no phase scanning needed.
+
+Handler categories:
+  accept_finding — Generic "reviewed, expected" pattern.  Writes to
+      entropy/thresholds.yaml so the detector reads accepted_columns and
+      returns a floor score.  Works for benford, outlier_rate, null_ratio.
+  document_business_meaning — Writes semantic overrides (business_name,
+      entity_type, description) to phases/semantic.yaml.
+  declare_unit — Writes unit declaration to phases/semantic.yaml.
+  confirm_relationship — Confirms a detected relationship in
+      phases/relationships.yaml.
+  resolve_join_ambiguity — Sets preferred join path in
+      phases/relationships.yaml.
 """
 
 from __future__ import annotations
@@ -116,9 +128,37 @@ def _register_builtin_handlers(registry: FixRegistry) -> None:
     """Register all built-in fix handlers."""
     registry.register(
         FixHandler(
-            action="transform_exclude_outliers",
-            handler=_handle_exclude_outliers,
-            phase_name="statistical_quality",
+            action="accept_finding",
+            handler=_handle_accept_finding,
+            phase_name="quality_review",
+        )
+    )
+    registry.register(
+        FixHandler(
+            action="document_business_meaning",
+            handler=_handle_document_business_meaning,
+            phase_name="semantic",
+        )
+    )
+    registry.register(
+        FixHandler(
+            action="declare_unit",
+            handler=_handle_declare_unit,
+            phase_name="semantic",
+        )
+    )
+    registry.register(
+        FixHandler(
+            action="confirm_relationship",
+            handler=_handle_confirm_relationship,
+            phase_name="relationships",
+        )
+    )
+    registry.register(
+        FixHandler(
+            action="resolve_join_ambiguity",
+            handler=_handle_resolve_join_ambiguity,
+            phase_name="relationships",
         )
     )
 
@@ -128,28 +168,183 @@ def _register_builtin_handlers(registry: FixRegistry) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _handle_exclude_outliers(
+def _handle_accept_finding(
     fix_input: FixInput, config: dict[str, Any]
 ) -> FixResult:
-    """Write exclude_outlier_columns to statistical_quality config.
+    """Mark an entropy finding as reviewed and accepted.
 
-    Appends each affected column to the exclusion list so that on re-run
-    the phase skips outlier detection for those columns.
+    Appends each affected column to the detector's ``accepted_columns``
+    list in the entropy thresholds config.  On next measurement the
+    detector reads this list and returns ``score_accepted`` instead of
+    the computed score.
+
+    Parameters in fix_input:
+        detector_id (str): Which detector config section to write to.
+        reason (str, optional): Why the finding was accepted.
     """
+    detector_id = fix_input.parameters.get("detector_id", "unknown")
     patches: list[ConfigPatch] = []
     for col in fix_input.affected_columns:
         patches.append(
             ConfigPatch(
-                config_path="phases/statistical_quality.yaml",
+                config_path="entropy/thresholds.yaml",
                 operation="append",
-                key_path=["exclude_outlier_columns"],
+                key_path=["detectors", detector_id, "accepted_columns"],
                 value=col,
-                reason=fix_input.interpretation or f"Exclude outliers for {col}",
+                reason=fix_input.interpretation
+                or f"Accepted {detector_id} finding for {col}",
             )
         )
 
     return FixResult(
         config_patches=patches,
-        requires_rerun="statistical_quality",
-        summary=f"Excluded outlier columns: {', '.join(fix_input.affected_columns)}",
+        requires_rerun="",  # no phase re-run — detector reads config directly
+        summary=f"Accepted {detector_id} findings: {', '.join(fix_input.affected_columns)}",
+    )
+
+
+def _handle_document_business_meaning(
+    fix_input: FixInput, config: dict[str, Any]
+) -> FixResult:
+    """Write business meaning overrides to semantic phase config.
+
+    Parameters in fix_input:
+        business_name (str, optional): Human-readable name.
+        entity_type (str, optional): Entity classification.
+        description (str, optional): Business description.
+    """
+    patches: list[ConfigPatch] = []
+    fields = ["business_name", "entity_type", "description"]
+
+    for col in fix_input.affected_columns:
+        override: dict[str, str] = {}
+        for field in fields:
+            value = fix_input.parameters.get(field)
+            if value:
+                override[field] = value
+
+        if override:
+            patches.append(
+                ConfigPatch(
+                    config_path="phases/semantic.yaml",
+                    operation="merge",
+                    key_path=["overrides", "business_meaning", col],
+                    value=override,
+                    reason=fix_input.interpretation
+                    or f"Document business meaning for {col}",
+                )
+            )
+
+    return FixResult(
+        config_patches=patches,
+        requires_rerun="semantic",
+        summary=f"Documented business meaning: {', '.join(fix_input.affected_columns)}",
+    )
+
+
+def _handle_declare_unit(
+    fix_input: FixInput, config: dict[str, Any]
+) -> FixResult:
+    """Write unit declaration to semantic phase config.
+
+    Parameters in fix_input:
+        unit (str): The unit to declare (e.g. "EUR", "kg", "dimensionless").
+        unit_source_column (str, optional): Column that defines the unit.
+    """
+    patches: list[ConfigPatch] = []
+    unit = fix_input.parameters.get("unit", "")
+    unit_source = fix_input.parameters.get("unit_source_column")
+
+    for col in fix_input.affected_columns:
+        override: dict[str, Any] = {"unit": unit}
+        if unit_source:
+            override["unit_source_column"] = unit_source
+        patches.append(
+            ConfigPatch(
+                config_path="phases/semantic.yaml",
+                operation="merge",
+                key_path=["overrides", "units", col],
+                value=override,
+                reason=fix_input.interpretation or f"Declare unit '{unit}' for {col}",
+            )
+        )
+
+    return FixResult(
+        config_patches=patches,
+        requires_rerun="semantic",
+        summary=f"Declared unit '{unit}': {', '.join(fix_input.affected_columns)}",
+    )
+
+
+def _handle_confirm_relationship(
+    fix_input: FixInput, config: dict[str, Any]
+) -> FixResult:
+    """Confirm a detected relationship in relationships phase config.
+
+    Parameters in fix_input:
+        from_table (str): Source table.
+        to_table (str): Target table.
+        relationship_type (str, optional): Confirmed type (e.g. "foreign_key").
+        cardinality (str, optional): Confirmed cardinality (e.g. "many_to_one").
+    """
+    patches: list[ConfigPatch] = []
+    from_table = fix_input.parameters.get("from_table", "")
+    to_table = fix_input.parameters.get("to_table", "")
+    rel_key = f"{from_table}->{to_table}"
+
+    confirmation: dict[str, Any] = {"confirmed": True}
+    if fix_input.parameters.get("relationship_type"):
+        confirmation["relationship_type"] = fix_input.parameters["relationship_type"]
+    if fix_input.parameters.get("cardinality"):
+        confirmation["cardinality"] = fix_input.parameters["cardinality"]
+
+    patches.append(
+        ConfigPatch(
+            config_path="phases/relationships.yaml",
+            operation="merge",
+            key_path=["overrides", "confirmed_relationships", rel_key],
+            value=confirmation,
+            reason=fix_input.interpretation
+            or f"Confirmed relationship {rel_key}",
+        )
+    )
+
+    return FixResult(
+        config_patches=patches,
+        requires_rerun="relationships",
+        summary=f"Confirmed relationship: {rel_key}",
+    )
+
+
+def _handle_resolve_join_ambiguity(
+    fix_input: FixInput, config: dict[str, Any]
+) -> FixResult:
+    """Set preferred join path for ambiguous table connections.
+
+    Parameters in fix_input:
+        table (str): Source table with ambiguous paths.
+        target_table (str): Target table.
+        preferred_column (str): Column to use for the join.
+    """
+    patches: list[ConfigPatch] = []
+    table = fix_input.parameters.get("table", "")
+    target = fix_input.parameters.get("target_table", "")
+    preferred_col = fix_input.parameters.get("preferred_column", "")
+    path_key = f"{table}->{target}"
+
+    patches.append(
+        ConfigPatch(
+            config_path="phases/relationships.yaml",
+            operation="merge",
+            key_path=["overrides", "preferred_joins", path_key],
+            value={"column": preferred_col},
+            reason=fix_input.interpretation
+            or f"Resolved join ambiguity: {path_key} via {preferred_col}",
+        )
+    )
+
+    return FixResult(
+        config_patches=patches,
+        requires_rerun="relationships",
+        summary=f"Resolved join ambiguity: {path_key} via {preferred_col}",
     )

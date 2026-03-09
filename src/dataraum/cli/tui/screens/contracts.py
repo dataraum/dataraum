@@ -575,18 +575,16 @@ def _action_matches_dimension(action: dict[str, Any], dimension: str) -> bool:
     action_name = str(action.get("action", "")).lower()
     action_to_dim = {
         "types": ["document_type_override", "transform_quarantine_values"],
-        "units": ["document_unit"],
-        "nulls": ["document_null_semantics", "transform_filter_nulls", "transform_impute_values"],
-        "outliers": ["transform_winsorize", "transform_exclude_outliers", "investigate_outliers"],
+        "units": ["declare_unit"],
+        "nulls": ["accept_finding", "transform_filter_nulls", "transform_impute_values"],
+        "outliers": ["transform_winsorize", "accept_finding", "investigate_outliers"],
         "relations": [
-            "document_relationship",
-            "document_join_path",
+            "confirm_relationship",
+            "resolve_join_ambiguity",
             "transform_fix_referential_integrity",
         ],
         "business_meaning": [
-            "document_description",
-            "document_business_name",
-            "document_entity_type",
+            "document_business_meaning",
         ],
         "temporal": ["document_timestamp_role", "transform_resolve_temporal_mismatch"],
         "derived_values": ["document_formula", "investigate_formula_mismatches"],

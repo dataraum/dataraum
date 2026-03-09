@@ -4,6 +4,11 @@ Measures deviation from Benford's Law for numeric columns.
 Non-compliance in financial/accounting data can indicate data quality
 issues, fabrication, or systematic rounding.
 
+For non-compliant columns, severity is computed using Cramér's V
+(chi-square normalized by sample size) instead of raw chi-square.
+This prevents large datasets from inflating scores — a chi_sq of 1917
+with n=8000 is a small effect (V=0.17), not a catastrophic one.
+
 Source: statistics/quality.benford_analysis (via quality_data JSON)
 """
 
@@ -11,8 +16,11 @@ import math
 
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, FixAction, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
+
+# Benford's Law uses digits 1-9, so df = k - 1 = 8
+_BENFORD_DF = 8
 
 
 class BenfordDetector(EntropyDetector):
@@ -21,6 +29,10 @@ class BenfordDetector(EntropyDetector):
     Only applies to numeric columns with semantic_role = "measure".
     Uses chi-square test results from statistical quality analysis
     to determine if the digit distribution follows Benford's Law.
+
+    Severity scaling uses Cramér's V (effect size) rather than raw
+    chi-square, so scores reflect practical significance, not just
+    statistical significance inflated by sample size.
 
     Source: statistics/quality.benford_analysis
     Scores configurable in config/entropy/thresholds.yaml.
@@ -35,6 +47,11 @@ class BenfordDetector(EntropyDetector):
 
     # Only measure columns benefit from Benford analysis
     _APPLICABLE_ROLES = frozenset({"measure"})
+
+    @property
+    def fixable_actions(self) -> set[FixAction]:
+        """Accept-finding lowers the score for reviewed Benford deviations."""
+        return {FixAction.ACCEPT_FINDING}
 
     def load_data(self, context: DetectorContext) -> None:
         """Load statistics and semantic annotation for this column."""
@@ -78,8 +95,15 @@ class BenfordDetector(EntropyDetector):
         score_compliant = detector_config.get("score_compliant", 0.1)
         score_non_compliant = detector_config.get("score_non_compliant", 0.7)
         chi_sq_escalation_threshold = detector_config.get("chi_sq_escalation_threshold", 0.01)
-        chi_sq_log_max = detector_config.get("chi_sq_log_max", 3.0)
+        v_max = detector_config.get("cramers_v_max", 0.5)
+        min_sample_size = detector_config.get("min_sample_size", 100)
+        score_accepted = self.config.get("score_accepted") or detector_config.get("score_accepted", 0.2)
+        accepted_columns: list[str] = (
+            self.config.get("accepted_columns") or detector_config.get("accepted_columns", [])
+        )
+
         stats = context.get_analysis("statistics", {})
+        n_values = stats.get("total_count", 0) or 0
         quality = stats.get("quality", stats)
 
         # Try to get Benford analysis from quality data
@@ -92,6 +116,10 @@ class BenfordDetector(EntropyDetector):
 
         # If no Benford data available, skip
         if benford_compliant is None and benford_analysis is None:
+            return []
+
+        # Skip unreliable small samples
+        if n_values < min_sample_size:
             return []
 
         # Determine compliance
@@ -108,18 +136,22 @@ class BenfordDetector(EntropyDetector):
             digit_distribution = None
             interpretation = ""
 
-        # Calculate score: use p-value gradient when available,
-        # fall back to binary compliant/non-compliant.
+        # Calculate Cramér's V (effect size normalized for sample size)
+        cramers_v: float | None = None
+        if chi_square and chi_square > 0 and n_values > 0:
+            cramers_v = math.sqrt(chi_square / (n_values * _BENFORD_DF))
+
+        # Calculate score
         if p_value is not None and isinstance(p_value, (int, float)):
             if p_value > chi_sq_escalation_threshold:
                 # Mild: p-value gradient maps to [score_compliant, score_non_compliant]
                 score = score_compliant + (score_non_compliant - score_compliant) * (1.0 - p_value)
                 score = max(score_compliant, min(score_non_compliant, score))
             else:
-                # Severe: chi-square severity gradient into [score_non_compliant, 1.0]
-                # log10(chi_sq): ~1.5 (borderline) → chi_sq_log_max (extreme)
-                if chi_square and chi_square > 0:
-                    severity = min(1.0, math.log10(chi_square) / chi_sq_log_max)
+                # Non-compliant: use Cramér's V for practical significance
+                # V < 0.1 = negligible, 0.1-0.3 = small, 0.3-0.5 = medium, >0.5 = large
+                if cramers_v is not None:
+                    severity = min(1.0, cramers_v / v_max)
                     score = score_non_compliant + (1.0 - score_non_compliant) * severity
                 else:
                     score = score_non_compliant
@@ -129,12 +161,28 @@ class BenfordDetector(EntropyDetector):
         else:
             score = score_non_compliant
 
+        # Classify effect size
+        if cramers_v is not None:
+            if cramers_v < 0.1:
+                effect_size = "negligible"
+            elif cramers_v < 0.3:
+                effect_size = "small"
+            elif cramers_v < 0.5:
+                effect_size = "medium"
+            else:
+                effect_size = "large"
+        else:
+            effect_size = None
+
         # Build evidence
         evidence = [
             {
                 "is_compliant": is_compliant,
                 "chi_square": chi_square,
                 "p_value": p_value,
+                "n_values": n_values,
+                "cramers_v": round(cramers_v, 4) if cramers_v is not None else None,
+                "effect_size": effect_size,
                 "digit_distribution": digit_distribution,
                 "interpretation": interpretation,
             }
@@ -150,11 +198,30 @@ class BenfordDetector(EntropyDetector):
                         "column": context.column_name,
                         "chi_square": chi_square,
                         "p_value": p_value,
+                        "cramers_v": round(cramers_v, 4) if cramers_v else None,
+                        "effect_size": effect_size,
                     },
                     effort="medium",
                     description="Investigate Benford's Law deviation — may indicate data quality issues or systematic rounding",
                 )
             )
+            resolution_options.append(
+                ResolutionOption(
+                    action="accept_finding",
+                    parameters={
+                        "column": context.column_name,
+                        "detector_id": self.detector_id,
+                    },
+                    effort="low",
+                    description="Accept Benford deviation as expected for this data",
+                )
+            )
+
+        # Apply acceptance floor if this column was previously accepted
+        target_key = f"{context.table_name}.{context.column_name}"
+        if target_key in accepted_columns:
+            score = score_accepted
+            evidence[0]["accepted"] = True
 
         return [
             self.create_entropy_object(

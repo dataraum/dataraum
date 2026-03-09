@@ -198,9 +198,10 @@ class TestBusinessMeaningDetector:
         results = detector.detect(context)
 
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "document_description" in actions
-        assert "document_business_name" in actions
-        assert "document_entity_type" in actions
+        assert "document_business_meaning" in actions
+        # All three fields should be listed as missing
+        opt = results[0].resolution_options[0]
+        assert set(opt.parameters["missing_fields"]) == {"description", "business_name", "entity_type"}
 
     def test_resolution_options_with_description(self, detector: BusinessMeaningDetector):
         """Test resolution options when description exists but not others."""
@@ -219,11 +220,12 @@ class TestBusinessMeaningDetector:
         results = detector.detect(context)
 
         actions = [opt.action for opt in results[0].resolution_options]
-        # Has description, so document_description not suggested
-        assert "document_description" not in actions
-        # Missing business_name and entity_type
-        assert "document_business_name" in actions
-        assert "document_entity_type" in actions
+        assert "document_business_meaning" in actions
+        # Has description, so only business_name and entity_type are missing
+        opt = results[0].resolution_options[0]
+        assert "description" not in opt.parameters["missing_fields"]
+        assert "business_name" in opt.parameters["missing_fields"]
+        assert "entity_type" in opt.parameters["missing_fields"]
 
     def test_fully_documented_low_confidence_nonzero(self, detector: BusinessMeaningDetector):
         """Test that fully documented column with low confidence has nonzero score.

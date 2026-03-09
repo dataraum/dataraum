@@ -137,8 +137,8 @@ class TestDetectorRegistry:
         empty_registry.register(OutlierRateDetector())
 
         fixable = empty_registry.get_fixable_actions()
-        assert "transform_exclude_outliers" in fixable
-        assert fixable["transform_exclude_outliers"] == "outlier_rate"
+        assert "accept_finding" in fixable
+        assert fixable["accept_finding"] == "outlier_rate"
 
 
 class TestEntropyDetector:

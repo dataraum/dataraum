@@ -12,7 +12,7 @@ from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, FixAction, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -39,6 +39,11 @@ class RelationshipEntropyDetector(EntropyDetector):
     sub_dimension = SubDimension.RELATIONSHIP_QUALITY
     required_analyses = [AnalysisKey.RELATIONSHIPS]
     description = "Measures relationship quality from evaluation metrics"
+
+    @property
+    def fixable_actions(self) -> set[FixAction]:
+        """Confirming a relationship lowers the semantic entropy component."""
+        return {FixAction.CONFIRM_RELATIONSHIP}
 
     def load_data(self, context: DetectorContext) -> None:
         """Load relationships for this column."""
@@ -181,7 +186,7 @@ class RelationshipEntropyDetector(EntropyDetector):
                 if not is_confirmed:
                     resolution_options.append(
                         ResolutionOption(
-                            action="document_relationship",
+                            action="confirm_relationship",
                             parameters={
                                 "from_table": from_table,
                                 "to_table": to_table,

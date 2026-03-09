@@ -45,14 +45,14 @@ class TestFixInput:
 
     def test_create_with_all_fields(self) -> None:
         fix_input = FixInput(
-            action_name="transform_exclude_outliers",
-            parameters={"exclude_columns": ["amount", "quantity"]},
-            interpretation="User wants to exclude financial columns from outlier analysis",
+            action_name="accept_finding",
+            parameters={"detector_id": "outlier_rate"},
+            interpretation="User wants to accept outlier findings",
             affected_columns=["orders.amount", "orders.quantity"],
             entropy_evidence={"outlier_rate": 0.15, "method": "iqr"},
         )
-        assert fix_input.action_name == "transform_exclude_outliers"
-        assert fix_input.parameters["exclude_columns"] == ["amount", "quantity"]
+        assert fix_input.action_name == "accept_finding"
+        assert fix_input.parameters["detector_id"] == "outlier_rate"
         assert len(fix_input.affected_columns) == 2
 
     def test_defaults(self) -> None:

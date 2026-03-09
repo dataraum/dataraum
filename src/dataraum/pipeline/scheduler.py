@@ -121,6 +121,10 @@ class PipelineScheduler:
         )
         self._step = 0
 
+        # Validate analysis coverage: warn if detectors require analyses
+        # that no phase produces
+        self._validate_analysis_coverage()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -195,6 +199,7 @@ class PipelineScheduler:
                 # all_scores accumulates across the entire run.
                 pending_issues: list[ExitCheckIssue] = []
                 column_details: dict[str, dict[str, float]] = {}
+                wave_skipped: list[dict[str, str]] = []
                 last_gate_phase: str = ""
 
                 for phase_name, _result in wave_results:
@@ -212,6 +217,14 @@ class PipelineScheduler:
                         )
                         all_scores.update(gate_result.scores)
                         column_details.update(gate_result.column_details)
+                        # Collect skipped detectors (deduplicate by detector_id)
+                        seen_ids = {s["detector_id"] for s in wave_skipped}
+                        for sd in gate_result.skipped_detectors:
+                            if sd.detector_id not in seen_ids:
+                                wave_skipped.append(
+                                    {"detector_id": sd.detector_id, "reason": sd.reason}
+                                )
+                                seen_ids.add(sd.detector_id)
                         last_gate_phase = phase_name
 
                 # Emit one POST_VERIFICATION per wave (after all gates measured)
@@ -221,6 +234,7 @@ class PipelineScheduler:
                         phase=last_gate_phase,
                         total=total,
                         scores=dict(all_scores),
+                        skipped_detectors=wave_skipped,
                     )
                     issues = assess_contracts(
                         dict(all_scores),
@@ -490,6 +504,33 @@ class PipelineScheduler:
         )
         self.session.add(log)
         self.session.commit()
+
+    def _validate_analysis_coverage(self) -> None:
+        """Warn if detectors require analyses that no phase produces."""
+        from dataraum.entropy.detectors.base import get_default_registry
+
+        all_produced: set[AnalysisKey] = set()
+        for phase in self.phases.values():
+            all_produced.update(phase.produces_analyses)
+
+        detector_registry = get_default_registry()
+        for detector in detector_registry.get_all_detectors():
+            missing = [
+                str(a)
+                for a in detector.required_analyses
+                if a not in all_produced
+            ]
+            if missing:
+                logger.warning(
+                    "detector_analysis_gap",
+                    detector=detector.detector_id,
+                    missing=missing,
+                    message=(
+                        f"Detector '{detector.detector_id}' requires "
+                        f"[{', '.join(missing)}] but no configured phase "
+                        f"produces them — it will never run"
+                    ),
+                )
 
     def _available_analyses(self) -> set[AnalysisKey]:
         """Build available analyses set from all COMPLETED phases."""

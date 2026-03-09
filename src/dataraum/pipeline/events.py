@@ -51,6 +51,9 @@ class PipelineEvent:
     # EXIT_CHECK: available fix actions per violating dimension
     # dim_path -> [{"action_name": str, "phase_name": str}]
     fixable_actions: dict[str, list[dict[str, str]]] = field(default_factory=dict)
+    # POST_VERIFICATION: detectors that could not run
+    # [{"detector_id": str, "reason": str}]
+    skipped_detectors: list[dict[str, str]] = field(default_factory=list)
 
 
 # Callback type for structured events

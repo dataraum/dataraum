@@ -198,7 +198,7 @@ def _handle_accept_finding(
 
     return FixResult(
         config_patches=patches,
-        requires_rerun="",  # no phase re-run — detector reads config directly
+        requires_rerun="quality_review",  # re-measure so scores update this run
         summary=f"Accepted {detector_id} findings: {', '.join(fix_input.affected_columns)}",
     )
 

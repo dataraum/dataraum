@@ -93,7 +93,6 @@ class PipelineScheduler:
         runtime_config: dict[str, Any] | None = None,
         session_factory: Callable[[], Any] | None = None,
         manager: Any | None = None,
-        force_sequential: bool = False,
     ) -> None:
         # Validate that all declared dependencies reference known phases
         for name, phase in phases.items():
@@ -113,8 +112,6 @@ class PipelineScheduler:
         self._runtime_config = runtime_config or {}
         self.session_factory = session_factory
         self.manager = manager
-        self.force_sequential = force_sequential
-
         # Internal state
         self._state: dict[str, PhaseStatus] = dict.fromkeys(
             phases, PhaseStatus.PENDING
@@ -178,9 +175,7 @@ class PipelineScheduler:
 
                 # 2. Execute phases
                 use_parallel = (
-                    len(to_run) > 1
-                    and self.session_factory is not None
-                    and not self.force_sequential
+                    len(to_run) > 1 and self.session_factory is not None
                 )
                 if use_parallel:
                     wave_results: list[tuple[str, PhaseResult]] = (

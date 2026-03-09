@@ -199,10 +199,6 @@ def run(
         contract=contract,
     )
 
-    # PAUSE mode forces sequential execution for determinism
-    if resolved_gate_mode == GateMode.PAUSE:
-        setup.scheduler.force_sequential = True
-
     gen = setup.scheduler.run()
 
     with warnings.catch_warnings():

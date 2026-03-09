@@ -1304,56 +1304,6 @@ class TestFixScoresCleared:
         assert result.final_scores.get("value.nulls.null_ratio") == pytest.approx(0.05)
 
 
-class TestForceSequential:
-    """Tests for force_sequential parameter."""
-
-    def test_force_sequential_prevents_parallel(self, session: Session, duckdb_conn, engine):
-        """With force_sequential=True, multiple ready phases run sequentially."""
-        from contextlib import contextmanager
-
-        from sqlalchemy.orm import sessionmaker
-
-        factory = sessionmaker(bind=engine, expire_on_commit=False)
-
-        @contextmanager
-        def session_scope():
-            s = factory()
-            try:
-                yield s
-                s.commit()
-            except Exception:
-                s.rollback()
-                raise
-            finally:
-                s.close()
-
-        run_id = _make_run(session)
-        a = MockPhase("A")
-        b = MockPhase("B", dependencies=["A"])
-        c = MockPhase("C", dependencies=["A"])
-
-        scheduler = PipelineScheduler(
-            phases={"A": a, "B": b, "C": c},
-            source_id="src-1",
-            run_id=run_id,
-            session=session,
-            duckdb_conn=duckdb_conn,
-            session_factory=session_scope,
-            force_sequential=True,
-        )
-
-        events, result = _drive(scheduler.run())
-
-        assert result.success is True
-        assert a.run_count == 1
-        assert b.run_count == 1
-        assert c.run_count == 1
-
-        # B and C ran sequentially (both completed)
-        completed = [e.phase for e in events if e.event_type == EventType.PHASE_COMPLETED]
-        assert set(completed) == {"A", "B", "C"}
-
-
 class TestFixRegistry:
     """Tests for FixRegistry lookup."""
 

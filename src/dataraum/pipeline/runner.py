@@ -176,10 +176,6 @@ def run(config: RunConfig) -> Result[RunResult]:
             target_phase=config.target_phase,
         )
 
-        # PAUSE mode forces sequential execution for determinism
-        if config.gate_mode == GateMode.PAUSE:
-            setup.scheduler.force_sequential = True
-
         # Drive the generator — collect events, auto-defer gates
         gen = setup.scheduler.run()
         collected_events: list[PipelineEvent] = []

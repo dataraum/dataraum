@@ -51,7 +51,7 @@ class TestHandleAcceptFinding:
         )
         result = handler(fix_input, {})
 
-        assert result.requires_rerun == ""
+        assert result.requires_rerun == "quality_review"
         assert len(result.config_patches) == 1
 
         patch = result.config_patches[0]
@@ -95,7 +95,7 @@ class TestHandleAcceptFinding:
         )
         result = handler(fix_input, {})
         assert result.config_patches == []
-        assert result.requires_rerun == ""
+        assert result.requires_rerun == "quality_review"
 
     def test_uses_interpretation_as_reason(self) -> None:
         handler = self._get_handler()

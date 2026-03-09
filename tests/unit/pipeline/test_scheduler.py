@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dataraum.entropy.dimensions import AnalysisKey
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.gate import (
     GateResult,
     SkippedDetector,
@@ -863,22 +863,22 @@ class TestMeasureAtGate:
         # Build a registry with one column-scoped and one table-scoped detector
         class StubCol(EntropyDetector):
             detector_id = "stub_col"
-            layer = "structural"
-            dimension = "types"
-            sub_dimension = "type_fidelity"
+            layer = Layer.STRUCTURAL
+            dimension = Dimension.TYPES
+            sub_dimension = SubDimension.TYPE_FIDELITY
             scope = "column"
-            required_analyses = ["typing"]
+            required_analyses = [AnalysisKey.TYPING]
 
             def detect(self, ctx):
                 return [self.create_entropy_object(ctx, score=0.3)]
 
         class StubTbl(EntropyDetector):
             detector_id = "stub_tbl"
-            layer = "semantic"
-            dimension = "dimensional"
-            sub_dimension = "cross_column_patterns"
+            layer = Layer.SEMANTIC
+            dimension = Dimension.DIMENSIONAL
+            sub_dimension = SubDimension.CROSS_COLUMN_PATTERNS
             scope = "table"
-            required_analyses = ["slice_variance"]
+            required_analyses = [AnalysisKey.SLICE_VARIANCE]
 
             def detect(self, ctx):
                 return [self.create_entropy_object(ctx, score=0.7)]
@@ -1398,11 +1398,11 @@ class TestExitCheckFixableActions:
         # Detector declares which actions are fixable
         class FixableDetector(EntropyDetector):
             detector_id = "test_fixable"
-            layer = "structural"
-            dimension = "types"
-            sub_dimension = "type_fidelity"
+            layer = Layer.STRUCTURAL
+            dimension = Dimension.TYPES
+            sub_dimension = SubDimension.TYPE_FIDELITY
             scope = "column"
-            required_analyses: list[str] = []
+            required_analyses: list[AnalysisKey] = []
 
             @property
             def fixable_actions(self):
@@ -1566,9 +1566,9 @@ class TestAnalysisCoverageValidation:
 
         class NeedsStats(EntropyDetector):
             detector_id = "needs_stats"
-            layer = "value"
-            dimension = "outliers"
-            sub_dimension = "outlier_rate"
+            layer = Layer.VALUE
+            dimension = Dimension.OUTLIERS
+            sub_dimension = SubDimension.OUTLIER_RATE
             scope = "column"
             required_analyses = [AnalysisKey.STATISTICS]
 
@@ -1609,9 +1609,9 @@ class TestAnalysisCoverageValidation:
 
         class NeedsTyping(EntropyDetector):
             detector_id = "needs_typing"
-            layer = "structural"
-            dimension = "types"
-            sub_dimension = "type_fidelity"
+            layer = Layer.STRUCTURAL
+            dimension = Dimension.TYPES
+            sub_dimension = SubDimension.TYPE_FIDELITY
             scope = "column"
             required_analyses = [AnalysisKey.TYPING]
 

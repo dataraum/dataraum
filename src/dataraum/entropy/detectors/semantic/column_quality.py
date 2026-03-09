@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.dimensions import AnalysisKey, SubDimension
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 if TYPE_CHECKING:
@@ -31,8 +31,8 @@ class ColumnQualityDetector(EntropyDetector):
     """
 
     detector_id = "column_quality"
-    layer = "semantic"
-    dimension = "dimensional"
+    layer = Layer.SEMANTIC
+    dimension = Dimension.DIMENSIONAL
     sub_dimension = SubDimension.COLUMN_QUALITY
     scope = "table"
     required_analyses = [AnalysisKey.COLUMN_QUALITY_REPORTS]

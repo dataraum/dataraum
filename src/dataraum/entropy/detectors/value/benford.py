@@ -11,7 +11,7 @@ import math
 
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.dimensions import AnalysisKey, SubDimension
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -27,8 +27,8 @@ class BenfordDetector(EntropyDetector):
     """
 
     detector_id = "benford"
-    layer = "value"
-    dimension = "distribution"
+    layer = Layer.VALUE
+    dimension = Dimension.DISTRIBUTION
     sub_dimension = SubDimension.BENFORD_COMPLIANCE
     required_analyses = [AnalysisKey.STATISTICS, AnalysisKey.SEMANTIC]
     description = "Measures deviation from Benford's Law for numeric columns"

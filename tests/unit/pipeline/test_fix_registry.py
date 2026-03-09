@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from dataraum.entropy.dimensions import Dimension, Layer, SubDimension
 from dataraum.pipeline.fix_registry import FixHandler, FixRegistry
 from dataraum.pipeline.fixes import FixResult
 
@@ -31,9 +32,9 @@ class TestFixRegistryValidation:
 
         class StubDetector(EntropyDetector):
             detector_id = "stub"
-            layer = "value"
-            dimension = "outliers"
-            sub_dimension = "outlier_rate"
+            layer = Layer.VALUE
+            dimension = Dimension.OUTLIERS
+            sub_dimension = SubDimension.OUTLIER_RATE
             scope = "column"
             required_analyses = []
 
@@ -72,9 +73,9 @@ class TestFixRegistryValidation:
 
         class StubDetector(EntropyDetector):
             detector_id = "stub"
-            layer = "value"
-            dimension = "outliers"
-            sub_dimension = "outlier_rate"
+            layer = Layer.VALUE
+            dimension = Dimension.OUTLIERS
+            sub_dimension = SubDimension.OUTLIER_RATE
             scope = "column"
             required_analyses = []
 
@@ -150,9 +151,9 @@ class TestFixRegistryValidation:
 
         class StubDetector(EntropyDetector):
             detector_id = "stub"
-            layer = "value"
-            dimension = "outliers"
-            sub_dimension = "outlier_rate"
+            layer = Layer.VALUE
+            dimension = Dimension.OUTLIERS
+            sub_dimension = SubDimension.OUTLIER_RATE
             scope = "column"
             required_analyses = []
 

@@ -22,6 +22,31 @@ class _StrValueMixin(str, Enum):
         return str(self.value)
 
 
+class Layer(_StrValueMixin):
+    """Entropy hierarchy layers."""
+
+    STRUCTURAL = "structural"
+    VALUE = "value"
+    SEMANTIC = "semantic"
+    COMPUTATIONAL = "computational"
+
+
+class Dimension(_StrValueMixin):
+    """Entropy hierarchy dimensions within layers."""
+
+    TYPES = "types"
+    RELATIONS = "relations"
+    NULLS = "nulls"
+    OUTLIERS = "outliers"
+    DISTRIBUTION = "distribution"
+    TEMPORAL = "temporal"
+    BUSINESS_MEANING = "business_meaning"
+    UNITS = "units"
+    DIMENSIONAL = "dimensional"
+    COVERAGE = "coverage"
+    DERIVED_VALUES = "derived_values"
+
+
 class AnalysisKey(_StrValueMixin):
     """Analysis outputs that phases produce and detectors consume."""
 

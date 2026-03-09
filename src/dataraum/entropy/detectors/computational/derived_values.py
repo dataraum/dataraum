@@ -8,7 +8,7 @@ from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.dimensions import AnalysisKey, SubDimension
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -25,8 +25,8 @@ class DerivedValueDetector(EntropyDetector):
     """
 
     detector_id = "derived_value"
-    layer = "computational"
-    dimension = "derived_values"
+    layer = Layer.COMPUTATIONAL
+    dimension = Dimension.DERIVED_VALUES
     sub_dimension = SubDimension.FORMULA_MATCH
     required_analyses = [AnalysisKey.CORRELATION]
     description = "Measures reliability of detected derived column formulas"

@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from dataraum.core.logging import get_logger
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.dimensions import AnalysisKey, SubDimension
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 logger = get_logger(__name__)
@@ -192,8 +192,8 @@ class DimensionalEntropyDetector(EntropyDetector):
     """
 
     detector_id = "dimensional_entropy"
-    layer = "semantic"
-    dimension = "dimensional"
+    layer = Layer.SEMANTIC
+    dimension = Dimension.DIMENSIONAL
     sub_dimension = SubDimension.CROSS_COLUMN_PATTERNS
     scope = "table"
     required_analyses = [AnalysisKey.SLICE_VARIANCE]  # temporal_variance is optional

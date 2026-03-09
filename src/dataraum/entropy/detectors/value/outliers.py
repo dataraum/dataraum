@@ -8,7 +8,7 @@ from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.dimensions import AnalysisKey, FixAction, SubDimension
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, FixAction, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 
@@ -27,8 +27,8 @@ class OutlierRateDetector(EntropyDetector):
     """
 
     detector_id = "outlier_rate"
-    layer = "value"
-    dimension = "outliers"
+    layer = Layer.VALUE
+    dimension = Dimension.OUTLIERS
     sub_dimension = SubDimension.OUTLIER_RATE
     required_analyses = [AnalysisKey.STATISTICS, AnalysisKey.SEMANTIC]
     description = "Measures uncertainty from outlier values"

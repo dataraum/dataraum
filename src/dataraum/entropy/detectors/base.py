@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from dataraum.entropy.dimensions import AnalysisKey, FixAction, SubDimension
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, FixAction, Layer, SubDimension
 from dataraum.entropy.models import (
     EntropyObject,
     ResolutionOption,
@@ -88,8 +88,8 @@ class EntropyDetector(ABC):
 
     # Detector identity (override in subclasses)
     detector_id: str = "base"
-    layer: str = ""  # structural, semantic, value, computational
-    dimension: str = ""  # types, relations, units, etc.
+    layer: Layer  # structural, semantic, value, computational
+    dimension: Dimension  # types, relations, units, etc.
     sub_dimension: SubDimension  # subclasses must set this
 
     # Target scope: "column" (per-column analysis) or "table" (cross-column analysis)
@@ -216,9 +216,30 @@ class DetectorRegistry:
     def register(self, detector: EntropyDetector) -> None:
         """Register a detector.
 
+        Validates that layer, dimension, and sub_dimension use the
+        correct enum types to catch typos at startup.
+
         Args:
             detector: Detector instance to register
+
+        Raises:
+            TypeError: If layer, dimension, or sub_dimension are not enum instances.
         """
+        if not isinstance(detector.layer, Layer):
+            raise TypeError(
+                f"Detector {detector.detector_id!r}: layer must be a Layer enum, "
+                f"got {type(detector.layer).__name__} ({detector.layer!r})"
+            )
+        if not isinstance(detector.dimension, Dimension):
+            raise TypeError(
+                f"Detector {detector.detector_id!r}: dimension must be a Dimension enum, "
+                f"got {type(detector.dimension).__name__} ({detector.dimension!r})"
+            )
+        if not isinstance(detector.sub_dimension, SubDimension):
+            raise TypeError(
+                f"Detector {detector.detector_id!r}: sub_dimension must be a SubDimension enum, "
+                f"got {type(detector.sub_dimension).__name__} ({detector.sub_dimension!r})"
+            )
         self.detectors[detector.detector_id] = detector
 
     def unregister(self, detector_id: str) -> None:

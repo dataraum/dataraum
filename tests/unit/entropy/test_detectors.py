@@ -8,6 +8,7 @@ from dataraum.entropy.detectors import (
     get_default_registry,
 )
 from dataraum.entropy.detectors.base import DetectorContext
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject
 
 
@@ -15,10 +16,10 @@ class MockDetector(EntropyDetector):
     """Mock detector for testing."""
 
     detector_id = "mock_detector"
-    layer = "structural"
-    dimension = "types"
-    sub_dimension = "mock_sub"
-    required_analyses = ["typing"]
+    layer = Layer.STRUCTURAL
+    dimension = Dimension.TYPES
+    sub_dimension = SubDimension.TYPE_FIDELITY
+    required_analyses = [AnalysisKey.TYPING]
     description = "Mock detector for testing"
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
@@ -157,7 +158,7 @@ class TestEntropyDetector:
     def test_dimension_path(self):
         """Test dimension path property."""
         detector = MockDetector()
-        assert detector.dimension_path == "structural.types.mock_sub"
+        assert detector.dimension_path == "structural.types.type_fidelity"
 
     def test_detect(self, sample_detector_context: DetectorContext):
         """Test detect method returns entropy objects."""
@@ -182,7 +183,7 @@ class TestEntropyDetector:
 
         assert obj.layer == "structural"
         assert obj.dimension == "types"
-        assert obj.sub_dimension == "mock_sub"
+        assert obj.sub_dimension == "type_fidelity"
         assert obj.target == "column:orders.amount"
         assert obj.score == 0.5
         assert obj.detector_id == "mock_detector"

@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from dataraum.core.logging import get_logger
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.dimensions import AnalysisKey, SubDimension
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
 logger = get_logger(__name__)
@@ -34,8 +34,8 @@ class DimensionCoverageDetector(EntropyDetector):
     """
 
     detector_id = "dimension_coverage"
-    layer = "semantic"
-    dimension = "coverage"
+    layer = Layer.SEMANTIC
+    dimension = Dimension.COVERAGE
     sub_dimension = SubDimension.DIMENSION_COVERAGE
     scope = "view"
     required_analyses = [AnalysisKey.ENRICHED_VIEW]

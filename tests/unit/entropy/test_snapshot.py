@@ -10,6 +10,7 @@ from dataraum.entropy.detectors.base import (
     DetectorRegistry,
     EntropyDetector,
 )
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject
 from dataraum.entropy.snapshot import Snapshot, take_snapshot
 
@@ -58,11 +59,11 @@ class StubTypingDetector(EntropyDetector):
     """A stub typing detector for testing."""
 
     detector_id = "stub_typing"
-    layer = "structural"
-    dimension = "types"
-    sub_dimension = "type_fidelity"
+    layer = Layer.STRUCTURAL
+    dimension = Dimension.TYPES
+    sub_dimension = SubDimension.TYPE_FIDELITY
 
-    required_analyses = ["typing"]
+    required_analyses = [AnalysisKey.TYPING]
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         return [
@@ -78,11 +79,11 @@ class StubSemanticDetector(EntropyDetector):
     """A stub semantic detector."""
 
     detector_id = "stub_semantic"
-    layer = "semantic"
-    dimension = "business_meaning"
-    sub_dimension = "naming_clarity"
+    layer = Layer.SEMANTIC
+    dimension = Dimension.BUSINESS_MEANING
+    sub_dimension = SubDimension.NAMING_CLARITY
 
-    required_analyses = ["semantic"]
+    required_analyses = [AnalysisKey.SEMANTIC]
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         return [self.create_entropy_object(context, score=0.5)]
@@ -92,11 +93,11 @@ class FailingDetector(EntropyDetector):
     """A detector that raises an exception."""
 
     detector_id = "failing_detector"
-    layer = "value"
-    dimension = "nulls"
-    sub_dimension = "null_ratio"
+    layer = Layer.VALUE
+    dimension = Dimension.NULLS
+    sub_dimension = SubDimension.NULL_RATIO
 
-    required_analyses = ["statistics"]
+    required_analyses = [AnalysisKey.STATISTICS]
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         raise RuntimeError("Detector crashed")
@@ -106,11 +107,11 @@ class NullDetector(EntropyDetector):
     """A detector for null_ratio."""
 
     detector_id = "null_ratio"
-    layer = "value"
-    dimension = "nulls"
-    sub_dimension = "null_ratio"
+    layer = Layer.VALUE
+    dimension = Dimension.NULLS
+    sub_dimension = SubDimension.NULL_RATIO
 
-    required_analyses = ["statistics"]
+    required_analyses = [AnalysisKey.STATISTICS]
 
     def detect(self, context: DetectorContext) -> list[EntropyObject]:
         return [self.create_entropy_object(context, score=0.1)]
@@ -317,12 +318,12 @@ class StubTableDetector(EntropyDetector):
     """A stub table-scoped detector for testing."""
 
     detector_id = "stub_table"
-    layer = "semantic"
-    dimension = "dimensional"
-    sub_dimension = "cross_column_patterns"
+    layer = Layer.SEMANTIC
+    dimension = Dimension.DIMENSIONAL
+    sub_dimension = SubDimension.CROSS_COLUMN_PATTERNS
     scope = "table"
 
-    required_analyses = ["slice_variance"]
+    required_analyses = [AnalysisKey.SLICE_VARIANCE]
 
     def load_data(self, context: DetectorContext) -> None:
         context.analysis_results["slice_variance"] = {"columns": {}, "slice_data": {}}
@@ -420,12 +421,12 @@ class StubViewDetector(EntropyDetector):
     """A stub view-scoped detector for testing."""
 
     detector_id = "stub_view"
-    layer = "semantic"
-    dimension = "coverage"
-    sub_dimension = "dimension_coverage"
+    layer = Layer.SEMANTIC
+    dimension = Dimension.COVERAGE
+    sub_dimension = SubDimension.DIMENSION_COVERAGE
     scope = "view"
 
-    required_analyses = ["enriched_view"]
+    required_analyses = [AnalysisKey.ENRICHED_VIEW]
 
     def load_data(self, context: DetectorContext) -> None:
         context.analysis_results["enriched_view"] = MagicMock(

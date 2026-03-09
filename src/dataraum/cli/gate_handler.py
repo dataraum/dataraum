@@ -490,7 +490,7 @@ def _build_data_profile(
                 select(Column, Table, StatisticalProfile)
                 .join(Table, Column.table_id == Table.table_id)
                 .outerjoin(StatisticalProfile, Column.column_id == StatisticalProfile.column_id)
-                .where(Table.source_id == source_id, Table.table_name == table_name, Column.column_name == column_name)
+                .where(Table.source_id == source_id, Table.layer == "typed", Table.table_name == table_name, Column.column_name == column_name)
                 .limit(1)
             )
             row = session.execute(stmt).first()

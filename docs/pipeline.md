@@ -149,8 +149,8 @@ The pipeline writes to the output directory (default: `./pipeline_output`):
 ## Checking Pipeline Status
 
 ```bash
-# Show phase execution history, table counts, timing
-dataraum status ./pipeline_output
+# Interactive dashboard with phase history, tables, entropy
+dataraum tui ./pipeline_output
 ```
 
 ## Rerunning Phases

@@ -286,7 +286,7 @@ Check [Linear](https://linear.app/dataraum) for active issues, plans, and projec
 - **Quarantine pattern** — Failed type casts go to quarantine tables for review, not pipeline failure.
 - **Pre-computed context** — AI receives a pre-assembled `ContextDocument` with all metadata already computed and interpreted through the selected ontology. No runtime discovery.
 - **Ontologies as configuration** — Domain ontologies (financial_reporting, marketing, etc.) are YAML configs that map column patterns to business terms, define computable metrics, and guide semantic interpretation.
-- **Minimal AI tools** — 6 core MCP tools + 3 source management tools. See `src/dataraum/mcp/server.py`.
+- **Minimal AI tools** — 4 core MCP tools + 2 source management tools (6 total). See `src/dataraum/mcp/server.py`.
 - **Free-threading** — Python 3.14t with GIL disabled for true CPU parallelism in pipeline phases.
 
 ### Module Structure
@@ -303,7 +303,7 @@ src/dataraum/
 ├── llm/            # LLM providers and prompts
 ├── core/           # Config, connections, utilities
 ├── cli/            # Typer CLI + Textual TUI
-└── mcp/            # MCP server (9 tools)
+└── mcp/            # MCP server (6 tools)
 ```
 
 SQLAlchemy DB models are co-located with business logic in `db_models.py` files within each module.
@@ -324,10 +324,16 @@ Source (CSV/Parquet) → [staging] VARCHAR → raw_{table}
 # Run pipeline
 dataraum run /path/to/data --output ./output
 
-# Check status / entropy / contracts
-dataraum status ./output
-dataraum entropy ./output
-dataraum contracts ./output
+# Interactive dashboard
+dataraum tui ./output
+
+# Source management
+dataraum sources discover /path/to/data
+dataraum sources add mydata /path/to/file.csv
+
+# Developer tools
+dataraum dev phases
+dataraum dev inspect ./output
 
 # Start MCP server
 dataraum-mcp

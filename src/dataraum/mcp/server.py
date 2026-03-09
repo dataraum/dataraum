@@ -24,6 +24,7 @@ from dataraum.mcp.formatters import (
     format_contract_evaluation,
     format_entropy_summary,
     format_pipeline_result,
+    format_quality_report,
     format_query_result,
 )
 from dataraum.pipeline.events import EventCallback, EventType, PipelineEvent
@@ -132,36 +133,37 @@ def create_server(output_dir: Path | None = None) -> Server:
                 },
             ),
             Tool(
-                name="get_entropy",
+                name="get_quality",
                 description=(
-                    "Get entropy analysis showing data uncertainty by dimension. "
-                    "Helps understand what assumptions the system makes and what needs fixing."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "table_name": {
-                            "type": "string",
-                            "description": "Optional: filter to a specific table",
-                        },
-                    },
-                },
-            ),
-            Tool(
-                name="evaluate_contract",
-                description=(
-                    "Evaluate data quality against a contract. "
-                    "Returns compliance status, dimension scores, and violations."
+                    "Get a unified data quality assessment: entropy scores, contract compliance, "
+                    "and resolution actions. Returns all three by default, or specific sections "
+                    "via the 'include' parameter."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "contract_name": {
                             "type": "string",
-                            "description": "Contract to evaluate (e.g., 'aggregation_safe', 'executive_dashboard')",
+                            "description": "Contract to evaluate (e.g., 'aggregation_safe', 'executive_dashboard'). Auto-detects if omitted.",
+                        },
+                        "table_name": {
+                            "type": "string",
+                            "description": "Optional: filter to a specific table",
+                        },
+                        "priority": {
+                            "type": "string",
+                            "enum": ["high", "medium", "low"],
+                            "description": "Optional: filter actions to a specific priority level",
+                        },
+                        "include": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["entropy", "contract", "actions"],
+                            },
+                            "description": "Sections to include. Default: all three.",
                         },
                     },
-                    "required": ["contract_name"],
                 },
             ),
             Tool(
@@ -183,27 +185,6 @@ def create_server(output_dir: Path | None = None) -> Server:
                         },
                     },
                     "required": ["question"],
-                },
-            ),
-            Tool(
-                name="get_actions",
-                description=(
-                    "Get prioritized resolution actions to improve data quality. "
-                    "Returns actionable steps with priority, effort, affected columns, and expected impact."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "priority": {
-                            "type": "string",
-                            "enum": ["high", "medium", "low"],
-                            "description": "Optional: filter to a specific priority level",
-                        },
-                        "table_name": {
-                            "type": "string",
-                            "description": "Optional: filter to actions affecting a specific table",
-                        },
-                    },
                 },
             ),
             # --- Source management tools ---
@@ -266,24 +247,6 @@ def create_server(output_dir: Path | None = None) -> Server:
                     },
                 },
             ),
-            Tool(
-                name="remove_source",
-                description=("Archive a data source. Does not delete analysis history by default."),
-                inputSchema={
-                    "type": "object",
-                    "required": ["name"],
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "Source name to remove.",
-                        },
-                        "purge_results": {
-                            "type": "boolean",
-                            "description": "Also delete stored analysis results. Default: false.",
-                        },
-                    },
-                },
-            ),
         ]
 
     @server.call_tool()  # type: ignore[no-untyped-call, untyped-decorator]
@@ -338,30 +301,24 @@ def create_server(output_dir: Path | None = None) -> Server:
                 )
         elif name == "get_context":
             result = _get_context(output_dir)
-        elif name == "get_entropy":
-            table_name = arguments.get("table_name")
-            result = _get_entropy(output_dir, table_name)
-        elif name == "evaluate_contract":
-            contract_name = arguments["contract_name"]
-            result = _evaluate_contract(output_dir, contract_name)
+        elif name == "get_quality":
+            result = _get_quality(
+                output_dir,
+                contract_name=arguments.get("contract_name"),
+                table_name=arguments.get("table_name"),
+                priority=arguments.get("priority"),
+                include=arguments.get("include"),
+            )
         elif name == "query":
             question = arguments["question"]
             contract_name = arguments.get("contract_name")
             result = _query(output_dir, question, contract_name)
-        elif name == "get_actions":
-            priority = arguments.get("priority")
-            table_name = arguments.get("table_name")
-            result = _get_actions(output_dir, priority, table_name)
         elif name == "discover_sources":
             scan_path = arguments.get("path", ".")
             recursive = arguments.get("recursive", True)
             result = _discover_sources(output_dir, scan_path, recursive)
         elif name == "add_source":
             result = _add_source(output_dir, arguments)
-        elif name == "remove_source":
-            source_name = arguments["name"]
-            purge = arguments.get("purge_results", False)
-            result = _remove_source(output_dir, source_name, purge)
         else:
             result = f"Unknown tool: {name}"
 
@@ -614,121 +571,23 @@ def _get_context(output_dir: Path) -> str:
         manager.close()
 
 
-def _get_entropy(output_dir: Path, table_name: str | None = None) -> str:
-    """Get entropy summary."""
+def _get_quality(
+    output_dir: Path,
+    contract_name: str | None = None,
+    table_name: str | None = None,
+    priority: str | None = None,
+    include: list[str] | None = None,
+) -> str:
+    """Get unified data quality report: entropy + contract + actions.
+
+    Opens a single connection and assembles all requested sections.
+    """
     from sqlalchemy import select
 
     from dataraum.core.connections import get_manager_for_directory
-    from dataraum.entropy.db_models import (
-        EntropySnapshotRecord,
-    )
-    from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
-    from dataraum.storage import Source
-
-    try:
-        manager = get_manager_for_directory(output_dir)
-    except FileNotFoundError:
-        return _NO_DATA_MSG.format(path=output_dir)
-
-    try:
-        with manager.session_scope() as session:
-            sources_result = session.execute(select(Source))
-            sources = sources_result.scalars().all()
-
-            if not sources:
-                return "Error: No sources found"
-
-            source = sources[0]
-
-            # Get snapshot
-            snapshot_result = session.execute(
-                select(EntropySnapshotRecord)
-                .where(EntropySnapshotRecord.source_id == source.source_id)
-                .order_by(EntropySnapshotRecord.snapshot_at.desc())
-                .limit(1)
-            )
-            snapshot = snapshot_result.scalar_one_or_none()
-
-            if not snapshot:
-                return "Error: No entropy data. Run entropy phase first."
-
-            # Get interpretations (column-level only; table-level have column_id=NULL)
-            interp_query = select(EntropyInterpretationRecord).where(
-                EntropyInterpretationRecord.source_id == source.source_id,
-                EntropyInterpretationRecord.column_id.isnot(None),
-            )
-
-            if table_name:
-                interp_query = interp_query.where(
-                    EntropyInterpretationRecord.table_name == table_name
-                )
-
-            interp_query = interp_query.order_by(
-                EntropyInterpretationRecord.table_name,
-                EntropyInterpretationRecord.column_name,
-            )
-            interp_result = session.execute(interp_query)
-            interpretations = interp_result.scalars().all()
-
-            # Build dimension breakdown from network + direct signals
-            dimension_scores: dict[str, float] | None = None
-            try:
-                from dataraum.entropy.views.network_context import (
-                    build_for_network,
-                    format_network_context,
-                )
-                from dataraum.entropy.views.query_context import network_to_column_summaries
-                from dataraum.storage import Table
-
-                tables_result = session.execute(
-                    select(Table).where(
-                        Table.source_id == source.source_id,
-                        Table.layer == "typed",
-                    )
-                )
-                tables = tables_result.scalars().all()
-                table_ids = [t.table_id for t in tables]
-
-                network_context = None
-                if table_ids:
-                    network_context = build_for_network(session, table_ids)
-            except Exception:
-                network_context = None
-                _log.debug("Network context unavailable", exc_info=True)
-
-            # Compute per-dimension averages across columns
-            if network_context and network_context.total_columns > 0:
-                col_summaries = network_to_column_summaries(network_context)
-                dim_totals: dict[str, list[float]] = {}
-                for summary in col_summaries.values():
-                    for dim_path, score in summary.dimension_scores.items():
-                        dim_totals.setdefault(dim_path, []).append(score)
-                dimension_scores = {
-                    dim: sum(scores) / len(scores) for dim, scores in dim_totals.items()
-                }
-
-            result = format_entropy_summary(
-                source.name, snapshot, interpretations, table_name, dimension_scores
-            )
-
-            # Append network context (inference + evidence + direct signals)
-            if network_context and network_context.total_columns > 0:
-                result += "\n\n" + format_network_context(network_context)
-
-            return result
-    finally:
-        manager.close()
-
-
-def _evaluate_contract(output_dir: Path, contract_name: str) -> str:
-    """Evaluate a contract."""
-    from sqlalchemy import select
-
-    from dataraum.core.connections import get_manager_for_directory
-    from dataraum.entropy.contracts import evaluate_contract, get_contract
-    from dataraum.entropy.views.network_context import build_for_network
-    from dataraum.entropy.views.query_context import network_to_column_summaries
     from dataraum.storage import Source, Table
+
+    sections_to_include = set(include or ["entropy", "contract", "actions"])
 
     try:
         manager = get_manager_for_directory(output_dir)
@@ -752,24 +611,161 @@ def _evaluate_contract(output_dir: Path, contract_name: str) -> str:
                 )
             )
             tables = tables_result.scalars().all()
-
-            if not tables:
-                return "Error: No tables found"
-
             table_ids = [t.table_id for t in tables]
 
-            # Build column summaries via network
-            network_ctx = build_for_network(session, table_ids)
-            column_summaries = network_to_column_summaries(network_ctx)
+            # Build shared network context (used by entropy + contract + actions)
+            network_context = None
+            column_summaries = None
+            if table_ids:
+                try:
+                    from dataraum.entropy.views.network_context import build_for_network
+                    from dataraum.entropy.views.query_context import (
+                        network_to_column_summaries,
+                    )
 
-            profile = get_contract(contract_name)
-            if profile is None:
-                return f"Error: Contract not found: {contract_name}"
+                    network_context = build_for_network(session, table_ids)
+                    if network_context and network_context.total_columns > 0:
+                        column_summaries = network_to_column_summaries(network_context)
+                except Exception:
+                    _log.debug("Network context unavailable", exc_info=True)
 
-            evaluation = evaluate_contract(column_summaries, contract_name)
-            return format_contract_evaluation(evaluation, profile)
+            sections: dict[str, str] = {}
+
+            # --- Entropy section ---
+            if "entropy" in sections_to_include:
+                sections["entropy"] = _build_entropy_section(
+                    session, source, network_context, column_summaries, table_name
+                )
+
+            # --- Contract section ---
+            if "contract" in sections_to_include:
+                sections["contract"] = _build_contract_section(
+                    column_summaries, contract_name
+                )
+
+            # --- Actions section ---
+            if "actions" in sections_to_include:
+                sections["actions"] = _build_actions_section(
+                    session, source, priority, table_name
+                )
+
+            return format_quality_report(sections)
     finally:
         manager.close()
+
+
+def _build_entropy_section(
+    session: Any,
+    source: Any,
+    network_context: Any,
+    column_summaries: Any,
+    table_name: str | None,
+) -> str:
+    """Build entropy section for quality report."""
+    from sqlalchemy import select
+
+    from dataraum.entropy.db_models import EntropySnapshotRecord
+    from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
+
+    snapshot_result = session.execute(
+        select(EntropySnapshotRecord)
+        .where(EntropySnapshotRecord.source_id == source.source_id)
+        .order_by(EntropySnapshotRecord.snapshot_at.desc())
+        .limit(1)
+    )
+    snapshot = snapshot_result.scalar_one_or_none()
+
+    if not snapshot:
+        return "## Entropy\nNo entropy data available. Run entropy phase first."
+
+    interp_query = select(EntropyInterpretationRecord).where(
+        EntropyInterpretationRecord.source_id == source.source_id,
+        EntropyInterpretationRecord.column_id.isnot(None),
+    )
+    if table_name:
+        interp_query = interp_query.where(
+            EntropyInterpretationRecord.table_name == table_name
+        )
+    interp_query = interp_query.order_by(
+        EntropyInterpretationRecord.table_name,
+        EntropyInterpretationRecord.column_name,
+    )
+    interpretations = session.execute(interp_query).scalars().all()
+
+    # Compute per-dimension averages
+    dimension_scores: dict[str, float] | None = None
+    if column_summaries:
+        dim_totals: dict[str, list[float]] = {}
+        for summary in column_summaries.values():
+            for dim_path, score in summary.dimension_scores.items():
+                dim_totals.setdefault(dim_path, []).append(score)
+        dimension_scores = {
+            dim: sum(scores) / len(scores) for dim, scores in dim_totals.items()
+        }
+
+    result = format_entropy_summary(
+        source.name, snapshot, interpretations, table_name, dimension_scores
+    )
+
+    if network_context and network_context.total_columns > 0:
+        from dataraum.entropy.views.network_context import format_network_context
+
+        result += "\n\n" + format_network_context(network_context)
+
+    return result
+
+
+def _build_contract_section(
+    column_summaries: Any,
+    contract_name: str | None,
+) -> str:
+    """Build contract section for quality report."""
+    from dataraum.entropy.contracts import evaluate_contract, get_contract, list_contracts
+
+    if not column_summaries:
+        return "## Contract Evaluation\nNo data available for contract evaluation."
+
+    # Auto-detect contract if not specified
+    resolved_name = contract_name
+    if not resolved_name:
+        contracts = list_contracts()
+        resolved_name = contracts[0]["name"] if contracts else "aggregation_safe"
+
+    profile = get_contract(resolved_name)
+    if profile is None:
+        return f"## Contract Evaluation\nContract not found: {resolved_name}"
+
+    evaluation = evaluate_contract(column_summaries, resolved_name)
+    return format_contract_evaluation(evaluation, profile)
+
+
+def _build_actions_section(
+    session: Any,
+    source: Any,
+    priority: str | None,
+    table_name: str | None,
+) -> str:
+    """Build actions section for quality report."""
+    from dataraum.entropy.actions import load_actions
+
+    actions = load_actions(session, source)
+
+    if not actions:
+        return "## Resolution Actions\nNo actions available."
+
+    if priority:
+        actions = [a for a in actions if a["priority"] == priority]
+    if table_name:
+        actions = [
+            a
+            for a in actions
+            if any(
+                col == table_name or col.startswith(f"{table_name}.")
+                for col in a["affected_columns"]
+            )
+        ]
+
+    return format_actions_report(source.name, actions, priority, table_name)
 
 
 def _query(
@@ -812,58 +808,6 @@ def _query(
                 return f"Error: {result.error}"
 
             return format_query_result(result.value)
-    finally:
-        manager.close()
-
-
-def _get_actions(
-    output_dir: Path,
-    priority: str | None = None,
-    table_name: str | None = None,
-) -> str:
-    """Get prioritized resolution actions."""
-    from sqlalchemy import select
-
-    from dataraum.core.connections import get_manager_for_directory
-    from dataraum.entropy.actions import load_actions
-    from dataraum.storage import Source
-
-    try:
-        manager = get_manager_for_directory(output_dir)
-    except FileNotFoundError:
-        return _NO_DATA_MSG.format(path=output_dir)
-
-    try:
-        with manager.session_scope() as session:
-            # Get source
-            sources_result = session.execute(select(Source))
-            sources = sources_result.scalars().all()
-
-            if not sources:
-                return "Error: No sources found"
-
-            source = sources[0]
-
-            # Load all actions
-            actions = load_actions(session, source)
-
-            if not actions:
-                return "Error: No tables found. Run pipeline first."
-
-            # Apply filters
-            if priority:
-                actions = [a for a in actions if a["priority"] == priority]
-            if table_name:
-                actions = [
-                    a
-                    for a in actions
-                    if any(
-                        col == table_name or col.startswith(f"{table_name}.")
-                        for col in a["affected_columns"]
-                    )
-                ]
-
-            return format_actions_report(source.name, actions, priority, table_name)
     finally:
         manager.close()
 
@@ -1008,43 +952,6 @@ def _add_source(output_dir: Path, arguments: dict[str, Any]) -> str:
                 output["credential_instructions"] = info.credential_instructions
 
             return json.dumps(output, indent=2)
-    finally:
-        manager.close()
-
-
-def _remove_source(output_dir: Path, name: str, purge: bool) -> str:
-    """Archive or delete a source."""
-    import json
-
-    from dataraum.core.connections import get_manager_for_directory
-    from dataraum.core.credentials import CredentialChain
-    from dataraum.sources.manager import SourceManager
-
-    try:
-        manager = get_manager_for_directory(output_dir)
-    except FileNotFoundError:
-        return _NO_DATA_MSG.format(path=output_dir)
-
-    try:
-        credential_chain = CredentialChain()
-
-        with manager.session_scope() as session:
-            src_mgr = SourceManager(session=session, credential_chain=credential_chain)
-            result = src_mgr.remove_source(name, purge=purge)
-
-            if not result.success:
-                return f"Error: {result.error}"
-
-            session.commit()
-
-            return json.dumps(
-                {
-                    "removed": name,
-                    "analysis_preserved": not purge,
-                    "message": result.unwrap(),
-                },
-                indent=2,
-            )
     finally:
         manager.close()
 

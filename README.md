@@ -34,19 +34,16 @@ Then in Claude Desktop, point the `analyze` tool at your data:
 
 > Analyze the CSV files in /path/to/my/data
 
-The server runs a 20-phase analysis pipeline and makes 9 tools available:
+The server runs a 20-phase analysis pipeline and makes 6 tools available:
 
 | Tool | Description |
 |------|-------------|
 | `analyze` | Run the pipeline on CSV/Parquet data |
 | `get_context` | Get the full metadata context document |
-| `get_entropy` | Get entropy analysis (data uncertainty by dimension) |
-| `evaluate_contract` | Evaluate data quality against a contract |
+| `get_quality` | Unified quality report (entropy, contracts, resolution actions) |
 | `query` | Natural language query against the data |
-| `get_actions` | Get prioritized actions to improve data quality |
 | `discover_sources` | Scan workspace for data files |
 | `add_source` | Register a new data source (file or database) |
-| `remove_source` | Archive a data source |
 
 ## Quick Start — CLI
 
@@ -54,10 +51,11 @@ The server runs a 20-phase analysis pipeline and makes 9 tools available:
 # Run analysis pipeline
 dataraum run /path/to/data --output ./output
 
-# Check results
-dataraum status ./output
-dataraum entropy ./output
-dataraum contracts ./output
+# Interactive dashboard
+dataraum tui ./output
+
+# Natural language query
+dataraum query ./output "What is the total revenue?"
 ```
 
 ## Quick Start — Python
@@ -66,9 +64,10 @@ dataraum contracts ./output
 from dataraum import Context
 
 ctx = Context("./pipeline_output")
-ctx.tables                    # List of tables
-ctx.entropy.summary()         # DataFrame with entropy scores
-ctx.contracts.evaluate("aggregation_safe")
+ctx.tables                                   # List of tables
+ctx.entropy.summary()                        # Entropy scores and readiness
+ctx.contracts.evaluate("aggregation_safe")   # Contract compliance
+ctx.actions()                                # Resolution actions
 result = ctx.query("What's the total revenue?")
 ```
 

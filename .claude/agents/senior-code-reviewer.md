@@ -101,7 +101,7 @@ Be specific. Quote code. Show the problematic line and what it should look like.
 - Database access uses context managers (`session_scope()`, `duckdb_cursor()`)
 - Python 3.14t with free-threading — the GIL is OFF, treat all shared mutable state as unsafe
 - Pipeline has 19 active phases managed by a scheduler — state transitions matter
-- MCP server exposes 9 tools (6 core + 3 source management)
+- MCP server exposes 6 tools (4 core + 2 source management)
 - VARCHAR-first staging pattern — type inference happens in profiling, not load
 - Tests use pytest-testmon; never suggest running the full suite without testmon
 

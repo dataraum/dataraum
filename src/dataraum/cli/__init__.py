@@ -1,11 +1,13 @@
 """CLI for dataraum pipeline.
 
-Provides commands for running, inspecting, and monitoring the pipeline.
+Provides commands for running, exploring, and managing data sources.
 
 Usage:
     dataraum run /path/to/data
-    dataraum status ./pipeline_output
-    dataraum entropy ./pipeline_output --tui
+    dataraum tui ./pipeline_output
+    dataraum query "What was total revenue?"
+    dataraum sources discover /path/to/data
+    dataraum dev phases
 
 Environment:
     Loads .env file from current directory if present.

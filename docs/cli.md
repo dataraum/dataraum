@@ -100,28 +100,58 @@ The `--rerun` flag handles the full re-run cycle: it snapshots entropy scores be
 
 **Stale detection:** Even without `--rerun`, the semantic phase automatically detects when fixes are newer than its last run and re-executes instead of skipping.
 
-### `status` - Show Pipeline Status
+### `tui` - Interactive Dashboard
 
-Display information about a completed or in-progress pipeline run.
+Open the Textual TUI for interactive exploration of pipeline results. Provides five screens: Home (overview), Entropy (dimension drill-down), Contracts (compliance), Actions (resolution actions), and Query (natural language).
 
 ```bash
-dataraum status [OUTPUT_DIR]
+dataraum tui [OUTPUT_DIR]
 ```
 
 **Arguments:**
 - `OUTPUT_DIR` - Output directory containing pipeline databases (default: `./pipeline_output`)
 
-**Output includes:**
-- Source information (name, ID)
-- Table counts by layer (raw, typed, quarantine)
-- Total row and column counts
-- Phase execution history with status, duration, and timestamps
+### `sources` - Manage Data Sources
 
-**Example:**
+Subcommand group for discovering and registering data sources.
 
 ```bash
-dataraum status ./pipeline_output
+dataraum sources list [-o OUTPUT_DIR]
+dataraum sources add NAME PATH [-o OUTPUT_DIR]
+dataraum sources discover [PATH] [--no-recursive] [-o OUTPUT_DIR]
+dataraum sources remove NAME [--purge] [-o OUTPUT_DIR]
 ```
+
+**Examples:**
+
+```bash
+# Scan for data files
+dataraum sources discover /path/to/data
+
+# Register a CSV file
+dataraum sources add sales /path/to/sales.csv
+
+# List registered sources
+dataraum sources list
+
+# Remove a source (keep analysis results)
+dataraum sources remove old_data
+```
+
+### `dev` - Developer Utilities
+
+Subcommand group for pipeline debugging and maintenance.
+
+```bash
+dataraum dev phases [--reset PHASE] [-o OUTPUT_DIR]
+dataraum dev inspect [OUTPUT_DIR] [--vertical VERTICAL]
+dataraum dev reset [OUTPUT_DIR] [--force]
+```
+
+- `dev phases` — List all pipeline phases and their dependencies
+- `dev phases --reset PHASE` — Reset a specific phase (delete its data and checkpoint)
+- `dev inspect` — Inspect graph definitions, filter coverage, and execution context
+- `dev reset` — Delete all database files from an output directory
 
 ### `query` - Natural Language Data Query
 

@@ -351,6 +351,27 @@ def format_actions_report(
     return "\n".join(lines)
 
 
+def format_quality_report(sections: dict[str, str]) -> str:
+    """Combine quality sections into a unified report.
+
+    Args:
+        sections: Dict mapping section name ('entropy', 'contract', 'actions')
+            to their pre-formatted markdown content.
+    """
+    lines = ["# Data Quality Report", ""]
+
+    for name in ("entropy", "contract", "actions"):
+        content = sections.get(name)
+        if content:
+            lines.append(content)
+            lines.append("")
+
+    if len(sections) == 0:
+        lines.append("No quality data available. Run the pipeline first.")
+
+    return "\n".join(lines)
+
+
 def format_pipeline_result(result: RunResult) -> str:
     """Format pipeline run result for LLM consumption.
 
@@ -397,7 +418,7 @@ def format_pipeline_result(result: RunResult) -> str:
     lines.append("## Next Steps")
     if result.success:
         lines.append("- Use `get_context` for full schema and relationships")
-        lines.append("- Use `get_entropy` for data quality overview")
+        lines.append("- Use `get_quality` for entropy, contracts, and resolution actions")
         lines.append("- Use `query` to ask questions about the data")
     else:
         lines.append("- Check the failures above and fix the data issues")

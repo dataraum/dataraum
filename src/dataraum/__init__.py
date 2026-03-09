@@ -6,8 +6,11 @@ Example:
     from dataraum import Context
 
     ctx = Context("./pipeline_output")
-    ctx.tables
-    ctx.entropy.summary()
+    ctx.tables                                   # List tables
+    ctx.entropy.summary()                        # Entropy scores
+    ctx.contracts.evaluate("aggregation_safe")   # Contract compliance
+    ctx.actions()                                # Resolution actions
+    ctx.sources.list()                           # Registered sources
     result = ctx.query("What is the total revenue?")
 """
 

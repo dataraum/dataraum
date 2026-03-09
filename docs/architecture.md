@@ -12,10 +12,10 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           CONSUMERS                                         │
 │                                                                             │
-│   Claude Code ──── MCP Server (9 tools)                                      │
+│   Claude Code ──── MCP Server (6 tools)                                      │
 │   Claude Desktop ─┘                       ContextDocument (pre-assembled)   │
 │   Python ──────── Context API                                               │
-│   Terminal ────── CLI + TUI (3 commands)                                     │
+│   Terminal ────── CLI + TUI (4 commands + 2 subgroups)                       │
 └─────────────────────────────────────────────────────────────────────────────┘
                                        ↑
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -97,8 +97,8 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 
 | Layer | Technology | Purpose |
 |-------|------------|---------|
-| **AI Interface** | MCP Server | 9 tools for AI agents (Claude Code, Claude Desktop) |
-| **CLI** | Typer + Rich | 3 commands for terminal use |
+| **AI Interface** | MCP Server | 6 tools for AI agents (Claude Code, Claude Desktop) |
+| **CLI** | Typer + Rich | 4 commands + 2 subgroups for terminal use |
 | **TUI** | Textual | Interactive terminal dashboards |
 | **Python API** | `Context` class | Programmatic access for notebooks and scripts |
 | **Pipeline** | ThreadPoolExecutor | Parallel phase execution (free-threaded Python 3.14) |
@@ -122,7 +122,7 @@ AI doesn't discover metadata at runtime via tools. It receives a pre-assembled c
 
 ### Minimal Tool Surface
 
-9 MCP tools: 6 core (`analyze`, `get_context`, `get_entropy`, `evaluate_contract`, `query`, `get_actions`) + 3 source management (`discover_sources`, `add_source`, `remove_source`). Rich context upfront instead of many discovery tools.
+6 MCP tools: 4 core (`analyze`, `get_context`, `get_quality`, `query`) + 2 source management (`discover_sources`, `add_source`). `get_quality` returns a unified report combining entropy, contract evaluation, and resolution actions. Rich context upfront instead of many discovery tools.
 
 ### Entropy Over Binary Quality
 
@@ -181,13 +181,13 @@ src/dataraum/
 ├── llm/                   # LLM provider abstraction, prompt management
 ├── core/                  # Config, connections, utilities, models
 ├── cli/                   # Typer commands + Textual TUI
-│   ├── main.py            # CLI entry point (3 commands: run, status, query)
+│   ├── main.py            # CLI entry point (4 commands + 2 subgroups)
+│   ├── commands/          # run, tui, query, fix, sources (subgroup), dev (subgroup)
 │   ├── gate_handler.py    # Interactive CLI gate handler (Rich prompts)
-│   ├── app.py             # Textual application
-│   ├── screens/           # TUI screens (home with gate status)
-│   └── widgets/           # TUI widgets
+│   ├── tui/               # Textual application + screens + widgets
+│   └── ...
 └── mcp/                   # MCP server
-    ├── server.py          # 10 tool definitions
+    ├── server.py          # 6 tool definitions
     ├── gate_handler.py    # MCPGateHandler for AI agent gate resolution
     └── formatters.py      # LLM-optimized markdown output
 ```
@@ -230,7 +230,7 @@ At each gate (⊘), the pipeline checks detector scores against thresholds. Gate
 
 ## Interfaces
 
-### MCP Server (9 tools)
+### MCP Server (6 tools)
 
 Primary interface for AI agents. Tools return markdown formatted for LLM consumption.
 
@@ -238,21 +238,21 @@ Primary interface for AI agents. Tools return markdown formatted for LLM consump
 |------|---------|
 | `analyze` | Run pipeline on CSV/Parquet data |
 | `get_context` | Full metadata context document |
-| `get_entropy` | Entropy scores by dimension |
-| `evaluate_contract` | Contract compliance check |
+| `get_quality` | Unified quality report (entropy + contracts + actions) |
 | `query` | Natural language data queries |
-| `get_actions` | Prioritized quality fixes |
 | `discover_sources` | Scan workspace for data files |
 | `add_source` | Register a file or database source |
-| `remove_source` | Archive a data source |
 
-### CLI (3 commands)
+### CLI (4 commands + 2 subgroups)
 
 | Command | Purpose |
 |---------|---------|
 | `dataraum run` | Execute pipeline (with interactive gate handling) |
-| `dataraum status` | Pipeline run status |
+| `dataraum tui` | Interactive dashboard (5 screens) |
 | `dataraum query` | Natural language data query |
+| `dataraum fix` | Document domain knowledge interactively |
+| `dataraum sources {list,add,discover,remove}` | Manage data sources |
+| `dataraum dev {phases,inspect,reset}` | Developer utilities |
 
 ### Python API
 
@@ -264,7 +264,7 @@ with Context("./pipeline_output") as ctx:
     ctx.tables                              # Table names
     ctx.context_document()                  # Full context for LLM
 
-    # Entropy
+    # Entropy (returns wrapper with Jupyter _repr_html_)
     ctx.entropy.summary()                   # Overall entropy
     ctx.entropy.table("orders")             # Per-table
     ctx.entropy.details("orders", "amount") # Per-column with evidence
@@ -273,14 +273,21 @@ with Context("./pipeline_output") as ctx:
     ctx.contracts.list()                    # Available contracts
     ctx.contracts.evaluate("aggregation_safe")
 
+    # Actions
+    ctx.actions(contract="executive_dashboard")
+
     # Query
     result = ctx.query("total revenue by month")
     result.answer                           # Natural language answer
     result.sql                              # Generated SQL
     result.to_dataframe()                   # Pandas DataFrame
 
-    # Actions
-    ctx.actions(contract="executive_dashboard")
+    # Source management
+    ctx.sources.list()                      # Registered sources
+    ctx.sources.discover("/path/to/data")   # Scan for files
+
+    # Pipeline execution
+    ctx.run("/path/to/data.csv")            # Run pipeline from notebook
 ```
 
 ## LLM Integration

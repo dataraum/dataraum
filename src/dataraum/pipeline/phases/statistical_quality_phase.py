@@ -7,9 +7,7 @@ Runs advanced statistical quality checks on typed data:
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from types import ModuleType
-from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
 
@@ -20,9 +18,6 @@ from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
-
-if TYPE_CHECKING:
-    from dataraum.pipeline.fixes import FixInput, FixResult
 
 logger = get_logger(__name__)
 
@@ -52,10 +47,6 @@ class StatisticalQualityPhase(BasePhase):
         from dataraum.analysis.statistics import quality_db_models
 
         return [quality_db_models]
-
-    @property
-    def fix_handlers(self) -> dict[str, Callable[[FixInput, dict[str, Any]], FixResult]]:
-        return {"transform_exclude_outliers": _handle_exclude_outliers}
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if all numeric columns already have quality metrics."""
@@ -197,30 +188,3 @@ class StatisticalQualityPhase(BasePhase):
             warnings=warnings if warnings else None,
             summary=f"{total_columns_assessed} columns assessed, {benford_violations} Benford violations, {outlier_columns} outlier columns",
         )
-
-
-def _handle_exclude_outliers(fix_input: FixInput, config: dict[str, Any]) -> FixResult:
-    """Write exclude_outlier_columns to statistical_quality config.
-
-    Appends each affected column to the exclusion list so that on re-run
-    the phase skips outlier detection for those columns.
-    """
-    from dataraum.pipeline.fixes import ConfigPatch, FixResult
-
-    patches: list[ConfigPatch] = []
-    for col in fix_input.affected_columns:
-        patches.append(
-            ConfigPatch(
-                config_path="phases/statistical_quality.yaml",
-                operation="append",
-                key_path=["exclude_outlier_columns"],
-                value=col,
-                reason=fix_input.interpretation or f"Exclude outliers for {col}",
-            )
-        )
-
-    return FixResult(
-        config_patches=patches,
-        requires_rerun="statistical_quality",
-        summary=f"Excluded outlier columns: {', '.join(fix_input.affected_columns)}",
-    )

@@ -37,10 +37,6 @@ class TestQualityReviewPhase:
         ctx = MagicMock()
         assert phase.should_skip(ctx) is None
 
-    def test_fix_handlers_empty_by_default(self) -> None:
-        phase = QualityReviewPhase()
-        assert phase.fix_handlers == {}
-
     def test_registered_in_registry(self) -> None:
         from dataraum.pipeline.registry import get_registry
 

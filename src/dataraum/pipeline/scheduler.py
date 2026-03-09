@@ -507,21 +507,23 @@ class PipelineScheduler:
         """
         from dataraum.core.config import _get_config_root
         from dataraum.documentation.ledger import log_fix
+        from dataraum.pipeline.fix_registry import get_default_fix_registry
 
         config_root = _get_config_root()
+        fix_registry = get_default_fix_registry()
         phases_to_rerun: set[str] = set()
 
         for fix_input in fix_inputs:
-            handler, phase_name = self._find_fix_handler(fix_input.action_name)
-            if handler is None:
+            entry = fix_registry.find(fix_input.action_name)
+            if entry is None:
                 logger.warning(
                     "fix_handler_not_found",
                     action=fix_input.action_name,
                 )
                 continue
 
-            config = self._phase_configs.get(phase_name, {})
-            fix_result: FixResult = handler(fix_input, config)
+            config = self._phase_configs.get(entry.phase_name, {})
+            fix_result: FixResult = entry.handler(fix_input, config)
 
             for patch in fix_result.config_patches:
                 apply_config_patch(config_root, patch)
@@ -551,7 +553,7 @@ class PipelineScheduler:
             logger.info(
                 "fix_applied",
                 action=fix_input.action_name,
-                phase=phase_name,
+                phase=entry.phase_name,
                 patches=len(fix_result.config_patches),
                 rerun=fix_result.requires_rerun,
                 summary=fix_result.summary,
@@ -581,55 +583,40 @@ class PipelineScheduler:
             logger.error("fix_cleanup_failed", phases=list(phases_to_rerun))
             raise
 
-    def _find_fix_handler(
-        self, action_name: str
-    ) -> tuple[Callable[[FixInput, dict[str, Any]], FixResult] | None, str]:
-        """Find the fix handler for an action by scanning phase fix_handlers.
-
-        Returns:
-            Tuple of (handler_function, phase_name) or (None, "") if not found.
-        """
-        for phase_name, phase in self.phases.items():
-            if action_name in phase.fix_handlers:
-                return phase.fix_handlers[action_name], phase_name
-        return None, ""
-
+    @staticmethod
     def _gather_fixable_actions(
-        self, issues: list[ExitCheckIssue]
+        issues: list[ExitCheckIssue],
     ) -> dict[str, list[dict[str, str]]]:
         """Gather fixable actions for EXIT_CHECK event display.
 
-        Consults the detector registry for which actions exist and resolves
-        the owning phase from phase.fix_handlers (single source of truth).
+        Consults the detector registry and fix registry to find which
+        actions are available for each violating dimension.
 
         Returns:
             dim_path -> [{"action_name": str, "phase_name": str}]
         """
         from dataraum.entropy.detectors.base import get_default_registry
+        from dataraum.pipeline.fix_registry import get_default_fix_registry
 
-        registry = get_default_registry()
-
-        # Build action_name -> phase_name from phase.fix_handlers
-        handler_phases = {
-            action: pname
-            for pname, phase in self.phases.items()
-            for action in phase.fix_handlers
-        }
+        detector_registry = get_default_registry()
+        fix_registry = get_default_fix_registry()
 
         # Build dim_path -> detector lookup for matching issues
         detector_by_path = {
-            d.dimension_path: d for d in registry.get_all_detectors()
+            d.dimension_path: d for d in detector_registry.get_all_detectors()
         }
 
         result: dict[str, list[dict[str, str]]] = {}
         for issue in issues:
             detector = detector_by_path.get(issue.dimension_path)
             if detector:
-                actions = [
-                    {"action_name": str(action), "phase_name": handler_phases[action]}
-                    for action in detector.fixable_actions
-                    if action in handler_phases
-                ]
+                actions = []
+                for action in detector.fixable_actions:
+                    entry = fix_registry.find(str(action))
+                    if entry is not None:
+                        actions.append(
+                            {"action_name": str(action), "phase_name": entry.phase_name}
+                        )
                 if actions:
                     result[issue.dimension_path] = actions
 

@@ -17,7 +17,6 @@ if TYPE_CHECKING:
 
     from dataraum.core.connections import ConnectionManager
     from dataraum.entropy.dimensions import AnalysisKey
-    from dataraum.pipeline.fixes import FixInput, FixResult
 
 
 class PhaseStatus(_StrValueMixin):
@@ -171,11 +170,6 @@ class Phase(Protocol):
     @property
     def is_quality_gate(self) -> bool:
         """Whether this phase is a quality gate for entropy assessment."""
-        ...
-
-    @property
-    def fix_handlers(self) -> dict[str, Callable[[FixInput, dict[str, Any]], FixResult]]:
-        """Map action_name to handler function for config fixes."""
         ...
 
     def should_skip(self, ctx: PhaseContext) -> str | None:

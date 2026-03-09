@@ -8,16 +8,11 @@ from __future__ import annotations
 import time
 import traceback
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from types import ModuleType
-from typing import TYPE_CHECKING, Any
 
 from dataraum.core.logging import get_logger
 from dataraum.entropy.dimensions import AnalysisKey
 from dataraum.pipeline.base import PhaseContext, PhaseResult
-
-if TYPE_CHECKING:
-    from dataraum.pipeline.fixes import FixInput, FixResult
 
 logger = get_logger(__name__)
 
@@ -75,19 +70,6 @@ class BasePhase(ABC):
         Lazy imports inside the property avoid circular imports at decoration time.
         """
         return []
-
-    @property
-    def fix_handlers(self) -> dict[str, Callable[[FixInput, dict[str, Any]], FixResult]]:
-        """Map action_name to a handler function that applies the fix.
-
-        Each handler receives a FixInput (structured user decision) and the
-        current phase config dict, then returns a FixResult with config patches.
-        The handler is a config writer — it applies the user's decision to YAML,
-        it does not make decisions itself.
-
-        Default: empty (no fix handlers). Override in subclasses to declare handlers.
-        """
-        return {}
 
     def run(self, ctx: PhaseContext) -> PhaseResult:
         """Execute the phase.

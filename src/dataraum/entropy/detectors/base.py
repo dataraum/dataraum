@@ -186,8 +186,8 @@ class EntropyDetector(ABC):
         """Action names that have config-level fix handlers.
 
         Actions not listed here are document-only (domain knowledge
-        capture via the fix ledger). The phase that owns each handler
-        is resolved from phase.fix_handlers — not duplicated here.
+        capture via the fix ledger). Handlers are registered in the
+        standalone FixRegistry — see pipeline.fix_registry.
 
         Default: empty (all actions are document-only).
         Override in subclasses to declare fixable actions.

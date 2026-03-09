@@ -19,6 +19,7 @@ from dataraum.entropy.gate import (
 from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.db_models import PhaseLog, PipelineRun
 from dataraum.pipeline.events import EventType
+from dataraum.pipeline.fix_registry import FixHandler, FixRegistry
 from dataraum.pipeline.fixes import ConfigPatch, FixInput, FixResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.scheduler import (
@@ -43,7 +44,6 @@ class MockPhase(BasePhase):
         skip_reason: str | None = None,
         produces_analyses_keys: set[AnalysisKey] | None = None,
         outputs: dict | None = None,
-        fix_handlers_map: dict | None = None,
         is_quality_gate: bool = False,
     ):
         self._name = name
@@ -52,7 +52,6 @@ class MockPhase(BasePhase):
         self._skip_reason = skip_reason
         self._produces_analyses = produces_analyses_keys or set()
         self._outputs = outputs
-        self._fix_handlers = fix_handlers_map or {}
         self._is_quality_gate = is_quality_gate
         self.run_count = 0
 
@@ -86,10 +85,6 @@ class MockPhase(BasePhase):
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         return self._skip_reason
-
-    @property
-    def fix_handlers(self):
-        return self._fix_handlers
 
 
 def _ensure_source(session: Session, source_id: str = "src-1") -> None:
@@ -954,6 +949,15 @@ class TestMeasureAtGate:
         assert "semantic.dimensional.cross_column_patterns" in gate_result.scores
 
 
+def _make_test_fix_registry(
+    action: str, handler, phase_name: str
+) -> FixRegistry:
+    """Create a FixRegistry with a single test handler registered."""
+    registry = FixRegistry()
+    registry.register(FixHandler(action=action, handler=handler, phase_name=phase_name))
+    return registry
+
+
 class TestFixResolution:
     """Tests for ResolutionAction.FIX — the inline fix flow."""
 
@@ -988,7 +992,6 @@ class TestFixResolution:
         alpha = MockPhase(
             "alpha",
             produces_analyses_keys={AnalysisKey.TYPING},
-            fix_handlers_map={"override_type": handler},
             is_quality_gate=True,
         )
         beta = MockPhase("beta", dependencies=["alpha"])
@@ -1018,6 +1021,7 @@ class TestFixResolution:
                 return GateResult(scores={"structural.types.type_fidelity": 0.8})
             return GateResult(scores={"structural.types.type_fidelity": 0.1})
 
+        test_registry = _make_test_fix_registry("override_type", handler, "alpha")
         with (
             patch(
                 "dataraum.pipeline.scheduler.measure_at_gate",
@@ -1025,6 +1029,10 @@ class TestFixResolution:
             ),
             patch("dataraum.pipeline.scheduler.cleanup_phase"),
             patch("dataraum.pipeline.scheduler.apply_config_patch") as mock_apply,
+            patch(
+                "dataraum.pipeline.fix_registry.get_default_fix_registry",
+                return_value=test_registry,
+            ),
         ):
             events, result = _drive(
                 scheduler.run(),
@@ -1103,7 +1111,6 @@ class TestFixResolution:
         alpha = MockPhase(
             "alpha",
             produces_analyses_keys={AnalysisKey.TYPING},
-            fix_handlers_map={"override_type": handler},
             is_quality_gate=True,
         )
         beta = MockPhase("beta", dependencies=["alpha"])
@@ -1128,6 +1135,7 @@ class TestFixResolution:
             return GateResult(scores={"structural.types.type_fidelity": 0.1})
 
         fix_input = FixInput(action_name="override_type")
+        test_registry = _make_test_fix_registry("override_type", handler, "alpha")
 
         with (
             patch(
@@ -1136,6 +1144,10 @@ class TestFixResolution:
             ),
             patch("dataraum.pipeline.scheduler.cleanup_phase"),
             patch("dataraum.pipeline.scheduler.apply_config_patch"),
+            patch(
+                "dataraum.pipeline.fix_registry.get_default_fix_registry",
+                return_value=test_registry,
+            ),
         ):
             events, result = _drive(
                 scheduler.run(),
@@ -1164,7 +1176,6 @@ class TestFixResolution:
         alpha = MockPhase(
             "alpha",
             produces_analyses_keys={AnalysisKey.TYPING},
-            fix_handlers_map={"override_type": handler},
             is_quality_gate=True,
         )
 
@@ -1182,6 +1193,7 @@ class TestFixResolution:
             return GateResult(scores={"structural.types.type_fidelity": 0.8})
 
         fix_input = FixInput(action_name="override_type")
+        test_registry = _make_test_fix_registry("override_type", handler, "alpha")
 
         with (
             patch(
@@ -1190,6 +1202,10 @@ class TestFixResolution:
             ),
             patch("dataraum.pipeline.scheduler.cleanup_phase"),
             patch("dataraum.pipeline.scheduler.apply_config_patch"),
+            patch(
+                "dataraum.pipeline.fix_registry.get_default_fix_registry",
+                return_value=test_registry,
+            ),
         ):
             events, result = _drive(
                 scheduler.run(),
@@ -1234,7 +1250,6 @@ class TestFixScoresCleared:
         alpha = MockPhase(
             "alpha",
             produces_analyses_keys={AnalysisKey.TYPING},
-            fix_handlers_map={"override_type": handler},
             is_quality_gate=True,
         )
 
@@ -1259,6 +1274,7 @@ class TestFixScoresCleared:
             return GateResult(scores={"value.nulls.null_ratio": 0.05})
 
         fix_input = FixInput(action_name="override_type")
+        test_registry = _make_test_fix_registry("override_type", handler, "alpha")
         with (
             patch(
                 "dataraum.pipeline.scheduler.measure_at_gate",
@@ -1267,6 +1283,10 @@ class TestFixScoresCleared:
             patch("dataraum.pipeline.scheduler.cleanup_phase"),
             patch("dataraum.pipeline.scheduler.apply_config_patch"),
             patch("dataraum.core.config.load_phase_config", return_value={}),
+            patch(
+                "dataraum.pipeline.fix_registry.get_default_fix_registry",
+                return_value=test_registry,
+            ),
         ):
             events, result = _drive(
                 scheduler.run(),
@@ -1333,45 +1353,22 @@ class TestForceSequential:
         assert set(completed) == {"A", "B", "C"}
 
 
-class TestFindFixHandler:
-    """Tests for _find_fix_handler helper."""
+class TestFixRegistry:
+    """Tests for FixRegistry lookup."""
 
-    def test_finds_handler_on_correct_phase(self, session: Session, duckdb_conn):
-        """Handler is found on the phase that declares it."""
-        run_id = _make_run(session)
+    def test_finds_registered_handler(self):
+        """Handler is found by action name."""
         handler = lambda fi, cfg: FixResult()  # noqa: E731
+        registry = _make_test_fix_registry("override_type", handler, "alpha")
+        entry = registry.find("override_type")
+        assert entry is not None
+        assert entry.handler is handler
+        assert entry.phase_name == "alpha"
 
-        alpha = MockPhase("alpha", fix_handlers_map={"override_type": handler})
-        beta = MockPhase("beta", dependencies=["alpha"])
-
-        scheduler = PipelineScheduler(
-            phases={"alpha": alpha, "beta": beta},
-            source_id="src-1",
-            run_id=run_id,
-            session=session,
-            duckdb_conn=duckdb_conn,
-        )
-
-        found_handler, found_phase = scheduler._find_fix_handler("override_type")
-        assert found_handler is handler
-        assert found_phase == "alpha"
-
-    def test_returns_none_for_unknown_action(self, session: Session, duckdb_conn):
-        """Unknown action returns (None, "")."""
-        run_id = _make_run(session)
-        alpha = MockPhase("alpha")
-
-        scheduler = PipelineScheduler(
-            phases={"alpha": alpha},
-            source_id="src-1",
-            run_id=run_id,
-            session=session,
-            duckdb_conn=duckdb_conn,
-        )
-
-        found_handler, found_phase = scheduler._find_fix_handler("nonexistent")
-        assert found_handler is None
-        assert found_phase == ""
+    def test_returns_none_for_unknown_action(self):
+        """Unknown action returns None."""
+        registry = FixRegistry()
+        assert registry.find("nonexistent") is None
 
 
 class TestExitCheckFixableActions:
@@ -1382,12 +1379,10 @@ class TestExitCheckFixableActions:
         from dataraum.entropy.detectors.base import DetectorRegistry, EntropyDetector
 
         run_id = _make_run(session)
-        # Phase declares fix_handlers — single source of truth for phase_name
         dummy_handler = lambda fi, cfg: None  # noqa: E731
         phase = MockPhase(
             "typing",
             produces_analyses_keys={AnalysisKey.TYPING},
-            fix_handlers_map={"override_type": dummy_handler},
             is_quality_gate=True,
         )
         scheduler = PipelineScheduler(
@@ -1399,7 +1394,7 @@ class TestExitCheckFixableActions:
             contract_thresholds={"structural.types": 0.3},
         )
 
-        # Detector declares which actions are fixable (no phase_name)
+        # Detector declares which actions are fixable
         class FixableDetector(EntropyDetector):
             detector_id = "test_fixable"
             layer = "structural"
@@ -1415,8 +1410,11 @@ class TestExitCheckFixableActions:
             def detect(self, ctx):
                 return []
 
-        registry = DetectorRegistry()
-        registry.register(FixableDetector())
+        detector_registry = DetectorRegistry()
+        detector_registry.register(FixableDetector())
+
+        # Fix registry maps action → handler + phase
+        fix_reg = _make_test_fix_registry("override_type", dummy_handler, "typing")
 
         gate = GateResult(scores={"structural.types.type_fidelity": 0.8})
         with (
@@ -1426,7 +1424,11 @@ class TestExitCheckFixableActions:
             ),
             patch(
                 "dataraum.entropy.detectors.base.get_default_registry",
-                return_value=registry,
+                return_value=detector_registry,
+            ),
+            patch(
+                "dataraum.pipeline.fix_registry.get_default_fix_registry",
+                return_value=fix_reg,
             ),
         ):
             events, result = _drive(

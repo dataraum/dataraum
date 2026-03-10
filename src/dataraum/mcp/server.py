@@ -23,6 +23,7 @@ from dataraum.mcp.formatters import (
     format_context_for_llm,
     format_contract_evaluation,
     format_entropy_summary,
+    format_export_result,
     format_pipeline_result,
     format_quality_report,
     format_query_result,
@@ -187,6 +188,38 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "required": ["question"],
                 },
             ),
+            # --- Export tools ---
+            Tool(
+                name="export",
+                description=(
+                    "Export query results or arbitrary SQL to a file (CSV, Parquet, or JSON). "
+                    "Provide either a question (runs query agent first) or raw SQL. "
+                    "Creates a metadata sidecar with provenance: SQL, entropy, assumptions."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "question": {
+                            "type": "string",
+                            "description": "Natural language question (runs query agent, then exports results)",
+                        },
+                        "sql": {
+                            "type": "string",
+                            "description": "Raw SQL to execute and export (alternative to question)",
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": "Destination file path (e.g., './exports/revenue.csv')",
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["csv", "parquet", "json"],
+                            "description": "Export format. Default: csv.",
+                        },
+                    },
+                    "required": ["output_path"],
+                },
+            ),
             # --- Source management tools ---
             Tool(
                 name="discover_sources",
@@ -313,6 +346,14 @@ def create_server(output_dir: Path | None = None) -> Server:
             question = arguments["question"]
             contract_name = arguments.get("contract_name")
             result = _query(output_dir, question, contract_name)
+        elif name == "export":
+            result = _export(
+                output_dir,
+                question=arguments.get("question"),
+                sql=arguments.get("sql"),
+                export_path=arguments.get("output_path", "./export.csv"),
+                fmt=arguments.get("format", "csv"),
+            )
         elif name == "discover_sources":
             scan_path = arguments.get("path", ".")
             recursive = arguments.get("recursive", True)
@@ -952,6 +993,87 @@ def _add_source(output_dir: Path, arguments: dict[str, Any]) -> str:
                 output["credential_instructions"] = info.credential_instructions
 
             return json.dumps(output, indent=2)
+    finally:
+        manager.close()
+
+
+def _export(
+    output_dir: Path,
+    question: str | None = None,
+    sql: str | None = None,
+    export_path: str = "./export.csv",
+    fmt: str = "csv",
+) -> str:
+    """Export query results or SQL output to a file."""
+    from sqlalchemy import select
+
+    from dataraum.core.connections import get_manager_for_directory
+    from dataraum.export import ExportFormat, export_query_result, export_sql
+    from dataraum.storage import Source
+
+    if not question and not sql:
+        return "Error: Provide either 'question' or 'sql'."
+    if question and sql:
+        return "Error: Provide 'question' or 'sql', not both."
+
+    if fmt not in ("csv", "parquet", "json"):
+        return f"Error: Unknown format '{fmt}'. Use csv, parquet, or json."
+
+    export_fmt: ExportFormat = fmt  # type: ignore[assignment]
+    dest = Path(export_path)
+
+    try:
+        manager = get_manager_for_directory(output_dir)
+    except FileNotFoundError:
+        return _NO_DATA_MSG.format(path=output_dir)
+
+    try:
+        if question:
+            # Run query agent, then export the result
+            from dataraum.query import answer_question
+
+            with manager.session_scope() as session:
+                sources = session.execute(select(Source)).scalars().all()
+                if not sources:
+                    return "Error: No sources found"
+                source = sources[0]
+
+                with manager.duckdb_cursor() as cursor:
+                    query_result = answer_question(
+                        question=question,
+                        session=session,
+                        duckdb_conn=cursor,
+                        source_id=source.source_id,
+                    )
+
+                if not query_result.success or not query_result.value:
+                    return f"Error: Query failed: {query_result.error}"
+
+                qr = query_result.value
+                if not qr.data or not qr.columns:
+                    return f"Error: Query returned no tabular data. Answer: {qr.answer}"
+
+                exported = export_query_result(qr, dest, fmt=export_fmt)
+                sidecar = exported.with_suffix(exported.suffix + ".meta.json")
+                return format_export_result(
+                    str(exported), fmt, len(qr.data), str(sidecar)
+                )
+        else:
+            # Export raw SQL
+            assert sql is not None
+            with manager.duckdb_cursor() as cursor:
+                exported = export_sql(sql, cursor, dest, fmt=export_fmt)
+                sidecar = exported.with_suffix(exported.suffix + ".meta.json")
+                # Get row count from sidecar
+                import json as json_mod
+
+                with open(sidecar) as f:
+                    meta = json_mod.load(f)
+                return format_export_result(
+                    str(exported), fmt, meta.get("row_count", 0), str(sidecar)
+                )
+    except Exception as e:
+        return f"Error: Export failed: {e}"
     finally:
         manager.close()
 

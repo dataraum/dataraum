@@ -372,6 +372,22 @@ def format_quality_report(sections: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def format_export_result(output_path: str, fmt: str, row_count: int, sidecar_path: str) -> str:
+    """Format export result for LLM consumption."""
+    lines = ["# Export Complete"]
+    lines.append("")
+    lines.append(f"**File:** `{output_path}`")
+    lines.append(f"**Format:** {fmt}")
+    lines.append(f"**Rows:** {row_count}")
+    lines.append(f"**Metadata:** `{sidecar_path}`")
+    lines.append("")
+    lines.append(
+        "The metadata sidecar contains provenance information: "
+        "source SQL, entropy score, assumptions, and confidence level."
+    )
+    return "\n".join(lines)
+
+
 def format_pipeline_result(result: RunResult) -> str:
     """Format pipeline run result for LLM consumption.
 

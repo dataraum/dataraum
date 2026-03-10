@@ -215,6 +215,19 @@ class TestKeyedDocuments:
         assert "to_table" not in value
         assert value["relationship_type"] == "foreign_key"
 
+    def test_missing_template_fields_returns_empty(self) -> None:
+        """When LLM doesn't include template fields, return empty (can't build valid key)."""
+        docs = build_fix_documents(
+            _keyed_schema(),
+            FixInput(
+                action_name="confirm_relationship",
+                affected_columns=["t.a"],
+                parameters={"relationship_type": "foreign_key"},  # missing from_table, to_table
+            ),
+            "orders", "id", "relationships",
+        )
+        assert docs == []
+
     def test_always_produces_one_doc(self) -> None:
         """Keyed route always produces exactly 1 doc regardless of affected_columns."""
         docs = build_fix_documents(

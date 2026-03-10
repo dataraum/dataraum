@@ -48,12 +48,6 @@ class NullRatioDetector(EntropyDetector):
                     "this action acknowledges the finding permanently."
                 ),
                 fields={
-                    "detector_id": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description="Detector ID (null_ratio)",
-                        default="null_ratio",
-                    ),
                     "reason": FixSchemaField(
                         type="string",
                         required=False,

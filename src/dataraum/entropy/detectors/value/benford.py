@@ -69,12 +69,6 @@ class BenfordDetector(EntropyDetector):
                     "this action acknowledges the finding permanently."
                 ),
                 fields={
-                    "detector_id": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description="Detector ID (benford)",
-                        default="benford",
-                    ),
                     "reason": FixSchemaField(
                         type="string",
                         required=False,

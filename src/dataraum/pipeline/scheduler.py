@@ -69,6 +69,16 @@ class PipelineAborted(Exception):
     """Raised when the caller sends ABORT resolution."""
 
 
+def _parse_col_ref(ref: str) -> tuple[str, str | None]:
+    """Parse a column reference like 'column:table.col' → (table, col).
+
+    Handles formats: 'table.col', 'column:table.col', 'table', 'column:table'.
+    """
+    bare = ref.split(":", 1)[-1] if ":" in ref else ref
+    parts = bare.split(".", 1)
+    return parts[0], parts[1] if len(parts) > 1 else None
+
+
 # ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------
@@ -560,12 +570,12 @@ class PipelineScheduler:
                 )
                 continue
 
-            # Derive table/column from affected_columns
-            col_ref = (fix_input.affected_columns or [fix_input.action_name])[0]
-            bare_ref = col_ref.split(":", 1)[-1] if ":" in col_ref else col_ref
-            parts = bare_ref.split(".", 1)
-            table_name = parts[0]
-            column_name = parts[1] if len(parts) > 1 else None
+            # Parse all column refs once
+            parsed = [
+                _parse_col_ref(ref)
+                for ref in (fix_input.affected_columns or [fix_input.action_name])
+            ]
+            table_name, column_name = parsed[0]
             dimension = schema.requires_rerun or ""
 
             documents = build_fix_documents(
@@ -585,13 +595,7 @@ class PipelineScheduler:
                 phases_to_rerun.add(schema.requires_rerun)
 
             # Log to fix ledger
-            for col_ref in fix_input.affected_columns or [fix_input.action_name]:
-                bare_ref = (
-                    col_ref.split(":", 1)[-1] if ":" in col_ref else col_ref
-                )
-                parts = bare_ref.split(".", 1)
-                t_name = parts[0]
-                c_name = parts[1] if len(parts) > 1 else None
+            for t_name, c_name in parsed:
                 log_fix(
                     session=self.session,
                     source_id=self.source_id,
@@ -668,6 +672,21 @@ class PipelineScheduler:
                     }
                     if schema.guidance:
                         action_dict["guidance"] = schema.guidance
+                    if schema.fields:
+                        # Serialize field schema for LLM context
+                        fields_desc: dict[str, str] = {}
+                        for fname, fschema in schema.fields.items():
+                            parts = [fschema.type]
+                            if fschema.required:
+                                parts.append("required")
+                            if fschema.description:
+                                parts.append(fschema.description)
+                            if fschema.enum_values:
+                                parts.append(f"one of: {fschema.enum_values}")
+                            if fschema.examples:
+                                parts.append(f"e.g. {fschema.examples}")
+                            fields_desc[fname] = ", ".join(parts)
+                        action_dict["fields"] = str(fields_desc)
                     actions.append(action_dict)
                 if actions:
                     result[issue.dimension_path] = actions

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from dataraum.core.logging import get_logger
-from dataraum.pipeline.fixes import ConfigPatch, apply_config_patch
+from dataraum.pipeline.fixes import apply_config_yaml
 from dataraum.pipeline.fixes.models import DataFix, FixDocument
 
 if TYPE_CHECKING:
@@ -50,19 +50,20 @@ class ConfigInterpreter:
             KeyError: If required payload fields are missing.
             ValueError: If the operation is invalid.
         """
-        patch = ConfigPatch(
-            config_path=doc.payload["config_path"],
+        config_path = doc.payload["config_path"]
+        key_path = doc.payload["key_path"]
+        apply_config_yaml(
+            config_root,
+            config_path=config_path,
             operation=doc.payload["operation"],
-            key_path=doc.payload["key_path"],
+            key_path=key_path,
             value=doc.payload.get("value"),
-            reason=doc.payload.get("reason", doc.description),
         )
-        apply_config_patch(config_root, patch)
         logger.info(
             "config_fix_applied",
             action=doc.action,
-            config_path=patch.config_path,
-            key_path=patch.key_path,
+            config_path=config_path,
+            key_path=key_path,
         )
 
 
@@ -236,8 +237,12 @@ def _resolve_semantic_annotation(session: Session, table_name: str, column_name:
 
 
 def _resolve_relationship(session: Session, table_name: str, column_name: str | None) -> Any:
-    """Find a Relationship by (table_name, column_name)."""
-    from sqlalchemy import select
+    """Find a Relationship by (table_name, column_name).
+
+    Checks both from_column_id and to_column_id so that relationships
+    are found regardless of which side the column is on.
+    """
+    from sqlalchemy import or_, select
 
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.storage import Column, Table
@@ -258,7 +263,12 @@ def _resolve_relationship(session: Session, table_name: str, column_name: str | 
         return None
 
     return session.execute(
-        select(Relationship).where(Relationship.from_column_id == col.column_id)
+        select(Relationship).where(
+            or_(
+                Relationship.from_column_id == col.column_id,
+                Relationship.to_column_id == col.column_id,
+            )
+        )
     ).scalar_one_or_none()
 
 

@@ -295,13 +295,13 @@ def _handle_pause(
     console.print("[bold]Available fixes:[/bold]")
     for i, action in enumerate(actions, 1):
         console.print(
-            f"  [{i}] {action['action_name']} "
+            f"  \\[{i}] {action['action_name']} "
             f"[dim]({action['phase_name']} phase)[/dim] "
             f"— {action['dimension']}"
         )
     console.print()
-    console.print("  [d] Defer — continue pipeline, address later")
-    console.print("  [a] Abort — stop pipeline")
+    console.print("  \\[d] Defer — continue pipeline, address later")
+    console.print("  \\[a] Abort — stop pipeline")
     console.print()
 
     for attempt in range(3):
@@ -423,6 +423,18 @@ def _run_fix_flow(
 
     interp = interp_result.unwrap()
 
+    # Validate parameters against schema
+    from dataraum.entropy.detectors.base import get_default_registry
+
+    action_name = interp.config_action or action_info["action_name"]
+    schema = get_default_registry().get_fix_schema(action_name)
+    if schema:
+        errors = schema.validate_payload(interp.parameters)
+        if errors:
+            console.print(f"[red]LLM returned invalid parameters: {'; '.join(errors)}[/red]")
+            console.print("[yellow]Deferring — try again or fix manually.[/yellow]")
+            return Resolution(action=ResolutionAction.DEFER)
+
     console.print(f"\n[bold]Interpretation:[/bold] {interp.summary}")
     console.print(f"[dim]{interp.interpretation}[/dim]")
     console.print(f"[dim]Confidence: {interp.confidence}[/dim]\n")
@@ -442,18 +454,9 @@ def _run_fix_flow(
     if col_scores:
         evidence["column_scores"] = col_scores
 
-    # Ensure detector_id is in parameters — LLM may omit it but
-    # fix handlers (accept_finding etc.) need it to write patches
-    # to the correct config section.
-    params = dict(interp.parameters)
-    if "detector_id" not in params:
-        detector_id = _resolve_detector_id(dim_path)
-        if detector_id:
-            params["detector_id"] = detector_id
-
     fix_input = FixInput(
         action_name=interp.config_action or action_info["action_name"],
-        parameters=params,
+        parameters=dict(interp.parameters),
         interpretation=interp.interpretation,
         affected_columns=interp.affected_columns,
         entropy_evidence=evidence,
@@ -504,6 +507,8 @@ def build_gate_context(
     ]
     if "guidance" in action_info:
         action_lines.append(f"Guidance: {action_info['guidance']}")
+    if "fields" in action_info:
+        action_lines.append(f"Expected parameters: {action_info['fields']}")
     action_lines.append("</action_details>")
     sections.append("\n".join(action_lines))
 
@@ -529,17 +534,6 @@ def build_gate_context(
         sections.append(data_section)
 
     return "\n\n".join(sections)
-
-
-def _resolve_detector_id(dim_path: str) -> str | None:
-    """Look up detector_id from a dimension path like 'value.outliers.outlier_rate'."""
-    from dataraum.entropy.detectors.base import get_default_registry
-
-    registry = get_default_registry()
-    for d in registry.get_all_detectors():
-        if d.dimension_path == dim_path:
-            return d.detector_id
-    return None
 
 
 def _get_affected_targets(

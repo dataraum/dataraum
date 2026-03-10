@@ -1,10 +1,9 @@
 """Inline fix data models and config patch utilities.
 
 Core types for the inline fix system:
-- ConfigPatch: A concrete change to a YAML config file
 - FixInput: Structured user decision after agent interpretation
 
-And the utility to apply patches to config files on disk.
+And the utility to apply config changes to YAML files on disk.
 """
 
 from __future__ import annotations
@@ -17,32 +16,14 @@ import yaml
 
 
 @dataclass
-class ConfigPatch:
-    """A concrete change to a config YAML file.
-
-    Args:
-        config_path: Relative path within config root, e.g. "phases/typing.yaml".
-        operation: One of "set", "append", "remove", "merge".
-        key_path: Nested key path, e.g. ["date_patterns"] or ["overrides", "amount"].
-        value: The value to set/append/merge. Ignored for "remove".
-        reason: Human-readable explanation of why this change is applied.
-    """
-
-    config_path: str
-    operation: str  # "set", "append", "remove", "merge"
-    key_path: list[str]
-    value: Any = None
-    reason: str = ""
-
-
-@dataclass
 class FixInput:
     """Structured user decision after agent interpretation.
 
-    Produced by the DocumentAgent in config mode, consumed by phase fix handlers.
+    Produced by the DocumentAgent in config mode, consumed by the bridge
+    function to build FixDocuments.
 
     Args:
-        action_name: The entropy action being addressed, e.g. "transform_exclude_outliers".
+        action_name: The entropy action being addressed, e.g. "accept_finding".
         parameters: Structured parameters from user interaction.
         interpretation: Agent's interpretation of user answers.
         affected_columns: Which columns this fix applies to, e.g. ["orders.amount"].
@@ -56,16 +37,24 @@ class FixInput:
     entropy_evidence: dict[str, Any] = field(default_factory=dict)
 
 
-
-def apply_config_patch(config_root: Path, patch: ConfigPatch) -> None:
-    """Apply a ConfigPatch to a YAML file on disk.
+def apply_config_yaml(
+    config_root: Path,
+    config_path: str,
+    operation: str,
+    key_path: list[str],
+    value: Any = None,
+) -> None:
+    """Apply a config change to a YAML file on disk.
 
     Reads the YAML file, applies the operation at the specified key path,
     and writes it back. Creates the file with an empty dict if it doesn't exist.
 
     Args:
         config_root: Absolute path to the config root directory.
-        patch: The patch to apply.
+        config_path: Relative path within config root, e.g. "phases/typing.yaml".
+        operation: One of "set", "append", "remove", "merge".
+        key_path: Nested key path, e.g. ["date_patterns"] or ["overrides", "amount"].
+        value: The value to set/append/merge. Ignored for "remove".
 
     Raises:
         ValueError: If the operation is unknown or the key path is invalid
@@ -75,7 +64,7 @@ def apply_config_patch(config_root: Path, patch: ConfigPatch) -> None:
     if not config_root.is_dir():
         raise FileNotFoundError(f"Config root not found: {config_root}")
 
-    file_path = config_root / patch.config_path
+    file_path = config_root / config_path
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
     if file_path.exists():
@@ -84,10 +73,10 @@ def apply_config_patch(config_root: Path, patch: ConfigPatch) -> None:
     else:
         data = {}
 
-    if not patch.key_path:
+    if not key_path:
         raise ValueError("key_path must not be empty")
 
-    _apply_operation(data, patch.key_path, patch.operation, patch.value)
+    _apply_operation(data, key_path, operation, value)
 
     with open(file_path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)

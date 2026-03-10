@@ -57,12 +57,6 @@ class OutlierRateDetector(EntropyDetector):
                     "this action acknowledges the finding permanently."
                 ),
                 fields={
-                    "detector_id": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description="Detector ID (outlier_rate)",
-                        default="outlier_rate",
-                    ),
                     "reason": FixSchemaField(
                         type="string",
                         required=False,

@@ -286,7 +286,6 @@ class TestRunFixFlow:
         fix = result.fix_inputs[0]
         assert fix.action_name == "override_type"
         assert fix.parameters["resolved_type"] == "DATE"
-        assert fix.parameters["detector_id"] == "type_fidelity"
         assert fix.affected_columns == ["orders.order_date"]
 
     def test_user_cancels_at_confirmation(self) -> None:

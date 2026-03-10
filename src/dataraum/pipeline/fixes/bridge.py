@@ -144,7 +144,19 @@ def _build_keyed_documents(
 ) -> list[FixDocument]:
     """Build merge/set document — one doc using key_template for key suffix."""
     assert schema.key_template is not None
-    key_suffix = schema.key_template.format(**fix_input.parameters)
+    try:
+        key_suffix = schema.key_template.format(**fix_input.parameters)
+    except KeyError:
+        # LLM didn't include required template fields — cannot build a valid config key.
+        # Return empty so the caller logs "no documents" and moves on.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "key_template %r requires fields missing from parameters %s — skipping fix",
+            schema.key_template,
+            sorted(fix_input.parameters),
+        )
+        return []
 
     # Exclude key_template fields from the value dict
     key_fields = _extract_template_fields(schema.key_template)

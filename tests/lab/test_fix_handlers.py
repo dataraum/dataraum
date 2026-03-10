@@ -1,7 +1,8 @@
-"""Entropy lab Phase 5 — Fix handler tests.
+"""Fix bridge + detector response tests.
 
-Proves that each fix handler produces correct config patches and that
-detectors respond to the resulting state changes (score reduction).
+Proves that build_fix_documents() produces correct FixDocuments for each
+action pattern, and that detectors respond to the resulting state changes
+(score reduction after acceptance/documentation).
 
 Categories:
   1. Accept-finding: benford, outlier_rate, null_ratio
@@ -13,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from dataraum.entropy.detectors.base import DetectorContext
+from dataraum.entropy.detectors.base import DetectorContext, get_default_registry
 from dataraum.entropy.detectors.semantic.business_meaning import BusinessMeaningDetector
 from dataraum.entropy.detectors.semantic.unit_entropy import UnitEntropyDetector
 from dataraum.entropy.detectors.structural.relations import JoinPathDeterminismDetector
@@ -23,8 +24,8 @@ from dataraum.entropy.detectors.structural.relationship_entropy import (
 from dataraum.entropy.detectors.value.benford import BenfordDetector
 from dataraum.entropy.detectors.value.null_semantics import NullRatioDetector
 from dataraum.entropy.detectors.value.outliers import OutlierRateDetector
-from dataraum.pipeline.fix_registry import get_default_fix_registry
 from dataraum.pipeline.fixes import FixInput
+from dataraum.pipeline.fixes.bridge import build_fix_documents
 
 
 def _make_context(
@@ -40,51 +41,53 @@ def _make_context(
 
 
 # ---------------------------------------------------------------------------
-# Accept-finding handler — generic
+# Accept-finding bridge — generic
 # ---------------------------------------------------------------------------
 
 
-class TestAcceptFindingHandler:
-    """The accept_finding handler writes config patches to entropy/thresholds.yaml."""
+class TestAcceptFindingBridge:
+    """The accept_finding bridge writes FixDocuments targeting entropy/thresholds.yaml."""
 
-    def _get_handler(self):
-        registry = get_default_fix_registry()
-        entry = registry.find("accept_finding")
-        assert entry is not None
-        return entry.handler
-
-    def test_produces_correct_config_patch(self) -> None:
-        handler = self._get_handler()
-        result = handler(
+    def test_benford_produces_correct_document(self) -> None:
+        schema = BenfordDetector().fix_schemas[0]
+        docs = build_fix_documents(
+            schema,
             FixInput(
                 action_name="accept_finding",
                 affected_columns=["bank_transactions.amount"],
                 parameters={"detector_id": "benford"},
                 interpretation="Benford deviation expected for financial data",
             ),
-            {},
+            "bank_transactions",
+            "amount",
+            "quality_review",
         )
-        assert len(result.config_patches) == 1
-        patch = result.config_patches[0]
-        assert patch.config_path == "entropy/thresholds.yaml"
-        assert patch.key_path == ["detectors", "benford", "accepted_columns"]
-        assert patch.value == "bank_transactions.amount"
-        assert result.requires_rerun == ""
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc.target == "config"
+        assert doc.action == "accept_finding"
+        assert doc.payload["config_path"] == "entropy/thresholds.yaml"
+        assert doc.payload["key_path"] == ["detectors", "benford", "accepted_columns"]
+        assert doc.payload["operation"] == "append"
+        assert doc.payload["value"] == "bank_transactions.amount"
 
     def test_multiple_columns(self) -> None:
-        handler = self._get_handler()
-        result = handler(
+        schema = OutlierRateDetector().fix_schemas[0]
+        docs = build_fix_documents(
+            schema,
             FixInput(
                 action_name="accept_finding",
                 affected_columns=["t.a", "t.b", "t.c"],
                 parameters={"detector_id": "outlier_rate"},
             ),
-            {},
+            "t",
+            "a",
+            "quality_review",
         )
-        assert len(result.config_patches) == 3
+        assert len(docs) == 3
         assert all(
-            p.key_path == ["detectors", "outlier_rate", "accepted_columns"]
-            for p in result.config_patches
+            d.payload["key_path"] == ["detectors", "outlier_rate", "accepted_columns"]
+            for d in docs
         )
 
 
@@ -261,22 +264,20 @@ class TestNullRatioAcceptance:
 
 
 # ---------------------------------------------------------------------------
-# Category 2a — Metadata-write handlers
+# Category 2a — Metadata-write bridge
 # ---------------------------------------------------------------------------
 
 
-class TestDocumentBusinessMeaningHandler:
-    """document_business_meaning writes semantic overrides."""
+class TestDocumentBusinessMeaningBridge:
+    """document_business_meaning writes semantic overrides via bridge."""
 
-    def _get_handler(self):
-        registry = get_default_fix_registry()
-        entry = registry.find("document_business_meaning")
-        assert entry is not None
-        return entry.handler
+    def _get_schema(self):
+        return BusinessMeaningDetector().fix_schemas[0]
 
-    def test_produces_correct_patch(self) -> None:
-        handler = self._get_handler()
-        result = handler(
+    def test_produces_correct_document(self) -> None:
+        schema = self._get_schema()
+        docs = build_fix_documents(
+            schema,
             FixInput(
                 action_name="document_business_meaning",
                 affected_columns=["orders.amount"],
@@ -286,31 +287,36 @@ class TestDocumentBusinessMeaningHandler:
                     "description": "Total order value in local currency",
                 },
             ),
-            {},
+            "orders",
+            "amount",
+            "semantic",
         )
-        assert len(result.config_patches) == 1
-        patch = result.config_patches[0]
-        assert patch.config_path == "phases/semantic.yaml"
-        assert patch.operation == "merge"
-        assert patch.key_path == ["overrides", "business_meaning", "orders.amount"]
-        assert patch.value["business_name"] == "Order Amount"
-        assert result.requires_rerun == "semantic"
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc.target == "config"
+        assert doc.payload["config_path"] == "phases/semantic.yaml"
+        assert doc.payload["operation"] == "merge"
+        assert doc.payload["key_path"] == ["overrides", "business_meaning", "orders.amount"]
+        assert doc.payload["value"]["business_name"] == "Order Amount"
 
     def test_partial_fields(self) -> None:
-        """Only specified fields appear in the patch."""
-        handler = self._get_handler()
-        result = handler(
+        """Only specified fields appear in the value."""
+        schema = self._get_schema()
+        docs = build_fix_documents(
+            schema,
             FixInput(
                 action_name="document_business_meaning",
                 affected_columns=["orders.amount"],
                 parameters={"business_name": "Order Amount"},
             ),
-            {},
+            "orders",
+            "amount",
+            "semantic",
         )
-        patch = result.config_patches[0]
-        assert "business_name" in patch.value
-        assert "entity_type" not in patch.value
-        assert "description" not in patch.value
+        value = docs[0].payload["value"]
+        assert "business_name" in value
+        assert "entity_type" not in value
+        assert "description" not in value
 
 
 class TestDocumentBusinessMeaningDetectorResponse:
@@ -378,37 +384,35 @@ class TestDocumentBusinessMeaningDetectorResponse:
         )
         score3 = detector.detect(ctx3)[0].score
 
-        print(f"\n  Score progression: {score0:.3f} -> {score1:.3f} -> {score2:.3f} -> {score3:.3f}")
         assert score0 > score1 > score2 >= score3
         assert score3 == 0.0
 
 
-class TestDeclareUnitHandler:
-    """declare_unit writes unit overrides."""
+class TestDeclareUnitBridge:
+    """declare_unit writes unit overrides via bridge."""
 
-    def _get_handler(self):
-        registry = get_default_fix_registry()
-        entry = registry.find("declare_unit")
-        assert entry is not None
-        return entry.handler
+    def _get_schema(self):
+        return UnitEntropyDetector().fix_schemas[0]
 
-    def test_produces_correct_patch(self) -> None:
-        handler = self._get_handler()
-        result = handler(
+    def test_produces_correct_document(self) -> None:
+        schema = self._get_schema()
+        docs = build_fix_documents(
+            schema,
             FixInput(
                 action_name="declare_unit",
                 affected_columns=["bank_transactions.amount"],
                 parameters={"unit": "EUR", "unit_source_column": "currency"},
             ),
-            {},
+            "bank_transactions",
+            "amount",
+            "semantic",
         )
-        assert len(result.config_patches) == 1
-        patch = result.config_patches[0]
-        assert patch.config_path == "phases/semantic.yaml"
-        assert patch.key_path == ["overrides", "units", "bank_transactions.amount"]
-        assert patch.value["unit"] == "EUR"
-        assert patch.value["unit_source_column"] == "currency"
-        assert result.requires_rerun == "semantic"
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc.payload["config_path"] == "phases/semantic.yaml"
+        assert doc.payload["key_path"] == ["overrides", "units", "bank_transactions.amount"]
+        assert doc.payload["value"]["unit"] == "EUR"
+        assert doc.payload["value"]["unit_source_column"] == "currency"
 
 
 class TestDeclareUnitDetectorResponse:
@@ -440,7 +444,7 @@ class TestDeclareUnitDetectorResponse:
             semantic={"semantic_role": "measure", "unit_source_column": "currency"},
         )
         objects = detector.detect(context)
-        assert objects[0].score == 0.2  # score_inferred default
+        assert objects[0].score == 0.1  # score_inferred default
 
     def test_dimensionless_scores_declared(self) -> None:
         detector = UnitEntropyDetector()
@@ -452,18 +456,16 @@ class TestDeclareUnitDetectorResponse:
         assert objects[0].score == 0.1  # same as score_declared
 
 
-class TestConfirmRelationshipHandler:
-    """confirm_relationship writes relationship confirmation."""
+class TestConfirmRelationshipBridge:
+    """confirm_relationship writes relationship confirmation via bridge."""
 
-    def _get_handler(self):
-        registry = get_default_fix_registry()
-        entry = registry.find("confirm_relationship")
-        assert entry is not None
-        return entry.handler
+    def _get_schema(self):
+        return RelationshipEntropyDetector().fix_schemas[0]
 
-    def test_produces_correct_patch(self) -> None:
-        handler = self._get_handler()
-        result = handler(
+    def test_produces_correct_document(self) -> None:
+        schema = self._get_schema()
+        docs = build_fix_documents(
+            schema,
             FixInput(
                 action_name="confirm_relationship",
                 affected_columns=["bank_transactions.account_id"],
@@ -474,19 +476,23 @@ class TestConfirmRelationshipHandler:
                     "cardinality": "many_to_one",
                 },
             ),
-            {},
+            "bank_transactions",
+            "account_id",
+            "relationships",
         )
-        assert len(result.config_patches) == 1
-        patch = result.config_patches[0]
-        assert patch.config_path == "phases/relationships.yaml"
-        assert patch.key_path == [
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc.payload["config_path"] == "phases/relationships.yaml"
+        assert doc.payload["key_path"] == [
             "overrides",
             "confirmed_relationships",
             "bank_transactions->chart_of_accounts",
         ]
-        assert patch.value["confirmed"] is True
-        assert patch.value["relationship_type"] == "foreign_key"
-        assert result.requires_rerun == "relationships"
+        assert doc.payload["value"]["relationship_type"] == "foreign_key"
+        assert doc.payload["value"]["cardinality"] == "many_to_one"
+        # from_table/to_table are key_template fields — excluded from value
+        assert "from_table" not in doc.payload["value"]
+        assert "to_table" not in doc.payload["value"]
 
 
 class TestConfirmRelationshipDetectorResponse:
@@ -516,8 +522,6 @@ class TestConfirmRelationshipDetectorResponse:
         assert len(objects) == 1
         score_unconfirmed = objects[0].score
         assert score_unconfirmed > 0, f"Expected nonzero, got {score_unconfirmed}"
-        # Semantic component is 0.3 (unconfirmed) vs 0.1 (confirmed)
-        print(f"\n  Unconfirmed: {score_unconfirmed:.3f}")
 
     def test_confirmed_scores_lower(self) -> None:
         detector = RelationshipEntropyDetector()
@@ -527,23 +531,19 @@ class TestConfirmRelationshipDetectorResponse:
         score_before = detector.detect(ctx_before)[0].score
         score_after = detector.detect(ctx_after)[0].score
 
-        print(f"\n  Before confirm: {score_before:.3f}")
-        print(f"  After confirm:  {score_after:.3f}")
         assert score_after < score_before, "Confirmation should lower score"
 
 
-class TestResolveJoinAmbiguityHandler:
-    """resolve_join_ambiguity sets preferred join path."""
+class TestResolveJoinAmbiguityBridge:
+    """resolve_join_ambiguity sets preferred join path via bridge."""
 
-    def _get_handler(self):
-        registry = get_default_fix_registry()
-        entry = registry.find("resolve_join_ambiguity")
-        assert entry is not None
-        return entry.handler
+    def _get_schema(self):
+        return JoinPathDeterminismDetector().fix_schemas[0]
 
-    def test_produces_correct_patch(self) -> None:
-        handler = self._get_handler()
-        result = handler(
+    def test_produces_correct_document(self) -> None:
+        schema = self._get_schema()
+        docs = build_fix_documents(
+            schema,
             FixInput(
                 action_name="resolve_join_ambiguity",
                 affected_columns=["orders.customer_id"],
@@ -553,14 +553,18 @@ class TestResolveJoinAmbiguityHandler:
                     "preferred_column": "customer_id",
                 },
             ),
-            {},
+            "orders",
+            "customer_id",
+            "relationships",
         )
-        assert len(result.config_patches) == 1
-        patch = result.config_patches[0]
-        assert patch.config_path == "phases/relationships.yaml"
-        assert patch.key_path == ["overrides", "preferred_joins", "orders->customers"]
-        assert patch.value["column"] == "customer_id"
-        assert result.requires_rerun == "relationships"
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc.payload["config_path"] == "phases/relationships.yaml"
+        assert doc.payload["key_path"] == ["overrides", "preferred_joins", "orders->customers"]
+        assert doc.payload["value"]["preferred_column"] == "customer_id"
+        # table/target_table are key_template fields — excluded from value
+        assert "table" not in doc.payload["value"]
+        assert "target_table" not in doc.payload["value"]
 
 
 class TestResolveJoinAmbiguityDetectorResponse:
@@ -592,20 +596,21 @@ class TestResolveJoinAmbiguityDetectorResponse:
 
 
 # ---------------------------------------------------------------------------
-# All handlers registered
+# Schema coverage
 # ---------------------------------------------------------------------------
 
 
-class TestAllHandlersRegistered:
-    """Every FixAction has a handler in the default registry."""
+class TestFixSchemaCoverage:
+    """Every fixable detector has fix_schemas and all FixActions are covered."""
 
-    def test_all_fix_actions_have_handlers(self) -> None:
+    def test_all_fix_actions_have_schemas(self) -> None:
+        """Every FixAction maps to at least one fix_schema in the registry."""
         from dataraum.entropy.dimensions import FixAction
 
-        registry = get_default_fix_registry()
+        registry = get_default_registry()
         for action in FixAction:
-            entry = registry.find(str(action))
-            assert entry is not None, f"No handler for FixAction.{action.name}"
+            schema = registry.get_fix_schema(str(action))
+            assert schema is not None, f"No fix_schema for FixAction.{action.name}"
 
     def test_all_detectors_declare_fixable_actions(self) -> None:
         """Every gate-measurable detector declares at least one fixable action."""
@@ -622,4 +627,36 @@ class TestAllHandlersRegistered:
             assert len(detector.fixable_actions) > 0, (
                 f"{detector.detector_id} has no fixable_actions"
             )
-            print(f"  {detector.detector_id}: {[str(a) for a in detector.fixable_actions]}")
+
+    def test_all_detectors_declare_fix_schemas(self) -> None:
+        """Every gate-measurable detector declares at least one fix_schema."""
+        gate_detectors = [
+            OutlierRateDetector(),
+            BenfordDetector(),
+            NullRatioDetector(),
+            BusinessMeaningDetector(),
+            UnitEntropyDetector(),
+            RelationshipEntropyDetector(),
+            JoinPathDeterminismDetector(),
+        ]
+        for detector in gate_detectors:
+            assert len(detector.fix_schemas) > 0, (
+                f"{detector.detector_id} has no fix_schemas"
+            )
+
+    def test_fix_schemas_have_requires_rerun(self) -> None:
+        """All fix_schemas declare which phase to re-run."""
+        gate_detectors = [
+            OutlierRateDetector(),
+            BenfordDetector(),
+            NullRatioDetector(),
+            BusinessMeaningDetector(),
+            UnitEntropyDetector(),
+            RelationshipEntropyDetector(),
+            JoinPathDeterminismDetector(),
+        ]
+        for detector in gate_detectors:
+            for schema in detector.fix_schemas:
+                assert schema.requires_rerun is not None, (
+                    f"{detector.detector_id}.{schema.action} missing requires_rerun"
+                )

@@ -25,7 +25,7 @@ from dataraum.pipeline.base import Phase, PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.cleanup import cleanup_phase
 from dataraum.pipeline.db_models import PhaseLog
 from dataraum.pipeline.events import EventType, PipelineEvent
-from dataraum.pipeline.fixes import FixInput, FixResult, apply_config_patch
+from dataraum.pipeline.fixes import FixInput
 
 logger = get_logger(__name__)
 
@@ -536,63 +536,77 @@ class PipelineScheduler:
         return available
 
     def _apply_fixes(self, fix_inputs: list[FixInput]) -> None:
-        """Apply fix inputs: call handlers, patch config, log to ledger, reset.
+        """Apply fix inputs via bridge + interpreters, log to ledger, reset.
 
         After this method returns the scheduler loop naturally re-runs
         the reset phases, triggering fresh gate measurement.
         """
         from dataraum.core.config import _get_config_root
         from dataraum.documentation.ledger import log_fix
-        from dataraum.pipeline.fix_registry import get_default_fix_registry
+        from dataraum.entropy.detectors.base import get_default_registry
+        from dataraum.pipeline.fixes.bridge import build_fix_documents
+        from dataraum.pipeline.fixes.interpreters import apply_and_persist
 
         config_root = _get_config_root()
-        fix_registry = get_default_fix_registry()
+        detector_registry = get_default_registry()
         phases_to_rerun: set[str] = set()
 
         for fix_input in fix_inputs:
-            entry = fix_registry.find(fix_input.action_name)
-            if entry is None:
+            schema = detector_registry.get_fix_schema(fix_input.action_name)
+            if schema is None:
                 logger.warning(
-                    "fix_handler_not_found",
+                    "fix_schema_not_found",
                     action=fix_input.action_name,
                 )
                 continue
 
-            config = self._phase_configs.get(entry.phase_name, {})
-            fix_result: FixResult = entry.handler(fix_input, config)
+            # Derive table/column from affected_columns
+            col_ref = (fix_input.affected_columns or [fix_input.action_name])[0]
+            bare_ref = col_ref.split(":", 1)[-1] if ":" in col_ref else col_ref
+            parts = bare_ref.split(".", 1)
+            table_name = parts[0]
+            column_name = parts[1] if len(parts) > 1 else None
+            dimension = schema.requires_rerun or ""
 
-            for patch in fix_result.config_patches:
-                apply_config_patch(config_root, patch)
+            documents = build_fix_documents(
+                schema, fix_input, table_name, column_name, dimension
+            )
 
-            if fix_result.requires_rerun:
-                phases_to_rerun.add(fix_result.requires_rerun)
+            if documents:
+                apply_and_persist(
+                    self.source_id,
+                    documents,
+                    session=self.session,
+                    config_root=config_root,
+                    duckdb_conn=self.duckdb_conn,
+                )
+
+            if schema.requires_rerun:
+                phases_to_rerun.add(schema.requires_rerun)
 
             # Log to fix ledger
             for col_ref in fix_input.affected_columns or [fix_input.action_name]:
-                # Strip scope prefix (e.g. "column:orders.amount" → "orders.amount")
                 bare_ref = (
                     col_ref.split(":", 1)[-1] if ":" in col_ref else col_ref
                 )
                 parts = bare_ref.split(".", 1)
-                table_name = parts[0]
-                column_name = parts[1] if len(parts) > 1 else None
+                t_name = parts[0]
+                c_name = parts[1] if len(parts) > 1 else None
                 log_fix(
                     session=self.session,
                     source_id=self.source_id,
                     action_name=fix_input.action_name,
-                    table_name=table_name,
-                    column_name=column_name,
+                    table_name=t_name,
+                    column_name=c_name,
                     user_input=fix_input.interpretation,
-                    interpretation=fix_result.summary,
+                    interpretation=f"{schema.action}: {', '.join(fix_input.affected_columns)}",
                 )
 
             logger.info(
                 "fix_applied",
                 action=fix_input.action_name,
-                phase=entry.phase_name,
-                patches=len(fix_result.config_patches),
-                rerun=fix_result.requires_rerun,
-                summary=fix_result.summary,
+                documents=len(documents),
+                rerun=schema.requires_rerun,
             )
 
         # Reload configs from disk so re-runs pick up the patches
@@ -627,17 +641,15 @@ class PipelineScheduler:
     ) -> dict[str, list[dict[str, str]]]:
         """Gather fixable actions for EXIT_CHECK event display.
 
-        Consults the detector registry and fix registry to find which
+        Consults the detector registry's fix_schemas to find which
         actions are available for each violating dimension.
 
         Returns:
-            dim_path -> [{"action_name": str, "phase_name": str}]
+            dim_path -> [{"action_name": str, "phase_name": str, ...}]
         """
         from dataraum.entropy.detectors.base import get_default_registry
-        from dataraum.pipeline.fix_registry import get_default_fix_registry
 
         detector_registry = get_default_registry()
-        fix_registry = get_default_fix_registry()
 
         # Build dim_path -> detector lookup for matching issues
         detector_by_path = {
@@ -648,17 +660,15 @@ class PipelineScheduler:
         for issue in issues:
             detector = detector_by_path.get(issue.dimension_path)
             if detector:
-                actions = []
-                for action in detector.fixable_actions:
-                    entry = fix_registry.find(str(action))
-                    if entry is not None:
-                        action_dict: dict[str, str] = {
-                            "action_name": str(action),
-                            "phase_name": entry.phase_name,
-                        }
-                        if entry.guidance:
-                            action_dict["guidance"] = entry.guidance
-                        actions.append(action_dict)
+                actions: list[dict[str, str]] = []
+                for schema in detector.fix_schemas:
+                    action_dict: dict[str, str] = {
+                        "action_name": schema.action,
+                        "phase_name": schema.requires_rerun or "",
+                    }
+                    if schema.guidance:
+                        action_dict["guidance"] = schema.guidance
+                    actions.append(action_dict)
                 if actions:
                     result[issue.dimension_path] = actions
 

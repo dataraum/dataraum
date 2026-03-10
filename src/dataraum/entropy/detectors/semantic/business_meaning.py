@@ -15,6 +15,7 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, FixAction, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 
 class BusinessMeaningDetector(EntropyDetector):
@@ -42,6 +43,43 @@ class BusinessMeaningDetector(EntropyDetector):
     def fixable_actions(self) -> set[FixAction]:
         """Documenting business meaning directly lowers the score."""
         return {FixAction.DOCUMENT_BUSINESS_MEANING}
+
+    @property
+    def fix_schemas(self) -> list[FixSchema]:
+        """Schema for documenting business meaning."""
+        return [
+            FixSchema(
+                action="document_business_meaning",
+                target="config",
+                description="Record business meaning overrides for columns",
+                config_path="phases/semantic.yaml",
+                key_path=["overrides", "business_meaning"],
+                operation="merge",
+                requires_rerun="semantic",
+                guidance=(
+                    "Records business meaning for columns that lack clear semantic "
+                    "annotations. Ask what the column represents in business terms, "
+                    "what entity type it belongs to, and its human-readable name."
+                ),
+                fields={
+                    "business_name": FixSchemaField(
+                        type="string",
+                        required=False,
+                        description="Human-readable business name for the column",
+                    ),
+                    "entity_type": FixSchemaField(
+                        type="string",
+                        required=False,
+                        description="Entity classification (e.g. customer, product, transaction)",
+                    ),
+                    "description": FixSchemaField(
+                        type="string",
+                        required=False,
+                        description="Business description of the column",
+                    ),
+                },
+            )
+        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load semantic annotation for this column."""

@@ -16,6 +16,7 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, FixAction, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 
 class UnitEntropyDetector(EntropyDetector):
@@ -44,6 +45,38 @@ class UnitEntropyDetector(EntropyDetector):
     def fixable_actions(self) -> set[FixAction]:
         """Declaring a unit directly lowers the score."""
         return {FixAction.DECLARE_UNIT}
+
+    @property
+    def fix_schemas(self) -> list[FixSchema]:
+        """Schema for declaring units."""
+        return [
+            FixSchema(
+                action="declare_unit",
+                target="config",
+                description="Declare the unit of measure for numeric columns",
+                config_path="phases/semantic.yaml",
+                key_path=["overrides", "units"],
+                operation="merge",
+                requires_rerun="semantic",
+                guidance=(
+                    "Declares the unit of measure for numeric columns. Ask what unit "
+                    "the column values represent (e.g. USD, EUR, kg, %). Use the data "
+                    "profile and column name to suggest a likely unit."
+                ),
+                fields={
+                    "unit": FixSchemaField(
+                        type="string",
+                        required=True,
+                        description="Unit of measure (e.g. USD, EUR, kg, dimensionless)",
+                    ),
+                    "unit_source_column": FixSchemaField(
+                        type="string",
+                        required=False,
+                        description="Column that defines the unit (for cross-column inference)",
+                    ),
+                },
+            )
+        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load typing and semantic data for this column."""

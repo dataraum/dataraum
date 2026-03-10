@@ -10,8 +10,9 @@ Source: semantic.semantic_role, typing.data_type
 
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, FixAction, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 
 class TemporalEntropyDetector(EntropyDetector):
@@ -36,6 +37,77 @@ class TemporalEntropyDetector(EntropyDetector):
 
     # Date/time type indicators (uppercase for case-insensitive matching)
     DATETIME_TYPES = frozenset({"DATE", "TIME", "TIMESTAMP", "DATETIME", "INTERVAL"})
+
+    @property
+    def fixable_actions(self) -> set[FixAction]:
+        """Set timestamp role or add type pattern."""
+        return {FixAction.SET_TIMESTAMP_ROLE, FixAction.ADD_TYPE_PATTERN}
+
+    @property
+    def fix_schemas(self) -> list[FixSchema]:
+        """Schemas for temporal fixes."""
+        return [
+            FixSchema(
+                action="set_timestamp_role",
+                target="config",
+                description="Mark a date column with its temporal behavior",
+                config_path="phases/semantic.yaml",
+                key_path=["overrides", "temporal_roles"],
+                operation="merge",
+                requires_rerun="semantic",
+                guidance=(
+                    "Sets the temporal role for a date/time column. Ask whether "
+                    "this column represents an event timestamp, a period boundary, "
+                    "or a record-keeping date."
+                ),
+                fields={
+                    "temporal_behavior": FixSchemaField(
+                        type="enum",
+                        required=True,
+                        description="Temporal behavior classification",
+                        enum_values=[
+                            "event_timestamp",
+                            "period_start",
+                            "period_end",
+                            "record_created",
+                            "record_updated",
+                        ],
+                    ),
+                },
+            ),
+            FixSchema(
+                action="add_type_pattern",
+                target="config",
+                description="Add a custom type pattern for date parsing",
+                config_path="phases/typing.yaml",
+                key_path=["overrides", "patterns"],
+                operation="merge",
+                requires_rerun="typing",
+                key_template="{pattern_name}",
+                guidance=(
+                    "Adds a custom date/time pattern for columns that fail type "
+                    "inference. Ask what format the dates are in (e.g. DD/MM/YYYY)."
+                ),
+                fields={
+                    "pattern_name": FixSchemaField(
+                        type="string",
+                        required=True,
+                        description="Name for this pattern (e.g. european_date)",
+                    ),
+                    "pattern": FixSchemaField(
+                        type="regex",
+                        required=True,
+                        description="Regex pattern to match (e.g. \\d{2}/\\d{2}/\\d{4})",
+                    ),
+                    "inferred_type": FixSchemaField(
+                        type="string",
+                        required=True,
+                        description="DuckDB type to infer (e.g. DATE, TIMESTAMP)",
+                        default="DATE",
+                    ),
+                },
+            ),
+        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load typing and semantic data for this column."""
@@ -150,7 +222,7 @@ class TemporalEntropyDetector(EntropyDetector):
         if temporal_status == "unmarked":
             resolution_options.append(
                 ResolutionOption(
-                    action="document_timestamp_role",
+                    action="set_timestamp_role",
                     parameters={
                         "column": context.column_name,
                         "table": context.table_name,

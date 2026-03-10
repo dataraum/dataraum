@@ -91,5 +91,7 @@ class FixAction(_StrValueMixin):
     ACCEPT_FINDING = "accept_finding"
     DOCUMENT_BUSINESS_MEANING = "document_business_meaning"
     DECLARE_UNIT = "declare_unit"
+    SET_TIMESTAMP_ROLE = "set_timestamp_role"
+    ADD_TYPE_PATTERN = "add_type_pattern"
     CONFIRM_RELATIONSHIP = "confirm_relationship"
     RESOLVE_JOIN_AMBIGUITY = "resolve_join_ambiguity"

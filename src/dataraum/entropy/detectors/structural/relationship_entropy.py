@@ -14,6 +14,7 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, FixAction, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 
 class RelationshipEntropyDetector(EntropyDetector):
@@ -44,6 +45,51 @@ class RelationshipEntropyDetector(EntropyDetector):
     def fixable_actions(self) -> set[FixAction]:
         """Confirming a relationship lowers the semantic entropy component."""
         return {FixAction.CONFIRM_RELATIONSHIP}
+
+    @property
+    def fix_schemas(self) -> list[FixSchema]:
+        """Schema for confirming relationships."""
+        return [
+            FixSchema(
+                action="confirm_relationship",
+                target="config",
+                description="Confirm a detected relationship between tables",
+                config_path="phases/relationships.yaml",
+                key_path=["overrides", "confirmed_relationships"],
+                operation="merge",
+                requires_rerun="relationships",
+                key_template="{from_table}->{to_table}",
+                guidance=(
+                    "Confirms or rejects a detected relationship between tables. "
+                    "Ask whether the relationship is a real foreign key, shared "
+                    "reference data, or coincidental overlap."
+                ),
+                fields={
+                    "from_table": FixSchemaField(
+                        type="string",
+                        required=True,
+                        description="Source table name",
+                    ),
+                    "to_table": FixSchemaField(
+                        type="string",
+                        required=True,
+                        description="Target table name",
+                    ),
+                    "relationship_type": FixSchemaField(
+                        type="enum",
+                        required=False,
+                        description="Confirmed relationship type",
+                        enum_values=["foreign_key", "shared_reference", "coincidental"],
+                    ),
+                    "cardinality": FixSchemaField(
+                        type="enum",
+                        required=False,
+                        description="Confirmed cardinality",
+                        enum_values=["one_to_one", "one_to_many", "many_to_one", "many_to_many"],
+                    ),
+                },
+            )
+        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load relationships for this column."""

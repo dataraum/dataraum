@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from dataraum.entropy.detectors.base import DetectorRegistry, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.gate import (
     GateResult,
@@ -20,8 +21,8 @@ from dataraum.entropy.gate import (
 from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.db_models import PhaseLog, PipelineRun
 from dataraum.pipeline.events import EventType
-from dataraum.pipeline.fix_registry import FixHandler, FixRegistry
-from dataraum.pipeline.fixes import ConfigPatch, FixInput, FixResult
+from dataraum.pipeline.fixes import FixInput
+from dataraum.pipeline.fixes.models import FixSchema
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.scheduler import (
     PipelineScheduler,
@@ -950,45 +951,55 @@ class TestMeasureAtGate:
         assert "semantic.dimensional.cross_column_patterns" in gate_result.scores
 
 
-def _make_test_fix_registry(
-    action: str, handler, phase_name: str
-) -> FixRegistry:
-    """Create a FixRegistry with a single test handler registered."""
-    registry = FixRegistry()
-    registry.register(FixHandler(action=action, handler=handler, phase_name=phase_name))
+def _make_test_detector_registry(
+    action: str, phase_name: str, dim_path: str = "structural.types.type_fidelity"
+) -> DetectorRegistry:
+    """Create a DetectorRegistry with a detector that has a fix schema."""
+    parts = dim_path.split(".")
+    layer_str, dim_str, subdim_str = parts[0], parts[1], parts[2]
+
+    class TestDetector(EntropyDetector):
+        detector_id = "test_detector"
+        layer = Layer(layer_str)
+        dimension = Dimension(dim_str)
+        sub_dimension = SubDimension(subdim_str)
+        scope = "column"
+        required_analyses: list[AnalysisKey] = []
+
+        @property
+        def fix_schemas(self) -> list[FixSchema]:
+            return [
+                FixSchema(
+                    action=action,
+                    target="config",
+                    description="Test fix",
+                    config_path="phases/typing.yaml",
+                    key_path=["overrides"],
+                    operation="set",
+                    requires_rerun=phase_name,
+                    fields={},
+                )
+            ]
+
+        @property
+        def fixable_actions(self):
+            return {action}
+
+        def detect(self, ctx):
+            return []
+
+    registry = DetectorRegistry()
+    registry.register(TestDetector())
     return registry
 
 
 class TestFixResolution:
     """Tests for ResolutionAction.FIX — the inline fix flow."""
 
-    def _make_fix_handler(self, rerun_phase: str = "typing"):
-        """Create a mock fix handler that records calls and returns a FixResult."""
-        calls = []
-
-        def handler(fix_input: FixInput, config: dict) -> FixResult:
-            calls.append((fix_input, config))
-            return FixResult(
-                config_patches=[
-                    ConfigPatch(
-                        config_path="phases/typing.yaml",
-                        operation="set",
-                        key_path=["overrides", "amount"],
-                        value={"resolved_type": "DECIMAL"},
-                        reason="Test fix",
-                    )
-                ],
-                requires_rerun=rerun_phase,
-                summary="Applied type override",
-            )
-
-        return handler, calls
-
     def test_fix_calls_handler_and_resets_phase(self, session: Session, duckdb_conn):
-        """FIX resolution calls handler, applies patches, resets affected phase."""
+        """FIX resolution builds documents, applies via interpreter, resets affected phase."""
         _ensure_source(session)
         run_id = _make_run(session)
-        handler, calls = self._make_fix_handler(rerun_phase="alpha")
 
         alpha = MockPhase(
             "alpha",
@@ -1022,18 +1033,21 @@ class TestFixResolution:
                 return GateResult(scores={"structural.types.type_fidelity": 0.8})
             return GateResult(scores={"structural.types.type_fidelity": 0.1})
 
-        test_registry = _make_test_fix_registry("override_type", handler, "alpha")
+        detector_registry = _make_test_detector_registry("override_type", "alpha")
         with (
             patch(
                 "dataraum.pipeline.scheduler.measure_at_gate",
                 side_effect=mock_measure,
             ),
             patch("dataraum.pipeline.scheduler.cleanup_phase"),
-            patch("dataraum.pipeline.scheduler.apply_config_patch") as mock_apply,
             patch(
-                "dataraum.pipeline.fix_registry.get_default_fix_registry",
-                return_value=test_registry,
+                "dataraum.entropy.detectors.base.get_default_registry",
+                return_value=detector_registry,
             ),
+            patch(
+                "dataraum.pipeline.fixes.interpreters.apply_and_persist",
+                return_value=[],
+            ) as mock_apply,
         ):
             events, result = _drive(
                 scheduler.run(),
@@ -1045,11 +1059,7 @@ class TestFixResolution:
                 },
             )
 
-        # Handler was called
-        assert len(calls) == 1
-        assert calls[0][0].action_name == "override_type"
-
-        # Config patch was applied
+        # apply_and_persist was called
         mock_apply.assert_called_once()
 
         # Alpha ran twice (original + re-run after fix)
@@ -1067,7 +1077,7 @@ class TestFixResolution:
         assert fixes[0].table_name == "orders"
         assert fixes[0].column_name == "amount"
 
-    def test_fix_handler_not_found_continues(self, session: Session, duckdb_conn):
+    def test_fix_schema_not_found_continues(self, session: Session, duckdb_conn):
         """Unknown action_name in FIX resolution logs warning, doesn't crash."""
         _ensure_source(session)
         run_id = _make_run(session)
@@ -1098,7 +1108,7 @@ class TestFixResolution:
                 },
             )
 
-        # Pipeline completes — handler not found, violation silently dropped
+        # Pipeline completes — schema not found, violation silently dropped
         assert result.success is True
         assert alpha.run_count == 1
         assert result.deferred_issues == []
@@ -1107,7 +1117,6 @@ class TestFixResolution:
         """FIX resets affected phase and all downstream to PENDING."""
         _ensure_source(session)
         run_id = _make_run(session)
-        handler, _ = self._make_fix_handler(rerun_phase="alpha")
 
         alpha = MockPhase(
             "alpha",
@@ -1135,8 +1144,8 @@ class TestFixResolution:
                 return GateResult(scores={"structural.types.type_fidelity": 0.8})
             return GateResult(scores={"structural.types.type_fidelity": 0.1})
 
-        fix_input = FixInput(action_name="override_type")
-        test_registry = _make_test_fix_registry("override_type", handler, "alpha")
+        fix_input = FixInput(action_name="override_type", affected_columns=["orders.amount"])
+        detector_registry = _make_test_detector_registry("override_type", "alpha")
 
         with (
             patch(
@@ -1144,10 +1153,13 @@ class TestFixResolution:
                 side_effect=mock_measure,
             ),
             patch("dataraum.pipeline.scheduler.cleanup_phase"),
-            patch("dataraum.pipeline.scheduler.apply_config_patch"),
             patch(
-                "dataraum.pipeline.fix_registry.get_default_fix_registry",
-                return_value=test_registry,
+                "dataraum.entropy.detectors.base.get_default_registry",
+                return_value=detector_registry,
+            ),
+            patch(
+                "dataraum.pipeline.fixes.interpreters.apply_and_persist",
+                return_value=[],
             ),
         ):
             events, result = _drive(
@@ -1172,7 +1184,6 @@ class TestFixResolution:
         """If fix doesn't resolve violation, EXIT_CHECK fires again."""
         _ensure_source(session)
         run_id = _make_run(session)
-        handler, calls = self._make_fix_handler(rerun_phase="alpha")
 
         alpha = MockPhase(
             "alpha",
@@ -1193,8 +1204,8 @@ class TestFixResolution:
         def mock_measure(session, duckdb_conn, source_id, available_analyses):
             return GateResult(scores={"structural.types.type_fidelity": 0.8})
 
-        fix_input = FixInput(action_name="override_type")
-        test_registry = _make_test_fix_registry("override_type", handler, "alpha")
+        fix_input = FixInput(action_name="override_type", affected_columns=["orders.amount"])
+        detector_registry = _make_test_detector_registry("override_type", "alpha")
 
         with (
             patch(
@@ -1202,11 +1213,14 @@ class TestFixResolution:
                 side_effect=mock_measure,
             ),
             patch("dataraum.pipeline.scheduler.cleanup_phase"),
-            patch("dataraum.pipeline.scheduler.apply_config_patch"),
             patch(
-                "dataraum.pipeline.fix_registry.get_default_fix_registry",
-                return_value=test_registry,
+                "dataraum.entropy.detectors.base.get_default_registry",
+                return_value=detector_registry,
             ),
+            patch(
+                "dataraum.pipeline.fixes.interpreters.apply_and_persist",
+                return_value=[],
+            ) as mock_apply,
         ):
             events, result = _drive(
                 scheduler.run(),
@@ -1219,8 +1233,8 @@ class TestFixResolution:
                 },
             )
 
-        # Handler called once (first EXIT_CHECK)
-        assert len(calls) == 1
+        # apply_and_persist called once (first EXIT_CHECK)
+        mock_apply.assert_called_once()
 
         # Alpha ran twice (original + re-run)
         assert alpha.run_count == 2
@@ -1241,12 +1255,6 @@ class TestFixScoresCleared:
         """After FIX resolution, scores are cleared so gate re-measures fresh."""
         _ensure_source(session)
         run_id = _make_run(session)
-
-        handler = lambda fi, cfg: FixResult(  # noqa: E731
-            config_patches=[],
-            requires_rerun="alpha",
-            summary="test",
-        )
 
         alpha = MockPhase(
             "alpha",
@@ -1274,19 +1282,22 @@ class TestFixScoresCleared:
             # After fix, return different dimension to prove old scores were cleared
             return GateResult(scores={"value.nulls.null_ratio": 0.05})
 
-        fix_input = FixInput(action_name="override_type")
-        test_registry = _make_test_fix_registry("override_type", handler, "alpha")
+        fix_input = FixInput(action_name="override_type", affected_columns=["orders.amount"])
+        detector_registry = _make_test_detector_registry("override_type", "alpha")
         with (
             patch(
                 "dataraum.pipeline.scheduler.measure_at_gate",
                 side_effect=mock_measure,
             ),
             patch("dataraum.pipeline.scheduler.cleanup_phase"),
-            patch("dataraum.pipeline.scheduler.apply_config_patch"),
             patch("dataraum.core.config.load_phase_config", return_value={}),
             patch(
-                "dataraum.pipeline.fix_registry.get_default_fix_registry",
-                return_value=test_registry,
+                "dataraum.entropy.detectors.base.get_default_registry",
+                return_value=detector_registry,
+            ),
+            patch(
+                "dataraum.pipeline.fixes.interpreters.apply_and_persist",
+                return_value=[],
             ),
         ):
             events, result = _drive(
@@ -1304,33 +1315,29 @@ class TestFixScoresCleared:
         assert result.final_scores.get("value.nulls.null_ratio") == pytest.approx(0.05)
 
 
-class TestFixRegistry:
-    """Tests for FixRegistry lookup."""
+class TestDetectorRegistryFixSchema:
+    """Tests for DetectorRegistry.get_fix_schema()."""
 
-    def test_finds_registered_handler(self):
-        """Handler is found by action name."""
-        handler = lambda fi, cfg: FixResult()  # noqa: E731
-        registry = _make_test_fix_registry("override_type", handler, "alpha")
-        entry = registry.find("override_type")
-        assert entry is not None
-        assert entry.handler is handler
-        assert entry.phase_name == "alpha"
+    def test_finds_registered_schema(self):
+        """Schema is found by action name."""
+        registry = _make_test_detector_registry("override_type", "alpha")
+        schema = registry.get_fix_schema("override_type")
+        assert schema is not None
+        assert schema.action == "override_type"
+        assert schema.requires_rerun == "alpha"
 
     def test_returns_none_for_unknown_action(self):
         """Unknown action returns None."""
-        registry = FixRegistry()
-        assert registry.find("nonexistent") is None
+        registry = DetectorRegistry()
+        assert registry.get_fix_schema("nonexistent") is None
 
 
 class TestExitCheckFixableActions:
     """Tests for fixable_actions on EXIT_CHECK events."""
 
     def test_exit_check_includes_fixable_actions(self, session: Session, duckdb_conn):
-        """EXIT_CHECK event carries fixable_actions from detector registry."""
-        from dataraum.entropy.detectors.base import DetectorRegistry, EntropyDetector
-
+        """EXIT_CHECK event carries fixable_actions from detector fix_schemas."""
         run_id = _make_run(session)
-        dummy_handler = lambda fi, cfg: None  # noqa: E731
         phase = MockPhase(
             "typing",
             produces_analyses_keys={AnalysisKey.TYPING},
@@ -1345,27 +1352,7 @@ class TestExitCheckFixableActions:
             contract_thresholds={"structural.types": 0.3},
         )
 
-        # Detector declares which actions are fixable
-        class FixableDetector(EntropyDetector):
-            detector_id = "test_fixable"
-            layer = Layer.STRUCTURAL
-            dimension = Dimension.TYPES
-            sub_dimension = SubDimension.TYPE_FIDELITY
-            scope = "column"
-            required_analyses: list[AnalysisKey] = []
-
-            @property
-            def fixable_actions(self):
-                return {"override_type"}
-
-            def detect(self, ctx):
-                return []
-
-        detector_registry = DetectorRegistry()
-        detector_registry.register(FixableDetector())
-
-        # Fix registry maps action → handler + phase
-        fix_reg = _make_test_fix_registry("override_type", dummy_handler, "typing")
+        detector_registry = _make_test_detector_registry("override_type", "typing")
 
         gate = GateResult(scores={"structural.types.type_fidelity": 0.8})
         with (
@@ -1376,10 +1363,6 @@ class TestExitCheckFixableActions:
             patch(
                 "dataraum.entropy.detectors.base.get_default_registry",
                 return_value=detector_registry,
-            ),
-            patch(
-                "dataraum.pipeline.fix_registry.get_default_fix_registry",
-                return_value=fix_reg,
             ),
         ):
             events, result = _drive(
@@ -1408,10 +1391,19 @@ class TestExitCheckFixableActions:
             contract_thresholds={"structural.types": 0.3},
         )
 
+        # Use empty detector registry — no detectors = no fixable actions
+        empty_registry = DetectorRegistry()
+
         gate = GateResult(scores={"structural.types.type_fidelity": 0.8})
-        with patch(
-            "dataraum.pipeline.scheduler.measure_at_gate",
-            return_value=gate,
+        with (
+            patch(
+                "dataraum.pipeline.scheduler.measure_at_gate",
+                return_value=gate,
+            ),
+            patch(
+                "dataraum.entropy.detectors.base.get_default_registry",
+                return_value=empty_registry,
+            ),
         ):
             events, result = _drive(
                 scheduler.run(),
@@ -1420,10 +1412,7 @@ class TestExitCheckFixableActions:
 
         exit_checks = [e for e in events if e.event_type == EventType.EXIT_CHECK]
         assert len(exit_checks) == 1
-        # Default detectors have no fixable_actions
-        assert exit_checks[0].fixable_actions == {} or all(
-            v == [] for v in exit_checks[0].fixable_actions.values()
-        )
+        assert exit_checks[0].fixable_actions == {}
 
 
 class TestSkippedDetectors:

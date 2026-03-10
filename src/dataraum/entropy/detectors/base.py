@@ -20,6 +20,7 @@ from dataraum.entropy.models import (
     EntropyObject,
     ResolutionOption,
 )
+from dataraum.pipeline.fixes.models import FixSchema
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -185,14 +186,21 @@ class EntropyDetector(ABC):
     def fixable_actions(self) -> set[FixAction]:
         """Action names that have config-level fix handlers.
 
-        Actions not listed here are document-only (domain knowledge
-        capture via the fix ledger). Handlers are registered in the
-        standalone FixRegistry — see pipeline.fix_registry.
-
         Default: empty (all actions are document-only).
         Override in subclasses to declare fixable actions.
         """
         return set()
+
+    @property
+    def fix_schemas(self) -> list[FixSchema]:
+        """Schemas for fix documents this detector can produce.
+
+        Each schema tells the bridge function how to build FixDocuments
+        for a given action. Override in subclasses.
+
+        Default: empty (no fix schemas).
+        """
+        return []
 
     @property
     def dimension_path(self) -> str:
@@ -342,6 +350,21 @@ class DetectorRegistry:
             for action in detector.fixable_actions:
                 result[str(action)] = detector.detector_id
         return result
+
+    def get_fix_schema(self, action_name: str) -> FixSchema | None:
+        """Find a FixSchema by action name across all detectors.
+
+        Args:
+            action_name: The action to look up.
+
+        Returns:
+            The matching FixSchema, or None if not found.
+        """
+        for detector in self.detectors.values():
+            for schema in detector.fix_schemas:
+                if schema.action == action_name:
+                    return schema
+        return None
 
 
 # Global registry instance

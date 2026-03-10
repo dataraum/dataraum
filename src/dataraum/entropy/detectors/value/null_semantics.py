@@ -8,6 +8,7 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, FixAction, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 
 class NullRatioDetector(EntropyDetector):
@@ -31,6 +32,41 @@ class NullRatioDetector(EntropyDetector):
     def fixable_actions(self) -> set[FixAction]:
         """Accept-finding for structurally expected nulls."""
         return {FixAction.ACCEPT_FINDING}
+
+    @property
+    def fix_schemas(self) -> list[FixSchema]:
+        """Schema for accepting null ratio findings."""
+        return [
+            FixSchema(
+                action="accept_finding",
+                target="config",
+                description="Mark null ratio findings as reviewed and accepted",
+                config_path="entropy/thresholds.yaml",
+                key_path=["detectors", "null_ratio", "accepted_columns"],
+                operation="append",
+                requires_rerun="quality_review",
+                guidance=(
+                    "Marks selected columns as reviewed and accepted. The detector "
+                    "will use a low floor score on future runs instead of the computed "
+                    "score. Ask the user WHICH columns to accept (all or a subset). "
+                    "Do NOT ask about disabling detection or adjusting thresholds — "
+                    "this action acknowledges the finding permanently."
+                ),
+                fields={
+                    "detector_id": FixSchemaField(
+                        type="string",
+                        required=True,
+                        description="Detector ID (null_ratio)",
+                        default="null_ratio",
+                    ),
+                    "reason": FixSchemaField(
+                        type="string",
+                        required=False,
+                        description="Why the finding was accepted",
+                    ),
+                },
+            )
+        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load statistical profile for this column."""

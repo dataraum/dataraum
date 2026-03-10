@@ -6,8 +6,9 @@ High parse failure rate indicates the detected type may not be correct.
 
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
+from dataraum.entropy.dimensions import AnalysisKey, Dimension, FixAction, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 
 class TypeFidelityDetector(EntropyDetector):
@@ -34,6 +35,50 @@ class TypeFidelityDetector(EntropyDetector):
     sub_dimension = SubDimension.TYPE_FIDELITY
     required_analyses = [AnalysisKey.TYPING]
     description = "Measures uncertainty in type inference based on parse success rate"
+
+    @property
+    def fixable_actions(self) -> set[FixAction]:
+        """Add custom type patterns for columns with parse failures."""
+        return {FixAction.ADD_TYPE_PATTERN}
+
+    @property
+    def fix_schemas(self) -> list[FixSchema]:
+        """Schema for adding type patterns."""
+        return [
+            FixSchema(
+                action="add_type_pattern",
+                target="config",
+                description="Add a custom type pattern for type inference",
+                config_path="phases/typing.yaml",
+                key_path=["overrides", "patterns"],
+                operation="merge",
+                requires_rerun="typing",
+                key_template="{pattern_name}",
+                guidance=(
+                    "Adds a custom type pattern for columns where type inference "
+                    "produced parse failures. Ask what the actual data format is "
+                    "and define a regex pattern for it."
+                ),
+                fields={
+                    "pattern_name": FixSchemaField(
+                        type="string",
+                        required=True,
+                        description="Name for this pattern (e.g. custom_decimal)",
+                    ),
+                    "pattern": FixSchemaField(
+                        type="regex",
+                        required=True,
+                        description="Regex pattern to match",
+                    ),
+                    "inferred_type": FixSchemaField(
+                        type="string",
+                        required=True,
+                        description="DuckDB type to infer (e.g. DECIMAL, INTEGER)",
+                        default="VARCHAR",
+                    ),
+                },
+            )
+        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load type decision and candidate info for this column."""

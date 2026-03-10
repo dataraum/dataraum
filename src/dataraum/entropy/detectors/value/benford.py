@@ -18,6 +18,7 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, FixAction, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 # Benford's Law uses digits 1-9, so df = k - 1 = 8
 _BENFORD_DF = 8
@@ -52,6 +53,41 @@ class BenfordDetector(EntropyDetector):
     def fixable_actions(self) -> set[FixAction]:
         """Accept-finding lowers the score for reviewed Benford deviations."""
         return {FixAction.ACCEPT_FINDING}
+
+    @property
+    def fix_schemas(self) -> list[FixSchema]:
+        """Schema for accepting Benford findings."""
+        return [
+            FixSchema(
+                action="accept_finding",
+                target="config",
+                description="Mark Benford deviation findings as reviewed and accepted",
+                config_path="entropy/thresholds.yaml",
+                key_path=["detectors", "benford", "accepted_columns"],
+                operation="append",
+                requires_rerun="quality_review",
+                guidance=(
+                    "Marks selected columns as reviewed and accepted. The detector "
+                    "will use a low floor score on future runs instead of the computed "
+                    "score. Ask the user WHICH columns to accept (all or a subset). "
+                    "Do NOT ask about disabling detection or adjusting thresholds — "
+                    "this action acknowledges the finding permanently."
+                ),
+                fields={
+                    "detector_id": FixSchemaField(
+                        type="string",
+                        required=True,
+                        description="Detector ID (benford)",
+                        default="benford",
+                    ),
+                    "reason": FixSchemaField(
+                        type="string",
+                        required=False,
+                        description="Why the finding was accepted",
+                    ),
+                },
+            )
+        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load statistics and semantic annotation for this column."""

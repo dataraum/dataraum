@@ -354,6 +354,8 @@ def _collect_fix_actions(
                 }
                 if "guidance" in action_info:
                     entry["guidance"] = action_info["guidance"]
+                if "fields" in action_info:
+                    entry["fields"] = action_info["fields"]
                 actions.append(entry)
 
     return actions
@@ -414,20 +416,25 @@ def _run_fix_flow(
 
     user_answers = "\n\n".join(answers_parts)
 
-    # Interpret answers
+    # Interpret answers — enforce parameter structure via tool schema
     console.print("[dim]Interpreting answers...[/dim]")
-    interp_result = agent.interpret_config_answers(context, user_answers)
+    from dataraum.entropy.detectors.base import get_default_registry
+
+    schema = get_default_registry().get_fix_schema(action_info["action_name"])
+    param_schema = schema.parameter_json_schema() if schema else None
+    interp_result = agent.interpret_config_answers(
+        context, user_answers, parameter_schema=param_schema
+    )
     if not interp_result.success:
         console.print(f"[red]Error: {interp_result.error}[/red]")
         return Resolution(action=ResolutionAction.DEFER)
 
     interp = interp_result.unwrap()
 
-    # Validate parameters against schema
-    from dataraum.entropy.detectors.base import get_default_registry
-
+    # Validate parameters against schema (belt-and-suspenders)
     action_name = interp.config_action or action_info["action_name"]
-    schema = get_default_registry().get_fix_schema(action_name)
+    if action_name != action_info["action_name"]:
+        schema = get_default_registry().get_fix_schema(action_name)
     if schema:
         errors = schema.validate_payload(interp.parameters)
         if errors:
@@ -508,7 +515,9 @@ def build_gate_context(
     if "guidance" in action_info:
         action_lines.append(f"Guidance: {action_info['guidance']}")
     if "fields" in action_info:
-        action_lines.append(f"Expected parameters: {action_info['fields']}")
+        action_lines.append("Expected parameters:")
+        for line in action_info["fields"].splitlines():
+            action_lines.append(f"  {line}")
     action_lines.append("</action_details>")
     sections.append("\n".join(action_lines))
 
@@ -539,14 +548,23 @@ def build_gate_context(
 def _get_affected_targets(
     dim_path: str, event: PipelineEvent,
 ) -> list[str]:
-    """Extract affected column/table targets from event column_details."""
+    """Extract column/table targets that actually violate the contract.
+
+    Only returns targets whose individual score exceeds the contract
+    threshold. Columns that scored but are below threshold (e.g.
+    aligned temporal columns at 0.1) are healthy and not actionable.
+    """
     col_scores = event.column_details.get(dim_path, {})
-    if col_scores:
-        # Return targets sorted by score descending (worst first)
-        return [
-            t for t, _ in sorted(col_scores.items(), key=lambda x: x[1], reverse=True)
-        ]
-    return []
+    if not col_scores:
+        return []
+
+    _, threshold = event.violations.get(dim_path, (0.0, 0.0))
+
+    return [
+        t
+        for t, s in sorted(col_scores.items(), key=lambda x: x[1], reverse=True)
+        if s > threshold
+    ]
 
 
 def _build_data_profile(

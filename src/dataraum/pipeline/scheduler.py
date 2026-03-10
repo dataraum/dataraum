@@ -673,20 +673,21 @@ class PipelineScheduler:
                     if schema.guidance:
                         action_dict["guidance"] = schema.guidance
                     if schema.fields:
-                        # Serialize field schema for LLM context
-                        fields_desc: dict[str, str] = {}
+                        # Serialize field schema as structured text for LLM
+                        field_lines: list[str] = []
                         for fname, fschema in schema.fields.items():
-                            parts = [fschema.type]
+                            parts = [f"{fname} ({fschema.type}"]
                             if fschema.required:
-                                parts.append("required")
+                                parts[0] += ", required"
+                            parts[0] += ")"
                             if fschema.description:
-                                parts.append(fschema.description)
+                                parts.append(f"  {fschema.description}")
                             if fschema.enum_values:
-                                parts.append(f"one of: {fschema.enum_values}")
+                                parts.append(f"  values: {fschema.enum_values}")
                             if fschema.examples:
-                                parts.append(f"e.g. {fschema.examples}")
-                            fields_desc[fname] = ", ".join(parts)
-                        action_dict["fields"] = str(fields_desc)
+                                parts.append(f"  examples: {fschema.examples}")
+                            field_lines.append("\n".join(parts))
+                        action_dict["fields"] = "\n".join(field_lines)
                     actions.append(action_dict)
                 if actions:
                     result[issue.dimension_path] = actions

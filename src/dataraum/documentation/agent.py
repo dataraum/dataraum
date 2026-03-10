@@ -277,6 +277,7 @@ class DocumentAgent:
         self,
         context: str,
         user_answers: str,
+        parameter_schema: dict[str, Any] | None = None,
     ) -> Result[ConfigFixInterpretation]:
         """Interpret user answers into structured config fix parameters.
 
@@ -286,6 +287,10 @@ class DocumentAgent:
         Args:
             context: Structured context string.
             user_answers: Formatted user answers to config questions.
+            parameter_schema: JSON schema for the parameters property.
+                When provided, replaces the generic dict[str, Any] in the
+                tool schema so the API enforces the expected field names,
+                types, and enum values.
 
         Returns:
             Result containing ConfigFixInterpretation.
@@ -303,10 +308,14 @@ class DocumentAgent:
         except Exception as e:
             return Result.fail(f"Failed to render prompt: {e}")
 
+        input_schema = ConfigFixInterpretation.model_json_schema()
+        if parameter_schema:
+            input_schema["properties"]["parameters"] = parameter_schema
+
         tool = ToolDefinition(
             name="config_fix_interpretation",
             description="Provide structured config fix parameters from user answers.",
-            input_schema=ConfigFixInterpretation.model_json_schema(),
+            input_schema=input_schema,
         )
 
         request = ConversationRequest(

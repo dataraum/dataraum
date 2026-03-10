@@ -31,6 +31,9 @@ system_prompt: |
   - Focus on CONCRETE CONFIG DECISIONS, not abstract domain knowledge.
   - Reference actual column names, current types/values, and sample data.
   - Use multiple_choice when the config has a finite set of valid options.
+  - When <action_details> lists "Expected parameters", use those as the
+    source of truth for what to ask. Use enum values as multiple_choice
+    options verbatim — do not paraphrase or invent alternatives.
   - Keep questions short — the user should be able to answer in one word or phrase.
   - Check <existing_fixes> to avoid asking about already-resolved issues.
   - If the data strongly suggests one answer, make it the default choice.
@@ -40,7 +43,9 @@ system_prompt: |
     must stand on its own. If a single question can cover the decision, prefer that.
 
   Rules for interpreting answers:
-  - Return structured parameters that map directly to config YAML keys.
+  - The parameters dict must use the exact field names and values from
+    "Expected parameters" in <action_details>. Do not rename keys or
+    paraphrase enum values.
   - The config_action must match an available fix action from the context.
   - List all affected_columns explicitly (e.g., ["orders.amount"]).
   - The interpretation should be a one-line human-readable summary.
@@ -62,8 +67,8 @@ user_prompt: |
   concrete default when the data points to an obvious answer.
 
   If mode is "interpret": Convert the user's answers into structured parameters
-  for the config fix handler. The parameters dict should contain key-value pairs
-  that map to YAML config keys (e.g., {{"resolved_type": "DATE", "columns": ["order_date"]}}).
+  for the config fix handler. Use the exact field names and values from
+  "Expected parameters" in <action_details>.
 
 inputs:
   mode:

@@ -11,8 +11,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.sqlite import JSON
@@ -121,23 +124,76 @@ class FixSchema:
     guidance: str = ""
     key_template: str | None = None
 
+    def _build_pydantic_model(self) -> type[BaseModel] | None:
+        """Build a dynamic Pydantic model from self.fields.
+
+        Returns None if there are no fields defined.
+        """
+        if not self.fields:
+            return None
+
+        from enum import Enum
+
+        from pydantic import Field as PydanticField
+        from pydantic import create_model
+
+        _TYPE_MAP: dict[str, type] = {
+            "string": str,
+            "float": float,
+            "int": int,
+            "bool": bool,
+            "enum": str,
+            "regex": str,
+            "duckdb_sql": str,
+        }
+
+        model_fields: dict[str, Any] = {}
+        for name, f in self.fields.items():
+            field_type: type = _TYPE_MAP.get(f.type, str)
+
+            # For enum fields, create a real Enum so Pydantic emits "enum" in JSON schema
+            if f.enum_values:
+                field_type = Enum(name, {v: v for v in f.enum_values}, type=str)  # type: ignore[misc,no-redef]
+
+            field_kwargs: dict[str, Any] = {}
+            if f.description:
+                field_kwargs["description"] = f.description
+
+            if f.required and f.default is None:
+                model_fields[name] = (field_type, PydanticField(..., **field_kwargs))
+            else:
+                model_fields[name] = (field_type, PydanticField(default=f.default, **field_kwargs))
+
+        return create_model("FixParameters", **model_fields)
+
+    def parameter_json_schema(self) -> dict[str, Any] | None:
+        """Build a JSON schema for the parameters dict via Pydantic.
+
+        Returns None if there are no fields defined.
+        """
+        model = self._build_pydantic_model()
+        if model is None:
+            return None
+        result: dict[str, Any] = model.model_json_schema()
+        return result
+
     def validate_payload(self, payload: dict[str, Any]) -> list[str]:
-        """Check that a payload satisfies this schema.
+        """Validate a payload against this schema using Pydantic.
 
         Returns:
             List of validation error messages (empty if valid).
         """
-        errors: list[str] = []
-        for name, schema_field in self.fields.items():
-            if schema_field.required and name not in payload:
-                errors.append(f"Missing required field: {name}")
-            if name in payload and schema_field.enum_values is not None:
-                if payload[name] not in schema_field.enum_values:
-                    errors.append(
-                        f"Field '{name}' must be one of {schema_field.enum_values}, "
-                        f"got {payload[name]!r}"
-                    )
-        return errors
+        model = self._build_pydantic_model()
+        if model is None:
+            return []
+
+        from pydantic import ValidationError
+
+        try:
+            model.model_validate(payload)
+            return []
+        except ValidationError as e:
+            return [err["msg"] for err in e.errors()]
 
 
 # ---------------------------------------------------------------------------

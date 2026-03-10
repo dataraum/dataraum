@@ -45,28 +45,24 @@ class TemporalEntropyDetector(EntropyDetector):
             FixSchema(
                 action="set_timestamp_role",
                 target="config",
-                description="Mark a date column with its temporal behavior",
+                description="Mark a date column as a timestamp",
                 config_path="phases/semantic.yaml",
-                key_path=["overrides", "temporal_roles"],
+                key_path=["overrides", "semantic_roles"],
                 operation="merge",
                 requires_rerun="semantic",
                 guidance=(
-                    "Sets the temporal role for a date/time column. Ask whether "
-                    "this column represents an event timestamp, a period boundary, "
-                    "or a record-keeping date."
+                    "Confirms that a date/time column should have "
+                    "semantic_role='timestamp'. The column has a date type from "
+                    "type inference but was not identified as a timestamp by the "
+                    "semantic agent. Ask the user to confirm."
                 ),
                 fields={
-                    "temporal_behavior": FixSchemaField(
+                    "semantic_role": FixSchemaField(
                         type="enum",
                         required=True,
-                        description="Temporal behavior classification",
-                        enum_values=[
-                            "event_timestamp",
-                            "period_start",
-                            "period_end",
-                            "record_created",
-                            "record_updated",
-                        ],
+                        description="Semantic role to assign",
+                        enum_values=["timestamp"],
+                        default="timestamp",
                     ),
                 },
             ),

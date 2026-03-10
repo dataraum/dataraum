@@ -420,7 +420,9 @@ def _run_fix_flow(
     console.print("[dim]Interpreting answers...[/dim]")
     from dataraum.entropy.detectors.base import get_default_registry
 
-    schema = get_default_registry().get_fix_schema(action_info["action_name"])
+    dim_path = action_info["dimension"]
+    registry = get_default_registry()
+    schema = registry.get_fix_schema(action_info["action_name"], dim_path)
     param_schema = schema.parameter_json_schema() if schema else None
     interp_result = agent.interpret_config_answers(
         context, user_answers, parameter_schema=param_schema
@@ -434,7 +436,7 @@ def _run_fix_flow(
     # Validate parameters against schema (belt-and-suspenders)
     action_name = interp.config_action or action_info["action_name"]
     if action_name != action_info["action_name"]:
-        schema = get_default_registry().get_fix_schema(action_name)
+        schema = registry.get_fix_schema(action_name, dim_path)
     if schema:
         errors = schema.validate_payload(interp.parameters)
         if errors:
@@ -463,6 +465,7 @@ def _run_fix_flow(
 
     fix_input = FixInput(
         action_name=interp.config_action or action_info["action_name"],
+        dimension=dim_path,
         parameters=dict(interp.parameters),
         interpretation=interp.interpretation,
         affected_columns=interp.affected_columns,

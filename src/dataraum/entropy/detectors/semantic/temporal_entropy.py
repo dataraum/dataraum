@@ -69,32 +69,40 @@ class TemporalEntropyDetector(EntropyDetector):
             FixSchema(
                 action="add_type_pattern",
                 target="config",
-                description="Add a custom type pattern for date parsing",
+                description="Add a custom date/time parsing pattern",
                 config_path="phases/typing.yaml",
                 key_path=["overrides", "patterns"],
                 operation="merge",
                 requires_rerun="typing",
                 key_template="{pattern_name}",
                 guidance=(
-                    "Adds a custom date/time pattern for columns that fail type "
-                    "inference. Ask what format the dates are in (e.g. DD/MM/YYYY)."
+                    "Adds a date/time pattern so the typing phase can parse "
+                    "this column. Show sample values and ask what date format "
+                    "they represent. Then produce a DuckDB STRPTIME format "
+                    "string (e.g. '%Y-%m' for '2025-01', '%d/%m/%Y' for "
+                    "'15/01/2024'). The regex pattern must match the raw "
+                    "string values."
                 ),
                 fields={
                     "pattern_name": FixSchemaField(
                         type="string",
                         required=True,
-                        description="Name for this pattern (e.g. european_date)",
+                        description="Short name for this pattern (e.g. fiscal_period, european_date)",
                     ),
                     "pattern": FixSchemaField(
                         type="regex",
                         required=True,
-                        description="Regex pattern to match (e.g. \\d{2}/\\d{2}/\\d{4})",
+                        description="Regex matching the raw values (e.g. ^\\d{4}-\\d{2}$)",
                     ),
-                    "inferred_type": FixSchemaField(
-                        type="string",
+                    "standardization_expr": FixSchemaField(
+                        type="duckdb_sql",
                         required=True,
-                        description="DuckDB type to infer (e.g. DATE, TIMESTAMP)",
-                        default="DATE",
+                        description=(
+                            'DuckDB expression to parse the value into a date/timestamp. '
+                            'Use STRPTIME with {col} placeholder. '
+                            'Examples: STRPTIME("{col}", \'%Y-%m\'), '
+                            'STRPTIME("{col}", \'%d/%m/%Y\')'
+                        ),
                     ),
                 },
             ),

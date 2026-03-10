@@ -86,27 +86,52 @@ class PatternConfig:
             patterns_list = cast(list[dict[str, Any]], self._config.get(category, []))
             for pattern_dict in patterns_list:
                 try:
-                    # Convert inferred_type string to DataType enum
-                    inferred_type_str = pattern_dict.get("inferred_type", "VARCHAR")
-                    inferred_type = DataType[inferred_type_str]
-
-                    pattern = Pattern(
-                        name=pattern_dict["name"],
-                        pattern=pattern_dict["pattern"],
-                        inferred_type=inferred_type,
-                        semantic_type=pattern_dict.get("semantic_type"),
-                        detected_unit=pattern_dict.get("detected_unit"),
-                        case_sensitive=pattern_dict.get("case_sensitive", True),
-                        pii=pattern_dict.get("pii", False),
-                        ambiguous=pattern_dict.get("ambiguous", False),
-                        locale=pattern_dict.get("locale"),
-                        examples=pattern_dict.get("examples"),
-                        standardization_expr=pattern_dict.get("standardization_expr"),
-                    )
-                    self._patterns.append(pattern)
+                    self._patterns.append(self._build_pattern(pattern_dict, category))
                 except KeyError as e:
                     logger.warning("invalid_pattern_definition", category=category, error=str(e))
                     continue
+
+        # Load user-defined overrides (dict keyed by pattern name)
+        overrides = self._config.get("overrides", {})
+        if isinstance(overrides, dict):
+            override_patterns = overrides.get("patterns", {})
+            if isinstance(override_patterns, dict):
+                for name, pattern_dict in override_patterns.items():
+                    if not isinstance(pattern_dict, dict):
+                        continue
+                    try:
+                        # Default inferred_type to DATE for override patterns
+                        # with standardization_expr (date/time parsing patterns).
+                        defaults: dict[str, Any] = {"name": name}
+                        if "standardization_expr" in pattern_dict and "inferred_type" not in pattern_dict:
+                            defaults["inferred_type"] = "DATE"
+                        pattern_dict_with_name = {**defaults, **pattern_dict}
+                        self._patterns.append(
+                            self._build_pattern(pattern_dict_with_name, "overrides")
+                        )
+                    except KeyError as e:
+                        logger.warning("invalid_override_pattern", name=name, error=str(e))
+                        continue
+
+    @staticmethod
+    def _build_pattern(pattern_dict: dict[str, Any], category: str) -> Pattern:
+        """Build a Pattern from a config dict."""
+        inferred_type_str = pattern_dict.get("inferred_type", "VARCHAR")
+        inferred_type = DataType[inferred_type_str]
+
+        return Pattern(
+            name=pattern_dict["name"],
+            pattern=pattern_dict["pattern"],
+            inferred_type=inferred_type,
+            semantic_type=pattern_dict.get("semantic_type"),
+            detected_unit=pattern_dict.get("detected_unit"),
+            case_sensitive=pattern_dict.get("case_sensitive", True),
+            pii=pattern_dict.get("pii", False),
+            ambiguous=pattern_dict.get("ambiguous", False),
+            locale=pattern_dict.get("locale"),
+            examples=pattern_dict.get("examples"),
+            standardization_expr=pattern_dict.get("standardization_expr"),
+        )
 
     def get_patterns(self) -> list[Pattern]:
         """Get all value patterns.

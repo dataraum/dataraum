@@ -566,7 +566,9 @@ class PipelineScheduler:
         phases_to_rerun: set[str] = set()
 
         for fix_input in fix_inputs:
-            schema = detector_registry.get_fix_schema(fix_input.action_name)
+            schema = detector_registry.get_fix_schema(
+                fix_input.action_name, fix_input.dimension or None
+            )
             if schema is None:
                 logger.warning(
                     "fix_schema_not_found",
@@ -627,14 +629,16 @@ class PipelineScheduler:
 
         # Cleanup and reset affected phases + all downstream, then commit
         # so per-phase sessions (via session_factory) see the cleared state.
+        # Order matters: invalidate downstream FIRST to remove FK references,
+        # then clean up the target phase itself.
         try:
             for phase_name in phases_to_rerun:
                 if phase_name in self.phases:
+                    self._invalidate_downstream(phase_name)
                     cleanup_phase(
                         phase_name, self.source_id, self.session, self.duckdb_conn
                     )
                     self._state[phase_name] = PhaseStatus.PENDING
-                    self._invalidate_downstream(phase_name)
 
             if phases_to_rerun:
                 self.session.commit()

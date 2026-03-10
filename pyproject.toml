@@ -20,7 +20,7 @@ classifiers = [
 
 dependencies = [
     # Data processing
-    "duckdb>=1.0.0",
+    "duckdb>=1.5.0",
     "pint>=0.23",
     "pandas>=3.0.0",
     # Database (SQLAlchemy + SQLite backend)

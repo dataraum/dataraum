@@ -329,16 +329,26 @@ class DetectorRegistry:
         """
         return list({d.dimension for d in self.detectors.values() if d.layer == layer})
 
-    def get_fix_schema(self, action_name: str) -> FixSchema | None:
-        """Find a FixSchema by action name across all detectors.
+    def get_fix_schema(
+        self, action_name: str, dimension_path: str | None = None
+    ) -> FixSchema | None:
+        """Find a FixSchema by action name, optionally scoped by dimension.
+
+        When multiple detectors share the same action name (e.g.
+        ``accept_finding``), *dimension_path* disambiguates by matching
+        the detector's ``dimension_path`` property.
 
         Args:
             action_name: The action to look up.
+            dimension_path: If provided, only consider detectors whose
+                dimension_path matches.
 
         Returns:
             The matching FixSchema, or None if not found.
         """
         for detector in self.detectors.values():
+            if dimension_path and detector.dimension_path != dimension_path:
+                continue
             for schema in detector.fix_schemas:
                 if schema.action == action_name:
                     return schema

@@ -206,7 +206,7 @@ def measure_at_gate(
         mean_score = sum(score_list) / len(score_list)
         max_score = max(score_list)
         path = sub_dim_to_path.get(sub_dim, sub_dim)
-        result_scores[path] = max(mean_score, max_score**2)
+        result_scores[path] = round(max(mean_score, max_score**2), 4)
 
     # Build column details keyed by dimension_path
     result_column_details: dict[str, dict[str, float]] = {}

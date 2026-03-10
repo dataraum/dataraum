@@ -286,6 +286,9 @@ class SemanticPhase(BasePhase):
 
         enrichment = enrich_result.unwrap()
 
+        # Apply config overrides (e.g. set_timestamp_role fix)
+        _apply_semantic_overrides(ctx.session, ctx.config, table_ids)
+
         annotations_count = len(enrichment.annotations)
         entities_count = len(enrichment.entity_detections)
         relationships_count = len(enrichment.relationships)
@@ -316,3 +319,73 @@ class SemanticPhase(BasePhase):
             warnings=previews,
             summary=f"{annotations_count} annotations, {entities_count} entities, {relationships_count} relationships",
         )
+
+
+def _apply_semantic_overrides(
+    session: Session,
+    config: dict,  # type: ignore[type-arg]
+    table_ids: list[str],
+) -> int:
+    """Apply semantic role overrides from config.
+
+    Reads ``overrides.semantic_roles`` from the semantic phase config.
+    Each entry maps ``"table.column"`` to ``{"semantic_role": "..."}``
+    and patches the existing SemanticAnnotation.
+
+    Returns:
+        Number of annotations updated.
+    """
+    overrides = config.get("overrides", {})
+    if not isinstance(overrides, dict):
+        return 0
+    role_overrides = overrides.get("semantic_roles", {})
+    if not isinstance(role_overrides, dict) or not role_overrides:
+        return 0
+
+    # Build column lookup: "table.column" -> column_id
+    cols = (
+        session.execute(
+            select(Column, Table.table_name)
+            .join(Table, Column.table_id == Table.table_id)
+            .where(Column.table_id.in_(table_ids))
+        )
+        .all()
+    )
+    col_lookup: dict[str, str] = {}
+    for col, tbl_name in cols:
+        col_lookup[f"{tbl_name}.{col.column_name}"] = col.column_id
+
+    count = 0
+    for col_ref, override_dict in role_overrides.items():
+        if not isinstance(override_dict, dict):
+            continue
+        new_role = override_dict.get("semantic_role")
+        if not new_role:
+            continue
+
+        col_id = col_lookup.get(col_ref)
+        if col_id is None:
+            logger.debug("semantic_override_skip", column=col_ref, reason="not found")
+            continue
+
+        annotation = session.execute(
+            select(SemanticAnnotation).where(SemanticAnnotation.column_id == col_id)
+        ).scalar_one_or_none()
+
+        if annotation is None:
+            logger.debug("semantic_override_skip", column=col_ref, reason="no annotation")
+            continue
+
+        if annotation.semantic_role != new_role:
+            annotation.semantic_role = new_role
+            annotation.annotation_source = "config_override"
+            count += 1
+            logger.info(
+                "semantic_override_applied",
+                column=col_ref,
+                role=new_role,
+            )
+
+    if count:
+        session.flush()
+    return count

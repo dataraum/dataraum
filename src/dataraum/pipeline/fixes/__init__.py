@@ -31,6 +31,7 @@ class FixInput:
     """
 
     action_name: str
+    dimension: str = ""
     parameters: dict[str, Any] = field(default_factory=dict)
     interpretation: str = ""
     affected_columns: list[str] = field(default_factory=list)

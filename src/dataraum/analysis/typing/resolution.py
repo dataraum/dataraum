@@ -29,6 +29,65 @@ from dataraum.storage import Column, Table
 logger = get_logger(__name__)
 
 
+def _resolve_pattern(
+    detected_pattern: str,
+    patterns_by_name: dict[str, Pattern],
+) -> Pattern | None:
+    """Resolve a detected pattern name to a Pattern object.
+
+    Handles combined pattern names (e.g. "us_date+eu_slash_date+dd_mon_yy")
+    produced by inference Strategy 1b. For combined names, builds a synthetic
+    Pattern with a COALESCE standardization_expr that tries each format.
+
+    Args:
+        detected_pattern: Pattern name, possibly containing '+' for combined.
+        patterns_by_name: Lookup of individual pattern objects.
+
+    Returns:
+        Pattern object, or None if not found.
+    """
+    # Simple case: single pattern name
+    if "+" not in detected_pattern:
+        return patterns_by_name.get(detected_pattern)
+
+    # Combined pattern: split and look up each constituent
+    names = detected_pattern.split("+")
+    parts: list[Pattern] = []
+    for name in names:
+        p = patterns_by_name.get(name)
+        if p is not None:
+            parts.append(p)
+
+    if not parts:
+        return None
+
+    # If only one resolved, just return it directly
+    if len(parts) == 1:
+        return parts[0]
+
+    # Build COALESCE(TRY_STRPTIME("{col}", fmt1), TRY_STRPTIME("{col}", fmt2), ...)
+    # Each part's standardization_expr is e.g. STRPTIME("{col}", '%m/%d/%Y')
+    # We replace STRPTIME → TRY_STRPTIME so mismatches return NULL not error
+    coalesce_parts = []
+    for p in parts:
+        if p.standardization_expr:
+            expr = p.standardization_expr.replace("STRPTIME(", "TRY_STRPTIME(")
+            coalesce_parts.append(expr)
+
+    if not coalesce_parts:
+        return parts[0]  # No standardization exprs, fallback to first
+
+    coalesce_expr = f"COALESCE({', '.join(coalesce_parts)})"
+
+    # Build synthetic Pattern combining all constituents
+    return Pattern(
+        name=detected_pattern,
+        pattern="",  # Not used for matching, only for SQL generation
+        inferred_type=parts[0].inferred_type,
+        standardization_expr=coalesce_expr,
+    )
+
+
 @dataclass
 class ColumnTypeSpec:
     """Type specification for a column during resolution."""
@@ -77,7 +136,7 @@ def _select_best_candidates(
         candidates = sorted(col.type_candidates, key=lambda c: c.confidence, reverse=True)
         if candidates and candidates[0].confidence >= min_confidence:
             best = candidates[0]
-            pattern = patterns_by_name.get(best.detected_pattern) if best.detected_pattern else None
+            pattern = _resolve_pattern(best.detected_pattern, patterns_by_name) if best.detected_pattern else None
             specs.append(
                 ColumnTypeSpec(
                     column_id=col.column_id,

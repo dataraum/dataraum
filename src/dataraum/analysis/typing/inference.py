@@ -269,6 +269,65 @@ def _infer_column_types(
             )
             candidates.append(candidate)
 
+        # Strategy 1b: Mixed-format columns — combine patterns via COALESCE
+        # When multiple patterns match different subsets of a column (e.g.
+        # MM/DD/YYYY and DD-Mon-YY), no single pattern reaches 80% parse
+        # success. Combine all matching standardization_expr for the same
+        # inferred_type into a COALESCE expression.
+        succeeded_types = {c.data_type for c in candidates}
+        patterns_by_type: dict[DataType, list[Pattern]] = defaultdict(list)
+        for pname, _count in pattern_matches.items():
+            p = pattern_by_name[pname]
+            if p.standardization_expr and p.inferred_type not in succeeded_types:
+                patterns_by_type[p.inferred_type].append(p)
+
+        for target_type, type_patterns in patterns_by_type.items():
+            if len(type_patterns) < 2:
+                continue  # Need multiple patterns to COALESCE
+
+            # Build COALESCE(TRY_STRPTIME(col, fmt1), TRY_STRPTIME(col, fmt2), ...)
+            # Replace STRPTIME→TRY_STRPTIME so mismatches return NULL not error
+            parts = []
+            for p in type_patterns:
+                expr = p.standardization_expr.format(col=col_name)  # type: ignore[union-attr]
+                expr = expr.replace("STRPTIME(", "TRY_STRPTIME(")
+                parts.append(expr)
+            coalesce_expr = f"COALESCE({', '.join(parts)})"
+
+            parse_result = _test_type_cast(
+                table_name=table_name,
+                col_name=col_name,
+                target_type=target_type,
+                duckdb_conn=duckdb_conn,
+                # Pass raw expr — _test_type_cast wraps in TRY_CAST
+                standardization_expr=None,
+                cast_override=coalesce_expr,
+            )
+
+            if parse_result.success_rate < 0.8:
+                continue
+
+            # Sum match rates across combined patterns
+            total_match = sum(pattern_matches[p.name] for p in type_patterns)
+            combined_rate = min(total_match / len(sample_values), 1.0)
+            confidence = (combined_rate + parse_result.success_rate) / 2.0
+            combined_names = "+".join(p.name for p in type_patterns)
+
+            candidate = TypeCandidateModel(
+                column_id=column.column_id,
+                column_ref=ColumnRef(
+                    table_name=table.table_name,
+                    column_name=column.column_name,
+                ),
+                data_type=target_type,
+                confidence=confidence,
+                parse_success_rate=parse_result.success_rate,
+                failed_examples=parse_result.failed_examples,
+                detected_pattern=combined_names,
+                pattern_match_rate=combined_rate,
+            )
+            candidates.append(candidate)
+
         # Strategy 2: If Pint detected units but no patterns matched
         # This handles cases like "100 kg" where the unit detection worked
         # but our regex patterns didn't catch it
@@ -320,6 +379,7 @@ def _test_type_cast(
     target_type: DataType,
     duckdb_conn: duckdb.DuckDBPyConnection,
     standardization_expr: str | None = None,
+    cast_override: str | None = None,
 ) -> ParseResult:
     """Test casting a column to a target type.
 
@@ -330,6 +390,10 @@ def _test_type_cast(
         duckdb_conn: DuckDB connection
         standardization_expr: Optional DuckDB SQL to normalize value before casting
                              (e.g., STRPTIME for date formats)
+        cast_override: Complete cast expression (e.g. COALESCE of multiple
+            STRPTIME calls). When set, used directly instead of building
+            TRY_CAST from standardization_expr.
+
     Returns:
         ParseResult with success rate and failed examples
     """
@@ -346,8 +410,11 @@ def _test_type_cast(
         if total_count == 0:
             return ParseResult(success_rate=0.0, failed_examples=[])
 
-        # Build cast expression - use standardization_expr if provided
-        if standardization_expr:
+        # Build cast expression
+        if cast_override:
+            # Pre-built expression (e.g. COALESCE of multiple STRPTIME calls)
+            cast_expr = cast_override
+        elif standardization_expr:
             cast_expression = standardization_expr.format(col=col_name)
             cast_expr = f"TRY_CAST({cast_expression} AS {target_type.value})"
         else:

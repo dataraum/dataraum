@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import json
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -12,7 +11,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from dataraum.export import (
-    ExportFormat,
     export_query_result,
     export_sql,
 )

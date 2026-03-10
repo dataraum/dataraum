@@ -86,7 +86,8 @@ class TestCollectFixActions:
         assert actions[0]["phase_name"] == "typing"
         assert actions[0]["dimension"] == "structural.types.type_fidelity"
 
-    def test_deduplicates_by_action_name(self) -> None:
+    def test_deduplicates_by_action_and_dimension(self) -> None:
+        """Same action for different dimensions produces separate entries."""
         event = _make_exit_check_event(
             fixable_actions={
                 "dim1": [{"action_name": "fix_a", "phase_name": "p1"}],
@@ -96,7 +97,9 @@ class TestCollectFixActions:
 
         actions = _collect_fix_actions(event)
 
-        assert len(actions) == 1
+        assert len(actions) == 2
+        assert actions[0]["dimension"] == "dim1"
+        assert actions[1]["dimension"] == "dim2"
 
     def test_multiple_distinct_actions(self) -> None:
         event = _make_exit_check_event(

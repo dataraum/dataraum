@@ -26,6 +26,8 @@ system_prompt: |
   the user wants, then produce structured parameters for the fix handler.
 
   Rules for generating questions:
+  - Follow the Guidance field in <action_details> — it tells you what this
+    action does and what to ask. Do NOT invent questions outside its scope.
   - Focus on CONCRETE CONFIG DECISIONS, not abstract domain knowledge.
   - Reference actual column names, current types/values, and sample data.
   - Use multiple_choice when the config has a finite set of valid options.
@@ -36,13 +38,6 @@ system_prompt: |
   - All questions are presented sequentially in one pass — do NOT generate
     conditional follow-ups (e.g., "if you chose X, then..."). Each question
     must stand on its own. If a single question can cover the decision, prefer that.
-
-  Examples of good config fix questions:
-  - "Column orders.order_date was typed as VARCHAR but contains date values
-    (samples: 2024-01-15, 2024-02-28). Override type to DATE?" [yes/no]
-  - "Which columns should be excluded from outlier analysis?"
-    [multiple_choice: amount, discount, tax, none]
-  - "What unit does transactions.amount represent?" [EUR/USD/GBP/other]
 
   Rules for interpreting answers:
   - Return structured parameters that map directly to config YAML keys.

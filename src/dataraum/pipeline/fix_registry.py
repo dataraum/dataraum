@@ -39,6 +39,7 @@ class FixHandler:
     action: str  # FixAction enum value (str-compatible)
     handler: Callable[[FixInput, dict[str, Any]], FixResult]
     phase_name: str  # which phase config to pass and which to re-run
+    guidance: str = ""  # LLM guidance: what the action does and what to ask the user
 
 
 class FixRegistry:
@@ -131,6 +132,13 @@ def _register_builtin_handlers(registry: FixRegistry) -> None:
             action="accept_finding",
             handler=_handle_accept_finding,
             phase_name="quality_review",
+            guidance=(
+                "Marks selected columns as reviewed and accepted. The detector "
+                "will use a low floor score on future runs instead of the computed "
+                "score. Ask the user WHICH columns to accept (all or a subset). "
+                "Do NOT ask about disabling detection or adjusting thresholds — "
+                "this action acknowledges the finding permanently."
+            ),
         )
     )
     registry.register(
@@ -138,6 +146,11 @@ def _register_builtin_handlers(registry: FixRegistry) -> None:
             action="document_business_meaning",
             handler=_handle_document_business_meaning,
             phase_name="semantic",
+            guidance=(
+                "Records business meaning for columns that lack clear semantic "
+                "annotations. Ask what the column represents in business terms, "
+                "what entity type it belongs to, and its human-readable name."
+            ),
         )
     )
     registry.register(
@@ -145,6 +158,11 @@ def _register_builtin_handlers(registry: FixRegistry) -> None:
             action="declare_unit",
             handler=_handle_declare_unit,
             phase_name="semantic",
+            guidance=(
+                "Declares the unit of measure for numeric columns. Ask what unit "
+                "the column values represent (e.g. USD, EUR, kg, %). Use the data "
+                "profile and column name to suggest a likely unit."
+            ),
         )
     )
     registry.register(
@@ -152,6 +170,11 @@ def _register_builtin_handlers(registry: FixRegistry) -> None:
             action="confirm_relationship",
             handler=_handle_confirm_relationship,
             phase_name="relationships",
+            guidance=(
+                "Confirms or rejects a detected relationship between tables. "
+                "Ask whether the relationship is a real foreign key, shared "
+                "reference data, or coincidental overlap."
+            ),
         )
     )
     registry.register(
@@ -159,6 +182,10 @@ def _register_builtin_handlers(registry: FixRegistry) -> None:
             action="resolve_join_ambiguity",
             handler=_handle_resolve_join_ambiguity,
             phase_name="relationships",
+            guidance=(
+                "Resolves ambiguity when multiple join paths exist between tables. "
+                "Ask which join path is the correct one for analytics queries."
+            ),
         )
     )
 

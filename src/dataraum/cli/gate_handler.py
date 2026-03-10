@@ -339,18 +339,22 @@ def _collect_fix_actions(
 ) -> list[dict[str, str]]:
     """Collect and deduplicate fix actions from the EXIT_CHECK event."""
     actions: list[dict[str, str]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
 
     for dim_path, dim_actions in event.fixable_actions.items():
         for action_info in dim_actions:
             name = action_info["action_name"]
-            if name not in seen:
-                seen.add(name)
-                actions.append({
+            key = (name, dim_path)
+            if key not in seen:
+                seen.add(key)
+                entry: dict[str, str] = {
                     "action_name": name,
                     "phase_name": action_info["phase_name"],
                     "dimension": dim_path,
-                })
+                }
+                if "guidance" in action_info:
+                    entry["guidance"] = action_info["guidance"]
+                actions.append(entry)
 
     return actions
 
@@ -491,14 +495,17 @@ def build_gate_context(
     sections: list[str] = []
 
     # Section 1: Action details
-    sections.append(
-        f"<action_details>\n"
-        f"Action: {action_info['action_name']}\n"
-        f"Description: Fix for {dim_path} contract violation\n"
-        f"Priority: high (score: {score:.2f})\n"
-        f"Affected columns: {', '.join(affected_targets)}\n"
-        f"</action_details>"
-    )
+    action_lines = [
+        "<action_details>",
+        f"Action: {action_info['action_name']}",
+        f"Description: Fix for {dim_path} contract violation",
+        f"Priority: high (score: {score:.2f})",
+        f"Affected columns: {', '.join(affected_targets)}",
+    ]
+    if "guidance" in action_info:
+        action_lines.append(f"Guidance: {action_info['guidance']}")
+    action_lines.append("</action_details>")
+    sections.append("\n".join(action_lines))
 
     # Section 2: Entropy evidence
     evidence_lines = [

@@ -652,9 +652,13 @@ class PipelineScheduler:
                 for action in detector.fixable_actions:
                     entry = fix_registry.find(str(action))
                     if entry is not None:
-                        actions.append(
-                            {"action_name": str(action), "phase_name": entry.phase_name}
-                        )
+                        action_dict: dict[str, str] = {
+                            "action_name": str(action),
+                            "phase_name": entry.phase_name,
+                        }
+                        if entry.guidance:
+                            action_dict["guidance"] = entry.guidance
+                        actions.append(action_dict)
                 if actions:
                     result[issue.dimension_path] = actions
 

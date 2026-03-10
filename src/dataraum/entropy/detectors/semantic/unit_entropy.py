@@ -120,6 +120,10 @@ class UnitEntropyDetector(EntropyDetector):
             # Having no unit is correct — not a quality issue
             score = score_declared
             unit_status = "dimensionless"
+        elif unit_source_column and str(unit_source_column).startswith("declared:"):
+            # Unit declared via config override (e.g. "declared:EUR")
+            score = score_declared
+            unit_status = "declared"
         elif unit_source_column:
             # Unit is inferred from a dimension column — lower entropy than missing
             score = score_inferred

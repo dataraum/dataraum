@@ -8,7 +8,6 @@ import yaml
 from dataraum.pipeline.fixes import (
     ConfigPatch,
     FixInput,
-    FixResult,
     apply_config_patch,
 )
 
@@ -62,31 +61,6 @@ class TestFixInput:
         assert fix_input.affected_columns == []
         assert fix_input.entropy_evidence == {}
 
-
-class TestFixResult:
-    """Tests for FixResult dataclass."""
-
-    def test_create_with_patches(self) -> None:
-        patch = ConfigPatch(
-            config_path="phases/statistics.yaml",
-            operation="set",
-            key_path=["outlier_exclusions"],
-            value=["amount"],
-            reason="Exclude amount from outlier analysis",
-        )
-        result = FixResult(
-            config_patches=[patch],
-            requires_rerun="statistics",
-            summary="Excluded 1 column from outlier analysis",
-        )
-        assert len(result.config_patches) == 1
-        assert result.requires_rerun == "statistics"
-
-    def test_defaults(self) -> None:
-        result = FixResult()
-        assert result.config_patches == []
-        assert result.requires_rerun == ""
-        assert result.summary == ""
 
 
 class TestApplyConfigPatchSet:

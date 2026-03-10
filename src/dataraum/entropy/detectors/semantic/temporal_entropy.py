@@ -165,8 +165,11 @@ class TemporalEntropyDetector(EntropyDetector):
         else:
             temporal_behavior = semantic.get("temporal_behavior") if isinstance(semantic, dict) else None
 
-        # Check if column is marked as timestamp (via role or temporal_behavior)
-        is_marked_timestamp = semantic_role == "timestamp" or temporal_behavior is not None
+        # Check if column is marked as timestamp via semantic_role only.
+        # temporal_behavior is NOT used here — it contains aggregation semantics
+        # ("additive", "point_in_time") backfilled from the ontology for measures,
+        # not temporal role indicators.
+        is_marked_timestamp = semantic_role == "timestamp"
 
         # Get semantic confidence (if available) for score modulation
         semantic_confidence: float | None = None

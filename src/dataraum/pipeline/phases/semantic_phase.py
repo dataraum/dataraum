@@ -13,7 +13,7 @@ unit detection, and reviewing low-confidence annotations.
 from __future__ import annotations
 
 from types import ModuleType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, func, select
 
@@ -286,9 +286,6 @@ class SemanticPhase(BasePhase):
 
         enrichment = enrich_result.unwrap()
 
-        # Apply config overrides (from fix handlers) on top of LLM annotations
-        overrides_applied = _apply_overrides(ctx.session, table_ids, ctx.config.get("overrides"))
-
         annotations_count = len(enrichment.annotations)
         entities_count = len(enrichment.entity_detections)
         relationships_count = len(enrichment.relationships)
@@ -313,91 +310,9 @@ class SemanticPhase(BasePhase):
                 "confirmed_relationships": relationships_count,
                 "tables_analyzed": [t.table_name for t in typed_tables],
                 "tier1_annotations": column_annotations is not None,
-                "config_overrides_applied": overrides_applied,
             },
             records_processed=len(unannotated_columns),
             records_created=annotations_count + entities_count + relationships_count,
             warnings=previews,
             summary=f"{annotations_count} annotations, {entities_count} entities, {relationships_count} relationships",
         )
-
-
-def _apply_overrides(
-    session: Session,
-    table_ids: list[str],
-    overrides: dict[str, Any] | None,
-) -> int:
-    """Apply config overrides to semantic annotations.
-
-    Reads ``overrides.units`` and ``overrides.business_meaning`` from the
-    phase config (written by fix handlers) and updates existing
-    SemanticAnnotation rows. Fields set by an override are marked with
-    ``annotation_source='config_override'``.
-
-    Args:
-        session: Database session.
-        table_ids: Table IDs for this source.
-        overrides: The ``overrides`` dict from phases/semantic.yaml.
-
-    Returns:
-        Number of annotations updated.
-    """
-    if not overrides:
-        return 0
-
-    from dataraum.analysis.semantic.utils import load_column_mappings
-
-    column_map = load_column_mappings(session, table_ids)
-
-    # Invert: we need column_id -> (table, col) and also (table.col) -> column_id
-    ref_to_id: dict[str, str] = {}
-    for (table_name, col_name), col_id in column_map.items():
-        ref_to_id[f"{table_name}.{col_name}"] = col_id
-
-    count = 0
-
-    # Unit overrides: overrides.units."table.column" -> {unit, unit_source_column}
-    unit_overrides: dict[str, Any] = overrides.get("units", {})
-    for col_ref, unit_config in unit_overrides.items():
-        unit_col_id: str | None = ref_to_id.get(col_ref)
-        if not unit_col_id:
-            continue
-        annotation = session.execute(
-            select(SemanticAnnotation).where(SemanticAnnotation.column_id == unit_col_id)
-        ).scalar_one_or_none()
-        if not annotation:
-            continue
-
-        if "unit_source_column" in unit_config:
-            annotation.unit_source_column = unit_config["unit_source_column"]
-        if "unit" in unit_config:
-            # Direct unit declaration — store as unit_source_column with
-            # a "declared:" prefix so downstream knows it's not a column ref.
-            annotation.unit_source_column = f"declared:{unit_config['unit']}"
-        annotation.annotation_source = "config_override"
-        count += 1
-
-    # Business meaning overrides: overrides.business_meaning."table.column" -> {business_name, ...}
-    bm_overrides: dict[str, Any] = overrides.get("business_meaning", {})
-    for col_ref, bm_config in bm_overrides.items():
-        bm_col_id: str | None = ref_to_id.get(col_ref)
-        if not bm_col_id:
-            continue
-        annotation = session.execute(
-            select(SemanticAnnotation).where(SemanticAnnotation.column_id == bm_col_id)
-        ).scalar_one_or_none()
-        if not annotation:
-            continue
-
-        for field in ("business_name", "entity_type", "business_description"):
-            value = bm_config.get(field)
-            if value is not None:
-                setattr(annotation, field, value)
-        annotation.annotation_source = "config_override"
-        count += 1
-
-    if count:
-        session.flush()
-        logger.info("config_overrides_applied", count=count)
-
-    return count

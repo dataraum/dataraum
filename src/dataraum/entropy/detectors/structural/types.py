@@ -51,11 +51,14 @@ class TypeFidelityDetector(EntropyDetector):
                 key_template="{pattern_name}",
                 guidance=(
                     "Adds a date/time pattern so the typing phase can parse "
-                    "this column. Show sample values and ask what date format "
-                    "they represent. Then produce a DuckDB STRPTIME format "
-                    "string (e.g. '%Y-%m' for '2025-01', '%d/%m/%Y' for "
-                    "'15/01/2024'). The regex pattern must match the raw "
-                    "string values."
+                    "this column correctly. From the sample values and column "
+                    "name, PROPOSE a concrete pattern:\n"
+                    "  1. The regex that matches the raw values (e.g. ^\\d{4}-\\d{2}-\\d{2}$)\n"
+                    "  2. The DuckDB STRPTIME expression (e.g. STRPTIME(\"{col}\", '%Y-%m-%d'))\n"
+                    "  3. A short pattern_name (e.g. iso_date, fiscal_period)\n"
+                    "Present your proposal and ask the user to confirm or correct it. "
+                    "Do NOT ask open-ended questions like 'what format is this?' — "
+                    "infer the format from the data and propose it."
                 ),
                 fields={
                     "pattern_name": FixSchemaField(

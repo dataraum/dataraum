@@ -96,11 +96,10 @@ packages = ["src/dataraum"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-v --tb=short --ignore=tests/e2e"
+addopts = "-v --tb=short"
 markers = [
     "integration: marks tests as integration tests (may be slower)",
     "slow: marks tests as slow (use real data, skip in CI)",
-    "e2e: end-to-end tests using dataraum-testdata (excluded from testmon)",
 ]
 filterwarnings = [
     # Numpy warnings during correlation calculations with constant columns (expected)

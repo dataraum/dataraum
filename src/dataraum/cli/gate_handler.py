@@ -450,7 +450,7 @@ def _run_fix_flow(
 
     confirm = console.input("[bold]Apply fix? (y/n): [/bold]").strip().lower()
     if confirm != "y":
-        console.print("[yellow]Fix cancelled, deferring.[/yellow]")
+        console.print(f"[yellow]Fix cancelled, deferring.[/yellow] [dim](input was {confirm!r})[/dim]")
         return Resolution(action=ResolutionAction.DEFER)
 
     # Thread entropy evidence into FixInput for audit trail

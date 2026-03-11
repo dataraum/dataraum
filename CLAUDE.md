@@ -6,6 +6,31 @@ A Python library for extracting rich metadata context from data sources to power
 
 This project prioritizes **correctness over speed**. We would rather have working code slowly than broken code quickly.
 
+### Analytical Correctness Is the Product
+
+The entropy detectors, pipeline phases, and fix system are the core value proposition. "Working" means: **the system finds real data quality issues and helps users fix them.** It does NOT mean: the code compiles, tests pass, scores are produced.
+
+A detector that scores 0.00 on a column with 3% garbage values is **broken**, not "measuring something different." A fix system that writes YAML but the detector never fired is **untested**, not "ready for review." An e2e test asserting `coverage >= 0.5` is **accepting 50% failure**, not "providing safety."
+
+### Ground Truth, Not Current Behavior
+
+The `dataraum-testdata` project generates data with **known injections** and an `entropy_map.yaml` listing exactly what was injected. This is the oracle. Detector correctness is measured by:
+- **Recall**: did the detector find the known injection? (score > threshold for the affected column)
+- **Precision**: on clean data, are scores low? (no false alarms)
+
+When a detector misses a known injection, the detector has a bug. Not a "design gap." Not a "future improvement." A bug that needs fixing.
+
+### No Sugar-Coating
+
+Do not:
+- Label broken detectors as "design gaps" or "out of scope"
+- Write tests that assert against current (broken) behavior
+- Set weak thresholds (coverage >= 0.5) to make tests pass
+- Create Linear issues to defer bugs instead of fixing them
+- Claim the system "works" when it finds 3 of 15 known problems
+
+When something doesn't work, say so plainly, then fix it or propose how to fix it.
+
 ## Critical Rules
 
 ### Never Claim "Done" Until:
@@ -25,20 +50,21 @@ If you've attempted the same fix 3 times without success:
 
 Do not continue making random changes hoping something works.
 
-### E2E Test Failures Mean Production Bugs
-When an e2e test fails, the default assumption is: **the production code has a bug, not the test.**
+### Calibration Is the Definition of Done
 
-1. Read the assertion, understand what behavior it expects.
-2. Fix the **source code** (not the test).
-3. If you genuinely believe the test expectation is wrong, STOP and explain your reasoning to the user before touching the test.
+Entropy detectors are validated by **calibration against ground truth** in `dataraum-eval` (separate repo). The calibration harness:
+1. Generates clean + medium data via `dataraum-testdata`
+2. Runs the pipeline on both
+3. For each injection in `entropy_map.yaml`, asserts the detector found it
+4. On clean data, asserts no false alarms
 
-**Never do these to make e2e tests pass:**
-- Weaken thresholds (e.g., changing `>= 0.5` to `>= 0.3`) — these are calibrated
-- Add `pytest.mark.skip` or `pytest.mark.xfail`
-- Delete or comment out assertions
-- Change expected values to match broken output
+A detector is "done" when its calibration tests pass. Unit tests in this repo verify internal logic; calibration tests verify the detector does its job.
 
-You may edit `tests/e2e/` files when the user explicitly asks you to (e.g., adding new tests, restructuring fixtures, updating test infrastructure). The rule is about *motive*: never edit a test to make a failure disappear.
+**When a calibration test fails:**
+1. The detector has a bug — fix the detection logic
+2. Do NOT weaken the calibration threshold
+3. Do NOT label it a "design gap" and defer — it's a bug
+4. If the detector fundamentally cannot find this injection type, redesign it
 
 ## Problem-Solving Standards
 
@@ -169,26 +195,20 @@ uv run pytest --testmon tests -q
 - Unit tests: `tests/unit/` (~760 tests, ~13s). Integration: `tests/integration/` (~300 tests, ~2min)
 - The end-of-turn hook runs testmon automatically — don't duplicate its work
 
-### E2E Tests (when asked to run them)
-E2E tests are expensive (real LLM calls, full pipeline). Only run when explicitly asked.
-```bash
-# Run all e2e tests
-uv run pytest tests/e2e -v -m e2e
+### Calibration Tests (separate repo: dataraum-eval)
+Calibration tests run the full pipeline against testdata with known injections. They are the ultimate measure of detector correctness. See DAT-133 / DAT-135 in Linear.
 
-# Run a specific e2e file
-uv run pytest tests/e2e/test_pipeline_phases.py -v
+```bash
+# Run calibration (from dataraum-eval repo)
+uv run pytest calibration/ -v
 ```
 
-**When an e2e test fails, this is the protocol:**
-1. Quote the full assertion error and traceback
-2. Identify which production module is responsible (not the test file)
-3. Read the relevant source code
-4. Form a hypothesis about the bug in the production code
-5. Fix the production code
-6. Re-run only the failed test to verify
-7. If you cannot determine the fix, report the failure with your analysis — do NOT patch the test
-
-**Remember: `tests/e2e/` files are READ-ONLY. See "E2E Tests Are Read-Only Ground Truth" above.**
+**When a calibration test fails:**
+1. Identify which detector missed which injection
+2. Read the detector source code and the injection parameters
+3. Understand WHY the detector doesn't find the problem (not just THAT it doesn't)
+4. Fix the detector — redesign if needed
+5. Re-run calibration to verify
 
 ## Code Quality
 
@@ -213,6 +233,8 @@ uv run pytest tests/e2e/test_pipeline_phases.py -v
 - [ ] Error handling is in place
 - [ ] Edge cases are handled
 - [ ] Docs updated (if user-facing behavior changed)
+- [ ] **For detector changes**: calibration recall did not regress (run `dataraum-eval`)
+- [ ] **For fix system changes**: fix loop test passes (apply fix → score drops)
 
 ## Cross-Project Work
 

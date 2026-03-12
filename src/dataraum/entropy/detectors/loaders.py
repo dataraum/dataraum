@@ -50,6 +50,7 @@ def load_typing(session: Session, column_id: str) -> dict[str, Any] | None:
             typing_dict["pattern_match_rate"] = tc.pattern_match_rate
             typing_dict["detected_unit"] = tc.detected_unit
             typing_dict["unit_confidence"] = tc.unit_confidence
+            typing_dict["quarantine_rate"] = tc.quarantine_rate
         return typing_dict
     elif tc:
         return {
@@ -62,6 +63,7 @@ def load_typing(session: Session, column_id: str) -> dict[str, Any] | None:
             "pattern_match_rate": tc.pattern_match_rate,
             "detected_unit": tc.detected_unit,
             "unit_confidence": tc.unit_confidence,
+            "quarantine_rate": tc.quarantine_rate,
         }
     return None
 

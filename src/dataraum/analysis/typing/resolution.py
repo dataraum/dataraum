@@ -361,9 +361,48 @@ def resolve_types(
     )
     session.add(quarantine_meta_col)
 
+    # Compute per-column quarantine metrics and update raw TypeCandidates
+    # BEFORE copying to typed columns, so copies include the fields.
+    column_results = []
+    for spec in specs:
+        col = f'"{spec.column_name}"'
+        target = spec.data_type.value
+
+        if spec.pattern and spec.pattern.standardization_expr:
+            expr = spec.pattern.standardization_expr.format(col=spec.column_name)
+            cast_expr = f"TRY_CAST({expr} AS {target})"
+        else:
+            cast_expr = f"TRY_CAST({col} AS {target})"
+
+        success_result = duckdb_conn.execute(
+            f'SELECT COUNT(*) FROM "{raw_table}" WHERE {cast_expr} IS NOT NULL OR {col} IS NULL'
+        ).fetchone()
+        success = success_result[0] if success_result else 0
+        failures = total_rows - success
+        q_rate = failures / total_rows if total_rows > 0 else 0.0
+
+        column_results.append(
+            ColumnCastResult(
+                column_id=spec.column_id,
+                column_ref=ColumnRef(table_name=table.table_name, column_name=spec.column_name),
+                source_type="VARCHAR",
+                target_type=spec.data_type,
+                success_count=success,
+                failure_count=failures,
+                success_rate=success / total_rows if total_rows > 0 else 1.0,
+            )
+        )
+
+        # Set quarantine metrics on raw TypeCandidate records
+        raw_col = raw_col_by_id[spec.column_id]
+        for tc in raw_col.type_candidates:
+            tc.quarantine_count = failures
+            tc.quarantine_rate = q_rate
+
     # Copy TypeDecision and TypeCandidate from raw columns to typed columns.
     # Raw columns keep originals (audit trail); typed columns get copies so
     # downstream consumers can query by typed column_id directly.
+    # Note: quarantine_count/rate are already set on raw TypeCandidates above.
     for raw_col in table.columns:
         target_col_id = typed_column_map.get(raw_col.column_name)
         if target_col_id is None:
@@ -398,38 +437,10 @@ def resolve_types(
                     pattern_match_rate=tc.pattern_match_rate,
                     detected_unit=tc.detected_unit,
                     unit_confidence=tc.unit_confidence,
+                    quarantine_count=tc.quarantine_count,
+                    quarantine_rate=tc.quarantine_rate,
                 )
             )
-
-    # Build column results
-    column_results = []
-    for spec in specs:
-        col = f'"{spec.column_name}"'
-        target = spec.data_type.value
-
-        if spec.pattern and spec.pattern.standardization_expr:
-            expr = spec.pattern.standardization_expr.format(col=spec.column_name)
-            cast_expr = f"TRY_CAST({expr} AS {target})"
-        else:
-            cast_expr = f"TRY_CAST({col} AS {target})"
-
-        success_result = duckdb_conn.execute(
-            f'SELECT COUNT(*) FROM "{raw_table}" WHERE {cast_expr} IS NOT NULL OR {col} IS NULL'
-        ).fetchone()
-        success = success_result[0] if success_result else 0
-        failures = total_rows - success
-
-        column_results.append(
-            ColumnCastResult(
-                column_id=spec.column_id,
-                column_ref=ColumnRef(table_name=table.table_name, column_name=spec.column_name),
-                source_type="VARCHAR",
-                target_type=spec.data_type,
-                success_count=success,
-                failure_count=failures,
-                success_rate=success / total_rows if total_rows > 0 else 1.0,
-            )
-        )
 
     logger.debug(
         "type_resolution_completed",

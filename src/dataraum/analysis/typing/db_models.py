@@ -20,6 +20,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     UniqueConstraint,
 )
@@ -72,6 +73,10 @@ class TypeCandidate(Base):
     # Unit detection (from Pint)
     detected_unit: Mapped[str | None] = mapped_column(String)
     unit_confidence: Mapped[float | None] = mapped_column(Float)
+
+    # Quarantine metrics (set during type resolution)
+    quarantine_count: Mapped[int | None] = mapped_column(Integer)
+    quarantine_rate: Mapped[float | None] = mapped_column(Float)
 
     # Relationships
     column: Mapped[Column] = relationship(back_populates="type_candidates")

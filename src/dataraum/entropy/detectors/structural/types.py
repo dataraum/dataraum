@@ -121,11 +121,13 @@ class TypeFidelityDetector(EntropyDetector):
             detected_type = getattr(typing_result, "data_type", None)
             failed_examples = getattr(typing_result, "failed_examples", [])
             decision_source = getattr(typing_result, "decision_source", None)
+            quarantine_rate = getattr(typing_result, "quarantine_rate", None)
         else:
             parse_success_rate = typing_result.get("parse_success_rate", 1.0)
             detected_type = typing_result.get("detected_type")
             failed_examples = typing_result.get("failed_examples", [])
             decision_source = typing_result.get("decision_source")
+            quarantine_rate = typing_result.get("quarantine_rate")
 
         # Calculate entropy
         is_fallback = decision_source == "fallback"
@@ -134,13 +136,15 @@ class TypeFidelityDetector(EntropyDetector):
             # parse_success_rate=1.0 is meaningless — use configurable score.
             score = score_fallback
         else:
-            # Normal case: lower parse success = higher entropy
-            score = 1.0 - parse_success_rate
+            # Combine parse failure rate with quarantine rate (take the worse signal)
+            parse_score = 1.0 - parse_success_rate
+            score = max(parse_score, quarantine_rate or 0.0)
 
         # Build evidence
         evidence = [
             {
                 "parse_success_rate": parse_success_rate,
+                "quarantine_rate": quarantine_rate,
                 "detected_type": str(detected_type) if detected_type else None,
                 "failure_count": len(failed_examples) if failed_examples else 0,
                 "decision_source": decision_source,

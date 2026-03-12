@@ -235,6 +235,14 @@ class PipelineScheduler:
                                 seen_ids.add(sd.detector_id)
                         last_gate_phase = phase_name
 
+                # Persist gate scores to PhaseLog for the gate phase
+                if last_gate_phase:
+                    self._persist_gate_scores(
+                        last_gate_phase,
+                        gate_result.scores,
+                        gate_result.column_details,
+                    )
+
                 # Emit one POST_VERIFICATION per wave (after all gates measured)
                 if last_gate_phase and all_scores:
                     yield self._event(
@@ -512,6 +520,45 @@ class PipelineScheduler:
             outputs=outputs,
         )
         self.session.add(log)
+        self.session.commit()
+
+    def _persist_gate_scores(
+        self,
+        gate_phase: str,
+        scores: dict[str, float],
+        column_details: dict[str, dict[str, float]],
+    ) -> None:
+        """Update the PhaseLog for a gate phase with entropy scores.
+
+        Merges gate_column_details and detector_id_map into the existing
+        outputs dict and sets entropy_scores on the PhaseLog record.
+        """
+        from sqlalchemy import select as sa_select
+
+        from dataraum.entropy.detectors.base import get_default_registry
+
+        log = self.session.execute(
+            sa_select(PhaseLog).where(
+                PhaseLog.run_id == self.run_id,
+                PhaseLog.phase_name == gate_phase,
+            )
+        ).scalar_one_or_none()
+        if log is None:
+            return
+
+        # Build dimension_path → detector_id mapping so consumers can
+        # resolve gate scores back to detector_ids.
+        registry = get_default_registry()
+        detector_id_map = {
+            d.dimension_path: d.detector_id
+            for d in registry.get_all_detectors()
+        }
+
+        log.entropy_scores = dict(scores)
+        existing_outputs = dict(log.outputs) if log.outputs else {}
+        existing_outputs["gate_column_details"] = dict(column_details)
+        existing_outputs["detector_id_map"] = detector_id_map
+        log.outputs = existing_outputs
         self.session.commit()
 
     def _validate_analysis_coverage(self) -> None:

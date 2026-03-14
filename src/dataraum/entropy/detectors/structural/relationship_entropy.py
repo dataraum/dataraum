@@ -48,8 +48,34 @@ class RelationshipEntropyDetector(EntropyDetector):
 
     @property
     def fix_schemas(self) -> list[FixSchema]:
-        """Schema for confirming relationships."""
+        """Schemas for relationship quality fixes."""
         return [
+            FixSchema(
+                action="accept_finding",
+                target="config",
+                description="Mark relationship quality findings as reviewed and accepted",
+                config_path="entropy/thresholds.yaml",
+                key_path=["detectors", "relationship_entropy", "accepted_columns"],
+                operation="append",
+                requires_rerun="quality_review",
+                guidance=(
+                    "This is a RELATIONSHIP finding between two tables, not a per-column issue. "
+                    "Present the relationship: from_table.column → to_table.column, with its "
+                    "key metrics (referential integrity %, orphan count, cardinality). "
+                    "Explain what the score means in plain language.\n"
+                    "Do NOT ask the user to pick columns — accept the finding for the column "
+                    "this entropy object belongs to.\n"
+                    "Ask WHY the relationship quality is acceptable (e.g., 'known partial overlap', "
+                    "'soft reference', 'legacy data', 'different ID namespaces')."
+                ),
+                fields={
+                    "reason": FixSchemaField(
+                        type="string",
+                        required=False,
+                        description="Why the finding was accepted",
+                    ),
+                },
+            ),
             FixSchema(
                 action="confirm_relationship",
                 target="config",
@@ -118,6 +144,12 @@ class RelationshipEntropyDetector(EntropyDetector):
         """
         config = get_entropy_config()
         detector_config = config.detector("relationship_entropy")
+
+        # Accepted columns
+        score_accepted = self.config.get("score_accepted") or detector_config.get("score_accepted", 0.2)
+        accepted_columns: list[str] = (
+            self.config.get("accepted_columns") or detector_config.get("accepted_columns", [])
+        )
 
         # Configurable scores for unknown values
         score_unknown_ri = detector_config.get("score_unknown_ri", 0.5)
@@ -247,6 +279,25 @@ class RelationshipEntropyDetector(EntropyDetector):
                             description="Fix referential integrity issues (orphan records)",
                         )
                     )
+
+            if score > 0:
+                resolution_options.append(
+                    ResolutionOption(
+                        action="accept_finding",
+                        parameters={
+                            "column": context.column_name,
+                            "detector_id": self.detector_id,
+                        },
+                        effort="low",
+                        description="Accept relationship quality findings as expected",
+                    )
+                )
+
+            # Apply acceptance floor if this column was previously accepted
+            target_key = f"{context.table_name}.{context.column_name}"
+            if target_key in accepted_columns:
+                score = score_accepted
+                rel_evidence["accepted"] = True
 
             objects.append(
                 self.create_entropy_object(

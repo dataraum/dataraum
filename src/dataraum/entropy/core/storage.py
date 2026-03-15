@@ -18,7 +18,7 @@ from dataraum.entropy.models import (
     EntropyObject,
     ResolutionOption,
 )
-from dataraum.storage import Column, Table
+from dataraum.storage import Table
 
 if TYPE_CHECKING:
     pass
@@ -57,22 +57,6 @@ class EntropyRepository:
 
         stmt = select(Table.table_id).where(
             Table.table_id.in_(table_ids),
-            Table.layer == "typed",
-        )
-        result = self.session.execute(stmt).scalars().all()
-        return list(result)
-
-    def get_typed_table_ids_for_source(self, source_id: str) -> list[str]:
-        """Get all typed table IDs for a source.
-
-        Args:
-            source_id: Source ID to get tables for
-
-        Returns:
-            List of typed table IDs for this source
-        """
-        stmt = select(Table.table_id).where(
-            Table.source_id == source_id,
             Table.layer == "typed",
         )
         result = self.session.execute(stmt).scalars().all()
@@ -121,107 +105,6 @@ class EntropyRepository:
 
         # Convert records to EntropyObjects
         return [self._record_to_object(r) for r in records]
-
-    def load_for_columns(
-        self,
-        column_ids: list[str],
-        *,
-        enforce_typed: bool = True,
-    ) -> list[EntropyObject]:
-        """Load entropy objects for specific columns.
-
-        Args:
-            column_ids: List of column IDs to load entropy for
-            enforce_typed: If True, filters to columns in typed tables only
-
-        Returns:
-            List of EntropyObject instances
-        """
-        if not column_ids:
-            return []
-
-        if enforce_typed:
-            # Get columns that are in typed tables
-            typed_column_stmt = (
-                select(Column.column_id)
-                .join(Table, Column.table_id == Table.table_id)
-                .where(
-                    Column.column_id.in_(column_ids),
-                    Table.layer == "typed",
-                )
-            )
-            typed_column_ids = list(self.session.execute(typed_column_stmt).scalars().all())
-            if not typed_column_ids:
-                return []
-            column_ids = typed_column_ids
-
-        stmt = select(EntropyObjectRecord).where(EntropyObjectRecord.column_id.in_(column_ids))
-        records = self.session.execute(stmt).scalars().all()
-
-        return [self._record_to_object(r) for r in records]
-
-    def load_by_dimension(
-        self,
-        table_ids: list[str],
-        layer: str | None = None,
-        dimension: str | None = None,
-        *,
-        enforce_typed: bool = True,
-    ) -> list[EntropyObject]:
-        """Load entropy objects filtered by dimension.
-
-        Args:
-            table_ids: List of table IDs to load from
-            layer: Optional layer filter (structural, semantic, value, computational)
-            dimension: Optional dimension filter
-            enforce_typed: If True, filters to typed tables only
-
-        Returns:
-            List of EntropyObject instances matching filters
-        """
-        if not table_ids:
-            return []
-
-        if enforce_typed:
-            table_ids = self.get_typed_table_ids(table_ids)
-            if not table_ids:
-                return []
-
-        stmt = select(EntropyObjectRecord).where(EntropyObjectRecord.table_id.in_(table_ids))
-
-        if layer is not None:
-            stmt = stmt.where(EntropyObjectRecord.layer == layer)
-        if dimension is not None:
-            stmt = stmt.where(EntropyObjectRecord.dimension == dimension)
-
-        records = self.session.execute(stmt).scalars().all()
-        return [self._record_to_object(r) for r in records]
-
-    def get_table_column_mapping(
-        self,
-        table_ids: list[str],
-    ) -> tuple[dict[str, Table], dict[str, Column]]:
-        """Load table and column metadata for context building.
-
-        Args:
-            table_ids: List of table IDs
-
-        Returns:
-            Tuple of (table_map, column_map) where keys are IDs
-        """
-        tables = (
-            self.session.execute(select(Table).where(Table.table_id.in_(table_ids))).scalars().all()
-        )
-        table_map = {t.table_id: t for t in tables}
-
-        columns = (
-            self.session.execute(select(Column).where(Column.table_id.in_(table_ids)))
-            .scalars()
-            .all()
-        )
-        column_map = {c.column_id: c for c in columns}
-
-        return table_map, column_map
 
     def _record_to_object(self, record: EntropyObjectRecord) -> EntropyObject:
         """Convert a database record to an EntropyObject.

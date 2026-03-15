@@ -73,40 +73,6 @@ class EntropyInterpretation:
     # Metadata
     model_used: str | None = None
 
-    def to_dashboard_dict(self) -> dict[str, Any]:
-        """Convert interpretation to dashboard-friendly dictionary.
-
-        Returns a clean structure suitable for JSON serialization and UI display.
-        """
-        return {
-            "column_key": f"{self.table_name}.{self.column_name}"
-            if self.column_name
-            else self.table_name,
-            "table_name": self.table_name,
-            "column_name": self.column_name,
-            "explanation": self.explanation,
-            "assumptions": [
-                {
-                    "dimension": a.dimension,
-                    "text": a.assumption_text,
-                    "confidence": a.confidence,
-                    "impact": a.impact,
-                }
-                for a in self.assumptions
-            ],
-            "resolution_actions": [
-                {
-                    "action": r.action,
-                    "description": r.description,
-                    "effort": r.effort,
-                    "parameters": r.parameters,
-                }
-                for r in self.resolution_actions
-            ],
-            "metadata": {
-                "model_used": self.model_used,
-            },
-        }
 
 
 @dataclass

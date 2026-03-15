@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from dataraum.graphs.entropy_behavior import (
     BehaviorMode,
-    DimensionBehavior,
-    EntropyAction,
     EntropyBehaviorConfig,
     get_default_config,
 )
@@ -45,76 +43,6 @@ class TestEntropyBehaviorConfig:
         assert config.refusal_threshold == 0.95
         assert config.auto_assume is True
         assert config.assumption_disclosure == "minimal"
-
-
-class TestDetermineAction:
-    """Tests for determine_action method."""
-
-    def test_low_entropy_answers_confidently(self) -> None:
-        """Low entropy (< 0.3) should answer confidently."""
-        config = EntropyBehaviorConfig.balanced()
-
-        action = config.determine_action(max_entropy=0.2)
-        assert action == EntropyAction.ANSWER_CONFIDENTLY
-
-    def test_medium_entropy_answers_with_assumptions(self) -> None:
-        """Medium entropy (0.3-0.6) should answer with assumptions."""
-        config = EntropyBehaviorConfig.balanced()
-
-        action = config.determine_action(max_entropy=0.4)
-        assert action == EntropyAction.ANSWER_WITH_ASSUMPTIONS
-
-    def test_high_entropy_asks_or_caveats(self) -> None:
-        """High entropy (0.6-0.8) should ask or caveat."""
-        config = EntropyBehaviorConfig.balanced()
-
-        action = config.determine_action(max_entropy=0.7)
-        assert action == EntropyAction.ASK_OR_CAVEAT
-
-    def test_critical_entropy_refuses(self) -> None:
-        """Critical entropy (> 0.8) should refuse."""
-        config = EntropyBehaviorConfig.balanced()
-
-        action = config.determine_action(max_entropy=0.9)
-        assert action == EntropyAction.REFUSE
-
-    def test_strict_mode_asks_at_medium_entropy(self) -> None:
-        """Strict mode should ask at medium entropy."""
-        config = EntropyBehaviorConfig.strict()
-
-        action = config.determine_action(max_entropy=0.4)
-        assert action == EntropyAction.ASK_OR_CAVEAT
-
-    def test_lenient_mode_answers_at_high_entropy(self) -> None:
-        """Lenient mode should answer with assumptions at high entropy."""
-        config = EntropyBehaviorConfig.lenient()
-
-        action = config.determine_action(max_entropy=0.7)
-        assert action == EntropyAction.ANSWER_WITH_ASSUMPTIONS
-
-
-class TestDimensionThresholds:
-    """Tests for dimension-specific thresholds."""
-
-    def test_get_threshold_for_known_dimension(self) -> None:
-        """Should return override threshold for configured dimension."""
-        config = EntropyBehaviorConfig.balanced()
-        config.dimension_overrides = [
-            DimensionBehavior(
-                dimension="semantic.units",
-                clarification_threshold=0.4,
-            )
-        ]
-
-        threshold = config.get_threshold_for_dimension("semantic.units")
-        assert threshold == 0.4
-
-    def test_get_threshold_for_unknown_dimension(self) -> None:
-        """Should return default threshold for unconfigured dimension."""
-        config = EntropyBehaviorConfig.balanced()
-
-        threshold = config.get_threshold_for_dimension("some.other")
-        assert threshold == config.clarification_threshold
 
 
 class TestGetDefaultConfig:

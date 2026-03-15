@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models import Result, SourceConfig
-from dataraum.sources.base import ColumnInfo, LoaderBase, TypeSystemStrength, normalize_column_name
+from dataraum.sources.base import ColumnInfo, LoaderBase, normalize_column_name
 from dataraum.sources.csv.models import StagedTable, StagingResult
 from dataraum.sources.csv.null_values import NullValueConfig, load_null_value_config
 from dataraum.storage import Column, Source, Table
@@ -23,11 +23,6 @@ class CSVLoader(LoaderBase):
     CSV files are untyped sources - all data is text. We use a VARCHAR-first
     approach to preserve raw values and prevent data loss during loading.
     """
-
-    @property
-    def type_system_strength(self) -> TypeSystemStrength:
-        """CSV files are untyped."""
-        return TypeSystemStrength.UNTYPED
 
     def get_schema(
         self,
@@ -154,117 +149,6 @@ class CSVLoader(LoaderBase):
         except Exception as e:
             logger.error("csv_load_error", file=str(path), error=str(e))
             return Result.fail(f"Failed to load CSV: {e}")
-
-    def load_directory(
-        self,
-        directory_path: str,
-        source_name: str,
-        duckdb_conn: duckdb.DuckDBPyConnection,
-        session: Session,
-        file_pattern: str = "*.csv",
-    ) -> Result[StagingResult]:
-        """Load all CSV files from a directory into DuckDB.
-
-        Creates a single Source with multiple Table records (one per CSV file).
-
-        Args:
-            directory_path: Path to the directory containing CSV files
-            source_name: Name for the source (dataset name)
-            duckdb_conn: DuckDB connection
-            session: SQLAlchemy session for metadata
-            file_pattern: Glob pattern for CSV files (default: "*.csv")
-
-        Returns:
-            Result containing StagingResult with multiple tables
-        """
-        directory = Path(directory_path)
-        if not directory.exists():
-            return Result.fail(f"Directory not found: {directory}")
-        if not directory.is_dir():
-            return Result.fail(f"Path is not a directory: {directory}")
-
-        # Find all CSV files
-        csv_files = sorted(directory.glob(file_pattern))
-        if not csv_files:
-            return Result.fail(f"No CSV files found matching '{file_pattern}' in {directory}")
-
-        logger.debug(
-            "csv_directory_loading",
-            directory=str(directory),
-            file_count=len(csv_files),
-            pattern=file_pattern,
-        )
-
-        start_time = time.time()
-        warnings: list[str] = []
-
-        try:
-            # Load null value configuration once
-            null_config = load_null_value_config()
-
-            # Create single Source for the directory
-            source_id = str(uuid4())
-            source = Source(
-                source_id=source_id,
-                name=source_name,
-                source_type="csv_directory",
-                connection_config={
-                    "directory": str(directory),
-                    "file_pattern": file_pattern,
-                    "file_count": len(csv_files),
-                },
-            )
-            session.add(source)
-
-            # Load each CSV file
-            staged_tables: list[StagedTable] = []
-            total_rows = 0
-
-            for csv_file in csv_files:
-                file_result = self._load_single_file(
-                    file_path=csv_file,
-                    source_id=source_id,
-                    duckdb_conn=duckdb_conn,
-                    session=session,
-                    null_config=null_config,
-                )
-
-                if not file_result.success:
-                    logger.warning("csv_file_skipped", file=csv_file.name, error=file_result.error)
-                    warnings.append(f"Failed to load {csv_file.name}: {file_result.error}")
-                    continue
-
-                staged_table = file_result.unwrap()
-                staged_tables.append(staged_table)
-                total_rows += staged_table.row_count
-
-            if not staged_tables:
-                return Result.fail("No CSV files were successfully loaded")
-
-            session.commit()
-
-            duration = time.time() - start_time
-            logger.debug(
-                "csv_directory_loaded",
-                directory=str(directory),
-                tables=len(staged_tables),
-                total_rows=total_rows,
-                skipped=len(warnings),
-                duration_s=round(duration, 2),
-            )
-
-            result = StagingResult(
-                source_id=source_id,
-                tables=staged_tables,
-                total_rows=total_rows,
-                duration_seconds=duration,
-            )
-
-            return Result.ok(result, warnings=warnings)
-
-        except Exception as e:
-            logger.error("csv_directory_load_error", directory=str(directory), error=str(e))
-            return Result.fail(f"Failed to load CSV directory: {e}")
 
     def _load_single_file(
         self,

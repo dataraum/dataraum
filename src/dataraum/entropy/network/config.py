@@ -198,8 +198,3 @@ def get_network_config(config_path: Path | None = None) -> NetworkConfig:
     return _config_cache
 
 
-def reset_config_cache() -> None:
-    """Reset the config cache. Useful for testing."""
-    global _config_cache, _config_path_cache
-    _config_cache = None
-    _config_path_cache = None

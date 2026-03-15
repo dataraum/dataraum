@@ -95,30 +95,3 @@ def get_active_fixes(session: Session, source_id: str) -> list[FixLedgerEntry]:
         .order_by(FixLedgerEntry.created_at)
     )
     return list(session.execute(stmt).scalars().all())
-
-
-def format_fixes_for_prompt(fixes: list[FixLedgerEntry]) -> str:
-    """Format fixes as structured text for LLM prompt injection.
-
-    Args:
-        fixes: List of active fix entries
-
-    Returns:
-        XML-formatted string for inclusion in prompts.
-        Empty string if no fixes.
-    """
-    if not fixes:
-        return ""
-
-    lines = ["<domain_fixes>"]
-    for fix in fixes:
-        scope = fix.table_name
-        if fix.column_name:
-            scope = f"{fix.table_name}.{fix.column_name}"
-
-        lines.append(f'  <fix action="{fix.action_name}" column="{scope}">')
-        lines.append(f"    User: {fix.user_input!r}")
-        lines.append(f"    Interpretation: {fix.interpretation}")
-        lines.append("  </fix>")
-    lines.append("</domain_fixes>")
-    return "\n".join(lines)

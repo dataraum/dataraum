@@ -89,24 +89,6 @@ class PhaseResult:
             summary=summary,
         )
 
-    def detail(self) -> str:
-        """Render outputs as a human-readable multi-line string for verbose display."""
-        if not self.outputs:
-            return ""
-        lines: list[str] = []
-        for key, value in self.outputs.items():
-            if isinstance(value, list):
-                n = len(value)
-                preview = ", ".join(str(v) for v in value[:5])
-                if n > 5:
-                    preview += ", ..."
-                lines.append(f"  {key}: {n} items — {preview}")
-            elif isinstance(value, dict):
-                lines.append(f"  {key}: {value}")
-            else:
-                lines.append(f"  {key}: {value}")
-        return "\n".join(lines)
-
     @classmethod
     def failed(cls, error: str, duration: float = 0.0) -> PhaseResult:
         """Create a failed result.

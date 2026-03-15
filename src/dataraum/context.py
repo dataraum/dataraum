@@ -338,40 +338,6 @@ class Context:
 
             return QueryResultWrapper(result.value)
 
-    def context_document(self) -> str:
-        """Get the full context document for LLM prompts."""
-        from sqlalchemy import select
-
-        from dataraum.graphs.context import build_execution_context, format_context_for_prompt
-        from dataraum.storage import Source, Table
-
-        with self.manager.session_scope() as session:
-            sources_result = session.execute(select(Source))
-            sources = sources_result.scalars().all()
-
-            if not sources:
-                return "Error: No sources found"
-
-            source = sources[0]
-
-            tables_result = session.execute(
-                select(Table).where(
-                    Table.source_id == source.source_id,
-                    Table.layer == "typed",
-                )
-            )
-            tables = tables_result.scalars().all()
-
-            table_ids = [t.table_id for t in tables]
-
-            with self.manager.duckdb_cursor() as cursor:
-                context = build_execution_context(
-                    session=session,
-                    table_ids=table_ids,
-                    duckdb_conn=cursor,
-                )
-
-            return format_context_for_prompt(context)
 
 
 class EntropyAccessor:
@@ -678,30 +644,6 @@ class SourcesAccessor:
                 "columns": len(info.columns) if info.columns else 0,
             }
 
-    def discover(self, path: str | Path, recursive: bool = True) -> builtins.list[dict[str, Any]]:
-        """Scan a directory for data files.
-
-        Args:
-            path: Directory to scan.
-            recursive: Whether to scan subdirectories.
-
-        Returns:
-            List of file info dicts.
-        """
-        from dataraum.sources.discovery import discover_sources
-
-        result = discover_sources(root=Path(path).resolve(), recursive=recursive)
-        return [
-            {
-                "path": f.path,
-                "format": f.format,
-                "size_bytes": f.size_bytes,
-                "columns": f.columns,
-                "rows_estimate": f.row_count_estimate,
-            }
-            for f in result.files
-        ]
-
     def remove(self, name: str, purge: bool = False) -> str:
         """Remove (archive) a source.
 
@@ -1000,17 +942,6 @@ class QueryResultWrapper:
     def columns(self) -> list[str] | None:
         """Column names."""
         return self._result.columns
-
-    def to_dataframe(self) -> Any:
-        """Convert to pandas DataFrame (requires pandas)."""
-        try:
-            import pandas as pd
-
-            if self.data and self.columns:
-                return pd.DataFrame(self.data, columns=self.columns)
-            return pd.DataFrame()
-        except ImportError as err:
-            raise ImportError("pandas is required for to_dataframe()") from err
 
     def _repr_html_(self) -> str:
         """Jupyter HTML representation."""

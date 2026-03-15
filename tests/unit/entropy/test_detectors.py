@@ -77,43 +77,6 @@ class TestDetectorRegistry:
         assert "mock_detector" in empty_registry.get_detector_ids()
         assert empty_registry.get_detector("mock_detector") is detector
 
-    def test_unregister_detector(self, empty_registry: DetectorRegistry):
-        """Test unregistering a detector."""
-        detector = MockDetector()
-        empty_registry.register(detector)
-        empty_registry.unregister("mock_detector")
-
-        assert "mock_detector" not in empty_registry.get_detector_ids()
-
-    def test_get_detectors_for_layer(self, empty_registry: DetectorRegistry):
-        """Test getting detectors by layer."""
-        detector = MockDetector()
-        empty_registry.register(detector)
-
-        structural_detectors = empty_registry.get_detectors_for_layer("structural")
-        assert len(structural_detectors) == 1
-        assert structural_detectors[0].detector_id == "mock_detector"
-
-        semantic_detectors = empty_registry.get_detectors_for_layer("semantic")
-        assert len(semantic_detectors) == 0
-
-    def test_get_runnable_detectors(
-        self,
-        empty_registry: DetectorRegistry,
-        sample_detector_context: DetectorContext,
-    ):
-        """Test getting runnable detectors based on available analyses."""
-        detector = MockDetector()
-        empty_registry.register(detector)
-
-        # Context has 'typing' analysis, so detector should be runnable
-        runnable = empty_registry.get_runnable_detectors(sample_detector_context)
-        assert len(runnable) == 1
-
-        # Context without typing analysis
-        empty_context = DetectorContext(table_name="test", column_name="col")
-        runnable = empty_registry.get_runnable_detectors(empty_context)
-        assert len(runnable) == 0
 
 class TestEntropyDetector:
     """Tests for EntropyDetector base class."""

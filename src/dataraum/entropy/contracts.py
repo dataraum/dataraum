@@ -7,7 +7,6 @@ and provides confidence level calculation (traffic light model).
 Usage:
     from dataraum.entropy.contracts import (
         evaluate_contract,
-        get_confidence_level,
         list_contracts,
         ConfidenceLevel,
     )
@@ -16,7 +15,7 @@ Usage:
     evaluation = evaluate_contract(entropy_data, "executive_dashboard")
 
     # Get traffic light confidence
-    level = get_confidence_level(evaluation)  # GREEN, YELLOW, ORANGE, RED
+    level = evaluation.confidence_level  # GREEN, YELLOW, ORANGE, RED
 
 See docs/ENTROPY_CONTRACTS.md for detailed specification.
 """
@@ -71,14 +70,6 @@ class ConfidenceLevel(str, Enum):
             ConfidenceLevel.ORANGE: "ISSUES",
             ConfidenceLevel.RED: "BLOCKED",
         }[self]
-
-
-@dataclass
-class DimensionThreshold:
-    """Threshold for a single entropy dimension."""
-
-    dimension: str  # e.g., "structural.types" or "semantic.units"
-    max_score: float  # Maximum acceptable entropy score
 
 
 @dataclass
@@ -688,21 +679,6 @@ def _calculate_confidence_level(
     return ConfidenceLevel.GREEN
 
 
-def get_confidence_level(evaluation: ContractEvaluation) -> ConfidenceLevel:
-    """Get the confidence level from an evaluation.
-
-    This is a convenience function - the level is already
-    computed in the evaluation.
-
-    Args:
-        evaluation: A contract evaluation
-
-    Returns:
-        ConfidenceLevel
-    """
-    return evaluation.confidence_level
-
-
 def evaluate_all_contracts(
     column_summaries: dict[str, ColumnSummary],
     config_path: Path | None = None,
@@ -759,11 +735,3 @@ def find_best_contract(
     return None, None
 
 
-def clear_contracts_cache() -> None:
-    """Clear the contracts cache.
-
-    Useful for testing or when config file changes.
-    """
-    global _contracts_cache, _contracts_path_cache
-    _contracts_cache = None
-    _contracts_path_cache = None

@@ -1,7 +1,7 @@
 """Tests for query agent models."""
 
 from dataraum.entropy.contracts import ConfidenceLevel
-from dataraum.graphs.models import AssumptionBasis, QueryAssumption
+from dataraum.graphs.models import AssumptionBasis
 from dataraum.query.models import (
     QueryAnalysisOutput,
     QueryAssumptionOutput,
@@ -56,61 +56,6 @@ class TestQueryResult:
 
         d = result.to_dict()
         assert d["entropy_action"] is None
-
-    def test_format_cli_response_success(self):
-        """CLI response formatting for success."""
-        result = QueryResult(
-            execution_id="exec_test",
-            question="What was revenue?",
-            answer="Total revenue was $500,000",
-            data=[{"total": 500000}],
-            columns=["total"],
-            confidence_level=ConfidenceLevel.GREEN,
-            contract="exploratory_analysis",
-        )
-
-        cli_output = result.format_cli_response()
-
-        assert "GOOD" in cli_output
-        assert "exploratory_analysis" in cli_output
-        assert "500,000" in cli_output or "500000" in cli_output
-
-    def test_format_cli_response_without_entropy_action(self):
-        """CLI response omits entropy action line when None."""
-        result = QueryResult(
-            execution_id="exec_ea",
-            question="What was revenue?",
-            answer="Total revenue was $500,000",
-            confidence_level=ConfidenceLevel.YELLOW,
-        )
-
-        cli_output = result.format_cli_response()
-        assert "Entropy Assessment" not in cli_output
-
-    def test_format_cli_response_with_assumptions(self):
-        """CLI response includes assumptions."""
-        assumption = QueryAssumption.create(
-            execution_id="exec_test",
-            dimension="semantic.units",
-            target="column:orders.amount",
-            assumption="Currency is EUR",
-            basis=AssumptionBasis.INFERRED,
-            confidence=0.8,
-        )
-
-        result = QueryResult(
-            execution_id="exec_test",
-            question="What was revenue?",
-            answer="Total revenue was €500,000",
-            confidence_level=ConfidenceLevel.YELLOW,
-            assumptions=[assumption],
-        )
-
-        cli_output = result.format_cli_response()
-
-        assert "Assumptions:" in cli_output
-        assert "Currency is EUR" in cli_output
-
 
 class TestAssumptionConversion:
     """Tests for assumption conversion."""

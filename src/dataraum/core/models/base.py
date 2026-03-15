@@ -6,9 +6,7 @@ domain module (staging, profiling, enrichment, etc.).
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from enum import Enum
-from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -41,12 +39,6 @@ class Result[T](BaseModel):
             raise ValueError(f"Result failed: {self.error}")
         assert self.value is not None
         return self.value
-
-    def map(self, fn: Callable[[T], Any]) -> Result[Any]:
-        """Transform the value if successful."""
-        if self.success and self.value is not None:
-            return Result.ok(fn(self.value), self.warnings)
-        return self
 
 
 # === Enums ===

@@ -13,11 +13,7 @@ to ensure consistent storage and retrieval.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from dataraum.graphs.models import GraphSQLGenerationOutput
-    from dataraum.query.models import QueryAnalysisOutput
+from typing import Any
 
 
 @dataclass
@@ -112,60 +108,6 @@ class QueryDocument:
                 for a in pydantic_assumptions
             ]
         return []
-
-    @classmethod
-    def from_query_analysis(
-        cls,
-        output: QueryAnalysisOutput,
-        assumptions: list[dict[str, Any]] | None = None,
-    ) -> QueryDocument:
-        """Create from Query Agent output.
-
-        Args:
-            output: The QueryAnalysisOutput from LLM
-            assumptions: List of assumption dicts (optional override)
-
-        Returns:
-            QueryDocument instance
-        """
-        steps = [
-            SQLStep(step_id=s.step_id, sql=s.sql, description=s.description) for s in output.steps
-        ]
-
-        return cls(
-            summary=output.summary,
-            steps=steps,
-            final_sql=output.final_sql,
-            column_mappings=output.column_mappings,
-            assumptions=cls._build_assumptions(assumptions, output.assumptions),
-        )
-
-    @classmethod
-    def from_graph_output(
-        cls,
-        output: GraphSQLGenerationOutput,
-        assumptions: list[dict[str, Any]] | None = None,
-    ) -> QueryDocument:
-        """Create from Graph Agent output.
-
-        Args:
-            output: The GraphSQLGenerationOutput from LLM
-            assumptions: List of assumption dicts (from entropy context)
-
-        Returns:
-            QueryDocument instance
-        """
-        steps = [
-            SQLStep(step_id=s.step_id, sql=s.sql, description=s.description) for s in output.steps
-        ]
-
-        return cls(
-            summary=output.summary,
-            steps=steps,
-            final_sql=output.final_sql,
-            column_mappings=output.column_mappings,
-            assumptions=cls._build_assumptions(assumptions),
-        )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""

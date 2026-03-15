@@ -93,43 +93,6 @@ class EntropyBehaviorConfig:
             assumption_disclosure="minimal",
         )
 
-    def get_threshold_for_dimension(self, dimension: str) -> float:
-        """Get the clarification threshold for a specific dimension.
-
-        Some dimensions (like currency/units) should have lower thresholds
-        because errors in those dimensions are particularly problematic.
-        """
-        for override in self.dimension_overrides:
-            if override.dimension == dimension:
-                return override.clarification_threshold
-        return self.clarification_threshold
-
-    def determine_action(
-        self,
-        max_entropy: float,
-    ) -> EntropyAction:
-        """Determine what action to take based on entropy level.
-
-        Args:
-            max_entropy: Maximum entropy score encountered
-
-        Returns:
-            The recommended action for the agent
-        """
-        # Standard entropy-based decisions
-        if max_entropy >= self.refusal_threshold:
-            return EntropyAction.REFUSE
-
-        if max_entropy >= self.clarification_threshold:
-            return EntropyAction.ASK_OR_CAVEAT
-
-        if max_entropy >= 0.3:  # Medium entropy
-            if self.auto_assume:
-                return EntropyAction.ANSWER_WITH_ASSUMPTIONS
-            return EntropyAction.ASK_OR_CAVEAT
-
-        # Low entropy
-        return EntropyAction.ANSWER_CONFIDENTLY
 
 
 # Default dimension-specific thresholds per ENTROPY_QUERY_BEHAVIOR.md

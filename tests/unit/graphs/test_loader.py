@@ -283,62 +283,6 @@ dependencies:
         assert "test_email_filter" in graph_ids
 
 
-class TestGetCrossColumnFilters:
-    """Tests for get_cross_column_filters method."""
-
-    @pytest.fixture
-    def loader_with_cross_column(self, tmp_path: Path) -> GraphLoader:
-        """Create loader with cross-column filter."""
-        filters_dir = tmp_path / "filters" / "test"
-        filters_dir.mkdir(parents=True)
-
-        cross_filter = """
-graph_id: "test_date_order"
-graph_type: "filter"
-version: "1.0"
-
-metadata:
-  name: "Date Order Check"
-  description: "Start date before end date"
-  category: "quality"
-  source: "system"
-  applies_to:
-    column_pairs:
-      start_pattern: ".*_start.*"
-      end_pattern: ".*_end.*"
-
-output:
-  type: "classification"
-
-dependencies:
-  date_order:
-    level: 1
-    type: "predicate"
-    condition: "{start_column} <= {end_column}"
-    on_false: "quarantine"
-    output_step: true
-"""
-        (filters_dir / "cross_filter.yaml").write_text(cross_filter)
-
-        loader = GraphLoader(graphs_dir=tmp_path)
-        loader.load_all()
-        return loader
-
-    def test_get_cross_column_filters(self, loader_with_cross_column: GraphLoader) -> None:
-        """Cross-column filters are identified."""
-        cross_filters = loader_with_cross_column.get_cross_column_filters()
-        assert len(cross_filters) == 1
-        assert cross_filters[0].graph_id == "test_date_order"
-
-    def test_cross_column_not_in_regular_match(self, loader_with_cross_column: GraphLoader) -> None:
-        """Cross-column filters are excluded from regular matching."""
-        filters = loader_with_cross_column.get_applicable_filters(
-            column_name="contract_start_date",
-        )
-        # Should not match because it has column_pairs
-        assert not any(f.graph_id == "test_date_order" for f in filters)
-
-
 class TestGetFiltersForDataset:
     """Tests for get_filters_for_dataset method."""
 

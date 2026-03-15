@@ -45,20 +45,6 @@ class TestOntologyLoader:
         # Should be the same object (cached)
         assert ontology1 is ontology2
 
-    def test_clear_cache(self):
-        """Test clearing the cache."""
-        loader = OntologyLoader()
-
-        # Load to populate cache
-        ontology1 = loader.load("finance")
-        loader.clear_cache()
-
-        # Load again (should be new object)
-        ontology2 = loader.load("finance")
-
-        # Different objects after cache clear
-        assert ontology1 is not ontology2
-
     def test_custom_verticals_dir(self, tmp_path: Path) -> None:
         """Test using a custom verticals directory."""
         # Create a test vertical with ontology file

@@ -19,7 +19,6 @@ from dataraum.analysis.quality_summary.models import (
     ColumnQualitySummary,
     QualityIssue,
     QualitySummaryBatchOutput,
-    QualitySummaryOutput,
     SliceComparison,
     SliceMetrics,
 )
@@ -271,75 +270,6 @@ class QualitySummaryAgent(LLMFeature):
             )
             for sd in column_data.slice_data
         ]
-
-    def _convert_output_to_summary(
-        self,
-        column_data: AggregatedColumnData,
-        output: QualitySummaryOutput,
-    ) -> Result[ColumnQualitySummary]:
-        """Convert Pydantic tool output to ColumnQualitySummary.
-
-        Args:
-            column_data: Original column data
-            output: Validated Pydantic output from LLM
-
-        Returns:
-            Result containing ColumnQualitySummary
-        """
-        # Build slice metrics from original data
-        slice_metrics = self._build_slice_metrics(column_data)
-
-        # Convert quality issues from Pydantic output
-        quality_issues = [
-            QualityIssue(
-                issue_type=issue.issue_type,
-                severity=issue.severity,
-                description=issue.description,
-                affected_slices=issue.affected_slices,
-                investigation_sql=issue.investigation_sql,
-            )
-            for issue in output.quality_issues
-        ]
-
-        # Convert slice comparisons from Pydantic output
-        slice_comparisons = [
-            SliceComparison(
-                metric_name=comp.metric_name,
-                description=comp.description,
-                min_value=comp.min_value,
-                max_value=comp.max_value,
-                outlier_slices=comp.outlier_slices,
-            )
-            for comp in output.slice_comparisons
-        ]
-
-        # Convert investigation views from Pydantic output
-        investigation_views = [
-            {
-                "name": view.name,
-                "description": view.description,
-                "sql": view.sql,
-            }
-            for view in output.investigation_views
-        ]
-
-        summary = ColumnQualitySummary(
-            column_name=column_data.column_name,
-            source_table_name=column_data.source_table_name,
-            slice_column_name=column_data.slice_column_name,
-            total_slices=len(column_data.slice_data),
-            overall_quality_score=output.overall_quality_score,
-            quality_grade=output.quality_grade,
-            summary=output.summary,
-            key_findings=output.key_findings,
-            quality_issues=quality_issues,
-            slice_comparisons=slice_comparisons,
-            recommendations=output.recommendations,
-            investigation_views=investigation_views,
-            slice_metrics=slice_metrics,
-        )
-
-        return Result.ok(summary)
 
 
 __all__ = ["QualitySummaryAgent"]

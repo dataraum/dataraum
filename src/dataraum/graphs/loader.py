@@ -149,23 +149,6 @@ class GraphLoader:
             except Exception as e:
                 self._load_errors.append(GraphLoadError(yaml_file, str(e)))
 
-    def load_graph(self, yaml_path: Path) -> TransformationGraph:
-        """Load a single transformation graph from YAML.
-
-        Args:
-            yaml_path: Path to the YAML file
-
-        Returns:
-            TransformationGraph instance (first document only)
-
-        Raises:
-            GraphLoadError: If the YAML is invalid or missing required fields
-        """
-        graphs = self.load_graphs_from_file(yaml_path)
-        if not graphs:
-            raise GraphLoadError(yaml_path, "Empty YAML file")
-        return graphs[0]
-
     def load_graphs_from_file(self, yaml_path: Path) -> list[TransformationGraph]:
         """Load all transformation graphs from a YAML file.
 
@@ -461,10 +444,6 @@ class GraphLoader:
         """Get all metric graphs."""
         return [g for g in self.graphs.values() if g.graph_type == GraphType.METRIC]
 
-    def get_system_graphs(self) -> list[TransformationGraph]:
-        """Get all system-defined graphs."""
-        return [g for g in self.graphs.values() if g.metadata.source == GraphSource.SYSTEM]
-
     def get_user_graphs(self) -> list[TransformationGraph]:
         """Get all user-defined graphs."""
         return [g for g in self.graphs.values() if g.metadata.source == GraphSource.USER]
@@ -506,60 +485,6 @@ class GraphLoader:
                 if step.source and step.source.standard_field:
                     fields.add(step.source.standard_field)
         return fields
-
-    def validate_graph(self, graph: TransformationGraph) -> list[str]:
-        """Validate a transformation graph for consistency.
-
-        Args:
-            graph: The graph to validate
-
-        Returns:
-            List of validation errors (empty if valid)
-        """
-        errors = []
-
-        # Check for output step
-        output_step = graph.get_output_step()
-        if not output_step:
-            errors.append("No output_step defined")
-
-        # Check dependency references
-        step_ids = set(graph.steps.keys())
-        for step in graph.steps.values():
-            for dep in step.depends_on:
-                if dep not in step_ids:
-                    errors.append(f"Step {step.step_id} references unknown dependency: {dep}")
-
-        # Check level ordering (dependencies should have lower level)
-        for step in graph.steps.values():
-            for dep_id in step.depends_on:
-                if dep_id in step_ids:
-                    dep_step = graph.steps[dep_id]
-                    if dep_step.level >= step.level:
-                        errors.append(
-                            f"Step {step.step_id} (level {step.level}) depends on "
-                            f"{dep_id} (level {dep_step.level}) - invalid level order"
-                        )
-
-        # Filter-specific checks
-        if graph.graph_type == GraphType.FILTER:
-            # Check predicate steps have classification actions
-            for step in graph.steps.values():
-                if step.step_type == StepType.PREDICATE:
-                    if not step.on_false and not step.on_true:
-                        errors.append(
-                            f"Predicate step {step.step_id} has no on_false or on_true action"
-                        )
-
-        # Metric-specific checks
-        if graph.graph_type == GraphType.METRIC:
-            # Check that required filter graphs exist (if loader has them)
-            for req in graph.requires_filters:
-                if req.required and req.graph_id not in self.graphs:
-                    # Not an error, just a warning - filter might be loaded separately
-                    pass
-
-        return errors
 
     def get_applicable_filters(
         self,
@@ -625,21 +550,6 @@ class GraphLoader:
             applicable.append(graph)
 
         return applicable
-
-    def get_cross_column_filters(self) -> list[TransformationGraph]:
-        """Get filter graphs that require cross-column matching.
-
-        These are filters with column_pairs defined in applies_to,
-        requiring special handling to match start/end date pairs, etc.
-
-        Returns:
-            List of filter graphs with column_pairs criteria
-        """
-        return [
-            graph
-            for graph in self.get_filter_graphs()
-            if graph.metadata.applies_to and graph.metadata.applies_to.column_pairs
-        ]
 
     def get_filters_for_dataset(
         self,

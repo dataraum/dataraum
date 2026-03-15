@@ -18,23 +18,10 @@ from dataraum.entropy.snapshot import Snapshot, take_snapshot
 
 
 class TestSnapshot:
-    def test_score_for_existing(self):
-        snap = Snapshot(
-            scores={"type_fidelity": 0.3, "null_ratio": 0.1},
-            detectors_run=["type_fidelity", "null_ratio"],
-        )
-        assert snap.score_for("type_fidelity") == 0.3
-        assert snap.score_for("null_ratio") == 0.1
-
-    def test_score_for_missing(self):
-        snap = Snapshot(scores={"type_fidelity": 0.3}, detectors_run=[])
-        assert snap.score_for("nonexistent") is None
-
     def test_empty_snapshot(self):
         snap = Snapshot(scores={}, detectors_run=[])
         assert snap.scores == {}
         assert snap.detectors_run == []
-        assert snap.score_for("anything") is None
 
     def test_measured_at_default(self):
         before = datetime.now(UTC)
@@ -286,14 +273,12 @@ class TestTakeSnapshot:
         present on the context (e.g., in tests), detectors don't need load_data.
         """
         registry = DetectorRegistry()
-        registry.register(StubTypingDetector())  # no load_data override
 
         # Stub that pre-populates typing in analysis_results
         class TypingPreloader(StubTypingDetector):
             def load_data(self, context: DetectorContext) -> None:
                 context.analysis_results["typing"] = {"parse_success_rate": 0.95}
 
-        registry.unregister("stub_typing")
         registry.register(TypingPreloader())
 
         with (

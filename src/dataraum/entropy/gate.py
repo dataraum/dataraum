@@ -35,6 +35,8 @@ class GateResult:
 
     scores: dict[str, float] = field(default_factory=dict)
     column_details: dict[str, dict[str, float]] = field(default_factory=dict)
+    table_details: dict[str, dict[str, float]] = field(default_factory=dict)
+    view_details: dict[str, dict[str, float]] = field(default_factory=dict)
     skipped_detectors: list[SkippedDetector] = field(default_factory=list)
     # dim_path -> {action_name, ...} — resolution options from all entropy objects
     resolution_actions: dict[str, set[str]] = field(default_factory=dict)
@@ -116,6 +118,8 @@ def measure_at_gate(
 
     scores_by_dim: dict[str, list[float]] = defaultdict(list)
     column_scores: dict[str, dict[str, float]] = defaultdict(dict)
+    table_scores: dict[str, dict[str, float]] = defaultdict(dict)
+    view_scores: dict[str, dict[str, float]] = defaultdict(dict)
     actions_by_dim: dict[str, set[str]] = defaultdict(set)
 
     # Column-scoped pass
@@ -153,6 +157,7 @@ def measure_at_gate(
             )
             for sub_dim, score in snapshot.scores.items():
                 scores_by_dim[sub_dim].append(score)
+                table_scores[sub_dim][target] = score
             for obj in snapshot.objects:
                 for opt in obj.resolution_options:
                     actions_by_dim[str(obj.sub_dimension)].add(opt.action)
@@ -181,6 +186,7 @@ def measure_at_gate(
             )
             for sub_dim, score in snapshot.scores.items():
                 scores_by_dim[sub_dim].append(score)
+                view_scores[sub_dim][target] = score
             for obj in snapshot.objects:
                 for opt in obj.resolution_options:
                     actions_by_dim[str(obj.sub_dimension)].add(opt.action)
@@ -204,6 +210,18 @@ def measure_at_gate(
         path = sub_dim_to_path.get(sd, sd)
         result_column_details[path] = targets
 
+    # Build table details keyed by dimension_path
+    result_table_details: dict[str, dict[str, float]] = {}
+    for sd, targets in table_scores.items():
+        path = sub_dim_to_path.get(sd, sd)
+        result_table_details[path] = targets
+
+    # Build view details keyed by dimension_path
+    result_view_details: dict[str, dict[str, float]] = {}
+    for sd, targets in view_scores.items():
+        path = sub_dim_to_path.get(sd, sd)
+        result_view_details[path] = targets
+
     # Build resolution actions keyed by dimension_path
     result_actions: dict[str, set[str]] = {}
     for sd, acts in actions_by_dim.items():
@@ -213,6 +231,8 @@ def measure_at_gate(
     return GateResult(
         scores=result_scores,
         column_details=result_column_details,
+        table_details=result_table_details,
+        view_details=result_view_details,
         skipped_detectors=skipped,
         resolution_actions=result_actions,
     )
@@ -348,6 +368,8 @@ def persist_gate_result(
     log.entropy_scores = dict(gate_result.scores)
     existing_outputs = dict(log.outputs) if log.outputs else {}
     existing_outputs["gate_column_details"] = dict(gate_result.column_details)
+    existing_outputs["gate_table_details"] = dict(gate_result.table_details)
+    existing_outputs["gate_view_details"] = dict(gate_result.view_details)
     existing_outputs["detector_id_map"] = detector_id_map
     log.outputs = existing_outputs
     session.commit()

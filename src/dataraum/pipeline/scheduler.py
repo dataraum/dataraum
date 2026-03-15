@@ -18,6 +18,7 @@ from dataraum.core.logging import get_logger
 from dataraum.entropy.dimensions import AnalysisKey, _StrValueMixin
 from dataraum.entropy.gate import (
     ExitCheckIssue,
+    GateResult,
     assess_contracts,
     measure_at_gate,
     persist_gate_result,
@@ -227,11 +228,7 @@ class PipelineScheduler:
 
                 # Persist gate scores to PhaseLog for the gate phase
                 if last_gate_phase:
-                    self._persist_gate_scores(
-                        last_gate_phase,
-                        gate_result.scores,
-                        gate_result.column_details,
-                    )
+                    self._persist_gate_scores(last_gate_phase, gate_result)
 
                 # Emit one POST_VERIFICATION per wave (after all gates measured)
                 if last_gate_phase and all_scores:
@@ -511,19 +508,12 @@ class PipelineScheduler:
     def _persist_gate_scores(
         self,
         gate_phase: str,
-        scores: dict[str, float],
-        column_details: dict[str, dict[str, float]],
+        gate_result: GateResult,
     ) -> None:
         """Update the PhaseLog for a gate phase with entropy scores.
 
         Delegates to the shared ``persist_gate_result`` utility.
         """
-        from dataraum.entropy.gate import GateResult
-
-        gate_result = GateResult(
-            scores=dict(scores),
-            column_details=dict(column_details),
-        )
         persist_gate_result(
             self.session,
             self.source_id,
@@ -556,10 +546,14 @@ class PipelineScheduler:
                 )
 
     def _available_analyses(self) -> set[AnalysisKey]:
-        """Build available analyses set from all COMPLETED phases."""
+        """Build available analyses set from COMPLETED and SKIPPED phases.
+
+        SKIPPED phases have their output from a prior run, so their
+        analyses are available for gate measurement.
+        """
         available: set[AnalysisKey] = set()
         for name, status in self._state.items():
-            if status == PhaseStatus.COMPLETED:
+            if status in (PhaseStatus.COMPLETED, PhaseStatus.SKIPPED):
                 available.update(self.phases[name].produces_analyses)
         return available
 

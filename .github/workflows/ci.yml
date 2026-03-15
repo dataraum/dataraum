@@ -6,9 +6,6 @@ on:
     pull_request:
         branches: [main]
 
-env:
-    UV_NO_SOURCES_PACKAGE: dataraum-testdata
-
 jobs:
     check:
         runs-on: ubuntu-latest

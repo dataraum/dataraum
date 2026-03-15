@@ -487,7 +487,7 @@ class DimensionalEntropyDetector(EntropyDetector):
 
             # 2. Check for correlated variance patterns
             correlated_patterns = self._detect_correlated_variance(
-                interesting_columns, columns_data, correlation_threshold
+                interesting_columns, correlation_threshold
             )
             patterns.extend(correlated_patterns)
             entropy_score.correlated_variance_count = len(correlated_patterns)
@@ -520,7 +520,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         # mutual exclusivity is real. Check directly via DuckDB.
         if context.duckdb_conn is not None and entropy_score.mutual_exclusivity_count == 0:
             value_mutex_patterns = self._detect_value_mutual_exclusivity(
-                context, columns_data, mutual_exclusivity_threshold
+                context, mutual_exclusivity_threshold
             )
             patterns.extend(value_mutex_patterns)
             entropy_score.mutual_exclusivity_count += len(value_mutex_patterns)
@@ -723,7 +723,6 @@ class DimensionalEntropyDetector(EntropyDetector):
     def _detect_value_mutual_exclusivity(
         self,
         context: DetectorContext,
-        columns_data: dict[str, Any],
         threshold: float,
     ) -> list[CrossColumnPattern]:
         """Detect value-based mutual exclusivity via DuckDB.
@@ -814,7 +813,6 @@ class DimensionalEntropyDetector(EntropyDetector):
     def _detect_correlated_variance(
         self,
         columns: list[ColumnVariancePattern],
-        columns_data: dict[str, Any],
         threshold: float,
     ) -> list[CrossColumnPattern]:
         """Detect columns whose variance patterns correlate.

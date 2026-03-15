@@ -178,7 +178,7 @@ class GraphExecutionPhase(BasePhase):
                     required_fields.append(step.source.standard_field)
 
             # Check if we have direct mappings (LLM can still infer if not)
-            can_exec, missing = can_execute_metric(field_mappings, required_fields)
+            _, missing = can_execute_metric(field_mappings, required_fields)
 
             # Execute the graph (LLM will infer missing fields)
             try:

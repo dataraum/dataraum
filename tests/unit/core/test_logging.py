@@ -149,11 +149,8 @@ class TestProxyLogger:
             "info",
             "warn",
             "warning",
-            "fatal",
-            "failure",
             "err",
             "error",
-            "critical",
             "exception",
         ]
         for alias in aliases:

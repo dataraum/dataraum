@@ -30,7 +30,6 @@ BACKEND_URL_TEMPLATES: dict[str, str] = {
 }
 
 _CREDENTIALS_FILE = "credentials.yaml"
-_DESIRED_DIR_MODE = 0o700
 _DESIRED_FILE_MODE = 0o600
 
 

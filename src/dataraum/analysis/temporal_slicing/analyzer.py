@@ -342,7 +342,7 @@ def analyze_column_drift(
             per_period: list[tuple[str, float, dict[str, float], dict[str, float]]] = []
 
             for i in range(1, len(distributions)):
-                prev_label, prev_dist = distributions[i - 1]
+                _, prev_dist = distributions[i - 1]
                 curr_label, curr_dist = distributions[i]
                 js_div = _jensen_shannon_divergence(prev_dist, curr_dist)
                 js_values.append(js_div)

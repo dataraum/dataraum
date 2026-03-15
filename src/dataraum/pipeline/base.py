@@ -23,7 +23,6 @@ class PhaseStatus(_StrValueMixin):
     """Status of a pipeline phase."""
 
     PENDING = "pending"
-    RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"

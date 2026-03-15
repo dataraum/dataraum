@@ -250,9 +250,9 @@ class TestBusinessMeaningDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
-        # Additive: 0.0 + 0.3 * 0.5 - 0.0 = 0.15
+        # Additive: 0.0 + 0.5 * (1 - 0.5) - 0.0 = 0.25
         assert results[0].score > 0.0, "Low confidence should produce nonzero score"
-        assert results[0].score == pytest.approx(0.15, abs=0.01)
+        assert results[0].score == pytest.approx(0.25, abs=0.01)
 
     def test_fully_documented_high_confidence_near_zero(self, detector: BusinessMeaningDetector):
         """Test that fully documented column with high confidence has near-zero score."""
@@ -272,8 +272,8 @@ class TestBusinessMeaningDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
-        # Additive: 0.0 + 0.3 * 0.05 = 0.015
-        assert results[0].score == pytest.approx(0.015, abs=0.01)
+        # Additive: 0.0 + 0.5 * (1 - 0.95) - 0.0 = 0.025
+        assert results[0].score == pytest.approx(0.025, abs=0.01)
 
     def test_low_confidence_increases_partial_score(self, detector: BusinessMeaningDetector):
         """Test that low confidence increases score for partially documented columns."""

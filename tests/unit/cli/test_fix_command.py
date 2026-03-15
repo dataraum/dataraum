@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import re
+
 from typer.testing import CliRunner
 
 from dataraum.cli.main import app
 
 runner = CliRunner()
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 class TestFixCommandRegistered:
@@ -24,7 +32,7 @@ class TestFixCommandRegistered:
         """--rerun is listed as a valid option."""
         result = runner.invoke(app, ["fix", "--help"])
         assert result.exit_code == 0
-        assert "--rerun" in result.output
+        assert "--rerun" in _strip_ansi(result.output)
 
 
 class TestGetSourcePath:

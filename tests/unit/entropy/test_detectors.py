@@ -115,14 +115,6 @@ class TestDetectorRegistry:
         runnable = empty_registry.get_runnable_detectors(empty_context)
         assert len(runnable) == 0
 
-    def test_get_layers(self, empty_registry: DetectorRegistry):
-        """Test getting unique layers."""
-        detector = MockDetector()
-        empty_registry.register(detector)
-
-        layers = empty_registry.get_layers()
-        assert "structural" in layers
-
 class TestEntropyDetector:
     """Tests for EntropyDetector base class."""
 

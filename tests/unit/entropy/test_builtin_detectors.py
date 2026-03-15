@@ -78,17 +78,6 @@ class TestBuiltinDetectors:
         detector_ids = registry.get_detector_ids()
         assert len(detector_ids) == len(BUILTIN_DETECTORS)
 
-    def test_layers_covered(self):
-        """Test that all entropy layers are covered by builtin detectors."""
-        registry = DetectorRegistry()
-        register_builtin_detectors(registry)
-
-        layers = registry.get_layers()
-        assert "structural" in layers
-        assert "value" in layers
-        assert "semantic" in layers
-        assert "computational" in layers
-
     def test_structural_detectors(self):
         """Test structural layer detectors."""
         registry = DetectorRegistry()

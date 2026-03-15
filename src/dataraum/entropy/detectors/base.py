@@ -279,18 +279,6 @@ class DetectorRegistry:
         """
         return [d for d in self.detectors.values() if d.layer == layer]
 
-    def get_detectors_for_dimension(self, layer: str, dimension: str) -> list[EntropyDetector]:
-        """Get all detectors for a specific dimension.
-
-        Args:
-            layer: Layer name
-            dimension: Dimension name
-
-        Returns:
-            List of detectors for that dimension
-        """
-        return [d for d in self.detectors.values() if d.layer == layer and d.dimension == dimension]
-
     def get_runnable_detectors(self, context: DetectorContext) -> list[EntropyDetector]:
         """Get all detectors that can run with the given context.
 
@@ -309,25 +297,6 @@ class DetectorRegistry:
             List of detector IDs
         """
         return list(self.detectors.keys())
-
-    def get_layers(self) -> list[str]:
-        """Get list of unique layers with registered detectors.
-
-        Returns:
-            List of layer names
-        """
-        return list({d.layer for d in self.detectors.values()})
-
-    def get_dimensions(self, layer: str) -> list[str]:
-        """Get list of dimensions for a layer.
-
-        Args:
-            layer: Layer name
-
-        Returns:
-            List of dimension names
-        """
-        return list({d.dimension for d in self.detectors.values() if d.layer == layer})
 
     def get_fix_schema(
         self, action_name: str, dimension_path: str | None = None

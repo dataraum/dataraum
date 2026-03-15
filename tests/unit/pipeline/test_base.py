@@ -41,7 +41,7 @@ class TestPhaseRegistry:
         assert cls is not None
         instance = cls()
         assert "semantic" in instance.dependencies
-        assert "quality_summary" in instance.dependencies
+        assert "analysis_review" in instance.dependencies
 
     def test_graph_execution_phase_exists(self):
         cls = get_phase_class("graph_execution")

@@ -179,10 +179,6 @@ class ContractEvaluation:
     worst_dimension_score: float = 0.0
     estimated_effort_to_comply: str = "unknown"
 
-    def get_blocking_violations(self) -> list[Violation]:
-        """Get only violations that block compliance."""
-        return [v for v in self.violations if v.severity == "blocking"]
-
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -733,5 +729,3 @@ def find_best_contract(
 
     # None pass
     return None, None
-
-

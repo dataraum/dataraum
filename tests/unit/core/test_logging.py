@@ -87,8 +87,10 @@ class TestProxyLogger:
 
         proxy = _ProxyLogger()
         proxy.msg(
-            event="phase.done", level="info",
-            timestamp="2026-03-04T20:10:29Z", phase="typing",
+            event="phase.done",
+            level="info",
+            timestamp="2026-03-04T20:10:29Z",
+            phase="typing",
         )
 
         text_obj: Text = mock_console.print.call_args[0][0]
@@ -142,8 +144,17 @@ class TestProxyLogger:
         """All level aliases point to the same method as msg."""
         proxy = _ProxyLogger()
         aliases = [
-            "log", "debug", "info", "warn", "warning",
-            "fatal", "failure", "err", "error", "critical", "exception",
+            "log",
+            "debug",
+            "info",
+            "warn",
+            "warning",
+            "fatal",
+            "failure",
+            "err",
+            "error",
+            "critical",
+            "exception",
         ]
         for alias in aliases:
             assert getattr(proxy, alias) == proxy.msg, f"{alias} does not match msg"

@@ -26,5 +26,3 @@ class TestPhaseResultSummary:
         """Skipped results don't have a summary."""
         result = PhaseResult.skipped("not needed")
         assert result.summary == ""
-
-

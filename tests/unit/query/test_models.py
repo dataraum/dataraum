@@ -57,6 +57,7 @@ class TestQueryResult:
         d = result.to_dict()
         assert d["entropy_action"] is None
 
+
 class TestAssumptionConversion:
     """Tests for assumption conversion."""
 

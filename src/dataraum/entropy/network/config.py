@@ -196,5 +196,3 @@ def get_network_config(config_path: Path | None = None) -> NetworkConfig:
     _config_cache = load_network_config(path)
     _config_path_cache = path
     return _config_cache
-
-

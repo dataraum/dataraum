@@ -145,4 +145,3 @@ class PromptRenderer:
             return []
 
         return [p.stem for p in self.prompts_dir.glob("*.yaml")]
-

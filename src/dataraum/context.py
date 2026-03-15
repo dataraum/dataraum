@@ -339,7 +339,6 @@ class Context:
             return QueryResultWrapper(result.value)
 
 
-
 class EntropyAccessor:
     """Accessor for entropy data."""
 

@@ -75,7 +75,28 @@ class TestDetectorRegistry:
         empty_registry.register(detector)
 
         assert "mock_detector" in empty_registry.get_detector_ids()
-        assert empty_registry.get_detector("mock_detector") is detector
+        assert empty_registry.detectors["mock_detector"] is detector
+
+    def test_get_all_detectors_by_layer(self, empty_registry: DetectorRegistry):
+        """Test filtering detectors by layer via get_all_detectors."""
+        detector = MockDetector()
+        empty_registry.register(detector)
+
+        all_detectors = empty_registry.get_all_detectors()
+        structural = [d for d in all_detectors if d.layer.value == "structural"]
+        assert len(structural) == 1
+        assert structural[0].detector_id == "mock_detector"
+
+        semantic = [d for d in all_detectors if d.layer.value == "semantic"]
+        assert len(semantic) == 0
+
+    def test_registered_layers(self, empty_registry: DetectorRegistry):
+        """Test getting unique layers from registered detectors."""
+        detector = MockDetector()
+        empty_registry.register(detector)
+
+        layers = {d.layer.value for d in empty_registry.get_all_detectors()}
+        assert "structural" in layers
 
 
 class TestEntropyDetector:

@@ -163,7 +163,10 @@ class TestDetectsEnrichedDerivedColumns:
         _make_stat_profile(session, dim_col)
 
         ev = _make_enriched_view(
-            session, table, "enriched_orders", ["products__unit_price"],
+            session,
+            table,
+            "enriched_orders",
+            ["products__unit_price"],
             view_table=view_table,
         )
 
@@ -174,10 +177,7 @@ class TestDetectsEnrichedDerivedColumns:
 
         # Find the cross-table derivation (source includes dim column's real ID)
         fact_col_ids = {col_qty.column_id, col_total.column_id}
-        cross = [
-            d for d in derived
-            if any(sid not in fact_col_ids for sid in d.source_column_ids)
-        ]
+        cross = [d for d in derived if any(sid not in fact_col_ids for sid in d.source_column_ids)]
         assert len(cross) >= 1
         assert cross[0].derived_column_name == "total"
         assert cross[0].derivation_type == "product"
@@ -258,7 +258,10 @@ class TestDetectsEnrichedDerivedColumns:
         _make_column(session, view_table, "dim__name", "VARCHAR")
 
         ev = _make_enriched_view(
-            session, table, "enriched_varchar", ["dim__name"],
+            session,
+            table,
+            "enriched_varchar",
+            ["dim__name"],
             view_table=view_table,
         )
 
@@ -281,7 +284,10 @@ class TestDetectsEnrichedDerivedColumns:
         _make_stat_profile(session, dim_col)
 
         ev = _make_enriched_view(
-            session, table, "enriched_orders", ["products__unit_price"],
+            session,
+            table,
+            "enriched_orders",
+            ["products__unit_price"],
             view_table=view_table,
         )
 
@@ -304,7 +310,10 @@ class TestDetectsEnrichedDerivedColumns:
         _make_stat_profile(session, dim_col)
 
         ev = _make_enriched_view(
-            session, table, "enriched_orders", ["products__unit_price"],
+            session,
+            table,
+            "enriched_orders",
+            ["products__unit_price"],
             view_table=view_table,
         )
 
@@ -312,16 +321,10 @@ class TestDetectsEnrichedDerivedColumns:
         assert result.success
         derived = result.unwrap()
         fact_col_ids = {col_qty.column_id, col_total.column_id}
-        cross = [
-            d for d in derived
-            if any(sid not in fact_col_ids for sid in d.source_column_ids)
-        ]
+        cross = [d for d in derived if any(sid not in fact_col_ids for sid in d.source_column_ids)]
         assert len(cross) >= 1
         # The dimension column's real column_id should appear in source_column_ids
-        dim_ids = [
-            sid for d in cross for sid in d.source_column_ids
-            if sid not in fact_col_ids
-        ]
+        dim_ids = [sid for d in cross for sid in d.source_column_ids if sid not in fact_col_ids]
         assert dim_col.column_id in dim_ids
 
     def test_deduplication(self, session):

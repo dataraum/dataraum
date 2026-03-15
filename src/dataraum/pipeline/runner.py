@@ -132,7 +132,6 @@ class RunResult:
         return [p for p in self.phases if p.status == "failed"]
 
 
-
 def run(config: RunConfig) -> Result[RunResult]:
     """Run the pipeline with the given configuration.
 

@@ -28,7 +28,6 @@ class TestBusinessCyclesPhase:
             "quality_summary",
         ]
 
-
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):

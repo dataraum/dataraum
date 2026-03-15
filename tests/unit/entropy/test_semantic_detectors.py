@@ -201,7 +201,11 @@ class TestBusinessMeaningDetector:
         assert "document_business_meaning" in actions
         # All three fields should be listed as missing
         opt = results[0].resolution_options[0]
-        assert set(opt.parameters["missing_fields"]) == {"description", "business_name", "entity_type"}
+        assert set(opt.parameters["missing_fields"]) == {
+            "description",
+            "business_name",
+            "entity_type",
+        }
 
     def test_resolution_options_with_description(self, detector: BusinessMeaningDetector):
         """Test resolution options when description exists but not others."""

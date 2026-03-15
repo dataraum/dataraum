@@ -145,36 +145,6 @@ class CredentialChain:
                 return result
         return None
 
-    def save(self, source_name: str, url: str) -> Path:
-        """Save a connection URL to the credentials file.
-
-        Creates the config directory and file if they don't exist.
-        Sets secure permissions (0700 for dir, 0600 for file).
-
-        Returns:
-            Path to the credentials file.
-        """
-        self._ensure_config_dir()
-
-        cred_file = self.credentials_file
-        config: dict[str, Any] = {}
-
-        if cred_file.exists():
-            with open(cred_file) as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    config = loaded
-
-        sources = config.setdefault("sources", {})
-        sources[source_name] = url
-
-        with open(cred_file, "w") as f:
-            yaml.dump(config, f, default_flow_style=False)
-
-        # Ensure 0600 permissions after write
-        cred_file.chmod(_DESIRED_FILE_MODE)
-        return cred_file
-
     def instructions_for(self, source_name: str, backend: str) -> dict[str, Any]:
         """Generate setup instructions when no credentials are found.
 
@@ -196,11 +166,3 @@ class CredentialChain:
             "file_path": str(self.credentials_file),
             "env_alternative": env_var,
         }
-
-    def _ensure_config_dir(self) -> None:
-        """Create ~/.dataraum/ with 0700 permissions if it doesn't exist."""
-        self._credentials_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            self._credentials_dir.chmod(_DESIRED_DIR_MODE)
-        except OSError:
-            _log.debug("Could not set permissions on %s", self._credentials_dir)

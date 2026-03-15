@@ -94,7 +94,6 @@ class EntropyBehaviorConfig:
         )
 
 
-
 # Default dimension-specific thresholds per ENTROPY_QUERY_BEHAVIOR.md
 DEFAULT_DIMENSION_OVERRIDES = [
     DimensionBehavior(

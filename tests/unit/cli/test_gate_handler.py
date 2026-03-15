@@ -389,7 +389,11 @@ class TestRunFixFlow:
             patch.object(console, "input", side_effect=lambda _: next(input_values)),
         ):
             result = _run_fix_flow(
-                console, MagicMock(), "src", group, event,
+                console,
+                MagicMock(),
+                "src",
+                group,
+                event,
             )
 
         assert result.action == ResolutionAction.DEFER
@@ -413,7 +417,11 @@ class TestRunFixFlow:
             return_value=mock_agent,
         ):
             result = _run_fix_flow(
-                console, MagicMock(), "src", group, event,
+                console,
+                MagicMock(),
+                "src",
+                group,
+                event,
             )
 
         assert result.action == ResolutionAction.DEFER
@@ -436,9 +444,7 @@ class TestRunFixFlow:
         group = _make_group()
 
         mock_questions = ConfigFixQuestions(
-            questions=[
-                ClarifyingQuestion(question="Q?", question_type="free_text")
-            ],
+            questions=[ClarifyingQuestion(question="Q?", question_type="free_text")],
             context_summary="",
         )
         mock_interp = ConfigFixInterpretation(

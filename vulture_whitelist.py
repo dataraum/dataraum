@@ -4,11 +4,15 @@
 # (SQLAlchemy event listeners, structlog processors) or code that vulture
 # cannot statically determine is reachable.
 
-# SQLAlchemy event.listens_for("connect") requires this parameter
+# SQLAlchemy event.listens_for("connect") — callback + parameter required by framework
+configure_sqlite  # noqa
 connection_record  # noqa
 
 # structlog processor/renderer callbacks require method_name parameter
 method_name  # noqa
 
-# vulture cannot see that `while True: ... break` makes trailing code reachable
-_ = "fix.py:258 — code after while-True with break is reachable"
+# Module-level __getattr__ for lazy imports — Python calls it automatically
+__getattr__  # noqa
+
+# Note: "unreachable code after 'while'" false positives (while True + break)
+# are filtered via grep in the hook and CI scripts, not via this whitelist.

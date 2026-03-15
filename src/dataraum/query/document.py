@@ -71,44 +71,6 @@ class QueryDocument:
     column_mappings: dict[str, str] = field(default_factory=dict)
     assumptions: list[QueryAssumptionData] = field(default_factory=list)
 
-    @staticmethod
-    def _build_assumptions(
-        assumptions: list[dict[str, Any]] | None,
-        pydantic_assumptions: list[Any] | None = None,
-    ) -> list[QueryAssumptionData]:
-        """Convert assumption dicts or Pydantic objects to QueryAssumptionData.
-
-        Args:
-            assumptions: List of assumption dicts (takes priority if provided)
-            pydantic_assumptions: List of Pydantic assumption objects (fallback)
-
-        Returns:
-            List of QueryAssumptionData
-        """
-        if assumptions:
-            return [
-                QueryAssumptionData(
-                    dimension=a.get("dimension", ""),
-                    target=a.get("target", ""),
-                    assumption=a.get("assumption", ""),
-                    basis=a.get("basis", "inferred"),
-                    confidence=a.get("confidence", 0.5),
-                )
-                for a in assumptions
-            ]
-        if pydantic_assumptions:
-            return [
-                QueryAssumptionData(
-                    dimension=a.dimension,
-                    target=a.target,
-                    assumption=a.assumption,
-                    basis=a.basis,
-                    confidence=a.confidence,
-                )
-                for a in pydantic_assumptions
-            ]
-        return []
-
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {

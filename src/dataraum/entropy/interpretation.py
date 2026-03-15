@@ -74,7 +74,6 @@ class EntropyInterpretation:
     model_used: str | None = None
 
 
-
 @dataclass
 class InterpretationInput:
     """Input data for entropy interpretation.

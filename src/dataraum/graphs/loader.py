@@ -9,9 +9,6 @@ Usage:
     loader = GraphLoader()
     loader.load_all()
 
-    # Get a specific graph
-    graph = loader.get_graph("technical_quality")
-
     # Get all filter graphs
     filters = loader.get_filter_graphs()
 
@@ -432,10 +429,6 @@ class GraphLoader:
 
     # Accessor methods
 
-    def get_graph(self, graph_id: str) -> TransformationGraph | None:
-        """Get a specific graph by ID."""
-        return self.graphs.get(graph_id)
-
     def get_filter_graphs(self) -> list[TransformationGraph]:
         """Get all filter graphs."""
         return [g for g in self.graphs.values() if g.graph_type == GraphType.FILTER]
@@ -444,34 +437,9 @@ class GraphLoader:
         """Get all metric graphs."""
         return [g for g in self.graphs.values() if g.graph_type == GraphType.METRIC]
 
-    def get_user_graphs(self) -> list[TransformationGraph]:
-        """Get all user-defined graphs."""
-        return [g for g in self.graphs.values() if g.metadata.source == GraphSource.USER]
-
-    def get_graphs_by_category(self, category: str) -> list[TransformationGraph]:
-        """Get all graphs in a specific category."""
-        return [g for g in self.graphs.values() if g.metadata.category == category]
-
     def get_load_errors(self) -> list[GraphLoadError]:
         """Get any errors encountered during loading."""
         return self._load_errors.copy()
-
-    def get_dependent_metrics(self, filter_graph_id: str) -> list[TransformationGraph]:
-        """Find all metrics that depend on a specific filter graph.
-
-        Args:
-            filter_graph_id: The filter graph ID
-
-        Returns:
-            List of metric graphs that require this filter
-        """
-        dependents = []
-        for graph in self.get_metric_graphs():
-            for req in graph.requires_filters:
-                if req.graph_id == filter_graph_id:
-                    dependents.append(graph)
-                    break
-        return dependents
 
     def get_all_abstract_fields(self) -> set[str]:
         """Get all abstract fields used across all graphs.

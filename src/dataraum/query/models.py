@@ -205,7 +205,6 @@ class QueryResult:
         }
 
 
-
 def assumption_output_to_query_assumption(
     output: QueryAssumptionOutput,
     execution_id: str,

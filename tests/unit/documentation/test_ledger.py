@@ -150,5 +150,3 @@ class TestGetActiveFixes:
         source_id = _create_source(session)
         active = get_active_fixes(session, source_id)
         assert active == []
-
-

@@ -108,6 +108,4 @@ class TestAutoDeriveMappingCompleteness:
             phase = cls()
             produced.update(phase.produces_analyses)
 
-        assert produced == set(AnalysisKey), (
-            f"Missing producers for: {set(AnalysisKey) - produced}"
-        )
+        assert produced == set(AnalysisKey), f"Missing producers for: {set(AnalysisKey) - produced}"

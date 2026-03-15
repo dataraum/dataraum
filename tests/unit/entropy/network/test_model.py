@@ -51,26 +51,6 @@ class TestNodeQueries:
         children = full_network.get_children("query_intent")
         assert children == []
 
-    def test_get_root_nodes(self, full_network: EntropyNetwork):
-        roots = full_network.get_root_nodes()
-        expected = {
-            "type_fidelity",
-            "null_ratio",
-            "outlier_rate",
-            "naming_clarity",
-            "unit_declaration",
-            "time_role",
-            "temporal_drift",
-            "benford_compliance",
-            "dimension_coverage",
-        }
-        assert set(roots) == expected
-
-    def test_get_leaf_nodes(self, full_network: EntropyNetwork):
-        leaves = full_network.get_leaf_nodes()
-        expected = {"query_intent", "aggregation_intent", "reporting_intent"}
-        assert set(leaves) == expected
-
     def test_get_intent_nodes(self, full_network: EntropyNetwork):
         intents = full_network.get_intent_nodes()
         assert set(intents) == {"query_intent", "aggregation_intent", "reporting_intent"}
@@ -120,14 +100,6 @@ class TestInvalidConfig:
 
 class TestSmallNetwork:
     """Test with the 4-node small network."""
-
-    def test_root_nodes(self, small_network: EntropyNetwork):
-        roots = small_network.get_root_nodes()
-        assert set(roots) == {"root_a", "root_b"}
-
-    def test_leaf_nodes(self, small_network: EntropyNetwork):
-        leaves = small_network.get_leaf_nodes()
-        assert set(leaves) == {"leaf_z"}
 
     def test_child_has_two_parents(self, small_network: EntropyNetwork):
         parents = small_network.get_parents("child_x")

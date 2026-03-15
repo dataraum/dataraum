@@ -52,7 +52,7 @@ class TestLoadNewRuleGraphs:
     def test_loads_role_based_rules(self, loader: GraphLoader) -> None:
         """Role-based rule graphs are loaded."""
         # Check for key column checks
-        graph = loader.get_graph("role_key_checks")
+        graph = loader.graphs.get("role_key_checks")
         if graph:  # May not exist if YAML has multiple documents
             assert graph.graph_type == GraphType.FILTER
             assert graph.metadata.applies_to is not None
@@ -60,7 +60,7 @@ class TestLoadNewRuleGraphs:
 
     def test_loads_type_based_rules(self, loader: GraphLoader) -> None:
         """Type-based rule graphs are loaded."""
-        graph = loader.get_graph("type_double_checks")
+        graph = loader.graphs.get("type_double_checks")
         if graph:
             assert graph.graph_type == GraphType.FILTER
             assert graph.metadata.applies_to is not None
@@ -68,7 +68,7 @@ class TestLoadNewRuleGraphs:
 
     def test_loads_pattern_based_rules(self, loader: GraphLoader) -> None:
         """Pattern-based rule graphs are loaded."""
-        graph = loader.get_graph("pattern_email_checks")
+        graph = loader.graphs.get("pattern_email_checks")
         if graph:
             assert graph.graph_type == GraphType.FILTER
             assert graph.metadata.applies_to is not None
@@ -77,9 +77,9 @@ class TestLoadNewRuleGraphs:
 
     def test_quality_metrics_not_loaded(self, loader: GraphLoader) -> None:
         """Quality metrics were relocated out of verticals — not loaded by default."""
-        assert loader.get_graph("data_completeness") is None
-        assert loader.get_graph("data_freshness") is None
-        assert loader.get_graph("anomaly_rate") is None
+        assert loader.graphs.get("data_completeness") is None
+        assert loader.graphs.get("data_freshness") is None
+        assert loader.graphs.get("anomaly_rate") is None
 
     def test_filter_graphs_loaded(self, loader: GraphLoader) -> None:
         """At least some filter graphs are loaded."""

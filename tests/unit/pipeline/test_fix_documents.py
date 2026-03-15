@@ -66,7 +66,9 @@ class TestBridgeRouting:
         docs = build_fix_documents(
             _append_schema(),
             FixInput(action_name="accept_finding", affected_columns=["t.a"]),
-            "t", "a", "quality_review",
+            "t",
+            "a",
+            "quality_review",
         )
         assert len(docs) == 1
         assert docs[0].payload["operation"] == "append"
@@ -79,7 +81,9 @@ class TestBridgeRouting:
                 affected_columns=["t.a"],
                 parameters={"business_name": "Amount"},
             ),
-            "t", "a", "semantic",
+            "t",
+            "a",
+            "semantic",
         )
         assert len(docs) == 1
         assert docs[0].payload["operation"] == "merge"
@@ -93,7 +97,9 @@ class TestBridgeRouting:
                 affected_columns=["t.a"],
                 parameters={"from_table": "orders", "to_table": "products"},
             ),
-            "orders", "id", "relationships",
+            "orders",
+            "id",
+            "relationships",
         )
         assert len(docs) == 1
         assert docs[0].payload["key_path"][-1] == "orders->products"
@@ -103,7 +109,9 @@ class TestBridgeRouting:
         docs = build_fix_documents(
             schema,
             FixInput(action_name="foo", affected_columns=["t.a"]),
-            "t", "a", "dim",
+            "t",
+            "a",
+            "dim",
         )
         assert docs == []
 
@@ -118,7 +126,9 @@ class TestAppendDocuments:
         docs = build_fix_documents(
             _append_schema(),
             FixInput(action_name="accept_finding", affected_columns=[]),
-            "t", "a", "quality_review",
+            "t",
+            "a",
+            "quality_review",
         )
         assert docs == []
 
@@ -126,7 +136,9 @@ class TestAppendDocuments:
         docs = build_fix_documents(
             _append_schema(),
             FixInput(action_name="accept_finding", affected_columns=["t.a", "t.b", "t.c"]),
-            "t", "a", "quality_review",
+            "t",
+            "a",
+            "quality_review",
         )
         assert [d.ordinal for d in docs] == [0, 1, 2]
 
@@ -138,7 +150,9 @@ class TestAppendDocuments:
                 affected_columns=["t.a"],
                 interpretation="User reviewed",
             ),
-            "t", "a", "quality_review",
+            "t",
+            "a",
+            "quality_review",
         )
         assert docs[0].payload["reason"] == "User reviewed"
 
@@ -146,7 +160,9 @@ class TestAppendDocuments:
         docs = build_fix_documents(
             _append_schema(),
             FixInput(action_name="accept_finding", affected_columns=["t.a"]),
-            "t", "a", "quality_review",
+            "t",
+            "a",
+            "quality_review",
         )
         assert "t" in docs[0].payload["reason"]
 
@@ -168,7 +184,9 @@ class TestPerColumnDocuments:
                     "extra_field": "ignored",
                 },
             ),
-            "t", "a", "semantic",
+            "t",
+            "a",
+            "semantic",
         )
         value = docs[0].payload["value"]
         assert value == {"business_name": "Amount"}
@@ -182,7 +200,9 @@ class TestPerColumnDocuments:
                 affected_columns=["t.a", "t.b"],
                 parameters={"business_name": "Test"},
             ),
-            "t", "a", "semantic",
+            "t",
+            "a",
+            "semantic",
         )
         assert len(docs) == 2
         keys = [d.payload["key_path"][-1] for d in docs]
@@ -208,7 +228,9 @@ class TestKeyedDocuments:
                     "relationship_type": "foreign_key",
                 },
             ),
-            "orders", "id", "relationships",
+            "orders",
+            "id",
+            "relationships",
         )
         value = docs[0].payload["value"]
         assert "from_table" not in value
@@ -224,7 +246,9 @@ class TestKeyedDocuments:
                 affected_columns=["t.a"],
                 parameters={"relationship_type": "foreign_key"},  # missing from_table, to_table
             ),
-            "orders", "id", "relationships",
+            "orders",
+            "id",
+            "relationships",
         )
         assert docs == []
 
@@ -237,7 +261,9 @@ class TestKeyedDocuments:
                 affected_columns=["t.a", "t.b", "t.c"],
                 parameters={"from_table": "a", "to_table": "b"},
             ),
-            "a", "id", "relationships",
+            "a",
+            "id",
+            "relationships",
         )
         assert len(docs) == 1
 
@@ -249,7 +275,9 @@ class TestKeyedDocuments:
                 affected_columns=["t.a"],
                 parameters={"from_table": "x", "to_table": "y"},
             ),
-            "x", "id", "relationships",
+            "x",
+            "id",
+            "relationships",
         )
         doc = docs[0]
         assert doc.target == "config"

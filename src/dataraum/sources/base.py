@@ -88,12 +88,6 @@ class LoaderBase(ABC):
     Each loader handles a specific source type and knows its type system strength.
     """
 
-    @property
-    @abstractmethod
-    def type_system_strength(self) -> TypeSystemStrength:
-        """Classify the source's type system strength."""
-        pass
-
     @abstractmethod
     def load(
         self,

@@ -105,14 +105,6 @@ class EntropyNetwork:
         """Get child node names for a given node."""
         return list(self._model.get_children(node))
 
-    def get_root_nodes(self) -> list[str]:
-        """Get nodes with no parents (root/exogenous nodes)."""
-        return [name for name in self._config.nodes if not self.get_parents(name)]
-
-    def get_leaf_nodes(self) -> list[str]:
-        """Get nodes with no children (leaf/terminal nodes)."""
-        return [name for name in self._config.nodes if not self.get_children(name)]
-
     def get_intent_nodes(self) -> list[str]:
         """Get intent nodes (nodes in the 'intent' layer)."""
         return [name for name, node in self._config.nodes.items() if node.layer == "intent"]

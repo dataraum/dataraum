@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -87,22 +87,6 @@ class ConnectionConfig:
         return cls(
             sqlite_path=output_dir / "metadata.db",
             duckdb_path=output_dir / "data.duckdb",
-            **kwargs,
-        )
-
-    @classmethod
-    def in_memory(cls, **kwargs: Any) -> ConnectionConfig:
-        """Create config for in-memory databases (useful for testing).
-
-        Args:
-            **kwargs: Override any config attributes
-
-        Returns:
-            ConnectionConfig with in-memory paths
-        """
-        return cls(
-            sqlite_path=Path(":memory:"),
-            duckdb_path=Path(":memory:"),
             **kwargs,
         )
 
@@ -352,21 +336,6 @@ class ConnectionManager:
 
         self._session_factory = None
         self._initialized = False
-
-    def execute_sqlite(self, sql: str) -> Any:
-        """Execute raw SQL on SQLite (for debugging/admin).
-
-        Args:
-            sql: SQL statement to execute
-
-        Returns:
-            Result of execution
-        """
-        self._ensure_initialized()
-        assert self._engine is not None
-
-        with self._engine.begin() as conn:
-            return conn.execute(text(sql))
 
     def get_stats(self) -> dict[str, Any]:
         """Get connection pool statistics.

@@ -81,39 +81,6 @@ class PromptRenderer:
         self._cache[name] = template
         return template
 
-    def render(self, template_name: str, context: dict[str, Any]) -> tuple[str, float]:
-        """Render a prompt with context variables (legacy single-prompt format).
-
-        Args:
-            template_name: Name of template to render
-            context: Context variables for substitution
-
-        Returns:
-            Tuple of (rendered_prompt, temperature)
-
-        Raises:
-            ValueError: If required inputs are missing
-            KeyError: If template has undefined variables
-        """
-        template = self.load_template(template_name)
-        full_context = self._prepare_context(template, context)
-
-        # For legacy templates with single prompt
-        if template.prompt:
-            try:
-                rendered = template.prompt.format(**full_context)
-            except KeyError as e:
-                raise KeyError(
-                    f"Template '{template_name}' has undefined variable: {e}. "
-                    f"Available context: {list(full_context.keys())}"
-                ) from e
-            return rendered, template.temperature
-
-        # For new templates with system/user split - combine for legacy use
-        system = self._render_text(template.system_prompt or "", full_context)
-        user = self._render_text(template.user_prompt or "", full_context)
-        return f"{system}\n\n{user}", template.temperature
-
     def render_split(
         self, template_name: str, context: dict[str, Any]
     ) -> tuple[str | None, str, float]:
@@ -178,10 +145,3 @@ class PromptRenderer:
             return []
 
         return [p.stem for p in self.prompts_dir.glob("*.yaml")]
-
-    def clear_cache(self) -> None:
-        """Clear the template cache.
-
-        Useful for development when templates are being modified.
-        """
-        self._cache.clear()

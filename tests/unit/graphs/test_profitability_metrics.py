@@ -36,27 +36,27 @@ class TestProfitabilityMetricsLoad:
     def test_all_eight_metrics_present(self, loader: GraphLoader) -> None:
         """All profitability metric graph IDs are loadable."""
         for graph_id in PROFITABILITY_GRAPH_IDS:
-            graph = loader.get_graph(graph_id)
+            graph = loader.graphs.get(graph_id)
             assert graph is not None, f"Graph '{graph_id}' not found"
 
     @pytest.mark.parametrize("graph_id", PROFITABILITY_GRAPH_IDS)
     def test_graph_type_is_metric(self, loader: GraphLoader, graph_id: str) -> None:
         """Each profitability graph has graph_type == metric."""
-        graph = loader.get_graph(graph_id)
+        graph = loader.graphs.get(graph_id)
         assert graph is not None
         assert graph.graph_type == GraphType.METRIC
 
     @pytest.mark.parametrize("graph_id", PROFITABILITY_GRAPH_IDS)
     def test_output_type_is_scalar(self, loader: GraphLoader, graph_id: str) -> None:
         """Each profitability graph outputs a scalar."""
-        graph = loader.get_graph(graph_id)
+        graph = loader.graphs.get(graph_id)
         assert graph is not None
         assert graph.output.output_type == OutputType.SCALAR
 
     @pytest.mark.parametrize("graph_id", PROFITABILITY_GRAPH_IDS)
     def test_has_exactly_one_output_step(self, loader: GraphLoader, graph_id: str) -> None:
         """Each graph has exactly one step with output_step=true."""
-        graph = loader.get_graph(graph_id)
+        graph = loader.graphs.get(graph_id)
         assert graph is not None
         output_steps = [s for s in graph.steps.values() if s.output_step]
         assert len(output_steps) == 1, (
@@ -66,7 +66,7 @@ class TestProfitabilityMetricsLoad:
     @pytest.mark.parametrize("graph_id", PROFITABILITY_GRAPH_IDS)
     def test_requires_technical_quality_filter(self, loader: GraphLoader, graph_id: str) -> None:
         """Each graph requires the technical_quality filter."""
-        graph = loader.get_graph(graph_id)
+        graph = loader.graphs.get(graph_id)
         assert graph is not None
         filter_ids = [f.graph_id for f in graph.requires_filters]
         assert "technical_quality" in filter_ids
@@ -78,14 +78,14 @@ class TestProfitabilityOutputUnits:
     @pytest.mark.parametrize("graph_id", sorted(CURRENCY_METRICS))
     def test_currency_unit(self, loader: GraphLoader, graph_id: str) -> None:
         """Base P&L metrics output in currency."""
-        graph = loader.get_graph(graph_id)
+        graph = loader.graphs.get(graph_id)
         assert graph is not None
         assert graph.output.unit == "currency"
 
     @pytest.mark.parametrize("graph_id", sorted(PERCENTAGE_METRICS))
     def test_percentage_unit(self, loader: GraphLoader, graph_id: str) -> None:
         """Margin metrics output in percentage."""
-        graph = loader.get_graph(graph_id)
+        graph = loader.graphs.get(graph_id)
         assert graph is not None
         assert graph.output.unit == "percentage"
 
@@ -105,7 +105,7 @@ class TestProfitabilityFormulaDependencies:
     @pytest.mark.parametrize("graph_id", PROFITABILITY_GRAPH_IDS)
     def test_depends_on_references_exist(self, loader: GraphLoader, graph_id: str) -> None:
         """Every depends_on reference points to an existing step in the same graph."""
-        graph = loader.get_graph(graph_id)
+        graph = loader.graphs.get(graph_id)
         assert graph is not None
         step_names = set(graph.steps.keys())
         for step_name, step in graph.steps.items():
@@ -123,14 +123,14 @@ class TestProfitabilityCategories:
     @pytest.mark.parametrize("graph_id", PROFITABILITY_GRAPH_IDS)
     def test_category_is_profitability(self, loader: GraphLoader, graph_id: str) -> None:
         """All profitability graphs have category == 'profitability'."""
-        graph = loader.get_graph(graph_id)
+        graph = loader.graphs.get(graph_id)
         assert graph is not None
         assert graph.metadata.category == "profitability"
 
     @pytest.mark.parametrize("graph_id", PROFITABILITY_GRAPH_IDS)
     def test_has_interpretation_ranges(self, loader: GraphLoader, graph_id: str) -> None:
         """All profitability graphs have interpretation ranges."""
-        graph = loader.get_graph(graph_id)
+        graph = loader.graphs.get(graph_id)
         assert graph is not None
         assert graph.interpretation is not None
         assert len(graph.interpretation.ranges) >= 3

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from dataraum.pipeline.base import PhaseStatus
@@ -154,32 +154,6 @@ def get_pipeline_status(session: Session, source_id: str) -> PipelineStatus:
         last_run_at=latest_run.started_at if latest_run else None,
         phases=phases,
     )
-
-
-def reset_pipeline(session: Session, source_id: str) -> int:
-    """Reset all phase logs for a source.
-
-    Args:
-        session: SQLAlchemy session
-        source_id: Source identifier
-
-    Returns:
-        Number of logs deleted
-    """
-    # Count logs
-    count_stmt = select(func.count()).where(PhaseLog.source_id == source_id)
-    result = session.execute(count_stmt)
-    count = result.scalar() or 0
-
-    # Delete all runs (cascades to PhaseLog via FK)
-    runs_stmt = select(PipelineRun).where(PipelineRun.source_id == source_id)
-    result = session.execute(runs_stmt)
-    runs = result.scalars().all()
-
-    for run in runs:
-        session.delete(run)
-
-    return count
 
 
 def get_phase_tables(phase_name: str) -> list[type[Base]]:

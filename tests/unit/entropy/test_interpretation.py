@@ -8,7 +8,6 @@ import pytest
 from pydantic import ValidationError
 
 from dataraum.entropy.interpretation import (
-    EntropyInterpretation,
     EntropyInterpretationOutput,
     ResolutionActionOutput,
     TableEntropyInterpretationOutput,
@@ -44,49 +43,6 @@ class TestResolutionActionOutputSchema:
             parameters={"column_name": "amount", "unit": "EUR"},
         )
         assert output.parameters == {"column_name": "amount", "unit": "EUR"}
-
-
-class TestEntropyInterpretationDashboardDict:
-    """Tests for to_dashboard_dict method."""
-
-    def test_column_level_key(self):
-        """Column-level interpretation uses table.column key."""
-        interp = EntropyInterpretation(
-            column_name="amount",
-            table_name="orders",
-            assumptions=[],
-            resolution_actions=[],
-            explanation="Test",
-        )
-        result = interp.to_dashboard_dict()
-        assert result["column_key"] == "orders.amount"
-
-    def test_table_level_key(self):
-        """Table-level interpretation (column_name=None) uses table name as key."""
-        interp = EntropyInterpretation(
-            column_name=None,
-            table_name="orders",
-            assumptions=[],
-            resolution_actions=[],
-            explanation="Table-level interpretation",
-        )
-        result = interp.to_dashboard_dict()
-        assert result["column_key"] == "orders"
-        assert result["column_name"] is None
-        assert result["table_name"] == "orders"
-
-    def test_dashboard_dict_has_no_composite_score_or_readiness(self):
-        """Dashboard dict should not contain composite_score or readiness."""
-        interp = EntropyInterpretation(
-            column_name="amount",
-            table_name="orders",
-            assumptions=[],
-            resolution_actions=[],
-            explanation="Test",
-        )
-        result = interp.to_dashboard_dict()
-        assert "composite_score" not in result
-        assert "readiness" not in result
 
 
 class TestValidateOutput:

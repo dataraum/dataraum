@@ -25,7 +25,6 @@ from dataraum.storage import Column, Source, Table
 
 logger = get_logger(__name__)
 
-_CSV_EXTENSIONS = {".csv", ".tsv"}
 _PARQUET_EXTENSIONS = {".parquet", ".pq"}
 
 

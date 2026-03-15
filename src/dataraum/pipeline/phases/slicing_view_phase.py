@@ -214,7 +214,6 @@ class SlicingViewPhase(BasePhase):
                 fact_table=fact_table,
                 slice_defs=slice_defs,
                 enriched_view=enriched_view,
-                tables_by_id=tables_by_id,
                 columns_by_id=columns_by_id,
                 fact_columns=fact_columns_by_table.get(fact_table_id, []),
             )
@@ -326,7 +325,6 @@ class SlicingViewPhase(BasePhase):
         fact_table: Table,
         slice_defs: list[SliceDefinition],
         enriched_view: EnrichedView | None,
-        tables_by_id: dict[str, Table],
         columns_by_id: dict[str, Column],
         fact_columns: list[Column],
     ) -> tuple[str, list[str], list[str]]:

@@ -82,26 +82,6 @@ class EntropyForQuery:
             return True
         return False
 
-    def get_confidence_level(self) -> ConfidenceLevel:
-        """Get the confidence level for this query context."""
-        return self.confidence_level
-
-    def get_blocking_reason(self) -> str | None:
-        """Get human-readable reason for blocking, if blocked.
-
-        Returns:
-            Reason string or None if not blocked
-        """
-        if not self.is_blocked():
-            return None
-
-        if self.contract_evaluation and not self.contract_evaluation.is_compliant:
-            violations = self.contract_evaluation.get_blocking_violations()
-            if violations:
-                return f"Contract '{self.contract_name}' violated: {violations[0].details}"
-
-        return f"Data readiness is {self.overall_readiness}"
-
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {

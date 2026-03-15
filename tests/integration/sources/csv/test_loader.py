@@ -15,11 +15,6 @@ FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures" / "small_finance
 class TestCSVLoader:
     """Tests for CSVLoader."""
 
-    def test_type_system_strength(self):
-        """CSV loader should be classified as untyped."""
-        loader = CSVLoader()
-        assert loader.type_system_strength.value == "untyped"
-
     def test_get_schema(self, duckdb_conn):
         """Test getting schema from a CSV file."""
         loader = CSVLoader()

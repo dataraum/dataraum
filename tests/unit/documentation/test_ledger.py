@@ -3,7 +3,6 @@
 from sqlalchemy.orm import Session
 
 from dataraum.documentation.ledger import (
-    format_fixes_for_prompt,
     get_active_fixes,
     log_fix,
 )
@@ -151,46 +150,3 @@ class TestGetActiveFixes:
         source_id = _create_source(session)
         active = get_active_fixes(session, source_id)
         assert active == []
-
-
-class TestFormatFixesForPrompt:
-    def test_empty(self) -> None:
-        assert format_fixes_for_prompt([]) == ""
-
-    def test_structures_output(self, session: Session) -> None:
-        source_id = _create_source(session)
-
-        entry = log_fix(
-            session=session,
-            source_id=source_id,
-            action_name="document_unit",
-            table_name="transactions",
-            column_name="amount",
-            user_input="The amount is always in EUR",
-            interpretation="Column transactions.amount uses EUR as fixed currency unit.",
-        )
-
-        result = format_fixes_for_prompt([entry])
-
-        assert "<domain_fixes>" in result
-        assert "</domain_fixes>" in result
-        assert 'action="document_unit"' in result
-        assert 'column="transactions.amount"' in result
-        assert "The amount is always in EUR" in result
-        assert "EUR as fixed currency unit" in result
-
-    def test_table_level_scope(self, session: Session) -> None:
-        source_id = _create_source(session)
-
-        entry = log_fix(
-            session=session,
-            source_id=source_id,
-            action_name="document_grain",
-            table_name="transactions",
-            column_name=None,
-            user_input="One row per txn",
-            interpretation="Grain is per-transaction.",
-        )
-
-        result = format_fixes_for_prompt([entry])
-        assert 'column="transactions"' in result

@@ -64,7 +64,9 @@ class TestGenerateQuestions:
         provider.converse.return_value = Result.ok(
             ConversationResponse(
                 content="",
-                tool_calls=[ToolCall(id="tc1", name="document_fix_questions", input=questions_data)],
+                tool_calls=[
+                    ToolCall(id="tc1", name="document_fix_questions", input=questions_data)
+                ],
                 stop_reason="tool_use",
                 model="test-model",
                 input_tokens=100,
@@ -181,9 +183,7 @@ class TestGenerateConfigQuestions:
         provider.converse.return_value = Result.ok(
             ConversationResponse(
                 content="",
-                tool_calls=[
-                    ToolCall(id="tc1", name="config_fix_questions", input=questions_data)
-                ],
+                tool_calls=[ToolCall(id="tc1", name="config_fix_questions", input=questions_data)],
                 stop_reason="tool_use",
                 model="test-model",
                 input_tokens=100,
@@ -282,9 +282,7 @@ class TestInterpretConfigAnswers:
             )
         )
 
-        result = agent.interpret_config_answers(
-            CONFIG_CONTEXT, "Q: Override type?\nA: DATE"
-        )
+        result = agent.interpret_config_answers(CONFIG_CONTEXT, "Q: Override type?\nA: DATE")
         assert result.success
         interp = result.unwrap()
         assert isinstance(interp, ConfigFixInterpretation)

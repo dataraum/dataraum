@@ -7,7 +7,6 @@ from dataraum.analysis.correlation.algorithms.categorical import (
     _classify_strength as classify_categorical_strength,
 )
 from dataraum.analysis.correlation.algorithms.categorical import (
-    build_contingency_table,
     compute_cramers_v,
 )
 from dataraum.analysis.correlation.algorithms.multicollinearity import (
@@ -159,31 +158,6 @@ class TestComputePairwiseCorrelations:
 
         # Should find correlation between col0 and col1
         assert any(r.col1_idx == 0 and r.col2_idx == 1 for r in results)
-
-
-class TestBuildContingencyTable:
-    """Tests for build_contingency_table."""
-
-    def test_simple_table(self):
-        col1 = ["A", "A", "B", "B"]
-        col2 = ["X", "Y", "X", "Y"]
-
-        table = build_contingency_table(col1, col2)
-
-        assert table.shape == (2, 2)
-        assert table.sum() == 4
-
-    def test_uneven_categories(self):
-        col1 = ["A", "A", "A", "B"]
-        col2 = ["X", "X", "Y", "X"]
-
-        table = build_contingency_table(col1, col2)
-
-        assert table.shape == (2, 2)
-        assert table[0, 0] == 2  # A, X
-        assert table[0, 1] == 1  # A, Y
-        assert table[1, 0] == 1  # B, X
-        assert table[1, 1] == 0  # B, Y
 
 
 class TestComputeCramersV:

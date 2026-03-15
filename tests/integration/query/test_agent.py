@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from dataraum.core.models.base import Result
 from dataraum.entropy.contracts import ConfidenceLevel
 from dataraum.graphs.context import ColumnContext, GraphExecutionContext, TableContext
-from dataraum.query.agent import QueryAgent, QueryContext
+from dataraum.query.agent import QueryAgent
 from dataraum.query.models import QueryAnalysisOutput
 
 
@@ -104,36 +104,6 @@ def mock_agent() -> QueryAgent:
         provider=MagicMock(),
         prompt_renderer=MagicMock(),
     )
-
-
-class TestQueryContext:
-    """Tests for QueryContext dataclass."""
-
-    def test_create_context(self, duckdb_with_data, session: Session):
-        """Test creating a QueryContext."""
-        context = QueryContext(
-            session=session,
-            duckdb_conn=duckdb_with_data,
-            table_ids=["orders_001"],
-            source_id="source_123",
-        )
-
-        assert context.table_ids == ["orders_001"]
-        assert context.source_id == "source_123"
-        assert context.execution_context is None
-        assert context.auto_contract is False
-
-    def test_context_with_auto_contract(self, duckdb_with_data, session: Session):
-        """Test creating a QueryContext with auto contract."""
-        context = QueryContext(
-            session=session,
-            duckdb_conn=duckdb_with_data,
-            table_ids=["orders_001"],
-            auto_contract=True,
-        )
-
-        assert context.auto_contract is True
-        assert context.contract_name is None
 
 
 class TestQueryAgentSchemaBuilding:

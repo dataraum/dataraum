@@ -78,12 +78,25 @@ class TestBuiltinDetectors:
         detector_ids = registry.get_detector_ids()
         assert len(detector_ids) == len(BUILTIN_DETECTORS)
 
+    def test_layers_covered(self):
+        """Test that all entropy layers are covered by builtin detectors."""
+        registry = DetectorRegistry()
+        register_builtin_detectors(registry)
+
+        layers = {d.layer.value for d in registry.get_all_detectors()}
+        assert "structural" in layers
+        assert "value" in layers
+        assert "semantic" in layers
+        assert "computational" in layers
+
     def test_structural_detectors(self):
         """Test structural layer detectors."""
         registry = DetectorRegistry()
         register_builtin_detectors(registry)
 
-        structural_detectors = registry.get_detectors_for_layer("structural")
+        structural_detectors = [
+            d for d in registry.get_all_detectors() if d.layer.value == "structural"
+        ]
         assert len(structural_detectors) == 3
         detector_ids = [d.detector_id for d in structural_detectors]
         assert "type_fidelity" in detector_ids
@@ -95,7 +108,7 @@ class TestBuiltinDetectors:
         registry = DetectorRegistry()
         register_builtin_detectors(registry)
 
-        value_detectors = registry.get_detectors_for_layer("value")
+        value_detectors = [d for d in registry.get_all_detectors() if d.layer.value == "value"]
         assert len(value_detectors) == 4
         detector_ids = [d.detector_id for d in value_detectors]
         assert "null_ratio" in detector_ids
@@ -108,7 +121,9 @@ class TestBuiltinDetectors:
         registry = DetectorRegistry()
         register_builtin_detectors(registry)
 
-        semantic_detectors = registry.get_detectors_for_layer("semantic")
+        semantic_detectors = [
+            d for d in registry.get_all_detectors() if d.layer.value == "semantic"
+        ]
         assert len(semantic_detectors) == 3
         detector_ids = [d.detector_id for d in semantic_detectors]
         assert "business_meaning" in detector_ids
@@ -120,7 +135,9 @@ class TestBuiltinDetectors:
         registry = DetectorRegistry()
         register_builtin_detectors(registry)
 
-        computational_detectors = registry.get_detectors_for_layer("computational")
+        computational_detectors = [
+            d for d in registry.get_all_detectors() if d.layer.value == "computational"
+        ]
         assert len(computational_detectors) == 1
         assert computational_detectors[0].detector_id == "derived_value"
 
@@ -137,30 +154,30 @@ class TestDetectorRequirements:
 
     def test_type_fidelity_requires_typing(self, registry: DetectorRegistry):
         """Test TypeFidelityDetector requires typing analysis."""
-        detector = registry.get_detector("type_fidelity")
+        detector = registry.detectors.get("type_fidelity")
         assert detector is not None
         assert "typing" in detector.required_analyses
 
     def test_null_ratio_requires_statistics(self, registry: DetectorRegistry):
         """Test NullRatioDetector requires statistics analysis."""
-        detector = registry.get_detector("null_ratio")
+        detector = registry.detectors.get("null_ratio")
         assert detector is not None
         assert "statistics" in detector.required_analyses
 
     def test_business_meaning_requires_semantic(self, registry: DetectorRegistry):
         """Test BusinessMeaningDetector requires semantic analysis."""
-        detector = registry.get_detector("business_meaning")
+        detector = registry.detectors.get("business_meaning")
         assert detector is not None
         assert "semantic" in detector.required_analyses
 
     def test_derived_value_requires_correlation(self, registry: DetectorRegistry):
         """Test DerivedValueDetector requires correlation analysis."""
-        detector = registry.get_detector("derived_value")
+        detector = registry.detectors.get("derived_value")
         assert detector is not None
         assert "correlation" in detector.required_analyses
 
     def test_join_path_requires_relationships(self, registry: DetectorRegistry):
         """Test JoinPathDeterminismDetector requires relationships analysis."""
-        detector = registry.get_detector("join_path_determinism")
+        detector = registry.detectors.get("join_path_determinism")
         assert detector is not None
         assert "relationships" in detector.required_analyses

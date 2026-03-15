@@ -40,7 +40,9 @@ def _setup_annotated_source(session: Session) -> tuple[Source, Table, Column]:
     return source, table, col
 
 
-def _make_ctx(session: Session, source_id: str, duckdb_conn: duckdb.DuckDBPyConnection) -> PhaseContext:
+def _make_ctx(
+    session: Session, source_id: str, duckdb_conn: duckdb.DuckDBPyConnection
+) -> PhaseContext:
     return PhaseContext(
         session=session,
         duckdb_conn=duckdb_conn,
@@ -56,7 +58,9 @@ def duck() -> duckdb.DuckDBPyConnection:
 
 
 class TestShouldSkip:
-    def test_skip_when_all_annotated(self, session: Session, duck: duckdb.DuckDBPyConnection) -> None:
+    def test_skip_when_all_annotated(
+        self, session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
         """Returns skip message when all columns have semantic annotations."""
         source, _, _ = _setup_annotated_source(session)
         ctx = _make_ctx(session, source.source_id, duck)
@@ -65,7 +69,9 @@ class TestShouldSkip:
         result = phase.should_skip(ctx)
         assert result == "All columns already have semantic annotations"
 
-    def test_no_skip_when_unannotated(self, session: Session, duck: duckdb.DuckDBPyConnection) -> None:
+    def test_no_skip_when_unannotated(
+        self, session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
         """Returns None when columns lack annotations."""
         source = Source(name=f"test_{uuid4().hex[:8]}", source_type="csv")
         session.add(source)
@@ -75,7 +81,9 @@ class TestShouldSkip:
         session.add(table)
         session.flush()
 
-        col = Column(table_id=table.table_id, column_name="amount", column_position=0, raw_type="FLOAT")
+        col = Column(
+            table_id=table.table_id, column_name="amount", column_position=0, raw_type="FLOAT"
+        )
         session.add(col)
         session.flush()
 

@@ -18,11 +18,11 @@ Usage:
 
     # Get all registered detectors
     registry = get_default_registry()
-    detectors = registry.get_detectors_for_layer("structural")
+    detectors = registry.get_all_detectors()
 
-    # Run a specific detector
-    detector = registry.get_detector("type_fidelity")
-    results = detector.detect(context)
+    # Run a detector
+    for detector in detectors:
+        results = detector.detect(context)
 """
 
 from dataraum.entropy.detectors.base import (

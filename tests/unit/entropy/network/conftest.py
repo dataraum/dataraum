@@ -9,17 +9,8 @@ from dataraum.entropy.network.config import (
     NetworkConfig,
     NodeConfig,
     get_network_config,
-    reset_config_cache,
 )
 from dataraum.entropy.network.model import EntropyNetwork
-
-
-@pytest.fixture(autouse=True)
-def _clear_config_cache():
-    """Reset config cache before each test."""
-    reset_config_cache()
-    yield
-    reset_config_cache()
 
 
 @pytest.fixture

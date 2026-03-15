@@ -52,7 +52,7 @@ class TestLoadNewRuleGraphs:
     def test_loads_role_based_rules(self, loader: GraphLoader) -> None:
         """Role-based rule graphs are loaded."""
         # Check for key column checks
-        graph = loader.get_graph("role_key_checks")
+        graph = loader.graphs.get("role_key_checks")
         if graph:  # May not exist if YAML has multiple documents
             assert graph.graph_type == GraphType.FILTER
             assert graph.metadata.applies_to is not None
@@ -60,7 +60,7 @@ class TestLoadNewRuleGraphs:
 
     def test_loads_type_based_rules(self, loader: GraphLoader) -> None:
         """Type-based rule graphs are loaded."""
-        graph = loader.get_graph("type_double_checks")
+        graph = loader.graphs.get("type_double_checks")
         if graph:
             assert graph.graph_type == GraphType.FILTER
             assert graph.metadata.applies_to is not None
@@ -68,7 +68,7 @@ class TestLoadNewRuleGraphs:
 
     def test_loads_pattern_based_rules(self, loader: GraphLoader) -> None:
         """Pattern-based rule graphs are loaded."""
-        graph = loader.get_graph("pattern_email_checks")
+        graph = loader.graphs.get("pattern_email_checks")
         if graph:
             assert graph.graph_type == GraphType.FILTER
             assert graph.metadata.applies_to is not None
@@ -77,9 +77,9 @@ class TestLoadNewRuleGraphs:
 
     def test_quality_metrics_not_loaded(self, loader: GraphLoader) -> None:
         """Quality metrics were relocated out of verticals — not loaded by default."""
-        assert loader.get_graph("data_completeness") is None
-        assert loader.get_graph("data_freshness") is None
-        assert loader.get_graph("anomaly_rate") is None
+        assert loader.graphs.get("data_completeness") is None
+        assert loader.graphs.get("data_freshness") is None
+        assert loader.graphs.get("anomaly_rate") is None
 
     def test_filter_graphs_loaded(self, loader: GraphLoader) -> None:
         """At least some filter graphs are loaded."""
@@ -281,62 +281,6 @@ dependencies:
         graph_ids = [f.graph_id for f in filters]
         assert "test_key_filter" in graph_ids
         assert "test_email_filter" in graph_ids
-
-
-class TestGetCrossColumnFilters:
-    """Tests for get_cross_column_filters method."""
-
-    @pytest.fixture
-    def loader_with_cross_column(self, tmp_path: Path) -> GraphLoader:
-        """Create loader with cross-column filter."""
-        filters_dir = tmp_path / "filters" / "test"
-        filters_dir.mkdir(parents=True)
-
-        cross_filter = """
-graph_id: "test_date_order"
-graph_type: "filter"
-version: "1.0"
-
-metadata:
-  name: "Date Order Check"
-  description: "Start date before end date"
-  category: "quality"
-  source: "system"
-  applies_to:
-    column_pairs:
-      start_pattern: ".*_start.*"
-      end_pattern: ".*_end.*"
-
-output:
-  type: "classification"
-
-dependencies:
-  date_order:
-    level: 1
-    type: "predicate"
-    condition: "{start_column} <= {end_column}"
-    on_false: "quarantine"
-    output_step: true
-"""
-        (filters_dir / "cross_filter.yaml").write_text(cross_filter)
-
-        loader = GraphLoader(graphs_dir=tmp_path)
-        loader.load_all()
-        return loader
-
-    def test_get_cross_column_filters(self, loader_with_cross_column: GraphLoader) -> None:
-        """Cross-column filters are identified."""
-        cross_filters = loader_with_cross_column.get_cross_column_filters()
-        assert len(cross_filters) == 1
-        assert cross_filters[0].graph_id == "test_date_order"
-
-    def test_cross_column_not_in_regular_match(self, loader_with_cross_column: GraphLoader) -> None:
-        """Cross-column filters are excluded from regular matching."""
-        filters = loader_with_cross_column.get_applicable_filters(
-            column_name="contract_start_date",
-        )
-        # Should not match because it has column_pairs
-        assert not any(f.graph_id == "test_date_order" for f in filters)
 
 
 class TestGetFiltersForDataset:

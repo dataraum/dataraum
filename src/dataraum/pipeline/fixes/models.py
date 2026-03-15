@@ -166,17 +166,6 @@ class FixSchema:
 
         return create_model("FixParameters", **model_fields)
 
-    def parameter_json_schema(self) -> dict[str, Any] | None:
-        """Build a JSON schema for the parameters dict via Pydantic.
-
-        Returns None if there are no fields defined.
-        """
-        model = self._build_pydantic_model()
-        if model is None:
-            return None
-        result: dict[str, Any] = model.model_json_schema()
-        return result
-
     def validate_payload(self, payload: dict[str, Any]) -> list[str]:
         """Validate a payload against this schema using Pydantic.
 

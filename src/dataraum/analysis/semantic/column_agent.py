@@ -16,17 +16,12 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.models import (
     ColumnAnnotationOutput,
-    SemanticAnnotation,
-    SemanticEnrichmentResult,
 )
 from dataraum.analysis.semantic.ontology import OntologyLoader
 from dataraum.analysis.statistics.models import ColumnProfile
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import (
-    ColumnRef,
-    DecisionSource,
     Result,
-    SemanticRole,
 )
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.privacy import DataSampler
@@ -179,47 +174,6 @@ class ColumnAnnotationAgent(LLMFeature):
             return Result.ok(output)
         except Exception as e:
             return Result.fail(f"Failed to parse column annotation output: {e}")
-
-    def to_enrichment_result(
-        self, output: ColumnAnnotationOutput, model_name: str = "tier1"
-    ) -> SemanticEnrichmentResult:
-        """Convert tier 1 output to internal enrichment result format.
-
-        Used for merging with tier 2 results.
-        """
-        annotations = []
-        for table in output.tables:
-            for col in table.columns:
-                try:
-                    semantic_role = SemanticRole(col.semantic_role)
-                except ValueError:
-                    semantic_role = SemanticRole.UNKNOWN
-
-                annotations.append(
-                    SemanticAnnotation(
-                        column_id="",  # Filled by caller
-                        column_ref=ColumnRef(
-                            table_name=table.table_name,
-                            column_name=col.column_name,
-                        ),
-                        semantic_role=semantic_role,
-                        entity_type=col.entity_type,
-                        business_name=col.business_term,
-                        business_description=col.description,
-                        business_concept=col.business_concept,
-                        annotation_source=DecisionSource.LLM,
-                        annotated_by=model_name,
-                        confidence=col.confidence,
-                        unit_source_column=col.unit_source_column,
-                    )
-                )
-
-        return SemanticEnrichmentResult(
-            annotations=annotations,
-            entity_detections=[],
-            relationships=[],
-            source="llm_tier1",
-        )
 
     @staticmethod
     def _truncate_sample(value: Any, max_length: int = 100) -> Any:

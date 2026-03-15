@@ -61,38 +61,8 @@ def sample_parquet(tmp_path):
     return path
 
 
-@pytest.fixture
-def parquet_directory(tmp_path):
-    """Create a directory with multiple Parquet files."""
-    conn = duckdb.connect()
-    conn.execute(f"""
-        COPY (
-            SELECT * FROM (VALUES
-                (1::BIGINT, 'a@b.com'::VARCHAR),
-                (2::BIGINT, 'c@d.com'::VARCHAR)
-            ) AS t(customer_id, email)
-        ) TO '{tmp_path / "customers.parquet"}' (FORMAT PARQUET)
-    """)
-    conn.execute(f"""
-        COPY (
-            SELECT * FROM (VALUES
-                (100::BIGINT, 99.99::DOUBLE),
-                (200::BIGINT, 149.50::DOUBLE),
-                (300::BIGINT, 200.00::DOUBLE)
-            ) AS t(order_id, total)
-        ) TO '{tmp_path / "orders.parquet"}' (FORMAT PARQUET)
-    """)
-    conn.close()
-    return tmp_path
-
-
 class TestParquetLoader:
     """Tests for ParquetLoader."""
-
-    def test_type_system_strength(self):
-        """Parquet loader should be classified as strongly typed."""
-        loader = ParquetLoader()
-        assert loader.type_system_strength.value == "strong"
 
     def test_get_schema(self, sample_parquet):
         """Test getting schema from a Parquet file."""
@@ -250,25 +220,6 @@ class TestParquetLoader:
         result = loader.load(config, test_duckdb, test_session)
         assert not result.success
         assert "not found" in result.error.lower()
-
-    def test_load_directory(self, test_duckdb, test_session, parquet_directory):
-        """Test loading a directory of Parquet files."""
-        loader = ParquetLoader()
-
-        result = loader.load_directory(
-            directory_path=str(parquet_directory),
-            source_name="multi_parquet",
-            duckdb_conn=test_duckdb,
-            session=test_session,
-        )
-
-        assert result.success, f"Load failed: {result.error}"
-
-        staging_result = result.value
-        assert len(staging_result.tables) == 2
-        table_names = {t.table_name for t in staging_result.tables}
-        assert "customers" in table_names
-        assert "orders" in table_names
 
     def test_sqlalchemy_metadata_created(self, test_duckdb, test_session, sample_parquet):
         """Test that SQLAlchemy Table and Column records are created."""

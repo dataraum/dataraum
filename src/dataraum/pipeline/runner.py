@@ -131,15 +131,6 @@ class RunResult:
         """Get all failed phases with their errors."""
         return [p for p in self.phases if p.status == "failed"]
 
-    def get_phase_summary(self) -> dict[str, str]:
-        """Get phase name -> status mapping for simple display."""
-        return {p.phase_name: p.status for p in self.phases}
-
-    def get_slowest_phases(self, n: int = 5) -> list[tuple[str, float]]:
-        """Get the N slowest phases by duration."""
-        sorted_phases = sorted(self.phases, key=lambda p: p.duration_seconds, reverse=True)
-        return [(p.phase_name, p.duration_seconds) for p in sorted_phases[:n]]
-
 
 def run(config: RunConfig) -> Result[RunResult]:
     """Run the pipeline with the given configuration.

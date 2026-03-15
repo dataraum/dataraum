@@ -138,7 +138,7 @@ class _ProxyLogger:
         print("  ".join(parts), file=sys.stderr, flush=True)
 
     log = debug = info = warn = warning = msg
-    fatal = failure = err = error = critical = exception = msg
+    err = error = exception = msg
 
 
 class _ProxyLoggerFactory:

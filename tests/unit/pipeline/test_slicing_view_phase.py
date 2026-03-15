@@ -81,7 +81,6 @@ class TestBuildSlicingViewSql:
             fact_table=fact_table,
             slice_defs=[slice_def],
             enriched_view=None,
-            tables_by_id={"t1": fact_table},
             columns_by_id={"c1": fact_col},
             fact_columns=[fact_col],
         )
@@ -115,7 +114,6 @@ class TestBuildSlicingViewSql:
             fact_table=fact_table,
             slice_defs=[slice_def],
             enriched_view=enriched_view,
-            tables_by_id={"t1": fact_table},
             columns_by_id={"c_fk": fk_col, "c_other_fk": other_fk_col},
             fact_columns=[fk_col, other_fk_col],
         )
@@ -129,7 +127,6 @@ class TestBuildSlicingViewSql:
     def test_no_dim_columns_when_enriched_view_has_none(self):
         """When enriched view has no dimension columns, slice_dim_cols is empty."""
         fact_table = _make_table("t1", "orders", "typed_orders")
-        dim_table = _make_table("t2", "customers", "typed_customers")
         dim_col = _make_column("c2", "internal_code", "t2")
 
         enriched_view = _make_enriched_view("t1", "orders", [])
@@ -140,7 +137,6 @@ class TestBuildSlicingViewSql:
             fact_table=fact_table,
             slice_defs=[slice_def],
             enriched_view=enriched_view,
-            tables_by_id={"t1": fact_table, "t2": dim_table},
             columns_by_id={"c2": dim_col},
             fact_columns=[],
         )
@@ -161,7 +157,6 @@ class TestBuildSlicingViewSql:
             fact_table=fact_table,
             slice_defs=[slice_def],
             enriched_view=enriched_view,
-            tables_by_id={"t1": fact_table},
             columns_by_id={"c1": fact_col, "c_fk": fk_col},
             fact_columns=[fact_col, fk_col],
         )
@@ -173,7 +168,6 @@ class TestBuildSlicingViewSql:
     def test_sql_sources_from_enriched_view(self):
         """SQL queries from the enriched view, not the raw table."""
         fact_table = _make_table("t1", "orders", "typed_orders")
-        dim_table = _make_table("t2", "customers", "typed_customers")
         fact_col = _make_column("c1", "order_id", "t1")
         dim_col = _make_column("c2", "region", "t2")
 
@@ -184,7 +178,6 @@ class TestBuildSlicingViewSql:
             fact_table=fact_table,
             slice_defs=[slice_def],
             enriched_view=enriched_view,
-            tables_by_id={"t1": fact_table, "t2": dim_table},
             columns_by_id={"c1": fact_col, "c2": dim_col},
             fact_columns=[fact_col],
         )
@@ -205,7 +198,6 @@ class TestBuildSlicingViewSql:
             fact_table=fact_table,
             slice_defs=[sd1, sd2],
             enriched_view=enriched_view,
-            tables_by_id={"t1": fact_table},
             columns_by_id={"c_fk": fk_col},
             fact_columns=[],
         )

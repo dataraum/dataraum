@@ -53,16 +53,6 @@ VerticalOption = Annotated[
     ),
 ]
 
-VerboseOption = Annotated[
-    int,
-    typer.Option(
-        "--verbose",
-        "-v",
-        count=True,
-        help="Increase logging verbosity (-v=DEBUG)",
-    ),
-]
-
 
 def setup_logging(verbosity: int = 0, log_format: str = "console") -> None:
     """Configure structured logging based on verbosity level.

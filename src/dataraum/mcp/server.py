@@ -1203,8 +1203,8 @@ def _apply_fix(
 
     # Format before/after delta
     lines = [
-        f"## Fix Results",
-        f"",
+        "## Fix Results",
+        "",
         f"Applied {len(result.applied_fixes)} fix(es).",
     ]
     if result.phases_rerun:

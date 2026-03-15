@@ -981,7 +981,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         patterns: list[CrossColumnPattern] = []
 
         for i, col_a in enumerate(numeric_cols):
-            for col_b in numeric_cols[i + 1:]:
+            for col_b in numeric_cols[i + 1 :]:
                 # Query: what fraction of rows have both columns non-zero?
                 try:
                     sql = f"""

@@ -433,7 +433,8 @@ def analyze_column_drift(
                     change_points=[
                         stats_list[i + 1][0]
                         for i, s in enumerate(shift_values)
-                        if i > 0 and s > config.drift_threshold
+                        if i > 0
+                        and s > config.drift_threshold
                         and shift_values[i - 1] <= config.drift_threshold
                     ],
                 )

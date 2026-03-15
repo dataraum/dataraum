@@ -73,17 +73,12 @@ dev = [
     "pytest-testmon>=2.2.0",
     "zensical>=0.0.24",
 ]
-e2e = [
-    "dataraum-testdata @ git+https://github.com/dataraum/dataraum-testdata.git",
-]
-
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv.sources]
-dataraum-testdata = { path = "../dataraum-testdata", editable = true }
 torch = [{ index = "pytorch-cpu" }]
 
 [build-system]

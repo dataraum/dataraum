@@ -43,14 +43,11 @@ uv run pytest tests/unit/path/to/test_file.py -v
 # Run all tests before submitting (unit + integration)
 uv run pytest --testmon tests -q
 
-# E2E tests (expensive — real LLM calls, full pipeline)
-uv run pytest tests/e2e -v -m e2e
 ```
 
 **Test structure:**
 - `tests/unit/` — ~760 tests, ~13s. Run frequently during development.
 - `tests/integration/` — ~300 tests, ~2min. Run when changing cross-module behavior.
-- `tests/e2e/` — Real pipeline runs with LLM. Run only when explicitly needed.
 
 ## Code Quality
 

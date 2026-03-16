@@ -1326,8 +1326,15 @@ def _get_zone_status(
 
             thresholds = contract.dimension_thresholds
 
-            # Assess violations
-            issues = assess_contracts(scores, thresholds, column_details, gate_phase)
+            # Assess violations (accepted targets excluded via contract overrule)
+            col_evidence = outputs.get("gate_column_evidence", {})
+            issues = assess_contracts(
+                scores,
+                thresholds,
+                column_details,
+                gate_phase,
+                column_evidence=col_evidence,
+            )
 
             # Build violation entries with fix actions from detector registry
             registry = get_default_registry()
@@ -1496,7 +1503,8 @@ def _build_mcp_gate_context(
     action_lines.append("</available_actions>")
     sections.append("\n".join(action_lines))
 
-    # Section 2: Entropy evidence
+    # Section 2: Entropy evidence with per-column component breakdown
+    col_evidence = outputs.get("gate_column_evidence", {}).get(dimension, {})
     evidence_lines = [
         "<entropy_evidence>",
         f"Detector: {detector_id}",
@@ -1504,10 +1512,22 @@ def _build_mcp_gate_context(
         f"Threshold: {threshold:.2f}",
     ]
     if all_scores:
-        worst = sorted(all_scores.items(), key=lambda x: -x[1])[:5]
-        evidence_lines.append("Worst targets:")
-        for target, col_score in worst:
-            evidence_lines.append(f"  {target}: {col_score:.2f}")
+        evidence_lines.append("")
+        evidence_lines.append("Per-column breakdown:")
+        for target, col_score in sorted(all_scores.items(), key=lambda x: -x[1]):
+            label = "VIOLATING" if col_score > threshold else "passing"
+            line = f"  {target}: {col_score:.2f} ({label})"
+            ev = col_evidence.get(target, {})
+            if ev:
+                components = []
+                for k in ("ri_entropy", "card_entropy", "semantic_entropy"):
+                    if k in ev:
+                        components.append(f"{k}={ev[k]:.2f}")
+                if ev.get("accepted"):
+                    components.append("ACCEPTED")
+                if components:
+                    line += f" [{', '.join(components)}]"
+            evidence_lines.append(line)
     evidence_lines.append("</entropy_evidence>")
     sections.append("\n".join(evidence_lines))
 

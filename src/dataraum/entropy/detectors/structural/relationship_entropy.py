@@ -222,6 +222,10 @@ class RelationshipEntropyDetector(EntropyDetector):
             # 3. Compute semantic clarity entropy
             if is_confirmed and rel_type not in ("unknown", "candidate"):
                 semantic_entropy = 0.1
+            elif rel_type == "foreign_key" and ri_entropy < 0.05:
+                # High-RI foreign key: the semantic agent classified it as FK
+                # and RI proves the data matches. No human confirmation needed.
+                semantic_entropy = 0.1
             elif rel_type not in ("unknown", "candidate"):
                 semantic_entropy = score_unconfirmed
             else:

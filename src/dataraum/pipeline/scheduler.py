@@ -198,6 +198,7 @@ class PipelineScheduler:
                 # all_scores accumulates across the entire run.
                 pending_issues: list[ExitCheckIssue] = []
                 column_details: dict[str, dict[str, float]] = {}
+                column_evidence: dict[str, dict[str, dict[str, Any]]] = {}
                 resolution_actions: dict[str, set[str]] = {}
                 wave_skipped: list[dict[str, str]] = []
                 last_gate_phase: str = ""
@@ -214,6 +215,7 @@ class PipelineScheduler:
                         )
                         all_scores.update(gate_result.scores)
                         column_details.update(gate_result.column_details)
+                        column_evidence.update(gate_result.column_evidence)
                         for path, acts in gate_result.resolution_actions.items():
                             resolution_actions.setdefault(path, set()).update(acts)
                         # Collect skipped detectors (deduplicate by detector_id)
@@ -245,6 +247,7 @@ class PipelineScheduler:
                         column_details,
                         last_gate_phase,
                         resolution_actions=resolution_actions,
+                        column_evidence=column_evidence,
                     )
                     pending_issues.extend(issues)
 
@@ -261,6 +264,7 @@ class PipelineScheduler:
                         violations=violations,
                         scores=dict(all_scores),
                         column_details=dict(column_details),
+                        column_evidence=dict(column_evidence),
                         available_fixes=fixes,
                     )
                     if resolution is not None:

@@ -591,7 +591,7 @@ def build_gate_context(
     action_lines.append("</available_actions>")
     sections.append("\n".join(action_lines))
 
-    # Section 2: Entropy evidence
+    # Section 2: Entropy evidence with per-column component breakdown
     evidence_lines = [
         "<entropy_evidence>",
         f"Detector: {dim_path.split('.')[-1]}",
@@ -599,11 +599,25 @@ def build_gate_context(
         f"Threshold: {threshold:.2f}",
     ]
     col_scores = event.column_details.get(dim_path, {})
+    # Per-column component evidence from gate result (if available)
+    col_evidence = getattr(event, "column_evidence", {}).get(dim_path, {})
     if col_scores:
-        worst = sorted(col_scores.items(), key=lambda x: x[1], reverse=True)[:5]
-        evidence_lines.append("Worst targets:")
-        for target, col_score in worst:
-            evidence_lines.append(f"  {target}: {col_score:.2f}")
+        evidence_lines.append("")
+        evidence_lines.append("Per-column breakdown:")
+        for target, col_score in sorted(col_scores.items(), key=lambda x: -x[1]):
+            label = "VIOLATING" if col_score > threshold else "passing"
+            line = f"  {target}: {col_score:.2f} ({label})"
+            ev = col_evidence.get(target, {})
+            if ev:
+                components = []
+                for k in ("ri_entropy", "card_entropy", "semantic_entropy"):
+                    if k in ev:
+                        components.append(f"{k}={ev[k]:.2f}")
+                if ev.get("accepted"):
+                    components.append("ACCEPTED")
+                if components:
+                    line += f" [{', '.join(components)}]"
+            evidence_lines.append(line)
     evidence_lines.append("</entropy_evidence>")
     sections.append("\n".join(evidence_lines))
 

@@ -572,10 +572,13 @@ def build_gate_context(
         "<available_actions>",
         f"Dimension: {dim_path}",
         f"Score: {score:.2f} (threshold: {threshold:.2f})",
-        f"Affected columns: {', '.join(affected_targets)}",
+        f"Violating columns: {', '.join(affected_targets)}",
         "",
         "Choose the BEST action for this data issue. Set config_action to the chosen action name.",
         "Set applicable=false only if NONE of the actions fit.",
+        "",
+        "IMPORTANT for accept_finding: set affected_columns to ALL violating columns listed above,",
+        "not just one. The user accepts the finding for the entire dimension in one action.",
         "",
     ]
     for i, action in enumerate(group.actions, 1):
@@ -591,28 +594,82 @@ def build_gate_context(
     action_lines.append("</available_actions>")
     sections.append("\n".join(action_lines))
 
-    # Section 2: Entropy evidence
+    # Section 2: Entropy evidence — ALL per-column scores
+    col_scores = event.column_details.get(dim_path, {})
     evidence_lines = [
         "<entropy_evidence>",
         f"Detector: {dim_path.split('.')[-1]}",
-        f"Score: {score:.2f}",
-        f"Threshold: {threshold:.2f}",
+        f"Aggregate score: {score:.2f} (threshold: {threshold:.2f})",
     ]
-    col_scores = event.column_details.get(dim_path, {})
     if col_scores:
-        worst = sorted(col_scores.items(), key=lambda x: x[1], reverse=True)[:5]
-        evidence_lines.append("Worst targets:")
-        for target, col_score in worst:
-            evidence_lines.append(f"  {target}: {col_score:.2f}")
+        evidence_lines.append("")
+        evidence_lines.append("Per-column scores:")
+        for target, col_score in sorted(col_scores.items(), key=lambda x: -x[1]):
+            status = "VIOLATING" if col_score > threshold else "passing"
+            evidence_lines.append(f"  {target}: {col_score:.2f} ({status})")
     evidence_lines.append("</entropy_evidence>")
     sections.append("\n".join(evidence_lines))
 
-    # Section 3: Data profile from DB
+    # Section 3: Already-accepted columns (from previous fix rounds)
+    accepted = _get_accepted_columns(session, source_id, dim_path)
+    if accepted:
+        accepted_lines = [
+            "<already_accepted>",
+            "These columns were already accepted in a previous fix round:",
+        ]
+        for col in accepted:
+            accepted_lines.append(f"  - {col}")
+        accepted_lines.append("Do NOT re-ask about these. Focus on remaining violating columns.")
+        accepted_lines.append("</already_accepted>")
+        sections.append("\n".join(accepted_lines))
+
+    # Section 4: Data profile from DB
     data_section = _build_data_profile(session, source_id, affected_targets)
     if data_section:
         sections.append(data_section)
 
     return "\n\n".join(sections)
+
+
+def _get_accepted_columns(
+    session: Session,
+    source_id: str,
+    dim_path: str,
+) -> list[str]:
+    """Read already-accepted columns from the per-source config.
+
+    Maps dimension path to the detector config key and reads accepted_columns.
+    """
+    from dataraum.core.config import _get_config_root
+
+    config_root = _get_config_root()
+    thresholds_path = config_root / "entropy" / "thresholds.yaml"
+    if not thresholds_path.exists():
+        return []
+
+    import yaml
+
+    with open(thresholds_path) as f:
+        thresholds_config = yaml.safe_load(f) or {}
+
+    # Map dimension path to detector id (last segment)
+    detector_id = dim_path.rsplit(".", 1)[-1]
+
+    # Also check by detector_id from the registry
+    from dataraum.entropy.detectors.base import get_default_registry
+
+    registry = get_default_registry()
+    for d in registry.get_all_detectors():
+        if d.dimension_path == dim_path:
+            detector_id = d.detector_id
+            break
+
+    detectors_config = thresholds_config.get("detectors", {})
+    detector_config = detectors_config.get(detector_id, {})
+    accepted: list[str] = detector_config.get("accepted_columns", [])
+    accepted_tables: list[str] = detector_config.get("accepted_tables", [])
+
+    return accepted + accepted_tables
 
 
 def _get_affected_targets(

@@ -1472,10 +1472,13 @@ def _build_mcp_gate_context(
         "<available_actions>",
         f"Dimension: {dimension}",
         f"Score: {score:.2f} (threshold: {threshold:.2f})",
-        f"Affected columns: {', '.join(affected_targets)}",
+        f"Violating columns: {', '.join(affected_targets)}",
         "",
         "Choose the BEST action for this data issue. Set config_action to the chosen action name.",
         "Set applicable=false only if NONE of the actions fit.",
+        "",
+        "IMPORTANT for accept_finding: set affected_columns to ALL violating columns listed above,",
+        "not just one. The user accepts the finding for the entire dimension in one action.",
         "",
     ]
     if detector:
@@ -1496,22 +1499,37 @@ def _build_mcp_gate_context(
     action_lines.append("</available_actions>")
     sections.append("\n".join(action_lines))
 
-    # Section 2: Entropy evidence
+    # Section 2: Entropy evidence — ALL per-column scores
     evidence_lines = [
         "<entropy_evidence>",
         f"Detector: {detector_id}",
-        f"Score: {score:.2f}",
-        f"Threshold: {threshold:.2f}",
+        f"Aggregate score: {score:.2f} (threshold: {threshold:.2f})",
     ]
     if all_scores:
-        worst = sorted(all_scores.items(), key=lambda x: -x[1])[:5]
-        evidence_lines.append("Worst targets:")
-        for target, col_score in worst:
-            evidence_lines.append(f"  {target}: {col_score:.2f}")
+        evidence_lines.append("")
+        evidence_lines.append("Per-column scores:")
+        for target, col_score in sorted(all_scores.items(), key=lambda x: -x[1]):
+            status = "VIOLATING" if col_score > threshold else "passing"
+            evidence_lines.append(f"  {target}: {col_score:.2f} ({status})")
     evidence_lines.append("</entropy_evidence>")
     sections.append("\n".join(evidence_lines))
 
-    # Section 3: Data profile
+    # Section 3: Already-accepted columns
+    from dataraum.cli.gate_handler import _get_accepted_columns
+
+    accepted = _get_accepted_columns(session, source_id, dimension)
+    if accepted:
+        accepted_lines = [
+            "<already_accepted>",
+            "These columns were already accepted in a previous fix round:",
+        ]
+        for col in accepted:
+            accepted_lines.append(f"  - {col}")
+        accepted_lines.append("Do NOT re-ask about these. Focus on remaining violating columns.")
+        accepted_lines.append("</already_accepted>")
+        sections.append("\n".join(accepted_lines))
+
+    # Section 4: Data profile
     data_section = _build_data_profile(session, source_id, affected_targets)
     if data_section:
         sections.append(data_section)

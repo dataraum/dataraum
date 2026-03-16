@@ -59,14 +59,12 @@ class RelationshipEntropyDetector(EntropyDetector):
                 operation="append",
                 requires_rerun="quality_review",
                 guidance=(
-                    "This is a RELATIONSHIP finding between two tables, not a per-column issue. "
-                    "Present the relationship: from_table.column → to_table.column, with its "
-                    "key metrics (referential integrity %, orphan count, cardinality). "
-                    "Explain what the score means in plain language.\n"
-                    "Do NOT ask the user to pick columns — accept the finding for the column "
-                    "this entropy object belongs to.\n"
-                    "Ask WHY the relationship quality is acceptable (e.g., 'known partial overlap', "
-                    "'soft reference', 'legacy data', 'different ID namespaces')."
+                    "Present the violating relationships with their scores and ask "
+                    "the user to confirm acceptance. Include ALL violating columns "
+                    "in affected_columns — do NOT ask the user to pick one at a time.\n"
+                    "Ask ONE question: why the relationship quality findings are "
+                    "acceptable (e.g., 'known partial overlap', 'soft references', "
+                    "'orphans from legacy data migration')."
                 ),
                 fields={
                     "reason": FixSchemaField(

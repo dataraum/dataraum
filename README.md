@@ -34,7 +34,7 @@ Then in Claude Desktop, point the `analyze` tool at your data:
 
 > Analyze the CSV files in /path/to/my/data
 
-The server runs a 20-phase analysis pipeline and makes 6 tools available:
+The server runs a 21-phase analysis pipeline with two quality gates and makes these tools available:
 
 | Tool | Description |
 |------|-------------|
@@ -42,8 +42,30 @@ The server runs a 20-phase analysis pipeline and makes 6 tools available:
 | `get_context` | Get the full metadata context document |
 | `get_quality` | Unified quality report (entropy, contracts, resolution actions) |
 | `query` | Natural language query against the data |
+| `export` | Export query results to CSV/Parquet/JSON with provenance metadata |
 | `discover_sources` | Scan workspace for data files |
 | `add_source` | Register a new data source (file or database) |
+| `get_zone_status` | Inspect a quality gate: violations, fix actions, skipped detectors |
+| `get_fix_proposal` | Ask the document agent to generate fix questions for a violation |
+| `submit_fix_answers` | Submit answers — agent interprets and returns a ready-to-apply fix |
+| `apply_fix` | Apply fix documents and re-run affected pipeline phases |
+| `continue_pipeline` | Resume pipeline from current gate to the next zone |
+
+### Agentic Quality Loop
+
+An AI agent can drive the full fix cycle via MCP:
+
+```
+analyze → get_zone_status(gate="quality_review")
+  → get_fix_proposal(dimension="value.temporal.temporal_drift")
+  → submit_fix_answers(answers="...")
+  → apply_fix(fixes=[...])
+  → continue_pipeline(target_gate="analysis_review")
+  → get_zone_status(gate="analysis_review")
+  → ... repeat until clean
+```
+
+Two LLM agents collaborate: the document agent (inside DataRaum) asks domain-specific questions, and the outer agent (Claude) answers them based on its understanding of the data.
 
 ## Quick Start — CLI
 

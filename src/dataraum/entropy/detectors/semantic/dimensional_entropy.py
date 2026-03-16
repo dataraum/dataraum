@@ -496,9 +496,6 @@ class DimensionalEntropyDetector(EntropyDetector):
         correlation_threshold = detector_config.get("correlation_threshold", 0.8)
         mutual_exclusivity_threshold = detector_config.get("mutual_exclusivity_threshold", 0.95)
         pattern_weights = detector_config.get("pattern_weights", {})
-        score_accepted = self.config.get("score_accepted") or detector_config.get(
-            "score_accepted", 0.2
-        )
         accepted_tables: list[str] = self.config.get("accepted_tables") or detector_config.get(
             "accepted_tables", []
         )
@@ -653,9 +650,6 @@ class DimensionalEntropyDetector(EntropyDetector):
 
         for pattern in patterns:
             score = score_undocumented_rule if pattern.confidence > 0.9 else score_partial_pattern
-            if is_accepted:
-                score = score_accepted
-
             ev_dict: dict[str, Any] = {
                 "pattern_type": pattern.pattern_type,
                 "columns": pattern.columns,
@@ -722,7 +716,7 @@ class DimensionalEntropyDetector(EntropyDetector):
             if is_accepted:
                 summary_ev["accepted"] = True
             summary_evidence = [summary_ev]
-            overall_score = score_accepted if is_accepted else entropy_score.total_score
+            overall_score = entropy_score.total_score
             entropy_objects.append(
                 EntropyObject(
                     layer=self.layer,

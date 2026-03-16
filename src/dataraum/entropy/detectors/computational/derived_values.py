@@ -132,9 +132,6 @@ class DerivedValueDetector(EntropyDetector):
         match_exact = detector_config.get("match_exact", 0.99)
         match_near_exact = detector_config.get("match_near_exact", 0.95)
         match_approximate = detector_config.get("match_approximate", 0.80)
-        score_accepted = self.config.get("score_accepted") or detector_config.get(
-            "score_accepted", 0.2
-        )
         accepted_columns: list[str] = self.config.get("accepted_columns") or detector_config.get(
             "accepted_columns", []
         )
@@ -236,10 +233,9 @@ class DerivedValueDetector(EntropyDetector):
                 )
             )
 
-        # Apply acceptance floor if this column was previously accepted
+        # Mark as accepted (score stays honest, contract overrule handles gate)
         target_key = f"{context.table_name}.{context.column_name}"
         if target_key in accepted_columns:
-            score = score_accepted
             evidence[0]["accepted"] = True
 
         return [

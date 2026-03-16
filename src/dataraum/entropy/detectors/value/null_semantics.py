@@ -87,9 +87,6 @@ class NullRatioDetector(EntropyDetector):
         impact_significant = detector_config.get("impact_significant", 0.50)
         suggest_declare = detector_config.get("suggest_declare_threshold", 0.1)
         suggest_filter = detector_config.get("suggest_filter_threshold", 0.4)
-        score_accepted = self.config.get("score_accepted") or detector_config.get(
-            "score_accepted", 0.1
-        )
         accepted_columns: list[str] = self.config.get("accepted_columns") or detector_config.get(
             "accepted_columns", []
         )
@@ -187,10 +184,9 @@ class NullRatioDetector(EntropyDetector):
                 )
             )
 
-        # Apply acceptance floor if this column was previously accepted
+        # Mark as accepted (score stays honest, contract overrule handles gate)
         target_key = f"{context.table_name}.{context.column_name}"
         if target_key in accepted_columns:
-            score = score_accepted
             evidence[0]["accepted"] = True
 
         return [

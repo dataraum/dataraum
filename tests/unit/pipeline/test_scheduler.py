@@ -481,8 +481,8 @@ class TestInvalidateDownstream:
         assert scheduler._state["C"] == PhaseStatus.PENDING
         assert scheduler._state["D"] == PhaseStatus.PENDING
 
-        # cleanup_phase only called for COMPLETED (B), not SKIPPED/FAILED
-        mock_cleanup.assert_called_once()
+        # cleanup_phase called for COMPLETED (B) and SKIPPED (C), not FAILED (D)
+        assert mock_cleanup.call_count == 2
 
 
 class TestPhaseLog:

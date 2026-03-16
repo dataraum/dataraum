@@ -80,10 +80,10 @@ class RelationshipEntropyDetector(EntropyDetector):
                 action="confirm_relationship",
                 target="config",
                 description="Confirm a detected relationship between tables",
-                config_path="phases/relationships.yaml",
+                config_path="phases/semantic.yaml",
                 key_path=["overrides", "confirmed_relationships"],
                 operation="merge",
-                requires_rerun="relationships",
+                requires_rerun="semantic",
                 key_template="{from_table}->{to_table}",
                 guidance=(
                     "Confirms or rejects a detected relationship between tables. "
@@ -150,9 +150,6 @@ class RelationshipEntropyDetector(EntropyDetector):
         detector_config = config.detector("relationship_entropy")
 
         # Accepted columns
-        score_accepted = self.config.get("score_accepted") or detector_config.get(
-            "score_accepted", 0.2
-        )
         accepted_columns: list[str] = self.config.get("accepted_columns") or detector_config.get(
             "accepted_columns", []
         )
@@ -303,10 +300,9 @@ class RelationshipEntropyDetector(EntropyDetector):
                     )
                 )
 
-            # Apply acceptance floor if this column was previously accepted
+            # Mark as accepted (score stays honest, contract overrule handles gate)
             target_key = f"{context.table_name}.{context.column_name}"
             if target_key in accepted_columns:
-                score = score_accepted
                 rel_evidence["accepted"] = True
 
             objects.append(

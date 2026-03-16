@@ -154,9 +154,6 @@ class RelationshipsPhase(BasePhase):
             c for c in candidates if any(jc.join_confidence >= 0.7 for jc in c.join_candidates)
         ]
 
-        # Apply config overrides (e.g. confirm_relationship)
-        _apply_relationship_overrides(ctx.session, ctx.config, table_ids)
-
         return PhaseResult.success(
             outputs={
                 "relationship_candidates": [f"{c.table1} <-> {c.table2}" for c in candidates],
@@ -168,71 +165,3 @@ class RelationshipsPhase(BasePhase):
             records_created=len(candidates),
             summary=f"{len(candidates)} candidates ({len(high_confidence)} high-confidence)",
         )
-
-
-def _apply_relationship_overrides(
-    session: Session,
-    config: dict,  # type: ignore[type-arg]
-    table_ids: list[str],
-) -> None:
-    """Apply relationship overrides from config.
-
-    Reads ``overrides.confirmed_relationships`` from the relationships
-    phase config.  Keys are ``"from_table->to_table"``; values are field
-    dicts patched onto ALL matching Relationship rows for that table pair.
-    """
-    overrides = config.get("overrides", {})
-    if not isinstance(overrides, dict):
-        return
-
-    confirmed = overrides.get("confirmed_relationships", {})
-    if not isinstance(confirmed, dict) or not confirmed:
-        return
-
-    # Build table name lookup
-    tables = session.execute(select(Table).where(Table.table_id.in_(table_ids))).scalars().all()
-    name_to_id = {t.table_name: t.table_id for t in tables}
-
-    from datetime import UTC, datetime
-
-    for key, field_values in confirmed.items():
-        if not isinstance(field_values, dict):
-            continue
-        # Parse "from_table->to_table" key
-        if "->" not in key:
-            continue
-        from_name, to_name = key.split("->", 1)
-        from_tid = name_to_id.get(from_name)
-        to_tid = name_to_id.get(to_name)
-        if not from_tid or not to_tid:
-            logger.debug("relationship_override_skip", key=key, reason="table not found")
-            continue
-
-        rels = (
-            session.execute(
-                select(Relationship).where(
-                    Relationship.from_table_id == from_tid,
-                    Relationship.to_table_id == to_tid,
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if not rels:
-            logger.debug("relationship_override_skip", key=key, reason="no relationship")
-            continue
-
-        for rel in rels:
-            for field_name, value in field_values.items():
-                if hasattr(rel, field_name) and getattr(rel, field_name) != value:
-                    setattr(rel, field_name, value)
-
-            # Always confirm — the override entry itself is the confirmation,
-            # regardless of whether field values changed.
-            if not rel.is_confirmed:
-                rel.is_confirmed = True
-                rel.confirmed_at = datetime.now(UTC)
-                rel.confirmed_by = "config_override"
-                logger.info("relationship_override_applied", key=key)
-
-    session.flush()

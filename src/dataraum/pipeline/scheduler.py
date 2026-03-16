@@ -240,6 +240,8 @@ class PipelineScheduler:
                         total=total,
                         scores=dict(all_scores),
                         skipped_detectors=wave_skipped,
+                        column_details=dict(column_details),
+                        column_evidence=dict(column_evidence),
                     )
                     issues = assess_contracts(
                         dict(all_scores),
@@ -722,10 +724,12 @@ class PipelineScheduler:
         dependents = self._transitive_dependents(phase_name)
         for dep_name in dependents:
             dep_status = self._state[dep_name]
-            if dep_status == PhaseStatus.COMPLETED:
+            if dep_status in (PhaseStatus.COMPLETED, PhaseStatus.SKIPPED):
+                # Clean outputs so the phase can't skip via should_skip()
+                # when upstream data changed.
                 cleanup_phase(dep_name, self.source_id, self.session, self.duckdb_conn)
                 self._state[dep_name] = PhaseStatus.PENDING
-            elif dep_status in (PhaseStatus.SKIPPED, PhaseStatus.FAILED):
+            elif dep_status == PhaseStatus.FAILED:
                 self._state[dep_name] = PhaseStatus.PENDING
 
     def _transitive_dependents(self, phase_name: str) -> list[str]:

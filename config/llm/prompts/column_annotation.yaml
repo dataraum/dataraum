@@ -52,6 +52,15 @@ system_prompt: |
   be flagged for cleanup.
   </confidence_guidance>
 
+  <period_detection>
+  Some columns represent time periods rather than exact dates. Their values
+  won't look like standard dates but still encode temporal information
+  (e.g., "2024-01", "2024-Q1", "W23", "H2-2024"). Assign semantic_role:
+  timestamp to these columns so downstream typing applies the correct
+  date pattern. Look at sample values — if they follow a repeating
+  year/month/quarter/week structure, they are temporal.
+  </period_detection>
+
   Use the annotate_columns tool to provide your analysis.
 
 # User prompt - provides data and context

@@ -137,9 +137,6 @@ class TemporalDriftDetector(EntropyDetector):
         # Load config for accepted_columns
         config = get_entropy_config()
         detector_config = config.detector("temporal_drift")
-        score_accepted = self.config.get("score_accepted") or detector_config.get(
-            "score_accepted", 0.2
-        )
         accepted_columns: list[str] = self.config.get("accepted_columns") or detector_config.get(
             "accepted_columns", []
         )
@@ -206,10 +203,9 @@ class TemporalDriftDetector(EntropyDetector):
                 )
             )
 
-        # Apply acceptance floor if this column was previously accepted
+        # Mark as accepted (score stays honest, contract overrule handles gate)
         target_key = f"{context.table_name}.{context.column_name}"
         if target_key in accepted_columns:
-            score = score_accepted
             evidence[0]["accepted"] = True
 
         return [

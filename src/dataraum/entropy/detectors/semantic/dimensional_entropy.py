@@ -27,6 +27,7 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 logger = get_logger(__name__)
 
@@ -198,6 +199,55 @@ class DimensionalEntropyDetector(EntropyDetector):
     scope = "table"
     required_analyses = [AnalysisKey.SLICE_VARIANCE]  # temporal_variance is optional
     description = "Detects cross-column business rules from slice and temporal variance patterns"
+
+    @property
+    def fix_schemas(self) -> list[FixSchema]:
+        return [
+            FixSchema(
+                action="document_business_rule",
+                target="config",
+                description="Document a detected cross-column pattern as a known business rule",
+                config_path="entropy/thresholds.yaml",
+                key_path=["detectors", "dimensional_entropy", "documented_patterns"],
+                operation="append",
+                requires_rerun="analysis_review",
+                guidance=(
+                    "The detector found an undocumented cross-column relationship. "
+                    "If this is a known business rule (e.g., debit/credit mutual "
+                    "exclusivity in double-entry bookkeeping), document it so the "
+                    "detector recognizes it as expected."
+                ),
+                fields={
+                    "table": FixSchemaField(
+                        type="string",
+                        required=True,
+                        description="Table name where the pattern exists",
+                    ),
+                    "columns": FixSchemaField(
+                        type="string",
+                        required=True,
+                        description="Comma-separated column names involved in the pattern",
+                    ),
+                    "pattern_type": FixSchemaField(
+                        type="enum",
+                        required=True,
+                        description="Type of pattern",
+                        enum_values=[
+                            "mutual_exclusivity",
+                            "conditional_dependency",
+                            "correlated_variance",
+                            "temporal_correlation",
+                            "temporal_drift",
+                        ],
+                    ),
+                    "description": FixSchemaField(
+                        type="string",
+                        required=False,
+                        description="Business justification for why this pattern is expected",
+                    ),
+                },
+            ),
+        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load slice variance data for this table."""
@@ -446,6 +496,17 @@ class DimensionalEntropyDetector(EntropyDetector):
         correlation_threshold = detector_config.get("correlation_threshold", 0.8)
         mutual_exclusivity_threshold = detector_config.get("mutual_exclusivity_threshold", 0.95)
         pattern_weights = detector_config.get("pattern_weights", {})
+        score_accepted = self.config.get("score_accepted") or detector_config.get(
+            "score_accepted", 0.2
+        )
+        accepted_tables: list[str] = self.config.get("accepted_tables") or detector_config.get(
+            "accepted_tables", []
+        )
+        # Documented patterns: list of {"table", "columns", "pattern_type"} dicts.
+        # Patterns matching a documented entry are excluded from scoring.
+        documented_patterns: list[dict[str, Any]] = self.config.get(
+            "documented_patterns"
+        ) or detector_config.get("documented_patterns", [])
 
         slice_variance = context.get_analysis("slice_variance", {})
         columns_data = slice_variance.get("columns", {})
@@ -525,6 +586,46 @@ class DimensionalEntropyDetector(EntropyDetector):
             patterns.extend(value_mutex_patterns)
             entropy_score.mutual_exclusivity_count += len(value_mutex_patterns)
 
+        # Filter out documented patterns — these are known business rules,
+        # not undocumented complexity
+        if documented_patterns:
+            documented_keys = set()
+            for dp in documented_patterns:
+                if dp.get("table") == context.table_name:
+                    cols = frozenset(dp.get("columns", []))
+                    documented_keys.add((dp.get("pattern_type", ""), cols))
+
+            undocumented: list[CrossColumnPattern] = []
+            for p in patterns:
+                key = (p.pattern_type, frozenset(p.columns))
+                if key not in documented_keys:
+                    undocumented.append(p)
+                else:
+                    logger.info(
+                        "documented_pattern_skipped",
+                        table=context.table_name,
+                        pattern_type=p.pattern_type,
+                        columns=p.columns,
+                    )
+
+            # Recount after filtering
+            patterns = undocumented
+            entropy_score.mutual_exclusivity_count = sum(
+                1 for p in patterns if p.pattern_type == "mutual_exclusivity"
+            )
+            entropy_score.correlated_variance_count = sum(
+                1 for p in patterns if p.pattern_type == "correlated_variance"
+            )
+            entropy_score.conditional_dependency_count = sum(
+                1 for p in patterns if p.pattern_type == "conditional_dependency"
+            )
+            entropy_score.temporal_correlation_count = sum(
+                1 for p in patterns if p.pattern_type == "temporal_correlation"
+            )
+            entropy_score.temporal_drift_count = sum(
+                1 for p in patterns if p.pattern_type == "temporal_drift"
+            )
+
         # Calculate overall entropy score using configurable weights
         num_categorical = max(len(interesting_columns), entropy_score.mutual_exclusivity_count, 1)
         entropy_score.categorical_entropy = (
@@ -540,11 +641,16 @@ class DimensionalEntropyDetector(EntropyDetector):
 
         entropy_score.calculate_total(weights=pattern_weights or None)
 
+        # Check if this table has been accepted (documented business rules)
+        is_accepted = context.table_name in accepted_tables
+
         # Create entropy objects for each pattern
         entropy_objects: list[EntropyObject] = []
 
         for pattern in patterns:
             score = score_undocumented_rule if pattern.confidence > 0.9 else score_partial_pattern
+            if is_accepted:
+                score = score_accepted
 
             evidence = [
                 {
@@ -611,13 +717,14 @@ class DimensionalEntropyDetector(EntropyDetector):
                 }
             ]
 
+            overall_score = score_accepted if is_accepted else entropy_score.total_score
             entropy_objects.append(
                 EntropyObject(
                     layer=self.layer,
                     dimension=self.dimension,
                     sub_dimension="overall_score",
                     target=context.target_ref,
-                    score=entropy_score.total_score,
+                    score=overall_score,
                     evidence=summary_evidence,
                     resolution_options=[
                         ResolutionOption(

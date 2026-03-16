@@ -18,6 +18,7 @@ from dataraum.pipeline.fixes.models import DataFix, FixDocument
 logger = get_logger(__name__)
 
 _ZONE1_ANALYSES = None  # lazy singleton
+_ZONE2_ANALYSES = None  # lazy singleton
 
 
 def _zone1_analyses() -> set[Any]:
@@ -33,6 +34,29 @@ def _zone1_analyses() -> set[Any]:
             AnalysisKey.SEMANTIC,
         }
     return _ZONE1_ANALYSES
+
+
+def _zone2_analyses() -> set[Any]:
+    """Return the set of Zone 1 + Zone 2 analysis keys."""
+    global _ZONE2_ANALYSES  # noqa: PLW0603
+    if _ZONE2_ANALYSES is None:
+        from dataraum.entropy.dimensions import AnalysisKey
+
+        _ZONE2_ANALYSES = _zone1_analyses() | {
+            AnalysisKey.CORRELATION,
+            AnalysisKey.DRIFT_SUMMARIES,
+            AnalysisKey.SLICE_VARIANCE,
+            AnalysisKey.COLUMN_QUALITY_REPORTS,
+            AnalysisKey.ENRICHED_VIEW,
+        }
+    return _ZONE2_ANALYSES
+
+
+def _analyses_for_gate(target_phase: str) -> set[Any]:
+    """Return analysis keys available at the given gate."""
+    if target_phase == "analysis_review":
+        return _zone2_analyses()
+    return _zone1_analyses()
 
 
 @dataclass
@@ -68,7 +92,7 @@ def _determine_rerun_phases(fix_documents: list[FixDocument]) -> set[str]:
     """
     from dataraum.entropy.detectors.base import get_default_registry
 
-    gate_only_phases = {"quality_review", "semantic"}
+    gate_only_phases = {"quality_review", "analysis_review", "semantic"}
     registry = get_default_registry()
     phases: set[str] = set()
 
@@ -90,6 +114,7 @@ def apply_fixes(
     *,
     source_path: Path | None = None,
     contract: str | None = "aggregation_safe",
+    target_phase: str = "quality_review",
 ) -> ApplyFixResult:
     """Apply fixes to a pipeline output and re-run affected phases.
 
@@ -102,6 +127,7 @@ def apply_fixes(
         fix_documents: Fix documents to apply.
         source_path: Original source data path (needed for pipeline re-runs).
         contract: Contract name for gate evaluation.
+        target_phase: Gate phase to re-measure (quality_review or analysis_review).
 
     Returns:
         ApplyFixResult with before/after gate scores.
@@ -131,7 +157,7 @@ def apply_fixes(
                 session,
                 manager._duckdb_conn,
                 source.source_id,
-                _zone1_analyses(),
+                _analyses_for_gate(target_phase),
             )
 
             applied = apply_and_persist(
@@ -166,7 +192,7 @@ def apply_fixes(
             RunConfig(
                 source_path=source_path,
                 output_dir=output_dir,
-                target_phase="quality_review",
+                target_phase=target_phase,
                 gate_mode=GateMode.SKIP,
                 contract=contract,
             )
@@ -192,7 +218,7 @@ def apply_fixes(
                     session2,
                     manager2._duckdb_conn,
                     source2.source_id,
-                    _zone1_analyses(),
+                    _analyses_for_gate(target_phase),
                 )
                 persist_gate_result(session2, source2.source_id, gate_after)
         finally:

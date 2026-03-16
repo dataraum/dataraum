@@ -13,6 +13,9 @@ from dataraum.entropy.detectors.semantic.business_meaning import (
 from dataraum.entropy.detectors.semantic.column_quality import (
     ColumnQualityDetector,
 )
+from dataraum.entropy.detectors.semantic.dimension_coverage import (
+    DimensionCoverageDetector,
+)
 from dataraum.entropy.detectors.semantic.dimensional_entropy import (
     DimensionalEntropyDetector,
 )
@@ -27,6 +30,7 @@ __all__ = [
     "BusinessMeaningDetector",
     "ColumnQualityDetector",
     "DimensionalEntropyDetector",
+    "DimensionCoverageDetector",
     "TemporalEntropyDetector",
     "UnitEntropyDetector",
 ]

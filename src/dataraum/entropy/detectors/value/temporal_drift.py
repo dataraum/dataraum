@@ -4,6 +4,7 @@ Measures uncertainty from distribution drift over time.
 Uses max Jensen-Shannon divergence from ColumnDriftSummary records.
 """
 
+from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
@@ -31,7 +32,9 @@ class TemporalDriftDetector(EntropyDetector):
 
     # Semantic roles where drift detection is meaningless —
     # IDs naturally differ across periods (JS divergence = ln(2) guaranteed).
-    _SKIP_ROLES = frozenset({"key", "foreign_key", "identifier"})
+    # Dimensions (counterparty, category) naturally vary across periods — that's
+    # expected business behavior, not a data quality problem.
+    _SKIP_ROLES = frozenset({"key", "foreign_key", "identifier", "dimension", "category"})
 
     # Columns with cardinality ratio above this are near-unique (IDs, references)
     # and naturally produce max JS divergence — skip to avoid false positives.
@@ -100,6 +103,16 @@ class TemporalDriftDetector(EntropyDetector):
         if col_summary is None:
             return []
 
+        # Load config for accepted_columns
+        config = get_entropy_config()
+        detector_config = config.detector("temporal_drift")
+        score_accepted = self.config.get("score_accepted") or detector_config.get(
+            "score_accepted", 0.2
+        )
+        accepted_columns: list[str] = self.config.get("accepted_columns") or detector_config.get(
+            "accepted_columns", []
+        )
+
         max_js = col_summary.max_js_divergence
 
         # Score mapping: piecewise linear
@@ -161,6 +174,12 @@ class TemporalDriftDetector(EntropyDetector):
                     description="Filter to recent stable periods to reduce drift impact",
                 )
             )
+
+        # Apply acceptance floor if this column was previously accepted
+        target_key = f"{context.table_name}.{context.column_name}"
+        if target_key in accepted_columns:
+            score = score_accepted
+            evidence[0]["accepted"] = True
 
         return [
             self.create_entropy_object(

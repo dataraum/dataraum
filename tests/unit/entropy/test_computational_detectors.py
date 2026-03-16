@@ -85,7 +85,8 @@ class TestDerivedValueDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
-        assert results[0].score == pytest.approx(0.03, abs=0.01)
+        # Boosted: mismatch_rate=0.03 → ~0.20 (notable, not noise)
+        assert results[0].score == pytest.approx(0.20, abs=0.02)
         assert results[0].evidence[0]["status"] == "near_exact"
 
     def test_approximate_formula_match(self, detector: DerivedValueDetector):
@@ -109,7 +110,8 @@ class TestDerivedValueDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
-        assert results[0].score == pytest.approx(0.15, abs=0.01)
+        # Boosted: mismatch_rate=0.15 → 1.0 (severe — 15% formula errors)
+        assert results[0].score == pytest.approx(1.0, abs=0.01)
         assert results[0].evidence[0]["status"] == "approximate"
         # Should suggest verification
         actions = [opt.action for opt in results[0].resolution_options]
@@ -136,7 +138,8 @@ class TestDerivedValueDetector:
         results = detector.detect(context)
 
         assert len(results) == 1
-        assert results[0].score == pytest.approx(0.4, abs=0.01)
+        # Boosted: mismatch_rate=0.40 → 1.0 (severe — 40% formula errors)
+        assert results[0].score == pytest.approx(1.0, abs=0.01)
         assert results[0].evidence[0]["status"] == "poor"
         # Should suggest investigation
         actions = [opt.action for opt in results[0].resolution_options]

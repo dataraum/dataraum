@@ -59,6 +59,29 @@ class DerivedValueDetector(EntropyDetector):
     def fix_schemas(self) -> list[FixSchema]:
         return [
             FixSchema(
+                action="accept_finding",
+                target="config",
+                description="Accept formula mismatch as expected (e.g., manual adjustments, rounding)",
+                config_path="entropy/thresholds.yaml",
+                key_path=["detectors", "derived_value", "accepted_columns"],
+                operation="append",
+                requires_rerun="analysis_review",
+                guidance=(
+                    "The column was detected as derived (computed from other columns) "
+                    "but some rows don't match the formula. Show the user the detected "
+                    "formula, the match rate, and the source columns. Ask whether the "
+                    "mismatches are expected (manual adjustments, rounding, historical "
+                    "corrections) or indicate a real data quality problem."
+                ),
+                fields={
+                    "reason": FixSchemaField(
+                        type="string",
+                        required=True,
+                        description="Why the formula mismatch is expected",
+                    ),
+                },
+            ),
+            FixSchema(
                 action="recalculate_derived_column",
                 target="data",
                 description="Recalculate the derived column from its source formula",
@@ -67,9 +90,10 @@ class DerivedValueDetector(EntropyDetector):
                 },
                 requires_rerun="correlations",
                 guidance=(
-                    "The derived column has formula mismatches. If the formula "
-                    "is correct, recalculate the column from its source columns "
-                    "to fix drifted values."
+                    "The derived column has formula mismatches and the user wants "
+                    "to recalculate. Show the detected formula and match rate. "
+                    "Ask the user to confirm the correct formula (the detected one "
+                    "may be wrong). PROPOSE the detected formula as default."
                 ),
                 fields={
                     "formula": FixSchemaField(

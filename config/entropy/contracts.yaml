@@ -30,7 +30,8 @@ contracts:
       value.distribution: 0.8   # Benford's Law compliance
       value.temporal: 0.5       # Distribution drift over time
       computational.derived_values: 0.5
-      # Note: computational.aggregations removed - no detector
+      computational.reconciliation: 0.5  # Cross-table validation failures
+      semantic.cycles: 0.5              # Business cycle detection quality
 
     blocking_conditions:
       - type: any_dimension_exceeds
@@ -59,7 +60,8 @@ contracts:
       value.distribution: 0.4   # Benford deviations — informational for ML
       value.temporal: 0.3       # Distribution drift affects training data
       computational.derived_values: 0.4
-      # Note: computational.aggregations removed - no detector
+      computational.reconciliation: 0.4  # Cross-table validation failures
+      semantic.cycles: 0.4              # Business cycle detection quality
 
     blocking_conditions:
       - type: any_dimension_exceeds
@@ -88,7 +90,8 @@ contracts:
       value.distribution: 0.4   # Benford compliance
       value.temporal: 0.4       # Distribution drift
       computational.derived_values: 0.3
-      # Note: computational.aggregations removed - no detector
+      computational.reconciliation: 0.4  # Cross-table validation failures
+      semantic.cycles: 0.4              # Business cycle detection quality
 
     blocking_conditions:
       - type: any_dimension_exceeds
@@ -144,7 +147,8 @@ contracts:
       value.distribution: 0.3   # Benford compliance for executive reporting
       value.temporal: 0.3       # Drift must be controlled for KPI tracking
       computational.derived_values: 0.2
-      # Note: computational.aggregations removed - no detector
+      computational.reconciliation: 0.2  # Cross-table validation failures — execs can't see mismatches
+      semantic.cycles: 0.3              # Business cycle detection quality
 
     blocking_conditions:
       - type: any_dimension_exceeds
@@ -172,7 +176,8 @@ contracts:
       value.distribution: 0.2  # Benford deviations need investigation for compliance
       value.temporal: 0.2      # Distribution drift unacceptable for regulatory
       computational.derived_values: 0.1
-      # Note: computational.aggregations removed - no detector
+      computational.reconciliation: 0.1  # Cross-table validation failures — zero tolerance for regulatory
+      semantic.cycles: 0.2              # Business cycle detection quality
 
     blocking_conditions:
       - type: any_dimension_exceeds

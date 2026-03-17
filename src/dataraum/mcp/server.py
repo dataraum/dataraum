@@ -114,8 +114,8 @@ def create_server(output_dir: Path | None = None) -> Server:
                         },
                         "target_gate": {
                             "type": "string",
-                            "enum": ["quality_review", "analysis_review"],
-                            "description": "Stop at this gate for review instead of running the full pipeline. Default: runs all phases.",
+                            "enum": ["quality_review", "analysis_review", "computation_review"],
+                            "description": "Stop at this gate for review instead of running the full pipeline. quality_review = Gate 1 (foundation). analysis_review = Gate 2 (enrichment). computation_review = Gate 3 (interpretation). Default: runs all phases.",
                         },
                         "contract": {
                             "type": "string",
@@ -150,8 +150,8 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "properties": {
                         "gate": {
                             "type": "string",
-                            "enum": ["quality_review", "analysis_review"],
-                            "description": "When set, returns zone-specific gate status instead of overall report. quality_review = Gate 1. analysis_review = Gate 2.",
+                            "enum": ["quality_review", "analysis_review", "computation_review"],
+                            "description": "When set, returns zone-specific gate status instead of overall report. quality_review = Gate 1. analysis_review = Gate 2. computation_review = Gate 3.",
                         },
                         "contract_name": {
                             "type": "string",
@@ -307,11 +307,12 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "properties": {
                         "target_gate": {
                             "type": "string",
-                            "enum": ["analysis_review", "end"],
+                            "enum": ["analysis_review", "computation_review", "end"],
                             "description": (
                                 "Where to stop: "
                                 "'analysis_review' = run through Gate 2 (Zone 2). "
-                                "'end' = run through the end of the pipeline (Zone 3)."
+                                "'computation_review' = run through Gate 3 (Zone 3 analysis). "
+                                "'end' = run through the end of the pipeline."
                             ),
                         },
                         "source_path": {
@@ -336,7 +337,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "properties": {
                         "gate": {
                             "type": "string",
-                            "enum": ["quality_review", "analysis_review"],
+                            "enum": ["quality_review", "analysis_review", "computation_review"],
                             "description": "Which gate this violation was measured at.",
                         },
                         "dimension": {
@@ -616,6 +617,7 @@ _PHASE_LABELS: dict[str, str] = {
     "entropy_interpretation": "Writing quality summaries (AI step)",
     "business_cycles": "Detecting business cycles (AI step)",
     "validation": "Running validation checks (AI step)",
+    "computation_review": "Reviewing computation quality (Gate 3)",
     "graph_execution": "Executing metric graphs",
 }
 
@@ -1561,6 +1563,7 @@ def _add_source(output_dir: Path, arguments: dict[str, Any]) -> str:
 _GATE_ZONES: dict[str, tuple[str, str]] = {
     "quality_review": ("foundation", "Gate 1"),
     "analysis_review": ("enrichment", "Gate 2"),
+    "computation_review": ("interpretation", "Gate 3"),
 }
 
 
@@ -1702,6 +1705,19 @@ def _get_zone_status(
                     "CORRELATIONS",
                     "TEMPORAL_SLICING",
                     "QUALITY_SUMMARY",
+                },
+                "computation_review": {
+                    "TYPING",
+                    "STATISTICS",
+                    "RELATIONSHIPS",
+                    "SEMANTIC",
+                    "ENRICHED_VIEWS",
+                    "SLICING",
+                    "CORRELATIONS",
+                    "TEMPORAL_SLICING",
+                    "QUALITY_SUMMARY",
+                    "VALIDATION",
+                    "BUSINESS_CYCLES",
                 },
             }
             available = _gate_analyses.get(gate_phase, set())

@@ -14,6 +14,7 @@ from sqlalchemy import delete, func, select
 
 from dataraum.analysis.cycles import BusinessCycleAgent
 from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
+from dataraum.entropy.dimensions import AnalysisKey
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
@@ -43,6 +44,10 @@ class BusinessCyclesPhase(BasePhase):
     @property
     def description(self) -> str:
         return "Expert LLM cycle detection"
+
+    @property
+    def produces_analyses(self) -> set[AnalysisKey]:
+        return {AnalysisKey.BUSINESS_CYCLES}
 
     @property
     def dependencies(self) -> list[str]:

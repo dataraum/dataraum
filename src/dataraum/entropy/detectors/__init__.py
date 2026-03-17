@@ -34,11 +34,13 @@ from dataraum.entropy.detectors.base import (
 
 # Computational layer detectors
 from dataraum.entropy.detectors.computational import (
+    CrossTableConsistencyDetector,
     DerivedValueDetector,
 )
 
 # Semantic layer detectors
 from dataraum.entropy.detectors.semantic import (
+    BusinessCycleHealthDetector,
     BusinessMeaningDetector,
     ColumnQualityDetector,
     DimensionalEntropyDetector,
@@ -80,10 +82,12 @@ BUILTIN_DETECTORS: list[type[EntropyDetector]] = [
     # Semantic (table-scoped)
     DimensionalEntropyDetector,
     ColumnQualityDetector,
+    BusinessCycleHealthDetector,
     # Semantic (view-scoped)
     DimensionCoverageDetector,
     # Computational
     DerivedValueDetector,
+    CrossTableConsistencyDetector,
 ]
 
 
@@ -121,6 +125,7 @@ __all__ = [
     "OutlierRateDetector",
     "TemporalDriftDetector",
     # Semantic detectors
+    "BusinessCycleHealthDetector",
     "BusinessMeaningDetector",
     "UnitEntropyDetector",
     "TemporalEntropyDetector",
@@ -128,5 +133,6 @@ __all__ = [
     "DimensionalEntropyDetector",
     "DimensionCoverageDetector",
     # Computational detectors
+    "CrossTableConsistencyDetector",
     "DerivedValueDetector",
 ]

@@ -67,9 +67,20 @@ def _build_append_documents(
     config_path: str,
     key_path: list[str],
 ) -> list[FixDocument]:
-    """Build append documents — one per affected column."""
+    """Build append documents — one per affected column.
+
+    When the schema has fields (e.g., document_business_rule with table,
+    columns, pattern_type), appends the structured parameters dict.
+    When fieldless (e.g., accept_finding), appends the column reference string.
+    """
     docs: list[FixDocument] = []
     reason = fix_input.interpretation or f"{schema.action} for {table_name}"
+
+    # Schema with fields: append structured parameters dict
+    if schema.fields:
+        value: object = _extract_value(schema, fix_input)
+    else:
+        value = None  # set per-column below
 
     for i, col_ref in enumerate(fix_input.affected_columns):
         docs.append(
@@ -85,7 +96,7 @@ def _build_append_documents(
                     "config_path": config_path,
                     "key_path": key_path,
                     "operation": "append",
-                    "value": col_ref,
+                    "value": value if schema.fields else col_ref,
                     "reason": reason,
                 },
             )

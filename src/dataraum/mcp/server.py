@@ -637,10 +637,10 @@ async def _run_analyze_background(
 
 
 def _get_pipeline_progress(manager: Any) -> str | None:
-    """Check if a pipeline is running and return a progress message.
+    """Check if a pipeline is running or recently failed and return a status message.
 
     Returns:
-        Progress message string if running, None if no pipeline is running.
+        Progress/error message string if running or failed, None if pipeline is idle.
     """
     from sqlalchemy import func, select
 
@@ -652,22 +652,47 @@ def _get_pipeline_progress(manager: Any) -> str | None:
         if not source:
             return None
 
-        running_run = session.execute(
+        # Check for a running pipeline
+        latest_run = session.execute(
             select(PipelineRun)
-            .where(
-                PipelineRun.source_id == source.source_id,
-                PipelineRun.status == "running",
-            )
+            .where(PipelineRun.source_id == source.source_id)
             .order_by(PipelineRun.started_at.desc())
             .limit(1)
         ).scalar_one_or_none()
 
-        if running_run is None:
+        if latest_run is None:
             return None
 
+        # Pipeline completed successfully — no progress to report
+        if latest_run.status == "completed":
+            return None
+
+        # Pipeline failed — surface the error
+        if latest_run.status == "failed":
+            error_detail = f": {latest_run.error}" if latest_run.error else ""
+            # Collect failed phases for context
+            failed_phases = session.execute(
+                select(PhaseLog.phase_name, PhaseLog.error).where(
+                    PhaseLog.run_id == latest_run.run_id,
+                    PhaseLog.status == "failed",
+                )
+            ).all()
+            phase_detail = ""
+            if failed_phases:
+                details = [
+                    f"  - {name}: {err}" if err else f"  - {name}"
+                    for name, err in failed_phases
+                ]
+                phase_detail = "\nFailed phases:\n" + "\n".join(details)
+            return (
+                f"Error: Pipeline failed{error_detail}{phase_detail}\n\n"
+                f"Fix the issue and re-run `analyze`."
+            )
+
+        # Pipeline is still running — show progress
         completed_count: int = (
             session.execute(
-                select(func.count()).where(PhaseLog.run_id == running_run.run_id)
+                select(func.count()).where(PhaseLog.run_id == latest_run.run_id)
             ).scalar()
             or 0
         )
@@ -678,7 +703,7 @@ def _get_pipeline_progress(manager: Any) -> str | None:
         # Determine currently running phases from dependency graph
         completed_names: set[str] = set()
         log_result = session.execute(
-            select(PhaseLog.phase_name).where(PhaseLog.run_id == running_run.run_id)
+            select(PhaseLog.phase_name).where(PhaseLog.run_id == latest_run.run_id)
         )
         for row in log_result:
             completed_names.add(row[0])
@@ -697,7 +722,10 @@ def _get_pipeline_progress(manager: Any) -> str | None:
             labels = [_PHASE_LABELS.get(p, p) for p in running_phases]
             current_detail = f" Current: {', '.join(labels)}."
 
-        return f"Phase {completed_count} of {total_phases} complete.{current_detail}"
+        return (
+            f"Phase {completed_count} of {total_phases} complete.{current_detail}\n"
+            f"Call `get_context` again to check for completion."
+        )
 
 
 def _build_pipeline_status(session: Any, source_id: str) -> str | None:
@@ -1000,10 +1028,10 @@ def _get_context(output_dir: Path) -> str:
         return _NO_DATA_MSG.format(path=output_dir)
 
     try:
-        # If pipeline is still running, return progress instead of partial context
+        # If pipeline is running or failed, return status instead of partial context
         progress = _get_pipeline_progress(manager)
         if progress is not None:
-            return f"{progress}\nCall `get_context` again to check for completion."
+            return progress
 
         with manager.session_scope() as session:
             source = _get_pipeline_source(session)

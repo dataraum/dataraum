@@ -87,6 +87,14 @@ class TestAddSourceTool:
         assert "credential_instructions" in parsed
 
 
+class TestResolveSourcePath:
+    def test_nonexistent_dir_returns_none(self, tmp_path: Path) -> None:
+        from dataraum.mcp.server import _resolve_source_path
+
+        result = _resolve_source_path(tmp_path / "nonexistent")
+        assert result is None
+
+
 class TestGetQualityTool:
     def test_no_data_returns_error(self, tmp_path: Path) -> None:
         from dataraum.mcp.server import _get_quality
@@ -100,4 +108,11 @@ class TestGetQualityTool:
 
         # No database = early error, but proves the function accepts the param
         result = _get_quality(tmp_path / "nonexistent", include=["entropy"])
+        assert "No analyzed data" in result
+
+    def test_gate_param_delegates_to_zone_status(self, tmp_path: Path) -> None:
+        """When gate is set, _get_quality delegates to _get_zone_status."""
+        from dataraum.mcp.server import _get_quality
+
+        result = _get_quality(tmp_path / "nonexistent", gate="quality_review")
         assert "No analyzed data" in result

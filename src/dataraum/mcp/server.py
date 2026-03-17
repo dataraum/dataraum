@@ -97,10 +97,9 @@ def create_server(output_dir: Path | None = None) -> Server:
                 description=(
                     "Analyze CSV or Parquet data to build metadata context. "
                     "Must be called before other tools if no data has been analyzed yet. "
-                    "Takes a path to a file or directory. Runs the full 18-phase pipeline. "
-                    "This takes several minutes and returns immediately. "
-                    "With task support, progress updates are delivered automatically. "
-                    "Otherwise, call `get_context` to check progress and get results."
+                    "Use target_gate to stop at a quality gate for zone-by-zone review "
+                    "(returns inline gate status). Without target_gate, runs all phases. "
+                    "Use contract to select evaluation criteria (cached for subsequent calls)."
                 ),
                 inputSchema={
                     "type": "object",
@@ -112,6 +111,15 @@ def create_server(output_dir: Path | None = None) -> Server:
                         "name": {
                             "type": "string",
                             "description": "Optional: name for the data source",
+                        },
+                        "target_gate": {
+                            "type": "string",
+                            "enum": ["quality_review", "analysis_review"],
+                            "description": "Stop at this gate for review instead of running the full pipeline. Default: runs all phases.",
+                        },
+                        "contract": {
+                            "type": "string",
+                            "description": "Contract name (e.g. 'executive_dashboard'). Cached for subsequent calls.",
                         },
                     },
                     "required": [],
@@ -132,13 +140,19 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="get_quality",
                 description=(
-                    "Get a unified data quality assessment: entropy scores, contract compliance, "
-                    "and resolution actions. Returns all three by default, or specific sections "
-                    "via the 'include' parameter."
+                    "Get data quality information. Without gate: returns unified report "
+                    "(entropy scores, contract compliance, resolution actions). "
+                    "With gate: returns zone-specific status — violations, fix actions, "
+                    "and skipped detectors for a quality gate."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
+                        "gate": {
+                            "type": "string",
+                            "enum": ["quality_review", "analysis_review"],
+                            "description": "When set, returns zone-specific gate status instead of overall report. quality_review = Gate 1. analysis_review = Gate 2.",
+                        },
                         "contract_name": {
                             "type": "string",
                             "description": "Contract to evaluate (e.g., 'aggregation_safe', 'executive_dashboard'). Auto-detects if omitted.",
@@ -276,39 +290,14 @@ def create_server(output_dir: Path | None = None) -> Server:
                     },
                 },
             ),
-            # --- Zone status tool ---
-            Tool(
-                name="get_zone_status",
-                description=(
-                    "Get the current pipeline zone status: which gate was last measured, "
-                    "per-column scores, violations against the active contract, available "
-                    "fix actions, and skipped detectors. Use this after `analyze` completes "
-                    "to understand what needs fixing before calling `continue_pipeline`."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "required": ["gate"],
-                    "properties": {
-                        "gate": {
-                            "type": "string",
-                            "enum": ["quality_review", "analysis_review"],
-                            "description": "Which gate to inspect. quality_review = Gate 1 (Zone 1, after semantic). analysis_review = Gate 2 (Zone 2, after quality_summary).",
-                        },
-                        "contract_name": {
-                            "type": "string",
-                            "description": "Contract to evaluate against (e.g., 'aggregation_safe'). Auto-detects if omitted.",
-                        },
-                    },
-                },
-            ),
             # --- Continue pipeline tool ---
             Tool(
                 name="continue_pipeline",
                 description=(
-                    "Resume the pipeline from the current position to the next zone boundary. "
-                    "After inspecting gate scores with `get_zone_status` and applying fixes "
-                    "with `apply_fix`, call this to advance to the next zone. "
-                    "Skips already-completed phases automatically."
+                    "Advance the pipeline to the next zone boundary. "
+                    "Call after inspecting gate status and applying fixes. "
+                    "Returns inline gate status when stopping at a gate. "
+                    "Skips already-completed phases. Source path is auto-resolved."
                 ),
                 inputSchema={
                     "type": "object",
@@ -325,7 +314,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                         },
                         "source_path": {
                             "type": "string",
-                            "description": "Path to original source data (needed for pipeline re-runs).",
+                            "description": "Path to original source data. Auto-resolved from registered sources if omitted.",
                         },
                     },
                 },
@@ -335,11 +324,9 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="get_fix_proposal",
                 description=(
-                    "Start an agent-driven fix for a specific violation. "
-                    "The DataRaum document agent analyzes the violation, inspects the data, "
-                    "and generates targeted questions that YOU (the calling agent) should answer "
-                    "based on your understanding of the data. Returns questions plus context. "
-                    "After answering, call `submit_fix_answers` with your responses."
+                    "Get agent-driven fix suggestions for a specific violation. "
+                    "Returns ready-to-apply fix documents with per-target action plan. "
+                    "Pass the fix documents directly to `apply_fix`."
                 ),
                 inputSchema={
                     "type": "object",
@@ -355,44 +342,8 @@ def create_server(output_dir: Path | None = None) -> Server:
                             "description": (
                                 "The dimension path of the violation to fix "
                                 "(e.g., 'value.temporal.temporal_drift'). "
-                                "Get this from get_zone_status."
+                                "Get this from get_quality(gate=...)."
                             ),
-                        },
-                    },
-                },
-            ),
-            Tool(
-                name="submit_fix_answers",
-                description=(
-                    "Submit your answers to the document agent's questions (from get_fix_proposal). "
-                    "The agent interprets your answers, picks the best fix action, validates "
-                    "parameters, and applies the fix. Returns the interpretation and result. "
-                    "Use `query` or `get_context` first if you need more data to answer well."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "required": ["gate", "dimension", "answers"],
-                    "properties": {
-                        "gate": {
-                            "type": "string",
-                            "enum": ["quality_review", "analysis_review"],
-                            "description": "Same gate as the get_fix_proposal call.",
-                        },
-                        "dimension": {
-                            "type": "string",
-                            "description": "Same dimension as the get_fix_proposal call.",
-                        },
-                        "answers": {
-                            "type": "string",
-                            "description": (
-                                "Your answers to the questions, formatted as:\n"
-                                "Q: <question 1>\nA: <your answer>\n\n"
-                                "Q: <question 2>\nA: <your answer>"
-                            ),
-                        },
-                        "source_path": {
-                            "type": "string",
-                            "description": "Path to original source data (needed for pipeline re-runs after fix).",
                         },
                     },
                 },
@@ -401,10 +352,8 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="apply_fix",
                 description=(
-                    "Apply data quality fixes and re-run affected pipeline phases. "
-                    "Takes a list of fix documents (from get_quality actions), applies them, "
-                    "cascade-cleans affected phases, re-runs the pipeline, and returns "
-                    "before/after gate score deltas. This may take several minutes."
+                    "Apply fix documents and re-run affected pipeline phases. "
+                    "Returns before/after score deltas. Source path is auto-resolved."
                 ),
                 inputSchema={
                     "type": "object",
@@ -457,7 +406,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                         },
                         "source_path": {
                             "type": "string",
-                            "description": "Path to original source data (needed for pipeline re-runs)",
+                            "description": "Path to original source data. Auto-resolved from registered sources if omitted.",
                         },
                     },
                 },
@@ -473,6 +422,8 @@ def create_server(output_dir: Path | None = None) -> Server:
         if name == "analyze":
             path = arguments.get("path")
             source_name = arguments.get("name")
+            target_gate = arguments.get("target_gate")
+            contract = arguments.get("contract")
 
             # Validate path if provided
             if path:
@@ -490,7 +441,13 @@ def create_server(output_dir: Path | None = None) -> Server:
                 async def _work(task: ServerTaskContext) -> CallToolResult:
                     callback = _make_task_event_callback(task, loop)
                     text = await asyncio.to_thread(
-                        _analyze, output_dir, path, source_name, callback
+                        _analyze,
+                        output_dir,
+                        path,
+                        source_name,
+                        callback,
+                        target_gate,
+                        contract,
                     )
                     return CallToolResult(content=[TextContent(type="text", text=text)])
 
@@ -504,7 +461,9 @@ def create_server(output_dir: Path | None = None) -> Server:
                 )
             else:
                 # No task API: fire-and-forget, client polls get_context
-                bg = asyncio.create_task(_run_analyze_background(output_dir, path, source_name))
+                bg = asyncio.create_task(
+                    _run_analyze_background(output_dir, path, source_name, target_gate, contract)
+                )
                 _background_tasks.add(bg)
                 bg.add_done_callback(_background_tasks.discard)
                 result = (
@@ -517,6 +476,7 @@ def create_server(output_dir: Path | None = None) -> Server:
         elif name == "get_quality":
             result = _get_quality(
                 output_dir,
+                gate=arguments.get("gate"),
                 contract_name=arguments.get("contract_name"),
                 table_name=arguments.get("table_name"),
                 priority=arguments.get("priority"),
@@ -540,25 +500,11 @@ def create_server(output_dir: Path | None = None) -> Server:
             result = _discover_sources(output_dir, scan_path, recursive)
         elif name == "add_source":
             result = _add_source(output_dir, arguments)
-        elif name == "get_zone_status":
-            result = _get_zone_status(
-                output_dir,
-                gate=arguments["gate"],
-                contract_name=arguments.get("contract_name"),
-            )
         elif name == "get_fix_proposal":
             result = _get_fix_proposal(
                 output_dir,
                 gate=arguments["gate"],
                 dimension=arguments["dimension"],
-            )
-        elif name == "submit_fix_answers":
-            result = _submit_fix_answers(
-                output_dir,
-                gate=arguments["gate"],
-                dimension=arguments["dimension"],
-                answers=arguments["answers"],
-                source_path=arguments.get("source_path"),
             )
         elif name == "continue_pipeline":
             target_gate = arguments["target_gate"]
@@ -653,10 +599,14 @@ async def _run_analyze_background(
     output_dir: Path,
     path: str | None,
     source_name: str | None,
+    target_gate: str | None = None,
+    contract: str | None = None,
 ) -> None:
     """Run _analyze in a background thread, logging errors."""
     try:
-        await asyncio.to_thread(_analyze, output_dir, path, source_name, None)
+        await asyncio.to_thread(
+            _analyze, output_dir, path, source_name, None, target_gate, contract
+        )
     except Exception:
         _log.exception("Background pipeline failed for %s", path or "(registered sources)")
 
@@ -729,11 +679,243 @@ def _get_pipeline_progress(manager: Any) -> str | None:
         return f"Phase {completed_count} of {total_phases} complete.{current_detail}"
 
 
+def _build_pipeline_status(session: Any, source_id: str) -> str | None:
+    """Build a short pipeline status section for get_context.
+
+    Returns None if no pipeline runs exist.
+    """
+    from sqlalchemy import func, select
+
+    from dataraum.entropy.contracts import get_contracts
+    from dataraum.entropy.gate import assess_contracts
+    from dataraum.pipeline.db_models import PhaseLog, PipelineRun
+
+    # Latest completed run
+    run = session.execute(
+        select(PipelineRun)
+        .where(
+            PipelineRun.source_id == source_id,
+            PipelineRun.status.in_(["completed", "stopped"]),
+        )
+        .order_by(PipelineRun.started_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+    if not run:
+        return None
+
+    # Count completed phases
+    phase_count: int = (
+        session.execute(
+            select(func.count()).where(
+                PhaseLog.run_id == run.run_id,
+                PhaseLog.status == "completed",
+            )
+        ).scalar()
+        or 0
+    )
+
+    contract_name = run.config.get("contract") if run.config else None
+    target_phase = run.config.get("target_phase") if run.config else None
+
+    lines = ["## Pipeline Status"]
+
+    # Contract
+    if contract_name:
+        lines.append(f"- Contract: {contract_name}")
+
+    # Phases completed
+    lines.append(f"- Phases completed: {phase_count}")
+    if target_phase:
+        lines.append(f"- Stopped at: {target_phase}")
+
+    # Check gates — track state for next steps
+    contracts = get_contracts()
+    contract = None
+    if contract_name:
+        contract = contracts.get(contract_name)
+    if not contract:
+        contract = next(iter(contracts.values()), None) if contracts else None
+
+    gate_states: dict[str, int | None] = {}  # gate_phase -> violation count or None
+    for gate_phase, (zone_name, gate_label) in _GATE_ZONES.items():
+        gate_log = session.execute(
+            select(PhaseLog)
+            .where(
+                PhaseLog.source_id == source_id,
+                PhaseLog.phase_name == gate_phase,
+                PhaseLog.status == "completed",
+            )
+            .order_by(PhaseLog.completed_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+        if not gate_log or not gate_log.outputs:
+            lines.append(f"- {gate_label} ({zone_name}): not yet reached")
+            gate_states[gate_phase] = None
+            continue
+
+        scores = gate_log.entropy_scores or {}
+        if not scores:
+            lines.append(f"- {gate_label} ({zone_name}): measured, no scores")
+            gate_states[gate_phase] = 0
+            continue
+
+        # Count violations
+        n_violations = 0
+        if contract:
+            column_details = gate_log.outputs.get("gate_column_details", {})
+            col_evidence = gate_log.outputs.get("gate_column_evidence", {})
+            issues = assess_contracts(
+                scores,
+                contract.dimension_thresholds,
+                column_details,
+                gate_phase,
+                column_evidence=col_evidence,
+            )
+            n_violations = len(issues)
+
+        if n_violations > 0:
+            lines.append(f"- {gate_label} ({zone_name}): {n_violations} violations")
+        else:
+            lines.append(f"- {gate_label} ({zone_name}): passing")
+        gate_states[gate_phase] = n_violations
+
+    # Next steps — contextual guidance based on pipeline state
+    lines.append("")
+    lines.append("### Next Steps")
+
+    g1 = gate_states.get("quality_review")
+    g2 = gate_states.get("analysis_review")
+
+    if g1 is None:
+        # Pipeline hasn't reached Gate 1 yet
+        lines.append("- Run `analyze(path='...', target_gate='quality_review')` to start")
+    elif g1 and g1 > 0:
+        # Gate 1 has violations
+        lines.append('- Use `get_quality(gate="quality_review")` to see violation details')
+        lines.append(
+            '- Use `get_fix_proposal(gate="quality_review", dimension="...")` for fix suggestions'
+        )
+        lines.append("- Use `apply_fix(fixes=[...])` to apply fixes")
+        lines.append(
+            '- Use `continue_pipeline(target_gate="analysis_review")` to advance after fixing'
+        )
+    elif g2 is None:
+        # Gate 1 passing, Gate 2 not yet reached
+        lines.append(
+            '- Gate 1 is clean — use `continue_pipeline(target_gate="analysis_review")` to advance'
+        )
+    elif g2 and g2 > 0:
+        # Gate 2 has violations
+        lines.append('- Use `get_quality(gate="analysis_review")` to see violation details')
+        lines.append(
+            '- Use `get_fix_proposal(gate="analysis_review", dimension="...")` for fix suggestions'
+        )
+        lines.append("- Use `apply_fix(fixes=[...])` to apply fixes")
+        lines.append(
+            '- Use `continue_pipeline(target_gate="end")` to complete the pipeline after fixing'
+        )
+    else:
+        # Both gates passing
+        lines.append("- All gates passing — data is ready for use")
+        lines.append("- Use `query` to ask questions about the data")
+        lines.append("- Use `export` to export results")
+
+    return "\n".join(lines)
+
+
+def _build_contract_catalog(session: Any, table_ids: list[str]) -> str | None:
+    """Build a contract catalog section with live compliance status.
+
+    Shows all available contracts with descriptions and, when entropy data
+    is available, evaluates each one to show pass/fail and score.
+    """
+    from dataraum.entropy.contracts import (
+        evaluate_all_contracts,
+        find_best_contract,
+        list_contracts,
+    )
+
+    contracts = list_contracts()
+    if not contracts:
+        return None
+
+    # Try to get column summaries for live evaluation
+    column_summaries = None
+    try:
+        from dataraum.entropy.views.network_context import build_for_network
+        from dataraum.entropy.views.query_context import network_to_column_summaries
+
+        network_context = build_for_network(session, table_ids)
+        if network_context and network_context.total_columns > 0:
+            column_summaries = network_to_column_summaries(network_context)
+    except Exception:
+        pass
+
+    lines = ["## Available Contracts"]
+    lines.append("")
+
+    if column_summaries:
+        evaluations = evaluate_all_contracts(column_summaries)
+        best_name, _ = find_best_contract(column_summaries)
+
+        lines.append("| Contract | Description | Threshold | Score | Status |")
+        lines.append("|----------|-------------|-----------|-------|--------|")
+
+        for c in contracts:
+            ev = evaluations.get(c["name"])
+            if ev:
+                status = "PASS" if ev.is_compliant else "FAIL"
+                if c["name"] == best_name:
+                    status += " (strictest passing)"
+                score = f"{ev.overall_score:.2f}"
+            else:
+                status = "?"
+                score = "—"
+            lines.append(
+                f"| `{c['name']}` | {c['description']} "
+                f"| {c['overall_threshold']} | {score} | {status} |"
+            )
+
+        lines.append("")
+        if best_name:
+            lines.append(
+                f"**Recommended:** `{best_name}` — strictest contract your data currently passes."
+            )
+        else:
+            lines.append(
+                "**No contracts pass.** Use `get_quality` to see violations, "
+                "then `get_fix_proposal` to address them."
+            )
+    else:
+        lines.append(
+            "Compliance status available after pipeline runs entropy phase. "
+            "Pass `contract` to `analyze` to select one."
+        )
+        lines.append("")
+        for c in contracts:
+            lines.append(
+                f"- **{c['display_name']}** (`{c['name']}`, "
+                f"threshold: {c['overall_threshold']}): {c['description']}"
+            )
+
+    lines.append("")
+    lines.append(
+        "Use `analyze(contract='name')` or `get_quality(contract_name='name')` "
+        "to evaluate against a specific contract."
+    )
+
+    return "\n".join(lines)
+
+
 def _analyze(
     output_dir: Path,
     path: str | None = None,
     name: str | None = None,
     event_callback: EventCallback | None = None,
+    target_gate: str | None = None,
+    contract: str | None = None,
 ) -> str:
     """Run the pipeline on a data source.
 
@@ -742,9 +924,11 @@ def _analyze(
         path: Path to CSV/Parquet file or directory. When None, uses registered sources.
         name: Optional source name
         event_callback: Optional callback for pipeline events
+        target_gate: Optional gate phase to stop at (e.g. 'quality_review').
+        contract: Optional contract name to use for evaluation.
 
     Returns:
-        Formatted pipeline result summary
+        Formatted pipeline result summary, optionally with inline gate status.
     """
     from dataraum.pipeline.runner import RunConfig, run
 
@@ -754,11 +938,16 @@ def _analyze(
         if not source_path.exists():
             return f"Error: Path not found: {path}"
 
+    # Fall back to cached contract from prior run
+    resolved_contract = contract or _get_cached_contract(output_dir)
+
     config = RunConfig(
         source_path=source_path,
         output_dir=output_dir,
         source_name=name,
         event_callback=event_callback,
+        target_phase=target_gate,
+        contract=resolved_contract,
     )
 
     result = run(config)
@@ -766,7 +955,14 @@ def _analyze(
     if not result.success or not result.value:
         return f"Error: Pipeline failed: {result.error}"
 
-    return format_pipeline_result(result.value)
+    text = format_pipeline_result(result.value)
+
+    # When stopping at a gate, append inline zone status
+    if target_gate:
+        zone_status = _get_zone_status(output_dir, gate=target_gate, contract_name=contract)
+        text += "\n\n---\n\n" + zone_status
+
+    return text
 
 
 def _get_context(output_dir: Path) -> str:
@@ -820,6 +1016,22 @@ def _get_context(output_dir: Path) -> str:
             formatted = format_context_for_prompt(context)
             result = format_context_for_llm(source.name, formatted)
 
+            # Append pipeline status summary
+            try:
+                status_section = _build_pipeline_status(session, source.source_id)
+                if status_section:
+                    result += "\n\n" + status_section
+            except Exception:
+                pass  # Pipeline status is non-critical
+
+            # Append contract catalog with live compliance status
+            try:
+                contract_section = _build_contract_catalog(session, table_ids)
+                if contract_section:
+                    result += "\n\n" + contract_section
+            except Exception:
+                pass  # Contract catalog is non-critical
+
             # Append snippet knowledge base stats if available
             try:
                 from dataraum.query.snippet_library import SnippetLibrary
@@ -849,15 +1061,24 @@ def _get_context(output_dir: Path) -> str:
 
 def _get_quality(
     output_dir: Path,
+    gate: str | None = None,
     contract_name: str | None = None,
     table_name: str | None = None,
     priority: str | None = None,
     include: list[str] | None = None,
 ) -> str:
-    """Get unified data quality report: entropy + contract + actions.
+    """Get unified data quality report or zone-specific gate status.
 
-    Opens a single connection and assembles all requested sections.
+    When ``gate`` is set, delegates to ``_get_zone_status`` for per-gate
+    violations, fix actions, and skipped detectors.  Otherwise assembles
+    the overall entropy + contract + actions report.
     """
+    # Fall back to cached contract from prior run
+    resolved_contract = contract_name or _get_cached_contract(output_dir)
+
+    if gate:
+        return _get_zone_status(output_dir, gate=gate, contract_name=resolved_contract)
+
     from sqlalchemy import select
 
     from dataraum.core.connections import get_manager_for_directory
@@ -915,7 +1136,7 @@ def _get_quality(
 
             # --- Contract section ---
             if "contract" in sections_to_include:
-                sections["contract"] = _build_contract_section(column_summaries, contract_name)
+                sections["contract"] = _build_contract_section(column_summaries, resolved_contract)
 
             # --- Actions section ---
             if "actions" in sections_to_include:
@@ -1078,6 +1299,61 @@ def _query(
             return format_query_result(result.value)
     finally:
         manager.close()
+
+
+def _get_cached_contract(output_dir: Path) -> str | None:
+    """Get the contract name from the latest pipeline run config.
+
+    Returns None if no runs exist or no contract was specified.
+    """
+    from sqlalchemy import select
+
+    from dataraum.core.connections import get_manager_for_directory
+    from dataraum.pipeline.db_models import PipelineRun
+
+    try:
+        manager = get_manager_for_directory(output_dir)
+    except FileNotFoundError:
+        return None
+
+    try:
+        with manager.session_scope() as session:
+            run = session.execute(
+                select(PipelineRun).order_by(PipelineRun.started_at.desc()).limit(1)
+            ).scalar_one_or_none()
+            if run and run.config:
+                return run.config.get("contract")
+    finally:
+        manager.close()
+
+    return None
+
+
+def _resolve_source_path(output_dir: Path) -> str | None:
+    """Resolve the source_path from the database if available.
+
+    Queries the first registered Source and returns its connection_config path.
+    Returns None if no source or no path is found.
+    """
+    from sqlalchemy import select
+
+    from dataraum.core.connections import get_manager_for_directory
+    from dataraum.storage import Source
+
+    try:
+        manager = get_manager_for_directory(output_dir)
+    except FileNotFoundError:
+        return None
+
+    try:
+        with manager.session_scope() as session:
+            source = session.execute(select(Source)).scalar_one_or_none()
+            if source and source.connection_config:
+                return source.connection_config.get("path")
+    finally:
+        manager.close()
+
+    return None
 
 
 def _get_or_create_manager(output_dir: Path) -> Any:
@@ -1285,7 +1561,7 @@ def _get_zone_status(
                 return (
                     f"No gate measurement found for `{gate_phase}`. "
                     f"The pipeline may not have reached this gate yet.\n\n"
-                    f"Run `analyze` first, then call `get_zone_status(gate='{gate_phase}')`."
+                    f"Run `analyze` first, then call `get_quality(gate='{gate_phase}')`."
                 )
 
             outputs = log.outputs
@@ -1659,8 +1935,8 @@ def _format_batch_proposal(
     if plan.follow_up_questions:
         lines.append("## Follow-up Questions")
         lines.append(
-            "These are optional — answer them via `submit_fix_answers` if you want "
-            "to add context (e.g., reason for acceptance).\n"
+            "These are optional — include the answers in the `description` field "
+            "of the fix documents if you want to add context (e.g., reason for acceptance).\n"
         )
         for i, q in enumerate(plan.follow_up_questions, 1):
             lines.append(f"**{i}. {q.question}**")
@@ -1677,7 +1953,7 @@ def _format_batch_proposal(
     lines.append("")
     lines.append("## Next Steps")
     lines.append("- Review the plan above, then call `apply_fix(fixes=[...])` with the JSON above")
-    lines.append(f'- Or call `get_zone_status(gate="{gate}")` to re-check the current state first')
+    lines.append(f'- Or call `get_quality(gate="{gate}")` to re-check the current state first')
 
     return "\n".join(lines)
 
@@ -1729,167 +2005,6 @@ def _build_fix_doc_from_plan_item(
     return fix_doc
 
 
-def _submit_fix_answers(
-    output_dir: Path,
-    gate: str,
-    dimension: str,
-    answers: str,
-    source_path: str | None = None,
-) -> str:
-    """Interpret agent answers and return ready-to-use fix documents.
-
-    Re-generates the batch plan and threads user answers (e.g., acceptance
-    reason) into all plan items, returning FixDocuments.
-    """
-    from sqlalchemy import select
-
-    from dataraum.core.connections import get_manager_for_directory
-    from dataraum.entropy.detectors.base import get_default_registry
-    from dataraum.pipeline.db_models import PhaseLog
-    from dataraum.storage import Source
-
-    try:
-        manager = get_manager_for_directory(output_dir)
-    except FileNotFoundError:
-        return _NO_DATA_MSG.format(path=output_dir)
-
-    try:
-        with manager.session_scope() as session:
-            source = session.execute(select(Source)).scalar_one_or_none()
-            if not source:
-                return "Error: No sources found."
-
-            log = session.execute(
-                select(PhaseLog)
-                .where(
-                    PhaseLog.source_id == source.source_id,
-                    PhaseLog.phase_name == gate,
-                    PhaseLog.status == "completed",
-                )
-                .order_by(PhaseLog.completed_at.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-
-            if not log or not log.outputs:
-                return f"No gate measurement found for `{gate}`."
-
-            outputs = log.outputs
-            scores = log.entropy_scores or {}
-
-            # Rebuild context (same as get_fix_proposal)
-            context = _build_mcp_gate_context(
-                session,
-                source.source_id,
-                dimension,
-                gate,
-                outputs,
-                scores,
-            )
-
-            column_details = outputs.get("gate_column_details", {})
-            table_details = outputs.get("gate_table_details", {})
-            all_col_scores = {
-                **column_details.get(dimension, {}),
-                **table_details.get(dimension, {}),
-            }
-
-            from dataraum.cli.gate_handler import _create_document_agent
-
-            agent = _create_document_agent()
-            registry = get_default_registry()
-            id_map = outputs.get("detector_id_map", {})
-
-            return _submit_batch_answers(
-                agent,
-                context,
-                dimension,
-                gate,
-                outputs,
-                all_col_scores,
-                answers,
-                registry,
-                id_map,
-            )
-    finally:
-        manager.close()
-
-
-def _submit_batch_answers(
-    agent: Any,
-    context: str,
-    dimension: str,
-    gate: str,
-    outputs: dict[str, Any],
-    col_scores: dict[str, float],
-    answers: str,
-    registry: Any,
-    id_map: dict[str, str],
-) -> str:
-    """Handle batch answer submission for multi-target dimensions.
-
-    Re-generates the batch plan, threads user answers into parameters,
-    and returns multiple FixDocuments.
-    """
-    import json
-
-    plan_result = agent.generate_batch_plan(context)
-    if not plan_result.success:
-        return f"Error re-generating batch plan: {plan_result.error}"
-
-    plan = plan_result.unwrap()
-    if not plan.items:
-        return "No actions proposed."
-
-    # Extract reason from answers (most common follow-up parameter)
-    reason = _extract_reason_from_answers(answers)
-
-    fix_docs: list[dict[str, Any]] = []
-    for item in plan.items:
-        if reason and "reason" not in item.parameters:
-            item.parameters["reason"] = reason
-        fix_doc = _build_fix_doc_from_plan_item(item, dimension, registry, id_map, col_scores)
-        if fix_doc:
-            fix_docs.append(fix_doc)
-
-    lines = [
-        "## Batch Fix Interpretation",
-        "",
-        f"**Plan:** {plan.summary}",
-        f"**Items:** {len(fix_docs)} fixes",
-        "",
-        "## Ready-to-Apply Fix Documents",
-        "",
-        f"Pass these {len(fix_docs)} fixes to `apply_fix` to apply them all at once:",
-        "```json",
-        json.dumps(fix_docs, indent=2, default=str),
-        "```",
-        "",
-        "## Next Steps",
-        "- Call `apply_fix(fixes=[...])` with the JSON above",
-        f'- Or call `get_zone_status(gate="{gate}")` to re-check first',
-    ]
-    return "\n".join(lines)
-
-
-def _extract_reason_from_answers(answers: str) -> str:
-    """Extract a reason string from formatted Q&A answers.
-
-    Looks for an answer to a question containing "reason" or "why".
-    """
-    current_q = ""
-    for line in answers.split("\n"):
-        stripped = line.strip()
-        if stripped.startswith("Q:"):
-            current_q = stripped.lower()
-        elif stripped.startswith("A:") and ("reason" in current_q or "why" in current_q):
-            return stripped[2:].strip()
-    # Fallback: if only one Q&A pair, use the answer
-    lines = [ln.strip() for ln in answers.split("\n") if ln.strip().startswith("A:")]
-    if len(lines) == 1:
-        return lines[0][2:].strip()
-    return ""
-
-
 def _continue_pipeline(
     output_dir: Path,
     target_gate: str,
@@ -1901,7 +2016,7 @@ def _continue_pipeline(
     Args:
         output_dir: Pipeline output directory (must already exist from prior run).
         target_gate: Where to stop — 'analysis_review' (Gate 2) or 'end' (full pipeline).
-        source_path: Path to original source data. Needed if pipeline re-run requires it.
+        source_path: Path to original source data. Auto-resolved from DB if omitted.
         event_callback: Optional callback for progress updates.
     """
     from dataraum.pipeline.runner import RunConfig, run
@@ -1909,7 +2024,9 @@ def _continue_pipeline(
     # Map target_gate to target_phase (None = run to end)
     target_phase: str | None = None if target_gate == "end" else target_gate
 
-    sp: Path | None = Path(source_path) if source_path else None
+    # Auto-resolve source_path if not provided
+    resolved = source_path or _resolve_source_path(output_dir)
+    sp: Path | None = Path(resolved) if resolved else None
 
     config = RunConfig(
         source_path=sp,
@@ -1923,7 +2040,14 @@ def _continue_pipeline(
     if not result.success or not result.value:
         return f"Error: Pipeline failed: {result.error}"
 
-    return format_pipeline_result(result.value)
+    text = format_pipeline_result(result.value)
+
+    # Append inline zone status when stopping at a gate
+    if target_gate != "end":
+        zone_status = _get_zone_status(output_dir, gate=target_gate)
+        text += "\n\n---\n\n" + zone_status
+
+    return text
 
 
 def _export(
@@ -2036,10 +2160,13 @@ def _apply_fix(
         for f in fixes
     ]
 
+    # Auto-resolve source_path if not provided
+    resolved = source_path or _resolve_source_path(output_dir)
+
     result = apply_fixes(
         output_dir=output_dir,
         fix_documents=fix_documents,
-        source_path=Path(source_path) if source_path else None,
+        source_path=Path(resolved) if resolved else None,
     )
 
     if not result.success:

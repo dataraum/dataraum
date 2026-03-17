@@ -309,7 +309,7 @@ Check [Linear](https://linear.app/dataraum) for active issues, plans, and projec
 - **Pre-computed context** — AI receives a pre-assembled `ContextDocument` with all metadata already computed and interpreted through the selected ontology. No runtime discovery.
 - **Ontologies as configuration** — Domain ontologies (financial_reporting, marketing, etc.) are YAML configs that map column patterns to business terms, define computable metrics, and guide semantic interpretation.
 - **Zone-by-zone quality gates** — Pipeline pauses at Gate 1 (after semantic) and Gate 2 (after quality_summary). Agents inspect violations, apply fixes, and advance zone by zone.
-- **MCP tools** — 5 core + 5 quality/fix + 2 source management (12 total). See `src/dataraum/mcp/server.py`.
+- **MCP tools** — 5 core + 3 quality/fix + 2 source management (10 total). See `src/dataraum/mcp/server.py`.
 - **Free-threading** — Python 3.14t with GIL disabled for true CPU parallelism in pipeline phases.
 
 ### Module Structure

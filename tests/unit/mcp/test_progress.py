@@ -217,6 +217,36 @@ class TestAnalyzeFunction:
         run_config = mock_run.call_args[0][0]
         assert run_config.event_callback is cb
 
+    def test_target_gate_and_contract_forwarded(self):
+        """target_gate and contract are passed through to RunConfig."""
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.value = MagicMock()
+
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
+            tmp_path = f.name
+
+        try:
+            with (
+                patch("dataraum.pipeline.runner.run", return_value=mock_result) as mock_run,
+                patch("dataraum.mcp.server.format_pipeline_result", return_value="ok"),
+                patch("dataraum.mcp.server._get_zone_status", return_value="zone status"),
+            ):
+                result = _analyze(
+                    output_dir=Path("/tmp/test_output"),
+                    path=tmp_path,
+                    target_gate="quality_review",
+                    contract="executive_dashboard",
+                )
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+        run_config = mock_run.call_args[0][0]
+        assert run_config.target_phase == "quality_review"
+        assert run_config.contract == "executive_dashboard"
+        # Zone status should be appended when target_gate is set
+        assert "zone status" in result
+
 
 class TestCreateServer:
     """Tests for server configuration."""

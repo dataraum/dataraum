@@ -204,65 +204,6 @@ class QueryResult:
             "error": self.error,
         }
 
-    def format_cli_response(self) -> str:
-        """Format result for CLI display."""
-        lines: list[str] = []
-
-        # Confidence header
-        emoji = self.confidence_level.emoji
-        label = self.confidence_level.label
-        contract_name = self.contract or "default"
-        lines.append(f"{emoji} Data Quality: {label} for {contract_name}")
-
-        if self.entropy_action:
-            action_labels = {
-                "answer_confidently": "Confident",
-                "answer_with_assumptions": "With Assumptions",
-                "ask_or_caveat": "Review Carefully",
-                "refuse": "Insufficient Data",
-            }
-            action_label = action_labels.get(self.entropy_action, self.entropy_action)
-            lines.append(f"   Entropy Assessment: {action_label}")
-
-        lines.append("")
-
-        if not self.success:
-            lines.append(f"Error: {self.error}")
-            return "\n".join(lines)
-
-        # Answer
-        lines.append(self.answer)
-
-        # Show data table if available
-        if self.data and self.columns:
-            lines.append("")
-            # Simple table formatting
-            if len(self.data) <= 20:
-                # Header
-                header = " | ".join(self.columns)
-                lines.append(header)
-                lines.append("-" * len(header))
-                # Rows
-                for row in self.data:
-                    row_str = " | ".join(str(row.get(c, "")) for c in self.columns)
-                    lines.append(row_str)
-
-        # Assumptions
-        if self.assumptions:
-            lines.append("")
-            lines.append("Assumptions:")
-            for a in self.assumptions:
-                lines.append(f"  - {a.assumption} ({a.basis.value})")
-
-        # Validation notes
-        if self.validation_notes:
-            lines.append("")
-            lines.append("Notes:")
-            for note in self.validation_notes:
-                lines.append(f"  - {note}")
-
-        return "\n".join(lines)
-
 
 def assumption_output_to_query_assumption(
     output: QueryAssumptionOutput,

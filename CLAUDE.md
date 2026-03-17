@@ -308,7 +308,8 @@ Check [Linear](https://linear.app/dataraum) for active issues, plans, and projec
 - **Quarantine pattern** — Failed type casts go to quarantine tables for review, not pipeline failure.
 - **Pre-computed context** — AI receives a pre-assembled `ContextDocument` with all metadata already computed and interpreted through the selected ontology. No runtime discovery.
 - **Ontologies as configuration** — Domain ontologies (financial_reporting, marketing, etc.) are YAML configs that map column patterns to business terms, define computable metrics, and guide semantic interpretation.
-- **Minimal AI tools** — 4 core MCP tools + 2 source management tools (6 total). See `src/dataraum/mcp/server.py`.
+- **Zone-by-zone quality gates** — Pipeline pauses at Gate 1 (after semantic) and Gate 2 (after quality_summary). Agents inspect violations, apply fixes, and advance zone by zone.
+- **MCP tools** — 5 core + 5 quality/fix + 2 source management (12 total). See `src/dataraum/mcp/server.py`.
 - **Free-threading** — Python 3.14t with GIL disabled for true CPU parallelism in pipeline phases.
 
 ### Module Structure
@@ -319,13 +320,13 @@ src/dataraum/
 │                   #   semantic, temporal, slicing, cycles, validation, quality_summary)
 ├── entropy/        # Uncertainty quantification (detectors, context, interpretation)
 ├── graphs/         # Calculation graphs, context assembly
-├── pipeline/       # Pipeline orchestrator (19 phases), gates, events
+├── pipeline/       # Pipeline orchestrator (21 phases), gates, fixes
 ├── sources/        # Data source loaders (CSV, Parquet)
 ├── storage/        # SQLAlchemy models, migrations
 ├── llm/            # LLM providers and prompts
 ├── core/           # Config, connections, utilities
 ├── cli/            # Typer CLI + Textual TUI
-└── mcp/            # MCP server (6 tools)
+└── mcp/            # MCP server (12 tools)
 ```
 
 SQLAlchemy DB models are co-located with business logic in `db_models.py` files within each module.

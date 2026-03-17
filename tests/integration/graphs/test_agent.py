@@ -206,6 +206,7 @@ class TestGraphAgentExecution:
         assert "id" in col_names
         assert "amount" in col_names
 
+
 class TestGraphAgentIntegration:
     """Integration tests for GraphAgent with mocked LLM."""
 

@@ -23,6 +23,7 @@ phases:
   - slice_analysis
   - temporal_slice_analysis
   - quality_summary
+  - analysis_review
   - entropy
   - entropy_interpretation
   - business_cycles

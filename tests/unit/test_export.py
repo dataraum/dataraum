@@ -173,8 +173,11 @@ class TestExportSql:
     def test_json_sidecar(self, tmp_path: Path) -> None:
         conn = self._mock_conn(["x"], [(1,)])
         path = export_sql(
-            "SELECT x FROM t", conn, tmp_path / "out.json",
-            fmt="json", description="Test export",
+            "SELECT x FROM t",
+            conn,
+            tmp_path / "out.json",
+            fmt="json",
+            description="Test export",
         )
 
         sidecar = path.with_suffix(".json.meta.json")

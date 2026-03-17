@@ -198,6 +198,7 @@ class PipelineScheduler:
                 # all_scores accumulates across the entire run.
                 pending_issues: list[ExitCheckIssue] = []
                 column_details: dict[str, dict[str, float]] = {}
+                column_evidence: dict[str, dict[str, dict[str, Any]]] = {}
                 resolution_actions: dict[str, set[str]] = {}
                 wave_skipped: list[dict[str, str]] = []
                 last_gate_phase: str = ""
@@ -214,6 +215,7 @@ class PipelineScheduler:
                         )
                         all_scores.update(gate_result.scores)
                         column_details.update(gate_result.column_details)
+                        column_evidence.update(gate_result.column_evidence)
                         for path, acts in gate_result.resolution_actions.items():
                             resolution_actions.setdefault(path, set()).update(acts)
                         # Collect skipped detectors (deduplicate by detector_id)
@@ -238,6 +240,8 @@ class PipelineScheduler:
                         total=total,
                         scores=dict(all_scores),
                         skipped_detectors=wave_skipped,
+                        column_details=dict(column_details),
+                        column_evidence=dict(column_evidence),
                     )
                     issues = assess_contracts(
                         dict(all_scores),
@@ -245,6 +249,7 @@ class PipelineScheduler:
                         column_details,
                         last_gate_phase,
                         resolution_actions=resolution_actions,
+                        column_evidence=column_evidence,
                     )
                     pending_issues.extend(issues)
 
@@ -261,6 +266,7 @@ class PipelineScheduler:
                         violations=violations,
                         scores=dict(all_scores),
                         column_details=dict(column_details),
+                        column_evidence=dict(column_evidence),
                         available_fixes=fixes,
                     )
                     if resolution is not None:
@@ -718,10 +724,12 @@ class PipelineScheduler:
         dependents = self._transitive_dependents(phase_name)
         for dep_name in dependents:
             dep_status = self._state[dep_name]
-            if dep_status == PhaseStatus.COMPLETED:
+            if dep_status in (PhaseStatus.COMPLETED, PhaseStatus.SKIPPED):
+                # Clean outputs so the phase can't skip via should_skip()
+                # when upstream data changed.
                 cleanup_phase(dep_name, self.source_id, self.session, self.duckdb_conn)
                 self._state[dep_name] = PhaseStatus.PENDING
-            elif dep_status in (PhaseStatus.SKIPPED, PhaseStatus.FAILED):
+            elif dep_status == PhaseStatus.FAILED:
                 self._state[dep_name] = PhaseStatus.PENDING
 
     def _transitive_dependents(self, phase_name: str) -> list[str]:

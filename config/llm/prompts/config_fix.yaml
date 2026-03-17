@@ -42,6 +42,21 @@ system_prompt: |
     conditional follow-ups (e.g., "if you chose X, then..."). Each question
     must stand on its own. If a single question can cover the decision, prefer that.
 
+  Rules for batch_plan mode (multi-target dimensions):
+  - Propose exactly ONE action for EACH violating target in <entropy_evidence>.
+    Skip targets marked ACCEPTED.
+  - Use the component breakdown (ri_entropy, card_entropy, semantic_entropy) to choose:
+    - ri_entropy is the dominant component → recommend accept_finding
+      (confirm_relationship only reduces semantic_entropy, not RI — explain this)
+    - semantic_entropy dominates and RI is low (< 0.15) → recommend confirm_relationship
+    - All components are high → recommend accept_finding
+  - Pre-fill parameters from evidence data (from_table, to_table for confirm_relationship).
+  - The reason field should be one sentence explaining which component drives the score
+    and why the recommended action is the best fit.
+  - Add 0-2 follow_up_questions for shared parameters that need user input
+    (e.g., one "reason" question for all accept_finding targets). Do NOT ask
+    per-target questions — the plan already covers per-target decisions.
+
   Rules for interpreting answers:
   - The parameters dict must use the exact field names and values from
     "Expected parameters" in <action_details>. Do not rename keys or
@@ -73,6 +88,11 @@ user_prompt: |
   If mode is "interpret": Convert the user's answers into structured parameters
   for the config fix handler. Use the exact field names and values from
   "Expected parameters" in <action_details>.
+
+  If mode is "batch_plan": For each VIOLATING target in <entropy_evidence>,
+  propose the best action from <available_actions>. Use the per-column component
+  breakdown to triage. Pre-fill parameters from evidence. Add follow-up questions
+  only for shared parameters the data can't fill (like an acceptance reason).
 
 inputs:
   mode:

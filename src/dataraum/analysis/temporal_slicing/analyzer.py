@@ -224,6 +224,43 @@ def _build_drift_evidence(
     )
 
 
+def _get_numeric_stats(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    col_name: str,
+    time_column: str,
+    start: date,
+    end: date,
+) -> dict[str, float] | None:
+    """Get numeric statistics for a column in a time period."""
+    sql = f"""
+        SELECT
+            COUNT(*) AS cnt,
+            AVG(CAST("{col_name}" AS DOUBLE)) AS mean_val,
+            STDDEV_POP(CAST("{col_name}" AS DOUBLE)) AS stddev_val,
+            MEDIAN(CAST("{col_name}" AS DOUBLE)) AS median_val
+        FROM "{table_name}"
+        WHERE CAST("{time_column}" AS DATE) >= ?
+          AND CAST("{time_column}" AS DATE) < ?
+          AND "{col_name}" IS NOT NULL
+    """
+    row = duckdb_conn.execute(sql, [start, end]).fetchone()
+    if not row or row[0] == 0:
+        return None
+
+    return {
+        "count": float(row[0]),
+        "mean": float(row[1]) if row[1] is not None else 0.0,
+        "stddev": float(row[2]) if row[2] is not None else 0.0,
+        "median": float(row[3]) if row[3] is not None else 0.0,
+    }
+
+
+_NUMERIC_TYPES = frozenset(
+    {"DECIMAL", "NUMERIC", "FLOAT", "DOUBLE", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "HUGEINT"}
+)
+
+
 def analyze_column_drift(
     slice_table_name: str,
     time_column: str,
@@ -231,7 +268,10 @@ def analyze_column_drift(
     session: Session,
     config: TemporalSliceConfig,
 ) -> Result[list[ColumnDriftResult]]:
-    """Analyze distribution drift for categorical columns in a slice table.
+    """Analyze distribution drift for columns in a slice table.
+
+    Categorical columns (VARCHAR/TEXT/STRING) use Jensen-Shannon divergence.
+    Numeric columns (DECIMAL/FLOAT/INTEGER/etc.) use relative mean shift.
 
     Args:
         slice_table_name: Name of the slice table in DuckDB
@@ -241,7 +281,7 @@ def analyze_column_drift(
         config: Temporal analysis configuration
 
     Returns:
-        Result containing list of ColumnDriftResult, one per categorical column
+        Result containing list of ColumnDriftResult, one per analyzed column
     """
     try:
         logger.debug(
@@ -262,7 +302,14 @@ def analyze_column_drift(
             Column.table_id == table.table_id,
             Column.resolved_type.in_(["VARCHAR", "TEXT", "STRING"]),
         )
-        columns = list(session.execute(col_stmt).scalars().all())
+        categorical_columns = list(session.execute(col_stmt).scalars().all())
+
+        # Get numeric columns
+        numeric_col_stmt = select(Column).where(
+            Column.table_id == table.table_id,
+            Column.resolved_type.in_(list(_NUMERIC_TYPES)),
+        )
+        numeric_columns = list(session.execute(numeric_col_stmt).scalars().all())
 
         # Generate periods
         periods = _generate_periods(config)
@@ -271,7 +318,8 @@ def analyze_column_drift(
 
         results: list[ColumnDriftResult] = []
 
-        for col in columns:
+        # --- Categorical drift (JS divergence) ---
+        for col in categorical_columns:
             col_name = col.column_name
             if col_name == time_column:
                 continue
@@ -294,7 +342,7 @@ def analyze_column_drift(
             per_period: list[tuple[str, float, dict[str, float], dict[str, float]]] = []
 
             for i in range(1, len(distributions)):
-                prev_label, prev_dist = distributions[i - 1]
+                _, prev_dist = distributions[i - 1]
                 curr_label, curr_dist = distributions[i]
                 js_div = _jensen_shannon_divergence(prev_dist, curr_dist)
                 js_values.append(js_div)
@@ -315,6 +363,88 @@ def analyze_column_drift(
                     max_js_divergence=round(max_js, 6),
                     mean_js_divergence=round(mean_js, 6),
                     periods_analyzed=len(js_values),
+                    periods_with_drift=periods_with_drift,
+                    drift_evidence=evidence,
+                )
+            )
+
+        # --- Numeric drift (relative mean shift) ---
+        for col in numeric_columns:
+            col_name = col.column_name
+            if col_name == time_column:
+                continue
+
+            stats_list: list[tuple[str, dict[str, float]]] = []
+            for start, end, label in periods:
+                stats = _get_numeric_stats(
+                    duckdb_conn, slice_table_name, col_name, time_column, start, end
+                )
+                if stats:
+                    stats_list.append((label, stats))
+
+            if len(stats_list) < 2:
+                continue
+
+            # Compute relative mean shift between consecutive periods
+            shift_values: list[float] = []
+            worst_shift = 0.0
+            worst_period = stats_list[0][0]
+
+            for i in range(1, len(stats_list)):
+                prev_label, prev_stats = stats_list[i - 1]
+                curr_label, curr_stats = stats_list[i]
+
+                prev_mean = prev_stats["mean"]
+                curr_mean = curr_stats["mean"]
+
+                # Relative shift: |curr - prev| / max(|prev|, |curr|, 1)
+                # Using max of both prevents division-by-zero and handles
+                # sign changes gracefully
+                denominator = max(abs(prev_mean), abs(curr_mean), 1.0)
+                shift = abs(curr_mean - prev_mean) / denominator
+                shift_values.append(shift)
+
+                if shift > worst_shift:
+                    worst_shift = shift
+                    worst_period = curr_label
+
+            max_shift = max(shift_values)
+            mean_shift = sum(shift_values) / len(shift_values)
+
+            # Use same drift_threshold semantics: a 10% mean shift is
+            # analogous to a 0.1 JS divergence in terms of "something changed"
+            periods_with_drift = sum(1 for s in shift_values if s > config.drift_threshold)
+
+            # Map to JS-equivalent scale for consistent detector scoring.
+            # A 35% mean shift (our injection) should produce a strong signal.
+            # Scale: shift 0.1 → js_equiv 0.1, shift 0.3 → js_equiv 0.3 (1:1)
+            # This keeps the detector's existing piecewise scoring working.
+            js_equiv_max = min(max_shift, math.log(2))  # cap at ln(2)
+            js_equiv_mean = min(mean_shift, math.log(2))
+
+            evidence = None
+            if max_shift > config.drift_threshold:
+                evidence = DriftEvidence(
+                    worst_period=worst_period,
+                    worst_js=round(max_shift, 4),
+                    top_shifts=[],
+                    emerged_categories=[],
+                    vanished_categories=[],
+                    change_points=[
+                        stats_list[i + 1][0]
+                        for i, s in enumerate(shift_values)
+                        if i > 0
+                        and s > config.drift_threshold
+                        and shift_values[i - 1] <= config.drift_threshold
+                    ],
+                )
+
+            results.append(
+                ColumnDriftResult(
+                    column_name=col_name,
+                    max_js_divergence=round(js_equiv_max, 6),
+                    mean_js_divergence=round(js_equiv_mean, 6),
+                    periods_analyzed=len(shift_values),
                     periods_with_drift=periods_with_drift,
                     drift_evidence=evidence,
                 )

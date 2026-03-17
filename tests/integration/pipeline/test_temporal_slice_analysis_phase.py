@@ -428,13 +428,17 @@ class TestTemporalSliceAnalysisPhase:
         result = phase.run(ctx)
 
         # Phase should succeed — no errors from table B's VARCHAR column
-        assert result.status == PhaseStatus.COMPLETED, f"Phase failed: {result.error}, outputs: {result.outputs}"
+        assert result.status == PhaseStatus.COMPLETED, (
+            f"Phase failed: {result.error}, outputs: {result.outputs}"
+        )
         assert result.error is None
         errors = result.outputs.get("errors", [])
         assert not errors, f"Unexpected errors: {errors}"
 
         # Only table A's time column should have been used
-        assert "time_columns" in result.outputs, f"Missing time_columns in outputs: {result.outputs}"
+        assert "time_columns" in result.outputs, (
+            f"Missing time_columns in outputs: {result.outputs}"
+        )
         assert result.outputs["time_columns"] == ["date"]
 
     def test_success_no_slice_definitions(

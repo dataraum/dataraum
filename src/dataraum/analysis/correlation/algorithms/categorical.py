@@ -5,7 +5,6 @@ No database, no async - just math.
 """
 
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 from scipy import stats
@@ -80,32 +79,3 @@ def compute_cramers_v(
         strength=_classify_strength(cramers_v),
         is_significant=bool(p_value < 0.05),
     )
-
-
-def build_contingency_table(
-    col1_values: list[Any],
-    col2_values: list[Any],
-) -> np.ndarray:
-    """Build contingency table from two columns of values.
-
-    Args:
-        col1_values: Values from first column
-        col2_values: Values from second column
-
-    Returns:
-        2D numpy array contingency table
-    """
-    # Get unique values
-    unique1 = sorted(set(col1_values))
-    unique2 = sorted(set(col2_values))
-
-    # Build index maps
-    idx1 = {v: i for i, v in enumerate(unique1)}
-    idx2 = {v: i for i, v in enumerate(unique2)}
-
-    # Count occurrences
-    table = np.zeros((len(unique1), len(unique2)))
-    for v1, v2 in zip(col1_values, col2_values, strict=False):
-        table[idx1[v1], idx2[v2]] += 1
-
-    return table

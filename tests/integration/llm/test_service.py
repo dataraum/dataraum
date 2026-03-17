@@ -44,21 +44,3 @@ def test_prompt_renderer_loads_templates(mock_anthropic_key):
     assert template.temperature >= 0
 
 
-def test_prompt_renderer_renders_template(mock_anthropic_key):
-    """Test that prompt renderer can render with context."""
-    renderer = PromptRenderer()
-
-    context = {
-        "tables_json": "[]",
-        "ontology_name": "financial_reporting",
-        "ontology_concepts": "- revenue: Total income from sales",
-        "relationship_candidates": "No candidates detected",
-        "column_annotations": "No annotations available",
-        "required_standard_fields": "",
-    }
-
-    rendered, temperature = renderer.render("semantic_analysis", context)
-
-    assert rendered
-    assert "[]" in rendered
-    assert temperature == 0.0

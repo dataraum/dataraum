@@ -72,6 +72,7 @@ dev = [
     "scipy-stubs>=1.16.3.2",
     "pytest-testmon>=2.2.0",
     "zensical>=0.0.24",
+    "vulture>=2.15",
 ]
 [[tool.uv.index]]
 name = "pytorch-cpu"
@@ -193,3 +194,28 @@ ignore_errors = true
 module = "tests.*"
 disallow_untyped_defs = false
 ignore_missing_imports = true
+
+[tool.vulture]
+min_confidence = 80
+paths = ["src/dataraum", "vulture_whitelist.py"]
+exclude = ["prototypes/"]
+
+[tool.coverage.run]
+source = ["src/dataraum"]
+branch = true
+omit = [
+    "src/dataraum/cli/*",        # CLI/TUI hard to unit-test
+    "src/dataraum/mcp/*",        # MCP server tested via integration
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+# Exclude common non-testable patterns
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "@overload",
+    "raise NotImplementedError",
+]

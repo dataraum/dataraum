@@ -2,14 +2,38 @@
 
 Measures uncertainty in derived/computed columns.
 Low match rate indicates the detected formula may not be correct.
+
+Uses non-linear scoring: a 5% formula mismatch rate is a real problem,
+not 0.05 severity. The boost function maps small mismatch rates to scores
+that reflect actual severity (same approach as type_fidelity).
 """
 
+import math
 from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
+
+
+def _boost_mismatch_rate(rate: float) -> float:
+    """Amplify small but significant formula mismatch rates.
+
+    5% of rows failing a formula check is a real problem, not noise.
+    Same log-based boost as type_fidelity._boost_rate():
+
+        0.01 → 0.01  (noise — rounding errors)
+        0.03 → 0.20  (notable — worth investigating)
+        0.05 → 0.35  (fires at 0.3 threshold)
+        0.08 → 0.56  (clearly broken)
+        0.15 → 1.00  (severe)
+    """
+    if rate <= 0:
+        return 0.0
+    boosted = ((1 + rate) ** 2 / -math.log10(rate)) - 0.5
+    return max(0.0, min(1.0, boosted))
 
 
 class DerivedValueDetector(EntropyDetector):
@@ -19,7 +43,7 @@ class DerivedValueDetector(EntropyDetector):
     how reliably a column matches its detected formula.
 
     Source: correlation/DerivedColumn.formula, match_rate
-    Formula: entropy = 1.0 - match_rate (or 1.0 if no formula detected)
+    Formula: entropy = boost(1.0 - match_rate) with log-based amplification
 
     Thresholds configurable in config/entropy/thresholds.yaml.
     """
@@ -30,6 +54,56 @@ class DerivedValueDetector(EntropyDetector):
     sub_dimension = SubDimension.FORMULA_MATCH
     required_analyses = [AnalysisKey.CORRELATION]
     description = "Measures reliability of detected derived column formulas"
+
+    @property
+    def fix_schemas(self) -> list[FixSchema]:
+        return [
+            FixSchema(
+                action="accept_finding",
+                target="config",
+                description="Accept formula mismatch as expected (e.g., manual adjustments, rounding)",
+                config_path="entropy/thresholds.yaml",
+                key_path=["detectors", "derived_value", "accepted_columns"],
+                operation="append",
+                requires_rerun="analysis_review",
+                guidance=(
+                    "The column was detected as derived (computed from other columns) "
+                    "but some rows don't match the formula. Show the user the detected "
+                    "formula, the match rate, and the source columns. Ask whether the "
+                    "mismatches are expected (manual adjustments, rounding, historical "
+                    "corrections) or indicate a real data quality problem."
+                ),
+                fields={
+                    "reason": FixSchemaField(
+                        type="string",
+                        required=True,
+                        description="Why the formula mismatch is expected",
+                    ),
+                },
+            ),
+            FixSchema(
+                action="recalculate_derived_column",
+                target="data",
+                description="Recalculate the derived column from its source formula",
+                templates={
+                    "recalculate": "UPDATE typed_{table} SET {column} = {formula}",
+                },
+                requires_rerun="correlations",
+                guidance=(
+                    "The derived column has formula mismatches and the user wants "
+                    "to recalculate. Show the detected formula and match rate. "
+                    "Ask the user to confirm the correct formula (the detected one "
+                    "may be wrong). PROPOSE the detected formula as default."
+                ),
+                fields={
+                    "formula": FixSchemaField(
+                        type="duckdb_sql",
+                        required=True,
+                        description="SQL expression to recalculate (e.g., 'debit - credit')",
+                    ),
+                },
+            ),
+        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load correlation (derived column) data for this column."""
@@ -58,6 +132,9 @@ class DerivedValueDetector(EntropyDetector):
         match_exact = detector_config.get("match_exact", 0.99)
         match_near_exact = detector_config.get("match_near_exact", 0.95)
         match_approximate = detector_config.get("match_approximate", 0.80)
+        accepted_columns: list[str] = self.config.get("accepted_columns") or detector_config.get(
+            "accepted_columns", []
+        )
         correlation = context.get_analysis("correlation", {})
 
         # Extract derived column information
@@ -98,8 +175,9 @@ class DerivedValueDetector(EntropyDetector):
                 formula = current_derived.get("formula")
                 source_columns = current_derived.get("source_column_names", [])
 
-            # Calculate entropy from match rate
-            score = 1.0 - match_rate
+            # Calculate entropy from mismatch rate with non-linear boost
+            mismatch_rate = 1.0 - match_rate
+            score = _boost_mismatch_rate(mismatch_rate)
 
             # Classify match quality using configurable thresholds
             if match_rate >= match_exact:
@@ -154,6 +232,11 @@ class DerivedValueDetector(EntropyDetector):
                     description="Verify formula and investigate rows where it doesn't match",
                 )
             )
+
+        # Mark as accepted (score stays honest, contract overrule handles gate)
+        target_key = f"{context.table_name}.{context.column_name}"
+        if target_key in accepted_columns:
+            evidence[0]["accepted"] = True
 
         return [
             self.create_entropy_object(

@@ -59,21 +59,29 @@ def render_gate_scores(
     scores: dict[str, float],
     contract_thresholds: dict[str, float] | None = None,
     phase_name: str | None = None,
+    column_details: dict[str, dict[str, float]] | None = None,
+    column_evidence: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> None:
     """Render all gate measurement scores as a Rich panel.
 
-    Shows passing and failing dimensions with contract status.
+    Shows passing, failing, and accepted dimensions with contract status.
+    Accepted dimensions are above threshold but all violating targets have
+    been acknowledged — the gate doesn't block on them.
 
     Args:
         console: Rich console for output.
         scores: All measured entropy scores at this gate.
         contract_thresholds: Contract thresholds keyed by dimension path.
         phase_name: Name of the gate phase.
+        column_details: Per-column scores for accepted detection.
+        column_evidence: Per-column evidence with accepted flags.
     """
     if not scores:
         return
 
     thresholds = contract_thresholds or {}
+    col_details = column_details or {}
+    col_evidence = column_evidence or {}
 
     table = Table(show_header=True, box=None, padding=(0, 2))
     table.add_column("Dimension", style="bold")
@@ -84,6 +92,7 @@ def render_gate_scores(
 
     violations = 0
     passing = 0
+    accepted_count = 0
 
     for dim_path, score in sorted(scores.items()):
         threshold = match_threshold(dim_path, thresholds)
@@ -92,10 +101,16 @@ def render_gate_scores(
 
         if threshold is not None:
             if score > threshold:
-                violations += 1
-                gap = score - threshold
-                color = "red"
-                status = f"[red]+{gap:.2f}[/red]"
+                # Check if all above-threshold targets are accepted
+                if _is_dimension_accepted(dim_path, threshold, col_details, col_evidence):
+                    accepted_count += 1
+                    color = "cyan"
+                    status = "[cyan]ACCEPTED[/cyan]"
+                else:
+                    violations += 1
+                    gap = score - threshold
+                    color = "red"
+                    status = f"[red]+{gap:.2f}[/red]"
             else:
                 passing += 1
                 headroom = threshold - score
@@ -118,7 +133,11 @@ def render_gate_scores(
     title = "Gate Measurement"
     if phase_name:
         title += f": {phase_name}"
-    summary = f"{violations} violation{'s' if violations != 1 else ''}, {passing} passing"
+    parts = [f"{violations} violation{'s' if violations != 1 else ''}"]
+    parts.append(f"{passing} passing")
+    if accepted_count:
+        parts.append(f"{accepted_count} accepted")
+    summary = ", ".join(parts)
     border = "red" if violations > 0 else "green"
 
     console.print()
@@ -135,6 +154,30 @@ def render_gate_scores(
     )
 
 
+def _is_dimension_accepted(
+    dim_path: str,
+    threshold: float,
+    column_details: dict[str, dict[str, float]],
+    column_evidence: dict[str, dict[str, dict[str, Any]]],
+) -> bool:
+    """Check if a dimension's above-threshold targets are all accepted.
+
+    Returns True if there are above-threshold targets and every one of
+    them has ``evidence.accepted=True``. This mirrors the contract
+    overrule logic in ``assess_contracts``.
+    """
+    col_scores = column_details.get(dim_path, {})
+    if not col_scores:
+        return False
+
+    dim_ev = column_evidence.get(dim_path, {})
+    above_threshold = [t for t, s in col_scores.items() if s > threshold]
+    if not above_threshold:
+        return False
+
+    return all(dim_ev.get(t, {}).get("accepted", False) for t in above_threshold)
+
+
 def render_violations(
     console: Console,
     violations: dict[str, tuple[float, float]],
@@ -142,6 +185,7 @@ def render_violations(
     all_scores: dict[str, float] | None = None,
     contract_thresholds: dict[str, float] | None = None,
     phase_name: str | None = None,
+    column_evidence: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> None:
     """Render post-verification violations as a Rich panel.
 
@@ -152,6 +196,7 @@ def render_violations(
         all_scores: All measured entropy scores (for distance-to-green display).
         contract_thresholds: Contract thresholds keyed by dimension path.
         phase_name: Name of the phase that triggered the check.
+        column_evidence: Per-column evidence for accepted detection.
     """
     if not violations:
         return
@@ -196,9 +241,12 @@ def render_violations(
                     "",
                 )
 
-    # Show passing dimensions with headroom (distance to green)
+    # Show passing and accepted dimensions
+    col_det = column_details or {}
+    col_ev = column_evidence or {}
+
     if all_scores and contract_thresholds:
-        passing_rows: list[tuple[str, float, float, float]] = []
+        passing_rows: list[tuple[str, float, float, float, bool]] = []
         for dim_path, score in sorted(all_scores.items()):
             if dim_path in violations:
                 continue
@@ -206,23 +254,33 @@ def render_violations(
             if matched is not None:
                 threshold = matched
                 headroom = threshold - score
-                passing_rows.append((dim_path, score, threshold, headroom))
+                accepted = _is_dimension_accepted(dim_path, threshold, col_det, col_ev)
+                passing_rows.append((dim_path, score, threshold, headroom, accepted))
 
         if passing_rows:
-            # Sort by headroom ascending (closest to flipping first)
-            passing_rows.sort(key=lambda r: r[3])
+            # Sort: accepted first (by score desc), then passing by headroom asc
+            passing_rows.sort(key=lambda r: (not r[4], r[3]))
             table.add_row("", "", "", "", "")  # spacer
-            for dim_path, score, threshold, headroom in passing_rows:
+            for dim_path, score, threshold, headroom, accepted in passing_rows:
                 filled = round(score * 10)
                 bar = "\u2593" * filled + "\u2591" * (10 - filled)
-                color = "yellow" if headroom < 0.1 else "green"
-                table.add_row(
-                    f"[{color}]{dim_path}[/{color}]",
-                    f"[{color}]{score:.2f}[/{color}]",
-                    f"{threshold:.2f}",
-                    f"[{color}]\u2212{headroom:.2f}[/{color}]",
-                    bar,
-                )
+                if accepted:
+                    table.add_row(
+                        f"[cyan]{dim_path}[/cyan]",
+                        f"[cyan]{score:.2f}[/cyan]",
+                        f"{threshold:.2f}",
+                        "[cyan]ACCEPTED[/cyan]",
+                        bar,
+                    )
+                else:
+                    color = "yellow" if headroom < 0.1 else "green"
+                    table.add_row(
+                        f"[{color}]{dim_path}[/{color}]",
+                        f"[{color}]{score:.2f}[/{color}]",
+                        f"{threshold:.2f}",
+                        f"[{color}]\u2212{headroom:.2f}[/{color}]",
+                        bar,
+                    )
 
     title = "Post-Verification"
     if phase_name:
@@ -264,6 +322,7 @@ def _handle_pause(
         all_scores=event.scores or None,
         contract_thresholds=contract_thresholds,
         phase_name=event.phase,
+        column_evidence=event.column_evidence,
     )
 
     # Collect available fixes grouped by dimension
@@ -389,11 +448,11 @@ def _run_fix_flow(
     group: _DimensionFixGroup,
     event: PipelineEvent,
 ) -> Resolution:
-    """Run the agent-driven Q&A flow for a dimension's fix actions.
+    """Run the agent-driven fix flow for a dimension's fix actions.
 
-    The LLM sees ALL available actions for the dimension and triages to the
-    best one based on the data. It returns config_action to tell us which
-    action it chose.
+    For multi-target dimensions (>1 violating target), uses a batch action
+    plan so the user can review and confirm all targets in one round.
+    For single-target dimensions, uses the standard Q&A flow.
 
     Returns a FIX resolution on success, DEFER on cancellation or error.
     """
@@ -405,6 +464,141 @@ def _run_fix_flow(
         console.print(f"[red]Failed to initialize LLM: {e}[/red]")
         return Resolution(action=ResolutionAction.DEFER)
 
+    # Multi-target → batch plan flow
+    affected = _get_affected_targets(group.dimension, event)
+    if len(affected) > 1:
+        return _run_batch_fix_flow(console, group, event, agent, context)
+
+    # Single target → standard Q&A flow
+    return _run_single_fix_flow(console, group, event, agent, context)
+
+
+def _run_batch_fix_flow(
+    console: Console,
+    group: _DimensionFixGroup,
+    event: PipelineEvent,
+    agent: Any,
+    context: str,
+) -> Resolution:
+    """Run batch action plan for multi-target dimensions.
+
+    The LLM proposes one action per violating target. The user reviews
+    the plan and confirms, producing multiple FixInputs in one round.
+    """
+    console.print("\n[dim]Generating action plan...[/dim]")
+    plan_result = agent.generate_batch_plan(context)
+    if not plan_result.success:
+        console.print(f"[red]Error: {plan_result.error}[/red]")
+        return Resolution(action=ResolutionAction.DEFER)
+
+    plan = plan_result.unwrap()
+    if not plan.items:
+        console.print("[yellow]No actions proposed. Deferring.[/yellow]")
+        return Resolution(action=ResolutionAction.DEFER)
+
+    # Display plan as Rich table
+    console.print(f"\n[bold]{plan.summary}[/bold]\n")
+    plan_table = Table(show_header=True, box=None, padding=(0, 2))
+    plan_table.add_column("Target", style="bold")
+    plan_table.add_column("Action")
+    plan_table.add_column("Reason", style="dim")
+
+    for item in plan.items:
+        # Show score inline if available
+        col_scores = event.column_details.get(group.dimension, {})
+        score = col_scores.get(item.target)
+        target_label = item.target
+        if score is not None:
+            target_label += f" ({score:.2f})"
+        plan_table.add_row(target_label, item.recommended_action, item.reason)
+
+    console.print(plan_table)
+    console.print()
+
+    # Confirm plan
+    confirm = console.input("[bold]Apply plan? (y/n): [/bold]").strip().lower()
+    if confirm != "y":
+        console.print(
+            f"[yellow]Plan cancelled, deferring.[/yellow] [dim](input was {confirm!r})[/dim]"
+        )
+        return Resolution(action=ResolutionAction.DEFER)
+
+    # Collect follow-up answers (shared parameters like "reason")
+    follow_up_answers: dict[str, str] = {}
+    for q in plan.follow_up_questions:
+        console.print(f"\n[bold]{q.question}[/bold]")
+        if q.question_type == "multiple_choice" and q.choices:
+            for j, choice_text in enumerate(q.choices, 1):
+                console.print(f"  {j}. {choice_text}")
+        answer = console.input("[green]> [/green]").strip()
+        if q.question_type == "multiple_choice" and q.choices:
+            try:
+                ci = int(answer) - 1
+                if 0 <= ci < len(q.choices):
+                    answer = q.choices[ci]
+            except ValueError:
+                pass
+        # Store answer keyed by question text (used to thread into parameters)
+        follow_up_answers[q.question] = answer
+
+    # Build FixInputs from plan items
+    dim_path = group.dimension
+    evidence: dict[str, Any] = {
+        "score": group.score,
+        "threshold": group.threshold,
+    }
+    col_scores = event.column_details.get(dim_path, {})
+    if col_scores:
+        evidence["column_scores"] = col_scores
+
+    fix_inputs: list[FixInput] = []
+    for item in plan.items:
+        params = dict(item.parameters)
+        # Thread follow-up answers into parameters as "reason"
+        # (accept_finding's only user-provided parameter)
+        if follow_up_answers and "reason" not in params:
+            # Use first follow-up answer as reason
+            first_answer = next(iter(follow_up_answers.values()), None)
+            if first_answer:
+                params["reason"] = first_answer
+
+        fix_inputs.append(
+            FixInput(
+                action_name=item.recommended_action,
+                dimension=dim_path,
+                parameters=params,
+                affected_columns=[_target_to_column_ref(item.target)],
+                entropy_evidence=evidence,
+            )
+        )
+
+    console.print(f"\n[dim]Applying {len(fix_inputs)} fixes...[/dim]")
+    return Resolution(action=ResolutionAction.FIX, fix_inputs=fix_inputs)
+
+
+def _target_to_column_ref(target: str) -> str:
+    """Convert a target string to a column reference.
+
+    "column:payments.invoice_id" -> "payments.invoice_id"
+    "table:payments" -> "payments"
+    """
+    if ":" in target:
+        return target.split(":", 1)[1]
+    return target
+
+
+def _run_single_fix_flow(
+    console: Console,
+    group: _DimensionFixGroup,
+    event: PipelineEvent,
+    agent: Any,
+    context: str,
+) -> Resolution:
+    """Run the standard Q&A flow for a single-target dimension.
+
+    The LLM sees ALL available actions and triages to the best one.
+    Returns config_action to indicate which action it chose.
+    """
     # Generate questions
     console.print("\n[dim]Generating questions...[/dim]")
     q_result = agent.generate_config_questions(context)
@@ -567,7 +761,7 @@ def build_gate_context(
     action_lines.append("</available_actions>")
     sections.append("\n".join(action_lines))
 
-    # Section 2: Entropy evidence
+    # Section 2: Entropy evidence with per-column component breakdown
     evidence_lines = [
         "<entropy_evidence>",
         f"Detector: {dim_path.split('.')[-1]}",
@@ -575,11 +769,25 @@ def build_gate_context(
         f"Threshold: {threshold:.2f}",
     ]
     col_scores = event.column_details.get(dim_path, {})
+    # Per-column component evidence from gate result (if available)
+    col_evidence = getattr(event, "column_evidence", {}).get(dim_path, {})
     if col_scores:
-        worst = sorted(col_scores.items(), key=lambda x: x[1], reverse=True)[:5]
-        evidence_lines.append("Worst targets:")
-        for target, col_score in worst:
-            evidence_lines.append(f"  {target}: {col_score:.2f}")
+        evidence_lines.append("")
+        evidence_lines.append("Per-column breakdown:")
+        for target, col_score in sorted(col_scores.items(), key=lambda x: -x[1]):
+            label = "VIOLATING" if col_score > threshold else "passing"
+            line = f"  {target}: {col_score:.2f} ({label})"
+            ev = col_evidence.get(target, {})
+            if ev:
+                components = []
+                for k in ("ri_entropy", "card_entropy", "semantic_entropy"):
+                    if k in ev:
+                        components.append(f"{k}={ev[k]:.2f}")
+                if ev.get("accepted"):
+                    components.append("ACCEPTED")
+                if components:
+                    line += f" [{', '.join(components)}]"
+            evidence_lines.append(line)
     evidence_lines.append("</entropy_evidence>")
     sections.append("\n".join(evidence_lines))
 

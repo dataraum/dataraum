@@ -388,6 +388,89 @@ def format_export_result(output_path: str, fmt: str, row_count: int, sidecar_pat
     return "\n".join(lines)
 
 
+def format_zone_status(
+    zone_name: str,
+    gate_label: str,
+    gate_phase: str,
+    violations: list[dict[str, Any]],
+    passing: list[dict[str, Any]],
+    skipped_detectors: list[dict[str, str]],
+    contract_name: str | None = None,
+) -> str:
+    """Format zone status for LLM consumption.
+
+    Args:
+        zone_name: Human-readable zone name (e.g. "foundation")
+        gate_label: Gate label (e.g. "Gate 1")
+        gate_phase: Phase name (e.g. "quality_review")
+        violations: List of violation dicts with dimension_path, detector_id, score, threshold, fix_actions, affected_targets
+        passing: List of passing dimension dicts with dimension_path, detector_id, score, threshold
+        skipped_detectors: List of dicts with detector_id and reason
+        contract_name: Contract used for evaluation
+    """
+    lines = [f"# Zone Status: {zone_name} ({gate_label}: {gate_phase})"]
+    if contract_name:
+        lines.append(f"Contract: {contract_name}")
+    lines.append("")
+
+    n_violations = len(violations)
+    n_passing = len(passing)
+    lines.append(f"## Status: {n_violations} violations, {n_passing} dimensions passing")
+    lines.append("")
+
+    # Violations
+    if violations:
+        lines.append("## Violations")
+        lines.append("")
+        lines.append("| Detector | Score | Threshold | Fix Actions |")
+        lines.append("|----------|-------|-----------|-------------|")
+        for v in violations:
+            actions = ", ".join(v.get("fix_actions", []))
+            lines.append(
+                f"| {v['detector_id']} | {v['score']:.3f} | {v['threshold']:.2f} | {actions} |"
+            )
+        lines.append("")
+
+        # Affected targets per violation
+        lines.append("### Affected Targets")
+        for v in violations:
+            targets = v.get("affected_targets", [])
+            if targets:
+                lines.append(f"- **{v['detector_id']}**: {', '.join(targets[:10])}")
+                if len(targets) > 10:
+                    lines.append(f"  ... and {len(targets) - 10} more")
+        lines.append("")
+
+    # Passing dimensions
+    if passing:
+        lines.append("## Passing Dimensions")
+        lines.append("")
+        lines.append("| Detector | Score | Threshold |")
+        lines.append("|----------|-------|-----------|")
+        for p in passing:
+            lines.append(f"| {p['detector_id']} | {p['score']:.3f} | {p['threshold']:.2f} |")
+        lines.append("")
+
+    # Skipped detectors
+    if skipped_detectors:
+        lines.append("## Skipped (need later zone analyses)")
+        for s in skipped_detectors:
+            lines.append(f"- {s['detector_id']}: {s['reason']}")
+        lines.append("")
+
+    # Next steps guidance
+    lines.append("## Next Steps")
+    if violations:
+        lines.append("- Use `apply_fix` to address violations above")
+        lines.append("- Use `continue_pipeline` to advance to the next zone after fixing")
+    elif skipped_detectors:
+        lines.append("- All measured dimensions passing — use `continue_pipeline` to advance")
+    else:
+        lines.append("- All dimensions passing — pipeline is clean")
+
+    return "\n".join(lines)
+
+
 def format_pipeline_result(result: RunResult) -> str:
     """Format pipeline run result for LLM consumption.
 

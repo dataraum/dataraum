@@ -56,6 +56,18 @@ date_patterns:
     examples: ["01-Apr-2025", "15-Jan-2024"]
     standardization_expr: "STRPTIME(\"{col}\", '%d-%b-%Y')"
 
+  - name: period_yyyy_mm
+    pattern: '^\d{4}-\d{2}$'
+    inferred_type: DATE
+    examples: ["2024-01", "2023-12"]
+    standardization_expr: "STRPTIME(\"{col}\" || '-01', '%Y-%m-%d')"
+
+  - name: period_yyyy_qq
+    pattern: '^\d{4}-?[Qq][1-4]$'
+    inferred_type: DATE
+    examples: ["2024-Q1", "2024Q3", "2023-Q4"]
+    standardization_expr: "MAKE_DATE(CAST(LEFT(\"{col}\", 4) AS INT), (CAST(RIGHT(\"{col}\", 1) AS INT) - 1) * 3 + 1, 1)"
+
   - name: time_only
     pattern: '^\d{1,2}:\d{2}(:\d{2})?$'
     inferred_type: TIME

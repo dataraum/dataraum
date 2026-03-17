@@ -289,6 +289,11 @@ class SemanticPhase(BasePhase):
         # Apply config overrides (e.g. set_timestamp_role fix)
         _apply_semantic_overrides(ctx.session, ctx.config, table_ids)
 
+        # Apply relationship confirmations from semantic config.
+        # This is the correct place: all relationships exist now, including
+        # self-referential ones discovered by the semantic agent.
+        _apply_relationship_confirmations(ctx.session, ctx.config, table_ids)
+
         annotations_count = len(enrichment.annotations)
         entities_count = len(enrichment.entity_detections)
         relationships_count = len(enrichment.relationships)
@@ -383,5 +388,75 @@ def _apply_semantic_overrides(
         if changed:
             annotation.annotation_source = "config_override"
             logger.info("semantic_override_applied", column=col_ref)
+
+    session.flush()
+
+
+def _apply_relationship_confirmations(
+    session: Session,
+    config: dict,  # type: ignore[type-arg]
+    table_ids: list[str],
+) -> None:
+    """Apply confirmed_relationships overrides from the semantic phase config.
+
+    Called after enrich_semantic so all relationships exist (including
+    self-referential ones the finder can't discover). Sets is_confirmed=True
+    and patches field values onto matching Relationship records.
+
+    Keys are ``"from_table->to_table"``; values are field dicts patched
+    onto ALL matching Relationship rows for that table pair.
+    """
+    from datetime import UTC, datetime
+
+    from dataraum.analysis.relationships.db_models import Relationship
+
+    overrides = config.get("overrides", {})
+    if not isinstance(overrides, dict):
+        return
+
+    confirmed = overrides.get("confirmed_relationships", {})
+    if not isinstance(confirmed, dict) or not confirmed:
+        return
+
+    # Build table name lookup
+    tables = session.execute(select(Table).where(Table.table_id.in_(table_ids))).scalars().all()
+    name_to_id = {t.table_name: t.table_id for t in tables}
+
+    for key, field_values in confirmed.items():
+        if not isinstance(field_values, dict):
+            continue
+        if "->" not in key:
+            continue
+        from_name, to_name = key.split("->", 1)
+        from_tid = name_to_id.get(from_name)
+        to_tid = name_to_id.get(to_name)
+        if not from_tid or not to_tid:
+            logger.debug("relationship_confirm_skip", key=key, reason="table not found")
+            continue
+
+        rels = (
+            session.execute(
+                select(Relationship).where(
+                    Relationship.from_table_id == from_tid,
+                    Relationship.to_table_id == to_tid,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not rels:
+            logger.debug("relationship_confirm_skip", key=key, reason="no relationship")
+            continue
+
+        for rel in rels:
+            for field_name, value in field_values.items():
+                if hasattr(rel, field_name) and getattr(rel, field_name) != value:
+                    setattr(rel, field_name, value)
+
+            if not rel.is_confirmed:
+                rel.is_confirmed = True
+                rel.confirmed_at = datetime.now(UTC)
+                rel.confirmed_by = "config_override"
+                logger.info("relationship_confirm_applied", key=key)
 
     session.flush()

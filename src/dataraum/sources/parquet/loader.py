@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models import Result, SourceConfig
-from dataraum.sources.base import ColumnInfo, LoaderBase, TypeSystemStrength, normalize_column_name
+from dataraum.sources.base import ColumnInfo, LoaderBase, normalize_column_name
 from dataraum.sources.csv.models import StagedTable, StagingResult
 from dataraum.storage import Column, Source, Table
 
@@ -39,11 +39,6 @@ class ParquetLoader(LoaderBase):
     Parquet files are strongly typed - column types are enforced by the format.
     DuckDB reads Parquet natively, making loading very efficient.
     """
-
-    @property
-    def type_system_strength(self) -> TypeSystemStrength:
-        """Parquet files are strongly typed."""
-        return TypeSystemStrength.STRONG
 
     def get_schema(
         self,
@@ -159,112 +154,6 @@ class ParquetLoader(LoaderBase):
         except Exception as e:
             logger.error("parquet_load_error", file=str(path), error=str(e))
             return Result.fail(f"Failed to load Parquet: {e}")
-
-    def load_directory(
-        self,
-        directory_path: str,
-        source_name: str,
-        duckdb_conn: duckdb.DuckDBPyConnection,
-        session: Session,
-        file_pattern: str = "*.parquet",
-    ) -> Result[StagingResult]:
-        """Load all Parquet files from a directory into DuckDB.
-
-        Args:
-            directory_path: Path to the directory containing Parquet files
-            source_name: Name for the source
-            duckdb_conn: DuckDB connection
-            session: SQLAlchemy session for metadata
-            file_pattern: Glob pattern for Parquet files
-
-        Returns:
-            Result containing StagingResult with multiple tables
-        """
-        directory = Path(directory_path)
-        if not directory.exists():
-            return Result.fail(f"Directory not found: {directory}")
-        if not directory.is_dir():
-            return Result.fail(f"Path is not a directory: {directory}")
-
-        # Find Parquet files (support both .parquet and .pq)
-        parquet_files = sorted(directory.glob(file_pattern))
-        if not parquet_files:
-            return Result.fail(f"No Parquet files found matching '{file_pattern}' in {directory}")
-
-        logger.debug(
-            "parquet_directory_loading",
-            directory=str(directory),
-            file_count=len(parquet_files),
-            pattern=file_pattern,
-        )
-
-        start_time = time.time()
-        warnings: list[str] = []
-
-        try:
-            # Create single Source for the directory
-            source_id = str(uuid4())
-            source = Source(
-                source_id=source_id,
-                name=source_name,
-                source_type="parquet_directory",
-                connection_config={
-                    "directory": str(directory),
-                    "file_pattern": file_pattern,
-                    "file_count": len(parquet_files),
-                },
-            )
-            session.add(source)
-
-            staged_tables: list[StagedTable] = []
-            total_rows = 0
-
-            for pq_file in parquet_files:
-                file_result = self._load_single_file(
-                    file_path=pq_file,
-                    source_id=source_id,
-                    duckdb_conn=duckdb_conn,
-                    session=session,
-                )
-
-                if not file_result.success:
-                    logger.warning(
-                        "parquet_file_skipped", file=pq_file.name, error=file_result.error
-                    )
-                    warnings.append(f"Failed to load {pq_file.name}: {file_result.error}")
-                    continue
-
-                staged_table = file_result.unwrap()
-                staged_tables.append(staged_table)
-                total_rows += staged_table.row_count
-
-            if not staged_tables:
-                return Result.fail("No Parquet files were successfully loaded")
-
-            session.commit()
-
-            duration = time.time() - start_time
-            logger.debug(
-                "parquet_directory_loaded",
-                directory=str(directory),
-                tables=len(staged_tables),
-                total_rows=total_rows,
-                skipped=len(warnings),
-                duration_s=round(duration, 2),
-            )
-
-            result = StagingResult(
-                source_id=source_id,
-                tables=staged_tables,
-                total_rows=total_rows,
-                duration_seconds=duration,
-            )
-
-            return Result.ok(result, warnings=warnings)
-
-        except Exception as e:
-            logger.error("parquet_directory_load_error", directory=str(directory), error=str(e))
-            return Result.fail(f"Failed to load Parquet directory: {e}")
 
     def _load_single_file(
         self,

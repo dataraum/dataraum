@@ -110,10 +110,6 @@ class OntologyLoader:
 
         return "\n".join(lines)
 
-    def clear_cache(self) -> None:
-        """Clear the ontology cache."""
-        self._cache.clear()
-
 
 __all__ = [
     "OntologyConcept",

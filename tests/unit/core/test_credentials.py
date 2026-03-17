@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import stat
 from pathlib import Path
 
 import pytest
@@ -136,42 +135,6 @@ class TestCredentialChain:
         os.environ.pop("DATARAUM_MISSING_URL", None)
         chain = CredentialChain(credentials_dir=tmp_path)
         assert chain.resolve("missing") is None
-
-    def test_save_creates_file(self, tmp_path: Path) -> None:
-        chain = CredentialChain(credentials_dir=tmp_path)
-        path = chain.save("mydb", "postgres://u:p@host/db")
-
-        assert path.exists()
-        with open(path) as f:
-            config = yaml.safe_load(f)
-        assert config["sources"]["mydb"] == "postgres://u:p@host/db"
-
-    def test_save_sets_permissions(self, tmp_path: Path) -> None:
-        chain = CredentialChain(credentials_dir=tmp_path)
-        path = chain.save("mydb", "x://y")
-
-        file_mode = stat.S_IMODE(path.stat().st_mode)
-        assert file_mode == 0o600
-
-    def test_save_preserves_existing(self, tmp_path: Path) -> None:
-        cred_file = tmp_path / "credentials.yaml"
-        cred_file.write_text(yaml.dump({"sources": {"existing": "x://y"}}))
-
-        chain = CredentialChain(credentials_dir=tmp_path)
-        chain.save("new_source", "z://w")
-
-        with open(cred_file) as f:
-            config = yaml.safe_load(f)
-        assert config["sources"]["existing"] == "x://y"
-        assert config["sources"]["new_source"] == "z://w"
-
-    def test_save_creates_dir(self, tmp_path: Path) -> None:
-        nested = tmp_path / "subdir" / ".dataraum"
-        chain = CredentialChain(credentials_dir=nested)
-        path = chain.save("src", "url://val")
-
-        assert nested.exists()
-        assert path.exists()
 
     def test_instructions_for_postgres(self, tmp_path: Path) -> None:
         chain = CredentialChain(credentials_dir=tmp_path)

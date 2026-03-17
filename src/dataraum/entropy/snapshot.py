@@ -38,10 +38,6 @@ class Snapshot:
     objects: tuple[EntropyObject, ...] = ()  # full EntropyObject instances
     measured_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
-    def score_for(self, sub_dimension: str) -> float | None:
-        """Look up a score by sub_dimension name."""
-        return self.scores.get(sub_dimension)
-
 
 def _resolve_view_target(
     session: Session,

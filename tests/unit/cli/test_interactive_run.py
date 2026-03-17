@@ -75,9 +75,7 @@ class TestDriveBasicPipeline:
 
         events = [
             PipelineEvent(event_type=EventType.PIPELINE_STARTED, step=1, total=3),
-            PipelineEvent(
-                event_type=EventType.PHASE_STARTED, phase="import", step=2, total=3
-            ),
+            PipelineEvent(event_type=EventType.PHASE_STARTED, phase="import", step=2, total=3),
             PipelineEvent(
                 event_type=EventType.PHASE_COMPLETED,
                 phase="import",
@@ -85,9 +83,7 @@ class TestDriveBasicPipeline:
                 total=3,
                 duration_seconds=1.5,
             ),
-            PipelineEvent(
-                event_type=EventType.PHASE_STARTED, phase="typing", step=4, total=3
-            ),
+            PipelineEvent(event_type=EventType.PHASE_STARTED, phase="typing", step=4, total=3),
             PipelineEvent(
                 event_type=EventType.PHASE_COMPLETED,
                 phase="typing",
@@ -165,9 +161,7 @@ class TestDriveWithFailure:
 
         events = [
             PipelineEvent(event_type=EventType.PIPELINE_STARTED, step=1, total=1),
-            PipelineEvent(
-                event_type=EventType.PHASE_STARTED, phase="import", step=2, total=1
-            ),
+            PipelineEvent(event_type=EventType.PHASE_STARTED, phase="import", step=2, total=1),
             PipelineEvent(
                 event_type=EventType.PHASE_FAILED,
                 phase="import",
@@ -206,9 +200,7 @@ class TestExitCheckAutoDefer:
 
         events = [
             PipelineEvent(event_type=EventType.PIPELINE_STARTED, step=1, total=2),
-            PipelineEvent(
-                event_type=EventType.PHASE_STARTED, phase="typing", step=2, total=2
-            ),
+            PipelineEvent(event_type=EventType.PHASE_STARTED, phase="typing", step=2, total=2),
             PipelineEvent(
                 event_type=EventType.PHASE_COMPLETED,
                 phase="typing",
@@ -249,9 +241,7 @@ class TestQuietMode:
 
         events = [
             PipelineEvent(event_type=EventType.PIPELINE_STARTED, step=1, total=1),
-            PipelineEvent(
-                event_type=EventType.PHASE_STARTED, phase="import", step=2, total=1
-            ),
+            PipelineEvent(event_type=EventType.PHASE_STARTED, phase="import", step=2, total=1),
             PipelineEvent(
                 event_type=EventType.PHASE_COMPLETED,
                 phase="import",
@@ -363,7 +353,9 @@ class TestSummaryDisplay:
             interactive=False,
         )
         _print_summary(
-            console, result, stats,
+            console,
+            result,
+            stats,
             contract_name="aggregation_safe",
             contract_thresholds={
                 "structural.types.type_fidelity": 0.30,
@@ -398,7 +390,9 @@ class TestSummaryDisplay:
             interactive=False,
         )
         _print_summary(
-            console, result, stats,
+            console,
+            result,
+            stats,
             contract_name="test_contract",
             contract_thresholds={
                 "structural.types.type_fidelity": 0.30,
@@ -423,9 +417,7 @@ class TestParallelSpinner:
 
         events = [
             PipelineEvent(event_type=EventType.PIPELINE_STARTED, step=1, total=2),
-            PipelineEvent(
-                event_type=EventType.PHASE_STARTED, phase="typing", step=2, total=2
-            ),
+            PipelineEvent(event_type=EventType.PHASE_STARTED, phase="typing", step=2, total=2),
             PipelineEvent(
                 event_type=EventType.PHASE_STARTED,
                 phase="statistics",

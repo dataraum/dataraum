@@ -241,25 +241,6 @@ class DetectorRegistry:
             )
         self.detectors[detector.detector_id] = detector
 
-    def unregister(self, detector_id: str) -> None:
-        """Unregister a detector by ID.
-
-        Args:
-            detector_id: ID of detector to remove
-        """
-        self.detectors.pop(detector_id, None)
-
-    def get_detector(self, detector_id: str) -> EntropyDetector | None:
-        """Get a detector by ID.
-
-        Args:
-            detector_id: Detector ID
-
-        Returns:
-            Detector instance or None if not found
-        """
-        return self.detectors.get(detector_id)
-
     def get_all_detectors(self) -> list[EntropyDetector]:
         """Get all registered detectors.
 
@@ -268,40 +249,6 @@ class DetectorRegistry:
         """
         return list(self.detectors.values())
 
-    def get_detectors_for_layer(self, layer: str) -> list[EntropyDetector]:
-        """Get all detectors for a specific layer.
-
-        Args:
-            layer: Layer name (structural, semantic, value, computational)
-
-        Returns:
-            List of detectors for that layer
-        """
-        return [d for d in self.detectors.values() if d.layer == layer]
-
-    def get_detectors_for_dimension(self, layer: str, dimension: str) -> list[EntropyDetector]:
-        """Get all detectors for a specific dimension.
-
-        Args:
-            layer: Layer name
-            dimension: Dimension name
-
-        Returns:
-            List of detectors for that dimension
-        """
-        return [d for d in self.detectors.values() if d.layer == layer and d.dimension == dimension]
-
-    def get_runnable_detectors(self, context: DetectorContext) -> list[EntropyDetector]:
-        """Get all detectors that can run with the given context.
-
-        Args:
-            context: Detection context with available analyses
-
-        Returns:
-            List of detectors that have required analyses available
-        """
-        return [d for d in self.detectors.values() if d.can_run(context)]
-
     def get_detector_ids(self) -> list[str]:
         """Get list of all registered detector IDs.
 
@@ -309,25 +256,6 @@ class DetectorRegistry:
             List of detector IDs
         """
         return list(self.detectors.keys())
-
-    def get_layers(self) -> list[str]:
-        """Get list of unique layers with registered detectors.
-
-        Returns:
-            List of layer names
-        """
-        return list({d.layer for d in self.detectors.values()})
-
-    def get_dimensions(self, layer: str) -> list[str]:
-        """Get list of dimensions for a layer.
-
-        Args:
-            layer: Layer name
-
-        Returns:
-            List of dimension names
-        """
-        return list({d.dimension for d in self.detectors.values() if d.layer == layer})
 
     def get_fix_schema(
         self, action_name: str, dimension_path: str | None = None

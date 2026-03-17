@@ -16,7 +16,7 @@ jobs:
               uses: astral-sh/setup-uv@v6
 
             - name: Set up Python
-              uses: actions/setup-python@v5
+              uses: actions/setup-python@v6
               with:
                   python-version: "3.14"
 
@@ -31,8 +31,24 @@ jobs:
             - name: Ruff format check
               run: uv run ruff format --check src/
 
-            - name: Run tests
-              run: uv run pytest tests/unit tests/integration -q
+            - name: Dead code check (vulture)
+              run: |
+                  output=$(uv run vulture src/dataraum vulture_whitelist.py --min-confidence 80 2>&1 \
+                    | grep -v "unreachable code after 'while'" || true)
+                  if [ -n "$output" ]; then
+                    echo "$output"
+                    exit 1
+                  fi
+
+            - name: Run tests with coverage
+              run: uv run pytest tests/unit tests/integration -q --cov --cov-report=term-missing --cov-report=xml
+
+            - name: Upload coverage report
+              if: always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: coverage-report
+                  path: coverage.xml
 
     docs:
         runs-on: ubuntu-latest
@@ -42,7 +58,7 @@ jobs:
         steps:
             - uses: actions/checkout@v6
 
-            - uses: actions/setup-python@v5
+            - uses: actions/setup-python@v6
               with:
                   python-version: "3.x"
 

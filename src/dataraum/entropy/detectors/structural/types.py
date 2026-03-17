@@ -186,9 +186,6 @@ class TypeFidelityDetector(EntropyDetector):
         suggest_override = detector_config.get("suggest_override_threshold", 0.3)
         suggest_quarantine = detector_config.get("suggest_quarantine_threshold", 0.1)
         score_fallback = detector_config.get("score_fallback", 0.5)
-        score_accepted = self.config.get("score_accepted") or detector_config.get(
-            "score_accepted", 0.2
-        )
         accepted_columns: list[str] = self.config.get("accepted_columns") or detector_config.get(
             "accepted_columns", []
         )
@@ -309,10 +306,9 @@ class TypeFidelityDetector(EntropyDetector):
                 )
             )
 
-        # Apply acceptance floor if this column was previously accepted
+        # Mark as accepted (score stays honest, contract overrule handles gate)
         target_key = f"{context.table_name}.{context.column_name}"
         if target_key in accepted_columns:
-            score = score_accepted
             evidence[0]["accepted"] = True
 
         return [

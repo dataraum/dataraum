@@ -74,23 +74,6 @@ class DiscoveryResult:
     mode: str = "full"  # "full" or "tool_search"
 
 
-@dataclass
-class QueryContext:
-    """Context for query execution."""
-
-    session: Session
-    duckdb_conn: duckdb.DuckDBPyConnection
-    table_ids: list[str]
-    source_id: str | None = None
-
-    # Rich metadata context
-    execution_context: GraphExecutionContext | None = None
-
-    # Contract settings
-    contract_name: str | None = None
-    auto_contract: bool = False
-
-
 class QueryAgent(LLMFeature):
     """Agent for converting natural language questions to SQL.
 

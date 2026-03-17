@@ -8,7 +8,6 @@ from dataraum.entropy.contracts import (
     ContractProfile,
     Violation,
     _calculate_confidence_level,
-    clear_contracts_cache,
     evaluate_contract,
     find_best_contract,
     get_contract,
@@ -30,14 +29,6 @@ def _make_column_summary(
         dimension_scores=dimension_scores or {},
         readiness=readiness,
     )
-
-
-@pytest.fixture(autouse=True)
-def clear_cache():
-    """Clear contracts cache before each test."""
-    clear_contracts_cache()
-    yield
-    clear_contracts_cache()
 
 
 class TestConfidenceLevel:

@@ -252,16 +252,6 @@ class TransformationGraph:
     scope: MetricScope = MetricScope.GLOBAL
     slice_dimension: str | None = None  # Column to slice by (for SLICE or BOTH scope)
 
-    def get_execution_order(self) -> list[tuple[int, list[GraphStep]]]:
-        """Get steps grouped by level for ordered execution."""
-        levels: dict[int, list[GraphStep]] = {}
-        for step in self.steps.values():
-            if step.level not in levels:
-                levels[step.level] = []
-            levels[step.level].append(step)
-
-        return [(level, levels[level]) for level in sorted(levels.keys())]
-
     def get_output_step(self) -> GraphStep | None:
         """Get the final output step."""
         for step in self.steps.values():
@@ -323,11 +313,6 @@ class ClassificationSummary:
     quarantine_count: int = 0
     flag_count: int = 0
     total_count: int = 0
-
-    @property
-    def clean_ratio(self) -> float:
-        """Ratio of clean rows."""
-        return self.clean_count / self.total_count if self.total_count > 0 else 0.0
 
 
 class AssumptionBasis(str, Enum):

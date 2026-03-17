@@ -40,6 +40,9 @@ class GateResult:
     skipped_detectors: list[SkippedDetector] = field(default_factory=list)
     # dim_path -> {action_name, ...} — resolution options from all entropy objects
     resolution_actions: dict[str, set[str]] = field(default_factory=dict)
+    # Per-target component evidence: dim_path -> target -> {component_key: value}
+    # Enables smart context: LLM sees which component drives each column's score
+    column_evidence: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -52,6 +55,41 @@ class ExitCheckIssue:
     producing_phase: str  # phase after which this was measured
     affected_targets: list[str] = field(default_factory=list)
     available_actions: list[str] = field(default_factory=list)
+
+
+_EVIDENCE_KEYS = frozenset(
+    {
+        "ri_entropy",
+        "card_entropy",
+        "semantic_entropy",
+        "from_table",
+        "to_table",
+        "accepted",
+        "aggregation_method",
+        "ri_boosted",
+    }
+)
+"""Evidence keys to persist in gate results for smart context."""
+
+
+def _collect_evidence(
+    obj: Any,
+    target: str,
+    evidence_by_dim: dict[str, dict[str, dict[str, Any]]],
+) -> None:
+    """Extract component evidence from an EntropyObject into the evidence dict.
+
+    Picks only keys useful for smart context (component scores, metadata).
+    Keyed by sub_dimension string and target.
+    """
+    if not obj.evidence:
+        return
+    ev = obj.evidence[0] if isinstance(obj.evidence, list) else obj.evidence
+    if not isinstance(ev, dict):
+        return
+    summary = {k: v for k, v in ev.items() if k in _EVIDENCE_KEYS}
+    if summary:
+        evidence_by_dim[str(obj.sub_dimension)][target] = summary
 
 
 def measure_at_gate(
@@ -121,6 +159,7 @@ def measure_at_gate(
     table_scores: dict[str, dict[str, float]] = defaultdict(dict)
     view_scores: dict[str, dict[str, float]] = defaultdict(dict)
     actions_by_dim: dict[str, set[str]] = defaultdict(set)
+    evidence_by_dim: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
 
     # Column-scoped pass
     if col_dims:
@@ -144,6 +183,7 @@ def measure_at_gate(
                 for obj in snapshot.objects:
                     for opt in obj.resolution_options:
                         actions_by_dim[str(obj.sub_dimension)].add(opt.action)
+                    _collect_evidence(obj, target, evidence_by_dim)
 
     # Table-scoped pass
     if tbl_dims:
@@ -161,6 +201,7 @@ def measure_at_gate(
             for obj in snapshot.objects:
                 for opt in obj.resolution_options:
                     actions_by_dim[str(obj.sub_dimension)].add(opt.action)
+                _collect_evidence(obj, target, evidence_by_dim)
 
     # View-scoped pass
     if view_dims:
@@ -190,6 +231,7 @@ def measure_at_gate(
             for obj in snapshot.objects:
                 for opt in obj.resolution_options:
                     actions_by_dim[str(obj.sub_dimension)].add(opt.action)
+                _collect_evidence(obj, target, evidence_by_dim)
 
     # Build sub_dimension -> dimension_path mapping
     sub_dim_to_path: dict[str, str] = {str(d.sub_dimension): d.dimension_path for d in runnable}
@@ -228,6 +270,12 @@ def measure_at_gate(
         path = sub_dim_to_path.get(sd, sd)
         result_actions.setdefault(path, set()).update(acts)
 
+    # Build evidence keyed by dimension_path
+    result_evidence: dict[str, dict[str, dict[str, Any]]] = {}
+    for sd, targets_ev in evidence_by_dim.items():
+        path = sub_dim_to_path.get(sd, sd)
+        result_evidence[path] = targets_ev
+
     return GateResult(
         scores=result_scores,
         column_details=result_column_details,
@@ -235,6 +283,7 @@ def measure_at_gate(
         view_details=result_view_details,
         skipped_detectors=skipped,
         resolution_actions=result_actions,
+        column_evidence=result_evidence,
     )
 
 
@@ -274,8 +323,15 @@ def assess_contracts(
     column_details: dict[str, dict[str, float]],
     producing_phase: str,
     resolution_actions: dict[str, set[str]] | None = None,
+    column_evidence: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> list[ExitCheckIssue]:
     """Check scores against contract thresholds.
+
+    Accepted targets (``evidence.accepted=True``) are excluded from
+    violation assessment.  The dimension score is still computed from all
+    targets, but only non-accepted targets above threshold count as
+    affected.  If every above-threshold target is accepted, the dimension
+    is not reported as a violation (contract overrule).
 
     Args:
         scores: Dimension path -> score mapping.
@@ -285,6 +341,8 @@ def assess_contracts(
         resolution_actions: Dimension path -> action names from detector
             resolution options. Used to filter fix schemas to only those
             the detectors actually recommended.
+        column_evidence: Per-target evidence dicts for accepted-target
+            detection.  Keyed by dimension_path -> target -> evidence dict.
 
     Returns:
         List of contract violations found.
@@ -292,12 +350,28 @@ def assess_contracts(
     if not thresholds or not scores:
         return []
 
+    ev = column_evidence or {}
+
     issues: list[ExitCheckIssue] = []
     for dimension_path, score in scores.items():
         threshold = match_threshold(dimension_path, thresholds)
         if threshold is not None and score > threshold:
             col_scores = column_details.get(dimension_path, {})
-            affected = [t for t, s in col_scores.items() if s > threshold]
+            dim_evidence = ev.get(dimension_path, {})
+
+            # Filter: only non-accepted targets above threshold are violations
+            above_threshold = [t for t, s in col_scores.items() if s > threshold]
+            affected = [
+                t for t in above_threshold if not dim_evidence.get(t, {}).get("accepted", False)
+            ]
+
+            # Contract overrule: if all above-threshold targets are accepted,
+            # the dimension is acknowledged — don't block the gate.
+            # Only applies when we have column-level detail; if no column
+            # details exist, the dimension score alone triggers the violation.
+            if above_threshold and not affected:
+                continue
+
             actions = resolution_actions.get(dimension_path, set()) if resolution_actions else set()
             issues.append(
                 ExitCheckIssue(
@@ -371,5 +445,7 @@ def persist_gate_result(
     existing_outputs["gate_table_details"] = dict(gate_result.table_details)
     existing_outputs["gate_view_details"] = dict(gate_result.view_details)
     existing_outputs["detector_id_map"] = detector_id_map
+    if gate_result.column_evidence:
+        existing_outputs["gate_column_evidence"] = dict(gate_result.column_evidence)
     log.outputs = existing_outputs
     session.commit()

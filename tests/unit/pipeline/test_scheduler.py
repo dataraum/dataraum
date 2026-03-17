@@ -81,9 +81,7 @@ class MockPhase(BasePhase):
         self.run_count += 1
         if self._should_fail:
             return PhaseResult.failed("Intentional failure")
-        return PhaseResult.success(
-            records_processed=10, records_created=5, outputs=self._outputs
-        )
+        return PhaseResult.success(records_processed=10, records_created=5, outputs=self._outputs)
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         return self._skip_reason
@@ -328,9 +326,7 @@ class TestContractExitCheck:
             # No contract_thresholds
         )
         gate = GateResult(scores={"structural.types.type_fidelity": 0.8})
-        with patch(
-            "dataraum.pipeline.scheduler.measure_at_gate", return_value=gate
-        ):
+        with patch("dataraum.pipeline.scheduler.measure_at_gate", return_value=gate):
             events, result = _drive(scheduler.run())
 
         types = [e.event_type for e in events]
@@ -349,9 +345,7 @@ class TestContractExitCheck:
             contract_thresholds={"structural.types": 0.3},
         )
         gate = GateResult(scores={"structural.types.type_fidelity": 0.8})
-        with patch(
-            "dataraum.pipeline.scheduler.measure_at_gate", return_value=gate
-        ):
+        with patch("dataraum.pipeline.scheduler.measure_at_gate", return_value=gate):
             events, result = _drive(scheduler.run())
 
         exit_checks = [e for e in events if e.event_type == EventType.EXIT_CHECK]
@@ -371,9 +365,7 @@ class TestContractExitCheck:
             contract_thresholds={"structural.types": 0.3},
         )
         gate = GateResult(scores={"structural.types.type_fidelity": 0.8})
-        with patch(
-            "dataraum.pipeline.scheduler.measure_at_gate", return_value=gate
-        ):
+        with patch("dataraum.pipeline.scheduler.measure_at_gate", return_value=gate):
             events, result = _drive(
                 scheduler.run(),
                 resolutions={0: Resolution(action=ResolutionAction.DEFER)},
@@ -396,9 +388,7 @@ class TestContractExitCheck:
             contract_thresholds={"structural.types": 0.3},
         )
         gate = GateResult(scores={"structural.types.type_fidelity": 0.8})
-        with patch(
-            "dataraum.pipeline.scheduler.measure_at_gate", return_value=gate
-        ):
+        with patch("dataraum.pipeline.scheduler.measure_at_gate", return_value=gate):
             events, result = _drive(
                 scheduler.run(),
                 resolutions={0: Resolution(action=ResolutionAction.ABORT)},
@@ -491,8 +481,8 @@ class TestInvalidateDownstream:
         assert scheduler._state["C"] == PhaseStatus.PENDING
         assert scheduler._state["D"] == PhaseStatus.PENDING
 
-        # cleanup_phase only called for COMPLETED (B), not SKIPPED/FAILED
-        mock_cleanup.assert_called_once()
+        # cleanup_phase called for COMPLETED (B) and SKIPPED (C), not FAILED (D)
+        assert mock_cleanup.call_count == 2
 
 
 class TestPhaseLog:
@@ -663,9 +653,7 @@ class TestColumnDetails:
             scores={"structural.types.type_fidelity": 0.8},
             column_details=col_data,
         )
-        with patch(
-            "dataraum.pipeline.scheduler.measure_at_gate", return_value=gate
-        ):
+        with patch("dataraum.pipeline.scheduler.measure_at_gate", return_value=gate):
             events, result = _drive(
                 scheduler.run(),
                 resolutions={0: Resolution(action=ResolutionAction.DEFER)},
@@ -1091,9 +1079,7 @@ class TestFixResolution:
         fix_input = FixInput(action_name="nonexistent_action")
 
         gate = GateResult(scores={"structural.types.type_fidelity": 0.8})
-        with patch(
-            "dataraum.pipeline.scheduler.measure_at_gate", return_value=gate
-        ):
+        with patch("dataraum.pipeline.scheduler.measure_at_gate", return_value=gate):
             events, result = _drive(
                 scheduler.run(),
                 resolutions={
@@ -1414,9 +1400,7 @@ class TestExitCheckAvailableFixes:
 class TestSkippedDetectors:
     """Tests for surfacing skipped detectors on POST_VERIFICATION."""
 
-    def test_post_verification_carries_skipped_detectors(
-        self, session: Session, duckdb_conn
-    ):
+    def test_post_verification_carries_skipped_detectors(self, session: Session, duckdb_conn):
         """Skipped detectors appear on POST_VERIFICATION event."""
         run_id = _make_run(session)
         alpha = MockPhase(
@@ -1449,9 +1433,7 @@ class TestSkippedDetectors:
         ):
             events, result = _drive(scheduler.run())
 
-        post_verifications = [
-            e for e in events if e.event_type == EventType.POST_VERIFICATION
-        ]
+        post_verifications = [e for e in events if e.event_type == EventType.POST_VERIFICATION]
         assert len(post_verifications) == 1
         skipped = post_verifications[0].skipped_detectors
         assert len(skipped) == 1
@@ -1485,9 +1467,7 @@ class TestSkippedDetectors:
         ):
             events, result = _drive(scheduler.run())
 
-        post_verifications = [
-            e for e in events if e.event_type == EventType.POST_VERIFICATION
-        ]
+        post_verifications = [e for e in events if e.event_type == EventType.POST_VERIFICATION]
         assert len(post_verifications) == 1
         assert post_verifications[0].skipped_detectors == []
 

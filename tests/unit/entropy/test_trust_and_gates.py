@@ -38,4 +38,4 @@ class TestDetectorRegistry:
 class TestPhaseStatus:
     def test_all_statuses(self):
         statuses = set(PhaseStatus)
-        assert len(statuses) == 5  # pending, running, completed, failed, skipped
+        assert len(statuses) == 4  # pending, completed, failed, skipped

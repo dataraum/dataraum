@@ -100,11 +100,6 @@ class FieldMappings:
         return [concept for concept, cols in self.mappings.items() if cols]
 
     @property
-    def available_terms(self) -> list[str]:
-        """Alias for available_concepts (backward compatibility)."""
-        return self.available_concepts
-
-    @property
     def total_mappings(self) -> int:
         """Total number of column mappings across all terms."""
         return sum(len(cols) for cols in self.mappings.values())

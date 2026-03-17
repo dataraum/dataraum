@@ -22,7 +22,6 @@ class TestCorrelationsPhase:
         assert phase.description == "Within-table correlation analysis"
         assert phase.dependencies == ["enriched_views"]
 
-
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):

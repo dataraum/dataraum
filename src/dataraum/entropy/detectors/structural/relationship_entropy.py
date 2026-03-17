@@ -80,15 +80,19 @@ class RelationshipEntropyDetector(EntropyDetector):
                 action="confirm_relationship",
                 target="config",
                 description="Confirm a detected relationship between tables",
-                config_path="phases/relationships.yaml",
+                config_path="phases/semantic.yaml",
                 key_path=["overrides", "confirmed_relationships"],
                 operation="merge",
-                requires_rerun="relationships",
+                requires_rerun="semantic",
                 key_template="{from_table}->{to_table}",
                 guidance=(
                     "Confirms or rejects a detected relationship between tables. "
                     "Ask whether the relationship is a real foreign key, shared "
-                    "reference data, or coincidental overlap."
+                    "reference data, or coincidental overlap.\n"
+                    "IMPORTANT: This only reduces the semantic component of the score. "
+                    "If the score is driven by referential integrity issues (orphan "
+                    "records, low RI %), confirming the relationship won't help — "
+                    "use accept_finding instead."
                 ),
                 fields={
                     "from_table": FixSchemaField(
@@ -146,9 +150,6 @@ class RelationshipEntropyDetector(EntropyDetector):
         detector_config = config.detector("relationship_entropy")
 
         # Accepted columns
-        score_accepted = self.config.get("score_accepted") or detector_config.get(
-            "score_accepted", 0.2
-        )
         accepted_columns: list[str] = self.config.get("accepted_columns") or detector_config.get(
             "accepted_columns", []
         )
@@ -217,6 +218,10 @@ class RelationshipEntropyDetector(EntropyDetector):
 
             # 3. Compute semantic clarity entropy
             if is_confirmed and rel_type not in ("unknown", "candidate"):
+                semantic_entropy = 0.1
+            elif rel_type == "foreign_key" and ri_entropy < 0.05:
+                # High-RI foreign key: the semantic agent classified it as FK
+                # and RI proves the data matches. No human confirmation needed.
                 semantic_entropy = 0.1
             elif rel_type not in ("unknown", "candidate"):
                 semantic_entropy = score_unconfirmed
@@ -295,10 +300,9 @@ class RelationshipEntropyDetector(EntropyDetector):
                     )
                 )
 
-            # Apply acceptance floor if this column was previously accepted
+            # Mark as accepted (score stays honest, contract overrule handles gate)
             target_key = f"{context.table_name}.{context.column_name}"
             if target_key in accepted_columns:
-                score = score_accepted
                 rel_evidence["accepted"] = True
 
             objects.append(

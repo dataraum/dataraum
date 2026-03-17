@@ -173,9 +173,7 @@ src/dataraum/
 ├── pipeline/              # Pipeline orchestrator
 │   ├── registry.py        # Phase auto-discovery
 │   ├── runner.py          # Execution engine + RunConfig
-│   ├── gates.py           # Gate model, GateHandler protocol, build_gate()
-│   ├── entropy_state.py   # PipelineEntropyState: runtime hard score tracking
-│   └── phases/            # 20 phase implementations (with entropy_preconditions)
+│   └── phases/            # 20 phase implementations
 ├── sources/               # Data source loaders (CSV, Parquet)
 ├── storage/               # SQLAlchemy base, migrations
 ├── llm/                   # LLM provider abstraction, prompt management
@@ -188,7 +186,6 @@ src/dataraum/
 │   └── ...
 └── mcp/                   # MCP server
     ├── server.py          # 6 tool definitions
-    ├── gate_handler.py    # MCPGateHandler for AI agent gate resolution
     └── formatters.py      # LLM-optimized markdown output
 ```
 
@@ -226,7 +223,7 @@ Source (CSV/Parquet)
 Context document → MCP / CLI / Python API → AI consumer
 ```
 
-At each gate (⊘), the pipeline checks detector scores against thresholds. Gate behavior depends on `--gate-mode` (skip, fail).
+At each gate (⊘), the pipeline checks detector scores against contract thresholds. `dataraum run` defers violations; `dataraum fix` pauses interactively.
 
 ## Interfaces
 

@@ -5,8 +5,9 @@ Its sole purpose is to act as a quality gate — the scheduler auto-derives
 which detectors to run, and this phase triggers contract assessment on all
 accumulated scores.
 
-In PAUSE gate mode, this is where the pipeline pauses to show all foundation
-entropy violations and allows the user to apply fixes before proceeding.
+In interactive mode (``dataraum fix``), this is where the pipeline pauses to
+show all foundation entropy violations and allows the user to apply fixes
+before proceeding.
 """
 
 from dataraum.pipeline.base import PhaseContext, PhaseResult

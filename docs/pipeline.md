@@ -14,8 +14,8 @@ dataraum run /path/to/file.csv --output ./my_output
 # Run up to a specific phase (includes dependencies)
 dataraum run /path/to/data --phase statistics
 
-# Run with a target contract (fail on violations)
-dataraum run /path/to/data --gate-mode fail --contract aggregation_safe
+# Run with a target contract
+dataraum run /path/to/data --contract aggregation_safe
 ```
 
 Via MCP (Claude Code, Claude Desktop):
@@ -77,16 +77,12 @@ Business cycle detection finds multi-table processes (e.g., order-to-cash). Vali
 
 ## Entropy Gates
 
-Gates are checkpoints between pipeline phases where **entropy preconditions** are verified. When a phase's preconditions are not met (entropy is too high), the gate fires and the pipeline's behavior depends on the `--gate-mode`:
+Gates are checkpoints between pipeline phases where **entropy preconditions** are verified. When a phase's preconditions are not met (entropy is too high), the gate fires.
 
-| Mode | Behavior |
-|------|----------|
-| `skip` (default) | Log warning, continue anyway |
-| `fail` | Treat as pipeline failure |
+- **`dataraum run`** defers all gate violations — they appear in the final summary but don't block the pipeline.
+- **`dataraum fix`** re-runs the pipeline interactively, pausing at each gate so you can review violations and apply fixes.
 
 Gates use **detector scores** — machine-verifiable metrics that can objectively gate the pipeline. All detectors calculate metrics from pre-computed metadata and can be used at gates.
-
-Interactive resolution of entropy issues happens **after** the pipeline completes, via `dataraum fix`, not during the pipeline run. This ensures full context (including LLM interpretation) is available for meaningful user interaction.
 
 ### Post-Verification
 

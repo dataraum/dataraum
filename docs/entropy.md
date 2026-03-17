@@ -115,7 +115,7 @@ Via MCP:
 
 Via CLI (contract can be evaluated during a pipeline run):
 ```bash
-dataraum run /path/to/data --gate-mode fail --contract aggregation_safe
+dataraum run /path/to/data --contract aggregation_safe
 ```
 
 ## Actions

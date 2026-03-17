@@ -583,9 +583,7 @@ def _get_pipeline_source(session: Any) -> Any | None:
     if source:
         return source
     # Single-source mode: exactly one source exists
-    return session.execute(
-        select(Source).order_by(Source.created_at).limit(1)
-    ).scalar_one_or_none()
+    return session.execute(select(Source).order_by(Source.created_at).limit(1)).scalar_one_or_none()
 
 
 _NO_DATA_MSG = (

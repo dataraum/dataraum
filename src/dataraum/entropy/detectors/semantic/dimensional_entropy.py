@@ -212,10 +212,14 @@ class DimensionalEntropyDetector(EntropyDetector):
                 operation="append",
                 requires_rerun="analysis_review",
                 guidance=(
-                    "The detector found an undocumented cross-column relationship. "
-                    "If this is a known business rule (e.g., debit/credit mutual "
-                    "exclusivity in double-entry bookkeeping), document it so the "
-                    "detector recognizes it as expected."
+                    "The detector found undocumented cross-column patterns. "
+                    "Read the table name from the affected targets in <entropy_evidence> "
+                    "(format: 'table:TABLE_NAME'). Read the columns and pattern_type "
+                    "from the per-column evidence breakdown.\n"
+                    "Do NOT ask the user which table or columns are involved — extract "
+                    "them from the evidence. Only ask whether this is a known business "
+                    "rule and what it means in their domain.\n"
+                    "Example: debit/credit mutual exclusivity in double-entry bookkeeping."
                 ),
                 fields={
                     "table": FixSchemaField(
@@ -673,15 +677,6 @@ class DimensionalEntropyDetector(EntropyDetector):
                     },
                     effort="medium",
                     description=f"Document business rule: {pattern.description}",
-                ),
-                ResolutionOption(
-                    action="create_constraint",
-                    parameters={
-                        "pattern_type": pattern.pattern_type,
-                        "columns": pattern.columns,
-                    },
-                    effort="high",
-                    description="Add database constraint to enforce this rule",
                 ),
             ]
 

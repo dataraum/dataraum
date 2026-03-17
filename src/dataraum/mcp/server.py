@@ -1481,8 +1481,8 @@ def _build_mcp_gate_context(
         f"Score: {score:.2f} (threshold: {threshold:.2f})",
         f"Affected columns: {', '.join(affected_targets)}",
         "",
-        "Choose the BEST action for this data issue. Set config_action to the chosen action name.",
-        "Set applicable=false only if NONE of the actions fit.",
+        "Choose the BEST action for each violating target.",
+        "Prefer corrective actions (recalculate, override, add pattern) over accept_finding.",
         "",
     ]
     if detector:
@@ -1502,6 +1502,10 @@ def _build_mcp_gate_context(
             action_lines.append("")
     action_lines.append("</available_actions>")
     sections.append("\n".join(action_lines))
+
+    # Section 1b: Detector-specific triage guidance
+    if detector and detector.triage_guidance:
+        sections.append(f"<triage_guidance>\n{detector.triage_guidance}\n</triage_guidance>")
 
     # Section 2: Entropy evidence with per-column component breakdown
     col_evidence = outputs.get("gate_column_evidence", {}).get(dimension, {})
@@ -1544,11 +1548,10 @@ def _get_fix_proposal(
     gate: str,
     dimension: str,
 ) -> str:
-    """Generate fix questions for a specific violation using the document agent.
+    """Generate a batch action plan for a specific violation using the document agent.
 
-    For multi-target dimensions (>1 violating target), generates a batch
-    action plan with ready-to-apply FixDocuments. For single-target
-    dimensions, generates clarifying questions.
+    Proposes one action per violating target with ready-to-apply FixDocuments.
+    Works for both single-target and multi-target dimensions.
     """
     from sqlalchemy import select
 
@@ -1618,12 +1621,9 @@ def _get_fix_proposal(
 
             agent = _create_document_agent()
 
-            if len(affected) > 1:
-                return _format_batch_proposal(
-                    agent, context, dimension, gate, outputs, affected, all_col_scores
-                )
-            else:
-                return _format_single_proposal(agent, context, dimension)
+            return _format_batch_proposal(
+                agent, context, dimension, gate, outputs, affected, all_col_scores
+            )
     finally:
         manager.close()
 
@@ -1750,48 +1750,6 @@ def _build_fix_doc_from_plan_item(
     return fix_doc
 
 
-def _format_single_proposal(
-    agent: Any,
-    context: str,
-    dimension: str,
-) -> str:
-    """Format a single-target Q&A proposal (existing flow)."""
-    q_result = agent.generate_config_questions(context)
-
-    if not q_result.success:
-        return f"Error generating questions: {q_result.error}"
-
-    questions = q_result.unwrap()
-
-    # Format for the calling agent
-    lines = [f"# Fix Proposal: {dimension}"]
-    if questions.context_summary:
-        lines.append(f"\n{questions.context_summary}")
-    lines.append("\n## Questions")
-    lines.append("Answer these questions, then call `submit_fix_answers` with your responses.\n")
-
-    for i, q in enumerate(questions.questions, 1):
-        lines.append(f"**{i}. {q.question}**")
-        if q.question_type == "multiple_choice" and q.choices:
-            for j, choice in enumerate(q.choices, 1):
-                lines.append(f"   {j}. {choice}")
-        lines.append("")
-
-    lines.append("## How to respond")
-    lines.append(
-        "Call `submit_fix_answers` with the same gate and dimension, and format your answers as:"
-    )
-    lines.append("```")
-    for i, q in enumerate(questions.questions, 1):
-        lines.append(f"Q: {q.question}")
-        lines.append("A: <your answer here>")
-        if i < len(questions.questions):
-            lines.append("")
-    lines.append("```")
-
-    return "\n".join(lines)
-
-
 def _submit_fix_answers(
     output_dir: Path,
     gate: str,
@@ -1801,9 +1759,8 @@ def _submit_fix_answers(
 ) -> str:
     """Interpret agent answers and return ready-to-use fix documents.
 
-    For multi-target dimensions, re-generates the batch plan and threads
-    user answers (e.g., acceptance reason) into all plan items, returning
-    multiple FixDocuments. For single-target, returns one FixDocument.
+    Re-generates the batch plan and threads user answers (e.g., acceptance
+    reason) into all plan items, returning FixDocuments.
     """
     from sqlalchemy import select
 
@@ -1850,22 +1807,12 @@ def _submit_fix_answers(
                 scores,
             )
 
-            # Detect multi-target
-            from dataraum.entropy.contracts import get_contracts
-            from dataraum.entropy.gate import match_threshold
-
-            contracts = get_contracts()
-            contract = next(iter(contracts.values()), None)
-            thresholds = contract.dimension_thresholds if contract else {}
-            threshold = match_threshold(dimension, thresholds) or 0.0
-
             column_details = outputs.get("gate_column_details", {})
             table_details = outputs.get("gate_table_details", {})
             all_col_scores = {
                 **column_details.get(dimension, {}),
                 **table_details.get(dimension, {}),
             }
-            affected = [t for t, s in all_col_scores.items() if s > threshold]
 
             from dataraum.cli.commands.fix import _create_document_agent
 
@@ -1873,29 +1820,17 @@ def _submit_fix_answers(
             registry = get_default_registry()
             id_map = outputs.get("detector_id_map", {})
 
-            if len(affected) > 1:
-                return _submit_batch_answers(
-                    agent,
-                    context,
-                    dimension,
-                    gate,
-                    outputs,
-                    all_col_scores,
-                    answers,
-                    registry,
-                    id_map,
-                )
-            else:
-                return _submit_single_answers(
-                    agent,
-                    context,
-                    dimension,
-                    gate,
-                    outputs,
-                    answers,
-                    registry,
-                    id_map,
-                )
+            return _submit_batch_answers(
+                agent,
+                context,
+                dimension,
+                gate,
+                outputs,
+                all_col_scores,
+                answers,
+                registry,
+                id_map,
+            )
     finally:
         manager.close()
 
@@ -1974,110 +1909,6 @@ def _extract_reason_from_answers(answers: str) -> str:
     if len(lines) == 1:
         return lines[0][2:].strip()
     return ""
-
-
-def _submit_single_answers(
-    agent: Any,
-    context: str,
-    dimension: str,
-    gate: str,
-    outputs: dict[str, Any],
-    answers: str,
-    registry: Any,
-    id_map: dict[str, str],
-) -> str:
-    """Handle single-target answer submission (existing flow)."""
-    import json
-
-    interp_result = agent.interpret_config_answers(context, answers)
-
-    if not interp_result.success:
-        return f"Error interpreting answers: {interp_result.error}"
-
-    interp = interp_result.unwrap()
-
-    if not interp.applicable:
-        return (
-            f"## Not Applicable\n\n"
-            f"The agent determined no available action fits this issue.\n\n"
-            f"**Reason:** {interp.interpretation}\n\n"
-            f"The violation at `{dimension}` remains. Consider using `apply_fix` "
-            f"directly if you know the correct fix document."
-        )
-
-    # Resolve action and validate
-    action_name = interp.config_action
-    if not action_name:
-        detector_id = id_map.get(dimension, dimension.rsplit(".", 1)[-1])
-        detector = registry.detectors.get(detector_id)
-        if detector and detector.fix_schemas:
-            action_name = detector.fix_schemas[0].action
-
-    if not action_name:
-        return "Error: Could not determine which action to apply."
-
-    schema = registry.get_fix_schema(action_name, dimension)
-    if schema:
-        errors = schema.validate_payload(interp.parameters)
-        if errors:
-            return (
-                f"## Validation Failed\n\n"
-                f"The agent's parameters for `{action_name}` are invalid:\n"
-                + "\n".join(f"- {e}" for e in errors)
-                + "\n\nTry answering more specifically, or use `apply_fix` directly."
-            )
-
-    # Build a ready-to-use FixDocument
-    table_name = ""
-    column_name: str | None = None
-    if interp.affected_columns:
-        parts = interp.affected_columns[0].split(".", 1)
-        table_name = parts[0]
-        column_name = parts[1] if len(parts) > 1 else None
-
-    fix_doc: dict[str, Any] = {
-        "target": schema.target if schema else "config",
-        "action": action_name,
-        "table_name": table_name,
-        "column_name": column_name,
-        "dimension": dimension,
-        "description": interp.summary,
-        "payload": {},
-    }
-
-    if schema and schema.target == "config":
-        value: Any = interp.parameters
-        if schema.operation == "append" and not schema.fields:
-            value = f"{table_name}.{column_name}" if column_name else table_name
-
-        fix_doc["payload"] = {
-            "config_path": schema.config_path,
-            "key_path": list(schema.key_path or []),
-            "operation": schema.operation or "set",
-            "value": value,
-        }
-
-    lines = [
-        "## Fix Interpretation",
-        "",
-        f"**Action:** `{action_name}`",
-        f"**Summary:** {interp.summary}",
-        f"**Confidence:** {interp.confidence}",
-        f"**Interpretation:** {interp.interpretation}",
-        "",
-        "## Ready-to-Apply Fix Document",
-        "",
-        "Pass this to `apply_fix` to apply:",
-        "```json",
-        json.dumps(fix_doc, indent=2, default=str),
-        "```",
-        "",
-        "## Next Steps",
-        "- Review the fix document above, then call "
-        "`apply_fix(fixes=[<the document>])` to apply it",
-        f'- Or call `get_zone_status(gate="{gate}")` to re-check the current state first',
-    ]
-    return "\n".join(lines)
 
 
 def _continue_pipeline(

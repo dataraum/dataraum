@@ -264,14 +264,10 @@ class TestHandlePause:
 
 class TestRunFixFlow:
     def test_full_fix_flow(self) -> None:
-        """End-to-end: agent generates questions, user answers, fix applied."""
+        """End-to-end: agent generates batch plan, user confirms, fix applied."""
         from dataraum.cli.gate_handler import _run_fix_flow
         from dataraum.core.models.base import Result
-        from dataraum.documentation.agent import (
-            ClarifyingQuestion,
-            ConfigFixInterpretation,
-            ConfigFixQuestions,
-        )
+        from dataraum.documentation.agent import BatchActionPlan, BatchPlanItem
 
         output = StringIO()
         console = Console(file=output, force_terminal=True, width=100)
@@ -302,37 +298,26 @@ class TestRunFixFlow:
             ]
         )
 
-        mock_questions = ConfigFixQuestions(
-            questions=[
-                ClarifyingQuestion(
-                    question="Override orders.order_date to DATE?",
-                    question_type="multiple_choice",
-                    choices=["DATE", "TIMESTAMP", "Keep VARCHAR"],
-                )
+        mock_plan = BatchActionPlan(
+            summary="Override type for order_date",
+            items=[
+                BatchPlanItem(
+                    target="column:orders.order_date",
+                    recommended_action="override_type",
+                    reason="Column typed as VARCHAR but contains dates.",
+                    parameters={"resolved_type": "DATE"},
+                ),
             ],
-            context_summary="order_date looks like dates.",
-            suggested_action="override_type",
-        )
-
-        mock_interp = ConfigFixInterpretation(
-            parameters={"resolved_type": "DATE"},
-            config_action="override_type",
-            affected_columns=["orders.order_date"],
-            interpretation="Override orders.order_date type to DATE.",
-            confidence="high",
-            summary="Type override to DATE",
+            follow_up_questions=[],
         )
 
         mock_agent = MagicMock()
-        mock_agent.generate_config_questions.return_value = Result.ok(mock_questions)
-        mock_agent.interpret_config_answers.return_value = Result.ok(mock_interp)
+        mock_agent.generate_batch_plan.return_value = Result.ok(mock_plan)
 
-        # User: select choice 1 ("DATE"), then confirm "y"
-        input_values = iter(["1", "y"])
-
+        # User confirms plan with "y"
         with (
             patch("dataraum.cli.commands.fix._create_document_agent", return_value=mock_agent),
-            patch.object(console, "input", side_effect=lambda _: next(input_values)),
+            patch.object(console, "input", return_value="y"),
         ):
             result = _run_fix_flow(console, session, source_id, group, event)
 
@@ -341,17 +326,12 @@ class TestRunFixFlow:
         fix = result.fix_inputs[0]
         assert fix.action_name == "override_type"
         assert fix.parameters["resolved_type"] == "DATE"
-        assert fix.affected_columns == ["orders.order_date"]
 
     def test_user_cancels_at_confirmation(self) -> None:
-        """User answers questions but declines at confirmation step."""
+        """User declines the batch plan at confirmation step."""
         from dataraum.cli.gate_handler import _run_fix_flow
         from dataraum.core.models.base import Result
-        from dataraum.documentation.agent import (
-            ClarifyingQuestion,
-            ConfigFixInterpretation,
-            ConfigFixQuestions,
-        )
+        from dataraum.documentation.agent import BatchActionPlan, BatchPlanItem
 
         output = StringIO()
         console = Console(file=output, force_terminal=True, width=100)
@@ -359,34 +339,25 @@ class TestRunFixFlow:
         event = _make_exit_check_event()
         group = _make_group()
 
-        mock_questions = ConfigFixQuestions(
-            questions=[
-                ClarifyingQuestion(
-                    question="Override type?",
-                    question_type="free_text",
-                )
+        mock_plan = BatchActionPlan(
+            summary="Override type",
+            items=[
+                BatchPlanItem(
+                    target="column:orders.order_date",
+                    recommended_action="override_type",
+                    reason="Type mismatch.",
+                    parameters={},
+                ),
             ],
-            context_summary="",
-        )
-
-        mock_interp = ConfigFixInterpretation(
-            parameters={},
-            config_action="override_type",
-            affected_columns=[],
-            interpretation="Override type.",
-            confidence="low",
-            summary="Override",
+            follow_up_questions=[],
         )
 
         mock_agent = MagicMock()
-        mock_agent.generate_config_questions.return_value = Result.ok(mock_questions)
-        mock_agent.interpret_config_answers.return_value = Result.ok(mock_interp)
-
-        input_values = iter(["DATE", "n"])  # answer, then decline
+        mock_agent.generate_batch_plan.return_value = Result.ok(mock_plan)
 
         with (
             patch("dataraum.cli.commands.fix._create_document_agent", return_value=mock_agent),
-            patch.object(console, "input", side_effect=lambda _: next(input_values)),
+            patch.object(console, "input", return_value="n"),
         ):
             result = _run_fix_flow(
                 console,
@@ -399,7 +370,7 @@ class TestRunFixFlow:
         assert result.action == ResolutionAction.DEFER
 
     def test_agent_failure_defers(self) -> None:
-        """LLM failure during question generation defers gracefully."""
+        """LLM failure during batch plan generation defers gracefully."""
         from dataraum.cli.gate_handler import _run_fix_flow
         from dataraum.core.models.base import Result
 
@@ -410,7 +381,7 @@ class TestRunFixFlow:
         group = _make_group()
 
         mock_agent = MagicMock()
-        mock_agent.generate_config_questions.return_value = Result.fail("API error")
+        mock_agent.generate_batch_plan.return_value = Result.fail("API error")
 
         with patch(
             "dataraum.cli.commands.fix._create_document_agent",
@@ -427,15 +398,11 @@ class TestRunFixFlow:
         assert result.action == ResolutionAction.DEFER
         assert "error" in _strip_ansi(output.getvalue()).lower()
 
-    def test_not_applicable_defers(self) -> None:
-        """When LLM says no action fits, defers gracefully."""
+    def test_empty_plan_defers(self) -> None:
+        """When LLM returns an empty plan, defers gracefully."""
         from dataraum.cli.gate_handler import _run_fix_flow
         from dataraum.core.models.base import Result
-        from dataraum.documentation.agent import (
-            ClarifyingQuestion,
-            ConfigFixInterpretation,
-            ConfigFixQuestions,
-        )
+        from dataraum.documentation.agent import BatchActionPlan
 
         output = StringIO()
         console = Console(file=output, force_terminal=True, width=100)
@@ -443,35 +410,24 @@ class TestRunFixFlow:
         event = _make_exit_check_event()
         group = _make_group()
 
-        mock_questions = ConfigFixQuestions(
-            questions=[ClarifyingQuestion(question="Q?", question_type="free_text")],
-            context_summary="",
-        )
-        mock_interp = ConfigFixInterpretation(
-            parameters={},
-            config_action="override_type",
-            affected_columns=[],
-            interpretation="None of the actions fit.",
-            confidence="high",
-            summary="Not applicable",
-            applicable=False,
+        mock_plan = BatchActionPlan(
+            summary="No actions needed",
+            items=[],
+            follow_up_questions=[],
         )
 
         mock_agent = MagicMock()
-        mock_agent.generate_config_questions.return_value = Result.ok(mock_questions)
-        mock_agent.interpret_config_answers.return_value = Result.ok(mock_interp)
+        mock_agent.generate_batch_plan.return_value = Result.ok(mock_plan)
 
-        input_values = iter(["answer"])
-
-        with (
-            patch("dataraum.cli.commands.fix._create_document_agent", return_value=mock_agent),
-            patch.object(console, "input", side_effect=lambda _: next(input_values)),
+        with patch(
+            "dataraum.cli.commands.fix._create_document_agent",
+            return_value=mock_agent,
         ):
             result = _run_fix_flow(console, MagicMock(), "src", group, event)
 
         assert result.action == ResolutionAction.DEFER
         rendered = _strip_ansi(output.getvalue())
-        assert "no available action" in rendered.lower()
+        assert "no actions" in rendered.lower()
 
 
 class TestBuildGateContext:
@@ -531,4 +487,4 @@ class TestBuildGateContext:
         assert "<entropy_evidence>" in context
         assert "type_fidelity" in context
         assert "0.85" in context
-        assert "Per-column breakdown:" in context
+        assert "Per-target breakdown:" in context

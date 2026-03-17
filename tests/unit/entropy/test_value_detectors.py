@@ -554,7 +554,7 @@ class TestTemporalDriftDetector:
         assert len(ev["top_shifts"]) == 1
 
     def test_resolution_options_for_high_drift(self, detector: TemporalDriftDetector):
-        """High drift produces resolution options."""
+        """High drift produces accept_finding resolution option."""
         summary = _MockDriftSummary("status", 0.8, 0.4, 5, 4)
         context = DetectorContext(
             table_name="orders",
@@ -563,8 +563,7 @@ class TestTemporalDriftDetector:
         )
         results = detector.detect(context)
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "investigate_drift" in actions
-        assert "transform_add_time_filter" in actions
+        assert "accept_finding" in actions
 
     def test_skip_key_column(self, detector: TemporalDriftDetector):
         """Drift detection is skipped for key columns."""

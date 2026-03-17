@@ -56,6 +56,20 @@ class DerivedValueDetector(EntropyDetector):
     description = "Measures reliability of detected derived column formulas"
 
     @property
+    def triage_guidance(self) -> str:
+        return (
+            "This detector found a derived column (computed from other columns) with "
+            "formula mismatches. Choose based on the match rate:\n"
+            "- recalculate_derived_column: DEFAULT choice. The formula is known and "
+            "mismatches indicate data that drifted from the formula. Recalculating "
+            "enforces consistency. Ask the user to confirm the formula via a "
+            "follow_up_question (propose the detected formula as default).\n"
+            "- accept_finding: Only if the user has confirmed that mismatches are "
+            "intentional (manual adjustments, rounding). Do NOT assume this — "
+            "formula drift is usually a data quality problem, not expected behavior."
+        )
+
+    @property
     def fix_schemas(self) -> list[FixSchema]:
         return [
             FixSchema(
@@ -205,31 +219,33 @@ class DerivedValueDetector(EntropyDetector):
             elif isinstance(current_derived, dict) and "derivation_type" in current_derived:
                 evidence[0]["derivation_type"] = current_derived["derivation_type"]
 
-        # Build resolution options using configurable reductions
+        # Resolution options — only actions backed by fix_schemas
         resolution_options: list[ResolutionOption] = []
 
-        if status == "no_formula":
+        if status in ["approximate", "poor"] and formula:
             resolution_options.append(
                 ResolutionOption(
-                    action="document_formula",
+                    action="recalculate_derived_column",
                     parameters={
                         "column": context.column_name,
                         "table": context.table_name,
+                        "formula": formula,
                     },
-                    effort="medium",
-                    description="Declare the computation formula for this column",
+                    effort="high",
+                    description=f"Recalculate {context.column_name} using detected formula: {formula}",
                 )
             )
-        elif status in ["approximate", "poor"]:
+
+        if score > 0:
             resolution_options.append(
                 ResolutionOption(
-                    action="investigate_formula_mismatches",
+                    action="accept_finding",
                     parameters={
                         "column": context.column_name,
-                        "detected_formula": formula,
+                        "detector_id": self.detector_id,
                     },
-                    effort="medium",
-                    description="Verify formula and investigate rows where it doesn't match",
+                    effort="low",
+                    description="Accept formula deviation as expected (manual adjustments, rounding)",
                 )
             )
 

@@ -1,18 +1,15 @@
 # Config Fix Prompt
 #
-# Used by the document agent in config fix mode to help users make concrete
-# pipeline configuration changes (type overrides, column exclusions, unit
-# mappings, etc.) based on entropy violations.
+# Used by the document agent in batch_plan mode to help users fix data quality
+# issues by proposing one action per violating target. The LLM triages each
+# target to the best available action based on component evidence.
 #
-# Two modes: "questions" (ask about config decisions) and "interpret"
-# (produce structured parameters for config YAML).
-#
-# The column_context field contains the same rich context as document_fix,
-# plus entropy evidence and available fix actions.
+# The column_context field contains rich context: entropy evidence, available
+# fix actions, data profiles, and semantic annotations.
 
 name: config_fix
-version: "1.0.0"
-description: Generate config fix questions and interpret answers into structured parameters
+version: "2.0.0"
+description: Generate a batch action plan for config fix targets
 
 temperature: 0.1
 
@@ -22,53 +19,45 @@ system_prompt: |
 
   You receive context about a detected data quality issue: the entropy violation,
   affected columns with statistics and semantic annotations, and the available
-  config actions. Your job is to ask precise questions about what config change
-  the user wants, then produce structured parameters for the fix handler.
+  config actions. Your job is to propose the best action for each violating target
+  so the user can review and confirm the plan in one round.
 
-  Rules for generating questions:
-  - Follow the Guidance field in <action_details> — it tells you what this
-    action does and what to ask. Do NOT invent questions outside its scope.
-  - Focus on CONCRETE CONFIG DECISIONS, not abstract domain knowledge.
-  - Reference actual column names, current types/values, and sample data.
-  - Use multiple_choice when the config has a finite set of valid options.
-  - When <action_details> lists "Expected parameters", use those as the
-    source of truth for what to ask. Use enum values as multiple_choice
-    options verbatim — do not paraphrase or invent alternatives.
-  - Keep questions short — the user should be able to answer in one word or phrase.
-  - Check <existing_fixes> to avoid asking about already-resolved issues.
-  - If the data strongly suggests one answer, make it the default choice.
-  - Ask at most 3 questions. Often 1 is enough.
-  - All questions are presented sequentially in one pass — do NOT generate
-    conditional follow-ups (e.g., "if you chose X, then..."). Each question
-    must stand on its own. If a single question can cover the decision, prefer that.
-
-  Rules for batch_plan mode (multi-target dimensions):
+  Rules for batch_plan mode:
   - Propose exactly ONE action for EACH violating target in <entropy_evidence>.
     Skip targets marked ACCEPTED.
-  - Use the component breakdown (ri_entropy, card_entropy, semantic_entropy) to choose:
-    - ri_entropy is the dominant component → recommend accept_finding
-      (confirm_relationship only reduces semantic_entropy, not RI — explain this)
-    - semantic_entropy dominates and RI is low (< 0.15) → recommend confirm_relationship
-    - All components are high → recommend accept_finding
-  - Pre-fill parameters from evidence data (from_table, to_table for confirm_relationship).
-  - The reason field should be one sentence explaining which component drives the score
-    and why the recommended action is the best fit.
+  - When there is only ONE violating target, still produce a plan with one item.
+    The format is the same regardless of target count.
+
+  How to choose the best action:
+  - If <triage_guidance> is present, follow it — it contains detector-specific
+    rules for choosing between actions based on the evidence. These rules take
+    precedence over generic heuristics.
+  - Read the Guidance field on each action in <available_actions>. The
+    Guidance describes when the action applies and what it does. Treat
+    phrases like "ask the user" as describing the action's scope, not as
+    literal instructions to ask questions — you are proposing actions, not
+    asking questions.
+  - ALWAYS prefer corrective actions over accept_finding. accept_finding
+    is a last resort for when the data issue is genuinely expected and no
+    corrective action can fix it.
+  - When a corrective action needs user confirmation (e.g., which formula
+    to use), recommend the corrective action AND add a follow_up_question
+    to get the missing information. Do NOT fall back to accept_finding
+    just because a parameter needs confirmation.
+
+  Parameters and follow-up:
+  - Pre-fill parameters from evidence data (column names, formulas, types,
+    from_table/to_table, etc.). Use enum values from "Expected parameters"
+    verbatim — do not paraphrase.
+  - The reason field should be one sentence explaining which evidence signal
+    drives the score and why the recommended action is the best fit.
   - Add 0-2 follow_up_questions for shared parameters that need user input
     (e.g., one "reason" question for all accept_finding targets). Do NOT ask
     per-target questions — the plan already covers per-target decisions.
-
-  Rules for interpreting answers:
-  - The parameters dict must use the exact field names and values from
-    "Expected parameters" in <action_details>. Do not rename keys or
-    paraphrase enum values.
-  - The config_action must match an available fix action from the context.
-  - List all affected_columns explicitly (e.g., ["orders.amount"]).
-  - The interpretation should be a one-line human-readable summary.
-  - Be precise: "DECIMAL" not "decimal", "USD" not "us dollars".
-  - If the suggested action does not match the data issue (e.g., a date/time
-    pattern action for postal code data, or a type pattern for non-date columns),
-    set applicable=false and explain in the interpretation WHY the action is not
-    appropriate. The user will be offered the option to reject this fix permanently.
+  - Reference specific evidence (column names, values, formulas, change
+    points) in follow-up questions — never ask generic questions when the
+    data is known.
+  - Check <existing_fixes> to avoid proposing already-resolved fixes.
 
 user_prompt: |
   <context>
@@ -81,27 +70,20 @@ user_prompt: |
   {user_answers}
   </user_answers>
 
-  If mode is "questions": Generate 1-3 questions about what config change to make.
-  Ground every question in the actual data shown in <data_profile>. Suggest a
-  concrete default when the data points to an obvious answer.
-
-  If mode is "interpret": Convert the user's answers into structured parameters
-  for the config fix handler. Use the exact field names and values from
-  "Expected parameters" in <action_details>.
-
-  If mode is "batch_plan": For each VIOLATING target in <entropy_evidence>,
-  propose the best action from <available_actions>. Use the per-column component
-  breakdown to triage. Pre-fill parameters from evidence. Add follow-up questions
-  only for shared parameters the data can't fill (like an acceptance reason).
+  For each VIOLATING target in <entropy_evidence>, propose the best action from
+  <available_actions>. Match the action to the root cause in the evidence — prefer
+  corrective actions over accept_finding. Pre-fill parameters from evidence. Add
+  follow-up questions only for shared parameters the data can't fill (like an
+  acceptance reason).
 
 inputs:
   mode:
-    description: "'questions' or 'interpret'"
+    description: "'batch_plan'"
     required: true
   column_context:
     description: Full structured context (action details, entropy evidence, data profile, semantic annotations, existing fixes)
     required: true
   user_answers:
-    description: User's answers to config questions (empty for questions mode)
+    description: Not used in batch_plan mode
     required: false
     default: ""

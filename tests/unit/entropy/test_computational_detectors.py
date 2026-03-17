@@ -33,9 +33,9 @@ class TestDerivedValueDetector:
         assert len(results) == 1
         assert results[0].score == pytest.approx(1.0, abs=0.01)
         assert results[0].evidence[0]["status"] == "no_formula"
-        # Should suggest declaring formula
+        # No formula → only accept_finding available (no recalculate without a formula)
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "document_formula" in actions
+        assert "accept_finding" in actions
 
     def test_exact_formula_match(self, detector: DerivedValueDetector):
         """Test low entropy for exact formula match."""
@@ -113,9 +113,10 @@ class TestDerivedValueDetector:
         # Boosted: mismatch_rate=0.15 → 1.0 (severe — 15% formula errors)
         assert results[0].score == pytest.approx(1.0, abs=0.01)
         assert results[0].evidence[0]["status"] == "approximate"
-        # Should suggest verification
+        # Approximate match → recalculate available (formula detected)
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "investigate_formula_mismatches" in actions
+        assert "recalculate_derived_column" in actions
+        assert "accept_finding" in actions
 
     def test_poor_formula_match(self, detector: DerivedValueDetector):
         """Test high entropy for poor formula match."""
@@ -141,10 +142,10 @@ class TestDerivedValueDetector:
         # Boosted: mismatch_rate=0.40 → 1.0 (severe — 40% formula errors)
         assert results[0].score == pytest.approx(1.0, abs=0.01)
         assert results[0].evidence[0]["status"] == "poor"
-        # Should suggest investigation
+        # Poor match → recalculate available (formula detected)
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "investigate_formula_mismatches" in actions
-        # investigate_formula_mismatches consolidates both verify and investigate actions
+        assert "recalculate_derived_column" in actions
+        assert "accept_finding" in actions
 
     def test_column_not_in_derived_list(self, detector: DerivedValueDetector):
         """Test entropy when column is not in derived columns list."""

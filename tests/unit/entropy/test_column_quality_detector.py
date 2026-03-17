@@ -196,12 +196,8 @@ class TestColumnQualityDetector:
         results = detector.detect(context)
         opts = results[0].resolution_options
 
-        assert len(opts) == 1
-        assert opts[0].action == "investigate_quality_issues"
-        assert opts[0].effort == "medium"
-        assert opts[0].parameters["column_name"] == "amount"
-        assert len(opts[0].parameters["quality_issues"]) == 2
-        assert "2 quality issues" in opts[0].description
+        # No fix_schemas — column_quality is downstream, no direct fix path
+        assert len(opts) == 0
 
     def test_slicing_view_target(self, detector: ColumnQualityDetector):
         """Column quality from slicing_view uses effective table name in target."""

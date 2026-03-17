@@ -45,7 +45,7 @@ class ValidationPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        return ["semantic", "relationships", "enriched_views", "slicing"]
+        return ["analysis_review", "semantic", "relationships", "enriched_views", "slicing"]
 
     def cleanup(
         self,

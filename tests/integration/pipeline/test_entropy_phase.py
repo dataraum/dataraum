@@ -25,9 +25,7 @@ class TestEntropyPhase:
             "column_eligibility",
             "semantic",
             "relationships",
-            "correlations",
-            "quality_summary",
-            "temporal_slice_analysis",
+            "analysis_review",
         ]
 
     def test_skip_when_no_typed_tables(

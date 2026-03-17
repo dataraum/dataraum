@@ -297,6 +297,8 @@ class TestRunFixFlow:
         mock_agent.generate_batch_plan.return_value = Result.ok(mock_plan)
 
         # User confirms plan with "y"
+        input_values = iter(["y"])
+
         with (
             patch("dataraum.cli.gate_handler._create_document_agent", return_value=mock_agent),
             patch.object(console, "input", side_effect=lambda _: next(input_values)),
@@ -336,6 +338,8 @@ class TestRunFixFlow:
 
         mock_agent = MagicMock()
         mock_agent.generate_batch_plan.return_value = Result.ok(mock_plan)
+
+        input_values = iter(["n"])
 
         with (
             patch("dataraum.cli.gate_handler._create_document_agent", return_value=mock_agent),

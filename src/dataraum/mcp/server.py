@@ -95,8 +95,8 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="analyze",
                 description=(
-                    "Analyze CSV or Parquet data to build metadata context. "
-                    "Must be called before other tools if no data has been analyzed yet. "
+                    "Analyze data to build metadata context. Processes all registered "
+                    "sources together, or provide a path to a file/directory directly. "
                     "Use target_gate to stop at a quality gate for zone-by-zone review "
                     "(returns inline gate status). Without target_gate, runs all phases. "
                     "Use contract to select evaluation criteria (cached for subsequent calls)."
@@ -106,7 +106,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Path to CSV/Parquet file or directory of files",
+                            "description": "Path to CSV/Parquet file or directory. Omit to use registered sources.",
                         },
                         "name": {
                             "type": "string",
@@ -234,9 +234,10 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="discover_sources",
                 description=(
-                    "Scan the workspace for data files (CSV, Parquet, JSON, XLSX) "
-                    "and list existing registered sources. Returns file previews "
-                    "with column names and row counts."
+                    "Scan the workspace for data files (CSV, Parquet, JSON, XLSX). "
+                    "Returns file previews with column names and row counts, "
+                    "and marks which files are already registered as sources. "
+                    "Use this to help users identify what data is available before adding sources."
                 ),
                 inputSchema={
                     "type": "object",
@@ -255,10 +256,11 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="add_source",
                 description=(
-                    "Register a new data source. For files, provide a path. "
-                    "For databases, provide a backend type (postgres, mysql, sqlite). "
-                    "Database sources validate the connection if credentials are available, "
-                    "or return setup instructions if not."
+                    "Register a data source for analysis. Add all sources before calling "
+                    "analyze — the pipeline processes them together. For files, provide a "
+                    "path (file or directory). For databases, provide a backend type. "
+                    "Returns the current source count so you can confirm with the user "
+                    "whether more sources need to be added."
                 ),
                 inputSchema={
                     "type": "object",
@@ -1401,6 +1403,25 @@ def _discover_sources(output_dir: Path, scan_path: str, recursive: bool) -> str:
 
     result = discover_sources(root, recursive=recursive, existing_sources=existing_names)
 
+    # Get registered source paths to mark files as already-added
+    registered_paths: set[str] = set()
+    try:
+        from sqlalchemy import select
+
+        from dataraum.core.connections import get_manager_for_directory
+        from dataraum.storage import Source as SourceModel
+
+        mgr = get_manager_for_directory(output_dir)
+        try:
+            with mgr.session_scope() as sess:
+                for src in sess.execute(select(SourceModel)).scalars():
+                    if src.connection_config and "path" in src.connection_config:
+                        registered_paths.add(str(Path(src.connection_config["path"]).resolve()))
+        finally:
+            mgr.close()
+    except FileNotFoundError:
+        pass
+
     # Format as structured output for LLM
     output: dict[str, Any] = {
         "scan_root": result.scan_root,
@@ -1411,6 +1432,7 @@ def _discover_sources(output_dir: Path, scan_path: str, recursive: bool) -> str:
                 "size_bytes": f.size_bytes,
                 "columns": f.columns,
                 "row_count_estimate": f.row_count_estimate,
+                "registered": str(Path(f.path).resolve()) in registered_paths,
             }
             for f in result.files
         ],
@@ -1420,6 +1442,14 @@ def _discover_sources(output_dir: Path, scan_path: str, recursive: bool) -> str:
     if not result.files and not result.existing_sources:
         return f"No data files found in {scan_path}. Try a different directory or add files."
 
+    # Add guidance
+    unregistered = [f for f in output["files"] if not f["registered"]]
+    if unregistered:
+        output["hint"] = (
+            f"{len(unregistered)} file(s) not yet registered. "
+            f"Use `add_source` to register them, then `analyze` to process all sources together."
+        )
+
     return json.dumps(output, indent=2)
 
 
@@ -1427,8 +1457,11 @@ def _add_source(output_dir: Path, arguments: dict[str, Any]) -> str:
     """Register a new data source."""
     import json
 
+    from sqlalchemy import select
+
     from dataraum.core.credentials import CredentialChain
     from dataraum.sources.manager import SourceManager
+    from dataraum.storage import Source
 
     name = arguments["name"]
     path = arguments.get("path")
@@ -1494,6 +1527,21 @@ def _add_source(output_dir: Path, arguments: dict[str, Any]) -> str:
                 output["source"]["schema_discovered"] = info.discovered_schema
             if info.credential_instructions:
                 output["credential_instructions"] = info.credential_instructions
+
+            # Include total source count for multi-source flow
+            all_sources = (
+                session.execute(select(Source.name).where(Source.archived_at.is_(None)))
+                .scalars()
+                .all()
+            )
+            output["registered_sources"] = {
+                "count": len(all_sources),
+                "names": list(all_sources),
+            }
+            output["next_steps"] = (
+                "Add more sources with `add_source`, or call `analyze` "
+                "to process all registered sources together."
+            )
 
             return json.dumps(output, indent=2)
     finally:

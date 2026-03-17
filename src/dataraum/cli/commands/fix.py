@@ -9,7 +9,7 @@ from typing import Annotated
 
 import typer
 
-from dataraum.cli.common import OutputDirArg, console, setup_logging
+from dataraum.cli.common import console, setup_logging
 
 
 def fix(
@@ -19,7 +19,14 @@ def fix(
             help="Path to CSV file or directory. When omitted, uses registered sources.",
         ),
     ] = None,
-    output_dir: OutputDirArg = Path("./pipeline_output"),
+    output_dir: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output directory for database files",
+        ),
+    ] = Path("./pipeline_output"),
     name: Annotated[
         str | None,
         typer.Option(

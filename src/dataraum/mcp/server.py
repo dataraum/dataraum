@@ -566,6 +566,28 @@ def create_server(output_dir: Path | None = None) -> Server:
     return server
 
 
+def _get_pipeline_source(session: Any) -> Any | None:
+    """Find the source that has pipeline runs.
+
+    In multi-source mode (MCP onboarding flow), the pipeline runs against a
+    synthetic "multi_source" record.  In single-file mode there is only one
+    Source row.
+    """
+    from sqlalchemy import select
+
+    from dataraum.storage import Source
+
+    source = session.execute(
+        select(Source).where(Source.name == "multi_source")
+    ).scalar_one_or_none()
+    if source:
+        return source
+    # Single-source mode: exactly one source exists
+    return session.execute(
+        select(Source).order_by(Source.created_at).limit(1)
+    ).scalar_one_or_none()
+
+
 _NO_DATA_MSG = (
     "No analyzed data found at {path}. "
     "This can happen if the output directory was cleared or never created.\n\n"
@@ -626,15 +648,11 @@ def _get_pipeline_progress(manager: Any) -> str | None:
 
     from dataraum.pipeline.db_models import PhaseLog, PipelineRun
     from dataraum.pipeline.registry import get_registry
-    from dataraum.storage import Source
 
     with manager.session_scope() as session:
-        sources_result = session.execute(select(Source))
-        sources = sources_result.scalars().all()
-        if not sources:
+        source = _get_pipeline_source(session)
+        if not source:
             return None
-
-        source = sources[0]
 
         running_run = session.execute(
             select(PipelineRun)
@@ -976,7 +994,7 @@ def _get_context(output_dir: Path) -> str:
 
     from dataraum.core.connections import get_manager_for_directory
     from dataraum.graphs.context import build_execution_context, format_context_for_prompt
-    from dataraum.storage import Source, Table
+    from dataraum.storage import Table
 
     try:
         manager = get_manager_for_directory(output_dir)
@@ -990,13 +1008,10 @@ def _get_context(output_dir: Path) -> str:
             return f"{progress}\nCall `get_context` again to check for completion."
 
         with manager.session_scope() as session:
-            sources_result = session.execute(select(Source))
-            sources = sources_result.scalars().all()
+            source = _get_pipeline_source(session)
 
-            if not sources:
+            if not source:
                 return "Error: No sources found in database"
-
-            source = sources[0]
 
             tables_result = session.execute(
                 select(Table).where(
@@ -1087,7 +1102,7 @@ def _get_quality(
     from sqlalchemy import select
 
     from dataraum.core.connections import get_manager_for_directory
-    from dataraum.storage import Source, Table
+    from dataraum.storage import Table
 
     sections_to_include = set(include or ["entropy", "contract", "actions"])
 
@@ -1098,13 +1113,10 @@ def _get_quality(
 
     try:
         with manager.session_scope() as session:
-            sources_result = session.execute(select(Source))
-            sources = sources_result.scalars().all()
+            source = _get_pipeline_source(session)
 
-            if not sources:
+            if not source:
                 return "Error: No sources found"
-
-            source = sources[0]
 
             tables_result = session.execute(
                 select(Table).where(
@@ -1268,11 +1280,8 @@ def _query(
     contract_name: str | None = None,
 ) -> str:
     """Execute a natural language query."""
-    from sqlalchemy import select
-
     from dataraum.core.connections import get_manager_for_directory
     from dataraum.query import answer_question
-    from dataraum.storage import Source
 
     try:
         manager = get_manager_for_directory(output_dir)
@@ -1281,13 +1290,10 @@ def _query(
 
     try:
         with manager.session_scope() as session:
-            sources_result = session.execute(select(Source))
-            sources = sources_result.scalars().all()
+            source = _get_pipeline_source(session)
 
-            if not sources:
+            if not source:
                 return "Error: No sources found"
-
-            source = sources[0]
 
             with manager.duckdb_cursor() as cursor:
                 result = answer_question(
@@ -1340,10 +1346,7 @@ def _resolve_source_path(output_dir: Path) -> str | None:
     Queries the first registered Source and returns its connection_config path.
     Returns None if no source or no path is found.
     """
-    from sqlalchemy import select
-
     from dataraum.core.connections import get_manager_for_directory
-    from dataraum.storage import Source
 
     try:
         manager = get_manager_for_directory(output_dir)
@@ -1352,9 +1355,10 @@ def _resolve_source_path(output_dir: Path) -> str | None:
 
     try:
         with manager.session_scope() as session:
-            source = session.execute(select(Source)).scalar_one_or_none()
+            source = _get_pipeline_source(session)
             if source and source.connection_config:
-                return source.connection_config.get("path")
+                path: str | None = source.connection_config.get("path")
+                return path
     finally:
         manager.close()
 
@@ -1581,7 +1585,6 @@ def _get_zone_status(
     from dataraum.entropy.detectors.base import get_default_registry
     from dataraum.entropy.gate import assess_contracts, match_threshold
     from dataraum.pipeline.db_models import PhaseLog
-    from dataraum.storage import Source
 
     try:
         manager = get_manager_for_directory(output_dir)
@@ -1591,7 +1594,7 @@ def _get_zone_status(
     try:
         with manager.session_scope() as session:
             # Find source
-            source = session.execute(select(Source)).scalar_one_or_none()
+            source = _get_pipeline_source(session)
             if not source:
                 return "Error: No sources found."
 
@@ -1864,7 +1867,6 @@ def _get_fix_proposal(
 
     from dataraum.core.connections import get_manager_for_directory
     from dataraum.pipeline.db_models import PhaseLog
-    from dataraum.storage import Source
 
     try:
         manager = get_manager_for_directory(output_dir)
@@ -1873,7 +1875,7 @@ def _get_fix_proposal(
 
     try:
         with manager.session_scope() as session:
-            source = session.execute(select(Source)).scalar_one_or_none()
+            source = _get_pipeline_source(session)
             if not source:
                 return "Error: No sources found."
 
@@ -2110,11 +2112,8 @@ def _export(
     fmt: str = "csv",
 ) -> str:
     """Export query results or SQL output to a file."""
-    from sqlalchemy import select
-
     from dataraum.core.connections import get_manager_for_directory
     from dataraum.export import ExportFormat, export_query_result, export_sql
-    from dataraum.storage import Source
 
     if not question and not sql:
         return "Error: Provide either 'question' or 'sql'."
@@ -2138,10 +2137,9 @@ def _export(
             from dataraum.query import answer_question
 
             with manager.session_scope() as session:
-                sources = session.execute(select(Source)).scalars().all()
-                if not sources:
+                source = _get_pipeline_source(session)
+                if not source:
                     return "Error: No sources found"
-                source = sources[0]
 
                 with manager.duckdb_cursor() as cursor:
                     query_result = answer_question(

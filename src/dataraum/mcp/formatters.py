@@ -422,12 +422,12 @@ def format_zone_status(
     if violations:
         lines.append("## Violations")
         lines.append("")
-        lines.append("| Detector | Score | Threshold | Fix Actions |")
-        lines.append("|----------|-------|-----------|-------------|")
+        lines.append("| Detector | Dimension Path | Score | Threshold | Fix Actions |")
+        lines.append("|----------|----------------|-------|-----------|-------------|")
         for v in violations:
             actions = ", ".join(v.get("fix_actions", []))
             lines.append(
-                f"| {v['detector_id']} | {v['score']:.3f} | {v['threshold']:.2f} | {actions} |"
+                f"| {v['detector_id']} | `{v['dimension_path']}` | {v['score']:.3f} | {v['threshold']:.2f} | {actions} |"
             )
         lines.append("")
 
@@ -461,7 +461,12 @@ def format_zone_status(
     # Next steps guidance
     lines.append("## Next Steps")
     if violations:
-        lines.append("- Use `apply_fix` to address violations above")
+        dim_path = violations[0]["dimension_path"]
+        lines.append(
+            f"- Use `get_fix_proposal(gate=\"{gate_phase}\", dimension=\"{dim_path}\")` "
+            f"to get agent-driven fix suggestions"
+        )
+        lines.append("- Use `apply_fix` with the fix documents from the proposal")
         lines.append("- Use `continue_pipeline` to advance to the next zone after fixing")
     elif skipped_detectors:
         lines.append("- All measured dimensions passing — use `continue_pipeline` to advance")

@@ -391,8 +391,8 @@ def create_server(output_dir: Path | None = None) -> Server:
                                         "description": "Table this fix applies to",
                                     },
                                     "column_name": {
-                                        "type": "string",
-                                        "description": "Column this fix applies to (optional for table-scoped)",
+                                        "type": ["string", "null"],
+                                        "description": "Column this fix applies to (null for table-scoped fixes)",
                                     },
                                     "dimension": {
                                         "type": "string",
@@ -2066,14 +2066,24 @@ def _build_fix_doc_from_plan_item(
         "payload": {},
     }
 
-    if schema and schema.target == "config":
-        value: Any = item.parameters
-        if schema.operation == "append" and not schema.fields:
-            value = f"{table_name}.{column_name}" if column_name else table_name
-        elif schema.operation == "append":
-            # append with fields (e.g., accept_finding with reason)
-            # value is the column reference; parameters go into the appended entry
-            value = f"{table_name}.{column_name}" if column_name else table_name
+    if not schema:
+        return fix_doc
+
+    if schema.target == "config":
+        # For append operations, the value is a column/table reference
+        if schema.operation == "append":
+            value: Any = f"{table_name}.{column_name}" if column_name else table_name
+        elif schema.operation == "merge" and schema.fields:
+            # merge with fields: build the value dict from agent parameters
+            value = {}
+            params = item.parameters if isinstance(item.parameters, dict) else {}
+            for field_name, field_def in schema.fields.items():
+                if field_name in params:
+                    value[field_name] = params[field_name]
+                elif field_def.default is not None:
+                    value[field_name] = field_def.default
+        else:
+            value = item.parameters
 
         fix_doc["payload"] = {
             "config_path": schema.config_path,
@@ -2081,6 +2091,33 @@ def _build_fix_doc_from_plan_item(
             "operation": schema.operation or "set",
             "value": value,
         }
+
+    elif schema.target == "data":
+        # Data-target fixes: instantiate SQL template from agent parameters
+        params = item.parameters if isinstance(item.parameters, dict) else {}
+        payload: dict[str, Any] = {}
+
+        if schema.templates:
+            # Pick the first template and substitute placeholders
+            template_name, template_sql = next(iter(schema.templates.items()))
+            substitutions = {
+                "table": table_name,
+                "column": column_name or "",
+                **params,
+            }
+            try:
+                payload["sql"] = template_sql.format(**substitutions)
+            except KeyError:
+                # Template has placeholders not in params — pass raw for agent review
+                payload["template"] = template_sql
+                payload["parameters"] = substitutions
+
+        # Also pass through any explicit fields from the agent
+        for field_name in schema.fields:
+            if field_name in params:
+                payload[field_name] = params[field_name]
+
+        fix_doc["payload"] = payload
 
     return fix_doc
 

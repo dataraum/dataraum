@@ -1,4 +1,4 @@
-"""Fix command — re-run pipeline interactively to resolve data quality issues."""
+"""Fix command — run pipeline interactively to resolve data quality issues."""
 
 from __future__ import annotations
 
@@ -13,7 +13,21 @@ from dataraum.cli.common import OutputDirArg, console, setup_logging
 
 
 def fix(
+    source: Annotated[
+        Path | None,
+        typer.Argument(
+            help="Path to CSV file or directory. When omitted, uses registered sources.",
+        ),
+    ] = None,
     output_dir: OutputDirArg = Path("./pipeline_output"),
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            "-n",
+            help="Name for the data source (default: derived from path)",
+        ),
+    ] = None,
     contract: Annotated[
         str | None,
         typer.Option("--contract", help="Target contract name for gate evaluation"),
@@ -27,25 +41,29 @@ def fix(
         typer.Option("--log-format", help="Log output format (console or json)"),
     ] = "console",
 ) -> None:
-    """Re-run pipeline interactively to fix data quality issues.
+    """Run pipeline interactively, pausing at quality gates to review and fix issues.
 
-    Pauses at quality gates so you can review violations and apply fixes.
-    The pipeline re-uses existing metadata — only affected phases re-run.
+    Can be used for a fresh run or to re-run on existing pipeline output.
+    Only affected phases re-run when metadata already exists.
 
     Examples:
 
-        dataraum fix ./pipeline_output
+        dataraum fix /path/to/data
 
         dataraum fix ./pipeline_output --contract aggregation_safe
+
+        dataraum fix  # re-run on default output with registered sources
     """
     setup_logging(verbosity=verbose, log_format=log_format)
 
-    # Validate output_dir has existing pipeline data
-    metadata_db = output_dir / "metadata.db"
-    if not metadata_db.exists():
-        console.print(f"[red]Error: No pipeline data found at {output_dir}[/red]")
-        console.print("[dim]Run 'dataraum run' first to create pipeline output.[/dim]")
-        raise typer.Exit(1)
+    # Validate source path if provided
+    source_path: Path | None = None
+    if source is not None:
+        resolved = source.resolve()
+        if not resolved.exists():
+            console.print(f"[red]Error: Source path does not exist: {source}[/red]")
+            raise typer.Exit(1)
+        source_path = resolved
 
     # TTY check
     if not sys.stdin.isatty():
@@ -84,12 +102,13 @@ def fix(
             f"[dim]No contract specified, using {contract} (override with --contract)[/dim]"
         )
 
-    # Setup pipeline using registered sources
+    # Setup pipeline
     from dataraum.pipeline.setup import setup_pipeline
 
     setup = setup_pipeline(
-        source_path=None,
+        source_path=source_path,
         output_dir=output_dir,
+        source_name=name,
         contract=contract,
     )
 

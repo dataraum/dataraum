@@ -21,7 +21,7 @@ class TestFixCommandRegistered:
     def test_help(self) -> None:
         result = runner.invoke(app, ["fix", "--help"])
         assert result.exit_code == 0
-        assert "Re-run pipeline interactively" in result.output
+        assert "quality gates" in result.output.lower()
 
     def test_listed_in_main_help(self) -> None:
         result = runner.invoke(app, ["--help"])
@@ -34,11 +34,22 @@ class TestFixCommandRegistered:
         assert result.exit_code == 0
         assert "--contract" in _strip_ansi(result.output)
 
+    def test_name_flag_in_help(self) -> None:
+        """--name is listed as a valid option."""
+        result = runner.invoke(app, ["fix", "--help"])
+        assert result.exit_code == 0
+        assert "--name" in _strip_ansi(result.output)
 
-class TestFixRequiresMetadata:
-    def test_missing_metadata_db(self, tmp_path) -> None:
-        """Fix command fails when no metadata.db exists in output dir."""
-        # Create the directory but no metadata.db
-        result = runner.invoke(app, ["fix", str(tmp_path)])
+    def test_source_argument_in_help(self) -> None:
+        """Source path argument is documented."""
+        result = runner.invoke(app, ["fix", "--help"])
+        assert result.exit_code == 0
+        assert "source" in result.output.lower()
+
+
+class TestFixValidation:
+    def test_nonexistent_source_path(self, tmp_path) -> None:
+        """Fix command fails when source path doesn't exist."""
+        result = runner.invoke(app, ["fix", str(tmp_path / "nope.csv")])
         assert result.exit_code != 0
-        assert "No pipeline data found" in result.output
+        assert "does not exist" in result.output

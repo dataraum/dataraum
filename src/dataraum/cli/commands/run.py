@@ -371,9 +371,7 @@ def _drive_pipeline(
                             live.start()
                             activate_console(console, log_buffer=log_buffer)
                     else:
-                        event = gen.send(
-                            Resolution(action=ResolutionAction.DEFER)
-                        )
+                        event = gen.send(Resolution(action=ResolutionAction.DEFER))
                     continue
 
                 case EventType.PIPELINE_COMPLETED:

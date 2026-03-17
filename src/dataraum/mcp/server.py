@@ -504,9 +504,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                 )
             else:
                 # No task API: fire-and-forget, client polls get_context
-                bg = asyncio.create_task(
-                    _run_analyze_background(output_dir, path, source_name)
-                )
+                bg = asyncio.create_task(_run_analyze_background(output_dir, path, source_name))
                 _background_tasks.add(bg)
                 bg.add_done_callback(_background_tasks.discard)
                 result = (

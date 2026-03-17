@@ -463,7 +463,7 @@ def format_zone_status(
     if violations:
         dim_path = violations[0]["dimension_path"]
         lines.append(
-            f"- Use `get_fix_proposal(gate=\"{gate_phase}\", dimension=\"{dim_path}\")` "
+            f'- Use `get_fix_proposal(gate="{gate_phase}", dimension="{dim_path}")` '
             f"to get agent-driven fix suggestions"
         )
         lines.append("- Use `apply_fix` with the fix documents from the proposal")

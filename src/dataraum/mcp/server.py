@@ -680,8 +680,7 @@ def _get_pipeline_progress(manager: Any) -> str | None:
             phase_detail = ""
             if failed_phases:
                 details = [
-                    f"  - {name}: {err}" if err else f"  - {name}"
-                    for name, err in failed_phases
+                    f"  - {name}: {err}" if err else f"  - {name}" for name, err in failed_phases
                 ]
                 phase_detail = "\nFailed phases:\n" + "\n".join(details)
             return (

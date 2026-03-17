@@ -46,8 +46,10 @@ class BusinessCyclesPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        # Depends on all phases that build_cycle_detection_context reads from
+        # Zone 3: runs after analysis_review gate (Gate 2).
+        # Also depends on phases that build_cycle_detection_context reads from.
         return [
+            "analysis_review",  # Gate 2 — Zone 3 starts after this
             "semantic",  # column annotations, table entities
             "temporal",  # temporal column profiles
             "enriched_views",  # pre-joined fact-dimension views

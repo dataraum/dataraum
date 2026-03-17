@@ -47,6 +47,17 @@ class RelationshipEntropyDetector(EntropyDetector):
     description = "Measures relationship quality from evaluation metrics"
 
     @property
+    def triage_guidance(self) -> str:
+        return (
+            "Use the component breakdown (ri_entropy, card_entropy, semantic_entropy) "
+            "to choose:\n"
+            "- ri_entropy is the dominant component → accept_finding "
+            "(confirm_relationship only reduces semantic_entropy, not RI)\n"
+            "- semantic_entropy dominates and RI is low (< 0.15) → confirm_relationship\n"
+            "- All components are high → accept_finding"
+        )
+
+    @property
     def fix_schemas(self) -> list[FixSchema]:
         """Schemas for relationship quality fixes."""
         return [

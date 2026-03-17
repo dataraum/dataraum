@@ -21,6 +21,7 @@ class TestBusinessCyclesPhase:
         assert phase.name == "business_cycles"
         assert phase.description == "Expert LLM cycle detection"
         assert phase.dependencies == [
+            "analysis_review",
             "semantic",
             "temporal",
             "enriched_views",

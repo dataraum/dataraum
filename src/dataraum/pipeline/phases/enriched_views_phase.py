@@ -36,6 +36,7 @@ from dataraum.entropy.dimensions import AnalysisKey
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
+from dataraum.pipeline.db_models import PhaseLog
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
@@ -105,7 +106,12 @@ class EnrichedViewsPhase(BasePhase):
         return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if enriched views already exist for all fact tables."""
+        """Skip if enriched views phase already completed for this source.
+
+        Uses PhaseLog instead of counting EnrichedView records, because the
+        LLM may legitimately decide that some fact tables don't need
+        enrichment. Counting records would cause unnecessary re-runs.
+        """
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
         typed_tables = ctx.session.execute(stmt).scalars().all()
 
@@ -124,14 +130,14 @@ class EnrichedViewsPhase(BasePhase):
         if not fact_entities:
             return "No fact tables identified"
 
-        # Check if views already exist
-        existing_stmt = select(EnrichedView).where(
-            EnrichedView.fact_table_id.in_([e.table_id for e in fact_entities])
+        # Check if phase already completed (cleaned up by cleanup_phase on cascade)
+        log_stmt = select(PhaseLog).where(
+            PhaseLog.source_id == ctx.source_id,
+            PhaseLog.phase_name == "enriched_views",
+            PhaseLog.status == "completed",
         )
-        existing = ctx.session.execute(existing_stmt).scalars().all()
-
-        if len(existing) >= len(fact_entities):
-            return "Enriched views already exist for all fact tables"
+        if ctx.session.execute(log_stmt).first():
+            return "Enriched views phase already completed"
 
         return None
 

@@ -60,6 +60,20 @@ class TypeFidelityDetector(EntropyDetector):
     description = "Measures uncertainty in type inference based on parse success rate"
 
     @property
+    def triage_guidance(self) -> str:
+        return (
+            "Choose based on the evidence (quarantine rate, sample values, column type):\n"
+            "- add_type_pattern: The column contains date/time values that the typing "
+            "phase couldn't parse. Sample quarantined values look like dates in an "
+            "unusual format. Add a parsing pattern so typing handles them.\n"
+            "- set_column_type: The inferred type is wrong and quarantining valid data. "
+            "Force VARCHAR if the column has mixed types, or force a specific type if "
+            "the inference picked the wrong one.\n"
+            "- accept_finding: Only if the quarantined values are genuinely bad data "
+            "(not a format the system should learn). The user must confirm."
+        )
+
+    @property
     def fix_schemas(self) -> list[FixSchema]:
         """Schemas for type fidelity fixes."""
         return [

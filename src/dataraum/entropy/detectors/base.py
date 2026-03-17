@@ -194,6 +194,18 @@ class EntropyDetector(ABC):
         return []
 
     @property
+    def triage_guidance(self) -> str:
+        """Detector-specific instructions for choosing between fix actions.
+
+        When a detector has multiple fix schemas, this tells the LLM how
+        to pick the right one based on the evidence. Override in subclasses
+        that have non-trivial triage logic.
+
+        Default: empty (generic prompt rules apply).
+        """
+        return ""
+
+    @property
     def dimension_path(self) -> str:
         """Get full dimension path."""
         return f"{self.layer}.{self.dimension}.{self.sub_dimension}"

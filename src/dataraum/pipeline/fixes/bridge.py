@@ -20,10 +20,11 @@ def build_fix_documents(
 ) -> list[FixDocument]:
     """Build FixDocuments from a FixSchema and user input.
 
-    Routes by operation type:
-    - append: One FixDocument per affected_column, appending the column ref
-    - merge/set with key_template=None: One FixDocument per affected_column
-    - merge/set with key_template: One FixDocument using template-derived key
+    Routes by target and operation type:
+    - data: Renders SQL templates with parameters
+    - config/append: One FixDocument per affected_column
+    - config/merge or set with key_template=None: One per affected_column
+    - config/merge or set with key_template: One using template-derived key
 
     Args:
         schema: The fix schema from the detector.
@@ -35,8 +36,10 @@ def build_fix_documents(
     Returns:
         List of FixDocuments ready for interpreter application.
     """
+    if schema.target == "data":
+        return _build_data_documents(schema, fix_input, table_name, column_name, dimension)
+
     if schema.target != "config":
-        # Only config target is bridged in Phase 3
         return []
 
     config_path = schema.config_path or ""
@@ -67,9 +70,22 @@ def _build_append_documents(
     config_path: str,
     key_path: list[str],
 ) -> list[FixDocument]:
-    """Build append documents — one per affected column."""
+    """Build append documents — one per affected column.
+
+    When the schema has structured fields beyond just "reason" (e.g.,
+    document_business_rule with table, columns, pattern_type), appends
+    the parameters dict. Otherwise (e.g., accept_finding with only an
+    optional reason), appends the column reference string.
+    """
     docs: list[FixDocument] = []
     reason = fix_input.interpretation or f"{schema.action} for {table_name}"
+
+    # Structured append: schema has fields beyond just "reason"
+    has_structured_fields = bool(schema.fields.keys() - {"reason"})
+    if has_structured_fields:
+        value: object = _extract_value(schema, fix_input)
+    else:
+        value = None  # set per-column below
 
     for i, col_ref in enumerate(fix_input.affected_columns):
         docs.append(
@@ -85,7 +101,7 @@ def _build_append_documents(
                     "config_path": config_path,
                     "key_path": key_path,
                     "operation": "append",
-                    "value": col_ref,
+                    "value": value if has_structured_fields else col_ref,
                     "reason": reason,
                 },
             )
@@ -184,6 +200,59 @@ def _build_keyed_documents(
             },
         )
     ]
+
+
+def _build_data_documents(
+    schema: FixSchema,
+    fix_input: FixInput,
+    table_name: str,
+    column_name: str | None,
+    dimension: str,
+) -> list[FixDocument]:
+    """Build data fix documents by rendering SQL templates.
+
+    The schema's ``templates`` dict maps template names to SQL strings with
+    ``{placeholders}``. Placeholders are filled from fix_input.parameters
+    plus ``{table}`` and ``{column}`` from scope.
+    """
+    if not schema.templates:
+        return []
+
+    # Build substitution context: parameters + scope
+    subs = dict(fix_input.parameters)
+    subs["table"] = table_name
+    if column_name:
+        subs["column"] = column_name
+
+    docs: list[FixDocument] = []
+    for i, (name, template) in enumerate(schema.templates.items()):
+        try:
+            sql = template.format(**subs)
+        except KeyError as e:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "SQL template %r requires field %s missing from parameters %s — skipping",
+                name,
+                e,
+                sorted(subs),
+            )
+            continue
+
+        docs.append(
+            FixDocument(
+                target="data",
+                action=schema.action,
+                table_name=table_name,
+                column_name=column_name,
+                dimension=dimension,
+                ordinal=i,
+                description=f"{schema.action}: {name}",
+                payload={"sql": sql},
+            )
+        )
+
+    return docs
 
 
 def _extract_value(schema: FixSchema, fix_input: FixInput) -> dict[str, object]:

@@ -39,6 +39,19 @@ class TemporalEntropyDetector(EntropyDetector):
     DATETIME_TYPES = frozenset({"DATE", "TIME", "TIMESTAMP", "DATETIME", "INTERVAL"})
 
     @property
+    def triage_guidance(self) -> str:
+        return (
+            "Choose based on the evidence (column type, semantic role, sample values):\n"
+            "- add_type_pattern: The column contains date/time values stored as VARCHAR "
+            "because the typing phase couldn't parse the format. The root cause is a "
+            "type mismatch, not a missing role. This is the DEFAULT when the column "
+            "type is VARCHAR and sample values look like dates.\n"
+            "- set_timestamp_role: The column already has a date/time type but was not "
+            "identified as a timestamp by the semantic agent. Only use this when the "
+            "column is already correctly typed."
+        )
+
+    @property
     def fix_schemas(self) -> list[FixSchema]:
         """Schemas for temporal fixes."""
         return [

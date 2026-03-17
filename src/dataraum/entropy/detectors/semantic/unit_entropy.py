@@ -42,6 +42,18 @@ class UnitEntropyDetector(EntropyDetector):
     description = "Measures whether numeric columns have declared units"
 
     @property
+    def triage_guidance(self) -> str:
+        return (
+            "Choose based on the data profile and table structure:\n"
+            "- declare_unit: DEFAULT. The column always uses the same unit "
+            "(e.g., all values are USD, or kg, or percentages). Use the column "
+            "name and sample values to propose a unit.\n"
+            "- set_unit_source: The unit varies per row and another column in the "
+            "same or a related table provides it (e.g., a 'currency' column). "
+            "Only use this when such a column exists in the data profile."
+        )
+
+    @property
     def fix_schemas(self) -> list[FixSchema]:
         """Schemas for declaring units.
 

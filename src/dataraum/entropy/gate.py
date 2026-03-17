@@ -57,21 +57,6 @@ class ExitCheckIssue:
     available_actions: list[str] = field(default_factory=list)
 
 
-_EVIDENCE_KEYS = frozenset(
-    {
-        "ri_entropy",
-        "card_entropy",
-        "semantic_entropy",
-        "from_table",
-        "to_table",
-        "accepted",
-        "aggregation_method",
-        "ri_boosted",
-    }
-)
-"""Evidence keys to persist in gate results for smart context."""
-
-
 def _collect_evidence(
     obj: Any,
     target: str,
@@ -79,17 +64,16 @@ def _collect_evidence(
 ) -> None:
     """Extract component evidence from an EntropyObject into the evidence dict.
 
-    Picks only keys useful for smart context (component scores, metadata).
-    Keyed by sub_dimension string and target.
+    Passes all evidence keys through. Each detector decides what to put
+    in its evidence dict; the gate doesn't filter.
     """
     if not obj.evidence:
         return
     ev = obj.evidence[0] if isinstance(obj.evidence, list) else obj.evidence
     if not isinstance(ev, dict):
         return
-    summary = {k: v for k, v in ev.items() if k in _EVIDENCE_KEYS}
-    if summary:
-        evidence_by_dim[str(obj.sub_dimension)][target] = summary
+    if ev:
+        evidence_by_dim[str(obj.sub_dimension)][target] = dict(ev)
 
 
 def measure_at_gate(

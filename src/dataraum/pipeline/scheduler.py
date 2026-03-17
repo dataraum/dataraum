@@ -198,6 +198,8 @@ class PipelineScheduler:
                 # all_scores accumulates across the entire run.
                 pending_issues: list[ExitCheckIssue] = []
                 column_details: dict[str, dict[str, float]] = {}
+                table_details: dict[str, dict[str, float]] = {}
+                view_details: dict[str, dict[str, float]] = {}
                 column_evidence: dict[str, dict[str, dict[str, Any]]] = {}
                 resolution_actions: dict[str, set[str]] = {}
                 wave_skipped: list[dict[str, str]] = []
@@ -215,6 +217,8 @@ class PipelineScheduler:
                         )
                         all_scores.update(gate_result.scores)
                         column_details.update(gate_result.column_details)
+                        table_details.update(gate_result.table_details)
+                        view_details.update(gate_result.view_details)
                         column_evidence.update(gate_result.column_evidence)
                         for path, acts in gate_result.resolution_actions.items():
                             resolution_actions.setdefault(path, set()).update(acts)
@@ -241,6 +245,8 @@ class PipelineScheduler:
                         scores=dict(all_scores),
                         skipped_detectors=wave_skipped,
                         column_details=dict(column_details),
+                        table_details=dict(table_details),
+                        view_details=dict(view_details),
                         column_evidence=dict(column_evidence),
                     )
                     issues = assess_contracts(
@@ -266,6 +272,8 @@ class PipelineScheduler:
                         violations=violations,
                         scores=dict(all_scores),
                         column_details=dict(column_details),
+                        table_details=dict(table_details),
+                        view_details=dict(view_details),
                         column_evidence=dict(column_evidence),
                         available_fixes=fixes,
                     )

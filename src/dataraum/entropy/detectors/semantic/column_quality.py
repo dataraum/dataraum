@@ -192,22 +192,10 @@ class ColumnQualityDetector(EntropyDetector):
                 }
             ]
 
-            resolution_options = [
-                ResolutionOption(
-                    action="investigate_quality_issues",
-                    parameters={
-                        "column_name": col_name,
-                        "key_findings": col_data["key_findings"],
-                        "quality_issues": col_data["quality_issues"],
-                        "recommendations": col_data["recommendations"],
-                    },
-                    effort="medium",
-                    description=(
-                        f"Review {col_data['quality_issues_count']} quality issues "
-                        f"and {col_data['recommendations_count']} recommendations for {col_name}"
-                    ),
-                ),
-            ]
+            # No fix_schemas — column_quality is a downstream documentation-debt
+            # detector. Quality issues are addressed by fixing upstream detectors
+            # (typing, null_ratio, etc.) or by documenting business rules.
+            resolution_options: list[ResolutionOption] = []
 
             # Use the effective table name for the target
             effective_table_name = col_data["table_name"]

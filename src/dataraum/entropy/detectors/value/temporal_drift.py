@@ -175,31 +175,18 @@ class TemporalDriftDetector(EntropyDetector):
 
         evidence = [evidence_data]
 
-        # Resolution options
+        # Resolution options — only actions backed by fix_schemas
         resolution_options: list[ResolutionOption] = []
-        if score > 0.3:
+        if score > 0:
             resolution_options.append(
                 ResolutionOption(
-                    action="investigate_drift",
+                    action="accept_finding",
                     parameters={
                         "column": context.column_name,
-                        "worst_period": evidence_data.get("worst_period", ""),
-                    },
-                    effort="medium",
-                    description="Investigate the cause of distribution drift",
-                )
-            )
-
-        if score > 0.7:
-            resolution_options.append(
-                ResolutionOption(
-                    action="transform_add_time_filter",
-                    parameters={
-                        "column": context.column_name,
-                        "strategy": "use_recent_periods_only",
+                        "detector_id": self.detector_id,
                     },
                     effort="low",
-                    description="Filter to recent stable periods to reduce drift impact",
+                    description="Accept temporal drift as expected (seasonal, growth, etc.)",
                 )
             )
 

@@ -419,9 +419,9 @@ def _run_fix_flow(
 ) -> Resolution:
     """Run the agent-driven fix flow for a dimension's fix actions.
 
-    For multi-target dimensions (>1 violating target), uses a batch action
-    plan so the user can review and confirm all targets in one round.
-    For single-target dimensions, uses the standard Q&A flow.
+    Uses a batch action plan: the LLM proposes one action per violating
+    target, the user reviews and confirms, producing FixInputs in one round.
+    Works for both single-target and multi-target dimensions.
 
     Returns a FIX resolution on success, DEFER on cancellation or error.
     """
@@ -432,28 +432,6 @@ def _run_fix_flow(
     except Exception as e:
         console.print(f"[red]Failed to initialize LLM: {e}[/red]")
         return Resolution(action=ResolutionAction.DEFER)
-
-    # Multi-target → batch plan flow
-    affected = _get_affected_targets(group.dimension, event)
-    if len(affected) > 1:
-        return _run_batch_fix_flow(console, group, event, agent, context)
-
-    # Single target → standard Q&A flow
-    return _run_single_fix_flow(console, group, event, agent, context)
-
-
-def _run_batch_fix_flow(
-    console: Console,
-    group: _DimensionFixGroup,
-    event: PipelineEvent,
-    agent: Any,
-    context: str,
-) -> Resolution:
-    """Run batch action plan for multi-target dimensions.
-
-    The LLM proposes one action per violating target. The user reviews
-    the plan and confirms, producing multiple FixInputs in one round.
-    """
     console.print("\n[dim]Generating action plan...[/dim]")
     plan_result = agent.generate_batch_plan(context)
     if not plan_result.success:
@@ -520,9 +498,26 @@ def _run_batch_fix_flow(
     if col_scores:
         evidence["column_scores"] = col_scores
 
+    # Pre-fill parameters from detector evidence (deterministic, no LLM needed)
+    target_evidence = event.column_evidence.get(dim_path, {})
+
     fix_inputs: list[FixInput] = []
     for item in plan.items:
         params = dict(item.parameters)
+
+        # Enrich from component evidence — detector already knows columns,
+        # pattern_type, etc. so the user shouldn't be asked for them.
+        ev = target_evidence.get(item.target, {})
+        for key in ("pattern_type", "columns", "description", "confidence"):
+            if key in ev and key not in params:
+                params[key] = ev[key]
+        if "business_rule_hypothesis" in ev and "description" not in params:
+            params["description"] = ev["business_rule_hypothesis"]
+
+        # Extract table from target reference (e.g. "table:journal_lines")
+        if item.target.startswith("table:") and "table" not in params:
+            params["table"] = item.target.split(":", 1)[1]
+
         # Thread follow-up answers into parameters as "reason"
         # (accept_finding's only user-provided parameter)
         if follow_up_answers and "reason" not in params:
@@ -554,120 +549,6 @@ def _target_to_column_ref(target: str) -> str:
     if ":" in target:
         return target.split(":", 1)[1]
     return target
-
-
-def _run_single_fix_flow(
-    console: Console,
-    group: _DimensionFixGroup,
-    event: PipelineEvent,
-    agent: Any,
-    context: str,
-) -> Resolution:
-    """Run the standard Q&A flow for a single-target dimension.
-
-    The LLM sees ALL available actions and triages to the best one.
-    Returns config_action to indicate which action it chose.
-    """
-    # Generate questions
-    console.print("\n[dim]Generating questions...[/dim]")
-    q_result = agent.generate_config_questions(context)
-    if not q_result.success:
-        console.print(f"[red]Error: {q_result.error}[/red]")
-        return Resolution(action=ResolutionAction.DEFER)
-
-    questions = q_result.unwrap()
-    if questions.context_summary:
-        console.print(f"\n[dim]{questions.context_summary}[/dim]\n")
-
-    # Collect answers
-    answers_parts: list[str] = []
-    for q in questions.questions:
-        console.print(f"[bold]{q.question}[/bold]")
-        if q.question_type == "multiple_choice" and q.choices:
-            for j, choice_text in enumerate(q.choices, 1):
-                console.print(f"  {j}. {choice_text}")
-        answer = console.input("[green]> [/green]").strip()
-
-        # Resolve multiple choice number to text
-        if q.question_type == "multiple_choice" and q.choices:
-            try:
-                ci = int(answer) - 1
-                if 0 <= ci < len(q.choices):
-                    answer = q.choices[ci]
-            except ValueError:
-                pass
-
-        answers_parts.append(f"Q: {q.question}\nA: {answer}")
-        console.print()
-
-    user_answers = "\n\n".join(answers_parts)
-
-    # Interpret answers — LLM picks the best action via config_action
-    console.print("[dim]Interpreting answers...[/dim]")
-    from dataraum.entropy.detectors.base import get_default_registry
-
-    dim_path = group.dimension
-    registry = get_default_registry()
-    interp_result = agent.interpret_config_answers(context, user_answers, parameter_schema=None)
-    if not interp_result.success:
-        console.print(f"[red]Error: {interp_result.error}[/red]")
-        return Resolution(action=ResolutionAction.DEFER)
-
-    interp = interp_result.unwrap()
-
-    # Resolve which action the LLM chose
-    action_name = interp.config_action
-    if not action_name:
-        # Fallback: use the first action in the group
-        action_name = group.actions[0]["action_name"]
-
-    # Validate parameters against the chosen action's schema
-    schema = registry.get_fix_schema(action_name, dim_path)
-    if schema:
-        errors = schema.validate_payload(interp.parameters)
-        if errors:
-            console.print(
-                f"[red]LLM returned invalid parameters for {action_name}: {'; '.join(errors)}[/red]"
-            )
-            console.print("[yellow]Deferring — try again or fix manually.[/yellow]")
-            return Resolution(action=ResolutionAction.DEFER)
-
-    console.print(f"\n[bold]Proposed fix:[/bold] {action_name}")
-    console.print(f"[bold]Interpretation:[/bold] {interp.summary}")
-    console.print(f"[dim]{interp.interpretation}[/dim]")
-    console.print(f"[dim]Confidence: {interp.confidence}[/dim]\n")
-
-    if not interp.applicable:
-        console.print("[yellow]No available action fits this data issue.[/yellow]")
-        console.print(f"[dim]{interp.interpretation}[/dim]")
-        console.print("[yellow]Deferring.[/yellow]")
-        return Resolution(action=ResolutionAction.DEFER)
-
-    confirm = console.input("[bold]Apply fix? (y/n): [/bold]").strip().lower()
-    if confirm != "y":
-        console.print(
-            f"[yellow]Fix cancelled, deferring.[/yellow] [dim](input was {confirm!r})[/dim]"
-        )
-        return Resolution(action=ResolutionAction.DEFER)
-
-    # Thread entropy evidence into FixInput for audit trail
-    evidence: dict[str, Any] = {}
-    evidence["score"] = group.score
-    evidence["threshold"] = group.threshold
-    col_scores = event.column_details.get(dim_path, {})
-    if col_scores:
-        evidence["column_scores"] = col_scores
-
-    fix_input = FixInput(
-        action_name=action_name,
-        dimension=dim_path,
-        parameters=dict(interp.parameters),
-        interpretation=interp.interpretation,
-        affected_columns=interp.affected_columns,
-        entropy_evidence=evidence,
-    )
-
-    return Resolution(action=ResolutionAction.FIX, fix_inputs=[fix_input])
 
 
 # ---------------------------------------------------------------------------
@@ -713,8 +594,8 @@ def build_gate_context(
         f"Score: {score:.2f} (threshold: {threshold:.2f})",
         f"Affected columns: {', '.join(affected_targets)}",
         "",
-        "Choose the BEST action for this data issue. Set config_action to the chosen action name.",
-        "Set applicable=false only if NONE of the actions fit.",
+        "Choose the BEST action for each violating target.",
+        "Prefer corrective actions (recalculate, override, add pattern) over accept_finding.",
         "",
     ]
     for i, action in enumerate(group.actions, 1):
@@ -730,30 +611,45 @@ def build_gate_context(
     action_lines.append("</available_actions>")
     sections.append("\n".join(action_lines))
 
-    # Section 2: Entropy evidence with per-column component breakdown
+    # Section 1b: Detector-specific triage guidance (if available)
+    from dataraum.entropy.detectors.base import get_default_registry
+
+    registry = get_default_registry()
+    detector_by_path = {d.dimension_path: d for d in registry.get_all_detectors()}
+    detector = detector_by_path.get(dim_path)
+    if detector and detector.triage_guidance:
+        sections.append(f"<triage_guidance>\n{detector.triage_guidance}\n</triage_guidance>")
+
+    # Section 2: Entropy evidence with per-target component breakdown
+    # Merge column, table, and view details — detectors may be any scope
+    all_target_scores: dict[str, float] = {}
+    all_target_scores.update(event.column_details.get(dim_path, {}))
+    all_target_scores.update(getattr(event, "table_details", {}).get(dim_path, {}))
+    all_target_scores.update(getattr(event, "view_details", {}).get(dim_path, {}))
+
     evidence_lines = [
         "<entropy_evidence>",
         f"Detector: {dim_path.split('.')[-1]}",
         f"Score: {score:.2f}",
         f"Threshold: {threshold:.2f}",
     ]
-    col_scores = event.column_details.get(dim_path, {})
-    # Per-column component evidence from gate result (if available)
-    col_evidence = getattr(event, "column_evidence", {}).get(dim_path, {})
-    if col_scores:
+    # Per-target component evidence from gate result (if available)
+    target_evidence = getattr(event, "column_evidence", {}).get(dim_path, {})
+    if all_target_scores:
         evidence_lines.append("")
-        evidence_lines.append("Per-column breakdown:")
-        for target, col_score in sorted(col_scores.items(), key=lambda x: -x[1]):
-            label = "VIOLATING" if col_score > threshold else "passing"
-            line = f"  {target}: {col_score:.2f} ({label})"
-            ev = col_evidence.get(target, {})
+        evidence_lines.append("Per-target breakdown:")
+        for target, target_score in sorted(all_target_scores.items(), key=lambda x: -x[1]):
+            label = "VIOLATING" if target_score > threshold else "passing"
+            line = f"  {target}: {target_score:.2f} ({label})"
+            ev = target_evidence.get(target, {})
             if ev:
                 components = []
-                for k in ("ri_entropy", "card_entropy", "semantic_entropy"):
-                    if k in ev:
-                        components.append(f"{k}={ev[k]:.2f}")
-                if ev.get("accepted"):
-                    components.append("ACCEPTED")
+                for k, v in sorted(ev.items()):
+                    if k == "accepted":
+                        if v:
+                            components.append("ACCEPTED")
+                    else:
+                        components.append(f"{k}={v}")
                 if components:
                     line += f" [{', '.join(components)}]"
             evidence_lines.append(line)
@@ -772,20 +668,22 @@ def _get_affected_targets(
     dim_path: str,
     event: PipelineEvent,
 ) -> list[str]:
-    """Extract column/table targets that actually violate the contract.
+    """Extract column/table/view targets that actually violate the contract.
 
-    Only returns targets whose individual score exceeds the contract
-    threshold. Columns that scored but are below threshold (e.g.
-    aligned temporal columns at 0.1) are healthy and not actionable.
+    Checks column_details, table_details, and view_details — detectors
+    may be column-scoped, table-scoped, or view-scoped.
     """
-    col_scores = event.column_details.get(dim_path, {})
-    if not col_scores:
+    all_scores: dict[str, float] = {}
+    all_scores.update(event.column_details.get(dim_path, {}))
+    all_scores.update(getattr(event, "table_details", {}).get(dim_path, {}))
+    all_scores.update(getattr(event, "view_details", {}).get(dim_path, {}))
+    if not all_scores:
         return []
 
     _, threshold = event.violations.get(dim_path, (0.0, 0.0))
 
     return [
-        t for t, s in sorted(col_scores.items(), key=lambda x: x[1], reverse=True) if s > threshold
+        t for t, s in sorted(all_scores.items(), key=lambda x: x[1], reverse=True) if s > threshold
     ]
 
 

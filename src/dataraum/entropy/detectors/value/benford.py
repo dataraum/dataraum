@@ -18,7 +18,6 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
-from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 # Benford's Law uses digits 1-9, so df = k - 1 = 8
 _BENFORD_DF = 8
@@ -48,36 +47,6 @@ class BenfordDetector(EntropyDetector):
 
     # Only measure columns benefit from Benford analysis
     _APPLICABLE_ROLES = frozenset({"measure"})
-
-    @property
-    def fix_schemas(self) -> list[FixSchema]:
-        """Schema for accepting Benford findings."""
-        return [
-            FixSchema(
-                action="accept_finding",
-                target="config",
-                description="Mark Benford deviation findings as reviewed and accepted",
-                config_path="entropy/thresholds.yaml",
-                key_path=["detectors", "benford", "accepted_columns"],
-                operation="append",
-                requires_rerun="quality_review",
-                guidance=(
-                    "Present ALL affected columns in a numbered list with their key metric "
-                    "(e.g., Cramér's V, p-value). For each column show: table.column — "
-                    "effect size — digit distribution summary.\n"
-                    "Ask the user to select columns by number (comma-separated), or 'all'.\n"
-                    "Then ask WHY the finding is acceptable (e.g., 'known rounding', "
-                    "'pricing convention', 'expected distribution')."
-                ),
-                fields={
-                    "reason": FixSchemaField(
-                        type="string",
-                        required=False,
-                        description="Why the finding was accepted",
-                    ),
-                },
-            )
-        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load statistics and semantic annotation for this column."""

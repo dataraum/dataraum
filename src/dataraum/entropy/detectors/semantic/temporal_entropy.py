@@ -12,7 +12,6 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
-from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 
 class TemporalEntropyDetector(EntropyDetector):
@@ -37,89 +36,6 @@ class TemporalEntropyDetector(EntropyDetector):
 
     # Date/time type indicators (uppercase for case-insensitive matching)
     DATETIME_TYPES = frozenset({"DATE", "TIME", "TIMESTAMP", "DATETIME", "INTERVAL"})
-
-    @property
-    def triage_guidance(self) -> str:
-        return (
-            "Choose based on the evidence (column type, semantic role, sample values):\n"
-            "- add_type_pattern: The column contains date/time values stored as VARCHAR "
-            "because the typing phase couldn't parse the format. The root cause is a "
-            "type mismatch, not a missing role. This is the DEFAULT when the column "
-            "type is VARCHAR and sample values look like dates.\n"
-            "- set_timestamp_role: The column already has a date/time type but was not "
-            "identified as a timestamp by the semantic agent. Only use this when the "
-            "column is already correctly typed."
-        )
-
-    @property
-    def fix_schemas(self) -> list[FixSchema]:
-        """Schemas for temporal fixes."""
-        return [
-            FixSchema(
-                action="set_timestamp_role",
-                target="config",
-                description="Mark a date column as a timestamp",
-                config_path="phases/semantic.yaml",
-                key_path=["overrides", "semantic_roles"],
-                operation="merge",
-                requires_rerun="semantic",
-                guidance=(
-                    "Confirms that a date/time column should have "
-                    "semantic_role='timestamp'. The column has a date type from "
-                    "type inference but was not identified as a timestamp by the "
-                    "semantic agent. Ask the user to confirm."
-                ),
-                fields={
-                    "semantic_role": FixSchemaField(
-                        type="enum",
-                        required=True,
-                        description="Semantic role to assign",
-                        enum_values=["timestamp"],
-                        default="timestamp",
-                    ),
-                },
-            ),
-            FixSchema(
-                action="add_type_pattern",
-                target="config",
-                description="Add a custom date/time parsing pattern",
-                config_path="phases/typing.yaml",
-                key_path=["overrides", "patterns"],
-                operation="merge",
-                requires_rerun="typing",
-                key_template="{pattern_name}",
-                guidance=(
-                    "Adds a date/time pattern so the typing phase can parse "
-                    "this column. Show sample values and ask what date format "
-                    "they represent. Then produce a DuckDB STRPTIME format "
-                    "string (e.g. '%Y-%m' for '2025-01', '%d/%m/%Y' for "
-                    "'15/01/2024'). The regex pattern must match the raw "
-                    "string values."
-                ),
-                fields={
-                    "pattern_name": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description="Short name for this pattern (e.g. fiscal_period, european_date)",
-                    ),
-                    "pattern": FixSchemaField(
-                        type="regex",
-                        required=True,
-                        description="Regex matching the raw values (e.g. ^\\d{4}-\\d{2}$)",
-                    ),
-                    "standardization_expr": FixSchemaField(
-                        type="duckdb_sql",
-                        required=True,
-                        description=(
-                            "DuckDB expression to parse the value into a date/timestamp. "
-                            "Use STRPTIME with {col} placeholder. "
-                            "Examples: STRPTIME(\"{col}\", '%Y-%m'), "
-                            "STRPTIME(\"{col}\", '%d/%m/%Y')"
-                        ),
-                    ),
-                },
-            ),
-        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load typing and semantic data for this column."""

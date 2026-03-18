@@ -8,7 +8,6 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
-from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 
 class NullRatioDetector(EntropyDetector):
@@ -27,36 +26,6 @@ class NullRatioDetector(EntropyDetector):
     sub_dimension = SubDimension.NULL_RATIO
     required_analyses = [AnalysisKey.STATISTICS]
     description = "Measures uncertainty from null/missing values"
-
-    @property
-    def fix_schemas(self) -> list[FixSchema]:
-        """Schema for accepting null ratio findings."""
-        return [
-            FixSchema(
-                action="accept_finding",
-                target="config",
-                description="Mark null ratio findings as reviewed and accepted",
-                config_path="entropy/thresholds.yaml",
-                key_path=["detectors", "null_ratio", "accepted_columns"],
-                operation="append",
-                requires_rerun="quality_review",
-                guidance=(
-                    "Present ALL affected columns in a numbered list with their key metric "
-                    "(e.g., null rate). For each column show: table.column — null rate — "
-                    "sample values if relevant.\n"
-                    "Ask the user to select columns by number (comma-separated), or 'all'.\n"
-                    "Then ask WHY the finding is acceptable (e.g., 'optional field', "
-                    "'expected variation', 'known data quality')."
-                ),
-                fields={
-                    "reason": FixSchemaField(
-                        type="string",
-                        required=False,
-                        description="Why the finding was accepted",
-                    ),
-                },
-            )
-        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load statistical profile for this column."""

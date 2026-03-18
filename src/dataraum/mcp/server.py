@@ -1681,11 +1681,10 @@ def _get_zone_status(
                 detector_id = id_map.get(
                     issue.dimension_path, issue.dimension_path.rsplit(".", 1)[-1]
                 )
-                # Get fix actions from detector registry
-                fix_actions: list[str] = []
-                detector = registry.detectors.get(detector_id)
-                if detector:
-                    fix_actions = [s.action for s in detector.fix_schemas]
+                # Get fix actions from YAML fix schemas
+                from dataraum.entropy.fix_schemas import get_schemas_for_detector
+
+                fix_actions = [s.action for s in get_schemas_for_detector(detector_id)]
 
                 # Build per-target scores from all detail dicts
                 affected: list[str] = issue.affected_targets
@@ -1836,8 +1835,11 @@ def _build_mcp_gate_context(
         "accept_finding acknowledges an issue but does NOT lower the entropy score.",
         "",
     ]
-    if detector:
-        for i, schema in enumerate(detector.fix_schemas, 1):
+    from dataraum.entropy.fix_schemas import get_schemas_for_detector as _get_schemas
+
+    fix_schemas = _get_schemas(detector_id) if detector_id else []
+    if fix_schemas:
+        for i, schema in enumerate(fix_schemas, 1):
             action_lines.append(f"--- Action {i}: {schema.action} ---")
             if schema.requires_rerun:
                 action_lines.append(f"Phase: {schema.requires_rerun}")
@@ -1855,8 +1857,11 @@ def _build_mcp_gate_context(
     sections.append("\n".join(action_lines))
 
     # Section 1b: Detector-specific triage guidance
-    if detector and detector.triage_guidance:
-        sections.append(f"<triage_guidance>\n{detector.triage_guidance}\n</triage_guidance>")
+    from dataraum.entropy.fix_schemas import get_triage_guidance
+
+    triage = get_triage_guidance(detector_id) if detector_id else ""
+    if triage:
+        sections.append(f"<triage_guidance>\n{triage}\n</triage_guidance>")
 
     # Section 2: Entropy evidence with per-column component breakdown
     col_evidence = outputs.get("gate_column_evidence", {}).get(dimension, {})

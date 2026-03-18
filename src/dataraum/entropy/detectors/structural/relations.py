@@ -12,7 +12,6 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
-from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 
 class JoinPathDeterminismDetector(EntropyDetector):
@@ -34,43 +33,6 @@ class JoinPathDeterminismDetector(EntropyDetector):
     sub_dimension = SubDimension.JOIN_PATH_DETERMINISM
     required_analyses = [AnalysisKey.RELATIONSHIPS]
     description = "Measures ambiguity in join paths (not just connectivity)"
-
-    @property
-    def fix_schemas(self) -> list[FixSchema]:
-        """Schema for resolving join ambiguity."""
-        return [
-            FixSchema(
-                action="resolve_join_ambiguity",
-                target="config",
-                description="Set preferred join path for ambiguous table connections",
-                config_path="entropy/thresholds.yaml",
-                key_path=["detectors", "join_path", "preferred_joins"],
-                operation="merge",
-                requires_rerun="quality_review",
-                key_template="{table}->{target_table}",
-                guidance=(
-                    "Resolves ambiguity when multiple join paths exist between tables. "
-                    "Ask which join path is the correct one for analytics queries."
-                ),
-                fields={
-                    "table": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description="Source table with ambiguous paths",
-                    ),
-                    "target_table": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description="Target table",
-                    ),
-                    "preferred_column": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description="Column to use for the join",
-                    ),
-                },
-            )
-        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load relationships for this column."""

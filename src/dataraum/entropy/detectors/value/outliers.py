@@ -10,7 +10,6 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
-from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 
 class OutlierRateDetector(EntropyDetector):
@@ -36,36 +35,6 @@ class OutlierRateDetector(EntropyDetector):
 
     # Semantic roles where outlier detection is meaningless
     _SKIP_ROLES = frozenset({"key", "foreign_key"})
-
-    @property
-    def fix_schemas(self) -> list[FixSchema]:
-        """Schema for accepting outlier findings."""
-        return [
-            FixSchema(
-                action="accept_finding",
-                target="config",
-                description="Mark outlier findings as reviewed and accepted",
-                config_path="entropy/thresholds.yaml",
-                key_path=["detectors", "outlier_rate", "accepted_columns"],
-                operation="append",
-                requires_rerun="quality_review",
-                guidance=(
-                    "Present ALL affected columns in a numbered list with their key metric "
-                    "(e.g., outlier rate). For each column show: table.column — outlier "
-                    "rate — IQR fences if relevant.\n"
-                    "Ask the user to select columns by number (comma-separated), or 'all'.\n"
-                    "Then ask WHY the finding is acceptable (e.g., 'expected variation', "
-                    "'known data range', 'legitimate extreme values')."
-                ),
-                fields={
-                    "reason": FixSchemaField(
-                        type="string",
-                        required=False,
-                        description="Why the finding was accepted",
-                    ),
-                },
-            )
-        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load statistics and semantic annotation for this column."""

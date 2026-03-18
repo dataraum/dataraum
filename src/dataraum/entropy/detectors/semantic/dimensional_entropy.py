@@ -27,7 +27,6 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
-from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 logger = get_logger(__name__)
 
@@ -199,59 +198,6 @@ class DimensionalEntropyDetector(EntropyDetector):
     scope = "table"
     required_analyses = [AnalysisKey.SLICE_VARIANCE]  # temporal_variance is optional
     description = "Detects cross-column business rules from slice and temporal variance patterns"
-
-    @property
-    def fix_schemas(self) -> list[FixSchema]:
-        return [
-            FixSchema(
-                action="document_business_rule",
-                target="config",
-                description="Document a detected cross-column pattern as a known business rule",
-                config_path="entropy/thresholds.yaml",
-                key_path=["detectors", "dimensional_entropy", "documented_patterns"],
-                operation="append",
-                requires_rerun="analysis_review",
-                guidance=(
-                    "The detector found undocumented cross-column patterns. "
-                    "Read the table name from the affected targets in <entropy_evidence> "
-                    "(format: 'table:TABLE_NAME'). Read the columns and pattern_type "
-                    "from the per-column evidence breakdown.\n"
-                    "Do NOT ask the user which table or columns are involved — extract "
-                    "them from the evidence. Only ask whether this is a known business "
-                    "rule and what it means in their domain.\n"
-                    "Example: debit/credit mutual exclusivity in double-entry bookkeeping."
-                ),
-                fields={
-                    "table": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description="Table name where the pattern exists",
-                    ),
-                    "columns": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description="Comma-separated column names involved in the pattern",
-                    ),
-                    "pattern_type": FixSchemaField(
-                        type="enum",
-                        required=True,
-                        description="Type of pattern",
-                        enum_values=[
-                            "mutual_exclusivity",
-                            "conditional_dependency",
-                            "correlated_variance",
-                            "temporal_correlation",
-                            "temporal_drift",
-                        ],
-                    ),
-                    "description": FixSchemaField(
-                        type="string",
-                        required=False,
-                        description="Business justification for why this pattern is expected",
-                    ),
-                },
-            ),
-        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load slice variance data for this table."""

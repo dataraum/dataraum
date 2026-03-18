@@ -16,7 +16,6 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
-from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 
 class UnitEntropyDetector(EntropyDetector):
@@ -40,77 +39,6 @@ class UnitEntropyDetector(EntropyDetector):
     sub_dimension = SubDimension.UNIT_DECLARATION
     required_analyses = [AnalysisKey.TYPING, AnalysisKey.SEMANTIC]
     description = "Measures whether numeric columns have declared units"
-
-    @property
-    def triage_guidance(self) -> str:
-        return (
-            "Choose based on the data profile and table structure:\n"
-            "- declare_unit: DEFAULT. The column always uses the same unit "
-            "(e.g., all values are USD, or kg, or percentages). Use the column "
-            "name and sample values to propose a unit.\n"
-            "- set_unit_source: The unit varies per row and another column in the "
-            "same or a related table provides it (e.g., a 'currency' column). "
-            "Only use this when such a column exists in the data profile."
-        )
-
-    @property
-    def fix_schemas(self) -> list[FixSchema]:
-        """Schemas for declaring units.
-
-        Two actions covering the two real-world scenarios:
-        - declare_unit: fixed unit for the whole column (e.g. always USD)
-        - set_unit_source: unit varies per row, comes from another column
-        """
-        return [
-            FixSchema(
-                action="declare_unit",
-                target="config",
-                description="Declare a fixed unit for this column",
-                config_path="phases/typing.yaml",
-                key_path=["overrides", "units"],
-                operation="merge",
-                requires_rerun="typing",
-                guidance=(
-                    "The column always uses the same unit. Ask the user what "
-                    "unit the values represent (e.g. USD, EUR, kg, %, "
-                    "dimensionless). Use the data profile and column name to "
-                    "suggest a likely unit."
-                ),
-                fields={
-                    "unit": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description="Unit of measure (e.g. USD, EUR, kg, dimensionless)",
-                    ),
-                },
-            ),
-            FixSchema(
-                action="set_unit_source",
-                target="config",
-                description="Specify which column provides the unit per row",
-                config_path="phases/semantic.yaml",
-                key_path=["overrides", "units"],
-                operation="merge",
-                requires_rerun="semantic",
-                guidance=(
-                    "The unit varies per row and comes from another column "
-                    "(e.g. a 'currency' column in the same or a related "
-                    "table). Ask the user which column provides the unit. "
-                    "Format: column_name for same table, or "
-                    "table_name.column_name for a related table."
-                ),
-                fields={
-                    "unit_source_column": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description=(
-                            "Column providing the unit per row "
-                            "(e.g. 'currency' or 'chart_of_accounts.currency')"
-                        ),
-                    ),
-                },
-            ),
-        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load typing and semantic data for this column."""

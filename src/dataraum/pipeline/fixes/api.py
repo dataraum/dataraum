@@ -86,24 +86,18 @@ def _get_source(session: Any) -> Any:
 def _determine_rerun_phases(fix_documents: list[FixDocument]) -> set[str]:
     """Determine which phases need re-running based on fix actions.
 
-    Looks up each fix action's FixSchema from the detector registry
-    and collects ``requires_rerun`` values. Gate-only phases (quality_review,
-    semantic) are excluded — measure_at_gate handles them directly.
+    Looks up each fix action's FixSchema from the YAML fix schema loader.
+    Only preprocess schemas (those with ``requires_rerun``) contribute —
+    postprocess schemas have ``requires_rerun=None`` and are skipped.
     """
-    from dataraum.entropy.detectors.base import get_default_registry
+    from dataraum.entropy.fix_schemas import get_fix_schema
 
-    gate_only_phases = {"quality_review", "analysis_review", "semantic"}
-    registry = get_default_registry()
     phases: set[str] = set()
 
     for doc in fix_documents:
-        # Check all detectors' fix schemas for a matching action
-        for detector in registry.get_all_detectors():
-            for schema in detector.fix_schemas:
-                if schema.action == doc.action and schema.requires_rerun:
-                    if schema.requires_rerun not in gate_only_phases:
-                        phases.add(schema.requires_rerun)
-                    break
+        schema = get_fix_schema(doc.action, dimension_path=doc.dimension)
+        if schema and schema.requires_rerun:
+            phases.add(schema.requires_rerun)
 
     return phases
 

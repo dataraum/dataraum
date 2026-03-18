@@ -27,7 +27,6 @@ from dataraum.core.logging import get_logger
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
-from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 logger = get_logger(__name__)
 
@@ -95,47 +94,6 @@ class CrossTableConsistencyDetector(EntropyDetector):
     scope = "table"
     required_analyses = [AnalysisKey.VALIDATION]
     description = "Cross-table reconciliation failures from validation checks"
-
-    @property
-    def triage_guidance(self) -> str:
-        return (
-            "This detector found cross-table validation failures (e.g., trial balance "
-            "doesn't balance, sign convention violations). Investigate the evidence to "
-            "understand the root cause:\n"
-            "- If the failure is a real data issue (e.g., wrong account classifications), "
-            "it needs upstream data correction — outside the fix system.\n"
-            "- accept_finding: Only if the validation failure is expected (e.g., known "
-            "reclassification in progress, tolerance too strict for this dataset). "
-            "Ask the user to confirm and provide a reason."
-        )
-
-    @property
-    def fix_schemas(self) -> list[FixSchema]:
-        return [
-            FixSchema(
-                action="accept_finding",
-                target="config",
-                description="Accept cross-table inconsistency as expected or under investigation",
-                config_path="entropy/thresholds.yaml",
-                key_path=["detectors", "cross_table_consistency", "accepted_columns"],
-                operation="append",
-                requires_rerun="computation_review",
-                guidance=(
-                    "A cross-table validation check failed. Show the user the specific "
-                    "check that failed, the severity, and what it means (e.g., 'trial "
-                    "balance doesn't balance — Assets $196M vs Liabilities+Equity -$19M'). "
-                    "Only accept if the user confirms the mismatch is expected or under "
-                    "active investigation."
-                ),
-                fields={
-                    "reason": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description="Why the reconciliation failure is accepted",
-                    ),
-                },
-            ),
-        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load validation results that involve this table."""

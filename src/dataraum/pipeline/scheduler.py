@@ -682,6 +682,8 @@ class PipelineScheduler:
         detector_registry = get_default_registry()
 
         # Build dim_path -> detector lookup for matching issues
+        from dataraum.entropy.fix_schemas import get_schemas_for_detector
+
         detector_by_path = {d.dimension_path: d for d in detector_registry.get_all_detectors()}
 
         result: dict[str, list[dict[str, str]]] = {}
@@ -689,7 +691,7 @@ class PipelineScheduler:
             detector = detector_by_path.get(issue.dimension_path)
             if detector:
                 actions: list[dict[str, str]] = []
-                for schema in detector.fix_schemas:
+                for schema in get_schemas_for_detector(detector.detector_id):
                     # Only include schemas matching actual resolution options
                     if issue.available_actions and schema.action not in issue.available_actions:
                         continue

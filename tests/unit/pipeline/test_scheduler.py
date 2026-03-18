@@ -939,10 +939,32 @@ class TestMeasureAtGate:
         assert "semantic.dimensional.cross_column_patterns" in gate_result.scores
 
 
+def _make_test_fix_schema(
+    action: str, phase_name: str
+) -> FixSchema:
+    """Create a test FixSchema."""
+    return FixSchema(
+        action=action,
+        target="config",
+        description="Test fix",
+        config_path="phases/typing.yaml",
+        key_path=["overrides"],
+        operation="set",
+        requires_rerun=phase_name,
+        routing="preprocess",
+        fields={},
+    )
+
+
 def _make_test_detector_registry(
     action: str, phase_name: str, dim_path: str = "structural.types.type_fidelity"
-) -> DetectorRegistry:
-    """Create a DetectorRegistry with a detector that has a fix schema."""
+) -> tuple[DetectorRegistry, FixSchema]:
+    """Create a DetectorRegistry with a test detector and a corresponding FixSchema.
+
+    Returns:
+        Tuple of (registry, fix_schema) — callers must also mock the YAML
+        loader to return the schema.
+    """
     parts = dim_path.split(".")
     layer_str, dim_str, subdim_str = parts[0], parts[1], parts[2]
 
@@ -954,27 +976,13 @@ def _make_test_detector_registry(
         scope = "column"
         required_analyses: list[AnalysisKey] = []
 
-        @property
-        def fix_schemas(self) -> list[FixSchema]:
-            return [
-                FixSchema(
-                    action=action,
-                    target="config",
-                    description="Test fix",
-                    config_path="phases/typing.yaml",
-                    key_path=["overrides"],
-                    operation="set",
-                    requires_rerun=phase_name,
-                    fields={},
-                )
-            ]
-
         def detect(self, ctx):
             return []
 
     registry = DetectorRegistry()
     registry.register(TestDetector())
-    return registry
+    schema = _make_test_fix_schema(action, phase_name)
+    return registry, schema
 
 
 class TestFixResolution:
@@ -1017,7 +1025,7 @@ class TestFixResolution:
                 return GateResult(scores={"structural.types.type_fidelity": 0.8})
             return GateResult(scores={"structural.types.type_fidelity": 0.1})
 
-        detector_registry = _make_test_detector_registry("override_type", "alpha")
+        detector_registry, test_schema = _make_test_detector_registry("override_type", "alpha")
         with (
             patch(
                 "dataraum.pipeline.scheduler.measure_at_gate",
@@ -1027,6 +1035,14 @@ class TestFixResolution:
             patch(
                 "dataraum.entropy.detectors.base.get_default_registry",
                 return_value=detector_registry,
+            ),
+            patch(
+                "dataraum.entropy.fix_schemas.get_schemas_for_detector",
+                return_value=[test_schema],
+            ),
+            patch(
+                "dataraum.entropy.fix_schemas.get_fix_schema",
+                return_value=test_schema,
             ),
             patch(
                 "dataraum.pipeline.fixes.interpreters.apply_and_persist",
@@ -1127,7 +1143,7 @@ class TestFixResolution:
             return GateResult(scores={"structural.types.type_fidelity": 0.1})
 
         fix_input = FixInput(action_name="override_type", affected_columns=["orders.amount"])
-        detector_registry = _make_test_detector_registry("override_type", "alpha")
+        detector_registry, test_schema = _make_test_detector_registry("override_type", "alpha")
 
         with (
             patch(
@@ -1138,6 +1154,14 @@ class TestFixResolution:
             patch(
                 "dataraum.entropy.detectors.base.get_default_registry",
                 return_value=detector_registry,
+            ),
+            patch(
+                "dataraum.entropy.fix_schemas.get_schemas_for_detector",
+                return_value=[test_schema],
+            ),
+            patch(
+                "dataraum.entropy.fix_schemas.get_fix_schema",
+                return_value=test_schema,
             ),
             patch(
                 "dataraum.pipeline.fixes.interpreters.apply_and_persist",
@@ -1187,7 +1211,7 @@ class TestFixResolution:
             return GateResult(scores={"structural.types.type_fidelity": 0.8})
 
         fix_input = FixInput(action_name="override_type", affected_columns=["orders.amount"])
-        detector_registry = _make_test_detector_registry("override_type", "alpha")
+        detector_registry, test_schema = _make_test_detector_registry("override_type", "alpha")
 
         with (
             patch(
@@ -1198,6 +1222,14 @@ class TestFixResolution:
             patch(
                 "dataraum.entropy.detectors.base.get_default_registry",
                 return_value=detector_registry,
+            ),
+            patch(
+                "dataraum.entropy.fix_schemas.get_schemas_for_detector",
+                return_value=[test_schema],
+            ),
+            patch(
+                "dataraum.entropy.fix_schemas.get_fix_schema",
+                return_value=test_schema,
             ),
             patch(
                 "dataraum.pipeline.fixes.interpreters.apply_and_persist",
@@ -1265,7 +1297,7 @@ class TestFixScoresCleared:
             return GateResult(scores={"value.nulls.null_ratio": 0.05})
 
         fix_input = FixInput(action_name="override_type", affected_columns=["orders.amount"])
-        detector_registry = _make_test_detector_registry("override_type", "alpha")
+        detector_registry, test_schema = _make_test_detector_registry("override_type", "alpha")
         with (
             patch(
                 "dataraum.pipeline.scheduler.measure_at_gate",
@@ -1276,6 +1308,14 @@ class TestFixScoresCleared:
             patch(
                 "dataraum.entropy.detectors.base.get_default_registry",
                 return_value=detector_registry,
+            ),
+            patch(
+                "dataraum.entropy.fix_schemas.get_schemas_for_detector",
+                return_value=[test_schema],
+            ),
+            patch(
+                "dataraum.entropy.fix_schemas.get_fix_schema",
+                return_value=test_schema,
             ),
             patch(
                 "dataraum.pipeline.fixes.interpreters.apply_and_persist",
@@ -1298,12 +1338,17 @@ class TestFixScoresCleared:
 
 
 class TestDetectorRegistryFixSchema:
-    """Tests for DetectorRegistry.get_fix_schema()."""
+    """Tests for DetectorRegistry.get_fix_schema() (delegates to YAML loader)."""
 
-    def test_finds_registered_schema(self):
-        """Schema is found by action name."""
-        registry = _make_test_detector_registry("override_type", "alpha")
-        schema = registry.get_fix_schema("override_type")
+    def test_finds_schema_via_yaml_loader(self):
+        """Schema is found by action name via YAML loader."""
+        test_schema = _make_test_fix_schema("override_type", "alpha")
+        registry = DetectorRegistry()
+        with patch(
+            "dataraum.entropy.fix_schemas.get_fix_schema",
+            return_value=test_schema,
+        ):
+            schema = registry.get_fix_schema("override_type")
         assert schema is not None
         assert schema.action == "override_type"
         assert schema.requires_rerun == "alpha"
@@ -1311,7 +1356,11 @@ class TestDetectorRegistryFixSchema:
     def test_returns_none_for_unknown_action(self):
         """Unknown action returns None."""
         registry = DetectorRegistry()
-        assert registry.get_fix_schema("nonexistent") is None
+        with patch(
+            "dataraum.entropy.fix_schemas.get_fix_schema",
+            return_value=None,
+        ):
+            assert registry.get_fix_schema("nonexistent") is None
 
 
 class TestExitCheckAvailableFixes:
@@ -1334,7 +1383,7 @@ class TestExitCheckAvailableFixes:
             contract_thresholds={"structural.types": 0.3},
         )
 
-        detector_registry = _make_test_detector_registry("override_type", "typing")
+        detector_registry, test_schema = _make_test_detector_registry("override_type", "typing")
 
         gate = GateResult(scores={"structural.types.type_fidelity": 0.8})
         with (
@@ -1345,6 +1394,10 @@ class TestExitCheckAvailableFixes:
             patch(
                 "dataraum.entropy.detectors.base.get_default_registry",
                 return_value=detector_registry,
+            ),
+            patch(
+                "dataraum.entropy.fix_schemas.get_schemas_for_detector",
+                return_value=[test_schema],
             ),
         ):
             events, result = _drive(

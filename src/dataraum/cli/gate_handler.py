@@ -612,13 +612,13 @@ def build_gate_context(
     sections.append("\n".join(action_lines))
 
     # Section 1b: Detector-specific triage guidance (if available)
-    from dataraum.entropy.detectors.base import get_default_registry
+    from dataraum.entropy.fix_schemas import get_triage_guidance
 
-    registry = get_default_registry()
-    detector_by_path = {d.dimension_path: d for d in registry.get_all_detectors()}
-    detector = detector_by_path.get(dim_path)
-    if detector and detector.triage_guidance:
-        sections.append(f"<triage_guidance>\n{detector.triage_guidance}\n</triage_guidance>")
+    # Extract detector_id from dimension path (last segment)
+    _detector_id = dim_path.rsplit(".", 1)[-1] if dim_path else ""
+    _triage = get_triage_guidance(_detector_id)
+    if _triage:
+        sections.append(f"<triage_guidance>\n{_triage}\n</triage_guidance>")
 
     # Section 2: Entropy evidence with per-target component breakdown
     # Merge column, table, and view details — detectors may be any scope

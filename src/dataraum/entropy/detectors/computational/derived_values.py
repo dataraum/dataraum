@@ -15,7 +15,6 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
-from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 
 def _boost_mismatch_rate(rate: float) -> float:
@@ -54,70 +53,6 @@ class DerivedValueDetector(EntropyDetector):
     sub_dimension = SubDimension.FORMULA_MATCH
     required_analyses = [AnalysisKey.CORRELATION]
     description = "Measures reliability of detected derived column formulas"
-
-    @property
-    def triage_guidance(self) -> str:
-        return (
-            "This detector found a derived column (computed from other columns) with "
-            "formula mismatches. Choose based on the match rate:\n"
-            "- recalculate_derived_column: DEFAULT choice. The formula is known and "
-            "mismatches indicate data that drifted from the formula. Recalculating "
-            "enforces consistency. Ask the user to confirm the formula via a "
-            "follow_up_question (propose the detected formula as default).\n"
-            "- accept_finding: Only if the user has confirmed that mismatches are "
-            "intentional (manual adjustments, rounding). Do NOT assume this — "
-            "formula drift is usually a data quality problem, not expected behavior."
-        )
-
-    @property
-    def fix_schemas(self) -> list[FixSchema]:
-        return [
-            FixSchema(
-                action="accept_finding",
-                target="config",
-                description="Accept formula mismatch as expected (e.g., manual adjustments, rounding)",
-                config_path="entropy/thresholds.yaml",
-                key_path=["detectors", "derived_value", "accepted_columns"],
-                operation="append",
-                requires_rerun="analysis_review",
-                guidance=(
-                    "The column was detected as derived (computed from other columns) "
-                    "but some rows don't match the formula. Show the user the detected "
-                    "formula, the match rate, and the source columns. Ask whether the "
-                    "mismatches are expected (manual adjustments, rounding, historical "
-                    "corrections) or indicate a real data quality problem."
-                ),
-                fields={
-                    "reason": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description="Why the formula mismatch is expected",
-                    ),
-                },
-            ),
-            FixSchema(
-                action="recalculate_derived_column",
-                target="data",
-                description="Recalculate the derived column from its source formula",
-                templates={
-                    "recalculate": "UPDATE typed_{table} SET {column} = {formula}",
-                },
-                requires_rerun="correlations",
-                guidance=(
-                    "The derived column has formula mismatches and the user wants "
-                    "to recalculate. Show the detected formula and match rate. "
-                    "Ask the user to confirm the correct formula (the detected one "
-                    "may be wrong). PROPOSE the detected formula as default."
-                ),
-                fields={
-                    "formula": FixSchemaField(
-                        type="duckdb_sql",
-                        required=True,
-                        description="SQL expression to recalculate (e.g., 'debit - credit')",
-                    ),
-                },
-            ),
-        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load correlation (derived column) data for this column."""

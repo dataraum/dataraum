@@ -19,7 +19,6 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
-from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 
 class RelationshipEntropyDetector(EntropyDetector):
@@ -45,92 +44,6 @@ class RelationshipEntropyDetector(EntropyDetector):
     sub_dimension = SubDimension.RELATIONSHIP_QUALITY
     required_analyses = [AnalysisKey.RELATIONSHIPS]
     description = "Measures relationship quality from evaluation metrics"
-
-    @property
-    def triage_guidance(self) -> str:
-        return (
-            "Use the component breakdown (ri_entropy, card_entropy, semantic_entropy) "
-            "to choose:\n"
-            "- ri_entropy is the dominant component → accept_finding "
-            "(confirm_relationship only reduces semantic_entropy, not RI)\n"
-            "- semantic_entropy dominates and RI is low (< 0.15) → confirm_relationship\n"
-            "- All components are high → accept_finding"
-        )
-
-    @property
-    def fix_schemas(self) -> list[FixSchema]:
-        """Schemas for relationship quality fixes."""
-        return [
-            FixSchema(
-                action="accept_finding",
-                target="config",
-                description="Mark relationship quality findings as reviewed and accepted",
-                config_path="entropy/thresholds.yaml",
-                key_path=["detectors", "relationship_entropy", "accepted_columns"],
-                operation="append",
-                requires_rerun="quality_review",
-                guidance=(
-                    "This is a RELATIONSHIP finding between two tables, not a per-column issue. "
-                    "Present the relationship: from_table.column → to_table.column, with its "
-                    "key metrics (referential integrity %, orphan count, cardinality). "
-                    "Explain what the score means in plain language.\n"
-                    "Do NOT ask the user to pick columns — accept the finding for the column "
-                    "this entropy object belongs to.\n"
-                    "Ask WHY the relationship quality is acceptable (e.g., 'known partial overlap', "
-                    "'soft reference', 'legacy data', 'different ID namespaces')."
-                ),
-                fields={
-                    "reason": FixSchemaField(
-                        type="string",
-                        required=False,
-                        description="Why the finding was accepted",
-                    ),
-                },
-            ),
-            FixSchema(
-                action="confirm_relationship",
-                target="config",
-                description="Confirm a detected relationship between tables",
-                config_path="phases/semantic.yaml",
-                key_path=["overrides", "confirmed_relationships"],
-                operation="merge",
-                requires_rerun="semantic",
-                key_template="{from_table}->{to_table}",
-                guidance=(
-                    "Confirms or rejects a detected relationship between tables. "
-                    "Ask whether the relationship is a real foreign key, shared "
-                    "reference data, or coincidental overlap.\n"
-                    "IMPORTANT: This only reduces the semantic component of the score. "
-                    "If the score is driven by referential integrity issues (orphan "
-                    "records, low RI %), confirming the relationship won't help — "
-                    "use accept_finding instead."
-                ),
-                fields={
-                    "from_table": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description="Source table name",
-                    ),
-                    "to_table": FixSchemaField(
-                        type="string",
-                        required=True,
-                        description="Target table name",
-                    ),
-                    "relationship_type": FixSchemaField(
-                        type="enum",
-                        required=False,
-                        description="Confirmed relationship type",
-                        enum_values=["foreign_key", "shared_reference", "coincidental"],
-                    ),
-                    "cardinality": FixSchemaField(
-                        type="enum",
-                        required=False,
-                        description="Confirmed cardinality",
-                        enum_values=["one_to_one", "one_to_many", "many_to_one", "many_to_many"],
-                    ),
-                },
-            ),
-        ]
 
     def load_data(self, context: DetectorContext) -> None:
         """Load relationships for this column."""

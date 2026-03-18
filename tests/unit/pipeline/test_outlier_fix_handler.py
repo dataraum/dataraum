@@ -2,24 +2,23 @@
 
 from __future__ import annotations
 
-from dataraum.entropy.detectors.value.outliers import OutlierRateDetector
+from dataraum.entropy.fix_schemas import get_schemas_for_detector
 from dataraum.pipeline.fixes import FixInput
 from dataraum.pipeline.fixes.bridge import build_fix_documents
 
 
 class TestOutlierDetectorFixSchemas:
     def test_has_fix_schema(self) -> None:
-        detector = OutlierRateDetector()
-        schemas = detector.fix_schemas
+        schemas = get_schemas_for_detector("outlier_rate")
         assert len(schemas) == 1
         assert schemas[0].action == "accept_finding"
-        assert schemas[0].requires_rerun == "quality_review"
+        assert schemas[0].routing == "postprocess"
+        assert schemas[0].gate == "quality_review"
 
 
 class TestAcceptFindingBridge:
     def _get_schema(self):
-        detector = OutlierRateDetector()
-        return detector.fix_schemas[0]
+        return get_schemas_for_detector("outlier_rate")[0]
 
     def test_single_column(self) -> None:
         schema = self._get_schema()

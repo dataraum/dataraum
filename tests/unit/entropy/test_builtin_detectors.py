@@ -5,8 +5,10 @@ import pytest
 from dataraum.entropy.detectors import (
     BUILTIN_DETECTORS,
     BenfordDetector,
+    BusinessCycleHealthDetector,
     BusinessMeaningDetector,
     ColumnQualityDetector,
+    CrossTableConsistencyDetector,
     DerivedValueDetector,
     DetectorRegistry,
     DimensionalEntropyDetector,
@@ -45,10 +47,12 @@ class TestBuiltinDetectors:
             # Semantic (table-scoped)
             DimensionalEntropyDetector,
             ColumnQualityDetector,
+            BusinessCycleHealthDetector,
             # Semantic (view-scoped)
             DimensionCoverageDetector,
             # Computational
             DerivedValueDetector,
+            CrossTableConsistencyDetector,
         ]
 
         assert len(BUILTIN_DETECTORS) == len(expected_detectors)
@@ -132,7 +136,7 @@ class TestBuiltinDetectors:
         semantic_detectors = [
             d for d in registry.get_all_detectors() if d.layer.value == "semantic"
         ]
-        assert len(semantic_detectors) == 6
+        assert len(semantic_detectors) == 7
         detector_ids = [d.detector_id for d in semantic_detectors]
         assert "business_meaning" in detector_ids
         assert "unit_entropy" in detector_ids
@@ -149,8 +153,10 @@ class TestBuiltinDetectors:
         computational_detectors = [
             d for d in registry.get_all_detectors() if d.layer.value == "computational"
         ]
-        assert len(computational_detectors) == 1
-        assert computational_detectors[0].detector_id == "derived_value"
+        assert len(computational_detectors) == 2
+        detector_ids = [d.detector_id for d in computational_detectors]
+        assert "derived_value" in detector_ids
+        assert "cross_table_consistency" in detector_ids
 
 
 class TestDetectorRequirements:

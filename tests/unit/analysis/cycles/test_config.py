@@ -12,9 +12,9 @@ from dataraum.analysis.cycles.config import (
 
 
 class TestGetCycleTypes:
-    def test_returns_all_11_cycle_types(self) -> None:
+    def test_returns_all_12_cycle_types(self) -> None:
         types = get_cycle_types("finance")
-        assert len(types) == 11
+        assert len(types) == 12
 
     def test_contains_original_8_types(self) -> None:
         types = get_cycle_types("finance")
@@ -88,8 +88,8 @@ class TestMapToCanonicalType:
         assert is_known is False
 
     def test_unknown_type_normalized(self) -> None:
-        canonical, is_known = map_to_canonical_type("Bank_Reconciliation", "finance")
-        assert canonical == "bank_reconciliation"
+        canonical, is_known = map_to_canonical_type("Some_Unknown_Cycle", "finance")
+        assert canonical == "some_unknown_cycle"
         assert is_known is False
 
     def test_empty_string(self) -> None:

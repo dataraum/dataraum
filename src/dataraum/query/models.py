@@ -142,6 +142,9 @@ class QueryResult:
     )
     assumptions: list[QueryAssumption] = field(default_factory=list)
 
+    # Risk assessment (combined contract + LLM assumptions)
+    risk_assessment: str | None = None
+
     # Contract evaluation (if contract specified)
     contract: str | None = None
     contract_evaluation: ContractEvaluation | None = None
@@ -192,6 +195,7 @@ class QueryResult:
                 }
                 for a in self.assumptions
             ],
+            "risk_assessment": self.risk_assessment,
             "contract": self.contract,
             "contract_evaluation": (
                 self.contract_evaluation.to_dict() if self.contract_evaluation else None

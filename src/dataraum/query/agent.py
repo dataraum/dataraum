@@ -198,21 +198,6 @@ class QueryAgent(LLMFeature):
             else:
                 confidence_level = ConfidenceLevel.GREEN
 
-        # Check if query is blocked
-        if confidence_level == ConfidenceLevel.RED and contract_evaluation:
-            return Result.ok(
-                QueryResult(
-                    execution_id=execution_id,
-                    question=question,
-                    success=False,
-                    confidence_level=ConfidenceLevel.RED,
-                    contract=contract,
-                    contract_evaluation=contract_evaluation,
-                    answer=self._format_blocked_response(contract_evaluation),
-                    error="Query blocked due to data quality issues",
-                )
-            )
-
         # Discover validated SQL snippets from the knowledge base
         discovery = self._discover_snippets(
             session=session,
@@ -336,6 +321,14 @@ class QueryAgent(LLMFeature):
                 contract=contract,
             )
 
+        # Build risk assessment (combined contract + LLM data)
+        risk_assessment = self._build_risk_assessment(
+            contract_evaluation=contract_evaluation,
+            confidence_level=confidence_level,
+            assumptions=assumptions,
+            validation_notes=analysis_output.validation_notes,
+        )
+
         # Build execution steps from LLM output
         execution_steps = [
             ExecutionStep(
@@ -359,6 +352,7 @@ class QueryAgent(LLMFeature):
                 columns=columns,
                 confidence_level=confidence_level,
                 entropy_score=entropy_score,
+                risk_assessment=risk_assessment,
                 assumptions=assumptions,
                 contract=contract,
                 contract_evaluation=contract_evaluation,
@@ -1028,25 +1022,60 @@ class QueryAgent(LLMFeature):
 
         return f"Found {row_count} result(s) with {col_count} column(s)."
 
-    def _format_blocked_response(self, evaluation: ContractEvaluation) -> str:
-        """Format response when query is blocked."""
-        lines = [
-            f"Cannot provide answer for {evaluation.contract_display_name} because:",
-            "",
-        ]
+    @staticmethod
+    def _build_risk_assessment(
+        contract_evaluation: ContractEvaluation | None,
+        confidence_level: ConfidenceLevel,
+        assumptions: list[QueryAssumption],
+        validation_notes: list[str],
+    ) -> str | None:
+        """Build a unified risk assessment combining contract and LLM data.
 
-        for v in evaluation.violations:
-            if v.dimension:
-                lines.append(f"❌ {v.dimension}: {v.actual:.2f} (max allowed: {v.max_allowed:.2f})")
-            elif v.condition:
-                lines.append(f"❌ {v.condition}: {v.details}")
+        Args:
+            contract_evaluation: Contract evaluation result (may be None).
+            confidence_level: Overall confidence level.
+            assumptions: LLM-generated assumptions about the data.
+            validation_notes: LLM-generated validation caveats.
 
-        lines.append("")
-        lines.append("Options:")
-        lines.append("1. Use a less strict contract (e.g., exploratory_analysis)")
-        lines.append("2. Resolve the data quality issues first")
+        Returns:
+            Formatted risk assessment string, or None for GREEN confidence.
+        """
+        if confidence_level == ConfidenceLevel.GREEN:
+            return None
 
-        return "\n".join(lines)
+        lines: list[str] = []
+
+        # Contract violations and warnings
+        if contract_evaluation:
+            if contract_evaluation.violations:
+                lines.append("Contract violations:")
+                for v in contract_evaluation.violations:
+                    if v.dimension:
+                        lines.append(
+                            f"  - {v.dimension}: {v.actual:.2f} "
+                            f"(max allowed: {v.max_allowed:.2f})"
+                        )
+                    elif v.condition:
+                        lines.append(f"  - {v.details}")
+
+            if contract_evaluation.warnings:
+                lines.append("Contract warnings:")
+                for w in contract_evaluation.warnings:
+                    lines.append(f"  - {w.details}")
+
+        # LLM assumptions
+        if assumptions:
+            lines.append("Assumptions made:")
+            for a in assumptions:
+                lines.append(f"  - {a.assumption} ({a.basis.value})")
+
+        # LLM validation notes
+        if validation_notes:
+            lines.append("Validation notes:")
+            for note in validation_notes:
+                lines.append(f"  - {note}")
+
+        return "\n".join(lines) if lines else None
 
     def _record_execution(
         self,

@@ -213,8 +213,11 @@ def format_query_result(result: QueryResult) -> str:
         lines.append("```")
         lines.append("")
 
-    # Assumptions
-    if result.assumptions:
+    # Risk assessment (replaces separate assumptions section when present)
+    if result.risk_assessment:
+        lines.append("## Risk Assessment")
+        lines.append(result.risk_assessment)
+    elif result.assumptions:
         lines.append("## Assumptions")
         for a in result.assumptions:
             lines.append(f"- {a.assumption} ({a.basis.value})")

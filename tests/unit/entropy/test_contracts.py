@@ -46,7 +46,7 @@ class TestConfidenceLevel:
         assert ConfidenceLevel.GREEN.label == "GOOD"
         assert ConfidenceLevel.YELLOW.label == "MARGINAL"
         assert ConfidenceLevel.ORANGE.label == "ISSUES"
-        assert ConfidenceLevel.RED.label == "BLOCKED"
+        assert ConfidenceLevel.RED.label == "HIGH RISK"
 
     def test_value(self):
         """Each level has correct string value."""

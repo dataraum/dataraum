@@ -45,6 +45,8 @@ class Dimension(_StrValueMixin):
     DIMENSIONAL = "dimensional"
     COVERAGE = "coverage"
     DERIVED_VALUES = "derived_values"
+    RECONCILIATION = "reconciliation"
+    CYCLES = "cycles"
 
 
 class AnalysisKey(_StrValueMixin):
@@ -59,6 +61,8 @@ class AnalysisKey(_StrValueMixin):
     SLICE_VARIANCE = "slice_variance"
     COLUMN_QUALITY_REPORTS = "column_quality_reports"
     ENRICHED_VIEW = "enriched_view"
+    VALIDATION = "validation"
+    BUSINESS_CYCLES = "business_cycles"
 
 
 class SubDimension(_StrValueMixin):
@@ -78,3 +82,5 @@ class SubDimension(_StrValueMixin):
     CROSS_COLUMN_PATTERNS = "cross_column_patterns"
     COLUMN_QUALITY = "column_quality"
     DIMENSION_COVERAGE = "dimension_coverage"
+    CROSS_TABLE_CONSISTENCY = "cross_table_consistency"
+    BUSINESS_CYCLE_HEALTH = "business_cycle_health"

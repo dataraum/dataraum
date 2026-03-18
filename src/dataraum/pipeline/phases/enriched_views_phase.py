@@ -218,11 +218,11 @@ class EnrichedViewsPhase(BasePhase):
                         dimension_joins.extend(rec.dimension_joins)
 
             if not dimension_joins:
-                logger.debug(
-                    "no_qualifying_joins",
+                logger.info(
+                    "passthrough_enriched_view",
                     fact_table=fact_table.table_name,
+                    reason="no qualifying dimension joins",
                 )
-                continue
 
             # Build view SQL
             view_name, view_sql, dim_columns = build_enriched_view_sql(

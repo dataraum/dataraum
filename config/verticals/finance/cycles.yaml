@@ -336,6 +336,41 @@ cycle_types:
     feeds_into:
       - journal_entry_cycle
 
+  # Treasury/Banking Cycles
+  bank_reconciliation:
+    description: "Bank transaction matching and reconciliation against internal records"
+    business_value: high
+    aliases:
+      - bank_recon
+      - reconciliation_cycle
+      - bank_matching
+    typical_stages:
+      - name: "Transaction Recorded"
+        order: 1
+        indicators: ["recorded", "imported", "new"]
+      - name: "Matched"
+        order: 2
+        indicators: ["matched", "identified"]
+      - name: "Reconciled"
+        order: 3
+        indicators: ["reconciled", "cleared", "true", "yes"]
+    participating_entities:
+      - bank_transaction
+      - bank_account
+      - account
+    completion_indicators:
+      - "reconciled"
+      - "true"
+      - "cleared"
+      - "matched"
+    related_tables:
+      - bank
+      - transaction
+      - reconciliation
+      - statement
+    feeds_into:
+      - period_close
+
   # GL Cycles
   journal_entry_cycle:
     description: "GL journal entry from creation through posting"

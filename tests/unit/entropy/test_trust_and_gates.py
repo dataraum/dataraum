@@ -20,6 +20,8 @@ ALL_DETECTOR_IDS = {
     "dimensional_entropy",
     "column_quality",
     "dimension_coverage",
+    "business_cycle_health",
+    "cross_table_consistency",
 }
 
 

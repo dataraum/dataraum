@@ -55,7 +55,7 @@ class EntropyPhase(BasePhase):
             "column_eligibility",
             "semantic",
             "relationships",
-            "analysis_review",
+            "computation_review",
         ]
 
     def cleanup(

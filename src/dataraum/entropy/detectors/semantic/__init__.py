@@ -7,6 +7,9 @@ Detectors for semantic uncertainty:
 - Dimensional cross-column patterns
 """
 
+from dataraum.entropy.detectors.semantic.business_cycle_health import (
+    BusinessCycleHealthDetector,
+)
 from dataraum.entropy.detectors.semantic.business_meaning import (
     BusinessMeaningDetector,
 )
@@ -27,6 +30,7 @@ from dataraum.entropy.detectors.semantic.unit_entropy import (
 )
 
 __all__ = [
+    "BusinessCycleHealthDetector",
     "BusinessMeaningDetector",
     "ColumnQualityDetector",
     "DimensionalEntropyDetector",

@@ -114,8 +114,8 @@ def create_server(output_dir: Path | None = None) -> Server:
                         },
                         "target_gate": {
                             "type": "string",
-                            "enum": ["quality_review", "analysis_review"],
-                            "description": "Stop at this gate for review instead of running the full pipeline. Default: runs all phases.",
+                            "enum": ["quality_review", "analysis_review", "computation_review"],
+                            "description": "Stop at this gate for review instead of running the full pipeline. quality_review = Gate 1 (foundation). analysis_review = Gate 2 (enrichment). computation_review = Gate 3 (interpretation). Default: runs all phases.",
                         },
                         "contract": {
                             "type": "string",
@@ -150,8 +150,8 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "properties": {
                         "gate": {
                             "type": "string",
-                            "enum": ["quality_review", "analysis_review"],
-                            "description": "When set, returns zone-specific gate status instead of overall report. quality_review = Gate 1. analysis_review = Gate 2.",
+                            "enum": ["quality_review", "analysis_review", "computation_review"],
+                            "description": "When set, returns zone-specific gate status instead of overall report. quality_review = Gate 1. analysis_review = Gate 2. computation_review = Gate 3.",
                         },
                         "contract_name": {
                             "type": "string",
@@ -307,11 +307,12 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "properties": {
                         "target_gate": {
                             "type": "string",
-                            "enum": ["analysis_review", "end"],
+                            "enum": ["analysis_review", "computation_review", "end"],
                             "description": (
                                 "Where to stop: "
                                 "'analysis_review' = run through Gate 2 (Zone 2). "
-                                "'end' = run through the end of the pipeline (Zone 3)."
+                                "'computation_review' = run through Gate 3 (Zone 3 analysis). "
+                                "'end' = run through the end of the pipeline."
                             ),
                         },
                         "source_path": {
@@ -336,7 +337,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "properties": {
                         "gate": {
                             "type": "string",
-                            "enum": ["quality_review", "analysis_review"],
+                            "enum": ["quality_review", "analysis_review", "computation_review"],
                             "description": "Which gate this violation was measured at.",
                         },
                         "dimension": {
@@ -391,8 +392,8 @@ def create_server(output_dir: Path | None = None) -> Server:
                                         "description": "Table this fix applies to",
                                     },
                                     "column_name": {
-                                        "type": "string",
-                                        "description": "Column this fix applies to (optional for table-scoped)",
+                                        "type": ["string", "null"],
+                                        "description": "Column this fix applies to (null for table-scoped fixes)",
                                     },
                                     "dimension": {
                                         "type": "string",
@@ -616,6 +617,7 @@ _PHASE_LABELS: dict[str, str] = {
     "entropy_interpretation": "Writing quality summaries (AI step)",
     "business_cycles": "Detecting business cycles (AI step)",
     "validation": "Running validation checks (AI step)",
+    "computation_review": "Reviewing computation quality (Gate 3)",
     "graph_execution": "Executing metric graphs",
 }
 
@@ -637,10 +639,10 @@ async def _run_analyze_background(
 
 
 def _get_pipeline_progress(manager: Any) -> str | None:
-    """Check if a pipeline is running and return a progress message.
+    """Check if a pipeline is running or recently failed and return a status message.
 
     Returns:
-        Progress message string if running, None if no pipeline is running.
+        Progress/error message string if running or failed, None if pipeline is idle.
     """
     from sqlalchemy import func, select
 
@@ -652,22 +654,46 @@ def _get_pipeline_progress(manager: Any) -> str | None:
         if not source:
             return None
 
-        running_run = session.execute(
+        # Check for a running pipeline
+        latest_run = session.execute(
             select(PipelineRun)
-            .where(
-                PipelineRun.source_id == source.source_id,
-                PipelineRun.status == "running",
-            )
+            .where(PipelineRun.source_id == source.source_id)
             .order_by(PipelineRun.started_at.desc())
             .limit(1)
         ).scalar_one_or_none()
 
-        if running_run is None:
+        if latest_run is None:
             return None
 
+        # Pipeline completed successfully — no progress to report
+        if latest_run.status == "completed":
+            return None
+
+        # Pipeline failed — surface the error
+        if latest_run.status == "failed":
+            error_detail = f": {latest_run.error}" if latest_run.error else ""
+            # Collect failed phases for context
+            failed_phases = session.execute(
+                select(PhaseLog.phase_name, PhaseLog.error).where(
+                    PhaseLog.run_id == latest_run.run_id,
+                    PhaseLog.status == "failed",
+                )
+            ).all()
+            phase_detail = ""
+            if failed_phases:
+                details = [
+                    f"  - {name}: {err}" if err else f"  - {name}" for name, err in failed_phases
+                ]
+                phase_detail = "\nFailed phases:\n" + "\n".join(details)
+            return (
+                f"Error: Pipeline failed{error_detail}{phase_detail}\n\n"
+                f"Fix the issue and re-run `analyze`."
+            )
+
+        # Pipeline is still running — show progress
         completed_count: int = (
             session.execute(
-                select(func.count()).where(PhaseLog.run_id == running_run.run_id)
+                select(func.count()).where(PhaseLog.run_id == latest_run.run_id)
             ).scalar()
             or 0
         )
@@ -678,7 +704,7 @@ def _get_pipeline_progress(manager: Any) -> str | None:
         # Determine currently running phases from dependency graph
         completed_names: set[str] = set()
         log_result = session.execute(
-            select(PhaseLog.phase_name).where(PhaseLog.run_id == running_run.run_id)
+            select(PhaseLog.phase_name).where(PhaseLog.run_id == latest_run.run_id)
         )
         for row in log_result:
             completed_names.add(row[0])
@@ -697,7 +723,10 @@ def _get_pipeline_progress(manager: Any) -> str | None:
             labels = [_PHASE_LABELS.get(p, p) for p in running_phases]
             current_detail = f" Current: {', '.join(labels)}."
 
-        return f"Phase {completed_count} of {total_phases} complete.{current_detail}"
+        return (
+            f"Phase {completed_count} of {total_phases} complete.{current_detail}\n"
+            f"Call `get_context` again to check for completion."
+        )
 
 
 def _build_pipeline_status(session: Any, source_id: str) -> str | None:
@@ -1000,10 +1029,10 @@ def _get_context(output_dir: Path) -> str:
         return _NO_DATA_MSG.format(path=output_dir)
 
     try:
-        # If pipeline is still running, return progress instead of partial context
+        # If pipeline is running or failed, return status instead of partial context
         progress = _get_pipeline_progress(manager)
         if progress is not None:
-            return f"{progress}\nCall `get_context` again to check for completion."
+            return progress
 
         with manager.session_scope() as session:
             source = _get_pipeline_source(session)
@@ -1561,6 +1590,7 @@ def _add_source(output_dir: Path, arguments: dict[str, Any]) -> str:
 _GATE_ZONES: dict[str, tuple[str, str]] = {
     "quality_review": ("foundation", "Gate 1"),
     "analysis_review": ("enrichment", "Gate 2"),
+    "computation_review": ("interpretation", "Gate 3"),
 }
 
 
@@ -1702,6 +1732,19 @@ def _get_zone_status(
                     "CORRELATIONS",
                     "TEMPORAL_SLICING",
                     "QUALITY_SUMMARY",
+                },
+                "computation_review": {
+                    "TYPING",
+                    "STATISTICS",
+                    "RELATIONSHIPS",
+                    "SEMANTIC",
+                    "ENRICHED_VIEWS",
+                    "SLICING",
+                    "CORRELATIONS",
+                    "TEMPORAL_SLICING",
+                    "QUALITY_SUMMARY",
+                    "VALIDATION",
+                    "BUSINESS_CYCLES",
                 },
             }
             available = _gate_analyses.get(gate_phase, set())
@@ -2038,14 +2081,24 @@ def _build_fix_doc_from_plan_item(
         "payload": {},
     }
 
-    if schema and schema.target == "config":
-        value: Any = item.parameters
-        if schema.operation == "append" and not schema.fields:
-            value = f"{table_name}.{column_name}" if column_name else table_name
-        elif schema.operation == "append":
-            # append with fields (e.g., accept_finding with reason)
-            # value is the column reference; parameters go into the appended entry
-            value = f"{table_name}.{column_name}" if column_name else table_name
+    if not schema:
+        return fix_doc
+
+    if schema.target == "config":
+        # For append operations, the value is a column/table reference
+        if schema.operation == "append":
+            value: Any = f"{table_name}.{column_name}" if column_name else table_name
+        elif schema.operation == "merge" and schema.fields:
+            # merge with fields: build the value dict from agent parameters
+            value = {}
+            params = item.parameters if isinstance(item.parameters, dict) else {}
+            for field_name, field_def in schema.fields.items():
+                if field_name in params:
+                    value[field_name] = params[field_name]
+                elif field_def.default is not None:
+                    value[field_name] = field_def.default
+        else:
+            value = item.parameters
 
         fix_doc["payload"] = {
             "config_path": schema.config_path,
@@ -2053,6 +2106,33 @@ def _build_fix_doc_from_plan_item(
             "operation": schema.operation or "set",
             "value": value,
         }
+
+    elif schema.target == "data":
+        # Data-target fixes: instantiate SQL template from agent parameters
+        params = item.parameters if isinstance(item.parameters, dict) else {}
+        payload: dict[str, Any] = {}
+
+        if schema.templates:
+            # Pick the first template and substitute placeholders
+            template_name, template_sql = next(iter(schema.templates.items()))
+            substitutions = {
+                "table": table_name,
+                "column": column_name or "",
+                **params,
+            }
+            try:
+                payload["sql"] = template_sql.format(**substitutions)
+            except KeyError:
+                # Template has placeholders not in params — pass raw for agent review
+                payload["template"] = template_sql
+                payload["parameters"] = substitutions
+
+        # Also pass through any explicit fields from the agent
+        for field_name in schema.fields:
+            if field_name in params:
+                payload[field_name] = params[field_name]
+
+        fix_doc["payload"] = payload
 
     return fix_doc
 

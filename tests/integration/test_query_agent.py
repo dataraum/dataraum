@@ -9,18 +9,49 @@ Tests verify:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from dataraum.core.models.base import Result
 from dataraum.entropy.contracts import ConfidenceLevel
+from dataraum.graphs.field_mapping import ColumnCandidate, FieldMappings
 from dataraum.query.agent import QueryAgent
 from dataraum.query.models import QueryResult
 
 from .conftest import PipelineTestHarness
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _inject_field_mappings():
+    """Patch load_semantic_mappings to return minimal field mappings.
+
+    The analyzed_small_finance fixture does not run the semantic phase,
+    so no business_concept annotations exist. These tests exercise the
+    query agent's LLM interaction, not the semantic pipeline.
+    """
+    def _fake_mappings(session, table_ids):
+        return FieldMappings(
+            mappings={
+                "revenue": [
+                    ColumnCandidate(
+                        column_id="fake",
+                        column_name="Amount",
+                        table_name="typed_transactions",
+                        confidence=0.9,
+                    )
+                ],
+            },
+            table_ids=table_ids,
+        )
+
+    with patch(
+        "dataraum.graphs.field_mapping.load_semantic_mappings",
+        side_effect=_fake_mappings,
+    ):
+        yield
 
 
 @pytest.fixture

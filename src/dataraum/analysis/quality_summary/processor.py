@@ -504,6 +504,17 @@ def summarize_quality(
                 c for c in columns_to_process if c.column_id not in existing_column_ids
             ]
 
+        # Always persist slice profiles — even when no columns need LLM summaries.
+        # These profiles are computed from aggregated data (no LLM needed) and feed
+        # into the query agent context via GraphExecutionContext.
+        _save_slice_profiles_from_aggregated(
+            session=session,
+            aggregated_columns=aggregated_columns,
+            slice_definition=slice_definition,
+            source_table_name=effective_table.table_name,
+            variance_metrics=variance_metrics,
+        )
+
         if not columns_to_process:
             # All columns already have reports or filtered out
             duration = (datetime.now(UTC) - started_at).total_seconds()
@@ -600,15 +611,6 @@ def summarize_quality(
             reports_generated += 1
 
         duration = (datetime.now(UTC) - started_at).total_seconds()
-
-        # Persist slice profiles from aggregated data
-        _save_slice_profiles_from_aggregated(
-            session=session,
-            aggregated_columns=aggregated_columns,
-            slice_definition=slice_definition,
-            source_table_name=effective_table.table_name,
-            variance_metrics=variance_metrics,
-        )
 
         return Result.ok(
             QualitySummaryResult(

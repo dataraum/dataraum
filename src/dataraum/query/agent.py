@@ -37,7 +37,7 @@ from dataraum.entropy.contracts import (
     ConfidenceLevel,
     ContractEvaluation,
 )
-from dataraum.graphs.context import build_execution_context, format_context_for_prompt
+from dataraum.graphs.context import build_execution_context, format_metadata_document
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import ConversationRequest, Message, ToolDefinition, ToolResult
 from dataraum.storage import Table
@@ -740,15 +740,8 @@ class QueryAgent(LLMFeature):
         # Build schema information
         schema_info = self._build_schema_info(execution_context)
 
-        # Format context for prompt
-        context_str = format_context_for_prompt(execution_context)
-
-        # Format entropy warnings from execution_context
-        entropy_warnings = ""
-        if execution_context.entropy_summary:
-            from dataraum.graphs.context import format_entropy_for_prompt
-
-            entropy_warnings = format_entropy_for_prompt(execution_context)
+        # Format context as metadata document (includes entropy/quality info)
+        context_str = format_metadata_document(execution_context)
 
         # Build snippet context (mode-dependent: full injection OR search vocabulary)
         snippet_context = self._build_snippet_context(
@@ -756,12 +749,16 @@ class QueryAgent(LLMFeature):
             search_vocabulary=search_vocabulary,
         )
 
-        # Build field mappings string
-        field_mappings_str = ""
-        if execution_context.field_mappings:
-            from dataraum.graphs.field_mapping import format_mappings_for_prompt
+        # Field mappings are required — the LLM needs them to resolve business concepts
+        if not execution_context.field_mappings or not execution_context.field_mappings.mappings:
+            return Result.fail(
+                "Cannot analyze query without field mappings. "
+                "Run the semantic phase to map business concepts to columns."
+            )
 
-            field_mappings_str = format_mappings_for_prompt(execution_context.field_mappings)
+        from dataraum.graphs.field_mapping import format_mappings_for_prompt
+
+        field_mappings_str = format_mappings_for_prompt(execution_context.field_mappings)
 
         # Build prompt context
         prompt_context = {
@@ -769,8 +766,6 @@ class QueryAgent(LLMFeature):
             "schema_info": json.dumps(schema_info, indent=2),
             "dataset_context": context_str,
             "field_mappings": field_mappings_str,
-            "entropy_warnings": entropy_warnings
-            or "Data quality assessment not available - proceed with caution.",
             "snippet_context": snippet_context,
         }
 

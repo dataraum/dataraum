@@ -71,7 +71,6 @@ class ExecutionContext:
     """Context for graph execution."""
 
     duckdb_conn: duckdb.DuckDBPyConnection
-    table_name: str = ""  # Deprecated: use rich_context.tables for multi-table access
     schema_mapping: DatasetSchemaMapping | None = None
     schema_mapping_id: str | None = None
     period: str | None = None
@@ -110,9 +109,6 @@ class ExecutionContext:
             ExecutionContext with rich_context populated
         """
         from dataraum.graphs.context import build_execution_context
-
-        # Pop table_name if passed (backward compat), but it's no longer used
-        kwargs.pop("table_name", None)
 
         rich_context = build_execution_context(
             session=session,
@@ -367,38 +363,32 @@ class GraphAgent(LLMFeature):
         else:
             prompt_context["cached_steps"] = ""
 
-        # Add rich context if available (provides semantic, statistical, relational metadata)
-        if context.rich_context is not None:
-            from dataraum.graphs.context import (
-                format_context_for_prompt,
-                format_entropy_for_prompt,
+        # Rich context is required — the LLM needs metadata to generate correct SQL
+        if context.rich_context is None:
+            return Result.fail(
+                "Cannot generate SQL without dataset context. "
+                "Use ExecutionContext.with_rich_context() to build context."
             )
 
-            prompt_context["rich_context"] = format_context_for_prompt(context.rich_context)
+        from dataraum.graphs.context import format_metadata_document
 
-            # Add entropy warnings if entropy data is available
-            entropy_section = format_entropy_for_prompt(context.rich_context)
-            if entropy_section:
-                prompt_context["entropy_warnings"] = entropy_section
-            else:
-                prompt_context["entropy_warnings"] = ""
+        prompt_context["rich_context"] = format_metadata_document(context.rich_context)
 
-            # Add field mappings if available (for resolving standard_field references)
-            if (
-                hasattr(context.rich_context, "field_mappings")
-                and context.rich_context.field_mappings
-            ):
-                from dataraum.graphs.field_mapping import format_mappings_for_prompt
+        # Field mappings are required — the LLM needs them to resolve business concepts
+        if (
+            not context.rich_context.field_mappings
+            or not context.rich_context.field_mappings.mappings
+        ):
+            return Result.fail(
+                "Cannot generate SQL without field mappings. "
+                "Run the semantic phase to map business concepts to columns."
+            )
 
-                prompt_context["field_mappings"] = format_mappings_for_prompt(
-                    context.rich_context.field_mappings
-                )
-            else:
-                prompt_context["field_mappings"] = ""
-        else:
-            prompt_context["rich_context"] = ""
-            prompt_context["field_mappings"] = ""
-            prompt_context["entropy_warnings"] = ""
+        from dataraum.graphs.field_mapping import format_mappings_for_prompt
+
+        prompt_context["field_mappings"] = format_mappings_for_prompt(
+            context.rich_context.field_mappings
+        )
 
         # Render prompt with system/user split
         try:

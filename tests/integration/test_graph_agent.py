@@ -21,7 +21,7 @@ from dataraum.graphs.agent import ExecutionContext, GraphAgent
 from dataraum.graphs.context import (
     GraphExecutionContext,
     build_execution_context,
-    format_context_for_prompt,
+    format_metadata_document,
 )
 from dataraum.graphs.models import (
     GraphMetadata,
@@ -122,6 +122,53 @@ class TestContextLoading:
             assert table.row_count is not None
             assert table.row_count > 0
 
+    def test_context_has_temporal_bounds(
+        self,
+        analyzed_small_finance: PipelineTestHarness,
+        analyzed_table_ids: list[str],
+    ):
+        """Temporal columns should have min/max timestamps from TemporalColumnProfile."""
+        with analyzed_small_finance.session_factory() as session:
+            ctx = build_execution_context(
+                session=session,
+                table_ids=analyzed_table_ids,
+                duckdb_conn=analyzed_small_finance.duckdb_conn,
+            )
+
+        has_temporal = any(
+            col.min_timestamp is not None
+            for table in ctx.tables
+            for col in table.columns
+        )
+        assert has_temporal, "No columns have min_timestamp from TemporalColumnProfile"
+
+    def test_context_has_entropy_scores(
+        self,
+        analyzed_small_finance: PipelineTestHarness,
+        analyzed_table_ids: list[str],
+    ):
+        """Columns should have entropy scores from the entropy phase."""
+        with analyzed_small_finance.session_factory() as session:
+            ctx = build_execution_context(
+                session=session,
+                table_ids=analyzed_table_ids,
+                duckdb_conn=analyzed_small_finance.duckdb_conn,
+            )
+
+        has_entropy = any(
+            col.entropy_scores is not None
+            for table in ctx.tables
+            for col in table.columns
+        )
+        assert has_entropy, "No columns have entropy_scores"
+        assert ctx.entropy_summary is not None, "Missing entropy_summary"
+        assert ctx.entropy_summary["overall_readiness"] in ("ready", "investigate", "blocked")
+
+    # NOTE: business_name, table_description, quality_summary, and entropy_explanation
+    # require the semantic, quality_summary, and entropy_interpretation phases which
+    # are not run by analyzed_small_finance (requires LLM calls). Those fields are
+    # verified by the dataraum-eval calibration harness which runs the full pipeline.
+
     def test_context_format_for_prompt(
         self,
         analyzed_small_finance: PipelineTestHarness,
@@ -135,12 +182,16 @@ class TestContextLoading:
                 duckdb_conn=analyzed_small_finance.duckdb_conn,
             )
 
-        prompt_text = format_context_for_prompt(ctx)
+        prompt_text = format_metadata_document(ctx)
 
         assert isinstance(prompt_text, str)
         assert len(prompt_text) > 100  # Should be substantial
         # Should mention table names
         assert "transactions" in prompt_text.lower() or "customers" in prompt_text.lower()
+        # Metadata document structure
+        assert "# Data Catalog:" in prompt_text
+        assert "## Tables" in prompt_text
+        assert "| Column | Type | Role | Description | Notes |" in prompt_text
 
 
 class TestEntropyContextLoading:
@@ -265,6 +316,7 @@ class TestGraphAgentSQLGeneration:
         self,
         graph_agent: GraphAgent,
         analyzed_small_finance: PipelineTestHarness,
+        analyzed_table_ids: list[str],
         transaction_sum_graph: TransformationGraph,
     ):
         """Execute graph agent against real typed data in DuckDB."""
@@ -289,10 +341,33 @@ class TestGraphAgentSQLGeneration:
         mock_response.content = None
         graph_agent.provider.converse = MagicMock(return_value=Result.ok(mock_response))
 
+        from dataraum.graphs.field_mapping import ColumnCandidate, FieldMappings
+
+        with analyzed_small_finance.session_factory() as session:
+            rich_context = build_execution_context(
+                session=session,
+                table_ids=analyzed_table_ids,
+                duckdb_conn=analyzed_small_finance.duckdb_conn,
+            )
+
+        # Inject field mappings (semantic phase not run in this fixture)
+        rich_context.field_mappings = FieldMappings(
+            mappings={
+                "amount": [
+                    ColumnCandidate(
+                        column_id="test",
+                        column_name="Amount",
+                        table_name="typed_transactions",
+                        confidence=0.95,
+                    )
+                ],
+            },
+            table_ids=analyzed_table_ids,
+        )
+
         context = ExecutionContext(
             duckdb_conn=analyzed_small_finance.duckdb_conn,
-            table_name="typed_transactions",
-            schema_mapping_id="test-mapping",
+            rich_context=rich_context,
         )
 
         with analyzed_small_finance.session_factory() as session:

@@ -1030,7 +1030,7 @@ def _get_context(output_dir: Path) -> str:
     from sqlalchemy import select
 
     from dataraum.core.connections import get_manager_for_directory
-    from dataraum.graphs.context import build_execution_context, format_context_for_prompt
+    from dataraum.graphs.context import build_execution_context, format_metadata_document
     from dataraum.storage import Table
 
     try:
@@ -1070,7 +1070,7 @@ def _get_context(output_dir: Path) -> str:
                     duckdb_conn=cursor,
                 )
 
-            formatted = format_context_for_prompt(context)
+            formatted = format_metadata_document(context, source_name=source.name)
             result = format_context_for_llm(source.name, formatted)
 
             # Append pipeline status summary

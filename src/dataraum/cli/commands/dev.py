@@ -210,7 +210,7 @@ def inspect(
             if tables:
                 from dataraum.graphs.context import (
                     build_execution_context,
-                    format_context_for_prompt,
+                    format_metadata_document,
                 )
 
                 table_ids = [t.table_id for t in tables[:3]]
@@ -226,7 +226,7 @@ def inspect(
                 console.print(f"Relationships: {context.total_relationships}")
                 console.print(f"Graph pattern: {context.graph_pattern}")
 
-                formatted = format_context_for_prompt(context)
+                formatted = format_metadata_document(context)
                 lines = formatted.split("\n")
                 console.print("\n[dim]Formatted context preview:[/dim]")
                 for line in lines[:15]:

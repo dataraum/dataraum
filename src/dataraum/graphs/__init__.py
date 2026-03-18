@@ -45,7 +45,7 @@ from .context import (
     RelationshipContext,
     TableContext,
     build_execution_context,
-    format_context_for_prompt,
+    format_metadata_document,
 )
 from .entropy_behavior import (
     BehaviorMode,
@@ -101,7 +101,7 @@ __all__ = [
     "ColumnContext",
     "RelationshipContext",
     "build_execution_context",
-    "format_context_for_prompt",
+    "format_metadata_document",
     # Entropy behavior
     "BehaviorMode",
     "EntropyAction",

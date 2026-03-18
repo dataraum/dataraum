@@ -543,13 +543,32 @@ class ImportPhase(BasePhase):
         prefixed_name = f"{source_name}__{staged_table.table_name}"
         duckdb_name = staged_table.raw_table_name
 
+        # Find the Table record from session.new (unflushed pending objects).
+        # We avoid flush() here because SQLite doesn't handle concurrent flushes
+        # well in the free-threaded setup.
+        table_record: Table | None = None
+        for obj in ctx.session.new:
+            if isinstance(obj, Table) and obj.table_id == staged_table.table_id:
+                table_record = obj
+                break
+
         # Check for table name collision (e.g., Orders.csv and orders.csv both → same name)
+        # Check both flushed records (SELECT) and pending objects (session.new)
         existing_table = ctx.session.execute(
             select(Table).where(
                 Table.source_id == source.source_id,
                 Table.table_name == prefixed_name,
             )
         ).scalar_one_or_none()
+        if existing_table is None:
+            for obj in ctx.session.new:
+                if (
+                    isinstance(obj, Table)
+                    and obj.source_id == source.source_id
+                    and obj.table_name == prefixed_name
+                ):
+                    existing_table = obj
+                    break
         if existing_table:
             # Drop the just-created DuckDB table to avoid orphans
             try:
@@ -568,10 +587,7 @@ class ImportPhase(BasePhase):
                 "duckdb_rename_failed", table=duckdb_name, target=prefixed_name, error=str(e)
             )
 
-        # Update the SQLAlchemy Table record
-        table_record = ctx.session.execute(
-            select(Table).where(Table.table_id == staged_table.table_id)
-        ).scalar_one_or_none()
+        # Update the Table record in-memory (committed when session scope exits)
         if table_record:
             table_record.table_name = prefixed_name
             table_record.duckdb_path = prefixed_name

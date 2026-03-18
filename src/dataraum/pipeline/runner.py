@@ -26,6 +26,7 @@ from __future__ import annotations
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,7 @@ from sqlalchemy import select
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
-from dataraum.pipeline.db_models import PhaseLog
+from dataraum.pipeline.db_models import PhaseLog, PipelineRun
 from dataraum.pipeline.events import EventCallback, EventType, PipelineEvent  # noqa: F401
 from dataraum.pipeline.scheduler import (
     PipelineResult,
@@ -134,6 +135,7 @@ def run(config: RunConfig) -> Result[RunResult]:
     start_time = time.time()
     warnings: list[str] = []
     source_id = ""
+    setup = None
 
     try:
         setup = setup_pipeline(
@@ -220,6 +222,13 @@ def run(config: RunConfig) -> Result[RunResult]:
             if log and log.status == "failed" and log.error:
                 warnings.append(f"{phase_name} failed: {log.error}")
 
+        # Finalize PipelineRun record
+        run_record = session.get(PipelineRun, setup.run_id)
+        if run_record:
+            run_record.status = "completed" if pipeline_result.success else "failed"
+            run_record.completed_at = datetime.now(UTC)
+            run_record.error = pipeline_result.error
+
         # Commit session and close connections
         session.commit()
         setup.manager.close()
@@ -254,6 +263,18 @@ def run(config: RunConfig) -> Result[RunResult]:
             error=str(e),
             duration_seconds=round(duration, 2),
         )
+
+        # Mark PipelineRun as failed if we got far enough to create one
+        try:
+            if setup is not None and setup.session and setup.run_id:
+                run_record = setup.session.get(PipelineRun, setup.run_id)
+                if run_record:
+                    run_record.status = "failed"
+                    run_record.completed_at = datetime.now(UTC)
+                    run_record.error = str(e)
+                    setup.session.commit()
+        except Exception:
+            pass  # Best-effort — don't mask the original error
 
         run_result = RunResult(
             success=False,

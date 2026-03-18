@@ -6,11 +6,15 @@ quantifies that uncertainty so contracts and the Bayesian network
 can factor it in.
 
 Source: EnrichedView + StatisticalProfile (persisted during enriched_views phase)
-Score = mean NULL rate across dimension columns (0.0 = fully populated, 1.0 = all NULLs).
+Score = sqrt-boosted mean NULL rate across dimension columns
+(0.0 = fully populated, 1.0 = all NULLs).
+sqrt boost amplifies small-but-real coverage gaps (20% NULLs → 0.45 score),
+matching the pattern used by relationship_entropy for orphan rates.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from sqlalchemy import select
@@ -99,7 +103,10 @@ class DimensionCoverageDetector(EntropyDetector):
                 }
             )
 
-        score = sum(null_rates) / len(null_rates)
+        raw_score = sum(null_rates) / len(null_rates)
+        # sqrt boost: amplifies small-but-real coverage gaps
+        # (same pattern as relationship_entropy ri_boost)
+        score = min(1.0, math.sqrt(raw_score)) if raw_score > 0 else 0.0
 
         resolution_options: list[ResolutionOption] = []
         high_null_cols = [e["column"] for e in evidence if e["null_rate"] > 0.5]

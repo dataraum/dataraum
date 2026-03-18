@@ -54,7 +54,7 @@ class TestDetectAllPopulated:
 
 class TestDetectPartialNulls:
     def test_score_reflects_null_rate(self, detector: DimensionCoverageDetector):
-        """50% NULLs across columns → score ≈ 0.5."""
+        """50% NULLs across columns → sqrt-boosted score ≈ 0.707."""
         view = _make_enriched_view(["customers__country", "customers__city"])
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = (0.5,)
@@ -63,7 +63,7 @@ class TestDetectPartialNulls:
         objects = detector.detect(ctx)
 
         assert len(objects) == 1
-        assert objects[0].score == pytest.approx(0.5)
+        assert objects[0].score == pytest.approx(0.7071, abs=1e-3)
 
 
 class TestDetectNoDimensionColumns:
@@ -121,7 +121,7 @@ class TestEvidence:
         assert evidence[1]["null_rate"] == pytest.approx(0.6)
 
     def test_mean_score_from_mixed_rates(self, detector: DimensionCoverageDetector):
-        """Score is mean of per-column null rates."""
+        """Score is sqrt-boosted mean of per-column null rates: sqrt(0.4) ≈ 0.632."""
         view = _make_enriched_view(["a", "b"])
         conn = MagicMock()
         conn.execute.return_value.fetchone.side_effect = [(0.2,), (0.6,)]
@@ -129,7 +129,7 @@ class TestEvidence:
 
         objects = detector.detect(ctx)
 
-        assert objects[0].score == pytest.approx(0.4)
+        assert objects[0].score == pytest.approx(0.6325, abs=1e-3)
 
 
 class TestResolutionOption:

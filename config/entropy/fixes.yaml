@@ -1,0 +1,619 @@
+# Fix schemas for entropy detectors.
+#
+# Each top-level key is a detector_id. Under it:
+#   dimension_path  — full layer.dimension.sub_dimension path
+#   triage_guidance — LLM instructions for choosing between actions
+#   actions         — keyed by action name, each defines a FixSchema
+#
+# Routing:
+#   preprocess  — requires cascade-clean + phase re-run (requires_rerun)
+#   postprocess — patches config/metadata only, measured at next gate
+
+schemas:
+
+  # ── STRUCTURAL LAYER ──────────────────────────────────────────────
+
+  type_fidelity:
+    dimension_path: structural.types.type_fidelity
+    triage_guidance: |
+      Choose based on the evidence (quarantine rate, sample values, column type):
+      - add_type_pattern: The column contains date/time values that the typing
+        phase couldn't parse. Sample quarantined values look like dates in an
+        unusual format. Add a parsing pattern so typing handles them.
+      - set_column_type: The inferred type is wrong and quarantining valid data.
+        Force VARCHAR if the column has mixed types, or force a specific type if
+        the inference picked the wrong one.
+      - accept_finding: Only if the quarantined values are genuinely bad data
+        (not a format the system should learn). The user must confirm.
+    actions:
+      accept_finding:
+        target: config
+        routing: postprocess
+        gate: quality_review
+        description: Mark type fidelity findings as reviewed and accepted
+        config_path: entropy/thresholds.yaml
+        key_path: [detectors, type_fidelity, accepted_columns]
+        operation: append
+        guidance: |
+          Present ALL affected columns in a numbered list with their key metric
+          (e.g., quarantine rate). For each column show: table.column —
+          quarantine rate — detected type — sample quarantined values.
+          Ask the user to select columns by number (comma-separated), or 'all'.
+          Then ask WHY the finding is acceptable (e.g., 'mixed-type column',
+          'known format variation', 'acceptable data loss').
+        fields:
+          reason:
+            type: string
+            required: false
+            description: Why the finding was accepted
+      set_column_type:
+        target: config
+        routing: preprocess
+        requires_rerun: typing
+        description: Force a specific type for this column, overriding type inference
+        config_path: phases/typing.yaml
+        key_path: [overrides, forced_types]
+        operation: merge
+        guidance: |
+          The typing phase inferred a type that doesn't fit all values.
+          Some values were quarantined (couldn't be cast).
+          Show the user: current inferred type, quarantine rate,
+          sample quarantined values. Ask whether to:
+            1. Force VARCHAR (keeps all values, no quarantine)
+            2. Force a different type
+          PROPOSE VARCHAR as the default when quarantined values look valid.
+        fields:
+          target_type:
+            type: enum
+            required: true
+            description: Type to force for this column
+            enum_values: [VARCHAR, BIGINT, DOUBLE, DATE, TIMESTAMP, BOOLEAN]
+            default: VARCHAR
+      add_type_pattern:
+        target: config
+        routing: preprocess
+        requires_rerun: typing
+        description: Add a custom date/time parsing pattern
+        config_path: phases/typing.yaml
+        key_path: [overrides, patterns]
+        operation: merge
+        key_template: "{pattern_name}"
+        guidance: |
+          Adds a date/time pattern so the typing phase can parse
+          this column correctly. From the sample values and column
+          name, PROPOSE a concrete pattern:
+            1. The regex that matches the raw values (e.g. ^\d{4}-\d{2}-\d{2}$)
+            2. The DuckDB STRPTIME expression (e.g. STRPTIME("{col}", '%Y-%m-%d'))
+            3. A short pattern_name (e.g. iso_date, fiscal_period)
+          Present your proposal and ask the user to confirm or correct it.
+          Do NOT ask open-ended questions like 'what format is this?' —
+          infer the format from the data and propose it.
+        fields:
+          pattern_name:
+            type: string
+            required: true
+            description: "Short name for this pattern (e.g. fiscal_period, european_date)"
+          pattern:
+            type: regex
+            required: true
+            description: "Regex matching the raw values (e.g. ^\\d{4}-\\d{2}$)"
+          standardization_expr:
+            type: duckdb_sql
+            required: true
+            description: >
+              DuckDB expression to parse the value into a date/timestamp.
+              Use STRPTIME with {col} placeholder.
+              Examples: STRPTIME("{col}", '%Y-%m'),
+              STRPTIME("{col}", '%d/%m/%Y')
+
+  join_path_determinism:
+    dimension_path: structural.relations.join_path_determinism
+    triage_guidance: ""
+    actions:
+      resolve_join_ambiguity:
+        target: config
+        routing: postprocess
+        gate: quality_review
+        description: Set preferred join path for ambiguous table connections
+        config_path: entropy/thresholds.yaml
+        key_path: [detectors, join_path, preferred_joins]
+        operation: merge
+        key_template: "{table}->{target_table}"
+        guidance: |
+          Resolves ambiguity when multiple join paths exist between tables.
+          Ask which join path is the correct one for analytics queries.
+        fields:
+          table:
+            type: string
+            required: true
+            description: Source table with ambiguous paths
+          target_table:
+            type: string
+            required: true
+            description: Target table
+          preferred_column:
+            type: string
+            required: true
+            description: Column to use for the join
+
+  relationship_entropy:
+    dimension_path: structural.relations.relationship_quality
+    triage_guidance: |
+      Use the component breakdown (ri_entropy, card_entropy, semantic_entropy)
+      to choose:
+      - ri_entropy is the dominant component → accept_finding
+        (confirm_relationship only reduces semantic_entropy, not RI)
+      - semantic_entropy dominates and RI is low (< 0.15) → confirm_relationship
+      - All components are high → accept_finding
+    actions:
+      accept_finding:
+        target: config
+        routing: postprocess
+        gate: quality_review
+        description: Mark relationship quality findings as reviewed and accepted
+        config_path: entropy/thresholds.yaml
+        key_path: [detectors, relationship_entropy, accepted_columns]
+        operation: append
+        guidance: |
+          This is a RELATIONSHIP finding between two tables, not a per-column issue.
+          Present the relationship: from_table.column → to_table.column, with its
+          key metrics (referential integrity %, orphan count, cardinality).
+          Explain what the score means in plain language.
+          Do NOT ask the user to pick columns — accept the finding for the column
+          this entropy object belongs to.
+          Ask WHY the relationship quality is acceptable (e.g., 'known partial overlap',
+          'soft reference', 'legacy data', 'different ID namespaces').
+        fields:
+          reason:
+            type: string
+            required: false
+            description: Why the finding was accepted
+      confirm_relationship:
+        target: config
+        routing: postprocess
+        gate: quality_review
+        description: Confirm a detected relationship between tables
+        config_path: phases/semantic.yaml
+        key_path: [overrides, confirmed_relationships]
+        operation: merge
+        key_template: "{from_table}->{to_table}"
+        guidance: |
+          Confirms or rejects a detected relationship between tables.
+          Ask whether the relationship is a real foreign key, shared
+          reference data, or coincidental overlap.
+          IMPORTANT: This only reduces the semantic component of the score.
+          If the score is driven by referential integrity issues (orphan
+          records, low RI %), confirming the relationship won't help —
+          use accept_finding instead.
+        fields:
+          from_table:
+            type: string
+            required: true
+            description: Source table name
+          to_table:
+            type: string
+            required: true
+            description: Target table name
+          relationship_type:
+            type: enum
+            required: false
+            description: Confirmed relationship type
+            enum_values: [foreign_key, shared_reference, coincidental]
+          cardinality:
+            type: enum
+            required: false
+            description: Confirmed cardinality
+            enum_values: [one_to_one, one_to_many, many_to_one, many_to_many]
+
+  # ── VALUE LAYER ───────────────────────────────────────────────────
+
+  null_ratio:
+    dimension_path: value.nulls.null_ratio
+    triage_guidance: ""
+    actions:
+      accept_finding:
+        target: config
+        routing: postprocess
+        gate: quality_review
+        description: Mark null ratio findings as reviewed and accepted
+        config_path: entropy/thresholds.yaml
+        key_path: [detectors, null_ratio, accepted_columns]
+        operation: append
+        guidance: |
+          Present ALL affected columns in a numbered list with their key metric
+          (e.g., null rate). For each column show: table.column — null rate —
+          sample values if relevant.
+          Ask the user to select columns by number (comma-separated), or 'all'.
+          Then ask WHY the finding is acceptable (e.g., 'optional field',
+          'expected variation', 'known data quality').
+        fields:
+          reason:
+            type: string
+            required: false
+            description: Why the finding was accepted
+
+  outlier_rate:
+    dimension_path: value.outliers.outlier_rate
+    triage_guidance: ""
+    actions:
+      accept_finding:
+        target: config
+        routing: postprocess
+        gate: quality_review
+        description: Mark outlier findings as reviewed and accepted
+        config_path: entropy/thresholds.yaml
+        key_path: [detectors, outlier_rate, accepted_columns]
+        operation: append
+        guidance: |
+          Present ALL affected columns in a numbered list with their key metric
+          (e.g., outlier rate). For each column show: table.column — outlier
+          rate — IQR fences if relevant.
+          Ask the user to select columns by number (comma-separated), or 'all'.
+          Then ask WHY the finding is acceptable (e.g., 'expected variation',
+          'known data range', 'legitimate extreme values').
+        fields:
+          reason:
+            type: string
+            required: false
+            description: Why the finding was accepted
+
+  benford:
+    dimension_path: value.distribution.benford_compliance
+    triage_guidance: ""
+    actions:
+      accept_finding:
+        target: config
+        routing: postprocess
+        gate: quality_review
+        description: Mark Benford deviation findings as reviewed and accepted
+        config_path: entropy/thresholds.yaml
+        key_path: [detectors, benford, accepted_columns]
+        operation: append
+        guidance: |
+          Present ALL affected columns in a numbered list with their key metric
+          (e.g., Cramér's V, p-value). For each column show: table.column —
+          effect size — digit distribution summary.
+          Ask the user to select columns by number (comma-separated), or 'all'.
+          Then ask WHY the finding is acceptable (e.g., 'known rounding',
+          'pricing convention', 'expected distribution').
+        fields:
+          reason:
+            type: string
+            required: false
+            description: Why the finding was accepted
+
+  temporal_drift:
+    dimension_path: value.temporal.temporal_drift
+    triage_guidance: ""
+    actions:
+      accept_finding:
+        target: config
+        routing: postprocess
+        gate: analysis_review
+        description: "Accept temporal drift as expected (e.g., seasonal patterns, business growth)"
+        config_path: entropy/thresholds.yaml
+        key_path: [detectors, temporal_drift, accepted_columns]
+        operation: append
+        guidance: |
+          The column shows distribution drift over time. This may be
+          expected (seasonal patterns, business growth, price changes)
+          or a real data quality issue (schema change, data corruption).
+          Show the user the drift evidence: which period had the biggest
+          shift, the JS divergence magnitude, and the top value shifts.
+          Ask whether the drift is expected business behavior.
+        fields:
+          reason:
+            type: string
+            required: true
+            description: "Why this drift is expected (e.g., 'seasonal revenue pattern')"
+
+  # ── SEMANTIC LAYER ────────────────────────────────────────────────
+
+  unit_entropy:
+    dimension_path: semantic.units.unit_declaration
+    triage_guidance: |
+      Choose based on the data profile and table structure:
+      - declare_unit: DEFAULT. The column always uses the same unit
+        (e.g., all values are USD, or kg, or percentages). Use the column
+        name and sample values to propose a unit.
+      - set_unit_source: The unit varies per row and another column in the
+        same or a related table provides it (e.g., a 'currency' column).
+        Only use this when such a column exists in the data profile.
+    actions:
+      declare_unit:
+        target: config
+        routing: preprocess
+        requires_rerun: typing
+        description: Declare a fixed unit for this column
+        config_path: phases/typing.yaml
+        key_path: [overrides, units]
+        operation: merge
+        guidance: |
+          The column always uses the same unit. Ask the user what
+          unit the values represent (e.g. USD, EUR, kg, %,
+          dimensionless). Use the data profile and column name to
+          suggest a likely unit.
+        fields:
+          unit:
+            type: string
+            required: true
+            description: "Unit of measure (e.g. USD, EUR, kg, dimensionless)"
+      set_unit_source:
+        target: config
+        routing: postprocess
+        gate: quality_review
+        description: Specify which column provides the unit per row
+        config_path: phases/semantic.yaml
+        key_path: [overrides, units]
+        operation: merge
+        guidance: |
+          The unit varies per row and comes from another column
+          (e.g. a 'currency' column in the same or a related
+          table). Ask the user which column provides the unit.
+          Format: column_name for same table, or
+          table_name.column_name for a related table.
+        fields:
+          unit_source_column:
+            type: string
+            required: true
+            description: >
+              Column providing the unit per row
+              (e.g. 'currency' or 'chart_of_accounts.currency')
+
+  temporal_entropy:
+    dimension_path: semantic.temporal.time_role
+    triage_guidance: |
+      Choose based on the evidence (column type, semantic role, sample values):
+      - add_type_pattern: The column contains date/time values stored as VARCHAR
+        because the typing phase couldn't parse the format. The root cause is a
+        type mismatch, not a missing role. This is the DEFAULT when the column
+        type is VARCHAR and sample values look like dates.
+      - set_timestamp_role: The column already has a date/time type but was not
+        identified as a timestamp by the semantic agent. Only use this when the
+        column is already correctly typed.
+    actions:
+      set_timestamp_role:
+        target: config
+        routing: postprocess
+        gate: quality_review
+        description: Mark a date column as a timestamp
+        config_path: phases/semantic.yaml
+        key_path: [overrides, semantic_roles]
+        operation: merge
+        guidance: |
+          Confirms that a date/time column should have
+          semantic_role='timestamp'. The column has a date type from
+          type inference but was not identified as a timestamp by the
+          semantic agent. Ask the user to confirm.
+        fields:
+          semantic_role:
+            type: enum
+            required: true
+            description: Semantic role to assign
+            enum_values: [timestamp]
+            default: timestamp
+      add_type_pattern:
+        target: config
+        routing: preprocess
+        requires_rerun: typing
+        description: Add a custom date/time parsing pattern
+        config_path: phases/typing.yaml
+        key_path: [overrides, patterns]
+        operation: merge
+        key_template: "{pattern_name}"
+        guidance: |
+          Adds a date/time pattern so the typing phase can parse
+          this column. Show sample values and ask what date format
+          they represent. Then produce a DuckDB STRPTIME format
+          string (e.g. '%Y-%m' for '2025-01', '%d/%m/%Y' for
+          '15/01/2024'). The regex pattern must match the raw
+          string values.
+        fields:
+          pattern_name:
+            type: string
+            required: true
+            description: "Short name for this pattern (e.g. fiscal_period, european_date)"
+          pattern:
+            type: regex
+            required: true
+            description: "Regex matching the raw values (e.g. ^\\d{4}-\\d{2}$)"
+          standardization_expr:
+            type: duckdb_sql
+            required: true
+            description: >
+              DuckDB expression to parse the value into a date/timestamp.
+              Use STRPTIME with {col} placeholder.
+              Examples: STRPTIME("{col}", '%Y-%m'),
+              STRPTIME("{col}", '%d/%m/%Y')
+
+  business_meaning:
+    dimension_path: semantic.business_meaning.naming_clarity
+    triage_guidance: ""
+    actions:
+      document_business_meaning:
+        target: config
+        routing: postprocess
+        gate: quality_review
+        description: Record business meaning overrides for columns
+        config_path: phases/semantic.yaml
+        key_path: [overrides, business_meaning]
+        operation: merge
+        guidance: |
+          Records business meaning for columns that lack clear semantic
+          annotations. Ask what the column represents in business terms,
+          what entity type it belongs to, and its human-readable name.
+        fields:
+          business_name:
+            type: string
+            required: false
+            description: Human-readable business name for the column
+          entity_type:
+            type: string
+            required: false
+            description: "Entity classification (e.g. customer, product, transaction)"
+          business_description:
+            type: string
+            required: false
+            description: Business description of the column
+
+  dimensional_entropy:
+    dimension_path: semantic.dimensional.dimensional_patterns
+    triage_guidance: ""
+    actions:
+      document_business_rule:
+        target: config
+        routing: postprocess
+        gate: analysis_review
+        description: Document a detected cross-column pattern as a known business rule
+        config_path: entropy/thresholds.yaml
+        key_path: [detectors, dimensional_entropy, documented_patterns]
+        operation: append
+        guidance: |
+          The detector found undocumented cross-column patterns.
+          Read the table name from the affected targets in <entropy_evidence>
+          (format: 'table:TABLE_NAME'). Read the columns and pattern_type
+          from the per-column evidence breakdown.
+          Do NOT ask the user which table or columns are involved — extract
+          them from the evidence. Only ask whether this is a known business
+          rule and what it means in their domain.
+          Example: debit/credit mutual exclusivity in double-entry bookkeeping.
+        fields:
+          table:
+            type: string
+            required: true
+            description: Table name where the pattern exists
+          columns:
+            type: string
+            required: true
+            description: Comma-separated column names involved in the pattern
+          pattern_type:
+            type: enum
+            required: true
+            description: Type of pattern
+            enum_values:
+              - mutual_exclusivity
+              - conditional_dependency
+              - correlated_variance
+              - temporal_correlation
+              - temporal_drift
+          description:
+            type: string
+            required: false
+            description: Business justification for why this pattern is expected
+
+  business_cycle_health:
+    dimension_path: semantic.cycles.business_cycle_health
+    triage_guidance: |
+      This detector found low cycle completion rates or detection confidence.
+      Check the evidence to understand which cycles are unhealthy:
+      - Low completion rate: many records stuck in intermediate stages.
+        Could indicate incomplete data, missing status values, or a process
+        that genuinely has low throughput.
+      - Low confidence: the LLM was uncertain about cycle detection.
+        Could mean the cycle vocabulary doesn't match this dataset.
+      - accept_finding: If the low health is expected (e.g., partial data
+        load, new process with low volume). Ask the user to confirm.
+    actions:
+      accept_finding:
+        target: config
+        routing: postprocess
+        gate: computation_review
+        description: Accept low cycle health as expected for this dataset
+        config_path: entropy/thresholds.yaml
+        key_path: [detectors, business_cycle_health, accepted_columns]
+        operation: append
+        guidance: |
+          A business cycle has low completion rate or detection confidence.
+          Show the user the cycle name, type, completion rate, and confidence.
+          Explain what low health means for downstream analysis (graph_execution
+          metrics scoped to this cycle may be unreliable). Only accept if the
+          user confirms the cycle health is expected.
+        fields:
+          reason:
+            type: string
+            required: true
+            description: Why the low cycle health is accepted
+
+  # ── COMPUTATIONAL LAYER ───────────────────────────────────────────
+
+  derived_value:
+    dimension_path: computational.derived_values.formula_match
+    triage_guidance: |
+      This detector found a derived column (computed from other columns) with
+      formula mismatches. Choose based on the match rate:
+      - recalculate_derived_column: DEFAULT choice. The formula is known and
+        mismatches indicate data that drifted from the formula. Recalculating
+        enforces consistency. Ask the user to confirm the formula via a
+        follow_up_question (propose the detected formula as default).
+      - accept_finding: Only if the user has confirmed that mismatches are
+        intentional (manual adjustments, rounding). Do NOT assume this —
+        formula drift is usually a data quality problem, not expected behavior.
+    actions:
+      accept_finding:
+        target: config
+        routing: postprocess
+        gate: analysis_review
+        description: "Accept formula mismatch as expected (e.g., manual adjustments, rounding)"
+        config_path: entropy/thresholds.yaml
+        key_path: [detectors, derived_value, accepted_columns]
+        operation: append
+        guidance: |
+          The column was detected as derived (computed from other columns)
+          but some rows don't match the formula. Show the user the detected
+          formula, the match rate, and the source columns. Ask whether the
+          mismatches are expected (manual adjustments, rounding, historical
+          corrections) or indicate a real data quality problem.
+        fields:
+          reason:
+            type: string
+            required: true
+            description: Why the formula mismatch is expected
+      recalculate_derived_column:
+        target: data
+        routing: preprocess
+        requires_rerun: correlations
+        description: Recalculate the derived column from its source formula
+        templates:
+          recalculate: "UPDATE typed_{table} SET {column} = {formula}"
+        guidance: |
+          The derived column has formula mismatches and the user wants
+          to recalculate. Show the detected formula and match rate.
+          Ask the user to confirm the correct formula (the detected one
+          may be wrong). PROPOSE the detected formula as default.
+        fields:
+          formula:
+            type: duckdb_sql
+            required: true
+            description: "SQL expression to recalculate (e.g., 'debit - credit')"
+
+  cross_table_consistency:
+    dimension_path: computational.reconciliation.cross_table_consistency
+    triage_guidance: |
+      This detector found cross-table validation failures (e.g., trial balance
+      doesn't balance, sign convention violations). Investigate the evidence to
+      understand the root cause:
+      - If the failure is a real data issue (e.g., wrong account classifications),
+        it needs upstream data correction — outside the fix system.
+      - accept_finding: Only if the validation failure is expected (e.g., known
+        reclassification in progress, tolerance too strict for this dataset).
+        Ask the user to confirm and provide a reason.
+    actions:
+      accept_finding:
+        target: config
+        routing: postprocess
+        gate: computation_review
+        description: Accept cross-table inconsistency as expected or under investigation
+        config_path: entropy/thresholds.yaml
+        key_path: [detectors, cross_table_consistency, accepted_columns]
+        operation: append
+        guidance: |
+          A cross-table validation check failed. Show the user the specific
+          check that failed, the severity, and what it means (e.g., 'trial
+          balance doesn't balance — Assets $196M vs Liabilities+Equity -$19M').
+          Only accept if the user confirms the mismatch is expected or under
+          active investigation.
+        fields:
+          reason:
+            type: string
+            required: true
+            description: Why the reconciliation failure is accepted

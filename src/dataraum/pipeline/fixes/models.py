@@ -119,10 +119,12 @@ class FixSchema:
     # Data target specifics
     templates: dict[str, str] | None = None
 
-    # Phase 3: routing fields
+    # Routing and lifecycle
     requires_rerun: str | None = None
     guidance: str = ""
     key_template: str | None = None
+    routing: str | None = None  # "preprocess" or "postprocess"
+    gate: str | None = None  # gate where this fix is offered
 
     def _build_pydantic_model(self) -> type[BaseModel] | None:
         """Build a dynamic Pydantic model from self.fields.

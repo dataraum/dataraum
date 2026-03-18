@@ -274,6 +274,9 @@ class DetectorRegistry:
     ) -> FixSchema | None:
         """Find a FixSchema by action name, optionally scoped by dimension.
 
+        Checks Python detector properties first, then falls back to the
+        YAML fix schema loader.
+
         When multiple detectors share the same action name (e.g.
         ``accept_finding``), *dimension_path* disambiguates by matching
         the detector's ``dimension_path`` property.
@@ -286,13 +289,18 @@ class DetectorRegistry:
         Returns:
             The matching FixSchema, or None if not found.
         """
+        # Try Python detector properties first
         for detector in self.detectors.values():
             if dimension_path and detector.dimension_path != dimension_path:
                 continue
             for schema in detector.fix_schemas:
                 if schema.action == action_name:
                     return schema
-        return None
+
+        # Fall back to YAML loader
+        from dataraum.entropy.fix_schemas import get_fix_schema as yaml_get_fix_schema
+
+        return yaml_get_fix_schema(action_name, dimension_path=dimension_path)
 
 
 # Global registry instance

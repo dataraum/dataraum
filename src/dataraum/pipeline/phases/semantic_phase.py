@@ -286,13 +286,16 @@ class SemanticPhase(BasePhase):
 
         enrichment = enrich_result.unwrap()
 
-        # Apply config overrides (e.g. set_timestamp_role fix)
-        _apply_semantic_overrides(ctx.session, ctx.config, table_ids)
+        # Apply config overrides (e.g. set_timestamp_role fix).
+        # Delegates to overrides module — same functions also run at gate time
+        # for postprocess fixes that skip the full semantic re-run.
+        from dataraum.pipeline.overrides import (
+            apply_relationship_confirmations,
+            apply_semantic_overrides,
+        )
 
-        # Apply relationship confirmations from semantic config.
-        # This is the correct place: all relationships exist now, including
-        # self-referential ones discovered by the semantic agent.
-        _apply_relationship_confirmations(ctx.session, ctx.config, table_ids)
+        apply_semantic_overrides(ctx.session, ctx.config, table_ids)
+        apply_relationship_confirmations(ctx.session, ctx.config, table_ids)
 
         annotations_count = len(enrichment.annotations)
         entities_count = len(enrichment.entity_detections)
@@ -324,139 +327,3 @@ class SemanticPhase(BasePhase):
         )
 
 
-def _apply_semantic_overrides(
-    session: Session,
-    config: dict,  # type: ignore[type-arg]
-    table_ids: list[str],
-) -> None:
-    """Apply semantic overrides from config.
-
-    Reads all override sections under ``overrides`` in the semantic
-    phase config (``semantic_roles``, ``units``, ``business_meaning``).
-    Each section maps ``"table.column"`` to a dict of field values
-    that are patched onto the existing SemanticAnnotation.
-
-    The fix schemas upstream constrain which fields get written to the
-    config YAML, so we trust the field names here.
-    """
-    overrides = config.get("overrides", {})
-    if not isinstance(overrides, dict):
-        return
-
-    # Merge all override sections into a single col_ref -> fields dict.
-    merged: dict[str, dict[str, object]] = {}
-    for section in overrides.values():
-        if not isinstance(section, dict):
-            continue
-        for col_ref, values in section.items():
-            if not isinstance(values, dict):
-                continue
-            merged.setdefault(col_ref, {}).update(values)
-
-    if not merged:
-        return
-
-    # Build column lookup: "table.column" -> column_id
-    cols = session.execute(
-        select(Column, Table.table_name)
-        .join(Table, Column.table_id == Table.table_id)
-        .where(Column.table_id.in_(table_ids))
-    ).all()
-    col_lookup: dict[str, str] = {}
-    for col, tbl_name in cols:
-        col_lookup[f"{tbl_name}.{col.column_name}"] = col.column_id
-
-    for col_ref, field_values in merged.items():
-        col_id = col_lookup.get(col_ref)
-        if col_id is None:
-            logger.debug("semantic_override_skip", column=col_ref, reason="not found")
-            continue
-
-        annotation = session.execute(
-            select(SemanticAnnotation).where(SemanticAnnotation.column_id == col_id)
-        ).scalar_one_or_none()
-        if annotation is None:
-            logger.debug("semantic_override_skip", column=col_ref, reason="no annotation")
-            continue
-
-        changed = False
-        for field_name, value in field_values.items():
-            if hasattr(annotation, field_name) and getattr(annotation, field_name) != value:
-                setattr(annotation, field_name, value)
-                changed = True
-
-        if changed:
-            annotation.annotation_source = "config_override"
-            logger.info("semantic_override_applied", column=col_ref)
-
-    session.flush()
-
-
-def _apply_relationship_confirmations(
-    session: Session,
-    config: dict,  # type: ignore[type-arg]
-    table_ids: list[str],
-) -> None:
-    """Apply confirmed_relationships overrides from the semantic phase config.
-
-    Called after enrich_semantic so all relationships exist (including
-    self-referential ones the finder can't discover). Sets is_confirmed=True
-    and patches field values onto matching Relationship records.
-
-    Keys are ``"from_table->to_table"``; values are field dicts patched
-    onto ALL matching Relationship rows for that table pair.
-    """
-    from datetime import UTC, datetime
-
-    from dataraum.analysis.relationships.db_models import Relationship
-
-    overrides = config.get("overrides", {})
-    if not isinstance(overrides, dict):
-        return
-
-    confirmed = overrides.get("confirmed_relationships", {})
-    if not isinstance(confirmed, dict) or not confirmed:
-        return
-
-    # Build table name lookup
-    tables = session.execute(select(Table).where(Table.table_id.in_(table_ids))).scalars().all()
-    name_to_id = {t.table_name: t.table_id for t in tables}
-
-    for key, field_values in confirmed.items():
-        if not isinstance(field_values, dict):
-            continue
-        if "->" not in key:
-            continue
-        from_name, to_name = key.split("->", 1)
-        from_tid = name_to_id.get(from_name)
-        to_tid = name_to_id.get(to_name)
-        if not from_tid or not to_tid:
-            logger.debug("relationship_confirm_skip", key=key, reason="table not found")
-            continue
-
-        rels = (
-            session.execute(
-                select(Relationship).where(
-                    Relationship.from_table_id == from_tid,
-                    Relationship.to_table_id == to_tid,
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if not rels:
-            logger.debug("relationship_confirm_skip", key=key, reason="no relationship")
-            continue
-
-        for rel in rels:
-            for field_name, value in field_values.items():
-                if hasattr(rel, field_name) and getattr(rel, field_name) != value:
-                    setattr(rel, field_name, value)
-
-            if not rel.is_confirmed:
-                rel.is_confirmed = True
-                rel.confirmed_at = datetime.now(UTC)
-                rel.confirmed_by = "config_override"
-                logger.info("relationship_confirm_applied", key=key)
-
-    session.flush()

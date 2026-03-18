@@ -574,8 +574,10 @@ class PipelineScheduler:
     def _apply_fixes(self, fix_inputs: list[FixInput]) -> None:
         """Apply fix inputs via bridge + interpreters, log to ledger, reset.
 
-        After this method returns the scheduler loop naturally re-runs
-        the reset phases, triggering fresh gate measurement.
+        Routing:
+        - preprocess: cascade-clean + phase re-run (existing behaviour)
+        - postprocess: apply fix document only, skip cascade-clean.
+          The next gate measurement (with overrides applied) picks up the change.
         """
         from dataraum.core.config import _get_config_root
         from dataraum.documentation.ledger import log_fix
@@ -604,7 +606,7 @@ class PipelineScheduler:
                 for ref in (fix_input.affected_columns or [fix_input.action_name])
             ]
             table_name, column_name = parsed[0]
-            dimension = schema.requires_rerun or ""
+            dimension = schema.requires_rerun or schema.gate or ""
 
             documents = build_fix_documents(schema, fix_input, table_name, column_name, dimension)
 
@@ -617,7 +619,8 @@ class PipelineScheduler:
                     duckdb_conn=self.duckdb_conn,
                 )
 
-            if schema.requires_rerun:
+            # Only preprocess fixes trigger cascade-clean + phase re-run
+            if schema.routing == "preprocess" and schema.requires_rerun:
                 phases_to_rerun.add(schema.requires_rerun)
 
             # Log to fix ledger
@@ -636,6 +639,7 @@ class PipelineScheduler:
                 "fix_applied",
                 action=fix_input.action_name,
                 documents=len(documents),
+                routing=schema.routing,
                 rerun=schema.requires_rerun,
             )
 

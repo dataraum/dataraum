@@ -1262,6 +1262,105 @@ class TestFixResolution:
         assert result.success is True
 
 
+class TestPostprocessFixRouting:
+    """Tests for postprocess fix routing — no cascade-clean or phase re-run."""
+
+    def test_postprocess_fix_skips_cleanup(self, session: Session, duckdb_conn):
+        """Postprocess fix applies documents but does NOT reset phases."""
+        _ensure_source(session)
+        run_id = _make_run(session)
+
+        alpha = MockPhase(
+            "alpha",
+            produces_analyses_keys={AnalysisKey.TYPING},
+            is_quality_gate=True,
+        )
+
+        scheduler = PipelineScheduler(
+            phases={"alpha": alpha},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            contract_thresholds={"structural.types": 0.3},
+        )
+
+        fix_input = FixInput(
+            action_name="accept_finding",
+            affected_columns=["orders.amount"],
+        )
+
+        # Create a postprocess schema (routing="postprocess", no requires_rerun)
+        postprocess_schema = FixSchema(
+            action="accept_finding",
+            target="config",
+            description="Accept finding",
+            config_path="entropy/thresholds.yaml",
+            key_path=["detectors", "test", "accepted_columns"],
+            operation="append",
+            routing="postprocess",
+            gate="quality_review",
+            fields={},
+        )
+
+        # After postprocess fix, score drops below threshold
+        measure_count = 0
+
+        def mock_measure(session, duckdb_conn, source_id, available_analyses):
+            nonlocal measure_count
+            measure_count += 1
+            if measure_count == 1:
+                return GateResult(scores={"structural.types.type_fidelity": 0.8})
+            return GateResult(scores={"structural.types.type_fidelity": 0.1})
+
+        detector_registry, _ = _make_test_detector_registry("accept_finding", "alpha")
+
+        with (
+            patch(
+                "dataraum.pipeline.scheduler.measure_at_gate",
+                side_effect=mock_measure,
+            ),
+            patch("dataraum.pipeline.scheduler.cleanup_phase") as mock_cleanup,
+            patch(
+                "dataraum.entropy.detectors.base.get_default_registry",
+                return_value=detector_registry,
+            ),
+            patch(
+                "dataraum.entropy.fix_schemas.get_schemas_for_detector",
+                return_value=[postprocess_schema],
+            ),
+            patch(
+                "dataraum.entropy.fix_schemas.get_fix_schema",
+                return_value=postprocess_schema,
+            ),
+            patch(
+                "dataraum.pipeline.fixes.interpreters.apply_and_persist",
+                return_value=[],
+            ) as mock_apply,
+        ):
+            events, result = _drive(
+                scheduler.run(),
+                resolutions={
+                    0: Resolution(
+                        action=ResolutionAction.FIX,
+                        fix_inputs=[fix_input],
+                    )
+                },
+            )
+
+        # Fix was applied
+        mock_apply.assert_called_once()
+
+        # cleanup_phase was NOT called (postprocess skips cascade-clean)
+        mock_cleanup.assert_not_called()
+
+        # Alpha ran only ONCE (no re-run for postprocess)
+        assert alpha.run_count == 1
+
+        # Pipeline succeeded
+        assert result.success is True
+
+
 class TestFixScoresCleared:
     """Tests that fix re-runs clear measurement state."""
 

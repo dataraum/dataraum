@@ -305,7 +305,7 @@ class TestSliceVarianceDetector:
         assert detector.dimension == "variance"
         assert detector.sub_dimension == "slice_stability"
         assert detector.scope == "column"
-        assert detector.required_analyses == ["slice_profiles"]
+        assert detector.required_analyses == []
 
     def test_multiple_spreads_max_wins(self, detector: SliceVarianceDetector):
         """Score is the max of all normalized spreads."""

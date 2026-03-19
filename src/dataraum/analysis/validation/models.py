@@ -6,7 +6,7 @@ Contains data structures for validation specs and results.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -17,7 +17,7 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-class ValidationSeverity(str, Enum):
+class ValidationSeverity(StrEnum):
     """Severity levels for validation failures."""
 
     INFO = "info"
@@ -26,7 +26,7 @@ class ValidationSeverity(str, Enum):
     CRITICAL = "critical"
 
 
-class ValidationStatus(str, Enum):
+class ValidationStatus(StrEnum):
     """Status of a validation check."""
 
     PASSED = "passed"

@@ -15,7 +15,7 @@ from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
-from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
+from dataraum.entropy.dimensions import Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
@@ -90,19 +90,24 @@ class SliceVarianceDetector(EntropyDetector):
         ).scalar_one_or_none()
         return table
 
-    def _load_data(self, context: DetectorContext) -> None:
+    def _load_data(self, context: DetectorContext) -> list[dict[str, Any]]:
         """Load per-slice statistics for this column.
 
         Queries slice tables (Table.layer == 'slice') for the source,
         finds columns matching context.column_name, and loads their
         StatisticalProfile + StatisticalQualityMetrics.
+
+        Falls back to context.analysis_results["slice_profiles"] when
+        no DB session is available (e.g. unit tests).
         """
         if context.session is None or not context.column_name:
-            return
+            fallback: list[dict[str, Any]] = context.analysis_results.get("slice_profiles", [])
+            return fallback
 
         source_id = self._resolve_source_id(context)
         if source_id is None:
-            return
+            fallback_2: list[dict[str, Any]] = context.analysis_results.get("slice_profiles", [])
+            return fallback_2
 
         from sqlalchemy import select
 
@@ -122,7 +127,7 @@ class SliceVarianceDetector(EntropyDetector):
             .all()
         )
         if not slice_tables:
-            return
+            return []
 
         slice_table_ids = [t.table_id for t in slice_tables]
         slice_table_names = {t.table_id: t.table_name for t in slice_tables}
@@ -139,7 +144,7 @@ class SliceVarianceDetector(EntropyDetector):
             .all()
         )
         if not slice_columns:
-            return
+            return []
 
         slice_col_ids = [c.column_id for c in slice_columns]
         col_to_table = {c.column_id: c.table_id for c in slice_columns}

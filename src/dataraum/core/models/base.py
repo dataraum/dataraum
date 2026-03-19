@@ -6,7 +6,7 @@ domain module (staging, profiling, enrichment, etc.).
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
@@ -44,7 +44,7 @@ class Result[T](BaseModel):
 # === Enums ===
 
 
-class DataType(str, Enum):
+class DataType(StrEnum):
     """Supported data types."""
 
     VARCHAR = "VARCHAR"
@@ -62,7 +62,7 @@ class DataType(str, Enum):
     BLOB = "BLOB"
 
 
-class SemanticRole(str, Enum):
+class SemanticRole(StrEnum):
     """Semantic role of a column."""
 
     MEASURE = "measure"  # Numeric value to aggregate
@@ -74,7 +74,7 @@ class SemanticRole(str, Enum):
     UNKNOWN = "unknown"
 
 
-class RelationshipType(str, Enum):
+class RelationshipType(StrEnum):
     """Type of relationship between tables."""
 
     FOREIGN_KEY = "foreign_key"
@@ -83,7 +83,7 @@ class RelationshipType(str, Enum):
     SEMANTIC = "semantic"
 
 
-class Cardinality(str, Enum):
+class Cardinality(StrEnum):
     """Relationship cardinality."""
 
     ONE_TO_ONE = "one-to-one"
@@ -92,7 +92,7 @@ class Cardinality(str, Enum):
     MANY_TO_MANY = "many-to-many"
 
 
-class QualitySeverity(str, Enum):
+class QualitySeverity(StrEnum):
     """Severity of quality issues."""
 
     ERROR = "error"
@@ -100,7 +100,7 @@ class QualitySeverity(str, Enum):
     INFO = "info"
 
 
-class DecisionSource(str, Enum):
+class DecisionSource(StrEnum):
     """Source of a decision (type, annotation, etc)."""
 
     AUTO = "auto"  # Automatic heuristic

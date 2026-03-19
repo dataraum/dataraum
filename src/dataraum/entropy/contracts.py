@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -43,7 +43,7 @@ logger = get_logger(__name__)
 ENTROPY_CONTRACTS_CONFIG = "entropy/contracts.yaml"
 
 
-class ConfidenceLevel(str, Enum):
+class ConfidenceLevel(StrEnum):
     """Traffic light confidence levels for query responses."""
 
     GREEN = "green"  # All thresholds pass

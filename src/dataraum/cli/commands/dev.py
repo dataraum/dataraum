@@ -252,7 +252,7 @@ def context(
 
     from dataraum.core.connections import get_manager_for_directory
     from dataraum.graphs.context import build_execution_context, format_metadata_document
-    from dataraum.storage import Table
+    from dataraum.storage import Source, Table
 
     try:
         manager = get_manager_for_directory(output_dir)
@@ -262,15 +262,18 @@ def context(
 
     try:
         with manager.session_scope() as session:
-            source_result = session.execute(select(Table.source_id).limit(1))
-            source_id = source_result.scalar()
-            if not source_id:
-                console.print("[red]No tables found. Run the pipeline first.[/red]")
+            source = session.execute(
+                select(Source).order_by(Source.created_at).limit(1)
+            ).scalar_one_or_none()
+            if not source:
+                console.print("[red]No sources found. Run the pipeline first.[/red]")
                 raise typer.Exit(1)
 
             tables = (
                 session.execute(
-                    select(Table).where(Table.source_id == source_id, Table.layer == "typed")
+                    select(Table).where(
+                        Table.source_id == source.source_id, Table.layer == "typed"
+                    )
                 )
                 .scalars()
                 .all()
@@ -288,7 +291,7 @@ def context(
                     duckdb_conn=cursor,
                 )
 
-            document = format_metadata_document(ctx)
+            document = format_metadata_document(ctx, source_name=source.name)
             console.print(document)
     finally:
         manager.close()

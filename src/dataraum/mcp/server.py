@@ -20,7 +20,6 @@ from mcp.types import CallToolResult, CreateTaskResult, TextContent, Tool, ToolE
 
 from dataraum.mcp.formatters import (
     format_actions_report,
-    format_context_for_llm,
     format_contract_evaluation,
     format_entropy_summary,
     format_export_result,
@@ -1070,8 +1069,7 @@ def _get_context(output_dir: Path) -> str:
                     duckdb_conn=cursor,
                 )
 
-            formatted = format_metadata_document(context, source_name=source.name)
-            result = format_context_for_llm(source.name, formatted)
+            result = format_metadata_document(context, source_name=source.name)
 
             # Append pipeline status summary
             try:

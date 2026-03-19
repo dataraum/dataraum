@@ -10,6 +10,7 @@ prototypes/
 .claire/
 .claude/agent-memory/
 .claire/agent-memory/
+.claude/worktrees/
 
 # Python
 __pycache__/

@@ -68,7 +68,7 @@ class ConfidenceLevel(str, Enum):
             ConfidenceLevel.GREEN: "GOOD",
             ConfidenceLevel.YELLOW: "MARGINAL",
             ConfidenceLevel.ORANGE: "ISSUES",
-            ConfidenceLevel.RED: "BLOCKED",
+            ConfidenceLevel.RED: "HIGH RISK",
         }[self]
 
 

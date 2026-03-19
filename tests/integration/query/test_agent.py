@@ -51,6 +51,8 @@ def duckdb_with_data():
 @pytest.fixture
 def sample_execution_context(duckdb_with_data) -> GraphExecutionContext:
     """Create a sample execution context."""
+    from dataraum.graphs.field_mapping import ColumnCandidate, FieldMappings
+
     return GraphExecutionContext(
         tables=[
             TableContext(
@@ -89,7 +91,20 @@ def sample_execution_context(duckdb_with_data) -> GraphExecutionContext:
                     ),
                 ],
             )
-        ]
+        ],
+        field_mappings=FieldMappings(
+            mappings={
+                "revenue": [
+                    ColumnCandidate(
+                        column_id="col_amount",
+                        column_name="amount",
+                        table_name="orders",
+                        confidence=0.95,
+                    )
+                ],
+            },
+            table_ids=["orders_001"],
+        ),
     )
 
 

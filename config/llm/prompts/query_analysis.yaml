@@ -96,10 +96,6 @@ user_prompt: |
   {field_mappings}
   </field_mappings>
 
-  <data_quality>
-  {entropy_warnings}
-  </data_quality>
-
   {snippet_context}
 
   <instructions>
@@ -165,24 +161,15 @@ inputs:
 
   dataset_context:
     type: "string"
-    required: false
-    default: ""
-    description: "Rich context with semantic annotations, relationships, and statistics"
+    required: true
+    description: "Metadata document with semantic annotations, relationships, quality, and entropy"
 
   field_mappings:
     type: "string"
-    required: false
-    default: ""
-    description: "Business concept to column mappings from semantic analysis"
-
-  entropy_warnings:
-    type: "string"
-    required: false
-    default: "Data quality assessment not available - proceed with caution."
-    description: "Data quality warnings and entropy scores"
+    required: true
+    description: "Business concept to column mappings from semantic analysis (empty string if none)"
 
   snippet_context:
     type: "string"
-    required: false
-    default: ""
-    description: "SQL Knowledge Base context — either pre-fetched snippets or search vocabulary, with mode-specific instructions"
+    required: true
+    description: "SQL Knowledge Base context — either pre-fetched snippets or search vocabulary, with mode-specific instructions (empty string if none)"

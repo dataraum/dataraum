@@ -83,6 +83,50 @@ def duckdb_with_data():
     conn.close()
 
 
+def _make_execution_context(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    *,
+    schema_mapping_id: str = "test-mapping",
+) -> ExecutionContext:
+    """Create an ExecutionContext with minimal rich_context and field mappings.
+
+    This is the correct way to build an ExecutionContext for tests that
+    exercise SQL generation. Using ExecutionContext without rich_context
+    will fail fast with a clear error.
+    """
+    from dataraum.graphs.context import GraphExecutionContext, TableContext
+    from dataraum.graphs.field_mapping import ColumnCandidate, FieldMappings
+
+    rich_context = GraphExecutionContext(
+        tables=[
+            TableContext(
+                table_id="t1",
+                table_name="test_data",
+                duckdb_name="test_data",
+            ),
+        ],
+        total_tables=1,
+        field_mappings=FieldMappings(
+            mappings={
+                "test_field": [
+                    ColumnCandidate(
+                        column_id="c1",
+                        column_name="amount",
+                        table_name="test_data",
+                        confidence=1.0,
+                    )
+                ],
+            },
+            table_ids=["t1"],
+        ),
+    )
+    return ExecutionContext(
+        duckdb_conn=duckdb_conn,
+        schema_mapping_id=schema_mapping_id,
+        rich_context=rich_context,
+    )
+
+
 class TestGeneratedCode:
     """Tests for GeneratedCode dataclass."""
 
@@ -115,11 +159,9 @@ class TestExecutionContext:
         """Test creating an ExecutionContext."""
         context = ExecutionContext(
             duckdb_conn=duckdb_with_data,
-            table_name="test_data",
             schema_mapping_id="test-mapping",
         )
 
-        assert context.table_name == "test_data"
         assert context.schema_mapping_id == "test-mapping"
         assert context.period is None
 
@@ -256,11 +298,7 @@ class TestGraphAgentIntegration:
         mock_tool_response.content = None
         agent.provider.converse = MagicMock(return_value=Result.ok(mock_tool_response))
 
-        context = ExecutionContext(
-            duckdb_conn=duckdb_with_data,
-            table_name="test_data",
-            schema_mapping_id="test-mapping",
-        )
+        context = _make_execution_context(duckdb_with_data)
 
         # Execute
         result = agent.execute(session, sample_graph, context)
@@ -316,11 +354,7 @@ class TestGraphAgentIntegration:
         mock_tool_response.content = None
         agent.provider.converse = MagicMock(return_value=Result.ok(mock_tool_response))
 
-        context = ExecutionContext(
-            duckdb_conn=duckdb_with_data,
-            table_name="test_data",
-            schema_mapping_id="test-mapping",
-        )
+        context = _make_execution_context(duckdb_with_data)
 
         # First execution - should call LLM
         result1 = agent.execute(session, sample_graph, context)
@@ -387,11 +421,7 @@ class TestGraphAgentSnippets:
         mock_response.content = None
         agent.provider.converse = MagicMock(return_value=Result.ok(mock_response))
 
-        context = ExecutionContext(
-            duckdb_conn=duckdb_with_data,
-            table_name="test_data",
-            schema_mapping_id="test-mapping",
-        )
+        context = _make_execution_context(duckdb_with_data)
 
         result = agent.execute(session, sample_graph, context)
         assert result.success
@@ -446,11 +476,7 @@ class TestGraphAgentSnippets:
             prompt_renderer=mock_renderer,
         )
 
-        context = ExecutionContext(
-            duckdb_conn=duckdb_with_data,
-            table_name="test_data",
-            schema_mapping_id="test-mapping",
-        )
+        context = _make_execution_context(duckdb_with_data)
 
         # Execute — should assemble from snippets (no LLM call)
         result = agent.execute(session, sample_graph, context)
@@ -500,11 +526,7 @@ class TestGraphAgentSnippets:
             prompt_renderer=mock_renderer,
         )
 
-        context = ExecutionContext(
-            duckdb_conn=duckdb_with_data,
-            table_name="test_data",
-            schema_mapping_id="test-mapping",
-        )
+        context = _make_execution_context(duckdb_with_data)
 
         result = agent.execute(session, sample_graph, context)
         assert result.success
@@ -613,11 +635,7 @@ class TestGraphAgentSnippets:
         mock_response.content = None
         agent.provider.converse = MagicMock(return_value=Result.ok(mock_response))
 
-        context = ExecutionContext(
-            duckdb_conn=duckdb_with_data,
-            table_name="test_data",
-            schema_mapping_id="test-mapping",
-        )
+        context = _make_execution_context(duckdb_with_data)
 
         # Execute — no cached snippets (first time), should still track usage
         result = agent.execute(session, sample_graph, context)

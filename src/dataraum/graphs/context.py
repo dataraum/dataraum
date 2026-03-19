@@ -21,6 +21,7 @@ from dataraum.core.logging import get_logger
 if TYPE_CHECKING:
     import duckdb
 
+    from dataraum.analysis.cycles.health import HealthReport
     from dataraum.graphs.field_mapping import FieldMappings
 
 logger = get_logger(__name__)
@@ -57,9 +58,24 @@ class ColumnContext:
     is_stale: bool | None = None
     detected_granularity: str | None = None
 
+    # Business metadata (from SemanticAnnotation)
+    business_name: str | None = None
+    business_description: str | None = None
+    unit_source_column: str | None = None
+
+    # Temporal bounds (from TemporalColumnProfile)
+    min_timestamp: str | None = None
+    max_timestamp: str | None = None
+    completeness_ratio: float | None = None
+
     # Quality grade from quality_summary module
     quality_grade: str | None = None  # A, B, C, D, F
     quality_score: float | None = None  # 0.0 - 1.0
+
+    # Quality narrative (from ColumnQualityReport)
+    quality_summary: str | None = None  # LLM narrative
+    quality_findings: list[str] = field(default_factory=list)  # key_findings from report_data
+    quality_recommendations: list[str] = field(default_factory=list)
 
     # Derived column info from correlation analysis
     is_derived: bool = False
@@ -71,6 +87,10 @@ class ColumnContext:
     # Entropy scores (from entropy layer)
     entropy_scores: dict[str, Any] | None = None  # Layer scores and composite
     resolution_hints: list[dict[str, Any]] = field(default_factory=list)  # Top fixes
+
+    # Entropy interpretation (from EntropyInterpretationRecord)
+    entropy_explanation: str | None = None
+    entropy_assumptions: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -88,6 +108,11 @@ class TableContext:
     is_dimension_table: bool | None = None
     entity_type: str | None = None
 
+    # From TableEntity
+    table_description: str | None = None
+    grain_columns: list[str] = field(default_factory=list)
+    time_column: str | None = None
+
     # Columns
     columns: list[ColumnContext] = field(default_factory=list)
 
@@ -97,6 +122,10 @@ class TableContext:
     # Entropy (from entropy layer)
     table_entropy: dict[str, Any] | None = None  # Aggregated entropy scores
     readiness_for_use: str | None = None  # ready, investigate, blocked
+
+    # Table-level entropy interpretation
+    table_entropy_explanation: str | None = None
+    table_entropy_assumptions: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -165,6 +194,11 @@ class BusinessCycleContext:
     status_column: str | None = None  # "invoices.status"
     completion_value: str | None = None  # "paid"
 
+    # Volume metrics (from DetectedBusinessCycle)
+    total_records: int | None = None
+    completed_cycles: int | None = None
+    evidence: list[str] = field(default_factory=list)
+
 
 @dataclass
 class ValidationContext:
@@ -175,6 +209,7 @@ class ValidationContext:
     severity: str  # info, warning, error, critical
     passed: bool
     message: str
+    details: dict[str, Any] | None = None  # From ValidationResultRecord.details
 
 
 @dataclass
@@ -234,6 +269,9 @@ class GraphExecutionContext:
     # Business cycles (from cycles analysis)
     business_cycles: list[BusinessCycleContext] = field(default_factory=list)
 
+    # Cycle health (from cycles health computation)
+    cycle_health: HealthReport | None = None
+
     # Validation results (from validation analysis)
     validations: list[ValidationContext] = field(default_factory=list)
 
@@ -242,6 +280,9 @@ class GraphExecutionContext:
 
     # Field mappings (business_concept → column mappings for metrics)
     field_mappings: FieldMappings | None = None
+
+    # Aggregated assumptions across all columns (for top-level section)
+    active_assumptions: list[dict[str, Any]] = field(default_factory=list)
 
     # Metadata
     built_at: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -423,17 +464,14 @@ def build_execution_context(
     # Sort by priority descending
     slice_contexts.sort(key=lambda s: s.priority, reverse=True)
 
-    # 11. Load quality grades from quality_summary
-    quality_grades: dict[str, tuple[str, float]] = {}  # column_id -> (grade, score)
+    # 11. Load quality reports from quality_summary
+    quality_reports: dict[str, ColumnQualityReport] = {}
     if column_ids:
         grade_stmt = select(ColumnQualityReport).where(
             ColumnQualityReport.source_column_id.in_(column_ids)
         )
         for report in session.execute(grade_stmt).scalars().all():
-            quality_grades[report.source_column_id] = (
-                report.quality_grade,
-                report.overall_quality_score,
-            )
+            quality_reports[report.source_column_id] = report
 
     # 12. Load derived columns from correlation analysis
     derived_columns: dict[str, str] = {}  # column_id -> formula
@@ -501,6 +539,9 @@ def build_execution_context(
                 entity_flows=entity_flows,
                 status_column=status_col,
                 completion_value=cycle.completion_value,
+                total_records=cycle.total_records,
+                completed_cycles=cycle.completed_cycles,
+                evidence=cycle.evidence or [],
             )
         )
 
@@ -526,6 +567,7 @@ def build_execution_context(
                 severity=val_rec.severity,
                 passed=val_rec.passed,
                 message=val_rec.message or "",
+                details=val_rec.details,
             )
         )
 
@@ -545,6 +587,20 @@ def build_execution_context(
                     is_grain_verified=ev.is_grain_verified,
                 )
             )
+
+    # 13d. Compute cycle health
+    from dataraum.analysis.cycles.health import compute_cycle_health
+    from dataraum.core.config import load_phase_config
+
+    cycle_health_report: HealthReport | None = None
+    if _source_id:
+        bc_config = load_phase_config("business_cycles")
+        _vertical = bc_config.get("vertical")
+        if _vertical:
+            try:
+                cycle_health_report = compute_cycle_health(session, _source_id, vertical=_vertical)
+            except Exception as e:
+                logger.warning("cycle_health_failed", error=str(e))
 
     # 14. Load field mappings
     field_mappings = load_semantic_mappings(session, table_ids)
@@ -613,6 +669,22 @@ def build_execution_context(
             .limit(1)
         )
         overall_entropy_score = snapshot_result.scalar()
+
+    # 18. Load entropy interpretations
+    from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
+
+    entropy_interps: dict[str, EntropyInterpretationRecord] = {}
+    table_interps: dict[str, EntropyInterpretationRecord] = {}
+
+    if _source_id:
+        interp_stmt = select(EntropyInterpretationRecord).where(
+            EntropyInterpretationRecord.source_id == _source_id
+        )
+        for interp in session.execute(interp_stmt).scalars().all():
+            if interp.column_id:
+                entropy_interps[interp.column_id] = interp
+            elif interp.table_id:
+                table_interps[interp.table_id] = interp
 
     # 17. Build table contexts
     table_contexts: list[TableContext] = []
@@ -685,14 +757,15 @@ def build_execution_context(
             if flags:
                 quality_flags.extend(flags)
 
-            # Get quality grade if available
-            col_quality = quality_grades.get(col.column_id)
-            quality_grade = col_quality[0] if col_quality else None
-            quality_score = col_quality[1] if col_quality else None
+            # Get quality report if available
+            col_report = quality_reports.get(col.column_id)
 
             # Get entropy data for this column
             entropy_key = f"{table.table_name}.{col.column_name}"
             col_entropy = column_entropy_lookup.get(entropy_key)
+
+            # Get entropy interpretation for this column
+            col_interp = entropy_interps.get(col.column_id)
 
             column_contexts.append(
                 ColumnContext(
@@ -704,6 +777,9 @@ def build_execution_context(
                     entity_type=sem_ann.entity_type if sem_ann else None,
                     business_concept=sem_ann.business_concept if sem_ann else None,
                     temporal_behavior=sem_ann.temporal_behavior if sem_ann else None,
+                    business_name=sem_ann.business_name if sem_ann else None,
+                    business_description=sem_ann.business_description if sem_ann else None,
+                    unit_source_column=sem_ann.unit_source_column if sem_ann else None,
                     null_ratio=null_ratio,
                     cardinality_ratio=cardinality_ratio,
                     outlier_ratio=outlier_ratio,
@@ -711,13 +787,29 @@ def build_execution_context(
                     detected_granularity=temp_profile.detected_granularity
                     if temp_profile
                     else None,
-                    quality_grade=quality_grade,
-                    quality_score=quality_score,
+                    min_timestamp=str(temp_profile.min_timestamp)
+                    if temp_profile and temp_profile.min_timestamp
+                    else None,
+                    max_timestamp=str(temp_profile.max_timestamp)
+                    if temp_profile and temp_profile.max_timestamp
+                    else None,
+                    completeness_ratio=temp_profile.completeness_ratio if temp_profile else None,
+                    quality_grade=col_report.quality_grade if col_report else None,
+                    quality_score=col_report.overall_quality_score if col_report else None,
+                    quality_summary=col_report.summary if col_report else None,
+                    quality_findings=col_report.report_data.get("key_findings", [])
+                    if col_report and col_report.report_data
+                    else [],
+                    quality_recommendations=col_report.report_data.get("recommendations", [])
+                    if col_report and col_report.report_data
+                    else [],
                     is_derived=is_derived,
                     derived_formula=derived_columns.get(col.column_id),
                     flags=flags,
                     entropy_scores=col_entropy,
                     resolution_hints=col_entropy.get("resolution_hints", []) if col_entropy else [],
+                    entropy_explanation=col_interp.explanation if col_interp else None,
+                    entropy_assumptions=col_interp.assumptions_json or [] if col_interp else [],
                 )
             )
 
@@ -735,6 +827,19 @@ def build_execution_context(
         # Get table entropy data
         tbl_entropy = table_entropy_lookup.get(table.table_name)
 
+        # Get table-level entropy interpretation
+        table_interp = table_interps.get(table_id)
+
+        # Extract grain_columns: stored as JSON (may be list of column IDs or names)
+        grain_cols: list[str] = []
+        if table_entity and table_entity.grain_columns:
+            raw_grain = table_entity.grain_columns
+            if isinstance(raw_grain, list):
+                grain_cols = list(raw_grain)
+            elif isinstance(raw_grain, dict):
+                # Some formats store as {"columns": [...]}
+                grain_cols = list(raw_grain.get("columns", []))
+
         table_contexts.append(
             TableContext(
                 table_id=table_id,
@@ -745,12 +850,32 @@ def build_execution_context(
                 is_fact_table=table_entity.is_fact_table if table_entity else None,
                 is_dimension_table=table_entity.is_dimension_table if table_entity else None,
                 entity_type=table_entity.detected_entity_type if table_entity else None,
+                table_description=table_entity.description if table_entity else None,
+                grain_columns=grain_cols,
+                time_column=table_entity.time_column if table_entity else None,
                 columns=column_contexts,
                 flags=table_flags,
                 table_entropy=tbl_entropy,
                 readiness_for_use=tbl_entropy.get("readiness") if tbl_entropy else None,
+                table_entropy_explanation=table_interp.explanation if table_interp else None,
+                table_entropy_assumptions=table_interp.assumptions_json or []
+                if table_interp
+                else [],
             )
         )
+
+    # Aggregate active assumptions across all columns
+    active_assumptions: list[dict[str, Any]] = []
+    for tctx in table_contexts:
+        for cctx in tctx.columns:
+            for assumption in cctx.entropy_assumptions:
+                active_assumptions.append(
+                    {
+                        "table": tctx.table_name,
+                        "column": cctx.column_name,
+                        **assumption,
+                    }
+                )
 
     return GraphExecutionContext(
         tables=table_contexts,
@@ -770,9 +895,11 @@ def build_execution_context(
         slice_value=slice_value,
         available_slices=slice_contexts,
         business_cycles=business_cycle_contexts,
+        cycle_health=cycle_health_report,
         validations=validation_contexts,
         enriched_views=enriched_view_contexts,
         field_mappings=field_mappings,
+        active_assumptions=active_assumptions,
     )
 
 
@@ -894,313 +1021,144 @@ def _table_network_to_dict(
 
 
 # =============================================================================
-# Context Formatting for LLM
+# Metadata Document Formatter
 # =============================================================================
 
 
-def format_entropy_for_prompt(context: GraphExecutionContext) -> str:
-    """Format entropy information for LLM prompts.
-
-    Creates a concise entropy summary that helps the LLM understand:
-    - Overall data readiness
-    - High-entropy columns that need assumptions
-    - Blocked columns per table
-    - Columns that may block reliable answers
-
-    Args:
-        context: GraphExecutionContext with entropy data
-
-    Returns:
-        Formatted string for entropy section, or empty string if no entropy data
-    """
-    if not context.entropy_summary:
-        return ""
-
-    summary = context.entropy_summary
-    lines = []
-
-    # Overall readiness header
-    readiness = summary.get("overall_readiness", "unknown")
-    if readiness == "ready":
-        lines.append("## DATA READINESS: ✓ READY")
-        lines.append("Data quality is sufficient for reliable answers.")
-    elif readiness == "investigate":
-        lines.append("## DATA READINESS: ⚠ INVESTIGATE")
-        lines.append("Some columns have elevated uncertainty - state assumptions when using them.")
-    else:  # blocked
-        lines.append("## DATA READINESS: ✗ BLOCKED")
-        lines.append(
-            "Critical data quality issues exist - consider refusing or asking clarification."
-        )
-
-    lines.append("")
-
-    # Collect high-entropy columns first so the header count matches the list
-    high_entropy_cols, baseline_count = _collect_high_entropy_columns(context)
-
-    # Stats summary
-    critical_count = summary.get("critical_entropy_count", 0)
-    high_count = len(high_entropy_cols)
-
-    if high_count > 0 or critical_count > 0:
-        lines.append(f"- High entropy columns: {high_count}")
-        if critical_count > 0:
-            lines.append(f"- Critical entropy columns: {critical_count}")
-        lines.append("")
-
-    # Blocked columns (critical)
-    blockers = summary.get("readiness_blockers", [])
-    if blockers:
-        lines.append("### BLOCKING ISSUES")
-        lines.append("These columns have critical uncertainty and should be clarified before use:")
-        for blocker in blockers:
-            lines.append(f"  - {blocker}")
-        lines.append("")
-
-    # High entropy columns with details
-    if high_entropy_cols or baseline_count:
-        lines.append("### HIGH UNCERTAINTY COLUMNS")
-        lines.append("State assumptions when using these columns:")
-        for col_info in high_entropy_cols:
-            dims = ", ".join(col_info["dimensions"])
-            lines.append(f"  - {col_info['name']} (entropy: {col_info['score']:.2f}) - {dims}")
-        if baseline_count:
-            lines.append(
-                f"  - {baseline_count} additional column(s) at baseline uncertainty (~0.30)"
-            )
-        lines.append("")
-
-    # Blocked columns per table
-    blocked_warnings = _format_blocked_columns(context)
-    if blocked_warnings:
-        lines.append("### BLOCKED COLUMNS")
-        lines.append("These columns have critical entropy issues:")
-        lines.extend(blocked_warnings)
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-def _collect_high_entropy_columns(
+def format_metadata_document(
     context: GraphExecutionContext,
-) -> tuple[list[dict[str, Any]], int]:
-    """Collect columns with elevated entropy from the context.
+    source_name: str = "dataset",
+) -> str:
+    """Format execution context as a structured metadata document for LLM prompts.
 
-    A column is listed individually only if it has specific signals:
-    non-empty high_entropy_dimensions OR readiness != ready. Columns
-    with elevated P(high) but no specific signals are counted as
-    baseline and summarised in one line.
-
-    Returns:
-        Tuple of (detailed columns list, baseline count)
-    """
-    detailed_cols: list[dict[str, Any]] = []
-    baseline_count = 0
-
-    for table in context.tables:
-        for col in table.columns:
-            if not col.entropy_scores:
-                continue
-            score = col.entropy_scores.get("worst_intent_p_high", 0.0)
-            readiness = col.entropy_scores.get("readiness", "ready")
-            high_dims = col.entropy_scores.get("high_entropy_dimensions", [])
-
-            if readiness == "blocked" or high_dims:
-                # Has specific signals worth listing (blocked always listed)
-                detailed_cols.append(
-                    {
-                        "name": f"{table.table_name}.{col.column_name}",
-                        "score": score,
-                        "dimensions": high_dims,
-                        "readiness": readiness,
-                    }
-                )
-            elif score >= 0.30:
-                # Elevated but no specific signals — count as baseline
-                baseline_count += 1
-
-    # Sort by score descending
-    detailed_cols.sort(key=lambda x: x["score"], reverse=True)
-    return detailed_cols, baseline_count
-
-
-def _format_blocked_columns(context: GraphExecutionContext) -> list[str]:
-    """Format blocked column warnings per table.
-
-    Args:
-        context: GraphExecutionContext
-
-    Returns:
-        List of warning lines
-    """
-    warnings: list[str] = []
-
-    for table in context.tables:
-        if table.table_entropy:
-            blocked = table.table_entropy.get("blocked_columns", [])
-            if blocked:
-                warnings.append(
-                    f"  - Table '{table.table_name}': "
-                    f"{len(blocked)} blocked columns: {', '.join(blocked)}"
-                )
-
-    return warnings
-
-
-def _format_column_entropy_inline(col: ColumnContext) -> str:
-    """Format inline entropy indicator for a column.
-
-    Args:
-        col: ColumnContext with entropy data
-
-    Returns:
-        Short entropy indicator string or empty string
-    """
-    if not col.entropy_scores:
-        return ""
-
-    readiness = col.entropy_scores.get("readiness", "ready")
-
-    if readiness == "blocked":
-        return " ⛔"
-    elif readiness == "investigate":
-        return " ⚠"
-    return ""
-
-
-def format_context_for_prompt(context: GraphExecutionContext) -> str:
-    """Format execution context as a readable string for LLM prompts.
+    Produces a rich, pre-digested document with business names, descriptions,
+    quality narratives, entropy assumptions, and actionable notes. Replaces
+    both format_context_for_prompt() and format_entropy_for_prompt().
 
     Args:
         context: GraphExecutionContext from build_execution_context()
+        source_name: Human-readable name for the data source
 
     Returns:
-        Formatted string suitable for LLM prompt
+        Formatted markdown metadata document
     """
-    lines = []
+    lines: list[str] = []
 
-    # Summary
-    lines.append("## DATASET CONTEXT")
+    # --- Overview ---
+    lines.append(f"# Data Catalog: {source_name}")
     lines.append("")
-    lines.append(f"- Tables: {context.total_tables}")
-    lines.append(f"- Columns: {context.total_columns}")
-    lines.append(f"- Relationships: {context.total_relationships}")
-    lines.append(f"- Graph pattern: {context.graph_pattern or 'unknown'}")
+    lines.append("## Overview")
+    lines.append("")
 
+    overview_parts = [f"{context.total_tables} tables, {context.total_columns} columns."]
+    if context.graph_pattern:
+        overview_parts.append(f"Schema: {context.graph_pattern}.")
     if context.hub_tables:
-        lines.append(f"- Hub tables: {', '.join(context.hub_tables)}")
+        overview_parts.append(f"Hub: {', '.join(context.hub_tables)}.")
     if context.leaf_tables:
-        lines.append(f"- Leaf/dimension tables: {', '.join(context.leaf_tables)}")
+        overview_parts.append(f"Leaves: {', '.join(context.leaf_tables)}.")
+    lines.append(" ".join(overview_parts))
+
+    # Temporal coverage from column profiles
+    temporal_info = _build_temporal_summary(context)
+    if temporal_info:
+        lines.append(temporal_info)
+
+    # Data readiness from entropy summary
+    readiness_info = _build_readiness_summary(context)
+    if readiness_info:
+        lines.append(readiness_info)
 
     if context.slice_column:
-        lines.append("")
-        lines.append(f"- **Slice filter**: {context.slice_column} = '{context.slice_value}'")
+        lines.append(f"Active filter: {context.slice_column} = '{context.slice_value}'")
 
     lines.append("")
 
-    # Quality summary
-    if context.quality_issues_by_severity:
-        lines.append("## QUALITY SUMMARY")
-        for sev, count in sorted(context.quality_issues_by_severity.items()):
-            lines.append(f"- {sev}: {count} issues")
-        lines.append("")
+    # --- Tables ---
+    lines.append("## Tables")
 
-    # Validation rule compliance
-    if context.validations:
-        lines.append("## VALIDATION RULE COMPLIANCE")
-        failed = [v for v in context.validations if not v.passed]
-        passed = [v for v in context.validations if v.passed]
-        skipped = [v for v in context.validations if v.status in ("skipped", "error")]
-        if failed:
-            lines.append(f"FAILED: {len(failed)} checks")
-            for v in failed:
-                lines.append(f"  - [{v.severity.upper()}] {v.validation_id}: {v.message}")
-        if passed:
-            lines.append(f"PASSED: {len(passed)} checks")
-        if skipped:
-            lines.append(f"SKIPPED/ERROR: {len(skipped)} checks")
-        lines.append("")
-
-    # Entropy/Data readiness section
-    entropy_section = format_entropy_for_prompt(context)
-    if entropy_section:
-        lines.append(entropy_section)
-
-    # Tables
-    lines.append("## TABLES")
     for table in context.tables:
         table_type = ""
         if table.is_fact_table:
-            table_type = " (FACT)"
+            table_type = "FACT"
         elif table.is_dimension_table:
-            table_type = " (DIMENSION)"
+            table_type = "DIMENSION"
 
-        # Show DuckDB table name for SQL reference
         display_name = table.duckdb_name or table.table_name
-        lines.append(f"\n### {display_name}{table_type}")
-        if table.row_count:
-            lines.append(f"Rows: {table.row_count:,}")
-        if table.entity_type:
-            lines.append(f"Entity type: {table.entity_type}")
+        type_label = f" ({table_type})" if table_type else ""
+        lines.append(f"\n### {display_name}{type_label}")
 
+        # Entity description
+        if table.entity_type:
+            desc = f"**Entity**: {table.entity_type}"
+            if table.table_description:
+                desc += f" — {table.table_description}"
+            lines.append(desc)
+
+        # Grain, rows, time column
+        meta_parts = []
+        if table.grain_columns:
+            meta_parts.append(f"**Grain**: {', '.join(table.grain_columns)}.")
+        if table.row_count:
+            meta_parts.append(f"**Rows**: {table.row_count:,}.")
+        if table.time_column:
+            # Find matching temporal column for time range
+            time_col = next((c for c in table.columns if c.column_name == table.time_column), None)
+            time_info = f"**Time column**: {table.time_column}"
+            if time_col:
+                time_parts = []
+                if time_col.detected_granularity:
+                    time_parts.append(time_col.detected_granularity)
+                if time_col.min_timestamp and time_col.max_timestamp:
+                    time_parts.append(f"{time_col.min_timestamp} to {time_col.max_timestamp}")
+                if time_parts:
+                    time_info += f" ({', '.join(time_parts)})"
+            meta_parts.append(time_info + ".")
+        if meta_parts:
+            lines.append(" ".join(meta_parts))
+
+        # Column table
         lines.append("")
-        lines.append("Columns:")
+        lines.append("| Column | Type | Role | Description | Notes |")
+        lines.append("|--------|------|------|-------------|-------|")
         for col in table.columns:
-            role = f" [{col.semantic_role}]" if col.semantic_role else ""
-            dtype = f" ({col.data_type})" if col.data_type else ""
-            temporal = f" ({col.temporal_behavior})" if col.temporal_behavior else ""
-            concept = f" → {col.business_concept}{temporal}" if col.business_concept else ""
-            grade = f" [Grade: {col.quality_grade}]" if col.quality_grade else ""
-            derived = f" (derived: {col.derived_formula})" if col.is_derived else ""
-            flags_str = f" - FLAGS: {', '.join(col.flags)}" if col.flags else ""
-            entropy_indicator = _format_column_entropy_inline(col)
+            col_type = col.data_type or ""
+            col_role = col.semantic_role or ""
+            col_desc = _build_column_description(col)
+            col_notes = _build_column_notes(col)
             lines.append(
-                f"  - {col.column_name}{entropy_indicator}{dtype}{role}"
-                f"{concept}{grade}{derived}{flags_str}"
+                f"| {col.column_name} | {col_type} | {col_role} | {col_desc} | {col_notes} |"
             )
 
-    # Relationships
+        # Quality section (per-table)
+        _append_table_quality(lines, table)
+
+        # Data quality notes (entropy interpretations for non-ready columns)
+        _append_data_quality_notes(lines, table)
+
+    # --- Relationships ---
     if context.relationships:
         lines.append("")
-        lines.append("## RELATIONSHIPS")
-        for rel in context.relationships:
-            # Add entropy warning for non-deterministic joins
-            rel_warning = ""
-            if rel.relationship_entropy:
-                if not rel.relationship_entropy.get("is_deterministic", True):
-                    rel_warning = " ⚠"
-            lines.append(
-                f"- {rel.from_table}.{rel.from_column} → "
-                f"{rel.to_table}.{rel.to_column}{rel_warning} "
-                f"({rel.cardinality or '?'}, conf={rel.confidence:.2f})"
-            )
-
-    # Available slices
-    if context.available_slices:
+        lines.append("## Relationships")
         lines.append("")
-        lines.append("## AVAILABLE SLICES")
-        lines.append(
-            "Recommended dimensions for filtering/grouping (use these EXACT values in SQL):"
-        )
-        for slice_ctx in context.available_slices:
-            context_str = f" - {slice_ctx.business_context}" if slice_ctx.business_context else ""
+        lines.append("| From | To | Cardinality | Confidence |")
+        lines.append("|------|----|-------------|------------|")
+        for rel in context.relationships:
+            warning = ""
+            if rel.relationship_entropy and not rel.relationship_entropy.get(
+                "is_deterministic", True
+            ):
+                warning = " ⚠ non-deterministic"
             lines.append(
-                f"  - {slice_ctx.table_name}.{slice_ctx.column_name} "
-                f"(priority: {slice_ctx.priority}, values: {slice_ctx.value_count}){context_str}"
+                f"| {rel.from_table}.{rel.from_column} | {rel.to_table}.{rel.to_column} "
+                f"| {rel.cardinality or '?'} | {rel.confidence:.2f}{warning} |"
             )
-            if slice_ctx.distinct_values:
-                vals = ", ".join(f'"{v}"' for v in slice_ctx.distinct_values[:20])
-                if len(slice_ctx.distinct_values) > 20:
-                    vals += f" +{len(slice_ctx.distinct_values) - 20} more"
-                lines.append(f"    Values: [{vals}]")
 
-    # Enriched views — enhanced with slice context
+    # --- Enriched Views ---
     if context.enriched_views:
         lines.append("")
-        lines.append("## ENRICHED VIEWS")
-        lines.append("Pre-joined fact + dimension views. Use these for all SQL queries.")
+        lines.append("## Enriched Views")
 
-        # Index slices by base table name for lookup
         slices_by_table: dict[str, list[SliceContext]] = {}
         for s in context.available_slices:
             slices_by_table.setdefault(s.table_name, []).append(s)
@@ -1208,79 +1166,291 @@ def format_context_for_prompt(context: GraphExecutionContext) -> str:
         for ev in context.enriched_views:
             verified = " (grain verified)" if ev.is_grain_verified else ""
             lines.append(f"\n### {ev.view_name}{verified}")
-            lines.append(f"Fact table: {ev.fact_table}")
+            lines.append(f"Fact table: {ev.fact_table}.")
             dims = ", ".join(ev.dimension_columns) if ev.dimension_columns else "none"
-            lines.append(f"Joined columns: {dims}")
+            lines.append(f"Joined columns: {dims}.")
 
-            # Add slice dimensions for this enriched view
             view_slices = slices_by_table.get(ev.fact_table, [])
             if view_slices:
-                lines.append("")
-                lines.append("Categorical dimensions (use for filtering):")
+                lines.append("Slice dimensions:")
                 for s in view_slices:
-                    lines.append(f"  - **{s.column_name}** ({s.value_count} values)")
-                    if s.business_context:
-                        lines.append(f"    {s.business_context}")
+                    vals_str = ""
                     if s.distinct_values:
-                        vals = ", ".join(f'"{v}"' for v in s.distinct_values[:20])
-                        if len(s.distinct_values) > 20:
-                            vals += f" +{len(s.distinct_values) - 20} more"
-                        lines.append(f"    Values: [{vals}]")
+                        vals = ", ".join(s.distinct_values[:10])
+                        if len(s.distinct_values) > 10:
+                            vals += f", +{len(s.distinct_values) - 10} more"
+                        vals_str = f": [{vals}]"
+                    lines.append(f"  - **{s.column_name}** ({s.value_count} values){vals_str}")
 
-    # Business cycles
+    # --- Business Processes ---
     if context.business_cycles:
         lines.append("")
-        lines.append("## DETECTED BUSINESS CYCLES")
-        for cycle in context.business_cycles:
-            # Header: name (type) — value, confidence
-            value_str = f", {cycle.business_value} value" if cycle.business_value else ""
-            conf_str = f", {cycle.confidence:.0%} confident" if cycle.confidence else ""
-            lines.append(f"\n### {cycle.cycle_name} ({cycle.cycle_type}){value_str}{conf_str}")
+        lines.append("## Business Processes")
+        _append_business_processes(lines, context)
 
-            if cycle.description:
-                lines.append(cycle.description)
+    # --- Assumptions in Effect ---
+    if context.active_assumptions:
+        lines.append("")
+        lines.append("## Assumptions in Effect")
+        lines.append("")
+        lines.append("Pre-computed from entropy analysis. Apply unless user specifies otherwise:")
+        lines.append("")
+        for assumption in context.active_assumptions:
+            text = assumption.get("assumption_text", "")
+            conf = assumption.get("confidence", "")
+            basis = assumption.get("basis", "")
+            impact = assumption.get("impact", "")
+            tbl = assumption.get("table", "")
+            col_name = assumption.get("column", "")
+            lines.append(f"- **{tbl}.{col_name}**: {text} (confidence: {conf})")
+            if basis:
+                lines.append(f"  Basis: {basis}. Impact: {impact}.")
 
-            # Stages
-            if cycle.stages:
-                lines.append("")
-                lines.append("Stages:")
-                for stage in sorted(cycle.stages, key=lambda s: s.stage_order):
-                    vals = ", ".join(stage.indicator_values) if stage.indicator_values else ""
-                    ind_col = f" {stage.indicator_column}" if stage.indicator_column else ""
-                    indicator = f" →{ind_col} in [{vals}]" if vals else ""
-                    progress = (
-                        f" ({stage.completion_rate:.0%} progress)"
-                        if stage.completion_rate is not None
-                        else ""
-                    )
-                    lines.append(f"  {stage.stage_order}. {stage.stage_name}{indicator}{progress}")
-
-            # Entity flows
-            if cycle.entity_flows:
-                lines.append("")
-                lines.append("Entity Flows:")
-                for ef in cycle.entity_flows:
-                    rel_type = f", {ef.relationship_type}" if ef.relationship_type else ""
-                    fact = f" → {ef.fact_table}" if ef.fact_table else ""
-                    lines.append(
-                        f"  - {ef.entity_type} ({ef.entity_table}.{ef.entity_column}{fact}{rel_type})"
-                    )
-
-            # Completion tracking
-            if cycle.status_column or cycle.completion_rate is not None:
-                parts = []
-                if cycle.status_column and cycle.completion_value:
-                    parts.append(f'{cycle.status_column} = "{cycle.completion_value}"')
-                if cycle.completion_rate is not None:
-                    parts.append(f"{cycle.completion_rate:.0%} complete")
-                if parts:
-                    lines.append(f"\nCompletion: {', '.join(parts)}")
-
-            # Tables involved
-            tables_str = ", ".join(cycle.tables_involved)
-            lines.append(f"Tables: {tables_str}")
+    # --- Validation Results ---
+    if context.validations:
+        lines.append("")
+        lines.append("## Validation Results")
+        lines.append("")
+        failed = [v for v in context.validations if not v.passed]
+        passed = [v for v in context.validations if v.passed]
+        lines.append(f"PASSED: {len(passed)} | FAILED: {len(failed)}")
+        if failed:
+            lines.append("")
+            lines.append("Failed:")
+            for v in failed:
+                lines.append(f"- [{v.severity.upper()}] {v.validation_id}: {v.message}")
+                if v.details:
+                    summary = v.details.get("summary", "")
+                    if summary:
+                        lines.append(f"  Details: {summary}")
 
     return "\n".join(lines)
+
+
+def _build_temporal_summary(context: GraphExecutionContext) -> str | None:
+    """Build temporal coverage line from column profiles."""
+    earliest = None
+    latest = None
+    granularity = None
+    completeness_values: list[float] = []
+
+    for table in context.tables:
+        for col in table.columns:
+            if col.min_timestamp:
+                if earliest is None or col.min_timestamp < earliest:
+                    earliest = col.min_timestamp
+            if col.max_timestamp:
+                if latest is None or col.max_timestamp > latest:
+                    latest = col.max_timestamp
+            if col.detected_granularity and not granularity:
+                granularity = col.detected_granularity
+            if col.completeness_ratio is not None:
+                completeness_values.append(col.completeness_ratio)
+
+    if not earliest:
+        return None
+
+    parts = [f"Temporal coverage: {earliest} to {latest}"]
+    if granularity:
+        parts.append(f" ({granularity}")
+        if completeness_values:
+            avg = sum(completeness_values) / len(completeness_values)
+            parts.append(f", {avg:.0%} complete")
+        parts.append(")")
+    elif completeness_values:
+        avg = sum(completeness_values) / len(completeness_values)
+        parts.append(f" ({avg:.0%} complete)")
+
+    return "".join(parts) + "."
+
+
+def _build_readiness_summary(context: GraphExecutionContext) -> str | None:
+    """Build data readiness line from entropy summary."""
+    if not context.entropy_summary:
+        return None
+
+    summary = context.entropy_summary
+    readiness = summary.get("overall_readiness", "unknown")
+    assumptions_count = len(context.active_assumptions)
+    blocked_count = summary.get("critical_entropy_count", 0)
+
+    return (
+        f"Data readiness: {readiness} "
+        f"({assumptions_count} columns need assumptions, {blocked_count} blocked)."
+    )
+
+
+def _build_column_description(col: ColumnContext) -> str:
+    """Build column description from business metadata."""
+    parts = []
+    if col.business_name:
+        parts.append(col.business_name)
+        if col.business_description:
+            parts.append(f": {col.business_description}")
+    elif col.business_concept:
+        parts.append(col.business_concept)
+        if col.temporal_behavior:
+            parts.append(f" ({col.temporal_behavior})")
+    return "".join(parts)
+
+
+def _build_column_notes(col: ColumnContext) -> str:
+    """Build column notes from derived, unit, quality, and entropy data."""
+    notes = []
+
+    if col.unit_source_column:
+        notes.append(f"Unit source: {col.unit_source_column}.")
+
+    if col.is_derived and col.derived_formula:
+        notes.append(f"Derived: {col.derived_formula}.")
+
+    if col.quality_grade:
+        notes.append(f"Grade: {col.quality_grade}.")
+
+    # Entropy readiness indicator
+    if col.entropy_scores:
+        readiness = col.entropy_scores.get("readiness", "ready")
+        if readiness == "blocked":
+            notes.append("⛔ blocked.")
+        elif readiness == "investigate":
+            notes.append("⚠ investigate.")
+
+    if col.flags:
+        notes.append(f"Flags: {', '.join(col.flags)}.")
+
+    return " ".join(notes)
+
+
+def _append_table_quality(lines: list[str], table: TableContext) -> None:
+    """Append quality section for a table."""
+    # Collect quality info from columns
+    has_quality = False
+    for col in table.columns:
+        if col.quality_summary or col.quality_findings:
+            has_quality = True
+            break
+
+    if not has_quality:
+        return
+
+    # Show the first column-level quality summary as representative
+    for col in table.columns:
+        if col.quality_grade and col.quality_summary:
+            lines.append("")
+            lines.append(f"**Quality** (Grade: {col.quality_grade}):")
+            lines.append(col.quality_summary)
+            if col.quality_findings:
+                for finding in col.quality_findings[:3]:
+                    lines.append(f"- {finding}")
+            break
+
+
+def _append_data_quality_notes(lines: list[str], table: TableContext) -> None:
+    """Append data quality notes for columns with entropy issues."""
+    notes_cols = [
+        col
+        for col in table.columns
+        if col.entropy_explanation
+        and col.entropy_scores
+        and col.entropy_scores.get("readiness", "ready") != "ready"
+    ]
+    if not notes_cols:
+        return
+
+    lines.append("")
+    lines.append("**Data Quality Notes**:")
+    for col in notes_cols:
+        lines.append(f"- {col.column_name}: {col.entropy_explanation}")
+        for assumption in col.entropy_assumptions:
+            text = assumption.get("assumption_text", "")
+            conf = assumption.get("confidence", "")
+            basis = assumption.get("basis", "")
+            lines.append(f"  Assumption: {text} (confidence: {conf}, basis: {basis})")
+
+
+def _append_business_processes(lines: list[str], context: GraphExecutionContext) -> None:
+    """Append business processes section."""
+    # Build health lookup
+    health_lookup: dict[str, Any] = {}
+    if context.cycle_health:
+        for cs in context.cycle_health.cycle_scores:
+            if cs.canonical_type:
+                health_lookup[cs.canonical_type] = cs
+
+    for cycle in context.business_cycles:
+        # Determine verification status
+        health_score = health_lookup.get(cycle.cycle_type)
+        if health_score:
+            score = health_score.composite_score
+            if score is not None and score >= 0.8:
+                status = "VERIFIED"
+            elif score is not None and score >= 0.5:
+                status = "PARTIAL"
+            else:
+                status = "UNVERIFIED"
+            val_info = (
+                f"({health_score.validations_passed}/{health_score.validations_run} validations)"
+            )
+        else:
+            status = "UNVERIFIED"
+            val_info = ""
+
+        lines.append(f"\n### {cycle.cycle_name} ({cycle.cycle_type}) — {status} {val_info}")
+        lines.append("")
+
+        if cycle.description:
+            lines.append(cycle.description)
+
+        # Volume
+        volume_parts = []
+        if cycle.total_records is not None:
+            volume_parts.append(f"{cycle.total_records:,} records")
+        if cycle.completed_cycles is not None:
+            volume_parts.append(f"{cycle.completed_cycles:,} completed")
+        if cycle.completion_rate is not None:
+            volume_parts.append(f"{cycle.completion_rate:.0%} completion rate")
+        if volume_parts:
+            lines.append(f"Volume: {', '.join(volume_parts)}.")
+
+        # Evidence
+        if cycle.evidence:
+            evidence_str = "; ".join(cycle.evidence[:3])
+            lines.append(f"Evidence: {evidence_str}")
+
+        # Stages
+        if cycle.stages:
+            lines.append("")
+            lines.append("Stages:")
+            for stage in sorted(cycle.stages, key=lambda s: s.stage_order):
+                vals = ", ".join(stage.indicator_values) if stage.indicator_values else ""
+                ind_col = f" {stage.indicator_column}" if stage.indicator_column else ""
+                indicator = f" →{ind_col} in [{vals}]" if vals else ""
+                progress = (
+                    f" ({stage.completion_rate:.0%})" if stage.completion_rate is not None else ""
+                )
+                lines.append(f"  {stage.stage_order}. {stage.stage_name}{indicator}{progress}")
+
+        # Completion tracking
+        if cycle.status_column and cycle.completion_value:
+            lines.append(
+                f'Completion: {cycle.status_column} = "{cycle.completion_value}"'
+                + (
+                    f", {cycle.completion_rate:.0%} complete"
+                    if cycle.completion_rate is not None
+                    else ""
+                )
+                + "."
+            )
+
+        # Entity flows
+        if cycle.entity_flows:
+            for ef in cycle.entity_flows:
+                lines.append(
+                    f"Entity flow: {ef.entity_type} "
+                    f"({ef.entity_table}.{ef.entity_column}) → {ef.fact_table}."
+                )
+
+    return
 
 
 __all__ = [
@@ -1295,6 +1465,5 @@ __all__ = [
     "EnrichedViewContext",
     "GraphExecutionContext",
     "build_execution_context",
-    "format_context_for_prompt",
-    "format_entropy_for_prompt",
+    "format_metadata_document",
 ]

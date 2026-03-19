@@ -133,10 +133,6 @@ user_prompt: |
   {field_mappings}
   </field_mappings>
 
-  <data_quality>
-  {entropy_warnings}
-  </data_quality>
-
   <cached_steps>
   {cached_steps}
   </cached_steps>
@@ -207,30 +203,20 @@ inputs:
 
   parameters:
     type: "string"
-    required: false
-    default: "{}"
+    required: true
     description: "JSON of parameter values to use"
 
   rich_context:
     type: "string"
-    required: false
-    default: ""
-    description: "Dataset context with tables, columns, semantic annotations, relationships"
+    required: true
+    description: "Metadata document with semantic annotations, relationships, quality, and entropy"
 
   field_mappings:
     type: "string"
-    required: false
-    default: ""
-    description: "Business concept to column mappings from semantic analysis"
-
-  entropy_warnings:
-    type: "string"
-    required: false
-    default: "Data quality assessment not available - proceed with caution."
-    description: "Data quality warnings and entropy scores"
+    required: true
+    description: "Business concept to column mappings from semantic analysis (empty string if none)"
 
   cached_steps:
     type: "string"
-    required: false
-    default: ""
-    description: "JSON of previously validated SQL steps from the snippet knowledge base"
+    required: true
+    description: "JSON of previously validated SQL steps from the snippet knowledge base (empty string if none)"

@@ -37,7 +37,7 @@ from dataraum.entropy.contracts import (
     ConfidenceLevel,
     ContractEvaluation,
 )
-from dataraum.graphs.context import build_execution_context, format_context_for_prompt
+from dataraum.graphs.context import build_execution_context, format_metadata_document
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.providers.base import ConversationRequest, Message, ToolDefinition, ToolResult
 from dataraum.storage import Table
@@ -198,21 +198,6 @@ class QueryAgent(LLMFeature):
             else:
                 confidence_level = ConfidenceLevel.GREEN
 
-        # Check if query is blocked
-        if confidence_level == ConfidenceLevel.RED and contract_evaluation:
-            return Result.ok(
-                QueryResult(
-                    execution_id=execution_id,
-                    question=question,
-                    success=False,
-                    confidence_level=ConfidenceLevel.RED,
-                    contract=contract,
-                    contract_evaluation=contract_evaluation,
-                    answer=self._format_blocked_response(contract_evaluation),
-                    error="Query blocked due to data quality issues",
-                )
-            )
-
         # Discover validated SQL snippets from the knowledge base
         discovery = self._discover_snippets(
             session=session,
@@ -336,6 +321,14 @@ class QueryAgent(LLMFeature):
                 contract=contract,
             )
 
+        # Build risk assessment (combined contract + LLM data)
+        risk_assessment = self._build_risk_assessment(
+            contract_evaluation=contract_evaluation,
+            confidence_level=confidence_level,
+            assumptions=assumptions,
+            validation_notes=analysis_output.validation_notes,
+        )
+
         # Build execution steps from LLM output
         execution_steps = [
             ExecutionStep(
@@ -359,6 +352,7 @@ class QueryAgent(LLMFeature):
                 columns=columns,
                 confidence_level=confidence_level,
                 entropy_score=entropy_score,
+                risk_assessment=risk_assessment,
                 assumptions=assumptions,
                 contract=contract,
                 contract_evaluation=contract_evaluation,
@@ -746,15 +740,8 @@ class QueryAgent(LLMFeature):
         # Build schema information
         schema_info = self._build_schema_info(execution_context)
 
-        # Format context for prompt
-        context_str = format_context_for_prompt(execution_context)
-
-        # Format entropy warnings from execution_context
-        entropy_warnings = ""
-        if execution_context.entropy_summary:
-            from dataraum.graphs.context import format_entropy_for_prompt
-
-            entropy_warnings = format_entropy_for_prompt(execution_context)
+        # Format context as metadata document (includes entropy/quality info)
+        context_str = format_metadata_document(execution_context)
 
         # Build snippet context (mode-dependent: full injection OR search vocabulary)
         snippet_context = self._build_snippet_context(
@@ -762,12 +749,16 @@ class QueryAgent(LLMFeature):
             search_vocabulary=search_vocabulary,
         )
 
-        # Build field mappings string
-        field_mappings_str = ""
-        if execution_context.field_mappings:
-            from dataraum.graphs.field_mapping import format_mappings_for_prompt
+        # Field mappings are required — the LLM needs them to resolve business concepts
+        if not execution_context.field_mappings or not execution_context.field_mappings.mappings:
+            return Result.fail(
+                "Cannot analyze query without field mappings. "
+                "Run the semantic phase to map business concepts to columns."
+            )
 
-            field_mappings_str = format_mappings_for_prompt(execution_context.field_mappings)
+        from dataraum.graphs.field_mapping import format_mappings_for_prompt
+
+        field_mappings_str = format_mappings_for_prompt(execution_context.field_mappings)
 
         # Build prompt context
         prompt_context = {
@@ -775,8 +766,6 @@ class QueryAgent(LLMFeature):
             "schema_info": json.dumps(schema_info, indent=2),
             "dataset_context": context_str,
             "field_mappings": field_mappings_str,
-            "entropy_warnings": entropy_warnings
-            or "Data quality assessment not available - proceed with caution.",
             "snippet_context": snippet_context,
         }
 
@@ -1028,25 +1017,59 @@ class QueryAgent(LLMFeature):
 
         return f"Found {row_count} result(s) with {col_count} column(s)."
 
-    def _format_blocked_response(self, evaluation: ContractEvaluation) -> str:
-        """Format response when query is blocked."""
-        lines = [
-            f"Cannot provide answer for {evaluation.contract_display_name} because:",
-            "",
-        ]
+    @staticmethod
+    def _build_risk_assessment(
+        contract_evaluation: ContractEvaluation | None,
+        confidence_level: ConfidenceLevel,
+        assumptions: list[QueryAssumption],
+        validation_notes: list[str],
+    ) -> str | None:
+        """Build a unified risk assessment combining contract and LLM data.
 
-        for v in evaluation.violations:
-            if v.dimension:
-                lines.append(f"❌ {v.dimension}: {v.actual:.2f} (max allowed: {v.max_allowed:.2f})")
-            elif v.condition:
-                lines.append(f"❌ {v.condition}: {v.details}")
+        Args:
+            contract_evaluation: Contract evaluation result (may be None).
+            confidence_level: Overall confidence level.
+            assumptions: LLM-generated assumptions about the data.
+            validation_notes: LLM-generated validation caveats.
 
-        lines.append("")
-        lines.append("Options:")
-        lines.append("1. Use a less strict contract (e.g., exploratory_analysis)")
-        lines.append("2. Resolve the data quality issues first")
+        Returns:
+            Formatted risk assessment string, or None for GREEN confidence.
+        """
+        if confidence_level == ConfidenceLevel.GREEN:
+            return None
 
-        return "\n".join(lines)
+        lines: list[str] = []
+
+        # Contract violations and warnings
+        if contract_evaluation:
+            if contract_evaluation.violations:
+                lines.append("Contract violations:")
+                for v in contract_evaluation.violations:
+                    if v.dimension:
+                        lines.append(
+                            f"  - {v.dimension}: {v.actual:.2f} (max allowed: {v.max_allowed:.2f})"
+                        )
+                    elif v.condition:
+                        lines.append(f"  - {v.details}")
+
+            if contract_evaluation.warnings:
+                lines.append("Contract warnings:")
+                for w in contract_evaluation.warnings:
+                    lines.append(f"  - {w.details}")
+
+        # LLM assumptions
+        if assumptions:
+            lines.append("Assumptions made:")
+            for a in assumptions:
+                lines.append(f"  - {a.assumption} ({a.basis.value})")
+
+        # LLM validation notes
+        if validation_notes:
+            lines.append("Validation notes:")
+            for note in validation_notes:
+                lines.append(f"  - {note}")
+
+        return "\n".join(lines) if lines else None
 
     def _record_execution(
         self,

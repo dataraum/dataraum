@@ -191,6 +191,15 @@ class TestBuilderExtractsEntropyInterpretation:
                         "basis": "currency_code column present",
                     }
                 ],
+                resolution_actions_json=[
+                    {
+                        "action": "normalize_currency",
+                        "description": "Join with fx_rates to convert to EUR",
+                        "effort": "medium",
+                        "expected_impact": "high",
+                        "parameters": {"target_currency": "EUR"},
+                    }
+                ],
             )
         )
         session.flush()
@@ -201,6 +210,8 @@ class TestBuilderExtractsEntropyInterpretation:
         assert col.entropy_explanation == "Multi-currency uncertainty in amount column."
         assert len(col.entropy_assumptions) == 1
         assert col.entropy_assumptions[0]["assumption_text"] == "Amounts are in local currency"
+        assert len(col.entropy_resolution_actions) == 1
+        assert col.entropy_resolution_actions[0]["action"] == "normalize_currency"
 
     def test_table_entropy_interpretation(self, session: Session) -> None:
         from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord

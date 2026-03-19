@@ -839,9 +839,7 @@ def _build_pipeline_status(session: Any, source_id: str) -> str | None:
         )
     elif g3 is None:
         # Gate 2 passing, Gate 3 not yet reached
-        lines.append(
-            '- Gates 1-2 clean — use `continue_pipeline(target_gate="end")` to complete'
-        )
+        lines.append('- Gates 1-2 clean — use `continue_pipeline(target_gate="end")` to complete')
     elif g3 and g3 > 0:
         # Gate 3 has violations
         lines.append(

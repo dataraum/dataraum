@@ -597,8 +597,7 @@ def build_gate_context(
         f"Affected columns: {', '.join(affected_targets)}",
         "",
         "Choose the BEST action for each violating target.",
-        "Prefer corrective actions (override, add pattern) "
-        "over document_accepted_* actions.",
+        "Prefer corrective actions (override, add pattern) over document_accepted_* actions.",
         "",
     ]
     for i, action in enumerate(group.actions, 1):

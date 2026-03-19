@@ -396,8 +396,8 @@ class TestFormatMetadataDocument:
         assert "Table: Table-level currency ambiguity across columns." in result
         assert "EUR assumed" in result
 
-    def test_entropy_assumptions_per_column(self) -> None:
-        """Entropy explanation and assumptions shown for non-ready columns."""
+    def test_entropy_assumptions_and_actions_per_column(self) -> None:
+        """Entropy explanation, assumptions, and resolution actions shown."""
         col = ColumnContext(
             column_id="col-1",
             column_name="amount",
@@ -414,6 +414,14 @@ class TestFormatMetadataDocument:
                     "basis": "currency_code present",
                 }
             ],
+            entropy_resolution_actions=[
+                {
+                    "action": "normalize_currency",
+                    "description": "Join with fx_rates to convert amounts to EUR",
+                    "effort": "medium",
+                    "expected_impact": "high",
+                }
+            ],
         )
         table = TableContext(
             table_id="tbl-1",
@@ -426,6 +434,8 @@ class TestFormatMetadataDocument:
         assert "Data Quality Notes" in result
         assert "amount: Amount column has multi-currency uncertainty." in result
         assert "Amounts are in local currency" in result
+        assert "Join with fx_rates to convert amounts to EUR" in result
+        assert "effort: medium" in result
 
     def test_relationships_table(self) -> None:
         """Relationships rendered as a table."""

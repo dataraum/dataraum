@@ -9,6 +9,7 @@ and skipping existing reports.
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -46,20 +47,17 @@ from dataraum.storage import Column, Table
 if TYPE_CHECKING:
     from dataraum.analysis.quality_summary.agent import QualitySummaryAgent
     from dataraum.analysis.quality_summary.variance import SliceVarianceMetrics
+    from dataraum.entropy.views.network_context import ColumnNetworkResult
 
 logger = get_logger(__name__)
 
-_CONFIG_CACHE: dict[str, Any] | None = None
 
-
+@functools.lru_cache(maxsize=1)
 def _load_config() -> dict[str, Any]:
-    """Load quality_summary config from YAML (cached)."""
-    global _CONFIG_CACHE
-    if _CONFIG_CACHE is None:
-        from dataraum.core.config import load_phase_config
+    """Load quality_summary config from YAML (cached, thread-safe)."""
+    from dataraum.core.config import load_phase_config
 
-        _CONFIG_CACHE = load_phase_config("quality_summary")
-    return _CONFIG_CACHE
+    return load_phase_config("quality_summary")
 
 
 @dataclass
@@ -417,7 +415,7 @@ def _filter_by_network_readiness(
     session: Session,
     columns_with_data: list[AggregatedColumnData],
     source_table_id: str,
-    p_high_threshold: float = 0.35,
+    p_high_threshold: float,
 ) -> tuple[list[AggregatedColumnData], dict[str, str]]:
     """Filter columns using Bayesian network readiness.
 
@@ -436,52 +434,47 @@ def _filter_by_network_readiness(
         Tuple of (filtered columns, readiness_map {col_name: readiness}).
     """
     from dataraum.entropy.core.storage import EntropyRepository
-    from dataraum.entropy.network.model import EntropyNetwork
-    from dataraum.entropy.views.network_context import assemble_network_context
+    from dataraum.entropy.engine import build_network_context
 
     repo = EntropyRepository(session)
     typed_table_ids = repo.get_typed_table_ids([source_table_id])
     if not typed_table_ids:
-        logger.debug("network_filter_no_typed_tables", table_id=source_table_id)
-        return [], {}
+        logger.warning("network_filter_no_typed_tables", table_id=source_table_id)
+        return columns_with_data, {c.column_name: "no_signal" for c in columns_with_data}
 
     entropy_objects = repo.load_for_tables(typed_table_ids, enforce_typed=True)
     if not entropy_objects:
-        logger.debug("network_filter_no_entropy_objects", table_id=source_table_id)
-        return [], {}
+        # Entropy is a declared dependency, so missing data is unexpected.
+        # Include all columns rather than silently dropping them.
+        logger.warning("network_filter_no_entropy_objects", table_id=source_table_id)
+        return columns_with_data, {c.column_name: "no_signal" for c in columns_with_data}
 
-    network = EntropyNetwork()
-    network_ctx = assemble_network_context(entropy_objects, network)
+    network_ctx = build_network_context(entropy_objects)
 
     # Build column name -> readiness map from network results
     readiness_map: dict[str, str] = {}
     filtered: list[AggregatedColumnData] = []
 
     # Build a lookup: extract column name from target "column:table.col"
-    col_results_by_name: dict[str, str] = {}
-    col_p_high_by_name: dict[str, float] = {}
+    col_network_by_name: dict[str, ColumnNetworkResult] = {}
     for target, col_result in network_ctx.columns.items():
         # target format: "column:table_name.column_name"
-        if "." in target:
-            col_name = target.split(".", 1)[1]
-        else:
-            col_name = target.removeprefix("column:")
-        col_results_by_name[col_name] = col_result.readiness
-        col_p_high_by_name[col_name] = col_result.worst_intent_p_high
+        after_colon = target.removeprefix("column:")
+        _, _, col_name = after_colon.partition(".")
+        if not col_name:
+            continue  # malformed target, skip
+        col_network_by_name[col_name] = col_result
 
     for col in columns_with_data:
-        readiness = col_results_by_name.get(col.column_name)
-        if readiness is None:
+        net_result = col_network_by_name.get(col.column_name)
+        if net_result is None:
             # Column has no network result — exclude
             readiness_map[col.column_name] = "no_signal"
             continue
 
-        readiness_map[col.column_name] = readiness
+        readiness_map[col.column_name] = net_result.readiness
 
-        if readiness in ("investigate", "blocked"):
-            filtered.append(col)
-        elif (col_p_high_by_name.get(col.column_name, 0.0)) > p_high_threshold:
-            # "ready" but some intent P(high) is above threshold
+        if net_result.needs_attention(p_high_threshold):
             filtered.append(col)
 
     logger.debug(
@@ -563,6 +556,17 @@ def summarize_quality(
         for col in columns_with_data:
             variance_metrics[col.column_name] = compute_slice_variance(col)
 
+        # Pre-filter: EMPTY/CONSTANT columns are cheap to detect and never
+        # need LLM analysis regardless of network readiness.
+        from dataraum.analysis.quality_summary.variance import ColumnClassification
+
+        eligible_columns = [
+            col
+            for col in columns_with_data
+            if variance_metrics[col.column_name].classification
+            not in (ColumnClassification.EMPTY, ColumnClassification.CONSTANT)
+        ]
+
         # Filter by Bayesian network readiness (entropy is a dependency,
         # so entropy data is guaranteed to exist when this phase runs).
         cfg = _load_config()
@@ -570,10 +574,16 @@ def summarize_quality(
         p_high_threshold = nf_cfg.get("p_high_threshold", 0.35)
         columns_to_process, readiness_map = _filter_by_network_readiness(
             session=session,
-            columns_with_data=columns_with_data,
+            columns_with_data=eligible_columns,
             source_table_id=effective_table.table_id,
             p_high_threshold=p_high_threshold,
         )
+
+        # Merge EMPTY/CONSTANT classifications into readiness_map
+        for col in columns_with_data:
+            cls = variance_metrics[col.column_name].classification
+            if cls in (ColumnClassification.EMPTY, ColumnClassification.CONSTANT):
+                readiness_map[col.column_name] = cls.value
         classifications = readiness_map
 
         # Skip columns with existing reports if requested.

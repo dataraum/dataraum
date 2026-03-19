@@ -84,6 +84,17 @@ class ColumnNetworkResult:
     worst_intent_p_high: float = 0.0
     readiness: str = "ready"
 
+    def needs_attention(self, p_high_threshold: float = 0.35) -> bool:
+        """Whether this column needs further analysis based on network inference.
+
+        A column needs attention if readiness is "investigate" or "blocked",
+        or if any intent P(high) exceeds the threshold.
+        """
+        return (
+            self.readiness in ("investigate", "blocked")
+            or self.worst_intent_p_high > p_high_threshold
+        )
+
 
 @dataclass
 class AggregateIntentReadiness:

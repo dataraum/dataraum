@@ -15,6 +15,7 @@ rough proxy that works for 3-10 slices but breaks down with more values.
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -24,17 +25,13 @@ from dataraum.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-_CONFIG_CACHE: dict[str, Any] | None = None
 
-
+@functools.lru_cache(maxsize=1)
 def _load_config() -> dict[str, Any]:
-    """Load quality_summary config from YAML (cached)."""
-    global _CONFIG_CACHE
-    if _CONFIG_CACHE is None:
-        from dataraum.core.config import load_phase_config
+    """Load quality_summary config from YAML (cached, thread-safe)."""
+    from dataraum.core.config import load_phase_config
 
-        _CONFIG_CACHE = load_phase_config("quality_summary")
-    return _CONFIG_CACHE
+    return load_phase_config("quality_summary")
 
 
 class ColumnClassification(str, Enum):
@@ -279,77 +276,10 @@ def compute_slice_variance(col_data: AggregatedColumnData) -> SliceVarianceMetri
     return metrics
 
 
-def filter_interesting_columns(
-    columns_data: list[AggregatedColumnData],
-) -> tuple[list[AggregatedColumnData], dict[str, SliceVarianceMetrics]]:
-    """Filter columns to only include INTERESTING ones for LLM processing.
-
-    Computes variance metrics for each column and returns only those
-    classified as INTERESTING. Also returns the full classification
-    dict for reporting purposes.
-
-    Args:
-        columns_data: List of aggregated column data
-
-    Returns:
-        Tuple of:
-        - Filtered list (only INTERESTING columns)
-        - Dict mapping column_name to SliceVarianceMetrics (all columns)
-    """
-    config = get_filter_config()
-
-    if not config.enabled:
-        # Filtering disabled - return all columns
-        logger.debug("Slice variance filtering disabled, processing all columns")
-        return columns_data, {}
-
-    all_metrics: dict[str, SliceVarianceMetrics] = {}
-    interesting_columns: list[AggregatedColumnData] = []
-
-    # Counters for logging
-    counts = {
-        ColumnClassification.EMPTY: 0,
-        ColumnClassification.CONSTANT: 0,
-        ColumnClassification.INTERESTING: 0,
-        ColumnClassification.STABLE: 0,
-    }
-
-    for col_data in columns_data:
-        metrics = compute_slice_variance(col_data)
-        all_metrics[col_data.column_name] = metrics
-        counts[metrics.classification] += 1
-
-        if metrics.classification == ColumnClassification.INTERESTING:
-            interesting_columns.append(col_data)
-
-    logger.debug(
-        "slice_variance_filter_applied",
-        total_columns=len(columns_data),
-        empty=counts[ColumnClassification.EMPTY],
-        constant=counts[ColumnClassification.CONSTANT],
-        stable=counts[ColumnClassification.STABLE],
-        interesting=counts[ColumnClassification.INTERESTING],
-    )
-
-    # Log interesting columns with their patterns
-    for col_data in interesting_columns:
-        metrics = all_metrics[col_data.column_name]
-        logger.debug(
-            "interesting_column",
-            column=col_data.column_name,
-            exceeded=metrics.exceeded_thresholds,
-            null_spread=f"{metrics.null_spread:.1%}" if metrics.null_spread else None,
-            distinct_ratio=f"{metrics.distinct_ratio:.1f}x" if metrics.distinct_ratio > 1 else None,
-        )
-
-    return interesting_columns, all_metrics
-
-
 __all__ = [
     "ColumnClassification",
     "SliceVarianceMetrics",
     "SliceFilterConfig",
     "compute_slice_variance",
-    "filter_interesting_columns",
     "get_filter_config",
 ]

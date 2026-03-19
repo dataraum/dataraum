@@ -13,11 +13,11 @@ class TestNetworkConfigLoading:
         assert len(full_config.states) == 3
 
     def test_node_count(self, full_config: NetworkConfig):
-        assert len(full_config.nodes) == 16
+        assert len(full_config.nodes) == 19
 
     def test_edge_count(self, full_config: NetworkConfig):
         # Count edges in the YAML
-        assert len(full_config.edges) == 26
+        assert len(full_config.edges) == 32
 
     def test_states_are_low_medium_high(self, full_config: NetworkConfig):
         assert full_config.states == ["low", "medium", "high"]

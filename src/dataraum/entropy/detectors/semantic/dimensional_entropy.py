@@ -10,7 +10,7 @@ Detects patterns like:
 This is Stage 2 of the AI Entropy Framework - synthesizing business rules
 from INTERESTING columns identified by slice variance filtering.
 
-Source: quality_summary variance analysis (slice_data, temporal_data)
+Source: ColumnSliceProfile (slice_data), TemporalSliceAnalysis (temporal_data)
 """
 
 from __future__ import annotations
@@ -61,7 +61,6 @@ class ColumnVariancePattern:
     """Detected variance pattern for a column."""
 
     column_name: str
-    classification: str  # empty, constant, stable, interesting
     null_spread: float = 0.0
     distinct_ratio: float = 1.0
     outlier_spread: float = 0.0
@@ -212,7 +211,7 @@ class DimensionalEntropyDetector(EntropyDetector):
     4. Temporal Correlations: Columns that spike/drift together over time
        (e.g., columns affected by same business event)
 
-    Source: quality_summary.variance (slice_data, temporal_data from aggregation)
+    Source: ColumnSliceProfile (slice_data), TemporalSliceAnalysis (temporal_data)
     Scores configurable in config/entropy/thresholds.yaml.
     """
 
@@ -225,7 +224,7 @@ class DimensionalEntropyDetector(EntropyDetector):
     description = "Detects cross-column business rules from slice and temporal variance patterns"
 
     def load_data(self, context: DetectorContext) -> None:
-        """Load slice variance data for this table."""
+        """Load slice variance data and network readiness for this table."""
         if context.session is None or context.table_id is None:
             return
 
@@ -233,6 +232,21 @@ class DimensionalEntropyDetector(EntropyDetector):
         if result is not None:
             context.analysis_results["slice_variance"] = result["slice_variance"]
             context.analysis_results["drift_summaries"] = result["drift_summaries"]
+
+        # Load base network readiness for column filtering (DAT-162).
+        # Replaces variance_classification with Bayesian network assessment.
+        from dataraum.entropy.views.network_context import build_for_network
+
+        network_ctx = build_for_network(context.session, [context.table_id])
+        if network_ctx.columns:
+            readiness: dict[str, bool] = {}
+            table_prefix = f"column:{context.table_name}."
+            for target, col_result in network_ctx.columns.items():
+                if target.startswith(table_prefix):
+                    col_name = target[len(table_prefix) :]
+                    readiness[col_name] = col_result.needs_attention()
+            if readiness:
+                context.analysis_results["network_readiness"] = readiness
 
     @staticmethod
     def _load_slice_variance(
@@ -310,7 +324,6 @@ class DimensionalEntropyDetector(EntropyDetector):
 
             if col_name not in columns_data:
                 columns_data[col_name] = {
-                    "classification": profile.variance_classification or "stable",
                     "null_ratios": [],
                     "distinct_counts": [],
                     "exceeded_thresholds": [],
@@ -335,12 +348,10 @@ class DimensionalEntropyDetector(EntropyDetector):
             else:
                 col_metrics["distinct_ratio"] = 1.0
 
-            if col_metrics["null_spread"] > 0.1 or col_metrics["distinct_ratio"] > 2.0:
-                col_metrics["classification"] = "interesting"
-                if col_metrics["null_spread"] > 0.1:
-                    col_metrics["exceeded_thresholds"].append("null_spread")
-                if col_metrics["distinct_ratio"] > 2.0:
-                    col_metrics["exceeded_thresholds"].append("distinct_ratio")
+            if col_metrics["null_spread"] > 0.1:
+                col_metrics["exceeded_thresholds"].append("null_spread")
+            if col_metrics["distinct_ratio"] > 2.0:
+                col_metrics["exceeded_thresholds"].append("distinct_ratio")
 
         # Load drift summaries for slice tables
         col_name_by_id = {c.column_id: c.column_name for c in table_columns}
@@ -493,8 +504,9 @@ class DimensionalEntropyDetector(EntropyDetector):
         if not columns_data:
             return []
 
-        # Extract INTERESTING columns (categorical)
-        interesting_columns = self._get_interesting_columns(columns_data)
+        # Extract columns needing attention per Bayesian network (DAT-162)
+        network_readiness = context.get_analysis("network_readiness", {})
+        interesting_columns = self._get_interesting_columns(columns_data, network_readiness)
 
         # Extract INTERESTING temporal columns
         interesting_temporal = self._get_interesting_temporal_columns(temporal_columns)
@@ -705,22 +717,33 @@ class DimensionalEntropyDetector(EntropyDetector):
 
         return entropy_objects
 
-    def _get_interesting_columns(self, columns_data: dict[str, Any]) -> list[ColumnVariancePattern]:
-        """Extract columns classified as INTERESTING from categorical analysis."""
+    def _get_interesting_columns(
+        self,
+        columns_data: dict[str, Any],
+        network_readiness: dict[str, bool],
+    ) -> list[ColumnVariancePattern]:
+        """Extract columns that need cross-column pattern analysis.
+
+        Uses Bayesian network readiness (needs_attention) to determine
+        which columns warrant deeper analysis.
+
+        Args:
+            columns_data: Per-column slice variance metrics.
+            network_readiness: {col_name: needs_attention} from base network.
+        """
         interesting = []
         for col_name, metrics in columns_data.items():
-            classification = metrics.get("classification", "stable")
-            if classification == "interesting":
-                interesting.append(
-                    ColumnVariancePattern(
-                        column_name=col_name,
-                        classification=classification,
-                        null_spread=metrics.get("null_spread", 0.0),
-                        distinct_ratio=metrics.get("distinct_ratio", 1.0),
-                        outlier_spread=metrics.get("outlier_spread", 0.0),
-                        exceeded_thresholds=metrics.get("exceeded_thresholds", []),
-                    )
+            if not network_readiness.get(col_name, False):
+                continue
+            interesting.append(
+                ColumnVariancePattern(
+                    column_name=col_name,
+                    null_spread=metrics.get("null_spread", 0.0),
+                    distinct_ratio=metrics.get("distinct_ratio", 1.0),
+                    outlier_spread=metrics.get("outlier_spread", 0.0),
+                    exceeded_thresholds=metrics.get("exceeded_thresholds", []),
                 )
+            )
         return interesting
 
     def _get_interesting_temporal_columns(

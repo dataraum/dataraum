@@ -8,10 +8,10 @@ and serialisation.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class _StrValueMixin(str, Enum):
+class _StrValueMixin(StrEnum):
     """Mixin that ensures str() returns the value, not the enum repr.
 
     Python 3.12+ changed str(StrEnum) to return 'ClassName.MEMBER'.
@@ -47,6 +47,7 @@ class Dimension(_StrValueMixin):
     DERIVED_VALUES = "derived_values"
     RECONCILIATION = "reconciliation"
     CYCLES = "cycles"
+    VARIANCE = "variance"
 
 
 class AnalysisKey(_StrValueMixin):
@@ -84,3 +85,4 @@ class SubDimension(_StrValueMixin):
     DIMENSION_COVERAGE = "dimension_coverage"
     CROSS_TABLE_CONSISTENCY = "cross_table_consistency"
     BUSINESS_CYCLE_HEALTH = "business_cycle_health"
+    SLICE_STABILITY = "slice_stability"

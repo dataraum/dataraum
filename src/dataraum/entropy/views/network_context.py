@@ -84,6 +84,17 @@ class ColumnNetworkResult:
     worst_intent_p_high: float = 0.0
     readiness: str = "ready"
 
+    def needs_attention(self, p_high_threshold: float = 0.35) -> bool:
+        """Whether this column needs further analysis based on network inference.
+
+        A column needs attention if readiness is "investigate" or "blocked",
+        or if any intent P(high) exceeds the threshold.
+        """
+        return (
+            self.readiness in ("investigate", "blocked")
+            or self.worst_intent_p_high > p_high_threshold
+        )
+
 
 @dataclass
 class AggregateIntentReadiness:
@@ -124,6 +135,7 @@ class EntropyForNetwork:
     columns_ready: int = 0
     total_direct_signals: int = 0
     overall_readiness: str = "ready"
+    avg_entropy_score: float = 0.0
     computed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -216,11 +228,16 @@ def _build_column_result(
     if not evidence:
         return None, direct_signals
 
-    # Forward propagate
-    posteriors = forward_propagate(network, evidence)
+    # Build column-appropriate subgraph: only nodes with evidence
+    # (or inferrable from evidence) participate in inference.
+    # This eliminates prior leakage from inapplicable detectors.
+    col_network = network.subgraph(set(evidence.keys()))
 
-    # Compute priorities
-    priorities = compute_network_priorities(network, evidence)
+    # Forward propagate on the subgraph
+    posteriors = forward_propagate(col_network, evidence)
+
+    # Compute priorities on the subgraph
+    priorities = compute_network_priorities(col_network, evidence)
 
     # Build ColumnNodeEvidence for each observed node
     # Build lookups: node_name -> source object, node_name -> impact_delta
@@ -237,7 +254,7 @@ def _build_column_result(
         source_obj = node_to_obj.get(node_name)
         node_ev = ColumnNodeEvidence(
             node_name=node_name,
-            dimension_path=network.get_node_config(node_name).dimension_path,
+            dimension_path=col_network.get_node_config(node_name).dimension_path,
             state=state,
             score=source_obj.score if source_obj else 0.0,
             impact_delta=node_to_delta.get(node_name, 0.0),
@@ -250,14 +267,14 @@ def _build_column_result(
         node_evidence.append(node_ev)
 
     # Build per-column IntentReadiness
-    intent_nodes = network.get_intent_nodes()
+    intent_nodes = col_network.get_intent_nodes()
     intents: list[IntentReadiness] = []
 
     for intent_name in intent_nodes:
         if intent_name in posteriors:
             post = posteriors[intent_name]
         elif intent_name in evidence:
-            post = {s: (1.0 if s == evidence[intent_name] else 0.0) for s in network.states}
+            post = {s: (1.0 if s == evidence[intent_name] else 0.0) for s in col_network.states}
         else:
             continue
 
@@ -283,16 +300,6 @@ def _build_column_result(
         disc.medium_upper,
         disc.low_upper,
     )
-
-    # When every observed detector says "low", no actual issue was found.
-    # The posterior may still exceed the threshold because unobserved
-    # nodes fall back to their priors, but that is an artifact of
-    # incomplete detector coverage, not a real signal.
-    all_evidence_low = all(s == "low" for s in evidence.values())
-    if all_evidence_low:
-        readiness = "ready"
-        for intent in intents:
-            intent.readiness = "ready"
 
     # Top priority node
     top_priority_node = ""
@@ -435,7 +442,7 @@ def _compute_cross_column_fix(
 # ---------------------------------------------------------------------------
 
 
-def _assemble_network_context(
+def assemble_network_context(
     objects: list[EntropyObject],
     network: EntropyNetwork,
 ) -> EntropyForNetwork:
@@ -513,14 +520,21 @@ def _assemble_network_context(
     columns_investigate = sum(1 for c in columns.values() if c.readiness == "investigate")
     columns_ready = sum(1 for c in columns.values() if c.readiness == "ready")
 
-    # Overall readiness derived from per-column readiness (which already
-    # accounts for the all-evidence-low override in _build_column_result).
+    # Overall readiness derived from per-column readiness (which uses
+    # dynamic subgraphs to avoid prior leakage from unobserved nodes).
     if columns_blocked > 0:
         overall_readiness = "blocked"
     elif columns_investigate > 0:
         overall_readiness = "investigate"
     else:
         overall_readiness = "ready"
+
+    # Average entropy: per-target max score, then mean across targets.
+    target_max: dict[str, float] = {}
+    for obj in objects:
+        if obj.target not in target_max or obj.score > target_max[obj.target]:
+            target_max[obj.target] = obj.score
+    avg_entropy_score = sum(target_max.values()) / len(target_max) if target_max else 0.0
 
     return EntropyForNetwork(
         columns=columns,
@@ -533,6 +547,7 @@ def _assemble_network_context(
         columns_ready=columns_ready,
         total_direct_signals=len(all_direct_signals),
         overall_readiness=overall_readiness,
+        avg_entropy_score=avg_entropy_score,
     )
 
 
@@ -573,7 +588,7 @@ def build_for_network(
         return EntropyForNetwork()
 
     network = EntropyNetwork()
-    return _assemble_network_context(entropy_objects, network)
+    return assemble_network_context(entropy_objects, network)
 
 
 # ---------------------------------------------------------------------------

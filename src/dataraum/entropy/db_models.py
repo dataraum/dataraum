@@ -2,7 +2,6 @@
 
 SQLAlchemy models for persisting entropy measurements:
 - EntropyObjectRecord: Individual entropy measurements
-- EntropySnapshotRecord: Point-in-time entropy state snapshots
 
 EntropyInterpretationRecord lives in interpretation_db_models.py
 (owned by the entropy_interpretation phase).
@@ -14,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, Integer, String
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -80,43 +79,3 @@ Index("idx_entropy_layer_dimension", EntropyObjectRecord.layer, EntropyObjectRec
 Index("idx_entropy_table", EntropyObjectRecord.table_id)
 Index("idx_entropy_column", EntropyObjectRecord.column_id)
 Index("idx_entropy_score", EntropyObjectRecord.score)
-
-
-class EntropySnapshotRecord(Base):
-    """Snapshot of entropy state at a point in time.
-
-    Used for tracking entropy trends over time and
-    detecting entropy degradation.
-    """
-
-    __tablename__ = "entropy_snapshots"
-
-    snapshot_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-
-    # Scope
-    source_id: Mapped[str | None] = mapped_column(ForeignKey("sources.source_id"))
-    table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id"))
-
-    # Snapshot time
-    snapshot_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=lambda: datetime.now(UTC)
-    )
-
-    # Summary statistics
-    total_entropy_objects: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    high_entropy_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    critical_entropy_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-    # Overall average entropy
-    avg_entropy_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-
-    # Overall readiness
-    overall_readiness: Mapped[str] = mapped_column(String, nullable=False, default="investigate")
-
-    # Full snapshot data (for detailed analysis)
-    snapshot_data: Mapped[dict[str, Any] | None] = mapped_column(JSON_TYPE)
-
-
-Index("idx_entropy_snapshot_source", EntropySnapshotRecord.source_id)
-Index("idx_entropy_snapshot_table", EntropySnapshotRecord.table_id)
-Index("idx_entropy_snapshot_time", EntropySnapshotRecord.snapshot_at)

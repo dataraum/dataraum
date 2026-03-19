@@ -155,7 +155,7 @@ class TestGenerateAllCPDs:
 
     def test_full_config_cpds(self, full_config: NetworkConfig):
         cpds = generate_all_cpds(full_config)
-        assert len(cpds) == 16
+        assert len(cpds) == 19
 
     def test_all_cpds_valid(self, full_config: NetworkConfig):
         """Every CPD should have columns summing to 1."""

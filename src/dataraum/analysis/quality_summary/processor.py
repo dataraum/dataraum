@@ -9,6 +9,7 @@ and skipping existing reports.
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -29,7 +30,6 @@ from dataraum.analysis.quality_summary.models import (
     ColumnQualitySummary,
     QualitySummaryResult,
 )
-from dataraum.analysis.quality_summary.variance import filter_interesting_columns
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import (
@@ -45,21 +45,17 @@ from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
     from dataraum.analysis.quality_summary.agent import QualitySummaryAgent
-    from dataraum.analysis.quality_summary.variance import SliceVarianceMetrics
+    from dataraum.entropy.views.network_context import ColumnNetworkResult
 
 logger = get_logger(__name__)
 
-_CONFIG_CACHE: dict[str, Any] | None = None
 
-
+@functools.lru_cache(maxsize=1)
 def _load_config() -> dict[str, Any]:
-    """Load quality_summary config from YAML (cached)."""
-    global _CONFIG_CACHE
-    if _CONFIG_CACHE is None:
-        from dataraum.core.config import load_phase_config
+    """Load quality_summary config from YAML (cached, thread-safe)."""
+    from dataraum.core.config import load_phase_config
 
-        _CONFIG_CACHE = load_phase_config("quality_summary")
-    return _CONFIG_CACHE
+    return load_phase_config("quality_summary")
 
 
 @dataclass
@@ -413,6 +409,87 @@ def aggregate_slice_results(
         return Result.fail(f"Failed to aggregate slice results: {e}")
 
 
+def _is_empty_or_constant(slice_data: list[dict[str, Any]]) -> bool:
+    """Check if a column is all-null or single-value across all slices."""
+    null_ratios = [s["null_ratio"] for s in slice_data if s.get("null_ratio") is not None]
+    if null_ratios and all(nr > 0.99 for nr in null_ratios):
+        return True
+    distinct_counts = [
+        s["distinct_count"] for s in slice_data if s.get("distinct_count") is not None
+    ]
+    if distinct_counts and all(dc == 1 for dc in distinct_counts):
+        return True
+    return False
+
+
+def _filter_by_network_readiness(
+    session: Session,
+    columns_with_data: list[AggregatedColumnData],
+    source_table_id: str,
+    p_high_threshold: float,
+) -> tuple[list[AggregatedColumnData], dict[str, str]]:
+    """Filter columns using Bayesian network readiness.
+
+    A column is "interesting" if:
+    - readiness is "investigate" or "blocked", OR
+    - any intent P(high) > p_high_threshold
+
+    Args:
+        session: Database session.
+        columns_with_data: Columns with aggregated slice data.
+        source_table_id: Table ID to load entropy for.
+        p_high_threshold: Threshold for intent P(high) above which a
+            "ready" column is still included.
+
+    Returns:
+        Tuple of (filtered columns, readiness_map {col_name: readiness}).
+    """
+    from dataraum.entropy.views.network_context import build_for_network
+
+    network_ctx = build_for_network(session, [source_table_id])
+    if not network_ctx.columns:
+        logger.warning("network_filter_no_data", table_id=source_table_id)
+        return columns_with_data, {c.column_name: "no_signal" for c in columns_with_data}
+
+    # Build column name -> readiness map from network results
+    readiness_map: dict[str, str] = {}
+    filtered: list[AggregatedColumnData] = []
+
+    # Build a lookup: extract column name from target "column:table.col"
+    col_network_by_name: dict[str, ColumnNetworkResult] = {}
+    for target, col_result in network_ctx.columns.items():
+        # target format: "column:table_name.column_name"
+        after_colon = target.removeprefix("column:")
+        _, _, col_name = after_colon.partition(".")
+        if not col_name:
+            continue  # malformed target, skip
+        col_network_by_name[col_name] = col_result
+
+    for col in columns_with_data:
+        net_result = col_network_by_name.get(col.column_name)
+        if net_result is None:
+            # Column has no network result — exclude
+            readiness_map[col.column_name] = "no_signal"
+            continue
+
+        readiness_map[col.column_name] = net_result.readiness
+
+        if net_result.needs_attention(p_high_threshold):
+            filtered.append(col)
+
+    logger.debug(
+        "network_readiness_filter",
+        total=len(columns_with_data),
+        filtered=len(filtered),
+        blocked=sum(1 for v in readiness_map.values() if v == "blocked"),
+        investigate=sum(1 for v in readiness_map.values() if v == "investigate"),
+        ready=sum(1 for v in readiness_map.values() if v == "ready"),
+        no_signal=sum(1 for v in readiness_map.values() if v == "no_signal"),
+    )
+
+    return filtered, readiness_map
+
+
 def summarize_quality(
     session: Session,
     agent: QualitySummaryAgent,
@@ -473,21 +550,30 @@ def summarize_quality(
         # Filter out columns with no slice data
         columns_with_data = [c for c in aggregated_columns if c.slice_data]
 
-        # Apply variance-based filtering to reduce LLM noise
-        # Only columns with INTERESTING variance patterns go to LLM
-        columns_to_process, variance_metrics = filter_interesting_columns(columns_with_data)
+        # Pre-filter: EMPTY/CONSTANT columns never need LLM analysis.
+        # EMPTY = all null ratios > 99%. CONSTANT = all distinct counts == 1.
+        eligible_columns = [
+            col for col in columns_with_data if not _is_empty_or_constant(col.slice_data)
+        ]
 
-        # Log classification summary
-        classifications = {name: m.classification.value for name, m in variance_metrics.items()}
-        logger.debug(
-            "variance_classifications",
-            total=len(columns_with_data),
-            filtered=len(columns_to_process),
-            classifications_summary={
-                c: sum(1 for v in classifications.values() if v == c)
-                for c in ["empty", "constant", "stable", "interesting"]
-            },
+        # Filter by Bayesian network readiness (entropy is a dependency,
+        # so entropy data is guaranteed to exist when this phase runs).
+        cfg = _load_config()
+        nf_cfg = cfg.get("network_filter", {})
+        p_high_threshold = nf_cfg.get("p_high_threshold", 0.35)
+        columns_to_process, readiness_map = _filter_by_network_readiness(
+            session=session,
+            columns_with_data=eligible_columns,
+            source_table_id=source_table.table_id,
+            p_high_threshold=p_high_threshold,
         )
+
+        # Merge pre-filtered columns into readiness_map
+        eligible_names = {c.column_name for c in eligible_columns}
+        for col in columns_with_data:
+            if col.column_name not in eligible_names and col.column_name not in readiness_map:
+                readiness_map[col.column_name] = "empty_or_constant"
+        classifications = readiness_map
 
         # Skip columns with existing reports if requested.
         # Scope by slice_column_name too so enriched dim slice defs sharing the same
@@ -512,7 +598,6 @@ def summarize_quality(
             aggregated_columns=aggregated_columns,
             slice_definition=slice_definition,
             source_table_name=effective_table.table_name,
-            variance_metrics=variance_metrics,
         )
 
         if not columns_to_process:
@@ -633,7 +718,6 @@ def _save_slice_profiles_from_aggregated(
     aggregated_columns: list[AggregatedColumnData],
     slice_definition: SliceDefinition,
     source_table_name: str,
-    variance_metrics: dict[str, SliceVarianceMetrics] | None = None,
 ) -> None:
     """Persist slice profiles from aggregated column data.
 
@@ -726,11 +810,6 @@ def _save_slice_profiles_from_aggregated(
                 row_count=slice_info.get("row_count", 0),
                 null_ratio=null_ratio,
                 distinct_count=slice_info.get("distinct_count"),
-                variance_classification=(
-                    variance_metrics[col_data.column_name].classification.value
-                    if variance_metrics and col_data.column_name in variance_metrics
-                    else None
-                ),
                 quality_score=quality_score,
                 has_issues=has_issues,
                 issue_count=issue_count,

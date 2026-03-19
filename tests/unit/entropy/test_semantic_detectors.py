@@ -398,7 +398,6 @@ class TestDimensionalEntropyDetectorLoadSliceVariance:
         profile.row_count = 1000
         profile.quality_score = 0.9
         profile.has_issues = False
-        profile.variance_classification = "stable"
         profile.source_column_id = "col1"
 
         profiles_result = MagicMock()

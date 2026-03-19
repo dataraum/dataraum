@@ -356,13 +356,10 @@ class EntropyAccessor:
         """
         from sqlalchemy import select
 
-        from dataraum.entropy.db_models import (
-            EntropySnapshotRecord,
-        )
+        from dataraum.entropy.engine import compute_network
         from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
-        from dataraum.entropy.views.network_context import build_for_network
         from dataraum.entropy.views.query_context import network_to_column_summaries
-        from dataraum.storage import Source, Table
+        from dataraum.storage import Source
 
         with self._ctx.manager.session_scope() as session:
             sources_result = session.execute(select(Source))
@@ -373,16 +370,9 @@ class EntropyAccessor:
 
             source = sources[0]
 
-            # Get snapshot
-            snapshot_result = session.execute(
-                select(EntropySnapshotRecord)
-                .where(EntropySnapshotRecord.source_id == source.source_id)
-                .order_by(EntropySnapshotRecord.snapshot_at.desc())
-                .limit(1)
-            )
-            snapshot = snapshot_result.scalar_one_or_none()
-
-            if not snapshot:
+            # Compute network from persisted records
+            network_ctx = compute_network(session, source.source_id)
+            if network_ctx is None:
                 return EntropyResultWrapper({"error": "No entropy data"})
 
             # Get interpretations (column-level only; table-level have column_id=NULL)
@@ -407,25 +397,14 @@ class EntropyAccessor:
             dimension_scores: dict[str, float] = {}
             dim_warning: str | None = None
             try:
-                tables_result = session.execute(
-                    select(Table).where(
-                        Table.source_id == source.source_id,
-                        Table.layer == "typed",
-                    )
-                )
-                tables = tables_result.scalars().all()
-                table_ids = [t.table_id for t in tables]
-
-                if table_ids:
-                    network_ctx = build_for_network(session, table_ids)
-                    col_summaries = network_to_column_summaries(network_ctx)
-                    dim_totals: dict[str, list[float]] = {}
-                    for col_summary in col_summaries.values():
-                        for dim_path, score in col_summary.dimension_scores.items():
-                            dim_totals.setdefault(dim_path, []).append(score)
-                    dimension_scores = {
-                        dim: sum(scores) / len(scores) for dim, scores in dim_totals.items()
-                    }
+                col_summaries = network_to_column_summaries(network_ctx)
+                dim_totals: dict[str, list[float]] = {}
+                for col_summary in col_summaries.values():
+                    for dim_path, score in col_summary.dimension_scores.items():
+                        dim_totals.setdefault(dim_path, []).append(score)
+                dimension_scores = {
+                    dim: sum(scores) / len(scores) for dim, scores in dim_totals.items()
+                }
             except Exception as exc:
                 import warnings
 
@@ -435,8 +414,8 @@ class EntropyAccessor:
             return EntropyResultWrapper(
                 {
                     "source": source.name,
-                    "overall_readiness": snapshot.overall_readiness,
-                    "entropy_score": snapshot.avg_entropy_score,
+                    "overall_readiness": network_ctx.overall_readiness,
+                    "entropy_score": network_ctx.avg_entropy_score,
                     "dimension_scores": dimension_scores,
                     "columns": [
                         {

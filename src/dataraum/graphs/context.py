@@ -467,14 +467,29 @@ def build_execution_context(
     # Sort by priority descending
     slice_contexts.sort(key=lambda s: s.priority, reverse=True)
 
-    # 11. Load quality reports from quality_summary
+    # Derive source_id from table_ids — reused by quality reports, cycles, entropy
+    source_id_result = session.execute(
+        select(Table.source_id).where(Table.table_id.in_(table_ids)).limit(1)
+    )
+    _source_id = source_id_result.scalar()
+
+    # 11. Load quality reports from quality_summary.
+    # Reports are keyed by slicing_view column IDs (source_column_id), but
+    # context uses typed table columns.  Key by "table.column" instead.
     quality_reports: dict[str, ColumnQualityReport] = {}
-    if column_ids:
+    if _source_id:
         grade_stmt = select(ColumnQualityReport).where(
-            ColumnQualityReport.source_column_id.in_(column_ids)
+            ColumnQualityReport.source_column_id.in_(
+                select(Column.column_id).where(
+                    Column.table_id.in_(select(Table.table_id).where(Table.source_id == _source_id))
+                )
+            )
         )
         for report in session.execute(grade_stmt).scalars().all():
-            quality_reports[report.source_column_id] = report
+            typed_name = report.source_table_name
+            if typed_name.startswith("slicing_"):
+                typed_name = typed_name[len("slicing_") :]
+            quality_reports[f"{typed_name}.{report.column_name}"] = report
 
     # 12. Load derived columns from correlation analysis
     derived_columns: dict[str, str] = {}  # column_id -> formula
@@ -484,12 +499,6 @@ def build_execution_context(
             derived_columns[derived.derived_column_id] = derived.formula
 
     # 13. Load business cycles (filtered to current source)
-    #     Derive source_id from table_ids — reused later for entropy snapshot
-    source_id_result = session.execute(
-        select(Table.source_id).where(Table.table_id.in_(table_ids)).limit(1)
-    )
-    _source_id = source_id_result.scalar()
-
     business_cycle_contexts: list[BusinessCycleContext] = []
     if _source_id:
         cycles_stmt = (
@@ -661,18 +670,10 @@ def build_execution_context(
 
     column_summaries = network_to_column_summaries(network_ctx)
 
-    # 16c. Read overall entropy score from snapshot (_source_id resolved in step 13)
-    from dataraum.entropy.db_models import EntropySnapshotRecord
-
-    overall_entropy_score: float | None = None
-    if _source_id:
-        snapshot_result = session.execute(
-            select(EntropySnapshotRecord.avg_entropy_score)
-            .where(EntropySnapshotRecord.source_id == _source_id)
-            .order_by(EntropySnapshotRecord.snapshot_at.desc())
-            .limit(1)
-        )
-        overall_entropy_score = snapshot_result.scalar()
+    # 16c. Overall entropy score from network context
+    overall_entropy_score: float | None = (
+        network_ctx.avg_entropy_score if network_ctx.total_columns > 0 else None
+    )
 
     # 18. Load entropy interpretations
     from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
@@ -762,7 +763,7 @@ def build_execution_context(
                 quality_flags.extend(flags)
 
             # Get quality report if available
-            col_report = quality_reports.get(col.column_id)
+            col_report = quality_reports.get(f"{table.table_name}.{col.column_name}")
 
             # Get entropy data for this column
             entropy_key = f"{table.table_name}.{col.column_name}"

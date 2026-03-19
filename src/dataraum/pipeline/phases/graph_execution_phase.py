@@ -51,7 +51,10 @@ class GraphExecutionPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        # Depends on all phases that build_execution_context pulls data from
+        # entropy_interpretation transitively pulls in:
+        #   entropy, computation_review → business_cycles, validation
+        # quality_summary transitively pulls in:
+        #   slice_analysis, temporal_slice_analysis, entropy
         return [
             "semantic",  # field mappings, table entities
             "column_eligibility",  # ensures only eligible columns in context
@@ -61,9 +64,7 @@ class GraphExecutionPhase(BasePhase):
             "correlations",  # derived columns
             "slicing",  # slice definitions
             "quality_summary",  # quality reports
-            "entropy",  # entropy scores and network (interpretation not needed)
-            "validation",  # data validation results
-            "business_cycles",  # business cycle detection
+            "entropy_interpretation",  # assumptions, resolution actions (→ entropy, computation_review)
         ]
 
     def cleanup(

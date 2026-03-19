@@ -13,6 +13,7 @@ ALL_DETECTOR_IDS = {
     "outlier_rate",
     "benford",
     "temporal_drift",
+    "slice_variance",
     "derived_value",
     "business_meaning",
     "unit_entropy",

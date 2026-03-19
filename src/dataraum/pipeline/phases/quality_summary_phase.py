@@ -136,7 +136,7 @@ class QualitySummaryPhase(BasePhase):
 
     @property
     def dependencies(self) -> list[str]:
-        return ["slice_analysis", "temporal_slice_analysis"]
+        return ["slice_analysis", "temporal_slice_analysis", "entropy"]
 
     @property
     def produces_analyses(self) -> set[AnalysisKey]:

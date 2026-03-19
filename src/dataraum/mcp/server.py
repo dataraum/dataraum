@@ -1180,18 +1180,9 @@ def _build_entropy_section(
     """Build entropy section for quality report."""
     from sqlalchemy import select
 
-    from dataraum.entropy.db_models import EntropySnapshotRecord
     from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
 
-    snapshot_result = session.execute(
-        select(EntropySnapshotRecord)
-        .where(EntropySnapshotRecord.source_id == source.source_id)
-        .order_by(EntropySnapshotRecord.snapshot_at.desc())
-        .limit(1)
-    )
-    snapshot = snapshot_result.scalar_one_or_none()
-
-    if not snapshot:
+    if not network_context or network_context.total_columns == 0:
         return "## Entropy\nNo entropy data available. Run entropy phase first."
 
     interp_query = select(EntropyInterpretationRecord).where(
@@ -1216,13 +1207,17 @@ def _build_entropy_section(
         dimension_scores = {dim: sum(scores) / len(scores) for dim, scores in dim_totals.items()}
 
     result = format_entropy_summary(
-        source.name, snapshot, interpretations, table_name, dimension_scores
+        source.name,
+        network_context.overall_readiness,
+        network_context.avg_entropy_score,
+        interpretations,
+        table_name,
+        dimension_scores,
     )
 
-    if network_context and network_context.total_columns > 0:
-        from dataraum.entropy.views.network_context import format_network_context
+    from dataraum.entropy.views.network_context import format_network_context
 
-        result += "\n\n" + format_network_context(network_context)
+    result += "\n\n" + format_network_context(network_context)
 
     return result
 

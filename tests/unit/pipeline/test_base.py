@@ -41,7 +41,7 @@ class TestPhaseRegistry:
         assert cls is not None
         instance = cls()
         assert "semantic" in instance.dependencies
-        assert "computation_review" in instance.dependencies
+        assert "slice_analysis" in instance.dependencies
 
     def test_graph_execution_phase_exists(self):
         cls = get_phase_class("graph_execution")
@@ -118,14 +118,14 @@ class TestDependencyResolution:
 
     def test_get_all_dependencies_for_entropy(self):
         deps = get_all_dependencies("entropy")
-        # Entropy depends on statistics, semantic, relationships, correlations
+        # Entropy depends on typing, column_eligibility, semantic, relationships, slice_analysis
         # Each of those has their own dependencies
         assert "import" in deps
         assert "typing" in deps
         assert "statistics" in deps
         assert "semantic" in deps
         assert "relationships" in deps
-        assert "correlations" in deps
+        assert "slice_analysis" in deps
 
     def test_unknown_phase_returns_empty(self):
         deps = get_all_dependencies("nonexistent")

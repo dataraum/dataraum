@@ -1,11 +1,10 @@
 """Data fixes phase — replays stored fix documents on pipeline re-run.
 
 Runs after semantic, before quality_review. Loads all DataFix records
-for the source, ordered by ordinal, and applies each via the appropriate
-interpreter (config, metadata, or data).
+for the source, ordered by ordinal, and applies metadata fixes via
+MetadataInterpreter. Config fixes are skipped (already on disk).
 
-Config fixes are idempotent (YAML already on disk from initial application).
-Metadata and data fixes are re-applied because column IDs and typed tables
+Metadata fixes are re-applied because column IDs and typed tables
 are regenerated on --force re-runs.
 """
 
@@ -40,7 +39,7 @@ class DataFixesPhase(BasePhase):
 
     @property
     def description(self) -> str:
-        return "Apply stored data and metadata fixes"
+        return "Apply stored metadata fixes"
 
     @property
     def dependencies(self) -> list[str]:
@@ -84,7 +83,6 @@ class DataFixesPhase(BasePhase):
                 apply_fix_document(
                     doc,
                     session=ctx.session,
-                    duckdb_conn=ctx.duckdb_conn,
                 )
                 fix.status = "applied"
                 fix.applied_at = datetime.now(UTC)
@@ -95,7 +93,7 @@ class DataFixesPhase(BasePhase):
                 fix.error_message = str(e)
                 failed += 1
                 logger.error(
-                    "data_fix_replay_failed",
+                    "fix_replay_failed",
                     fix_id=fix.fix_id,
                     action=fix.action,
                     error=str(e),

@@ -2123,33 +2123,6 @@ def _build_fix_doc_from_plan_item(
             "value": value,
         }
 
-    elif schema.target == "data":
-        # Data-target fixes: instantiate SQL template from agent parameters
-        params = item.parameters if isinstance(item.parameters, dict) else {}
-        payload: dict[str, Any] = {}
-
-        if schema.templates:
-            # Pick the first template and substitute placeholders
-            template_name, template_sql = next(iter(schema.templates.items()))
-            substitutions = {
-                "table": table_name,
-                "column": column_name or "",
-                **params,
-            }
-            try:
-                payload["sql"] = template_sql.format(**substitutions)
-            except KeyError:
-                # Template has placeholders not in params — pass raw for agent review
-                payload["template"] = template_sql
-                payload["parameters"] = substitutions
-
-        # Also pass through any explicit fields from the agent
-        for field_name in schema.fields:
-            if field_name in params:
-                payload[field_name] = params[field_name]
-
-        fix_doc["payload"] = payload
-
     return fix_doc
 
 

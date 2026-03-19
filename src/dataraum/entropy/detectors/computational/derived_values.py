@@ -154,20 +154,6 @@ class DerivedValueDetector(EntropyDetector):
         # Resolution options — only actions backed by fix_schemas
         resolution_options: list[ResolutionOption] = []
 
-        if status in ["approximate", "poor"] and formula:
-            resolution_options.append(
-                ResolutionOption(
-                    action="recalculate_derived_column",
-                    parameters={
-                        "column": context.column_name,
-                        "table": context.table_name,
-                        "formula": formula,
-                    },
-                    effort="high",
-                    description=f"Recalculate {context.column_name} using detected formula: {formula}",
-                )
-            )
-
         if score > 0:
             resolution_options.append(
                 ResolutionOption(

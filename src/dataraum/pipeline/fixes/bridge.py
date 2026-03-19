@@ -21,7 +21,7 @@ def build_fix_documents(
     """Build FixDocuments from a FixSchema and user input.
 
     Routes by target and operation type:
-    - data: Renders SQL templates with parameters
+    - metadata: Model-based (ORM patch) or marker (DataFix record only)
     - config/append: One FixDocument per affected_column
     - config/merge or set with key_template=None: One per affected_column
     - config/merge or set with key_template: One using template-derived key
@@ -36,9 +36,6 @@ def build_fix_documents(
     Returns:
         List of FixDocuments ready for interpreter application.
     """
-    if schema.target == "data":
-        return _build_data_documents(schema, fix_input, table_name, column_name, dimension)
-
     if schema.target == "metadata":
         return _build_metadata_documents(schema, fix_input, table_name, column_name, dimension)
 
@@ -306,59 +303,6 @@ def _build_metadata_marker_documents(
                 ordinal=i,
                 description=f"{schema.action}: {col_ref}",
                 payload=payload,
-            )
-        )
-
-    return docs
-
-
-def _build_data_documents(
-    schema: FixSchema,
-    fix_input: FixInput,
-    table_name: str,
-    column_name: str | None,
-    dimension: str,
-) -> list[FixDocument]:
-    """Build data fix documents by rendering SQL templates.
-
-    The schema's ``templates`` dict maps template names to SQL strings with
-    ``{placeholders}``. Placeholders are filled from fix_input.parameters
-    plus ``{table}`` and ``{column}`` from scope.
-    """
-    if not schema.templates:
-        return []
-
-    # Build substitution context: parameters + scope
-    subs = dict(fix_input.parameters)
-    subs["table"] = table_name
-    if column_name:
-        subs["column"] = column_name
-
-    docs: list[FixDocument] = []
-    for i, (name, template) in enumerate(schema.templates.items()):
-        try:
-            sql = template.format(**subs)
-        except KeyError as e:
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "SQL template %r requires field %s missing from parameters %s — skipping",
-                name,
-                e,
-                sorted(subs),
-            )
-            continue
-
-        docs.append(
-            FixDocument(
-                target="data",
-                action=schema.action,
-                table_name=table_name,
-                column_name=column_name,
-                dimension=dimension,
-                ordinal=i,
-                description=f"{schema.action}: {name}",
-                payload={"sql": sql},
             )
         )
 

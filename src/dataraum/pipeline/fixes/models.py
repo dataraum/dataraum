@@ -4,7 +4,7 @@ FixDocument is the universal fix format — what agents write and interpreters a
 DataFix is the ORM model that persists fix documents across pipeline re-runs.
 
 A single user-facing fix action produces one or more FixDocuments (composite fix).
-Each document targets exactly one interpreter (config, metadata, or data).
+Each document targets exactly one interpreter (config or metadata).
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class FixDocument:
     action produces an ordered list of FixDocuments.
 
     Args:
-        target: Which interpreter handles this: "config", "metadata", or "data".
+        target: Which interpreter handles this: "config" or "metadata".
         action: Human-readable action name, e.g. "document_unit".
         table_name: Scoping — which table this fix applies to.
         column_name: Scoping — which column (None for table-scoped fixes).
@@ -48,7 +48,7 @@ class FixDocument:
         ordinal: Execution order within a composite fix (0-indexed).
     """
 
-    target: str  # "config" | "metadata" | "data"
+    target: str  # "config" | "metadata"
     action: str
     table_name: str
     column_name: str | None
@@ -59,8 +59,8 @@ class FixDocument:
     ordinal: int = 0
 
     def __post_init__(self) -> None:
-        if self.target not in ("config", "metadata", "data"):
-            msg = f"target must be 'config', 'metadata', or 'data', got {self.target!r}"
+        if self.target not in ("config", "metadata"):
+            msg = f"target must be 'config' or 'metadata', got {self.target!r}"
             raise ValueError(msg)
 
 
@@ -88,14 +88,13 @@ class FixSchema:
 
     Args:
         action: Action name this schema produces.
-        target: Which interpreter: "config", "metadata", or "data".
+        target: Which interpreter: "config" or "metadata".
         description: What this fix does.
         fields: Required/optional fields the agent must provide.
         config_path: For config target — relative YAML path.
         key_path: For config target — nested key path.
         operation: For config target — set/append/merge.
         model: For metadata target — ORM model name.
-        templates: For data target — named SQL templates with {placeholders}.
         requires_rerun: Phase to re-run after applying (None = no re-run).
         guidance: LLM guidance for agent Q&A.
         key_template: Format string for merge key suffix from params
@@ -104,7 +103,7 @@ class FixSchema:
     """
 
     action: str
-    target: str  # "config" | "metadata" | "data"
+    target: str  # "config" | "metadata"
     description: str = ""
     fields: dict[str, FixSchemaField] = field(default_factory=dict)
 
@@ -115,9 +114,6 @@ class FixSchema:
 
     # Metadata target specifics
     model: str | None = None
-
-    # Data target specifics
-    templates: dict[str, str] | None = None
 
     # Routing and lifecycle
     requires_rerun: str | None = None
@@ -208,7 +204,7 @@ class DataFix(Base):
 
     # What this fix does
     action: Mapped[str] = mapped_column(String, nullable=False)
-    target: Mapped[str] = mapped_column(String, nullable=False)  # config|metadata|data
+    target: Mapped[str] = mapped_column(String, nullable=False)  # config|metadata
     dimension: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str] = mapped_column(String, nullable=False, default="")
 

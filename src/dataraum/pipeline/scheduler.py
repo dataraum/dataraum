@@ -620,7 +620,6 @@ class PipelineScheduler:
                     documents,
                     session=self.session,
                     config_root=config_root,
-                    duckdb_conn=self.duckdb_conn,
                 )
 
             # Only preprocess fixes trigger cascade-clean + phase re-run

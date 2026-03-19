@@ -37,7 +37,7 @@ class TestLoaderBasics:
     def test_total_schema_count(self) -> None:
         all_schemas = get_all_schemas(config_path=_FIXES_YAML)
         total = sum(len(schemas) for schemas in all_schemas.values())
-        assert total == 20
+        assert total == 19
 
     def test_get_schemas_for_known_detector(self) -> None:
         schemas = get_schemas_for_detector("type_fidelity", config_path=_FIXES_YAML)
@@ -124,17 +124,13 @@ class TestSchemaFields:
         assert field.default == "VARCHAR"
         assert field.enum_values == ["VARCHAR", "BIGINT", "DOUBLE", "DATE", "TIMESTAMP", "BOOLEAN"]
 
-    def test_data_target_schema(self) -> None:
-        schema = get_fix_schema(
-            "recalculate_derived_column",
-            config_path=_FIXES_YAML,
-        )
-        assert schema is not None
-        assert schema.target == "data"
-        assert schema.templates is not None
-        assert "recalculate" in schema.templates
-        assert schema.requires_rerun == "correlations"
-        assert schema.routing == "preprocess"
+    def test_no_data_target_schemas(self) -> None:
+        all_schemas = get_all_schemas(config_path=_FIXES_YAML)
+        for det_id, schemas in all_schemas.items():
+            for schema in schemas:
+                assert schema.target != "data", (
+                    f"{det_id}/{schema.action} has target='data'"
+                )
 
     def test_metadata_acceptance_schema(self) -> None:
         schema = get_fix_schema(
@@ -214,7 +210,7 @@ class TestRoutingConsistency:
                     )
 
     def test_routing_counts(self) -> None:
-        """5 preprocess, 15 postprocess per the plan."""
+        """4 preprocess, 15 postprocess after removing recalculate_derived_column."""
         all_schemas = get_all_schemas(config_path=_FIXES_YAML)
         pre = post = 0
         for schemas in all_schemas.values():
@@ -223,7 +219,7 @@ class TestRoutingConsistency:
                     pre += 1
                 elif schema.routing == "postprocess":
                     post += 1
-        assert pre == 5
+        assert pre == 4
         assert post == 15
 
 

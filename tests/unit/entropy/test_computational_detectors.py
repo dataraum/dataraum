@@ -113,9 +113,8 @@ class TestDerivedValueDetector:
         # Boosted: mismatch_rate=0.15 → 1.0 (severe — 15% formula errors)
         assert results[0].score == pytest.approx(1.0, abs=0.01)
         assert results[0].evidence[0]["status"] == "approximate"
-        # Approximate match → recalculate available (formula detected)
+        # Approximate match → acceptance available
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "recalculate_derived_column" in actions
         assert "document_accepted_formula_match" in actions
 
     def test_poor_formula_match(self, detector: DerivedValueDetector):
@@ -142,9 +141,8 @@ class TestDerivedValueDetector:
         # Boosted: mismatch_rate=0.40 → 1.0 (severe — 40% formula errors)
         assert results[0].score == pytest.approx(1.0, abs=0.01)
         assert results[0].evidence[0]["status"] == "poor"
-        # Poor match → recalculate available (formula detected)
+        # Poor match → acceptance available
         actions = [opt.action for opt in results[0].resolution_options]
-        assert "recalculate_derived_column" in actions
         assert "document_accepted_formula_match" in actions
 
     def test_column_not_in_derived_list(self, detector: DerivedValueDetector):

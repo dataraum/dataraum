@@ -72,7 +72,6 @@ def _parse_schema(
         key_path=raw.get("key_path"),
         operation=raw.get("operation"),
         model=raw.get("model"),
-        templates=raw.get("templates"),
         requires_rerun=raw.get("requires_rerun"),
         guidance=raw.get("guidance", "").strip(),
         key_template=raw.get("key_template"),

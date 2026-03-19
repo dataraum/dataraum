@@ -501,16 +501,7 @@ schemas:
 
   derived_value:
     dimension_path: computational.derived_values.formula_match
-    triage_guidance: |
-      This detector found a derived column (computed from other columns) with
-      formula mismatches. Choose based on the match rate:
-      - recalculate_derived_column: DEFAULT choice. The formula is known and
-        mismatches indicate data that drifted from the formula. Recalculating
-        enforces consistency. Ask the user to confirm the formula via a
-        follow_up_question (propose the detected formula as default).
-      - document_accepted_formula_match: Only if the user has confirmed that mismatches are
-        intentional (manual adjustments, rounding). Do NOT assume this —
-        formula drift is usually a data quality problem, not expected behavior.
+    triage_guidance: ""
     actions:
       document_accepted_formula_match:
         target: metadata
@@ -528,23 +519,6 @@ schemas:
             type: string
             required: true
             description: Why the formula mismatch is expected
-      recalculate_derived_column:
-        target: data
-        routing: preprocess
-        requires_rerun: correlations
-        description: Recalculate the derived column from its source formula
-        templates:
-          recalculate: "UPDATE typed_{table} SET {column} = {formula}"
-        guidance: |
-          The derived column has formula mismatches and the user wants
-          to recalculate. Show the detected formula and match rate.
-          Ask the user to confirm the correct formula (the detected one
-          may be wrong). PROPOSE the detected formula as default.
-        fields:
-          formula:
-            type: duckdb_sql
-            required: true
-            description: "SQL expression to recalculate (e.g., 'debit - credit')"
 
   cross_table_consistency:
     dimension_path: computational.reconciliation.cross_table_consistency

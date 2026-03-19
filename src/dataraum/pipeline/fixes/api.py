@@ -178,7 +178,6 @@ def apply_fixes(
                 fix_documents,
                 session=session,
                 config_root=config_root,
-                duckdb_conn=manager._duckdb_conn,
             )
 
             if has_preprocess:

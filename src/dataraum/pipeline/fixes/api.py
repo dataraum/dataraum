@@ -209,7 +209,7 @@ def apply_fixes(
                 RunConfig(
                     source_path=source_path,
                     output_dir=output_dir,
-                    target_phase="quality_review",
+                    target_phase=target_phase,
                     contract=contract,
                 )
             ).unwrap()
@@ -236,7 +236,12 @@ def apply_fixes(
                     source2.source_id,
                     _analyses_for_gate(target_phase),
                 )
-                persist_gate_result(session2, source2.source_id, gate_after)
+                persist_gate_result(
+                    session2,
+                    source2.source_id,
+                    gate_after,
+                    phase_name=target_phase,
+                )
         finally:
             manager2.close()
 

@@ -424,6 +424,11 @@ schemas:
             type: string
             required: false
             description: Business description of the column
+          confidence:
+            type: float
+            required: false
+            description: "Override confidence (1.0 = human-verified name)"
+            default: 1.0
 
   dimensional_entropy:
     dimension_path: semantic.dimensional.dimensional_patterns

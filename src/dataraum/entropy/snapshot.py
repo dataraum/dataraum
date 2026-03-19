@@ -65,8 +65,8 @@ def _resolve_view_target(
 def _resolve_table_target(
     session: Session,
     target: str,
-) -> tuple[str, str] | None:
-    """Parse table target string and resolve to (table_id, table_name).
+) -> tuple[str, str, str] | None:
+    """Parse table target string and resolve to (table_id, table_name, source_id).
 
     Supports format: "table:table_name"
 
@@ -82,7 +82,7 @@ def _resolve_table_target(
     if not table:
         return None
 
-    return table.table_id, ref
+    return table.table_id, ref, table.source_id
 
 
 def _resolve_column_target(
@@ -232,10 +232,11 @@ def take_snapshot(
             logger.warning(f"Cannot resolve table target for snapshot: {target}")
             return Snapshot(scores={}, detectors_run=[])
 
-        table_id, table_name = resolved
+        table_id, table_name, source_id = resolved
 
         context = DetectorContext(
             session=session,
+            source_id=source_id,
             table_id=table_id,
             table_name=table_name,
             duckdb_conn=duckdb_conn,

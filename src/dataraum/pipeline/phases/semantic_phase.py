@@ -325,5 +325,3 @@ class SemanticPhase(BasePhase):
             warnings=previews,
             summary=f"{annotations_count} annotations, {entities_count} entities, {relationships_count} relationships",
         )
-
-

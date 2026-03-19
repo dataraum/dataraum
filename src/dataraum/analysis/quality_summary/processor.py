@@ -29,7 +29,7 @@ from dataraum.analysis.quality_summary.models import (
     ColumnQualitySummary,
     QualitySummaryResult,
 )
-from dataraum.analysis.quality_summary.variance import filter_interesting_columns
+from dataraum.analysis.quality_summary.variance import compute_slice_variance
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import (
@@ -413,6 +413,90 @@ def aggregate_slice_results(
         return Result.fail(f"Failed to aggregate slice results: {e}")
 
 
+def _filter_by_network_readiness(
+    session: Session,
+    columns_with_data: list[AggregatedColumnData],
+    source_table_id: str,
+    p_high_threshold: float = 0.35,
+) -> tuple[list[AggregatedColumnData], dict[str, str]]:
+    """Filter columns using Bayesian network readiness.
+
+    A column is "interesting" if:
+    - readiness is "investigate" or "blocked", OR
+    - any intent P(high) > p_high_threshold
+
+    Args:
+        session: Database session.
+        columns_with_data: Columns with aggregated slice data.
+        source_table_id: Table ID to load entropy for.
+        p_high_threshold: Threshold for intent P(high) above which a
+            "ready" column is still included.
+
+    Returns:
+        Tuple of (filtered columns, readiness_map {col_name: readiness}).
+    """
+    from dataraum.entropy.core.storage import EntropyRepository
+    from dataraum.entropy.network.model import EntropyNetwork
+    from dataraum.entropy.views.network_context import assemble_network_context
+
+    repo = EntropyRepository(session)
+    typed_table_ids = repo.get_typed_table_ids([source_table_id])
+    if not typed_table_ids:
+        logger.debug("network_filter_no_typed_tables", table_id=source_table_id)
+        return [], {}
+
+    entropy_objects = repo.load_for_tables(typed_table_ids, enforce_typed=True)
+    if not entropy_objects:
+        logger.debug("network_filter_no_entropy_objects", table_id=source_table_id)
+        return [], {}
+
+    network = EntropyNetwork()
+    network_ctx = assemble_network_context(entropy_objects, network)
+
+    # Build column name -> readiness map from network results
+    readiness_map: dict[str, str] = {}
+    filtered: list[AggregatedColumnData] = []
+
+    # Build a lookup: extract column name from target "column:table.col"
+    col_results_by_name: dict[str, str] = {}
+    col_p_high_by_name: dict[str, float] = {}
+    for target, col_result in network_ctx.columns.items():
+        # target format: "column:table_name.column_name"
+        if "." in target:
+            col_name = target.split(".", 1)[1]
+        else:
+            col_name = target.removeprefix("column:")
+        col_results_by_name[col_name] = col_result.readiness
+        col_p_high_by_name[col_name] = col_result.worst_intent_p_high
+
+    for col in columns_with_data:
+        readiness = col_results_by_name.get(col.column_name)
+        if readiness is None:
+            # Column has no network result — exclude
+            readiness_map[col.column_name] = "no_signal"
+            continue
+
+        readiness_map[col.column_name] = readiness
+
+        if readiness in ("investigate", "blocked"):
+            filtered.append(col)
+        elif (col_p_high_by_name.get(col.column_name, 0.0)) > p_high_threshold:
+            # "ready" but some intent P(high) is above threshold
+            filtered.append(col)
+
+    logger.debug(
+        "network_readiness_filter",
+        total=len(columns_with_data),
+        filtered=len(filtered),
+        blocked=sum(1 for v in readiness_map.values() if v == "blocked"),
+        investigate=sum(1 for v in readiness_map.values() if v == "investigate"),
+        ready=sum(1 for v in readiness_map.values() if v == "ready"),
+        no_signal=sum(1 for v in readiness_map.values() if v == "no_signal"),
+    )
+
+    return filtered, readiness_map
+
+
 def summarize_quality(
     session: Session,
     agent: QualitySummaryAgent,
@@ -473,21 +557,24 @@ def summarize_quality(
         # Filter out columns with no slice data
         columns_with_data = [c for c in aggregated_columns if c.slice_data]
 
-        # Apply variance-based filtering to reduce LLM noise
-        # Only columns with INTERESTING variance patterns go to LLM
-        columns_to_process, variance_metrics = filter_interesting_columns(columns_with_data)
+        # Compute variance metrics for ColumnSliceProfile.variance_classification
+        # (still needed by dimensional_entropy downstream)
+        variance_metrics: dict[str, SliceVarianceMetrics] = {}
+        for col in columns_with_data:
+            variance_metrics[col.column_name] = compute_slice_variance(col)
 
-        # Log classification summary
-        classifications = {name: m.classification.value for name, m in variance_metrics.items()}
-        logger.debug(
-            "variance_classifications",
-            total=len(columns_with_data),
-            filtered=len(columns_to_process),
-            classifications_summary={
-                c: sum(1 for v in classifications.values() if v == c)
-                for c in ["empty", "constant", "stable", "interesting"]
-            },
+        # Filter by Bayesian network readiness (entropy is a dependency,
+        # so entropy data is guaranteed to exist when this phase runs).
+        cfg = _load_config()
+        nf_cfg = cfg.get("network_filter", {})
+        p_high_threshold = nf_cfg.get("p_high_threshold", 0.35)
+        columns_to_process, readiness_map = _filter_by_network_readiness(
+            session=session,
+            columns_with_data=columns_with_data,
+            source_table_id=effective_table.table_id,
+            p_high_threshold=p_high_threshold,
         )
+        classifications = readiness_map
 
         # Skip columns with existing reports if requested.
         # Scope by slice_column_name too so enriched dim slice defs sharing the same

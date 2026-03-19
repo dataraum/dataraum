@@ -157,9 +157,7 @@ class EntropyNetwork:
         uniform_prior = [1.0 / n_states] * n_states
 
         # Determine which nodes lost all parents (become new roots)
-        kept_parent_map: dict[str, set[str]] = {
-            n: parent_map[n] & kept for n in kept
-        }
+        kept_parent_map: dict[str, set[str]] = {n: parent_map[n] & kept for n in kept}
 
         filtered_nodes: dict[str, NodeConfig] = {}
         for name in kept:
@@ -176,10 +174,7 @@ class EntropyNetwork:
             else:
                 filtered_nodes[name] = node_cfg
 
-        filtered_edges = [
-            e for e in self._config.edges
-            if e.parent in kept and e.child in kept
-        ]
+        filtered_edges = [e for e in self._config.edges if e.parent in kept and e.child in kept]
 
         filtered_config = NetworkConfig(
             states=self._config.states,

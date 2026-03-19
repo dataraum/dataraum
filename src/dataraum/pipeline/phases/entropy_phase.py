@@ -39,7 +39,7 @@ class EntropyPhase(BasePhase):
     Runs entropy detectors across all dimensions to quantify uncertainty
     in data. Produces entropy profiles for each column and table.
 
-    Requires: typing, column_eligibility, semantic, relationships, computation_review.
+    Requires: typing, column_eligibility, semantic, relationships, slice_analysis.
     """
 
     @property
@@ -57,7 +57,6 @@ class EntropyPhase(BasePhase):
             "column_eligibility",
             "semantic",
             "relationships",
-            "computation_review",
             "slice_analysis",
         ]
 

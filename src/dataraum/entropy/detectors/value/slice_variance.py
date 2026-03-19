@@ -178,9 +178,7 @@ class SliceVarianceDetector(EntropyDetector):
             if profile is None:
                 continue
 
-            null_ratio = (
-                profile.null_count / profile.total_count if profile.total_count else 0.0
-            )
+            null_ratio = profile.null_count / profile.total_count if profile.total_count else 0.0
 
             entry: dict[str, Any] = {
                 "null_ratio": null_ratio,
@@ -224,21 +222,21 @@ class SliceVarianceDetector(EntropyDetector):
         config = get_entropy_config()
         detector_config = config.detector("slice_variance")
         null_threshold = detector_config.get("null_spread_threshold", _DEFAULT_NULL_SPREAD)
-        distinct_threshold = detector_config.get("distinct_ratio_threshold", _DEFAULT_DISTINCT_RATIO)
+        distinct_threshold = detector_config.get(
+            "distinct_ratio_threshold", _DEFAULT_DISTINCT_RATIO
+        )
         outlier_threshold = detector_config.get("outlier_spread_threshold", _DEFAULT_OUTLIER_SPREAD)
         benford_threshold = detector_config.get("benford_spread_threshold", _DEFAULT_BENFORD_SPREAD)
-        accepted_columns: list[str] = self.config.get(
-            "accepted_columns"
-        ) or detector_config.get("accepted_columns", [])
+        accepted_columns: list[str] = self.config.get("accepted_columns") or detector_config.get(
+            "accepted_columns", []
+        )
 
         # Compute spread metrics
         null_ratios = [p["null_ratio"] for p in slice_profiles]
         distinct_counts = [p["distinct_count"] for p in slice_profiles]
         outlier_ratios = [p["outlier_ratio"] for p in slice_profiles]
         benford_pvalues = [
-            p["benford_p_value"]
-            for p in slice_profiles
-            if p.get("benford_p_value") is not None
+            p["benford_p_value"] for p in slice_profiles if p.get("benford_p_value") is not None
         ]
 
         # Null spread
@@ -255,9 +253,7 @@ class SliceVarianceDetector(EntropyDetector):
             # Normalize: ratio of 1.0 = no spread, threshold = 2.0
             # spread = ratio - 1.0, threshold_spread = threshold - 1.0 = 1.0
             distinct_spread = ratio - 1.0
-            distinct_norm = min(
-                distinct_spread / (2 * (distinct_threshold - 1.0)), 1.0
-            )
+            distinct_norm = min(distinct_spread / (2 * (distinct_threshold - 1.0)), 1.0)
         else:
             # min_distinct == 0: ratio is undefined (e.g., entirely-null slice)
             distinct_ratio = None

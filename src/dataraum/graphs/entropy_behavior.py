@@ -7,10 +7,10 @@ entropy levels, per the specification in ENTROPY_QUERY_BEHAVIOR.md.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 
-class BehaviorMode(str, Enum):
+class BehaviorMode(StrEnum):
     """Agent behavior mode when encountering data entropy."""
 
     STRICT = "strict"  # Ask clarification for ANY entropy > 0.3
@@ -18,7 +18,7 @@ class BehaviorMode(str, Enum):
     LENIENT = "lenient"  # Only refuse for critical entropy (> 0.8)
 
 
-class EntropyAction(str, Enum):
+class EntropyAction(StrEnum):
     """Action to take based on entropy level."""
 
     ANSWER_CONFIDENTLY = "answer_confidently"  # Direct answer, no caveats

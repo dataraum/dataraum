@@ -155,7 +155,7 @@ class ColumnAnnotationAgent(LLMFeature):
                     parsed = json.loads(response.content)
                     output = ColumnAnnotationOutput.model_validate(parsed)
                     return Result.ok(output)
-                except (json.JSONDecodeError, Exception):
+                except json.JSONDecodeError, Exception:
                     pass
             return Result.fail("LLM did not use the annotate_columns tool")
 

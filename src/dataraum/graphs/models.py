@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
@@ -26,14 +26,14 @@ from pydantic import BaseModel, Field
 # =============================================================================
 
 
-class GraphType(str, Enum):
+class GraphType(StrEnum):
     """Type of transformation graph."""
 
     FILTER = "filter"
     METRIC = "metric"
 
 
-class GraphSource(str, Enum):
+class GraphSource(StrEnum):
     """Source of the graph definition."""
 
     SYSTEM = "system"  # Built-in system graphs
@@ -41,7 +41,7 @@ class GraphSource(str, Enum):
     LLM = "llm"  # LLM-generated graphs
 
 
-class StepType(str, Enum):
+class StepType(StrEnum):
     """Type of graph step."""
 
     EXTRACT = "extract"  # Pull data from source
@@ -51,7 +51,7 @@ class StepType(str, Enum):
     COMPOSITE = "composite"  # Combine multiple steps
 
 
-class Classification(str, Enum):
+class Classification(StrEnum):
     """Classification result for filter graphs."""
 
     CLEAN = "clean"  # Passes all checks, include in analysis
@@ -60,7 +60,7 @@ class Classification(str, Enum):
     FLAG = "flag"  # Include but marked for attention
 
 
-class OutputType(str, Enum):
+class OutputType(StrEnum):
     """Type of graph output."""
 
     CLASSIFICATION = "classification"  # For filters
@@ -69,7 +69,7 @@ class OutputType(str, Enum):
     TABLE = "table"  # Multi-column result
 
 
-class MetricScope(str, Enum):
+class MetricScope(StrEnum):
     """Scope at which a metric can be computed.
 
     - GLOBAL: Computed once for the entire dataset
@@ -315,7 +315,7 @@ class ClassificationSummary:
     total_count: int = 0
 
 
-class AssumptionBasis(str, Enum):
+class AssumptionBasis(StrEnum):
     """Basis for an assumption made during query execution."""
 
     SYSTEM_DEFAULT = "system_default"  # Default from system configuration

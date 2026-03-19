@@ -147,8 +147,8 @@ class EntropyScreen(Screen[None]):
 
         from dataraum.entropy.db_models import (
             EntropyObjectRecord,
-            EntropySnapshotRecord,
         )
+        from dataraum.entropy.engine import compute_network
         from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
         from dataraum.storage import Column, Source, Table
 
@@ -165,16 +165,10 @@ class EntropyScreen(Screen[None]):
 
                 source = sources[0]
 
-                # Get latest snapshot
-                snapshot_result = session.execute(
-                    select(EntropySnapshotRecord)
-                    .where(EntropySnapshotRecord.source_id == source.source_id)
-                    .order_by(EntropySnapshotRecord.snapshot_at.desc())
-                    .limit(1)
-                )
-                snapshot = snapshot_result.scalar_one_or_none()
+                # Compute network from persisted records
+                network_ctx = compute_network(session, source.source_id)
 
-                if not snapshot:
+                if network_ctx is None:
                     self._show_error("No entropy data. Run entropy phase first.")
                     return
 
@@ -315,7 +309,7 @@ class EntropyScreen(Screen[None]):
                             self._relationships.setdefault(rel.to_table_id, []).append(rel)
 
                 # Update UI
-                self._update_summary(source.name, snapshot, interpretations)
+                self._update_summary(source.name, network_ctx, interpretations)
                 self._update_tree(interpretations)
 
                 # Select first item if available (delay to ensure widgets are mounted)
@@ -338,7 +332,7 @@ class EntropyScreen(Screen[None]):
         status.update(f"[red]{message}[/red]")
 
     def _update_summary(
-        self, source_name: str, snapshot: Any, interpretations: Sequence[Any]
+        self, source_name: str, network_ctx: Any, interpretations: Sequence[Any]
     ) -> None:
         """Update the summary section with merged stats."""
         readiness_colors = {
@@ -346,7 +340,7 @@ class EntropyScreen(Screen[None]):
             "investigate": "yellow",
             "blocked": "red",
         }
-        color = readiness_colors.get(snapshot.overall_readiness, "white")
+        color = readiness_colors.get(network_ctx.overall_readiness, "white")
 
         title_suffix = f" - {self.table_filter}" if self.table_filter else ""
         self.query_one(".screen-title", Static).update(
@@ -359,8 +353,8 @@ class EntropyScreen(Screen[None]):
 
         # Build status line with all stats
         parts = [
-            f"[{color}]{snapshot.overall_readiness.upper()}[/{color}]",
-            f"Score: {snapshot.avg_entropy_score:.3f}",
+            f"[{color}]{network_ctx.overall_readiness.upper()}[/{color}]",
+            f"Score: {network_ctx.avg_entropy_score:.3f}",
             f"Columns: {total - table_level}",
         ]
         if table_level:

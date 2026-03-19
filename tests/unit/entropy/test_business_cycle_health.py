@@ -72,16 +72,12 @@ class TestDetectNoCycles:
 class TestDetectHealthy:
     def test_high_completion_high_confidence(self, detector: BusinessCycleHealthDetector):
         """90% confidence, 85% completion → score = max(0.15, 0.10) = 0.15."""
-        ctx = _make_context(
-            cycles=[_make_cycle(confidence=0.9, completion_rate=0.85)]
-        )
+        ctx = _make_context(cycles=[_make_cycle(confidence=0.9, completion_rate=0.85)])
         objects = detector.detect(ctx)
         assert objects[0].score == pytest.approx(0.15)
 
     def test_perfect_cycle(self, detector: BusinessCycleHealthDetector):
-        ctx = _make_context(
-            cycles=[_make_cycle(confidence=1.0, completion_rate=1.0)]
-        )
+        ctx = _make_context(cycles=[_make_cycle(confidence=1.0, completion_rate=1.0)])
         objects = detector.detect(ctx)
         assert objects[0].score == 0.0
 
@@ -89,25 +85,19 @@ class TestDetectHealthy:
 class TestDetectUnhealthy:
     def test_low_completion(self, detector: BusinessCycleHealthDetector):
         """30% completion → score = max(0.7, 0.1) = 0.7."""
-        ctx = _make_context(
-            cycles=[_make_cycle(completion_rate=0.3, confidence=0.9)]
-        )
+        ctx = _make_context(cycles=[_make_cycle(completion_rate=0.3, confidence=0.9)])
         objects = detector.detect(ctx)
         assert objects[0].score == pytest.approx(0.7)
 
     def test_low_confidence(self, detector: BusinessCycleHealthDetector):
         """40% confidence → score = max(0.15, 0.6) = 0.6."""
-        ctx = _make_context(
-            cycles=[_make_cycle(confidence=0.4, completion_rate=0.85)]
-        )
+        ctx = _make_context(cycles=[_make_cycle(confidence=0.4, completion_rate=0.85)])
         objects = detector.detect(ctx)
         assert objects[0].score == pytest.approx(0.6)
 
     def test_null_completion_rate(self, detector: BusinessCycleHealthDetector):
         """None completion_rate treated as 0.0 → score = 1.0."""
-        ctx = _make_context(
-            cycles=[_make_cycle(completion_rate=None, confidence=0.9)]
-        )
+        ctx = _make_context(cycles=[_make_cycle(completion_rate=None, confidence=0.9)])
         # MagicMock returns the default we set, but let's override
         cycle = _make_cycle()
         cycle.completion_rate = None
@@ -150,17 +140,13 @@ class TestEvidence:
 
 class TestResolutionOptions:
     def test_resolution_on_low_health(self, detector: BusinessCycleHealthDetector):
-        ctx = _make_context(
-            cycles=[_make_cycle(completion_rate=0.2)]
-        )
+        ctx = _make_context(cycles=[_make_cycle(completion_rate=0.2)])
         objects = detector.detect(ctx)
         assert len(objects[0].resolution_options) == 1
         assert objects[0].resolution_options[0].action == "investigate_cycle_health"
 
     def test_no_resolution_when_healthy(self, detector: BusinessCycleHealthDetector):
-        ctx = _make_context(
-            cycles=[_make_cycle(confidence=0.9, completion_rate=0.9)]
-        )
+        ctx = _make_context(cycles=[_make_cycle(confidence=0.9, completion_rate=0.9)])
         objects = detector.detect(ctx)
         assert len(objects[0].resolution_options) == 0
 

@@ -42,5 +42,3 @@ def test_prompt_renderer_loads_templates(mock_anthropic_key):
     # Template can use either legacy `prompt` or new `system_prompt`/`user_prompt` format
     assert template.prompt or (template.system_prompt or template.user_prompt)
     assert template.temperature >= 0
-
-

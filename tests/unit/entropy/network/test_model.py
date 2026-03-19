@@ -98,6 +98,141 @@ class TestInvalidConfig:
             EntropyNetwork(config=config)
 
 
+class TestSubgraph:
+    """Test dynamic subgraph construction."""
+
+    def test_full_evidence_returns_self(self, full_network: EntropyNetwork):
+        """When all root nodes are observed, no pruning needed."""
+        all_roots = {
+            "type_fidelity",
+            "null_ratio",
+            "outlier_rate",
+            "naming_clarity",
+            "unit_declaration",
+            "time_role",
+            "temporal_drift",
+            "benford_compliance",
+            "slice_stability",
+            "dimension_coverage",
+            "cross_table_consistency",
+            "business_cycle_health",
+        }
+        # Also include observable children
+        observed = all_roots | {"join_path_determinism", "relationship_quality", "formula_match"}
+        sub = full_network.subgraph(observed)
+        assert sub is full_network  # Same object, no pruning
+
+    def test_partial_evidence_removes_unobserved_roots(self, full_network: EntropyNetwork):
+        """Unobserved root nodes are removed from the subgraph."""
+        observed = {"type_fidelity", "null_ratio"}
+        sub = full_network.subgraph(observed)
+        sub_nodes = set(sub.node_names)
+
+        # Observed roots kept
+        assert "type_fidelity" in sub_nodes
+        assert "null_ratio" in sub_nodes
+
+        # Unobserved roots removed
+        assert "outlier_rate" not in sub_nodes
+        assert "benford_compliance" not in sub_nodes
+        assert "temporal_drift" not in sub_nodes
+        assert "time_role" not in sub_nodes
+        assert "unit_declaration" not in sub_nodes
+        assert "dimension_coverage" not in sub_nodes
+
+        # Intent leaves always kept
+        assert "query_intent" in sub_nodes
+        assert "aggregation_intent" in sub_nodes
+        assert "reporting_intent" in sub_nodes
+
+    def test_inferrable_children_kept(self, full_network: EntropyNetwork):
+        """Non-root nodes with at least one observed parent are kept."""
+        observed = {"type_fidelity", "null_ratio", "naming_clarity"}
+        sub = full_network.subgraph(observed)
+        sub_nodes = set(sub.node_names)
+
+        # join_path_determinism has parent type_fidelity (observed) → kept
+        assert "join_path_determinism" in sub_nodes
+        # relationship_quality has parent type_fidelity (observed) → kept
+        assert "relationship_quality" in sub_nodes
+        # formula_match has parents naming_clarity, null_ratio (observed) + unit_declaration (removed)
+        # Still has 2 observed parents → kept
+        assert "formula_match" in sub_nodes
+
+    def test_orphaned_children_removed(self, full_network: EntropyNetwork):
+        """Non-root nodes whose ALL parents are removed get removed too."""
+        # Only observe naming_clarity — type_fidelity is NOT observed
+        observed = {"naming_clarity"}
+        sub = full_network.subgraph(observed)
+        sub_nodes = set(sub.node_names)
+
+        # join_path_determinism has only parent type_fidelity (removed) → removed
+        assert "join_path_determinism" not in sub_nodes
+        # relationship_quality has only parent type_fidelity (removed) → removed
+        assert "relationship_quality" not in sub_nodes
+
+    def test_orphaned_intermediate_removed(self, full_network: EntropyNetwork):
+        """A non-root node that loses all parents is removed from the subgraph."""
+        observed = {"naming_clarity", "time_role"}
+        sub = full_network.subgraph(observed)
+        sub_nodes = set(sub.node_names)
+
+        # aggregation_safety: parents are null_ratio, outlier_rate, unit_declaration — all removed
+        # aggregation_safety becomes orphaned → removed (not observed, no kept parents)
+        assert "aggregation_safety" not in sub_nodes
+
+    def test_disconnected_intent_removed(self, full_network: EntropyNetwork):
+        """Intent leaves with no remaining parents are removed (avoids false investigate)."""
+        # Only observe naming_clarity — this connects to formula_match and reporting_intent
+        # but NOT to aggregation_intent via its required path
+        observed = {"type_fidelity"}
+        sub = full_network.subgraph(observed)
+        sub_nodes = set(sub.node_names)
+
+        # query_intent has type_fidelity as parent → kept
+        assert "query_intent" in sub_nodes
+        # aggregation_intent's parents: aggregation_safety, formula_match, temporal_drift, benford
+        # None of these are in the subgraph → aggregation_intent removed
+        assert "aggregation_intent" not in sub_nodes
+
+    def test_observed_node_losing_parents_gets_uniform_prior(self, full_network: EntropyNetwork):
+        """An observed node that loses all parents becomes a root with uniform prior."""
+        # join_path_determinism has parent type_fidelity
+        # If type_fidelity is NOT observed but join_path_determinism IS observed,
+        # join_path_determinism becomes a root with uniform prior
+        observed = {"join_path_determinism"}
+        sub = full_network.subgraph(observed)
+        sub_nodes = set(sub.node_names)
+
+        assert "join_path_determinism" in sub_nodes
+        assert "type_fidelity" not in sub_nodes  # parent removed
+        # join_path_determinism is now a root with uniform prior
+        node_cfg = sub.get_node_config("join_path_determinism")
+        assert node_cfg.prior is not None
+        n = len(sub.states)
+        assert node_cfg.prior == [1.0 / n] * n
+
+    def test_subgraph_model_is_valid(self, full_network: EntropyNetwork):
+        """Subgraph produces a valid pgmpy model."""
+        observed = {"type_fidelity", "null_ratio", "naming_clarity"}
+        sub = full_network.subgraph(observed)
+        assert sub.model.check_model()
+
+    def test_small_network_subgraph(self, small_network: EntropyNetwork):
+        """Subgraph on the small 4-node network."""
+        # Only observe root_a, not root_b
+        sub = small_network.subgraph({"root_a"})
+        sub_nodes = set(sub.node_names)
+
+        assert "root_a" in sub_nodes
+        assert "root_b" not in sub_nodes  # Unobserved root removed
+        assert "child_x" in sub_nodes  # Has root_a as parent
+        assert "leaf_z" in sub_nodes  # Intent leaf
+
+        # child_x now has only 1 parent instead of 2
+        assert sub.get_parents("child_x") == ["root_a"]
+
+
 class TestSmallNetwork:
     """Test with the 4-node small network."""
 

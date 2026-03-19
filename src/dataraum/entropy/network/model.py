@@ -108,3 +108,80 @@ class EntropyNetwork:
     def get_intent_nodes(self) -> list[str]:
         """Get intent nodes (nodes in the 'intent' layer)."""
         return [name for name, node in self._config.nodes.items() if node.layer == "intent"]
+
+    def subgraph(self, observed_nodes: set[str]) -> EntropyNetwork:
+        """Build a subgraph relevant to the observed evidence.
+
+        Iteratively removes nodes that are unobserved, non-intent, and
+        have no remaining parents in the kept set. This eliminates prior
+        leakage from unobserved root nodes while keeping all nodes that
+        are inferrable from observed evidence.
+
+        Args:
+            observed_nodes: Node names that have evidence (from detectors).
+
+        Returns:
+            A new EntropyNetwork containing only relevant nodes, or self
+            if all nodes are relevant (no pruning needed).
+        """
+        all_node_names = set(self._config.nodes.keys())
+
+        # Build parent map from edges
+        parent_map: dict[str, set[str]] = {n: set() for n in all_node_names}
+        for edge in self._config.edges:
+            parent_map[edge.child].add(edge.parent)
+
+        # Iteratively remove unobserved nodes with no kept parents.
+        # Root nodes have no parents, so "no kept parents" is vacuously true
+        # for them — unobserved roots are always removed.
+        # Intent leaves are also removed if they lose all parents (they'd
+        # have uniform P(high)=1/n which produces false "investigate" signals).
+        kept = set(all_node_names)
+        while True:
+            removable = set()
+            for node in kept:
+                if node in observed_nodes:
+                    continue
+                parents_in_kept = parent_map[node] & kept
+                if not parents_in_kept:
+                    removable.add(node)
+            if not removable:
+                break
+            kept -= removable
+
+        if kept == all_node_names:
+            return self
+
+        # Build filtered config
+        n_states = len(self._config.states)
+        uniform_prior = [1.0 / n_states] * n_states
+
+        # Determine which nodes lost all parents (become new roots)
+        kept_parent_map: dict[str, set[str]] = {n: parent_map[n] & kept for n in kept}
+
+        filtered_nodes: dict[str, NodeConfig] = {}
+        for name in kept:
+            node_cfg = self._config.nodes[name]
+            if node_cfg.prior is None and not kept_parent_map[name]:
+                # Non-root node that lost all parents — assign uniform prior
+                filtered_nodes[name] = NodeConfig(
+                    name=name,
+                    layer=node_cfg.layer,
+                    dimension=node_cfg.dimension,
+                    sub_dimension=node_cfg.sub_dimension,
+                    prior=uniform_prior,
+                )
+            else:
+                filtered_nodes[name] = node_cfg
+
+        filtered_edges = [e for e in self._config.edges if e.parent in kept and e.child in kept]
+
+        filtered_config = NetworkConfig(
+            states=self._config.states,
+            discretization=self._config.discretization,
+            nodes=filtered_nodes,
+            edges=filtered_edges,
+            cpt_generation=self._config.cpt_generation,
+        )
+
+        return EntropyNetwork(config=filtered_config)

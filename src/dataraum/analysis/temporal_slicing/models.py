@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from datetime import date
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
-class TimeGrain(str, Enum):
+class TimeGrain(StrEnum):
     """Time granularity for period analysis."""
 
     DAILY = "daily"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from abc import ABC, abstractmethod
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import duckdb
@@ -54,7 +54,7 @@ def normalize_column_name(header: str, position: int = 0) -> str:
     return name
 
 
-class TypeSystemStrength(str, Enum):
+class TypeSystemStrength(StrEnum):
     """Classification of source type system strength."""
 
     UNTYPED = "untyped"  # CSV, JSON - no inherent types

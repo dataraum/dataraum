@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
@@ -138,25 +137,7 @@ def build_for_query(
     high_entropy_count = network_ctx.columns_blocked + network_ctx.columns_investigate
     critical_entropy_count = network_ctx.columns_blocked
 
-    # Read avg_entropy_score from the snapshot (computed by entropy phase from
-    # all in-memory domain objects, covering both network-mapped and unmapped).
-    from dataraum.entropy.db_models import EntropySnapshotRecord
-    from dataraum.storage import Table
-
-    source_id_result = session.execute(
-        select(Table.source_id).where(Table.table_id.in_(table_ids)).limit(1)
-    )
-    source_id = source_id_result.scalar()
-
-    overall_entropy_score: float | None = None
-    if source_id:
-        snapshot_result = session.execute(
-            select(EntropySnapshotRecord.avg_entropy_score)
-            .where(EntropySnapshotRecord.source_id == source_id)
-            .order_by(EntropySnapshotRecord.snapshot_at.desc())
-            .limit(1)
-        )
-        overall_entropy_score = snapshot_result.scalar()
+    overall_entropy_score: float | None = network_ctx.avg_entropy_score
 
     # Convert network results to ColumnSummary for contract evaluation
     column_summaries = network_to_column_summaries(network_ctx)

@@ -115,7 +115,7 @@ class QueryScreen(Screen[None]):
                 result = entry.get("result")
                 if result:
                     self._display_result(result)
-        except (ValueError, IndexError):
+        except ValueError, IndexError:
             pass
 
     def _load_history(self) -> None:

@@ -49,11 +49,29 @@ nodes:
     sub_dimension: benford_compliance
     prior: [0.6, 0.25, 0.15]
 
+  slice_stability:
+    layer: value
+    dimension: variance
+    sub_dimension: slice_stability
+    prior: [0.6, 0.25, 0.15]
+
   dimension_coverage:
     layer: semantic
     dimension: coverage
     sub_dimension: dimension_coverage
     prior: [0.5, 0.3, 0.2]
+
+  # Zone 3 observable roots (2) — table-scoped detectors, broadcast to columns
+  cross_table_consistency:
+    layer: computational
+    dimension: reconciliation
+    sub_dimension: cross_table_consistency
+    prior: [0.7, 0.2, 0.1]
+  business_cycle_health:
+    layer: semantic
+    dimension: cycles
+    sub_dimension: business_cycle_health
+    prior: [0.6, 0.25, 0.15]
 
   # Observable children (2) - have detectors but also real causal parents
   join_path_determinism:
@@ -104,6 +122,9 @@ edges:
   # dimension_coverage -> intent leaves
   - [dimension_coverage, query_intent, 0.5]
   - [dimension_coverage, reporting_intent, 0.6]
+  # slice_stability -> intents
+  - [slice_stability, query_intent, 0.4]
+  - [slice_stability, aggregation_intent, 0.5]
   # -> query_intent (6 parents)
   - [type_fidelity, query_intent, 0.7]
   - [join_path_determinism, query_intent, 0.8]
@@ -116,13 +137,18 @@ edges:
   - [formula_match, aggregation_intent, 0.7]
   - [temporal_drift, aggregation_intent, 0.5]
   - [benford_compliance, aggregation_intent, 0.4]
-  # -> reporting_intent (6 parents)
+  # -> reporting_intent (6+1 parents)
   - [naming_clarity, reporting_intent, 0.7]
   - [relationship_quality, reporting_intent, 0.5]
   - [aggregation_safety, reporting_intent, 0.8]
   - [unit_declaration, reporting_intent, 0.6]
   - [time_role, reporting_intent, 0.4]
   - [type_fidelity, reporting_intent, 0.4]
+  - [cross_table_consistency, reporting_intent, 0.7]
+  # Zone 3 -> intents
+  - [cross_table_consistency, aggregation_intent, 0.8]
+  - [business_cycle_health, reporting_intent, 0.5]
+  - [business_cycle_health, aggregation_intent, 0.4]
 
 cpt_generation:
   influence_blend: 0.7    # Weight for influence matrix vs uniform

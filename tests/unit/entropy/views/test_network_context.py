@@ -20,9 +20,9 @@ from dataraum.entropy.views.network_context import (
     DirectSignal,
     EntropyForNetwork,
     IntentReadiness,
-    _assemble_network_context,
     _object_to_direct_signal,
     _serialize_resolution_options,
+    assemble_network_context,
     format_network_context,
 )
 
@@ -168,7 +168,7 @@ class TestObjectToDirectSignal:
 
 class TestPerColumnAssembly:
     def test_empty_objects_returns_default(self, small_network):
-        result = _assemble_network_context([], small_network)
+        result = assemble_network_context([], small_network)
         assert result.total_columns == 0
         assert result.columns == {}
         assert result.overall_readiness == "ready"
@@ -191,7 +191,7 @@ class TestPerColumnAssembly:
                 target="column:t.c1",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         assert result.total_columns == 1
         assert "column:t.c1" in result.columns
         col = result.columns["column:t.c1"]
@@ -220,7 +220,7 @@ class TestPerColumnAssembly:
                 target="column:t.c2",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         assert result.total_columns == 2
         c1 = result.columns["column:t.c1"]
         c2 = result.columns["column:t.c2"]
@@ -240,7 +240,7 @@ class TestPerColumnAssembly:
                 target="column:t.c1",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         assert result.total_columns == 0
         assert "column:t.c1" not in result.columns
         assert len(result.direct_signals) == 1
@@ -266,7 +266,7 @@ class TestPerColumnAssembly:
                 target="column:t.c1",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         assert result.total_columns == 1
         assert len(result.direct_signals) == 1
 
@@ -288,7 +288,7 @@ class TestPerColumnAssembly:
                 target="column:t.c1",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         col = result.columns["column:t.c1"]
         assert col.readiness == "ready"
         assert result.overall_readiness == "ready"
@@ -314,7 +314,7 @@ class TestPerColumnAssembly:
                 target="column:t.c1",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         col = result.columns["column:t.c1"]
         assert len(col.intents) == 1
         intent = col.intents[0]
@@ -334,7 +334,7 @@ class TestPerColumnAssembly:
                 target="table:sales",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         assert result.total_columns == 0
         assert len(result.direct_signals) == 1
         assert result.direct_signals[0].target == "table:sales"
@@ -353,7 +353,7 @@ class TestPerColumnAssembly:
                 target="column:t.c1",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         col = result.columns["column:t.c1"]
         ne = next(n for n in col.node_evidence if n.node_name == "root_a")
         assert ne.score == 0.75
@@ -371,7 +371,7 @@ class TestPerColumnAssembly:
                 target="column:t.c1",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         col = result.columns["column:t.c1"]
         assert col.top_priority_node == "root_a"
         assert col.top_priority_impact > 0
@@ -387,7 +387,7 @@ class TestPerColumnAssembly:
                 target="column:t.c1",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         col = result.columns["column:t.c1"]
         ne = next(n for n in col.node_evidence if n.node_name == "root_a")
         assert ne.impact_delta > 0
@@ -403,7 +403,7 @@ class TestPerColumnAssembly:
                 target="column:t.c1",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         col = result.columns["column:t.c1"]
         ne = next(n for n in col.node_evidence if n.node_name == "root_a")
         assert ne.impact_delta == 0.0
@@ -449,7 +449,7 @@ class TestCrossColumnAggregation:
                 target="column:t.c2",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         assert len(result.intents) == 1  # leaf_z only intent
         agg = result.intents[0]
         assert agg.intent_name == "leaf_z"
@@ -499,7 +499,7 @@ class TestCrossColumnAggregation:
                 target="column:t.c2",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         assert result.top_fix is not None
         # root_a is non-low in 2 columns, root_b in 1 column
         assert result.top_fix.node_name == "root_a"
@@ -518,7 +518,7 @@ class TestCrossColumnAggregation:
                 target="column:t.c1",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         assert result.top_fix is not None
         # The delta should equal the node's actual impact_delta from priorities
         col = result.columns["column:t.c1"]
@@ -554,7 +554,7 @@ class TestCrossColumnAggregation:
                 target="column:t.c2",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         # c1 is blocked, so overall should be blocked
         assert result.columns_blocked >= 1 or result.columns_investigate >= 1
         assert result.overall_readiness != "ready"
@@ -577,7 +577,7 @@ class TestCrossColumnAggregation:
                 target="column:t.c2",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         assert (
             result.columns_blocked + result.columns_investigate + result.columns_ready
             == result.total_columns
@@ -601,7 +601,7 @@ class TestCrossColumnAggregation:
                 target="column:t.c2",
             ),
         ]
-        result = _assemble_network_context(objects, small_network)
+        result = assemble_network_context(objects, small_network)
         assert result.top_fix is None
 
 
@@ -641,7 +641,7 @@ class TestAssembleFullNetwork:
     def test_all_roots_one_column_produces_3_intents(self, full_network):
         """With all 8 roots observed for one column, all 3 intents computed."""
         objects = self._make_root_objects(score=0.7)
-        result = _assemble_network_context(objects, full_network)
+        result = assemble_network_context(objects, full_network)
         assert result.total_columns == 1
         col = result.columns["column:t.c1"]
         intent_names = {i.intent_name for i in col.intents}
@@ -652,7 +652,7 @@ class TestAssembleFullNetwork:
         objects = self._make_root_objects(
             score=0.8, target="column:t.c1"
         ) + self._make_root_objects(score=0.2, target="column:t.c2")
-        result = _assemble_network_context(objects, full_network)
+        result = assemble_network_context(objects, full_network)
         assert result.total_columns == 2
         agg_intent_names = {i.intent_name for i in result.intents}
         assert agg_intent_names == {"query_intent", "aggregation_intent", "reporting_intent"}
@@ -662,7 +662,7 @@ class TestAssembleFullNetwork:
         objects = self._make_root_objects(
             score=0.8, target="column:t.c1"
         ) + self._make_root_objects(score=0.9, target="column:t.c2")
-        result = _assemble_network_context(objects, full_network)
+        result = assemble_network_context(objects, full_network)
         assert result.top_fix is not None
         assert result.top_fix.columns_affected >= 1
 
@@ -678,7 +678,7 @@ class TestAssembleFullNetwork:
                 target="table:sales",
             )
         )
-        result = _assemble_network_context(objects, full_network)
+        result = assemble_network_context(objects, full_network)
         assert result.total_direct_signals == 1
         assert (
             result.direct_signals[0].dimension_path == "semantic.dimensional.cross_column_patterns"
@@ -687,7 +687,7 @@ class TestAssembleFullNetwork:
     def test_overall_readiness_blocked_when_high(self, full_network):
         """With very high scores, overall readiness should be blocked."""
         objects = self._make_root_objects(score=0.95)
-        result = _assemble_network_context(objects, full_network)
+        result = assemble_network_context(objects, full_network)
         blocked_intents = [i for i in result.intents if i.overall_readiness == "blocked"]
         assert len(blocked_intents) > 0
         assert result.overall_readiness == "blocked"
@@ -695,17 +695,18 @@ class TestAssembleFullNetwork:
     def test_all_low_roots_ready(self, full_network):
         """With all roots at low scores, should be ready."""
         objects = self._make_root_objects(score=0.1)
-        result = _assemble_network_context(objects, full_network)
+        result = assemble_network_context(objects, full_network)
         assert result.overall_readiness == "ready"
         assert result.top_fix is None
 
-    def test_partial_low_evidence_still_ready(self, full_network):
-        """Column with partial low evidence is ready despite prior bleed-through.
+    def test_partial_low_evidence_subgraph_inference(self, full_network):
+        """Column with partial low evidence uses dynamic subgraph.
 
-        When only 4 of 8 detectors fire (all with low scores), unobserved
-        nodes fall back to priors which can push the posterior P(high) just
-        above the discretization threshold.  The readiness should still be
-        "ready" because all observed evidence is low.
+        When only 4 of 9 root detectors fire (all with low scores), the
+        dynamic subgraph removes unobserved roots. Remaining P(high)
+        comes from CPT pessimistic shift — genuine conservatism, not
+        prior leakage. The network may classify as "investigate" for
+        intents where the pessimistic shift pushes P(high) just above 0.3.
         """
         # Only 4 roots — the common pattern for many baseline columns
         partial_roots = [
@@ -724,15 +725,14 @@ class TestAssembleFullNetwork:
             )
             for layer, dim, sub in partial_roots
         ]
-        result = _assemble_network_context(objects, full_network)
+        result = assemble_network_context(objects, full_network)
         col = result.columns["column:t.c1"]
 
-        # All evidence is low, so readiness must be "ready" even though
-        # the posterior P(high) may be slightly above 0.3 due to priors.
-        assert col.readiness == "ready"
-        assert all(i.readiness == "ready" for i in col.intents)
-        assert result.overall_readiness == "ready"
-        assert result.columns_investigate == 0
+        # With dynamic subgraph, unobserved roots are excluded.
+        # Remaining P(high) is from CPT pessimistic shift, not prior noise.
+        # Most intents should be ready; some may be marginal "investigate".
+        assert col.readiness in ("ready", "investigate")
+        assert col.worst_intent_p_high < 0.5  # No intent near "blocked"
 
 
 # ===================================================================

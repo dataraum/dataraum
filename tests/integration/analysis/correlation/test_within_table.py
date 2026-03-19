@@ -208,12 +208,14 @@ def test_zero_target_not_false_positive(session, test_source):
     )
     session.add(table)
 
-    for i, (name, dtype) in enumerate([
-        ("id", "INTEGER"),
-        ("amount", "BIGINT"),
-        ("quantity", "BIGINT"),
-        ("discount_amount", "BIGINT"),
-    ]):
+    for i, (name, dtype) in enumerate(
+        [
+            ("id", "INTEGER"),
+            ("amount", "BIGINT"),
+            ("quantity", "BIGINT"),
+            ("discount_amount", "BIGINT"),
+        ]
+    ):
         col = Column(
             column_id=str(uuid4()),
             table_id=table.table_id,

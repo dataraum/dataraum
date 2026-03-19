@@ -32,6 +32,7 @@ def _inject_field_mappings():
     so no business_concept annotations exist. These tests exercise the
     query agent's LLM interaction, not the semantic pipeline.
     """
+
     def _fake_mappings(session, table_ids):
         return FieldMappings(
             mappings={

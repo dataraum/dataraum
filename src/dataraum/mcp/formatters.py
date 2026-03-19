@@ -30,7 +30,8 @@ when answering questions or generating queries.
 
 def format_entropy_summary(
     source_name: str,
-    snapshot: Any,
+    overall_readiness: str,
+    avg_entropy_score: float,
     interpretations: Sequence[Any],
     table_filter: str | None = None,
     dimension_scores: dict[str, float] | None = None,
@@ -39,7 +40,8 @@ def format_entropy_summary(
 
     Args:
         source_name: Name of the data source
-        snapshot: EntropySnapshotRecord with overall stats
+        overall_readiness: Overall readiness status (ready/investigate/blocked)
+        avg_entropy_score: Average entropy score across all targets
         interpretations: List of EntropyInterpretationRecord
         table_filter: Optional table filter applied
         dimension_scores: Optional dict of dimension path -> avg score across columns
@@ -50,8 +52,8 @@ def format_entropy_summary(
         lines.append(f"Filtered to table: {table_filter}")
 
     lines.append("")
-    lines.append(f"## Overall Status: {snapshot.overall_readiness.upper()}")
-    lines.append(f"Entropy Score: {snapshot.avg_entropy_score:.3f}")
+    lines.append(f"## Overall Status: {overall_readiness.upper()}")
+    lines.append(f"Entropy Score: {avg_entropy_score:.3f}")
     lines.append("")
 
     # Dimension breakdown

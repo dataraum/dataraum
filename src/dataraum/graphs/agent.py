@@ -649,8 +649,8 @@ class GraphAgent(LLMFeature):
     ) -> list[QueryAssumption]:
         """Create QueryAssumption objects from entropy interpretations.
 
-        Extracts LLM-generated assumptions from the entropy context and
-        converts them to QueryAssumption objects for execution tracking.
+        Reads assumptions from ColumnContext.entropy_assumptions (populated
+        from EntropyInterpretationRecord by build_execution_context).
 
         Args:
             execution_id: ID of the current execution
@@ -665,31 +665,20 @@ class GraphAgent(LLMFeature):
         if context.rich_context is None:
             return assumptions
 
-        # Get tables from rich context
-        tables = getattr(context.rich_context, "tables", [])
-
-        for table in tables:
-            for col in getattr(table, "columns", []):
-                entropy_scores = getattr(col, "entropy_scores", None)
-                if not entropy_scores:
-                    continue
-
-                # Check if this column has interpretation data
-                interpretation = entropy_scores.get("interpretation")
-                if not interpretation:
+        for table in context.rich_context.tables:
+            for col in table.columns:
+                if not col.entropy_assumptions:
                     continue
 
                 # Only include assumptions for columns with meaningful entropy
-                p_high = entropy_scores.get("worst_intent_p_high", 0.0)
-                if p_high < 0.3:
-                    continue
+                if col.entropy_scores:
+                    p_high = col.entropy_scores.get("worst_intent_p_high", 0.0)
+                    if p_high < 0.3:
+                        continue
 
-                table_name = getattr(table, "table_name", "unknown")
-                column_name = getattr(col, "column_name", "unknown")
-                target = f"column:{table_name}.{column_name}"
+                target = f"column:{table.table_name}.{col.column_name}"
 
-                # Convert interpretation assumptions to QueryAssumptions
-                for assumption_data in interpretation.get("assumptions", []):
+                for assumption_data in col.entropy_assumptions:
                     # Map basis string to AssumptionBasis enum
                     basis_str = assumption_data.get("basis", "inferred")
                     if basis_str == "default":

@@ -549,11 +549,12 @@ def build_execution_context(
     from dataraum.analysis.validation.db_models import ValidationResultRecord
 
     validation_contexts: list[ValidationContext] = []
+    # ValidationResultRecord has no source_id — filter post-hoc by table_id overlap.
+    # This is correct because callers pre-filter table_ids to a single source.
     val_stmt = select(ValidationResultRecord).order_by(ValidationResultRecord.executed_at.desc())
     table_id_set = set(table_ids)
     seen_validation_ids: set[str] = set()
     for val_rec in session.execute(val_stmt).scalars().all():
-        # Filter by table overlap
         if not (table_id_set & set(val_rec.table_ids)):
             continue
         # Deduplicate: keep only the most recent run per validation_id
@@ -1271,12 +1272,12 @@ def _build_readiness_summary(context: GraphExecutionContext) -> str | None:
 
     summary = context.entropy_summary
     readiness = summary.get("overall_readiness", "unknown")
-    assumptions_count = len(context.active_assumptions)
+    columns_with_assumptions = len({(a["table"], a["column"]) for a in context.active_assumptions})
     blocked_count = summary.get("critical_entropy_count", 0)
 
     return (
         f"Data readiness: {readiness} "
-        f"({assumptions_count} columns need assumptions, {blocked_count} blocked)."
+        f"({columns_with_assumptions} columns need assumptions, {blocked_count} blocked)."
     )
 
 
@@ -1323,30 +1324,37 @@ def _build_column_notes(col: ColumnContext) -> str:
 
 def _append_table_quality(lines: list[str], table: TableContext) -> None:
     """Append quality section for a table."""
-    # Collect quality info from columns
-    has_quality = False
-    for col in table.columns:
-        if col.quality_summary or col.quality_findings:
-            has_quality = True
-            break
-
-    if not has_quality:
+    quality_cols = [col for col in table.columns if col.quality_grade and col.quality_summary]
+    if not quality_cols:
         return
 
-    # Show the first column-level quality summary as representative
-    for col in table.columns:
-        if col.quality_grade and col.quality_summary:
-            lines.append("")
-            lines.append(f"**Quality** (Grade: {col.quality_grade}):")
-            lines.append(col.quality_summary)
-            if col.quality_findings:
-                for finding in col.quality_findings[:3]:
-                    lines.append(f"- {finding}")
-            break
+    lines.append("")
+    lines.append("**Quality**:")
+    for col in quality_cols:
+        lines.append(f"- {col.column_name} (Grade {col.quality_grade}): {col.quality_summary}")
+        for finding in col.quality_findings[:2]:
+            lines.append(f"  - {finding}")
+        for rec in col.quality_recommendations[:2]:
+            lines.append(f"  - Recommendation: {rec}")
 
 
 def _append_data_quality_notes(lines: list[str], table: TableContext) -> None:
-    """Append data quality notes for columns with entropy issues."""
+    """Append data quality notes from entropy interpretations."""
+    has_notes = False
+
+    # Table-level entropy interpretation
+    if table.table_entropy_explanation:
+        lines.append("")
+        lines.append("**Data Quality Notes**:")
+        lines.append(f"- Table: {table.table_entropy_explanation}")
+        for assumption in table.table_entropy_assumptions:
+            text = assumption.get("assumption_text", "")
+            conf = assumption.get("confidence", "")
+            basis = assumption.get("basis", "")
+            lines.append(f"  Assumption: {text} (confidence: {conf}, basis: {basis})")
+        has_notes = True
+
+    # Column-level entropy interpretations (non-ready columns)
     notes_cols = [
         col
         for col in table.columns
@@ -1357,8 +1365,9 @@ def _append_data_quality_notes(lines: list[str], table: TableContext) -> None:
     if not notes_cols:
         return
 
-    lines.append("")
-    lines.append("**Data Quality Notes**:")
+    if not has_notes:
+        lines.append("")
+        lines.append("**Data Quality Notes**:")
     for col in notes_cols:
         lines.append(f"- {col.column_name}: {col.entropy_explanation}")
         for assumption in col.entropy_assumptions:

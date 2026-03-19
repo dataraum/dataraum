@@ -327,7 +327,7 @@ class TestFormatMetadataDocument:
         assert "qty * price" in result
 
     def test_quality_narrative(self) -> None:
-        """Quality summary and findings are shown per table."""
+        """Quality summary and findings are shown per column."""
         col = ColumnContext(
             column_id="col-1",
             column_name="email",
@@ -335,6 +335,7 @@ class TestFormatMetadataDocument:
             quality_grade="C",
             quality_summary="Email column has 15% invalid formats across slices.",
             quality_findings=["15% invalid email formats", "Higher null rate in EMEA slice"],
+            quality_recommendations=["Investigate null source"],
         )
         table = TableContext(
             table_id="tbl-1",
@@ -344,9 +345,56 @@ class TestFormatMetadataDocument:
         ctx = GraphExecutionContext(tables=[table], total_tables=1)
         result = format_metadata_document(ctx)
 
-        assert "**Quality** (Grade: C):" in result
+        assert "**Quality**:" in result
+        assert "email (Grade C):" in result
         assert "Email column has 15% invalid formats across slices." in result
         assert "15% invalid email formats" in result
+        assert "Recommendation: Investigate null source" in result
+
+    def test_quality_multiple_columns(self) -> None:
+        """Quality narratives shown for all columns, not just the first."""
+        col1 = ColumnContext(
+            column_id="col-1",
+            column_name="email",
+            table_name="users",
+            quality_grade="C",
+            quality_summary="Email has issues.",
+        )
+        col2 = ColumnContext(
+            column_id="col-2",
+            column_name="phone",
+            table_name="users",
+            quality_grade="D",
+            quality_summary="Phone has severe issues.",
+        )
+        table = TableContext(
+            table_id="tbl-1",
+            table_name="users",
+            columns=[col1, col2],
+        )
+        ctx = GraphExecutionContext(tables=[table], total_tables=1)
+        result = format_metadata_document(ctx)
+
+        assert "email (Grade C):" in result
+        assert "phone (Grade D):" in result
+
+    def test_table_entropy_explanation_rendered(self) -> None:
+        """Table-level entropy explanation appears in data quality notes."""
+        table = TableContext(
+            table_id="tbl-1",
+            table_name="orders",
+            table_entropy_explanation="Table-level currency ambiguity across columns.",
+            table_entropy_assumptions=[
+                {"assumption_text": "EUR assumed", "confidence": "high", "basis": "config"},
+            ],
+            columns=[],
+        )
+        ctx = GraphExecutionContext(tables=[table], total_tables=1)
+        result = format_metadata_document(ctx)
+
+        assert "Data Quality Notes" in result
+        assert "Table: Table-level currency ambiguity across columns." in result
+        assert "EUR assumed" in result
 
     def test_entropy_assumptions_per_column(self) -> None:
         """Entropy explanation and assumptions shown for non-ready columns."""

@@ -135,5 +135,3 @@ class TestInterpretAnswers:
         assert isinstance(interp, DocumentFixInterpretation)
         assert interp.confidence == "high"
         assert "EUR" in interp.interpretation
-
-

@@ -82,9 +82,7 @@ class TestScoreValidationResult:
 
     def test_aggregate_orphan_rate(self):
         """5% orphans → sqrt(0.05) ≈ 0.224."""
-        r = _make_result(
-            details={"check_type": "aggregate", "orphan_rate": 0.05}
-        )
+        r = _make_result(details={"check_type": "aggregate", "orphan_rate": 0.05})
         score = _score_validation_result(r)
         assert 0.20 < score < 0.25
 
@@ -117,9 +115,7 @@ class TestDetectNoResults:
 
 class TestDetectFailures:
     def test_single_critical_failure(self, detector: CrossTableConsistencyDetector):
-        ctx = _make_context(
-            validations=[_make_result(details={"check_type": "comparison"})]
-        )
+        ctx = _make_context(validations=[_make_result(details={"check_type": "comparison"})])
         objects = detector.detect(ctx)
         assert len(objects) == 1
         assert objects[0].score == 1.0
@@ -128,9 +124,7 @@ class TestDetectFailures:
         """Worst failure drives the score."""
         ctx = _make_context(
             validations=[
-                _make_result(
-                    passed=True, status="passed", validation_id="v1"
-                ),
+                _make_result(passed=True, status="passed", validation_id="v1"),
                 _make_result(
                     details={"check_type": "aggregate", "orphan_rate": 0.05},
                     validation_id="v2",
@@ -156,17 +150,13 @@ class TestDetectFailures:
 
 class TestResolutionOptions:
     def test_resolution_on_failure(self, detector: CrossTableConsistencyDetector):
-        ctx = _make_context(
-            validations=[_make_result(details={"check_type": "comparison"})]
-        )
+        ctx = _make_context(validations=[_make_result(details={"check_type": "comparison"})])
         objects = detector.detect(ctx)
         assert len(objects[0].resolution_options) == 1
         assert objects[0].resolution_options[0].action == "investigate_reconciliation"
 
     def test_no_resolution_when_all_pass(self, detector: CrossTableConsistencyDetector):
-        ctx = _make_context(
-            validations=[_make_result(passed=True, status="passed")]
-        )
+        ctx = _make_context(validations=[_make_result(passed=True, status="passed")])
         objects = detector.detect(ctx)
         assert len(objects[0].resolution_options) == 0
 

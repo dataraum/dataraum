@@ -136,9 +136,7 @@ class TestContextLoading:
             )
 
         has_temporal = any(
-            col.min_timestamp is not None
-            for table in ctx.tables
-            for col in table.columns
+            col.min_timestamp is not None for table in ctx.tables for col in table.columns
         )
         assert has_temporal, "No columns have min_timestamp from TemporalColumnProfile"
 
@@ -156,9 +154,7 @@ class TestContextLoading:
             )
 
         has_entropy = any(
-            col.entropy_scores is not None
-            for table in ctx.tables
-            for col in table.columns
+            col.entropy_scores is not None for table in ctx.tables for col in table.columns
         )
         assert has_entropy, "No columns have entropy_scores"
         assert ctx.entropy_summary is not None, "Missing entropy_summary"

@@ -91,6 +91,9 @@ class ColumnContext:
     # Entropy interpretation (from EntropyInterpretationRecord)
     entropy_explanation: str | None = None
     entropy_assumptions: list[dict[str, Any]] = field(default_factory=list)
+    # Each: {dimension, assumption_text, confidence, impact, basis}
+    entropy_resolution_actions: list[dict[str, Any]] = field(default_factory=list)
+    # Each: {action, description, effort, expected_impact, parameters}
 
 
 @dataclass
@@ -811,6 +814,9 @@ def build_execution_context(
                     resolution_hints=col_entropy.get("resolution_hints", []) if col_entropy else [],
                     entropy_explanation=col_interp.explanation if col_interp else None,
                     entropy_assumptions=col_interp.assumptions_json or [] if col_interp else [],
+                    entropy_resolution_actions=col_interp.resolution_actions_json or []
+                    if col_interp
+                    else [],
                 )
             )
 
@@ -1375,6 +1381,11 @@ def _append_data_quality_notes(lines: list[str], table: TableContext) -> None:
             conf = assumption.get("confidence", "")
             basis = assumption.get("basis", "")
             lines.append(f"  Assumption: {text} (confidence: {conf}, basis: {basis})")
+        for action in col.entropy_resolution_actions:
+            desc = action.get("description", "")
+            effort = action.get("effort", "")
+            impact = action.get("expected_impact", "")
+            lines.append(f"  Action: {desc} (effort: {effort}, impact: {impact})")
 
 
 def _append_business_processes(lines: list[str], context: GraphExecutionContext) -> None:

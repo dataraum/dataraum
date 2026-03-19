@@ -1195,8 +1195,7 @@ def _get_quality(
             # complete pipeline run. During zone-by-zone execution, agents
             # should use the gate parameter instead.
             any_unavailable = any(
-                isinstance(v, dict) and v.get("status") == "unavailable"
-                for v in sections.values()
+                isinstance(v, dict) and v.get("status") == "unavailable" for v in sections.values()
             )
             if any_unavailable:
                 result["hint"] = (

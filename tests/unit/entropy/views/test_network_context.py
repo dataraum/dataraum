@@ -870,7 +870,10 @@ class TestFormatNetworkContext:
         )
         result = format_network_context(ctx)
         assert "direct_signals" in result
-        assert result["direct_signals"][0]["dimension_path"] == "semantic.dimensional.cross_column_patterns"
+        assert (
+            result["direct_signals"][0]["dimension_path"]
+            == "semantic.dimensional.cross_column_patterns"
+        )
 
     def test_empty_columns_no_at_risk(self):
         ctx = EntropyForNetwork()

@@ -207,9 +207,7 @@ class TestAnalyzeFunction:
         try:
             with (
                 patch("dataraum.pipeline.runner.run", return_value=mock_result) as mock_run,
-                patch(
-                    "dataraum.mcp.server.format_pipeline_result", return_value={"status": "ok"}
-                ),
+                patch("dataraum.mcp.server.format_pipeline_result", return_value={"status": "ok"}),
             ):
                 _analyze(
                     output_dir=Path("/tmp/test_output"),
@@ -237,9 +235,7 @@ class TestAnalyzeFunction:
         try:
             with (
                 patch("dataraum.pipeline.runner.run", return_value=mock_result) as mock_run,
-                patch(
-                    "dataraum.mcp.server.format_pipeline_result", return_value={"status": "ok"}
-                ),
+                patch("dataraum.mcp.server.format_pipeline_result", return_value={"status": "ok"}),
                 patch("dataraum.mcp.server._get_zone_status", return_value=mock_zone),
             ):
                 result = _analyze(

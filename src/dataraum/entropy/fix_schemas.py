@@ -26,7 +26,9 @@ logger = get_logger(__name__)
 
 FIXES_CONFIG = "entropy/fixes.yaml"
 
-# Module-level cache
+# Module-level cache. Under free-threading (Python 3.14t) two threads may
+# both load the YAML and assign — this is a benign race (both produce
+# identical results, assignment is an atomic pointer swap).
 _schemas_cache: dict[str, list[FixSchema]] | None = None
 _triage_cache: dict[str, str] | None = None
 _dimension_map_cache: dict[str, str] | None = None  # detector_id -> dimension_path
@@ -90,21 +92,26 @@ def _ensure_loaded(config_path: Path | None = None) -> None:
     raw = _load_raw(config_path)
     schemas_raw = raw.get("schemas", {})
 
-    _schemas_cache = {}
-    _triage_cache = {}
-    _dimension_map_cache = {}
+    # Build into locals first, assign globals last (atomic pointer swap).
+    schemas: dict[str, list[FixSchema]] = {}
+    triage: dict[str, str] = {}
+    dim_map: dict[str, str] = {}
 
     for detector_id, detector_raw in schemas_raw.items():
         dimension_path = detector_raw.get("dimension_path", "")
-        _dimension_map_cache[detector_id] = dimension_path
-        _triage_cache[detector_id] = (detector_raw.get("triage_guidance") or "").strip()
+        dim_map[detector_id] = dimension_path
+        triage[detector_id] = (detector_raw.get("triage_guidance") or "").strip()
 
         detector_schemas: list[FixSchema] = []
         for action_name, action_raw in (detector_raw.get("actions") or {}).items():
             schema = _parse_schema(action_name, action_raw, detector_id, dimension_path)
             detector_schemas.append(schema)
 
-        _schemas_cache[detector_id] = detector_schemas
+        schemas[detector_id] = detector_schemas
+
+    _dimension_map_cache = dim_map
+    _triage_cache = triage
+    _schemas_cache = schemas  # Assign last — this is the sentinel check
 
 
 def clear_fix_schema_cache() -> None:

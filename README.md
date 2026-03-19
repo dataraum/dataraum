@@ -45,8 +45,7 @@ The server runs a 21-phase analysis pipeline with two quality gates and makes th
 | `export` | Export query results to CSV/Parquet/JSON with provenance metadata |
 | `discover_sources` | Scan workspace for data files |
 | `add_source` | Register a new data source (file or database) |
-| `get_fix_proposal` | Agent-driven fix suggestions with ready-to-apply fix documents |
-| `apply_fix` | Apply fix documents and re-run affected pipeline phases |
+| `apply_fix` | Apply fixes (action + target + parameters) and re-run affected phases |
 | `continue_pipeline` | Advance pipeline to the next zone (returns inline gate status) |
 
 ### Agentic Quality Loop
@@ -55,14 +54,14 @@ An AI agent drives quality improvement zone by zone:
 
 ```
 analyze(target_gate="quality_review", contract="executive_dashboard")
-  → get_fix_proposal(dimension="value.temporal.temporal_drift")
-  → apply_fix(fixes=[...])
+  → get_quality(gate="quality_review")           # See violations, triage guidance, fix actions
+  → apply_fix(fixes=[{action, target, ...}])     # Apply fixes
   → continue_pipeline(target_gate="analysis_review")
   → ... repeat until clean
   → continue_pipeline(target_gate="end")
 ```
 
-The document agent (inside DataRaum) generates targeted fix plans, and the outer agent (Claude) reviews and applies them.
+Claude triages violations directly using the enriched `get_quality` output (triage guidance, interpretation context, executable actions with parameters).
 
 ## Quick Start — CLI
 

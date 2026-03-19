@@ -126,8 +126,7 @@ These tools enable an agent to drive quality improvement zone by zone:
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `get_fix_proposal` | `gate`, `dimension` | Agent-driven fix suggestions with ready-to-apply fix documents |
-| `apply_fix` | `fixes`, `source_path?` | Apply fix documents, re-run affected phases, return score deltas |
+| `apply_fix` | `fixes`, `source_path?` | Apply fixes (action + target + parameters), re-run affected phases, return score deltas |
 | `continue_pipeline` | `target_gate`, `source_path?` | Advance to the next zone boundary (returns inline gate status) |
 
 **Gates:** `quality_review` (Gate 1, after semantic) and `analysis_review` (Gate 2, after quality_summary). Source path is auto-resolved from registered sources.
@@ -145,17 +144,17 @@ An AI agent drives quality improvement zone by zone:
 
 ```
 1. analyze(path="/data",                               # Run to Gate 1
-     target_gate="quality_review",                     # Returns inline gate status
+     target_gate="quality_review",
      contract="executive_dashboard")
-2. get_fix_proposal(gate="quality_review",             # Agent generates fix plan
-     dimension="value.temporal.temporal_drift")
-3. apply_fix(fixes=[<fix documents from step 2>])      # Apply and re-run
-4. continue_pipeline(target_gate="analysis_review")    # Advance to Gate 2 (inline status)
+2. get_quality(gate="quality_review")                   # See violations + fix actions
+3. apply_fix(fixes=[{action: "document_type_override",  # Apply fixes
+     target: "column:orders.date", parameters: {...}}])
+4. continue_pipeline(target_gate="analysis_review")    # Advance to Gate 2
 5. ... repeat steps 2-3 for remaining violations
 6. continue_pipeline(target_gate="end")                # Run to completion
 ```
 
-The document agent (inside DataRaum) generates targeted fix plans, and the outer agent (Claude Desktop, Claude Code) reviews and applies them.
+Claude triages violations directly using the enriched `get_quality` output (triage guidance, interpretation context, executable actions with field schemas).
 
 ### Contract names
 

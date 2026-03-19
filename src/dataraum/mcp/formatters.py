@@ -406,7 +406,7 @@ def format_zone_status(
         zone_name: Human-readable zone name (e.g. "foundation")
         gate_label: Gate label (e.g. "Gate 1")
         gate_phase: Phase name (e.g. "quality_review")
-        violations: List of violation dicts with dimension_path, detector_id, score, threshold, fix_actions, affected_targets
+        violations: List of violation dicts with dimension_path, detector_id, score, threshold, affected_targets, executable_actions, triage_guidance, interpretation, accepted_targets
         passing: List of passing dimension dicts with dimension_path, detector_id, score, threshold
         skipped_detectors: List of dicts with detector_id and reason
         contract_name: Contract used for evaluation
@@ -424,24 +424,61 @@ def format_zone_status(
     # Violations
     if violations:
         lines.append("## Violations")
-        lines.append("")
-        lines.append("| Detector | Dimension Path | Score | Threshold | Fix Actions |")
-        lines.append("|----------|----------------|-------|-----------|-------------|")
         for v in violations:
-            actions = ", ".join(v.get("fix_actions", []))
-            lines.append(
-                f"| {v['detector_id']} | `{v['dimension_path']}` | {v['score']:.3f} | {v['threshold']:.2f} | {actions} |"
-            )
-        lines.append("")
+            dim = v["dimension_path"]
+            det = v["detector_id"]
+            lines.append("")
+            lines.append(f"### {det} — `{dim}`")
+            lines.append(f"Score: **{v['score']:.3f}** (threshold: {v['threshold']:.2f})")
 
-        # Affected targets per violation
-        lines.append("### Affected Targets")
-        for v in violations:
+            # Affected targets
             targets = v.get("affected_targets", [])
+            accepted = v.get("accepted_targets", [])
             if targets:
-                lines.append(f"- **{v['detector_id']}**: {', '.join(targets[:10])}")
-                if len(targets) > 10:
-                    lines.append(f"  ... and {len(targets) - 10} more")
+                lines.append(f"Affected: {', '.join(targets[:15])}")
+            if accepted:
+                lines.append(f"Already accepted: {', '.join(accepted)}")
+
+            # Triage guidance
+            triage = v.get("triage_guidance", "")
+            if triage:
+                lines.append("")
+                lines.append(f"**Triage:** {triage.strip()}")
+
+            # Interpretation context (LLM + Bayesian network analysis)
+            interp = v.get("interpretation")
+            if interp:
+                lines.append("")
+                lines.append(f"**Interpretation:** {interp['explanation']}")
+                res_actions = interp.get("resolution_actions", [])
+                if res_actions:
+                    for ra in res_actions[:3]:
+                        lines.append(
+                            f"- {ra.get('action', '?')}: {ra.get('description', '')} "
+                            f"(effort: {ra.get('effort', '?')})"
+                        )
+
+            # Executable actions
+            actions = v.get("executable_actions", [])
+            if actions:
+                lines.append("")
+                lines.append("**Available fix actions:**")
+                for a in actions:
+                    lines.append(f"- **{a['action']}** ({a.get('routing', '?')})")
+                    if a.get("guidance"):
+                        # First line of guidance only
+                        first_line = a["guidance"].strip().split("\n")[0]
+                        lines.append(f"  {first_line}")
+                    fields = a.get("fields", {})
+                    if fields:
+                        for fname, fdef in fields.items():
+                            req = "required" if fdef.get("required") else "optional"
+                            ftype = fdef.get("type", "string")
+                            desc = fdef.get("description", "")
+                            line = f"  - `{fname}` ({ftype}, {req}): {desc}"
+                            if fdef.get("enum_values"):
+                                line += f" [{', '.join(fdef['enum_values'])}]"
+                            lines.append(line)
         lines.append("")
 
     # Passing dimensions
@@ -464,13 +501,14 @@ def format_zone_status(
     # Next steps guidance
     lines.append("## Next Steps")
     if violations:
-        dim_path = violations[0]["dimension_path"]
         lines.append(
-            f'- Use `get_fix_proposal(gate="{gate_phase}", dimension="{dim_path}")` '
-            f"to get agent-driven fix suggestions"
+            "- Review triage guidance above and pick an action for each violation"
         )
-        lines.append("- Use `apply_fix` with the fix documents from the proposal")
-        lines.append("- Use `continue_pipeline` to advance to the next zone after fixing")
+        lines.append(
+            '- Call `apply_fix(fixes=[{action: "...", target: "column:table.col", '
+            'parameters: {...}, reason: "..."}])` to apply fixes'
+        )
+        lines.append("- Call `continue_pipeline` to advance to the next zone after fixing")
     elif skipped_detectors:
         lines.append("- All measured dimensions passing — use `continue_pipeline` to advance")
     else:

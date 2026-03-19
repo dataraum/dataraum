@@ -323,42 +323,16 @@ def create_server(output_dir: Path | None = None) -> Server:
                 execution=ToolExecution(taskSupport="optional"),
             ),
             # --- Agent-driven fix tools ---
-            Tool(
-                name="get_fix_proposal",
-                description=(
-                    "Get agent-driven fix suggestions for a specific violation. "
-                    "Returns ready-to-apply fix documents with per-target action plan. "
-                    "Pass the fix documents directly to `apply_fix`."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "required": ["gate", "dimension"],
-                    "properties": {
-                        "gate": {
-                            "type": "string",
-                            "enum": ["quality_review", "analysis_review", "computation_review"],
-                            "description": "Which gate this violation was measured at.",
-                        },
-                        "dimension": {
-                            "type": "string",
-                            "description": (
-                                "The dimension path of the violation to fix "
-                                "(e.g., 'value.temporal.temporal_drift'). "
-                                "Get this from get_quality(gate=...)."
-                            ),
-                        },
-                    },
-                },
-            ),
-            # --- Low-level fix tool ---
+            # --- Fix tool ---
             Tool(
                 name="apply_fix",
                 description=(
-                    "Apply fix documents and re-run affected pipeline phases. "
-                    "Returns before/after score deltas. Source path is auto-resolved. "
-                    "Note: document_accepted_* actions mark an issue as acknowledged but do NOT "
-                    "lower the entropy score — the data issue remains, only the gate "
-                    "stops flagging it. Prefer corrective actions when possible."
+                    "Apply fixes and re-run affected pipeline phases. "
+                    "Provide action name + target from get_quality output. "
+                    "The system resolves the schema and builds documents internally. "
+                    "Returns before/after score deltas. "
+                    "Note: document_accepted_* actions acknowledge an issue but do NOT "
+                    "lower the entropy score. Prefer corrective actions when possible."
                 ),
                 inputSchema={
                     "type": "object",
@@ -366,55 +340,47 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "properties": {
                         "fixes": {
                             "type": "array",
-                            "description": "List of fix documents to apply",
+                            "description": "List of fixes to apply",
                             "items": {
                                 "type": "object",
-                                "required": [
-                                    "target",
-                                    "action",
-                                    "table_name",
-                                    "dimension",
-                                    "payload",
-                                ],
+                                "required": ["action", "target"],
                                 "properties": {
-                                    "target": {
-                                        "type": "string",
-                                        "enum": ["config", "metadata", "data"],
-                                        "description": "Which interpreter handles this fix",
-                                    },
                                     "action": {
                                         "type": "string",
                                         "description": (
-                                            "Fix action name (e.g. document_accepted_outlier_rate, "
+                                            "Fix action name from get_quality output "
+                                            "(e.g. document_accepted_outlier_rate, "
                                             "document_type_override)"
                                         ),
                                     },
-                                    "table_name": {
+                                    "target": {
                                         "type": "string",
-                                        "description": "Table this fix applies to",
+                                        "description": (
+                                            "Target from get_quality affected_targets "
+                                            "(e.g. 'column:orders.amount', 'table:orders')"
+                                        ),
                                     },
-                                    "column_name": {
-                                        "type": ["string", "null"],
-                                        "description": "Column this fix applies to (null for table-scoped fixes)",
-                                    },
-                                    "dimension": {
-                                        "type": "string",
-                                        "description": "Entropy dimension this addresses",
-                                    },
-                                    "payload": {
+                                    "parameters": {
                                         "type": "object",
-                                        "description": "Target-specific fix data",
+                                        "description": (
+                                            "Action-specific parameters "
+                                            "(field values from the action schema)"
+                                        ),
+                                        "default": {},
                                     },
-                                    "description": {
+                                    "reason": {
                                         "type": "string",
-                                        "description": "Human-readable summary of what this fix does",
+                                        "description": "Why this fix is being applied",
                                     },
                                 },
                             },
                         },
                         "source_path": {
                             "type": "string",
-                            "description": "Path to original source data. Auto-resolved from registered sources if omitted.",
+                            "description": (
+                                "Path to original source data. "
+                                "Auto-resolved if omitted."
+                            ),
                         },
                     },
                 },
@@ -508,12 +474,6 @@ def create_server(output_dir: Path | None = None) -> Server:
             result = _discover_sources(output_dir, scan_path, recursive)
         elif name == "add_source":
             result = _add_source(output_dir, arguments)
-        elif name == "get_fix_proposal":
-            result = _get_fix_proposal(
-                output_dir,
-                gate=arguments["gate"],
-                dimension=arguments["dimension"],
-            )
         elif name == "continue_pipeline":
             target_gate = arguments["target_gate"]
             cont_source_path: str | None = arguments.get("source_path")
@@ -856,10 +816,7 @@ def _build_pipeline_status(session: Any, source_id: str) -> str | None:
         lines.append("- Run `analyze(path='...', target_gate='quality_review')` to start")
     elif g1 and g1 > 0:
         # Gate 1 has violations
-        lines.append('- Use `get_quality(gate="quality_review")` to see violation details')
-        lines.append(
-            '- Use `get_fix_proposal(gate="quality_review", dimension="...")` for fix suggestions'
-        )
+        lines.append('- Use `get_quality(gate="quality_review")` to see violation details and fix actions')
         lines.append("- Use `apply_fix(fixes=[...])` to apply fixes")
         lines.append(
             '- Use `continue_pipeline(target_gate="analysis_review")` to advance after fixing'
@@ -871,10 +828,7 @@ def _build_pipeline_status(session: Any, source_id: str) -> str | None:
         )
     elif g2 and g2 > 0:
         # Gate 2 has violations
-        lines.append('- Use `get_quality(gate="analysis_review")` to see violation details')
-        lines.append(
-            '- Use `get_fix_proposal(gate="analysis_review", dimension="...")` for fix suggestions'
-        )
+        lines.append('- Use `get_quality(gate="analysis_review")` to see violation details and fix actions')
         lines.append("- Use `apply_fix(fixes=[...])` to apply fixes")
         lines.append(
             '- Use `continue_pipeline(target_gate="end")` to complete the pipeline after fixing'
@@ -948,8 +902,8 @@ def _build_contract_catalog(session: Any, table_ids: list[str]) -> str | None:
             )
         else:
             lines.append(
-                "**No contracts pass.** Use `get_quality` to see violations, "
-                "then `get_fix_proposal` to address them."
+                "**No contracts pass.** Use `get_quality(gate=...)` to see violations "
+                "and available fix actions, then `apply_fix` to address them."
             )
     else:
         lines.append(
@@ -1686,21 +1640,89 @@ def _get_zone_status(
                 accepted_targets=accepted,
             )
 
-            # Build violation entries with fix actions from detector registry
+            # Build violation entries with full context for agent triage
             registry = get_default_registry()
             violation_dims = {i.dimension_path for i in issues}
+
+            from dataraum.entropy.fix_schemas import (
+                get_schemas_for_detector,
+                get_triage_guidance,
+            )
+
+            # Load interpretation records scoped to violated targets only
+            from dataraum.entropy.interpretation_db_models import (
+                EntropyInterpretationRecord,
+            )
+
+            violated_tables = set()
+            for issue in issues:
+                for t in issue.affected_targets:
+                    ref = t.replace("column:", "").replace("table:", "")
+                    violated_tables.add(ref.split(".", 1)[0])
+
+            interp_by_col: dict[tuple[str, str | None], Any] = {}
+            if violated_tables:
+                interp_records = (
+                    session.execute(
+                        select(EntropyInterpretationRecord).where(
+                            EntropyInterpretationRecord.source_id == source.source_id,
+                            EntropyInterpretationRecord.table_name.in_(violated_tables),
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                for rec in interp_records:
+                    interp_by_col[(rec.table_name, rec.column_name)] = rec
+
             violations = []
             for issue in issues:
                 detector_id = id_map.get(
                     issue.dimension_path, issue.dimension_path.rsplit(".", 1)[-1]
                 )
-                # Get fix actions from YAML fix schemas
-                from dataraum.entropy.fix_schemas import get_schemas_for_detector
 
-                fix_actions = [s.action for s in get_schemas_for_detector(detector_id)]
+                # Full action details from fix schemas
+                schemas = get_schemas_for_detector(detector_id)
+                executable_actions = []
+                for s in schemas:
+                    action_detail: dict[str, Any] = {
+                        "action": s.action,
+                        "description": s.description,
+                        "routing": s.routing,
+                        "guidance": s.guidance,
+                    }
+                    if s.fields:
+                        action_detail["fields"] = {
+                            fname: {
+                                "type": fdef.type,
+                                "required": fdef.required,
+                                "description": fdef.description,
+                                **({"default": fdef.default} if fdef.default else {}),
+                                **({"enum_values": fdef.enum_values} if fdef.enum_values else {}),
+                            }
+                            for fname, fdef in s.fields.items()
+                        }
+                    executable_actions.append(action_detail)
 
-                # Build per-target scores from all detail dicts
-                affected: list[str] = issue.affected_targets
+                # Triage guidance
+                triage = get_triage_guidance(detector_id)
+
+                # Interpretation context (from first affected target)
+                interpretation = None
+                for target in issue.affected_targets:
+                    parts = target.replace("column:", "").replace("table:", "").split(".", 1)
+                    tbl = parts[0]
+                    col = parts[1] if len(parts) > 1 else None
+                    interp_rec = interp_by_col.get((tbl, col))
+                    if interp_rec:
+                        interpretation = {
+                            "explanation": interp_rec.explanation,
+                            "resolution_actions": interp_rec.resolution_actions_json or [],
+                        }
+                        break
+
+                # Accepted targets for this dimension
+                dim_accepted = list(accepted.get(issue.dimension_path, set()))
 
                 violations.append(
                     {
@@ -1708,8 +1730,11 @@ def _get_zone_status(
                         "detector_id": detector_id,
                         "score": issue.score,
                         "threshold": issue.threshold,
-                        "fix_actions": fix_actions,
-                        "affected_targets": affected,
+                        "affected_targets": issue.affected_targets,
+                        "executable_actions": executable_actions,
+                        "triage_guidance": triage,
+                        "interpretation": interpretation,
+                        "accepted_targets": dim_accepted,
                     }
                 )
 
@@ -1786,344 +1811,6 @@ def _get_zone_status(
             )
     finally:
         manager.close()
-
-
-# ---------------------------------------------------------------------------
-# Agent-driven fix flow
-# ---------------------------------------------------------------------------
-
-
-def _build_mcp_gate_context(
-    session: Any,
-    source_id: str,
-    dimension: str,
-    gate_phase: str,
-    outputs: dict[str, Any],
-    scores: dict[str, float],
-) -> str:
-    """Build context for the document agent from persisted gate data.
-
-    Same information as gate_handler.build_gate_context() but reads from
-    PhaseLog outputs instead of a live PipelineEvent.
-    """
-    from dataraum.cli.gate_handler import _build_data_profile
-    from dataraum.entropy.contracts import get_contracts
-    from dataraum.entropy.gate import match_threshold
-
-    contracts = get_contracts()
-    contract = next(iter(contracts.values()), None)
-    thresholds = contract.dimension_thresholds if contract else {}
-
-    score = scores.get(dimension, 0.0)
-    threshold = match_threshold(dimension, thresholds) or 0.0
-
-    # Get affected targets from gate details
-    column_details = outputs.get("gate_column_details", {})
-    table_details = outputs.get("gate_table_details", {})
-    col_scores = column_details.get(dimension, {})
-    tbl_scores = table_details.get(dimension, {})
-    all_scores = {**col_scores, **tbl_scores}
-    affected_targets = [
-        t for t, s in sorted(all_scores.items(), key=lambda x: -x[1]) if s > threshold
-    ]
-
-    # Resolve detector_id from pipeline outputs or dimension path
-    id_map = outputs.get("detector_id_map", {})
-    detector_id = id_map.get(dimension, dimension.rsplit(".", 1)[-1])
-
-    sections: list[str] = []
-
-    # Section 1: Available actions
-    action_lines = [
-        "<available_actions>",
-        f"Dimension: {dimension}",
-        f"Score: {score:.2f} (threshold: {threshold:.2f})",
-        f"Affected columns: {', '.join(affected_targets)}",
-        "",
-        "Choose the BEST action for each violating target.",
-        "Prefer corrective actions (recalculate, override, add pattern) "
-        "over document_accepted_* actions.",
-        "document_accepted_* actions acknowledge an issue but do NOT lower the entropy score.",
-        "",
-    ]
-    from dataraum.entropy.fix_schemas import get_schemas_for_detector as _get_schemas
-
-    fix_schemas = _get_schemas(detector_id) if detector_id else []
-    if fix_schemas:
-        for i, schema in enumerate(fix_schemas, 1):
-            action_lines.append(f"--- Action {i}: {schema.action} ---")
-            if schema.requires_rerun:
-                action_lines.append(f"Phase: {schema.requires_rerun}")
-            if schema.guidance:
-                action_lines.append(f"Guidance: {schema.guidance}")
-            if schema.fields:
-                action_lines.append("Expected parameters:")
-                for fname, fdef in schema.fields.items():
-                    line = f"  {fname} ({fdef.type}): {fdef.description}"
-                    if fdef.enum_values:
-                        line += f" [options: {', '.join(fdef.enum_values)}]"
-                    action_lines.append(line)
-            action_lines.append("")
-    action_lines.append("</available_actions>")
-    sections.append("\n".join(action_lines))
-
-    # Section 1b: Detector-specific triage guidance
-    from dataraum.entropy.fix_schemas import get_triage_guidance
-
-    triage = get_triage_guidance(detector_id) if detector_id else ""
-    if triage:
-        sections.append(f"<triage_guidance>\n{triage}\n</triage_guidance>")
-
-    # Section 2: Entropy evidence with per-column component breakdown
-    col_evidence = outputs.get("gate_column_evidence", {}).get(dimension, {})
-    evidence_lines = [
-        "<entropy_evidence>",
-        f"Detector: {detector_id}",
-        f"Score: {score:.2f}",
-        f"Threshold: {threshold:.2f}",
-    ]
-    if all_scores:
-        evidence_lines.append("")
-        evidence_lines.append("Per-column breakdown:")
-        for target, col_score in sorted(all_scores.items(), key=lambda x: -x[1]):
-            label = "VIOLATING" if col_score > threshold else "passing"
-            line = f"  {target}: {col_score:.2f} ({label})"
-            ev = col_evidence.get(target, {})
-            if ev:
-                components = []
-                for k in ("ri_entropy", "card_entropy", "semantic_entropy"):
-                    if k in ev:
-                        components.append(f"{k}={ev[k]:.2f}")
-                if ev.get("accepted"):
-                    components.append("ACCEPTED")
-                if components:
-                    line += f" [{', '.join(components)}]"
-            evidence_lines.append(line)
-    evidence_lines.append("</entropy_evidence>")
-    sections.append("\n".join(evidence_lines))
-
-    # Section 3: Data profile
-    data_section = _build_data_profile(session, source_id, affected_targets)
-    if data_section:
-        sections.append(data_section)
-
-    return "\n\n".join(sections)
-
-
-def _get_fix_proposal(
-    output_dir: Path,
-    gate: str,
-    dimension: str,
-) -> str:
-    """Generate a batch action plan for a specific violation using the document agent.
-
-    Proposes one action per violating target with ready-to-apply FixDocuments.
-    Works for both single-target and multi-target dimensions.
-    """
-    from sqlalchemy import select
-
-    from dataraum.core.connections import get_manager_for_directory
-    from dataraum.pipeline.db_models import PhaseLog
-
-    try:
-        manager = get_manager_for_directory(output_dir)
-    except FileNotFoundError:
-        return _NO_DATA_MSG.format(path=output_dir)
-
-    try:
-        with manager.session_scope() as session:
-            source = _get_pipeline_source(session)
-            if not source:
-                return "Error: No sources found."
-
-            log = session.execute(
-                select(PhaseLog)
-                .where(
-                    PhaseLog.source_id == source.source_id,
-                    PhaseLog.phase_name == gate,
-                    PhaseLog.status == "completed",
-                )
-                .order_by(PhaseLog.completed_at.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-
-            if not log or not log.outputs:
-                return f"No gate measurement found for `{gate}`."
-
-            outputs = log.outputs
-            scores = log.entropy_scores or {}
-
-            if dimension not in scores:
-                return f"Dimension `{dimension}` not found in gate scores. Available: {', '.join(sorted(scores))}"
-
-            # Build context
-            context = _build_mcp_gate_context(
-                session,
-                source.source_id,
-                dimension,
-                gate,
-                outputs,
-                scores,
-            )
-
-            # Detect multi-target: check if >1 target violates
-            from dataraum.entropy.contracts import get_contracts
-            from dataraum.entropy.gate import match_threshold
-
-            contracts = get_contracts()
-            contract = next(iter(contracts.values()), None)
-            thresholds = contract.dimension_thresholds if contract else {}
-            threshold = match_threshold(dimension, thresholds) or 0.0
-
-            column_details = outputs.get("gate_column_details", {})
-            table_details = outputs.get("gate_table_details", {})
-            all_col_scores = {
-                **column_details.get(dimension, {}),
-                **table_details.get(dimension, {}),
-            }
-            affected = [t for t, s in all_col_scores.items() if s > threshold]
-
-            from dataraum.cli.gate_handler import _create_document_agent
-
-            agent = _create_document_agent()
-
-            return _format_batch_proposal(
-                agent, context, dimension, gate, outputs, affected, all_col_scores
-            )
-    finally:
-        manager.close()
-
-
-def _format_batch_proposal(
-    agent: Any,
-    context: str,
-    dimension: str,
-    gate: str,
-    outputs: dict[str, Any],
-    affected: list[str],
-    col_scores: dict[str, float],
-) -> str:
-    """Format a batch action plan proposal for multi-target dimensions.
-
-    Returns ready-to-apply FixDocuments so the outer agent can pass them
-    directly to apply_fix without a submit_fix_answers round trip.
-    """
-    import json
-
-    from dataraum.entropy.detectors.base import get_default_registry
-
-    plan_result = agent.generate_batch_plan(context)
-    if not plan_result.success:
-        return f"Error generating batch plan: {plan_result.error}"
-
-    plan = plan_result.unwrap()
-    if not plan.items:
-        return "No actions proposed for this dimension."
-
-    registry = get_default_registry()
-    id_map = outputs.get("detector_id_map", {})
-
-    # Build FixDocuments from plan items
-    fix_docs: list[dict[str, Any]] = []
-    for item in plan.items:
-        fix_doc = _build_fix_doc_from_plan_item(item, dimension, registry, id_map, col_scores)
-        if fix_doc:
-            fix_docs.append(fix_doc)
-
-    # Format response
-    lines = [f"# Batch Fix Plan: {dimension}", ""]
-    lines.append(f"**{plan.summary}**\n")
-
-    lines.append("| Target | Score | Action | Reason |")
-    lines.append("|--------|-------|--------|--------|")
-    for item in plan.items:
-        score = col_scores.get(item.target, 0.0)
-        lines.append(
-            f"| {item.target} | {score:.2f} | `{item.recommended_action}` | {item.reason} |"
-        )
-    lines.append("")
-
-    if plan.follow_up_questions:
-        lines.append("## Follow-up Questions")
-        lines.append(
-            "These are optional — include the answers in the `description` field "
-            "of the fix documents if you want to add context (e.g., reason for acceptance).\n"
-        )
-        for i, q in enumerate(plan.follow_up_questions, 1):
-            lines.append(f"**{i}. {q.question}**")
-            if q.question_type == "multiple_choice" and q.choices:
-                for j, choice in enumerate(q.choices, 1):
-                    lines.append(f"   {j}. {choice}")
-            lines.append("")
-
-    lines.append("## Ready-to-Apply Fix Documents")
-    lines.append(f"\nPass these {len(fix_docs)} fixes to `apply_fix` to apply them all at once:")
-    lines.append("```json")
-    lines.append(json.dumps(fix_docs, indent=2, default=str))
-    lines.append("```")
-    lines.append("")
-    lines.append("## Next Steps")
-    lines.append("- Review the plan above, then call `apply_fix(fixes=[...])` with the JSON above")
-    lines.append(f'- Or call `get_quality(gate="{gate}")` to re-check the current state first')
-
-    return "\n".join(lines)
-
-
-def _build_fix_doc_from_plan_item(
-    item: Any,
-    dimension: str,
-    registry: Any,
-    id_map: dict[str, str],
-    col_scores: dict[str, float],
-) -> dict[str, Any] | None:
-    """Build a FixDocument dict from a batch plan item."""
-    from dataraum.cli.gate_handler import _target_to_column_ref
-
-    action_name = item.recommended_action
-    schema = registry.get_fix_schema(action_name, dimension)
-
-    col_ref = _target_to_column_ref(item.target)
-    parts = col_ref.split(".", 1)
-    table_name = parts[0]
-    column_name = parts[1] if len(parts) > 1 else None
-
-    fix_doc: dict[str, Any] = {
-        "target": schema.target if schema else "config",
-        "action": action_name,
-        "table_name": table_name,
-        "column_name": column_name,
-        "dimension": dimension,
-        "description": item.reason,
-        "payload": {},
-    }
-
-    if not schema:
-        return fix_doc
-
-    if schema.target == "config":
-        # For append operations, the value is a column/table reference
-        if schema.operation == "append":
-            value: Any = f"{table_name}.{column_name}" if column_name else table_name
-        elif schema.operation == "merge" and schema.fields:
-            # merge with fields: build the value dict from agent parameters
-            value = {}
-            params = item.parameters if isinstance(item.parameters, dict) else {}
-            for field_name, field_def in schema.fields.items():
-                if field_name in params:
-                    value[field_name] = params[field_name]
-                elif field_def.default is not None:
-                    value[field_name] = field_def.default
-        else:
-            value = item.parameters
-
-        fix_doc["payload"] = {
-            "config_path": schema.config_path,
-            "key_path": list(schema.key_path or []),
-            "operation": schema.operation or "set",
-            "value": value,
-        }
-
-    return fix_doc
 
 
 def _continue_pipeline(
@@ -2246,6 +1933,45 @@ def _export(
         manager.close()
 
 
+def _parse_target(target: str) -> tuple[str, str | None]:
+    """Parse a target string into (table_name, column_name).
+
+    "column:orders.amount" → ("orders", "amount")
+    "table:orders"         → ("orders", None)
+    "orders.amount"        → ("orders", "amount")
+
+    Raises:
+        ValueError: If target is empty or produces an empty table name.
+    """
+    if not target or not target.strip():
+        raise ValueError("Target string is empty")
+
+    # Strip prefix
+    if ":" in target:
+        prefix, ref = target.split(":", 1)
+        if prefix == "table":
+            if not ref:
+                raise ValueError(f"Empty table name in target: {target!r}")
+            return ref, None
+        if prefix != "column":
+            raise ValueError(f"Unknown target prefix {prefix!r} in: {target!r}")
+        # column:table.col
+        parts = ref.split(".", 1)
+        table = parts[0]
+        col = parts[1] if len(parts) > 1 else None
+    else:
+        parts = target.split(".", 1)
+        table = parts[0]
+        col = parts[1] if len(parts) > 1 else None
+
+    if not table:
+        raise ValueError(f"Empty table name in target: {target!r}")
+    if col is not None and not col:
+        col = None  # Treat empty column as None
+
+    return table, col
+
+
 def _apply_fix(
     output_dir: Path,
     fixes: list[dict[str, Any]],
@@ -2253,43 +1979,113 @@ def _apply_fix(
 ) -> str:
     """Apply fixes and re-run affected pipeline phases.
 
+    Resolves action → FixSchema → FixDocuments via the bridge, then
+    applies, logs to fix ledger, and reports before/after score deltas.
+
     Args:
         output_dir: Pipeline output directory.
-        fixes: List of fix document dicts from the MCP input.
+        fixes: List of fix dicts with action, target, parameters, reason.
         source_path: Optional path to original source data.
 
     Returns:
         Formatted before/after delta report.
     """
+    from dataraum.core.connections import get_manager_for_directory
+    from dataraum.documentation.ledger import log_fix
+    from dataraum.entropy.fix_schemas import get_fix_schema
+    from dataraum.pipeline.fixes import FixInput
     from dataraum.pipeline.fixes.api import apply_fixes
-    from dataraum.pipeline.fixes.models import FixDocument
+    from dataraum.pipeline.fixes.bridge import build_fix_documents
 
-    fix_documents = [
-        FixDocument(
-            target=f["target"],
-            action=f["action"],
-            table_name=f["table_name"],
-            column_name=f.get("column_name"),
-            dimension=f["dimension"],
-            payload=f["payload"],
-            description=f.get("description", ""),
+    all_documents = []
+    # Track fix metadata for ledger logging
+    fix_meta: list[dict[str, Any]] = []
+
+    for f in fixes:
+        action = f["action"]
+        target = f["target"]
+        parameters = f.get("parameters", {})
+        reason = f.get("reason", "")
+
+        try:
+            table_name, column_name = _parse_target(target)
+        except ValueError as e:
+            return f"Error: Invalid target: {e}"
+
+        schema = get_fix_schema(action)
+        if schema is None:
+            return f"Error: Unknown action '{action}'"
+
+        dimension = schema.dimension_path
+
+        # Build affected_columns list from target
+        if column_name:
+            affected = [f"{table_name}.{column_name}"]
+        else:
+            affected = [f"table:{table_name}"]
+
+        fix_input = FixInput(
+            action_name=action,
+            affected_columns=affected,
+            parameters=parameters,
+            interpretation=reason,
         )
-        for f in fixes
-    ]
+        docs = build_fix_documents(schema, fix_input, table_name, column_name, dimension)
+        all_documents.extend(docs)
+        fix_meta.append(
+            {
+                "action": action,
+                "table_name": table_name,
+                "column_name": column_name,
+                "reason": reason,
+            }
+        )
 
-    # Auto-resolve source_path if not provided
+    if not all_documents:
+        return "No fix documents generated. Check action names and parameters."
+
+    # Determine the latest gate needed for re-measurement
+    gate_order = ["quality_review", "analysis_review", "computation_review"]
+    target_phase = "quality_review"
+    for meta in fix_meta:
+        s = get_fix_schema(meta["action"])
+        if s and s.gate and s.gate in gate_order:
+            if gate_order.index(s.gate) > gate_order.index(target_phase):
+                target_phase = s.gate
+
     resolved = source_path or _resolve_source_path(output_dir)
-
     result = apply_fixes(
         output_dir=output_dir,
-        fix_documents=fix_documents,
+        fix_documents=all_documents,
         source_path=Path(resolved) if resolved else None,
+        target_phase=target_phase,
     )
 
     if not result.success:
         return f"Error: Fix application failed: {result.error}"
 
-    # Format before/after delta
+    # Log to fix ledger for audit trail
+    try:
+        ledger_mgr = get_manager_for_directory(output_dir)
+        try:
+            with ledger_mgr.session_scope() as session:
+                source = _get_pipeline_source(session)
+                if source:
+                    for meta in fix_meta:
+                        log_fix(
+                            session=session,
+                            source_id=source.source_id,
+                            action_name=meta["action"],
+                            table_name=meta["table_name"],
+                            column_name=meta["column_name"],
+                            user_input=meta["reason"],
+                            interpretation=f"MCP apply_fix: {meta['action']}",
+                        )
+        finally:
+            ledger_mgr.close()
+    except Exception:
+        pass  # Ledger logging is best-effort
+
     lines = [
         "## Fix Results",
         "",
@@ -2299,7 +2095,6 @@ def _apply_fix(
         lines.append(f"Phases re-run: {', '.join(result.phases_rerun)}")
     lines.append("")
 
-    # Show score deltas for dimensions that changed
     all_dims = set(result.gate_before.keys()) | set(result.gate_after.keys())
     if all_dims:
         lines.append("| Dimension | Target | Before | After | Delta |")
@@ -2314,7 +2109,9 @@ def _apply_fix(
                 delta = a - b
                 if abs(delta) > 0.001:
                     sign = "+" if delta > 0 else ""
-                    lines.append(f"| {dim} | {target} | {b:.3f} | {a:.3f} | {sign}{delta:.3f} |")
+                    lines.append(
+                        f"| {dim} | {target} | {b:.3f} | {a:.3f} | {sign}{delta:.3f} |"
+                    )
 
     return "\n".join(lines)
 

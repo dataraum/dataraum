@@ -456,8 +456,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "status": "started",
                     "source": display_label,
                     "message": (
-                        "Pipeline started. This typically takes 3-7 minutes "
-                        "depending on file size."
+                        "Pipeline started. This typically takes 3-7 minutes depending on file size."
                     ),
                     "hint": "Call get_context every ~2 minutes to check progress.",
                 }
@@ -589,6 +588,7 @@ def _no_data_error(path: Path) -> dict[str, Any]:
         ),
     }
 
+
 # Human-readable phase descriptions for progress reporting.
 # Keys must match the `name` property of each phase class.
 _PHASE_LABELS: dict[str, str] = {
@@ -678,9 +678,7 @@ def _get_pipeline_progress(manager: Any) -> dict[str, Any] | None:
             return {
                 "status": "pipeline_failed",
                 "error": latest_run.error or "Unknown error",
-                "failed_phases": [
-                    {"phase": name, "error": err} for name, err in failed_phases
-                ],
+                "failed_phases": [{"phase": name, "error": err} for name, err in failed_phases],
                 "hint": "Fix the issue and re-run analyze.",
             }
 
@@ -851,7 +849,9 @@ def _build_pipeline_status(session: Any, source_id: str) -> dict[str, Any] | Non
     if g1 is None:
         next_steps.append("Run analyze(path='...', target_gate='quality_review') to start")
     elif g1 and g1 > 0:
-        next_steps.append('Use get_quality(gate="quality_review") to see violations and fix actions')
+        next_steps.append(
+            'Use get_quality(gate="quality_review") to see violations and fix actions'
+        )
         next_steps.append("Use apply_fix(fixes=[...]) to apply fixes")
         next_steps.append(
             'Use continue_pipeline(target_gate="analysis_review") to advance after fixing'

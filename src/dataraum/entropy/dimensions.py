@@ -8,10 +8,10 @@ and serialisation.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class _StrValueMixin(str, Enum):
+class _StrValueMixin(StrEnum):
     """Mixin that ensures str() returns the value, not the enum repr.
 
     Python 3.12+ changed str(StrEnum) to return 'ClassName.MEMBER'.

@@ -134,12 +134,53 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="get_context",
                 description=(
-                    "Get the full data context document for AI analysis. "
-                    "Returns schema, relationships, semantic annotations, and data quality info."
+                    "Get the data context document for AI analysis. "
+                    "Without section: returns the full context (schema, relationships, "
+                    "semantic annotations, quality). With section: returns focused "
+                    "structured data for one or more sections, reducing response size. "
+                    "Use section='quality' for quality overview (entropy, grades, "
+                    "interpretations). Use get_quality(gate=...) for zone-specific "
+                    "violations and fix actions."
                 ),
                 inputSchema={
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "section": {
+                            "description": (
+                                "Focus on specific section(s) to reduce response size. "
+                                "Omit for full context document."
+                            ),
+                            "oneOf": [
+                                {
+                                    "type": "string",
+                                    "enum": [
+                                        "schema",
+                                        "semantics",
+                                        "quality",
+                                        "validations",
+                                        "cycles",
+                                        "snippets",
+                                        "contracts",
+                                    ],
+                                },
+                                {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string",
+                                        "enum": [
+                                            "schema",
+                                            "semantics",
+                                            "quality",
+                                            "validations",
+                                            "cycles",
+                                            "snippets",
+                                            "contracts",
+                                        ],
+                                    },
+                                },
+                            ],
+                        },
+                    },
                 },
             ),
             Tool(
@@ -328,6 +369,83 @@ def create_server(output_dir: Path | None = None) -> Server:
                 },
                 execution=ToolExecution(taskSupport="optional"),
             ),
+            # --- Direct SQL execution ---
+            Tool(
+                name="run_sql",
+                description=(
+                    "Execute SQL directly against the analyzed data. Returns rows "
+                    "with per-column quality metadata when available. "
+                    "Prefer structured steps over raw SQL: each step computes one "
+                    "business concept, becomes a reusable snippet in the knowledge "
+                    "base, and can be referenced by later steps as a temp view. "
+                    "Use 'table.column' format in column_mappings for unambiguous "
+                    "quality metadata resolution (e.g. 'invoices.amount')."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "steps": {
+                            "type": "array",
+                            "description": (
+                                "Structured SQL steps. Each step becomes a temp view "
+                                "and is saved as a reusable snippet in the knowledge base. "
+                                "Later steps can reference earlier ones by step_id. "
+                                "Decompose into one concept per step for maximum reuse. "
+                                "Mutually exclusive with 'sql'."
+                            ),
+                            "items": {
+                                "type": "object",
+                                "required": ["step_id", "sql"],
+                                "properties": {
+                                    "step_id": {
+                                        "type": "string",
+                                        "description": "Business concept name (e.g. 'monthly_revenue', not 'step_1'). Used as view name by later steps.",
+                                    },
+                                    "sql": {
+                                        "type": "string",
+                                        "description": "SQL query for this step",
+                                    },
+                                    "description": {
+                                        "type": "string",
+                                        "description": "What this step does",
+                                    },
+                                    "column_mappings": {
+                                        "type": "object",
+                                        "description": (
+                                            "Maps output column names to source column names "
+                                            "for quality metadata lookup"
+                                        ),
+                                        "additionalProperties": {"type": "string"},
+                                    },
+                                },
+                            },
+                        },
+                        "sql": {
+                            "type": "string",
+                            "description": (
+                                "Raw SQL for quick one-off queries. Prefer 'steps' for "
+                                "multi-stage analysis — steps are cached as snippets. "
+                                "CTE queries are auto-decomposed into individual snippets. "
+                                "Mutually exclusive with 'steps'."
+                            ),
+                        },
+                        "column_mappings": {
+                            "type": "object",
+                            "description": (
+                                "Maps output column names to source column names "
+                                "for quality metadata lookup (raw SQL mode). "
+                                "Use 'table.column' for unambiguous resolution."
+                            ),
+                            "additionalProperties": {"type": "string"},
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max rows to return. Default: 100, max: 10000.",
+                            "default": 100,
+                        },
+                    },
+                },
+            ),
             # --- Agent-driven fix tools ---
             # --- Fix tool ---
             Tool(
@@ -461,7 +579,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "hint": "Call get_context every ~2 minutes to check progress.",
                 }
         elif name == "get_context":
-            result = _get_context(output_dir)
+            result = _get_context(output_dir, section=arguments.get("section"))
         elif name == "get_quality":
             result = _get_quality(
                 output_dir,
@@ -489,6 +607,14 @@ def create_server(output_dir: Path | None = None) -> Server:
             result = _discover_sources(output_dir, scan_path, recursive)
         elif name == "add_source":
             result = _add_source(output_dir, arguments)
+        elif name == "run_sql":
+            result = _run_sql(
+                output_dir,
+                steps=arguments.get("steps"),
+                sql=arguments.get("sql"),
+                column_mappings=arguments.get("column_mappings"),
+                limit=arguments.get("limit", 100),
+            )
         elif name == "continue_pipeline":
             target_gate = arguments["target_gate"]
             cont_source_path: str | None = arguments.get("source_path")
@@ -882,84 +1008,6 @@ def _build_pipeline_status(session: Any, source_id: str) -> dict[str, Any] | Non
     return result
 
 
-def _build_contract_catalog(session: Any, table_ids: list[str]) -> dict[str, Any] | None:
-    """Build a contract catalog dict with live compliance status.
-
-    Shows all available contracts with descriptions and, when entropy data
-    is available, evaluates each one to show pass/fail and score.
-    """
-    from dataraum.entropy.contracts import (
-        evaluate_all_contracts,
-        find_best_contract,
-        list_contracts,
-    )
-
-    contracts = list_contracts()
-    if not contracts:
-        return None
-
-    # Try to get column summaries for live evaluation
-    column_summaries = None
-    try:
-        from dataraum.entropy.views.network_context import build_for_network
-        from dataraum.entropy.views.query_context import network_to_column_summaries
-
-        network_context = build_for_network(session, table_ids)
-        if network_context and network_context.total_columns > 0:
-            column_summaries = network_to_column_summaries(network_context)
-    except Exception:
-        pass
-
-    catalog_contracts: list[dict[str, Any]] = []
-
-    if column_summaries:
-        evaluations = evaluate_all_contracts(column_summaries)
-        best_name, _ = find_best_contract(column_summaries)
-
-        for c in contracts:
-            entry: dict[str, Any] = {
-                "name": c["name"],
-                "display_name": c["display_name"],
-                "description": c["description"],
-                "threshold": c["overall_threshold"],
-            }
-            ev = evaluations.get(c["name"])
-            if ev:
-                entry["score"] = round(ev.overall_score, 2)
-                entry["status"] = "PASS" if ev.is_compliant else "FAIL"
-                if c["name"] == best_name:
-                    entry["recommended"] = True
-            catalog_contracts.append(entry)
-
-        result: dict[str, Any] = {"contracts": catalog_contracts}
-        if best_name:
-            result["recommended"] = best_name
-        else:
-            result["hint"] = (
-                "No contracts pass. Use get_quality(gate=...) to see violations "
-                "and fix actions, then apply_fix to address them."
-            )
-    else:
-        for c in contracts:
-            catalog_contracts.append(
-                {
-                    "name": c["name"],
-                    "display_name": c["display_name"],
-                    "description": c["description"],
-                    "threshold": c["overall_threshold"],
-                }
-            )
-        result = {
-            "contracts": catalog_contracts,
-            "hint": (
-                "Compliance status available after pipeline runs entropy phase. "
-                "Pass contract to analyze to select one."
-            ),
-        }
-
-    return result
-
-
 def _analyze(
     output_dir: Path,
     path: str | None = None,
@@ -1017,13 +1065,46 @@ def _analyze(
     return result_dict
 
 
-def _get_context(output_dir: Path) -> dict[str, Any]:
-    """Get context document as structured dict, or progress status if pipeline is running."""
+def _get_context(
+    output_dir: Path,
+    section: str | list[str] | None = None,
+) -> dict[str, Any]:
+    """Get context document as structured dict, or progress status if pipeline is running.
+
+    Args:
+        output_dir: Pipeline output directory.
+        section: Optional section name or list of names. When set, returns
+            focused structured data instead of the full markdown document.
+            Valid: schema, semantics, quality, validations, cycles, snippets, contracts.
+    """
     from sqlalchemy import select
 
     from dataraum.core.connections import get_manager_for_directory
-    from dataraum.graphs.context import build_execution_context, format_metadata_document
+    from dataraum.mcp.sections import (
+        CONTEXT_SECTIONS,
+        VALID_SECTIONS,
+        build_contracts_section,
+        build_cycles_section,
+        build_quality_section,
+        build_schema_section,
+        build_semantics_section,
+        build_snippets_section,
+        build_validations_section,
+    )
     from dataraum.storage import Table
+
+    # Normalize section parameter
+    requested: set[str] | None = None
+    if section is not None:
+        if isinstance(section, str):
+            requested = {section}
+        else:
+            requested = set(section)
+        if not requested:
+            return {"error": "section list cannot be empty"}
+        invalid = requested - VALID_SECTIONS
+        if invalid:
+            return {"error": f"Unknown section(s): {', '.join(sorted(invalid))}"}
 
     try:
         manager = get_manager_for_directory(output_dir)
@@ -1055,57 +1136,123 @@ def _get_context(output_dir: Path) -> dict[str, Any]:
 
             table_ids = [t.table_id for t in tables]
 
-            with manager.duckdb_cursor() as cursor:
-                context = build_execution_context(
-                    session=session,
-                    table_ids=table_ids,
-                    duckdb_conn=cursor,
-                )
+            # --- Full mode (no section) — backward compatible ---
+            if requested is None:
+                return _get_context_full(session, source, table_ids, manager)
 
-            # metadata_document stays as markdown — it's a rich narrative
-            # document used by multiple callers (query agent, graph agent).
-            result: dict[str, Any] = {
-                "metadata": format_metadata_document(context, source_name=source.name),
+            # --- Sectioned mode ---
+            result: dict[str, Any] = {}
+
+            # Build GraphExecutionContext only if needed
+            context = None
+            if requested & CONTEXT_SECTIONS:
+                from dataraum.graphs.context import build_execution_context
+
+                with manager.duckdb_cursor() as cursor:
+                    context = build_execution_context(
+                        session=session,
+                        table_ids=table_ids,
+                        duckdb_conn=cursor,
+                    )
+
+            # Section builders backed by GraphExecutionContext
+            context_builders = {
+                "schema": build_schema_section,
+                "semantics": build_semantics_section,
+                "quality": build_quality_section,
+                "validations": build_validations_section,
+                "cycles": build_cycles_section,
             }
 
-            # Pipeline status as structured data
-            try:
-                status = _build_pipeline_status(session, source.source_id)
-                if status:
-                    result["pipeline_status"] = status
-            except Exception:
-                pass  # Pipeline status is non-critical
+            for name in sorted(requested & CONTEXT_SECTIONS):
+                builder = context_builders[name]
+                assert context is not None  # Guarded by CONTEXT_SECTIONS check above
+                try:
+                    result[name] = builder(context)
+                except Exception:
+                    _log.debug("Section %s failed", name, exc_info=True)
+                    result[name] = {"error": f"Failed to build {name} section"}
 
-            # Contract catalog as structured data
-            try:
-                catalog = _build_contract_catalog(session, table_ids)
-                if catalog:
-                    result["contract_catalog"] = catalog
-            except Exception:
-                pass  # Contract catalog is non-critical
+            # Independent sections
+            if "snippets" in requested:
+                try:
+                    result["snippets"] = build_snippets_section(session, source.source_id)
+                except Exception:
+                    _log.debug("Snippets section failed", exc_info=True)
+                    result["snippets"] = {"error": "Failed to build snippets section"}
 
-            # Snippet knowledge base stats
-            try:
-                from dataraum.query.snippet_library import SnippetLibrary
-
-                library = SnippetLibrary(session)
-                stats = library.get_stats(schema_mapping_id=source.source_id)
-                if stats.get("total_snippets", 0) > 0:
-                    kb: dict[str, Any] = {
-                        "total_snippets": stats["total_snippets"],
-                        "validated_snippets": stats["validated_snippets"],
-                    }
-                    if stats.get("snippets_by_type"):
-                        kb["by_type"] = stats["snippets_by_type"]
-                    if stats.get("cache_hit_rate", 0) > 0:
-                        kb["cache_hit_rate"] = round(stats["cache_hit_rate"], 3)
-                    result["sql_knowledge_base"] = kb
-            except Exception:
-                pass  # Snippet stats are non-critical
+            if "contracts" in requested:
+                try:
+                    result["contracts"] = build_contracts_section(session, table_ids)
+                except Exception:
+                    _log.debug("Contracts section failed", exc_info=True)
+                    result["contracts"] = {"error": "Failed to build contracts section"}
 
             return result
     finally:
         manager.close()
+
+
+def _get_context_full(
+    session: Any,
+    source: Any,
+    table_ids: list[str],
+    manager: Any,
+) -> dict[str, Any]:
+    """Build the full context response (backward compatible, no section parameter)."""
+    from dataraum.graphs.context import build_execution_context, format_metadata_document
+
+    with manager.duckdb_cursor() as cursor:
+        context = build_execution_context(
+            session=session,
+            table_ids=table_ids,
+            duckdb_conn=cursor,
+        )
+
+    # metadata_document stays as markdown — it's a rich narrative
+    # document used by multiple callers (query agent, graph agent).
+    result: dict[str, Any] = {
+        "metadata": format_metadata_document(context, source_name=source.name),
+    }
+
+    # Pipeline status as structured data
+    try:
+        status = _build_pipeline_status(session, source.source_id)
+        if status:
+            result["pipeline_status"] = status
+    except Exception:
+        pass  # Pipeline status is non-critical
+
+    # Contract catalog as structured data
+    try:
+        from dataraum.mcp.sections import build_contracts_section
+
+        catalog = build_contracts_section(session, table_ids)
+        if catalog:
+            result["contract_catalog"] = catalog
+    except Exception:
+        pass  # Contract catalog is non-critical
+
+    # Snippet knowledge base stats
+    try:
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        library = SnippetLibrary(session)
+        stats = library.get_stats(schema_mapping_id=source.source_id)
+        if stats.get("total_snippets", 0) > 0:
+            kb: dict[str, Any] = {
+                "total_snippets": stats["total_snippets"],
+                "validated_snippets": stats["validated_snippets"],
+            }
+            if stats.get("snippets_by_type"):
+                kb["by_type"] = stats["snippets_by_type"]
+            if stats.get("cache_hit_rate", 0) > 0:
+                kb["cache_hit_rate"] = round(stats["cache_hit_rate"], 3)
+            result["sql_knowledge_base"] = kb
+    except Exception:
+        pass  # Snippet stats are non-critical
+
+    return result
 
 
 def _get_quality(
@@ -1188,7 +1335,27 @@ def _get_quality(
             if "actions" in sections_to_include:
                 sections["actions"] = _build_actions_section(session, source, priority, table_name)
 
-            return format_quality_report(sections)
+            result = format_quality_report(sections)
+
+            # When sections are unavailable, explain the zone-by-zone model.
+            # The overall report (entropy + contract + actions) requires a
+            # complete pipeline run. During zone-by-zone execution, agents
+            # should use the gate parameter instead.
+            any_unavailable = any(
+                isinstance(v, dict) and v.get("status") == "unavailable" for v in sections.values()
+            )
+            if any_unavailable:
+                result["hint"] = (
+                    "The overall quality report requires a complete pipeline run. "
+                    "The pipeline runs zone-by-zone: Gate 1 (quality_review) checks "
+                    "foundation quality, Gate 2 (analysis_review) checks enrichment, "
+                    "Gate 3 (computation_review) checks interpretation. "
+                    "Use get_quality(gate=...) to see violations and fix actions at "
+                    "the current gate. Use get_context to see pipeline status and "
+                    "which gate to inspect next."
+                )
+
+            return result
     finally:
         manager.close()
 
@@ -1206,7 +1373,7 @@ def _build_entropy_section(
     from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
 
     if not network_context or network_context.total_columns == 0:
-        return {"status": "unavailable", "message": "No entropy data. Run entropy phase first."}
+        return {"status": "unavailable"}
 
     interp_query = select(EntropyInterpretationRecord).where(
         EntropyInterpretationRecord.source_id == source.source_id,
@@ -1253,7 +1420,7 @@ def _build_contract_section(
     from dataraum.entropy.contracts import evaluate_contract, get_contract, list_contracts
 
     if not column_summaries:
-        return {"status": "unavailable", "message": "No data available for contract evaluation."}
+        return {"status": "unavailable"}
 
     # Auto-detect contract if not specified
     resolved_name = contract_name
@@ -1332,6 +1499,65 @@ def _query(
                 return {"error": str(result.error)}
 
             return format_query_result(result.value)
+    finally:
+        manager.close()
+
+
+def _run_sql(
+    output_dir: Path,
+    steps: list[dict[str, Any]] | None = None,
+    sql: str | None = None,
+    column_mappings: dict[str, str] | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Execute SQL directly against analyzed data.
+
+    Args:
+        output_dir: Pipeline output directory.
+        steps: Structured SQL steps.
+        sql: Raw SQL string.
+        column_mappings: Maps output column names to source columns (raw SQL mode).
+        limit: Max rows to return.
+    """
+    from sqlalchemy import select
+
+    from dataraum.core.connections import get_manager_for_directory
+    from dataraum.mcp.sql_executor import run_sql
+    from dataraum.storage import Table
+
+    try:
+        manager = get_manager_for_directory(output_dir)
+    except FileNotFoundError:
+        return _no_data_error(output_dir)
+
+    try:
+        with manager.session_scope() as session:
+            source = _get_pipeline_source(session)
+            table_ids: list[str] = []
+            if source:
+                tables = (
+                    session.execute(
+                        select(Table).where(
+                            Table.source_id == source.source_id,
+                            Table.layer == "typed",
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                table_ids = [t.table_id for t in tables]
+
+            with manager.duckdb_cursor() as cursor:
+                return run_sql(
+                    cursor,
+                    session=session,
+                    source_id=source.source_id if source else None,
+                    table_ids=table_ids,
+                    steps=steps,
+                    sql=sql,
+                    column_mappings=column_mappings,
+                    limit=limit,
+                )
     finally:
         manager.close()
 
@@ -1679,6 +1905,10 @@ def _get_zone_status(
                 get_triage_guidance,
             )
 
+            # Per-target evidence is stored in gate outputs during gate measurement.
+            # Keyed by dimension_path → target → evidence dict.
+            gate_evidence = outputs.get("gate_column_evidence", {})
+
             # Load interpretation records scoped to violated targets only
             from dataraum.entropy.interpretation_db_models import (
                 EntropyInterpretationRecord,
@@ -1754,19 +1984,30 @@ def _get_zone_status(
                 # Accepted targets for this dimension
                 dim_accepted = list(accepted.get(issue.dimension_path, set()))
 
-                violations.append(
-                    {
-                        "dimension_path": issue.dimension_path,
-                        "detector_id": detector_id,
-                        "score": issue.score,
-                        "threshold": issue.threshold,
-                        "affected_targets": issue.affected_targets,
-                        "executable_actions": executable_actions,
-                        "triage_guidance": triage,
-                        "interpretation": interpretation,
-                        "accepted_targets": dim_accepted,
-                    }
-                )
+                # Per-target evidence from gate measurement (outlier_ratio, null_ratio, etc.)
+                dim_evidence = gate_evidence.get(issue.dimension_path, {})
+                target_evidence: dict[str, Any] = {}
+                for target in issue.affected_targets:
+                    ev = dim_evidence.get(target)
+                    if ev:
+                        target_evidence[target] = ev
+
+                violation: dict[str, Any] = {
+                    "dimension_path": issue.dimension_path,
+                    "detector_id": detector_id,
+                    "score": issue.score,
+                    "threshold": issue.threshold,
+                    "affected_targets": issue.affected_targets,
+                    "target_evidence": target_evidence,
+                    "executable_actions": executable_actions,
+                    "triage_guidance": triage,
+                }
+                if interpretation:
+                    violation["interpretation"] = interpretation
+                if dim_accepted:
+                    violation["accepted_targets"] = dim_accepted
+
+                violations.append(violation)
 
             # Build passing entries
             passing = []
@@ -2097,6 +2338,10 @@ def _apply_fix(
                 )
     if deltas:
         output["score_deltas"] = deltas
+
+    # Include post-fix gate status so the agent can decide immediately
+    # whether to fix more or advance the pipeline.
+    output["gate_status"] = _get_zone_status(output_dir, gate=target_phase)
 
     return output
 

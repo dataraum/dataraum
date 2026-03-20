@@ -32,7 +32,6 @@ build/
 .coverage
 .coverage.*
 .testmondata*
-<MagicMock*
 
 # Tools
 .mypy_cache/

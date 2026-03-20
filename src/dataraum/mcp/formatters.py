@@ -318,3 +318,51 @@ def format_zone_status(
         "skipped_detectors": skipped_detectors,
         "next_steps": next_steps,
     }
+
+
+def format_run_sql_result(
+    columns: list[str],
+    rows: list[dict[str, Any]],
+    *,
+    limit: int,
+    total_rows: int,
+    step_info: list[dict[str, Any]] | None = None,
+    step_results: list[Any] | None = None,
+    column_quality: dict[str, Any] | None = None,
+    quality_caveat: str | None = None,
+    snippet_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Format run_sql result as structured dict.
+
+    Args:
+        columns: Output column names.
+        rows: Result rows as list of dicts.
+        limit: Applied row limit.
+        total_rows: Total rows before truncation.
+        step_info: Per-step execution info (with snippet status). Preferred.
+        step_results: StepExecutionResult list — fallback when step_info is absent.
+        column_quality: Per-column quality metadata.
+        quality_caveat: Warning when quality data is incomplete.
+        snippet_summary: Snippet reuse/save summary.
+    """
+    if step_info is not None:
+        steps_executed = step_info
+    elif step_results is not None:
+        steps_executed = [{"step_id": sr.step_id, "sql": sr.sql_executed} for sr in step_results]
+    else:
+        steps_executed = []
+
+    result: dict[str, Any] = {
+        "columns": columns,
+        "row_count": len(rows),
+        "rows": rows,
+        "truncated": total_rows > limit,
+        "steps_executed": steps_executed,
+    }
+    if column_quality is not None:
+        result["column_quality"] = column_quality
+    if quality_caveat:
+        result["quality_caveat"] = quality_caveat
+    if snippet_summary is not None:
+        result["snippet_summary"] = snippet_summary
+    return result

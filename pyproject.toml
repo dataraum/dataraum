@@ -45,6 +45,8 @@ dependencies = [
     "pgmpy>=0.1.25",
     "torch>=2.0.0",
     "anthropic>=0.76.0",
+    # SQL parsing
+    "sqlglot>=26.0.0",
     # TUI
     "textual>=0.50.0",
 ]
@@ -178,6 +180,7 @@ module = [
     "pgmpy.*",
     "textual.*",
     "typer.*",
+    "sqlglot.*",
 ]
 ignore_missing_imports = true
 

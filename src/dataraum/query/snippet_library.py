@@ -528,7 +528,7 @@ class SnippetLibrary:
         """
         # Try to find existing snippet by key (including failed ones)
         existing: SQLSnippetRecord | None = None
-        if snippet_type in ("extract", "constant"):
+        if snippet_type in ("extract", "constant", "query"):
             existing = self._find_by_key_any(
                 snippet_type=snippet_type,
                 schema_mapping_id=schema_mapping_id,

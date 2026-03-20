@@ -33,7 +33,7 @@ def cursor() -> duckdb.DuckDBPyConnection:
 
 
 @pytest.fixture
-def session() -> Generator[Session, None, None]:
+def session() -> Generator[Session]:
     """In-memory SQLite session with all tables created."""
     engine = create_engine("sqlite:///:memory:", echo=False)
 

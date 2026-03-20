@@ -8,9 +8,8 @@ per-column quality metadata, and integrates with the snippet library.
 from __future__ import annotations
 
 import logging
-from uuid import uuid4
-
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from dataraum.query.execution import ExecutionResult, SQLStep, execute_sql_steps
 
@@ -132,7 +131,7 @@ def run_sql(
     sliced_rows = all_rows[:effective_limit]
 
     # Convert to list-of-dicts
-    rows_as_dicts = [dict(zip(columns, row)) for row in sliced_rows]
+    rows_as_dicts = [dict(zip(columns, row, strict=False)) for row in sliced_rows]
 
     # --- Quality metadata (best-effort) ---
     column_quality: dict[str, Any] | None = None
@@ -282,7 +281,8 @@ def _build_column_quality(
 
     from dataraum.analysis.quality_summary.db_models import ColumnQualityReport
     from dataraum.pipeline.db_models import PhaseLog
-    from dataraum.storage import Column as ColumnModel, Table
+    from dataraum.storage import Column as ColumnModel
+    from dataraum.storage import Table
 
     # Build lookup: (table_name, column_name) → quality info
     # First load all quality reports for these tables

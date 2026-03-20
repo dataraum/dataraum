@@ -369,6 +369,67 @@ def create_server(output_dir: Path | None = None) -> Server:
                 },
                 execution=ToolExecution(taskSupport="optional"),
             ),
+            # --- Direct SQL execution ---
+            Tool(
+                name="run_sql",
+                description=(
+                    "Execute SQL directly against the analyzed data. Provide structured "
+                    "steps (each becomes a temp view) or a raw SQL string. Returns rows "
+                    "as list-of-dicts with per-column quality metadata when available. "
+                    "No LLM involved — caller writes SQL, errors returned verbatim."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "steps": {
+                            "type": "array",
+                            "description": (
+                                "Structured SQL steps. Each step becomes a temp view; "
+                                "later steps can reference earlier ones. "
+                                "Mutually exclusive with 'sql'."
+                            ),
+                            "items": {
+                                "type": "object",
+                                "required": ["step_id", "sql"],
+                                "properties": {
+                                    "step_id": {
+                                        "type": "string",
+                                        "description": "View name for this step (used by later steps)",
+                                    },
+                                    "sql": {
+                                        "type": "string",
+                                        "description": "SQL query for this step",
+                                    },
+                                    "description": {
+                                        "type": "string",
+                                        "description": "What this step does",
+                                    },
+                                    "column_mappings": {
+                                        "type": "object",
+                                        "description": (
+                                            "Maps output column names to source column names "
+                                            "for quality metadata lookup"
+                                        ),
+                                        "additionalProperties": {"type": "string"},
+                                    },
+                                },
+                            },
+                        },
+                        "sql": {
+                            "type": "string",
+                            "description": (
+                                "Raw SQL to execute. Wrapped as a single step internally. "
+                                "Mutually exclusive with 'steps'."
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max rows to return. Default: 100, max: 10000.",
+                            "default": 100,
+                        },
+                    },
+                },
+            ),
             # --- Agent-driven fix tools ---
             # --- Fix tool ---
             Tool(
@@ -530,6 +591,13 @@ def create_server(output_dir: Path | None = None) -> Server:
             result = _discover_sources(output_dir, scan_path, recursive)
         elif name == "add_source":
             result = _add_source(output_dir, arguments)
+        elif name == "run_sql":
+            result = _run_sql(
+                output_dir,
+                steps=arguments.get("steps"),
+                sql=arguments.get("sql"),
+                limit=arguments.get("limit", 100),
+            )
         elif name == "continue_pipeline":
             target_gate = arguments["target_gate"]
             cont_source_path: str | None = arguments.get("source_path")
@@ -1415,6 +1483,35 @@ def _query(
                 return {"error": str(result.error)}
 
             return format_query_result(result.value)
+    finally:
+        manager.close()
+
+
+def _run_sql(
+    output_dir: Path,
+    steps: list[dict[str, Any]] | None = None,
+    sql: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Execute SQL directly against analyzed data.
+
+    Args:
+        output_dir: Pipeline output directory.
+        steps: Structured SQL steps.
+        sql: Raw SQL string.
+        limit: Max rows to return.
+    """
+    from dataraum.core.connections import get_manager_for_directory
+    from dataraum.mcp.sql_executor import run_sql
+
+    try:
+        manager = get_manager_for_directory(output_dir)
+    except FileNotFoundError:
+        return _no_data_error(output_dir)
+
+    try:
+        with manager.duckdb_cursor() as cursor:
+            return run_sql(cursor, steps=steps, sql=sql, limit=limit)
     finally:
         manager.close()
 

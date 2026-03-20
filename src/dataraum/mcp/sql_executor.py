@@ -329,25 +329,59 @@ def _build_column_quality(
         .all()
     )
 
-    # Map (table_name, column_name) → column_id
+    # Map (table_name, column_name) → column_id (typed layer)
     col_id_map: dict[tuple[str, str], str] = {}
     for col in all_columns:
         tname = table_names.get(col.table_id, "")
         col_id_map[(tname, col.column_name)] = col.column_id
 
-    # Load quality reports indexed by source_column_id
-    quality_by_col_id: dict[str, ColumnQualityReport] = {}
-    col_ids = list(col_id_map.values())
-    if col_ids:
+    # ColumnQualityReport.source_column_id points to slicing_view columns,
+    # not typed columns. Resolve slicing_view tables and use their column IDs
+    # for the quality report lookup (same pattern as ColumnQualityDetector).
+    sv_col_ids: list[str] = []
+    # Maps slicing_view column_id → (typed_table_name, column_name)
+    sv_col_to_typed: dict[str, tuple[str, str]] = {}
+    for tname in table_names.values():
+        sv_table = session.execute(
+            select(Table).where(
+                Table.table_name == f"slicing_{tname}",
+                Table.layer == "slicing_view",
+            )
+        ).scalar_one_or_none()
+        if sv_table:
+            sv_cols = (
+                session.execute(select(ColumnModel).where(ColumnModel.table_id == sv_table.table_id))
+                .scalars()
+                .all()
+            )
+            for c in sv_cols:
+                sv_col_ids.append(c.column_id)
+                sv_col_to_typed[c.column_id] = (tname, c.column_name)
+
+    # Load quality reports — prefer slicing_view column IDs, fall back to typed
+    quality_by_col: dict[tuple[str, str], ColumnQualityReport] = {}
+    lookup_ids = sv_col_ids if sv_col_ids else list(col_id_map.values())
+    if lookup_ids:
         reports = (
             session.execute(
-                select(ColumnQualityReport).where(ColumnQualityReport.source_column_id.in_(col_ids))
+                select(ColumnQualityReport).where(
+                    ColumnQualityReport.source_column_id.in_(lookup_ids)
+                )
             )
             .scalars()
             .all()
         )
         for r in reports:
-            quality_by_col_id[r.source_column_id] = r
+            if sv_col_ids:
+                key = sv_col_to_typed.get(r.source_column_id)
+                if key:
+                    quality_by_col[key] = r
+            else:
+                # Fallback: resolve typed column_id to (table_name, col_name)
+                for (tn, cn), cid in col_id_map.items():
+                    if cid == r.source_column_id:
+                        quality_by_col[(tn, cn)] = r
+                        break
 
     # Build readiness from entropy network context
     readiness_by_col: dict[str, str] = {}
@@ -398,7 +432,7 @@ def _build_column_quality(
 
             entry: dict[str, Any] = {"source_column": f"{tname}.{source_col}"}
 
-            report = quality_by_col_id.get(col_id)
+            report = quality_by_col.get((tname, source_col))
             if report:
                 entry["quality_grade"] = report.quality_grade
                 entry["quality_score"] = round(report.overall_quality_score, 2)

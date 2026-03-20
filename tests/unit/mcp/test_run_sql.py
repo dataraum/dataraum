@@ -252,6 +252,83 @@ class TestQualityMetadataForMappedColumns:
         assert quality["revenue"]["quality_score"] == 0.72
 
 
+class TestQualityViaSlicingView:
+    def test_quality_resolved_via_slicing_view(self, session: Session) -> None:
+        """ColumnQualityReport.source_column_id points to slicing_view columns.
+
+        Verify that _build_column_quality resolves through the slicing_view layer
+        to find quality grades — the same pattern as ColumnQualityDetector.
+        """
+        from dataraum.analysis.quality_summary.db_models import ColumnQualityReport
+        from dataraum.storage import Column, Source, Table
+
+        source_id = _id()
+        session.add(Source(source_id=source_id, name="test", source_type="csv"))
+
+        # Typed table
+        typed_id = _id()
+        session.add(
+            Table(
+                table_id=typed_id,
+                source_id=source_id,
+                table_name="orders",
+                layer="typed",
+                duckdb_path="typed_orders",
+            )
+        )
+        typed_col_id = _id()
+        session.add(
+            Column(column_id=typed_col_id, table_id=typed_id, column_name="amount", column_position=0)
+        )
+
+        # Slicing view table (what quality reports actually reference)
+        sv_id = _id()
+        session.add(
+            Table(
+                table_id=sv_id,
+                source_id=source_id,
+                table_name="slicing_orders",
+                layer="slicing_view",
+                duckdb_path="slicing_orders",
+            )
+        )
+        sv_col_id = _id()
+        session.add(
+            Column(column_id=sv_col_id, table_id=sv_id, column_name="amount", column_position=0)
+        )
+
+        # Quality report references slicing_view column (production behavior)
+        session.add(
+            ColumnQualityReport(
+                report_id=_id(),
+                source_column_id=sv_col_id,
+                slice_column_id=sv_col_id,
+                column_name="amount",
+                source_table_name="slicing_orders",
+                slice_column_name="amount",
+                slice_count=1,
+                overall_quality_score=0.85,
+                quality_grade="A",
+                summary="Good quality",
+                report_data={},
+                investigation_views=[],
+            )
+        )
+        session.flush()
+
+        quality, _ = _build_column_quality(
+            session,
+            table_ids=[typed_id],
+            output_columns=["amount"],
+            column_mappings={},
+        )
+
+        assert quality["amount"] is not None
+        assert quality["amount"]["source_column"] == "orders.amount"
+        assert quality["amount"]["quality_grade"] == "A"
+        assert quality["amount"]["quality_score"] == 0.85
+
+
 class TestUnmappedColumnsGetNull:
     def test_computed_column_returns_null(self, session: Session) -> None:
         _, table_id, _ = _insert_source_and_table(session, "orders", ["amount"])

@@ -116,7 +116,7 @@ class TestLoadPipelineConfig:
         assert isinstance(data, dict)
         assert "phases" in data
         assert "pipeline" in data
-        assert isinstance(data["phases"], list)
+        assert isinstance(data["phases"], dict)
         assert "import" in data["phases"]
 
     def test_pipeline_config_has_pipeline_settings(self):

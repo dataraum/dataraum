@@ -32,7 +32,6 @@ from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.analysis.views.enrichment_agent import EnrichmentAgent
 from dataraum.analysis.views.enrichment_models import EnrichmentAnalysisResult
 from dataraum.core.logging import get_logger
-from dataraum.entropy.dimensions import AnalysisKey
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
@@ -64,18 +63,6 @@ class EnrichedViewsPhase(BasePhase):
     @property
     def name(self) -> str:
         return "enriched_views"
-
-    @property
-    def description(self) -> str:
-        return "Create enriched views joining fact + dimension tables"
-
-    @property
-    def produces_analyses(self) -> set[AnalysisKey]:
-        return {AnalysisKey.ENRICHED_VIEW}
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["quality_review"]
 
     @property
     def duckdb_layers(self) -> list[str]:

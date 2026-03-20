@@ -50,14 +50,6 @@ class SlicingViewPhase(BasePhase):
         return "slicing_view"
 
     @property
-    def description(self) -> str:
-        return "Create slicing views narrowed to slice-relevant dimension columns"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["slicing"]
-
-    @property
     def duckdb_layers(self) -> list[str]:
         return ["slicing_view"]
 

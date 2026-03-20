@@ -18,7 +18,6 @@ from sqlalchemy import delete, select
 
 from dataraum.analysis.statistics import profile_statistics
 from dataraum.analysis.statistics.db_models import StatisticalProfile
-from dataraum.entropy.dimensions import AnalysisKey
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
@@ -40,18 +39,6 @@ class StatisticsPhase(BasePhase):
     @property
     def name(self) -> str:
         return "statistics"
-
-    @property
-    def description(self) -> str:
-        return "Statistical profiling of typed tables"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["typing"]
-
-    @property
-    def produces_analyses(self) -> set[AnalysisKey]:
-        return {AnalysisKey.STATISTICS}
 
     def cleanup(
         self,

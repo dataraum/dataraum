@@ -49,20 +49,6 @@ class EntropyPhase(BasePhase):
     def name(self) -> str:
         return "entropy"
 
-    @property
-    def description(self) -> str:
-        return "Entropy detection across all dimensions"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return [
-            "typing",
-            "column_eligibility",
-            "semantic",
-            "relationships",
-            "slice_analysis",
-        ]
-
     def cleanup(
         self,
         session: Session,

@@ -46,14 +46,6 @@ class ImportPhase(BasePhase):
     def name(self) -> str:
         return "import"
 
-    @property
-    def description(self) -> str:
-        return "Load data files into raw tables"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if raw tables already exist for this source."""
         # Check if source exists and has tables

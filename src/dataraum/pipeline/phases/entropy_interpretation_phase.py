@@ -83,14 +83,6 @@ class EntropyInterpretationPhase(BasePhase):
     def name(self) -> str:
         return "entropy_interpretation"
 
-    @property
-    def description(self) -> str:
-        return "LLM interpretation of entropy"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["entropy", "computation_review"]
-
     def cleanup(
         self,
         session: Session,

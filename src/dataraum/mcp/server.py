@@ -642,7 +642,6 @@ def _get_pipeline_progress(manager: Any) -> dict[str, Any] | None:
     from sqlalchemy import func, select
 
     from dataraum.pipeline.db_models import PhaseLog, PipelineRun
-    from dataraum.pipeline.registry import get_registry
 
     # A "running" pipeline older than this is considered stale (process died).
     _STALE_THRESHOLD_MINUTES = 30
@@ -698,8 +697,10 @@ def _get_pipeline_progress(manager: Any) -> dict[str, Any] | None:
             or 0
         )
 
-        registry = get_registry()
-        total_phases = len(registry)
+        from dataraum.pipeline.pipeline_config import load_phase_declarations
+
+        declarations = load_phase_declarations()
+        total_phases = len(declarations)
 
         # Determine currently running phases from dependency graph
         completed_names: set[str] = set()
@@ -710,11 +711,10 @@ def _get_pipeline_progress(manager: Any) -> dict[str, Any] | None:
             completed_names.add(row[0])
 
         running_phases: list[str] = []
-        for name, cls in registry.items():
+        for name, decl in declarations.items():
             if name in completed_names:
                 continue
-            instance = cls()
-            deps = set(instance.dependencies)
+            deps = set(decl.dependencies)
             if deps.issubset(completed_names):
                 running_phases.append(name)
 

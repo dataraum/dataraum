@@ -1,6 +1,8 @@
 """Base phase implementation.
 
 Provides common functionality for all pipeline phases.
+Structural declarations (description, dependencies, produces_analyses,
+is_quality_gate) are sourced from pipeline.yaml via YAMLAwarePhase.
 """
 
 from __future__ import annotations
@@ -12,7 +14,6 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 
 from dataraum.core.logging import get_logger
-from dataraum.entropy.dimensions import AnalysisKey
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 
 if TYPE_CHECKING:
@@ -24,12 +25,12 @@ logger = get_logger(__name__)
 class BasePhase(ABC):
     """Base class for pipeline phases.
 
-    Provides common functionality and enforces the Phase protocol.
     Subclasses must implement:
-    - name property
-    - description property
-    - dependencies property
-    - _run method
+    - name property (for registry matching)
+    - _run method (the actual phase logic)
+
+    Structural metadata (description, dependencies, produces_analyses,
+    is_quality_gate) comes from pipeline.yaml via YAMLAwarePhase wrapper.
     """
 
     @property
@@ -37,34 +38,6 @@ class BasePhase(ABC):
     def name(self) -> str:
         """Unique identifier for this phase."""
         ...
-
-    @property
-    @abstractmethod
-    def description(self) -> str:
-        """Human-readable description."""
-        ...
-
-    @property
-    @abstractmethod
-    def dependencies(self) -> list[str]:
-        """List of phase names that must complete before this phase."""
-        ...
-
-    @property
-    def produces_analyses(self) -> set[AnalysisKey]:
-        """Analysis keys this phase produces. Override in subclasses.
-
-        Used by the scheduler to determine which detectors can run at gates.
-        """
-        return set()
-
-    @property
-    def is_quality_gate(self) -> bool:
-        """Whether this phase is a quality gate. Default: False.
-
-        Quality gates trigger entropy measurement and contract assessment.
-        """
-        return False
 
     @property
     def duckdb_layers(self) -> list[str]:

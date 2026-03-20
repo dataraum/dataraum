@@ -39,14 +39,6 @@ class StatisticalQualityPhase(BasePhase):
     def name(self) -> str:
         return "statistical_quality"
 
-    @property
-    def description(self) -> str:
-        return "Benford's Law and outlier detection"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["column_eligibility"]
-
     def cleanup(
         self,
         session: Session,

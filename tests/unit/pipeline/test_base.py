@@ -2,6 +2,7 @@
 
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
+from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_all_dependencies, get_phase_class, get_registry
 
 
@@ -19,29 +20,25 @@ class TestPhaseRegistry:
             assert instance.name == name
             assert isinstance(instance.name, str)
 
-    def test_all_phases_have_descriptions(self):
-        registry = get_registry()
-        for _name, cls in registry.items():
-            instance = cls()
-            assert instance.description
-            assert isinstance(instance.description, str)
+    def test_all_declared_phases_have_descriptions(self):
+        declarations = load_phase_declarations()
+        for name, decl in declarations.items():
+            assert decl.description, f"Phase {name!r} has no description"
+            assert isinstance(decl.description, str)
 
     def test_import_phase_has_no_dependencies(self):
-        cls = get_phase_class("import")
-        assert cls is not None
-        assert cls().dependencies == []
+        declarations = load_phase_declarations()
+        assert declarations["import"].dependencies == []
 
     def test_typing_depends_on_import(self):
-        cls = get_phase_class("typing")
-        assert cls is not None
-        assert "import" in cls().dependencies
+        declarations = load_phase_declarations()
+        assert "import" in declarations["typing"].dependencies
 
     def test_entropy_phase_exists(self):
-        cls = get_phase_class("entropy")
-        assert cls is not None
-        instance = cls()
-        assert "semantic" in instance.dependencies
-        assert "slice_analysis" in instance.dependencies
+        declarations = load_phase_declarations()
+        assert "entropy" in declarations
+        assert "semantic" in declarations["entropy"].dependencies
+        assert "slice_analysis" in declarations["entropy"].dependencies
 
     def test_graph_execution_phase_exists(self):
         cls = get_phase_class("graph_execution")
@@ -49,28 +46,13 @@ class TestPhaseRegistry:
 
 
 class TestBasePhaseProperties:
-    """Tests for produces_analyses defaults and timing."""
-
-    def test_default_produces_analyses_empty(self):
-        class DummyPhase(BasePhase):
-            name = "dummy"
-            description = "test"
-            dependencies: list[str] = []
-            outputs: list[str] = []
-
-            def _run(self, ctx: PhaseContext) -> PhaseResult:
-                return PhaseResult.success()
-
-        phase = DummyPhase()
-        assert phase.produces_analyses == set()
+    """Tests for BasePhase runtime behavior."""
 
     def test_run_measures_duration(self):
         """BasePhase.run() sets duration_seconds on the result."""
 
         class SlowPhase(BasePhase):
             name = "slow"
-            description = "test"
-            dependencies: list[str] = []
 
             def _run(self, ctx: PhaseContext) -> PhaseResult:
                 return PhaseResult.success(records_processed=1)
@@ -86,8 +68,6 @@ class TestBasePhaseProperties:
 
         class CrashPhase(BasePhase):
             name = "crash"
-            description = "test"
-            dependencies: list[str] = []
 
             def _run(self, ctx: PhaseContext) -> PhaseResult:
                 raise RuntimeError("boom")
@@ -118,8 +98,6 @@ class TestDependencyResolution:
 
     def test_get_all_dependencies_for_entropy(self):
         deps = get_all_dependencies("entropy")
-        # Entropy depends on typing, column_eligibility, semantic, relationships, slice_analysis
-        # Each of those has their own dependencies
         assert "import" in deps
         assert "typing" in deps
         assert "statistics" in deps

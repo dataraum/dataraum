@@ -45,28 +45,6 @@ class GraphExecutionPhase(BasePhase):
     def name(self) -> str:
         return "graph_execution"
 
-    @property
-    def description(self) -> str:
-        return "Execute metric graphs"
-
-    @property
-    def dependencies(self) -> list[str]:
-        # entropy_interpretation transitively pulls in:
-        #   entropy, computation_review → business_cycles, validation
-        # quality_summary transitively pulls in:
-        #   slice_analysis, temporal_slice_analysis, entropy
-        return [
-            "semantic",  # field mappings, table entities
-            "column_eligibility",  # ensures only eligible columns in context
-            "statistical_quality",  # quality metrics
-            "temporal",  # temporal profiles
-            "relationships",  # table relationships
-            "correlations",  # derived columns
-            "slicing",  # slice definitions
-            "quality_summary",  # quality reports
-            "entropy_interpretation",  # assumptions, resolution actions (→ entropy, computation_review)
-        ]
-
     def cleanup(
         self,
         session: Session,

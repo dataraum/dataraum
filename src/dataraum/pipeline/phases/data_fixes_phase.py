@@ -38,14 +38,6 @@ class DataFixesPhase(BasePhase):
         return "data_fixes"
 
     @property
-    def description(self) -> str:
-        return "Apply stored metadata fixes"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["semantic"]
-
-    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.pipeline.fixes import models as fix_models_mod
 

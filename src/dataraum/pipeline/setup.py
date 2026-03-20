@@ -27,7 +27,11 @@ from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import Phase
 from dataraum.pipeline.db_models import PipelineRun
-from dataraum.pipeline.registry import get_all_dependencies, get_registry
+from dataraum.pipeline.pipeline_config import (
+    get_all_dependencies_from_declarations,
+    load_phase_declarations,
+)
+from dataraum.pipeline.registry import build_yaml_aware_phases
 from dataraum.pipeline.scheduler import PipelineScheduler
 from dataraum.storage import Source
 
@@ -104,7 +108,8 @@ def setup_pipeline(
 
     # 6. Load pipeline and phase configs (from source-specific copy)
     pipeline_yaml_config = load_pipeline_config()
-    active_phase_names = pipeline_yaml_config.get("phases", [])
+    declarations = load_phase_declarations(pipeline_yaml_config)
+    active_phase_names = list(declarations)
     phase_configs = {name: load_phase_config(name) for name in active_phase_names}
 
     # 7. Build runtime config
@@ -124,13 +129,12 @@ def setup_pipeline(
             "source_name": source_name or source_path.stem,
         }
 
-    # 8. Load phases from registry
-    registry = get_registry()
-    phases: dict[str, Phase] = {name: cls() for name, cls in registry.items()}
+    # 8. Load phases from YAML declarations + registry
+    phases: dict[str, Phase] = build_yaml_aware_phases(pipeline_yaml_config)  # type: ignore[assignment]
 
     # 9. Filter phases if --phase set
     if target_phase:
-        deps = get_all_dependencies(target_phase)
+        deps = get_all_dependencies_from_declarations(target_phase, declarations)
         keep = deps | {target_phase}
         phases = {n: p for n, p in phases.items() if n in keep}
 

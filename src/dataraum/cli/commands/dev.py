@@ -33,7 +33,7 @@ def phases(
         _reset_phase(reset, output_dir)
         return
 
-    from dataraum.pipeline.registry import get_registry
+    from dataraum.pipeline.pipeline_config import load_phase_declarations
 
     console.print("\n[bold]Pipeline Phases[/bold]\n")
 
@@ -42,11 +42,10 @@ def phases(
     table.add_column("Description")
     table.add_column("Dependencies")
 
-    registry = get_registry()
-    for name, cls in registry.items():
-        instance = cls()
-        deps = ", ".join(instance.dependencies) if instance.dependencies else "-"
-        table.add_row(name, instance.description, deps)
+    declarations = load_phase_declarations()
+    for name, decl in declarations.items():
+        deps = ", ".join(decl.dependencies) if decl.dependencies else "-"
+        table.add_row(name, decl.description, deps)
 
     console.print(table)
     console.print()

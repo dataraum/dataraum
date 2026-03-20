@@ -22,19 +22,6 @@ class ComputationReviewPhase(BasePhase):
     def name(self) -> str:
         return "computation_review"
 
-    @property
-    def description(self) -> str:
-        return "Quality checkpoint after Zone 3 analysis — runs cross-table and cycle detectors"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["business_cycles", "validation"]
-
-    @property
-    def is_quality_gate(self) -> bool:
-        """Quality gates assess ALL accumulated scores against contracts."""
-        return True
-
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """No-op — the checkpoint's value is in being a quality gate."""
         return PhaseResult.success(summary="Computation review checkpoint")

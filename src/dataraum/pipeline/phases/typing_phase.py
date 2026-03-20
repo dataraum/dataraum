@@ -21,7 +21,6 @@ from sqlalchemy.orm import selectinload
 from dataraum.analysis.typing import infer_type_candidates, resolve_types
 from dataraum.analysis.typing.patterns import load_typing_config
 from dataraum.core.logging import get_logger
-from dataraum.entropy.dimensions import AnalysisKey
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
@@ -48,18 +47,6 @@ class TypingPhase(BasePhase):
     @property
     def name(self) -> str:
         return "typing"
-
-    @property
-    def description(self) -> str:
-        return "Type inference and resolution"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["import"]
-
-    @property
-    def produces_analyses(self) -> set[AnalysisKey]:
-        return {AnalysisKey.TYPING}
 
     @property
     def duckdb_layers(self) -> list[str]:

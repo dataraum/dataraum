@@ -49,14 +49,6 @@ class SlicingPhase(BasePhase):
     def name(self) -> str:
         return "slicing"
 
-    @property
-    def description(self) -> str:
-        return "LLM-powered slice dimension identification"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["enriched_views"]
-
     def cleanup(
         self,
         session: Session,

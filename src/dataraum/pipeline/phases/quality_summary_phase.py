@@ -19,7 +19,6 @@ from dataraum.analysis.quality_summary.agent import QualitySummaryAgent
 from dataraum.analysis.quality_summary.db_models import ColumnQualityReport
 from dataraum.analysis.quality_summary.processor import summarize_quality
 from dataraum.analysis.slicing.db_models import SliceDefinition
-from dataraum.entropy.dimensions import AnalysisKey
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.llm.config import LLMConfig
 from dataraum.llm.providers.base import LLMProvider
@@ -129,18 +128,6 @@ class QualitySummaryPhase(BasePhase):
     @property
     def name(self) -> str:
         return "quality_summary"
-
-    @property
-    def description(self) -> str:
-        return "LLM quality report generation"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["slice_analysis", "temporal_slice_analysis", "entropy"]
-
-    @property
-    def produces_analyses(self) -> set[AnalysisKey]:
-        return {AnalysisKey.COLUMN_QUALITY_REPORTS}
 
     def cleanup(
         self,

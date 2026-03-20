@@ -11,8 +11,8 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum.mcp.formatters import format_run_sql_result
-from dataraum.mcp.sql_executor import _build_column_quality, run_sql
-from dataraum.query.execution import StepExecutionResult
+from dataraum.mcp.sql_executor import _build_column_quality, _snippet_key_for_step, run_sql
+from dataraum.query.execution import SQLStep, StepExecutionResult
 from dataraum.storage import init_database
 
 
@@ -366,7 +366,12 @@ class TestSnippetReuseDetected:
     ) -> None:
         source_id, table_id, _ = _insert_source_and_table(session, "orders", ["amount"])
         sql_text = "SELECT 42 AS x"
-        snippet_id = _make_snippet(session, source_id, "query", sql_text)
+        # Use content-hash key (matches what run_sql generates for raw SQL)
+        step = SQLStep(step_id="query", sql=sql_text, description="")
+        key = _snippet_key_for_step(
+            step, [{"step_id": "query", "_snippet_key": f"query_{__import__('hashlib').sha256(sql_text.encode()).hexdigest()[:12]}"}]
+        )
+        snippet_id = _make_snippet(session, source_id, key, sql_text)
 
         result = run_sql(
             cursor,
@@ -376,80 +381,89 @@ class TestSnippetReuseDetected:
             sql=sql_text,
         )
         assert "error" not in result
-        step = result["steps_executed"][0]
-        assert step["snippet_status"] == "exact_reuse"
-        assert step["snippet_id"] == snippet_id
+        step_info = result["steps_executed"][0]
+        assert step_info["snippet_status"] == "exact_reuse"
+        assert step_info["snippet_id"] == snippet_id
 
-    def test_adapted_reuse(
+    def test_adapted_reuse_with_structured_steps(
         self, cursor: duckdb.DuckDBPyConnection, session: Session
     ) -> None:
+        """Structured steps use step_id directly — adapted when SQL differs."""
         source_id, table_id, _ = _insert_source_and_table(session, "orders", ["amount"])
-        _make_snippet(session, source_id, "query", "SELECT 1 AS old_query")
+        _make_snippet(session, source_id, "my_step", "SELECT 1 AS old_query")
 
         result = run_sql(
             cursor,
             session=session,
             source_id=source_id,
             table_ids=[table_id],
-            sql="SELECT 42 AS x",
+            steps=[{"step_id": "my_step", "sql": "SELECT 42 AS x"}],
         )
         assert "error" not in result
-        step = result["steps_executed"][0]
-        assert step["snippet_status"] == "adapted"
+        step_info = result["steps_executed"][0]
+        assert step_info["snippet_status"] == "adapted"
 
 
 class TestSnippetSavedAfterSuccess:
     def test_novel_step_saved(
         self, cursor: duckdb.DuckDBPyConnection, session: Session
     ) -> None:
+        import hashlib as _hashlib
+
         from dataraum.query.snippet_library import SnippetLibrary
 
         source_id, table_id, _ = _insert_source_and_table(session, "orders", ["amount"])
+        sql_text = "SELECT 42 AS x"
 
         result = run_sql(
             cursor,
             session=session,
             source_id=source_id,
             table_ids=[table_id],
-            sql="SELECT 42 AS x",
+            sql=sql_text,
         )
         assert "error" not in result
         assert result["snippet_summary"]["saved"] == 1
         assert result["snippet_summary"]["session_source"].startswith("mcp:session_")
 
-        # Verify snippet was actually saved
+        # Verify snippet was saved with content-hash key
+        expected_key = f"query_{_hashlib.sha256(sql_text.encode()).hexdigest()[:12]}"
         library = SnippetLibrary(session)
         match = library.find_by_key(
             snippet_type="query",
             schema_mapping_id=source_id,
-            standard_field="query",
+            standard_field=expected_key,
         )
         assert match is not None
-        assert match.snippet.sql == "SELECT 42 AS x"
+        assert match.snippet.sql == sql_text
 
 
 class TestSnippetNotSavedOnFailure:
     def test_bad_sql_no_snippet(
         self, cursor: duckdb.DuckDBPyConnection, session: Session
     ) -> None:
+        import hashlib as _hashlib
+
         from dataraum.query.snippet_library import SnippetLibrary
 
         source_id, table_id, _ = _insert_source_and_table(session, "orders", ["amount"])
+        bad_sql = "SELECT * FROM nonexistent_table"
 
         result = run_sql(
             cursor,
             session=session,
             source_id=source_id,
             table_ids=[table_id],
-            sql="SELECT * FROM nonexistent_table",
+            sql=bad_sql,
         )
         assert "error" in result
 
+        key = f"query_{_hashlib.sha256(bad_sql.encode()).hexdigest()[:12]}"
         library = SnippetLibrary(session)
         match = library.find_by_key(
             snippet_type="query",
             schema_mapping_id=source_id,
-            standard_field="query",
+            standard_field=key,
         )
         assert match is None
 
@@ -496,3 +510,23 @@ class TestSnippetIntegrationWithRawSql:
         assert result["snippet_summary"]["saved"] == 1
         # step_id for raw sql mode is "query"
         assert result["steps_executed"][0]["step_id"] == "query"
+
+    def test_different_raw_sql_no_collision(
+        self, cursor: duckdb.DuckDBPyConnection, session: Session
+    ) -> None:
+        """Two different raw SQL strings should not share a snippet key."""
+        source_id, table_id, _ = _insert_source_and_table(session, "orders", ["amount"])
+
+        r1 = run_sql(
+            cursor, session=session, source_id=source_id,
+            table_ids=[table_id], sql="SELECT 1 AS a",
+        )
+        r2 = run_sql(
+            cursor, session=session, source_id=source_id,
+            table_ids=[table_id], sql="SELECT 2 AS b",
+        )
+        assert r1["snippet_summary"]["saved"] == 1
+        assert r2["snippet_summary"]["saved"] == 1
+        # Both saved independently, neither shows as reused
+        assert r1["snippet_summary"]["reused"] == 0
+        assert r2["snippet_summary"]["reused"] == 0

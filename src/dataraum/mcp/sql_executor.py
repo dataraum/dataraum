@@ -7,6 +7,7 @@ per-column quality metadata, and integrates with the snippet library.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -65,10 +66,16 @@ def run_sql(
     raw_steps = steps  # preserve original dicts for column_mappings
 
     if sql is not None:
-        # Convenience mode: wrap raw SQL as single step
+        # Convenience mode: wrap raw SQL as single step.
+        # step_id is always "query" (used as the temp view name).
+        # snippet_key uses a content hash so different SQL strings don't collide.
         sql_steps = [SQLStep(step_id="query", sql=sql, description="Raw SQL query")]
         final_sql = "SELECT * FROM query"
-        raw_steps = [{"step_id": "query", "sql": sql, "description": "Raw SQL query"}]
+        snippet_key = f"query_{hashlib.sha256(sql.encode()).hexdigest()[:12]}"
+        raw_steps = [
+            {"step_id": "query", "sql": sql, "description": "Raw SQL query",
+             "_snippet_key": snippet_key},
+        ]
     else:
         assert steps is not None
         sql_steps = [
@@ -84,10 +91,11 @@ def run_sql(
         final_sql = f"SELECT * FROM {last_step_id}"
 
     # --- Snippet lookup (before execution) ---
-    session_source = f"mcp:session_{uuid4().hex[:8]}"
+    session_source: str | None = None
     snippet_matches: dict[str, tuple[str, str]] = {}  # step_id → (status, snippet_id)
     if session is not None and source_id:
-        snippet_matches = _lookup_snippets(session, source_id, sql_steps)
+        session_source = f"mcp:session_{uuid4().hex[:8]}"
+        snippet_matches = _lookup_snippets(session, source_id, sql_steps, raw_steps or [])
 
     # --- Execute ---
     result = execute_sql_steps(
@@ -116,12 +124,14 @@ def run_sql(
                     _log.debug("Snippet failure recording failed", exc_info=True)
         else:
             # Save novel steps as snippets
+            assert session_source is not None  # set inside the same guard
             snippet_summary = _save_snippets(
                 session, source_id, sql_steps, raw_steps or [],
                 snippet_matches, session_source,
             )
 
     if is_error:
+        _log.warning("run_sql execution failed: %s", result.error)
         return {"error": str(result.error)}
 
     assert result.value is not None  # guarded by is_error check above
@@ -178,10 +188,25 @@ def run_sql(
     )
 
 
+def _snippet_key_for_step(
+    step: SQLStep, raw_steps: list[dict[str, Any]]
+) -> str:
+    """Get the snippet standard_field key for a step.
+
+    For structured steps, uses step_id directly.
+    For raw SQL mode, uses a content-derived key to avoid collisions.
+    """
+    for rs in raw_steps:
+        if rs.get("step_id") == step.step_id and "_snippet_key" in rs:
+            return rs["_snippet_key"]
+    return step.step_id
+
+
 def _lookup_snippets(
     session: Session,
     source_id: str,
     sql_steps: list[SQLStep],
+    raw_steps: list[dict[str, Any]],
 ) -> dict[str, tuple[str, str]]:
     """Look up snippets for each step before execution.
 
@@ -196,10 +221,11 @@ def _lookup_snippets(
 
     for step in sql_steps:
         try:
+            key = _snippet_key_for_step(step, raw_steps)
             match = library.find_by_key(
                 snippet_type="query",
                 schema_mapping_id=source_id,
-                standard_field=step.step_id,
+                standard_field=key,
             )
             if match:
                 status = "exact_reuse" if match.snippet.sql == step.sql else "adapted"
@@ -240,13 +266,14 @@ def _save_snippets(
         if step.step_id in snippet_matches:
             continue  # Already matched — don't re-save
         try:
+            key = _snippet_key_for_step(step, raw_steps)
             library.save_snippet(
                 snippet_type="query",
                 sql=step.sql,
                 description=step.description or f"MCP run_sql step: {step.step_id}",
                 schema_mapping_id=source_id,
                 source=session_source,
-                standard_field=step.step_id,
+                standard_field=key,
                 column_mappings=mappings_by_step.get(step.step_id),
             )
             saved += 1

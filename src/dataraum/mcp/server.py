@@ -373,10 +373,13 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="run_sql",
                 description=(
-                    "Execute SQL directly against the analyzed data. Provide structured "
-                    "steps (each becomes a temp view) or a raw SQL string. Returns rows "
-                    "as list-of-dicts with per-column quality metadata when available. "
-                    "No LLM involved — caller writes SQL, errors returned verbatim."
+                    "Execute SQL directly against the analyzed data. Returns rows "
+                    "with per-column quality metadata when available. "
+                    "Prefer structured steps over raw SQL: each step computes one "
+                    "business concept, becomes a reusable snippet in the knowledge "
+                    "base, and can be referenced by later steps as a temp view. "
+                    "Use 'table.column' format in column_mappings for unambiguous "
+                    "quality metadata resolution (e.g. 'invoices.amount')."
                 ),
                 inputSchema={
                     "type": "object",
@@ -384,8 +387,10 @@ def create_server(output_dir: Path | None = None) -> Server:
                         "steps": {
                             "type": "array",
                             "description": (
-                                "Structured SQL steps. Each step becomes a temp view; "
-                                "later steps can reference earlier ones. "
+                                "Structured SQL steps. Each step becomes a temp view "
+                                "and is saved as a reusable snippet in the knowledge base. "
+                                "Later steps can reference earlier ones by step_id. "
+                                "Decompose into one concept per step for maximum reuse. "
                                 "Mutually exclusive with 'sql'."
                             ),
                             "items": {
@@ -394,7 +399,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                                 "properties": {
                                     "step_id": {
                                         "type": "string",
-                                        "description": "View name for this step (used by later steps)",
+                                        "description": "Business concept name (e.g. 'monthly_revenue', not 'step_1'). Used as view name by later steps.",
                                     },
                                     "sql": {
                                         "type": "string",
@@ -418,7 +423,8 @@ def create_server(output_dir: Path | None = None) -> Server:
                         "sql": {
                             "type": "string",
                             "description": (
-                                "Raw SQL to execute. Wrapped as a single step internally. "
+                                "Raw SQL for quick one-off queries. Prefer 'steps' for "
+                                "multi-stage analysis — steps are cached as snippets. "
                                 "Mutually exclusive with 'steps'."
                             ),
                         },

@@ -131,17 +131,17 @@ class TestMakeTaskEventCallback:
 class TestAnalyzeFunction:
     """Tests for the _analyze sync function."""
 
-    def test_missing_path_returns_error(self):
+    def test_missing_path_returns_error(self, tmp_path):
         """Returns error dict for non-existent path."""
         result = _analyze(
-            output_dir=MagicMock(),
+            output_dir=tmp_path,
             path="/nonexistent/path/to/data.csv",
         )
 
         assert isinstance(result, dict)
         assert "Path not found" in result["error"]
 
-    def test_pipeline_failure_returns_error(self):
+    def test_pipeline_failure_returns_error(self, tmp_path):
         """Returns error when pipeline fails."""
         mock_result = MagicMock()
         mock_result.success = False
@@ -149,16 +149,16 @@ class TestAnalyzeFunction:
         mock_result.error = "something broke"
 
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
-            tmp_path = f.name
+            csv_path = f.name
 
         try:
             with patch("dataraum.pipeline.runner.run", return_value=mock_result):
                 result = _analyze(
-                    output_dir=MagicMock(),
-                    path=tmp_path,
+                    output_dir=tmp_path,
+                    path=csv_path,
                 )
         finally:
-            Path(tmp_path).unlink(missing_ok=True)
+            Path(csv_path).unlink(missing_ok=True)
 
         assert isinstance(result, dict)
         assert "Pipeline failed" in result["error"]

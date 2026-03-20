@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
+from dataraum.mcp.cte_parser import decompose_ctes
 from dataraum.mcp.formatters import format_run_sql_result
 from dataraum.mcp.sql_executor import _build_column_quality, _snippet_key_for_step, run_sql
 from dataraum.query.execution import SQLStep, StepExecutionResult
@@ -358,8 +359,11 @@ class TestQualifiedColumnMappings:
         t1_id = _id()
         session.add(
             Table(
-                table_id=t1_id, source_id=source_id, table_name="orders",
-                layer="typed", duckdb_path="typed_orders",
+                table_id=t1_id,
+                source_id=source_id,
+                table_name="orders",
+                layer="typed",
+                duckdb_path="typed_orders",
             )
         )
         session.add(Column(column_id=_id(), table_id=t1_id, column_name="date", column_position=0))
@@ -367,8 +371,11 @@ class TestQualifiedColumnMappings:
         t2_id = _id()
         session.add(
             Table(
-                table_id=t2_id, source_id=source_id, table_name="invoices",
-                layer="typed", duckdb_path="typed_invoices",
+                table_id=t2_id,
+                source_id=source_id,
+                table_name="invoices",
+                layer="typed",
+                duckdb_path="typed_invoices",
             )
         )
         session.add(Column(column_id=_id(), table_id=t2_id, column_name="date", column_position=0))
@@ -394,8 +401,11 @@ class TestQualifiedColumnMappings:
         t1_id = _id()
         session.add(
             Table(
-                table_id=t1_id, source_id=source_id, table_name="orders",
-                layer="typed", duckdb_path="typed_orders",
+                table_id=t1_id,
+                source_id=source_id,
+                table_name="orders",
+                layer="typed",
+                duckdb_path="typed_orders",
             )
         )
         session.add(Column(column_id=_id(), table_id=t1_id, column_name="date", column_position=0))
@@ -403,8 +413,11 @@ class TestQualifiedColumnMappings:
         t2_id = _id()
         session.add(
             Table(
-                table_id=t2_id, source_id=source_id, table_name="invoices",
-                layer="typed", duckdb_path="typed_invoices",
+                table_id=t2_id,
+                source_id=source_id,
+                table_name="invoices",
+                layer="typed",
+                duckdb_path="typed_invoices",
             )
         )
         session.add(Column(column_id=_id(), table_id=t2_id, column_name="date", column_position=0))
@@ -698,3 +711,119 @@ class TestSnippetIntegrationWithRawSql:
         # Both saved independently, neither shows as reused
         assert r1["snippet_summary"]["reused"] == 0
         assert r2["snippet_summary"]["reused"] == 0
+
+
+# --- CTE auto-decomposition ---
+
+
+class TestCteDecomposition:
+    def test_cte_decomposed_into_steps(self, cursor: duckdb.DuckDBPyConnection) -> None:
+        sql = (
+            "WITH revenue AS (SELECT region, SUM(amount) AS total FROM orders GROUP BY region), "
+            "costs AS (SELECT region, COUNT(*) AS n FROM orders GROUP BY region) "
+            "SELECT * FROM revenue JOIN costs USING (region)"
+        )
+        result = run_sql(cursor, sql=sql)
+        assert "error" not in result
+        assert len(result["steps_executed"]) == 2
+
+    def test_cte_names_used_as_step_ids(self, cursor: duckdb.DuckDBPyConnection) -> None:
+        sql = (
+            "WITH revenue AS (SELECT region, SUM(amount) AS total FROM orders GROUP BY region), "
+            "costs AS (SELECT region, COUNT(*) AS n FROM orders GROUP BY region) "
+            "SELECT * FROM revenue JOIN costs USING (region)"
+        )
+        result = run_sql(cursor, sql=sql)
+        assert "error" not in result
+        step_ids = [s["step_id"] for s in result["steps_executed"]]
+        assert step_ids == ["revenue", "costs"]
+
+    def test_cte_snippets_saved_individually(
+        self, cursor: duckdb.DuckDBPyConnection, session: Session
+    ) -> None:
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        source_id, table_id, _ = _insert_source_and_table(session, "orders", ["amount", "region"])
+        sql = (
+            "WITH revenue AS (SELECT region, SUM(amount) AS total FROM orders GROUP BY region), "
+            "costs AS (SELECT region, COUNT(*) AS n FROM orders GROUP BY region) "
+            "SELECT * FROM revenue JOIN costs USING (region)"
+        )
+        result = run_sql(
+            cursor,
+            session=session,
+            source_id=source_id,
+            table_ids=[table_id],
+            sql=sql,
+        )
+        assert "error" not in result
+        assert result["snippet_summary"]["saved"] == 2
+
+        library = SnippetLibrary(session)
+        rev = library.find_by_key(
+            snippet_type="query", schema_mapping_id=source_id, standard_field="revenue"
+        )
+        assert rev is not None
+        costs = library.find_by_key(
+            snippet_type="query", schema_mapping_id=source_id, standard_field="costs"
+        )
+        assert costs is not None
+
+    def test_recursive_cte_falls_back(self, cursor: duckdb.DuckDBPyConnection) -> None:
+        sql = (
+            "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5) "
+            "SELECT * FROM cnt"
+        )
+        result = run_sql(cursor, sql=sql)
+        assert "error" not in result
+        # Falls back to monolithic — single step with step_id "query"
+        assert len(result["steps_executed"]) == 1
+        assert result["steps_executed"][0]["step_id"] == "query"
+
+    def test_no_cte_passes_through(self, cursor: duckdb.DuckDBPyConnection) -> None:
+        result = run_sql(cursor, sql="SELECT * FROM orders")
+        assert "error" not in result
+        assert len(result["steps_executed"]) == 1
+        assert result["steps_executed"][0]["step_id"] == "query"
+
+    def test_column_mappings_distributed(self) -> None:
+        sql = (
+            "WITH revenue AS (SELECT region, SUM(amount) AS total FROM orders GROUP BY region), "
+            "costs AS (SELECT region, COUNT(*) AS n FROM orders GROUP BY region) "
+            "SELECT * FROM revenue JOIN costs USING (region)"
+        )
+        result = decompose_ctes(sql, column_mappings={"rev": "amount", "cnt": "n"})
+        assert result is not None
+        # "amount" is referenced in the revenue CTE
+        rev_step = result.steps[0]
+        assert rev_step["step_id"] == "revenue"
+        assert rev_step.get("column_mappings") == {"rev": "amount"}
+
+    def test_parse_error_falls_back(self) -> None:
+        result = decompose_ctes("THIS IS NOT SQL AT ALL !!!")
+        assert result is None
+
+    def test_quoted_alias_falls_back(self, cursor: duckdb.DuckDBPyConnection) -> None:
+        """CTE aliases with spaces are not safe for CREATE TEMP VIEW."""
+        sql = 'WITH "my cte" AS (SELECT 1 AS x) SELECT * FROM "my cte"'
+        result = decompose_ctes(sql)
+        assert result is None
+        # Also verify run_sql still executes it via monolithic fallback
+        run_result = run_sql(cursor, sql=sql)
+        assert "error" not in run_result
+        assert run_result["steps_executed"][0]["step_id"] == "query"
+
+    def test_qualified_column_mappings_distributed(self) -> None:
+        """Qualified 'table.column' mappings should match by column name."""
+        sql = (
+            "WITH revenue AS (SELECT region, SUM(amount) AS total FROM orders GROUP BY region) "
+            "SELECT * FROM revenue"
+        )
+        result = decompose_ctes(sql, column_mappings={"rev": "orders.amount"})
+        assert result is not None
+        assert result.steps[0].get("column_mappings") == {"rev": "orders.amount"}
+
+    def test_empty_steps_returns_error(self, cursor: duckdb.DuckDBPyConnection) -> None:
+        result = run_sql(cursor, steps=[])
+        assert "error" in result
+        assert "empty" in result["error"]

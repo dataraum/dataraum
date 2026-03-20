@@ -249,6 +249,7 @@ dependencies = [
     { name = "ruptures" },
     { name = "scipy" },
     { name = "sqlalchemy" },
+    { name = "sqlglot" },
     { name = "statsmodels" },
     { name = "structlog" },
     { name = "textual" },
@@ -290,6 +291,7 @@ requires-dist = [
     { name = "ruptures", specifier = ">=1.1.0" },
     { name = "scipy", specifier = ">=1.11.0" },
     { name = "sqlalchemy", specifier = ">=2.0.0" },
+    { name = "sqlglot", specifier = ">=26.0.0" },
     { name = "statsmodels", specifier = ">=0.14.0" },
     { name = "structlog", specifier = ">=24.1.0" },
     { name = "textual", specifier = ">=0.50.0" },
@@ -1521,6 +1523,15 @@ wheels = [
 ]
 
 [[package]]
+name = "sqlglot"
+version = "30.0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5b/7a/3b6a8853fc2fa166f785a8ea4fecde46f70588e35471bc7811373da31a49/sqlglot-30.0.3.tar.gz", hash = "sha256:35ba7514c132b54f87fd1732a65a73615efa9fd83f6e1eed0a315bc9ee3e1027", size = 5802632, upload-time = "2026-03-19T16:51:39.166Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c6/13/b57ab75b0f60b5ee8cb8924bc01a5c419ed3221e00f8f11f8c059a707eb7/sqlglot-30.0.3-py3-none-any.whl", hash = "sha256:5489cc98b5666f1fafc21e0304ca286e513e142aa054ee5760806a2139d07a05", size = 651853, upload-time = "2026-03-19T16:51:36.241Z" },
+]
+
+[[package]]
 name = "sse-starlette"
 version = "3.3.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1745,8 +1756,8 @@ name = "uvicorn"
 version = "0.42.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
-    { name = "h11" },
+    { name = "click", marker = "sys_platform != 'emscripten'" },
+    { name = "h11", marker = "sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e3/ad/4a96c425be6fb67e0621e62d86c402b4a17ab2be7f7c055d9bd2f638b9e2/uvicorn-0.42.0.tar.gz", hash = "sha256:9b1f190ce15a2dd22e7758651d9b6d12df09a13d51ba5bf4fc33c383a48e1775", size = 85393, upload-time = "2026-03-16T06:19:50.077Z" }
 wheels = [

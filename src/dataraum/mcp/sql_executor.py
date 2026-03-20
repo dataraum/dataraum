@@ -33,6 +33,7 @@ def run_sql(
     table_ids: list[str] | None = None,
     steps: list[dict[str, Any]] | None = None,
     sql: str | None = None,
+    column_mappings: dict[str, str] | None = None,
     limit: int = DEFAULT_ROW_LIMIT,
 ) -> dict[str, Any]:
     """Execute SQL and return results as a structured dict.
@@ -45,6 +46,7 @@ def run_sql(
         steps: Structured SQL steps (list of dicts with step_id, sql, description,
             optional column_mappings).
         sql: Raw SQL convenience mode. Mutually exclusive with steps.
+        column_mappings: Maps output column names to source column names (raw SQL mode).
         limit: Max rows to return. Capped at MAX_ROW_LIMIT.
 
     Returns:
@@ -56,6 +58,8 @@ def run_sql(
         return {"error": "Provide either 'steps' or 'sql', not both."}
     if steps is None and sql is None:
         return {"error": "Provide either 'steps' or 'sql'."}
+    if steps is not None and len(steps) == 0:
+        return {"error": "steps list cannot be empty."}
 
     # Clamp limit
     effective_limit = min(max(1, limit), MAX_ROW_LIMIT)
@@ -66,20 +70,36 @@ def run_sql(
     raw_steps = steps  # preserve original dicts for column_mappings
 
     if sql is not None:
-        # Convenience mode: wrap raw SQL as single step.
-        # step_id is always "query" (used as the temp view name).
-        # snippet_key uses a content hash so different SQL strings don't collide.
-        sql_steps = [SQLStep(step_id="query", sql=sql, description="Raw SQL query")]
-        final_sql = "SELECT * FROM query"
-        snippet_key = f"query_{hashlib.sha256(sql.encode()).hexdigest()[:12]}"
-        raw_steps = [
-            {
-                "step_id": "query",
-                "sql": sql,
-                "description": "Raw SQL query",
-                "_snippet_key": snippet_key,
-            },
-        ]
+        # Try CTE decomposition first — each CTE becomes its own reusable snippet.
+        from dataraum.mcp.cte_parser import decompose_ctes
+
+        decomposition = decompose_ctes(sql, column_mappings)
+        if decomposition is not None:
+            sql_steps = [
+                SQLStep(
+                    step_id=s["step_id"],
+                    sql=s["sql"],
+                    description=s.get("description", ""),
+                )
+                for s in decomposition.steps
+            ]
+            final_sql = decomposition.final_sql
+            raw_steps = decomposition.steps
+        else:
+            # Fallback: wrap raw SQL as single step.
+            # step_id is always "query" (used as the temp view name).
+            # snippet_key uses a content hash so different SQL strings don't collide.
+            sql_steps = [SQLStep(step_id="query", sql=sql, description="Raw SQL query")]
+            final_sql = "SELECT * FROM query"
+            snippet_key = f"query_{hashlib.sha256(sql.encode()).hexdigest()[:12]}"
+            raw_steps = [
+                {
+                    "step_id": "query",
+                    "sql": sql,
+                    "description": "Raw SQL query",
+                    "_snippet_key": snippet_key,
+                },
+            ]
     else:
         assert steps is not None
         sql_steps = [

@@ -425,8 +425,18 @@ def create_server(output_dir: Path | None = None) -> Server:
                             "description": (
                                 "Raw SQL for quick one-off queries. Prefer 'steps' for "
                                 "multi-stage analysis — steps are cached as snippets. "
+                                "CTE queries are auto-decomposed into individual snippets. "
                                 "Mutually exclusive with 'steps'."
                             ),
+                        },
+                        "column_mappings": {
+                            "type": "object",
+                            "description": (
+                                "Maps output column names to source column names "
+                                "for quality metadata lookup (raw SQL mode). "
+                                "Use 'table.column' for unambiguous resolution."
+                            ),
+                            "additionalProperties": {"type": "string"},
                         },
                         "limit": {
                             "type": "integer",
@@ -602,6 +612,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                 output_dir,
                 steps=arguments.get("steps"),
                 sql=arguments.get("sql"),
+                column_mappings=arguments.get("column_mappings"),
                 limit=arguments.get("limit", 100),
             )
         elif name == "continue_pipeline":
@@ -1496,6 +1507,7 @@ def _run_sql(
     output_dir: Path,
     steps: list[dict[str, Any]] | None = None,
     sql: str | None = None,
+    column_mappings: dict[str, str] | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
     """Execute SQL directly against analyzed data.
@@ -1504,6 +1516,7 @@ def _run_sql(
         output_dir: Pipeline output directory.
         steps: Structured SQL steps.
         sql: Raw SQL string.
+        column_mappings: Maps output column names to source columns (raw SQL mode).
         limit: Max rows to return.
     """
     from sqlalchemy import select
@@ -1542,6 +1555,7 @@ def _run_sql(
                     table_ids=table_ids,
                     steps=steps,
                     sql=sql,
+                    column_mappings=column_mappings,
                     limit=limit,
                 )
     finally:

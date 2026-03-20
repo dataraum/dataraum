@@ -87,9 +87,7 @@ def build_schema_section(context: GraphExecutionContext) -> dict[str, Any]:
             r["cardinality"] = rel.cardinality
         if rel.confidence:
             r["confidence"] = round(rel.confidence, 2)
-        if rel.relationship_entropy and not rel.relationship_entropy.get(
-            "is_deterministic", True
-        ):
+        if rel.relationship_entropy and not rel.relationship_entropy.get("is_deterministic", True):
             r["non_deterministic"] = True
         relationships.append(r)
 
@@ -126,12 +124,14 @@ def build_semantics_section(context: GraphExecutionContext) -> dict[str, Any]:
         columns = []
         for col in table.columns:
             # Only include columns with semantic data
-            if not any([
-                col.business_name,
-                col.business_description,
-                col.business_concept,
-                col.is_derived,
-            ]):
+            if not any(
+                [
+                    col.business_name,
+                    col.business_description,
+                    col.business_concept,
+                    col.is_derived,
+                ]
+            ):
                 continue
             c: dict[str, Any] = {"name": col.column_name}
             if col.business_name:
@@ -192,20 +192,10 @@ def build_semantics_section(context: GraphExecutionContext) -> dict[str, Any]:
 def build_quality_section(context: GraphExecutionContext) -> dict[str, Any]:
     """Build quality section: grades, entropy, interpretations, assumptions."""
     # Check what's available
-    has_quality_grades = any(
-        col.quality_grade
-        for table in context.tables
-        for col in table.columns
-    )
-    has_entropy = any(
-        col.entropy_scores
-        for table in context.tables
-        for col in table.columns
-    )
+    has_quality_grades = any(col.quality_grade for table in context.tables for col in table.columns)
+    has_entropy = any(col.entropy_scores for table in context.tables for col in table.columns)
     has_interpretation = any(
-        col.entropy_explanation
-        for table in context.tables
-        for col in table.columns
+        col.entropy_explanation for table in context.tables for col in table.columns
     )
 
     availability: dict[str, Any] = {}
@@ -228,12 +218,14 @@ def build_quality_section(context: GraphExecutionContext) -> dict[str, Any]:
         columns = []
         for col in table.columns:
             # Only include columns with quality data
-            if not any([
-                col.quality_grade,
-                col.entropy_scores,
-                col.entropy_explanation,
-                col.flags,
-            ]):
+            if not any(
+                [
+                    col.quality_grade,
+                    col.entropy_scores,
+                    col.entropy_explanation,
+                    col.flags,
+                ]
+            ):
                 continue
 
             c: dict[str, Any] = {"name": col.column_name}
@@ -442,12 +434,14 @@ def build_snippets_section(session: Session, source_id: str) -> dict[str, Any]:
                 entry["input_fields"] = s.input_fields
             snippets.append(entry)
 
-        formatted_graphs.append({
-            "graph_id": graph.graph_id,
-            "source": graph.source,
-            "source_type": graph.source_type,
-            "snippets": snippets,
-        })
+        formatted_graphs.append(
+            {
+                "graph_id": graph.graph_id,
+                "source": graph.source,
+                "source_type": graph.source_type,
+                "snippets": snippets,
+            }
+        )
 
     result: dict[str, Any] = {
         "total_snippets": total_snippets,
@@ -528,12 +522,14 @@ def build_contracts_section(
             )
     else:
         for c in contracts:
-            catalog.append({
-                "name": c["name"],
-                "display_name": c["display_name"],
-                "description": c["description"],
-                "threshold": c["overall_threshold"],
-            })
+            catalog.append(
+                {
+                    "name": c["name"],
+                    "display_name": c["display_name"],
+                    "description": c["description"],
+                    "threshold": c["overall_threshold"],
+                }
+            )
         result = {
             "contracts": catalog,
             "hint": (

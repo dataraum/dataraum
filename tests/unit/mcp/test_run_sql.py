@@ -278,7 +278,9 @@ class TestQualityViaSlicingView:
         )
         typed_col_id = _id()
         session.add(
-            Column(column_id=typed_col_id, table_id=typed_id, column_name="amount", column_position=0)
+            Column(
+                column_id=typed_col_id, table_id=typed_id, column_name="amount", column_position=0
+            )
         )
 
         # Slicing view table (what quality reports actually reference)

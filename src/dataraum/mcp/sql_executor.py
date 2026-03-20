@@ -350,7 +350,9 @@ def _build_column_quality(
         ).scalar_one_or_none()
         if sv_table:
             sv_cols = (
-                session.execute(select(ColumnModel).where(ColumnModel.table_id == sv_table.table_id))
+                session.execute(
+                    select(ColumnModel).where(ColumnModel.table_id == sv_table.table_id)
+                )
                 .scalars()
                 .all()
             )

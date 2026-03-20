@@ -453,7 +453,15 @@ class TestBuildContractsSection:
 
 class TestSectionConstants:
     def test_valid_sections(self) -> None:
-        expected = {"schema", "semantics", "quality", "validations", "cycles", "snippets", "contracts"}
+        expected = {
+            "schema",
+            "semantics",
+            "quality",
+            "validations",
+            "cycles",
+            "snippets",
+            "contracts",
+        }
         assert VALID_SECTIONS == expected
 
     def test_context_sections_subset(self) -> None:

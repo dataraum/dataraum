@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
-import pytest
 from sqlalchemy.orm import Session
 
 from dataraum.entropy.db_models import EntropyObjectRecord
@@ -37,89 +34,30 @@ def _make_record(
     )
 
 
-def _disabled_config():
-    """Mock load_llm_config returning disabled feature."""
-    from dataraum.llm.config import FeatureConfig, LLMConfig, LLMFeatures, LLMLimits, LLMPrivacy
-
-    return LLMConfig(
-        providers={},
-        active_provider="anthropic",
-        features=LLMFeatures(
-            semantic_analysis=FeatureConfig(enabled=True),
-            business_pattern_filter=FeatureConfig(enabled=False),
-        ),
-        limits=LLMLimits(),
-        privacy=LLMPrivacy(),
-    )
-
-
-def _enabled_config():
-    """Mock load_llm_config returning enabled feature (no provider = LLM skipped)."""
-    from dataraum.llm.config import FeatureConfig, LLMConfig, LLMFeatures, LLMLimits, LLMPrivacy
-
-    return LLMConfig(
-        providers={},
-        active_provider="anthropic",
-        features=LLMFeatures(
-            semantic_analysis=FeatureConfig(enabled=True),
-            business_pattern_filter=FeatureConfig(enabled=True, model_tier="fast"),
-        ),
-        limits=LLMLimits(),
-        privacy=LLMPrivacy(),
-    )
-
-
 class TestPatternFilter:
     """Tests for apply_pattern_filter."""
 
-    def test_filter_disabled_passthrough(self, session: Session):
-        """When feature is disabled, records pass through unchanged."""
-        _ensure_source(session)
-        rec = _make_record(score=0.7)
-        session.add(rec)
-        session.flush()
-
-        with patch(
-            "dataraum.llm.config.load_llm_config",
-            return_value=_disabled_config(),
-        ):
-            result = apply_pattern_filter(session, "src-1", [rec])
-
-        assert len(result) == 1
-        assert result[0].score == 0.7
-        assert result[0].filter_confidence is None
-
     def test_filter_skips_zero_score_records(self, session: Session):
-        """Records with score=0 are not candidates for classification."""
+        """Records with score=0 are not candidates."""
         _ensure_source(session)
         rec = _make_record(score=0.0)
         session.add(rec)
         session.flush()
 
-        with patch(
-            "dataraum.llm.config.load_llm_config",
-            return_value=_enabled_config(),
-        ):
-            result = apply_pattern_filter(session, "src-1", [rec])
+        result = apply_pattern_filter(session, "src-1", [rec])
 
         assert result[0].score == 0.0
         assert result[0].filter_confidence is None
 
     def test_filter_idempotent(self, session: Session):
-        """Already-classified records are not re-classified or re-discounted."""
+        """Already-classified records are not re-discounted."""
         _ensure_source(session)
-        # Simulate a record already classified in a prior call
         rec = _make_record(score=0.05, filter_confidence=0.9)
         session.add(rec)
         session.flush()
 
-        with patch(
-            "dataraum.llm.config.load_llm_config",
-            return_value=_enabled_config(),
-        ):
-            result = apply_pattern_filter(session, "src-1", [rec])
+        result = apply_pattern_filter(session, "src-1", [rec])
 
-        # Score unchanged — discount was already applied in prior call
         assert result[0].filter_confidence == 0.9
         assert result[0].score == 0.05
 
@@ -145,13 +83,8 @@ class TestPatternFilter:
         )
         session.flush()
 
-        with patch(
-            "dataraum.llm.config.load_llm_config",
-            return_value=_enabled_config(),
-        ):
-            result = apply_pattern_filter(session, "src-1", [rec])
+        result = apply_pattern_filter(session, "src-1", [rec])
 
-        # confidence=1.0 → score * (1-1.0) = 0
         assert result[0].filter_confidence == 1.0
         assert result[0].score == 0.0
 
@@ -162,26 +95,17 @@ class TestPatternFilter:
         session.add(rec)
         session.flush()
 
-        with patch(
-            "dataraum.llm.config.load_llm_config",
-            return_value=_enabled_config(),
-        ):
-            result = apply_pattern_filter(session, "src-1", [rec])
+        result = apply_pattern_filter(session, "src-1", [rec])
 
-        assert result[0].score == 0.6  # unchanged — below threshold
+        assert result[0].score == 0.6
 
     def test_filter_user_confirmed_zeros_score(self, session: Session):
-        """DataFix confirm_expected_pattern sets confidence=1.0 → score zeroed."""
+        """DataFix confirm_expected_pattern sets confidence=1.0, score zeroed."""
         from dataraum.pipeline.fixes.models import DataFix
 
         _ensure_source(session)
-        rec = _make_record(
-            score=0.7,
-            target="column:journal_lines.debit",
-        )
+        rec = _make_record(score=0.7, target="column:journal_lines.debit")
         session.add(rec)
-
-        # Add a DataFix record
         session.add(
             DataFix(
                 source_id="src-1",
@@ -203,17 +127,24 @@ class TestPatternFilter:
         )
         session.flush()
 
-        with patch(
-            "dataraum.llm.config.load_llm_config",
-            return_value=_enabled_config(),
-        ):
-            result = apply_pattern_filter(session, "src-1", [rec])
+        result = apply_pattern_filter(session, "src-1", [rec])
 
         assert result[0].filter_confidence == 1.0
         assert result[0].expected_business_pattern == "mutual_exclusivity"
         assert result[0].business_rule == "Debit/credit mutual exclusivity"
-        # score * (1 - 1.0) = 0
         assert result[0].score == 0.0
+
+    def test_no_datafix_no_change(self, session: Session):
+        """Without DataFix records, scores pass through unchanged."""
+        _ensure_source(session)
+        rec = _make_record(score=0.7)
+        session.add(rec)
+        session.flush()
+
+        result = apply_pattern_filter(session, "src-1", [rec])
+
+        assert result[0].score == 0.7
+        assert result[0].filter_confidence is None
 
     def test_confidence_threshold_constant(self):
         """CONFIDENCE_THRESHOLD is 0.8."""

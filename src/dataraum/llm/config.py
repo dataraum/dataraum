@@ -44,7 +44,6 @@ class LLMFeatures(BaseModel):
     entropy_interpretation: FeatureConfig | None = None
     entropy_query_interpretation: FeatureConfig | None = None
     enrichment_analysis: FeatureConfig | None = None
-    business_pattern_filter: FeatureConfig | None = None
 
 
 class LLMLimits(BaseModel):

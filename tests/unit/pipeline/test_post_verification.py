@@ -1,111 +1,65 @@
-"""Tests for auto-derive post-verification: phases declare produces_analyses."""
+"""Tests for auto-derive post-verification: YAML declares produces and gates."""
 
 from dataraum.entropy.dimensions import AnalysisKey
+from dataraum.pipeline.pipeline_config import load_phase_declarations
 
 
 class TestPhaseProducesAnalyses:
-    """Verify that phases correctly declare what analyses they produce."""
+    """Verify that YAML declarations correctly declare what analyses phases produce."""
 
     def test_typing_phase_produces_typing(self):
-        from dataraum.pipeline.registry import get_phase_class
-
-        cls = get_phase_class("typing")
-        assert cls is not None
-        phase = cls()
-        assert phase.produces_analyses == {AnalysisKey.TYPING}
+        decl = load_phase_declarations()["typing"]
+        assert decl.produces == {AnalysisKey.TYPING}
 
     def test_statistics_phase_produces_statistics(self):
-        from dataraum.pipeline.registry import get_phase_class
-
-        cls = get_phase_class("statistics")
-        assert cls is not None
-        phase = cls()
-        assert phase.produces_analyses == {AnalysisKey.STATISTICS}
+        decl = load_phase_declarations()["statistics"]
+        assert decl.produces == {AnalysisKey.STATISTICS}
 
     def test_semantic_phase_produces_semantic(self):
-        from dataraum.pipeline.registry import get_phase_class
-
-        cls = get_phase_class("semantic")
-        assert cls is not None
-        phase = cls()
-        assert phase.produces_analyses == {AnalysisKey.SEMANTIC}
+        decl = load_phase_declarations()["semantic"]
+        assert decl.produces == {AnalysisKey.SEMANTIC}
 
     def test_relationships_phase_produces_relationships(self):
-        from dataraum.pipeline.registry import get_phase_class
-
-        cls = get_phase_class("relationships")
-        assert cls is not None
-        phase = cls()
-        assert phase.produces_analyses == {AnalysisKey.RELATIONSHIPS}
+        decl = load_phase_declarations()["relationships"]
+        assert decl.produces == {AnalysisKey.RELATIONSHIPS}
 
     def test_correlations_phase_produces_correlation(self):
-        from dataraum.pipeline.registry import get_phase_class
-
-        cls = get_phase_class("correlations")
-        assert cls is not None
-        phase = cls()
-        assert phase.produces_analyses == {AnalysisKey.CORRELATION}
+        decl = load_phase_declarations()["correlations"]
+        assert decl.produces == {AnalysisKey.CORRELATION}
 
     def test_temporal_slice_analysis_produces_drift_summaries(self):
-        from dataraum.pipeline.registry import get_phase_class
-
-        cls = get_phase_class("temporal_slice_analysis")
-        assert cls is not None
-        phase = cls()
-        assert phase.produces_analyses == {AnalysisKey.DRIFT_SUMMARIES}
+        decl = load_phase_declarations()["temporal_slice_analysis"]
+        assert decl.produces == {AnalysisKey.DRIFT_SUMMARIES}
 
     def test_slice_analysis_produces_slice_variance(self):
-        from dataraum.pipeline.registry import get_phase_class
-
-        cls = get_phase_class("slice_analysis")
-        assert cls is not None
-        phase = cls()
-        assert phase.produces_analyses == {AnalysisKey.SLICE_VARIANCE}
+        decl = load_phase_declarations()["slice_analysis"]
+        assert decl.produces == {AnalysisKey.SLICE_VARIANCE}
 
     def test_quality_summary_produces_column_quality_reports(self):
-        from dataraum.pipeline.registry import get_phase_class
-
-        cls = get_phase_class("quality_summary")
-        assert cls is not None
-        phase = cls()
-        assert phase.produces_analyses == {AnalysisKey.COLUMN_QUALITY_REPORTS}
+        decl = load_phase_declarations()["quality_summary"]
+        assert decl.produces == {AnalysisKey.COLUMN_QUALITY_REPORTS}
 
     def test_enriched_views_produces_enriched_view(self):
-        from dataraum.pipeline.registry import get_phase_class
-
-        cls = get_phase_class("enriched_views")
-        assert cls is not None
-        phase = cls()
-        assert phase.produces_analyses == {AnalysisKey.ENRICHED_VIEW}
+        decl = load_phase_declarations()["enriched_views"]
+        assert decl.produces == {AnalysisKey.ENRICHED_VIEW}
 
     def test_import_phase_produces_nothing(self):
-        from dataraum.pipeline.registry import get_phase_class
-
-        cls = get_phase_class("import")
-        assert cls is not None
-        phase = cls()
-        assert phase.produces_analyses == set()
+        decl = load_phase_declarations()["import"]
+        assert decl.produces == set()
 
     def test_quality_review_is_quality_gate(self):
-        from dataraum.pipeline.registry import get_phase_class
-
-        cls = get_phase_class("quality_review")
-        assert cls is not None
-        phase = cls()
-        assert phase.is_quality_gate is True
-        assert phase.produces_analyses == set()
+        decl = load_phase_declarations()["quality_review"]
+        assert decl.gate is True
+        assert decl.produces == set()
 
 
 class TestAutoDeriveMappingCompleteness:
-    """Every AnalysisKey is produced by exactly one phase."""
+    """Every AnalysisKey is produced by exactly one phase in YAML."""
 
     def test_all_analysis_keys_have_producers(self):
-        from dataraum.pipeline.registry import get_registry
-
-        registry = get_registry()
+        declarations = load_phase_declarations()
         produced: set[AnalysisKey] = set()
-        for cls in registry.values():
-            phase = cls()
-            produced.update(phase.produces_analyses)
+        for decl in declarations.values():
+            produced.update(decl.produces)
 
         assert produced == set(AnalysisKey), f"Missing producers for: {set(AnalysisKey) - produced}"

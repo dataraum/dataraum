@@ -154,6 +154,11 @@ class Phase(Protocol):
         ...
 
     @property
+    def detectors(self) -> list[str]:
+        """Detector IDs to run as post-steps after this phase completes."""
+        ...
+
+    @property
     def duckdb_layers(self) -> list[str]:
         """DuckDB layers this phase creates (for cleanup)."""
         ...

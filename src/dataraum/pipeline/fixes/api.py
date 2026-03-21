@@ -16,62 +16,32 @@ from dataraum.pipeline.fixes.models import DataFix, FixDocument
 
 logger = get_logger(__name__)
 
-_ZONE1_ANALYSES = None  # lazy singleton
-_ZONE2_ANALYSES = None  # lazy singleton
-_ZONE3_ANALYSES = None  # lazy singleton
 
+def _detector_ids_for_gate(target_phase: str) -> list[str]:
+    """Collect detector IDs from all phases preceding (and including) a gate.
 
-def _zone1_analyses() -> set[Any]:
-    """Return the set of Zone 1 analysis keys."""
-    global _ZONE1_ANALYSES  # noqa: PLW0603
-    if _ZONE1_ANALYSES is None:
-        from dataraum.entropy.dimensions import AnalysisKey
+    Loads YAML declarations and walks the dependency chain to find all
+    phases that contribute detectors before the given gate phase.
+    """
+    from dataraum.pipeline.pipeline_config import (
+        get_all_dependencies_from_declarations,
+        load_phase_declarations,
+    )
 
-        _ZONE1_ANALYSES = {
-            AnalysisKey.TYPING,
-            AnalysisKey.STATISTICS,
-            AnalysisKey.RELATIONSHIPS,
-            AnalysisKey.SEMANTIC,
-        }
-    return _ZONE1_ANALYSES
+    declarations = load_phase_declarations()
+    # Include all transitive dependencies + the gate phase itself
+    deps = get_all_dependencies_from_declarations(target_phase, declarations)
+    deps.add(target_phase)
 
-
-def _zone2_analyses() -> set[Any]:
-    """Return the set of Zone 1 + Zone 2 analysis keys."""
-    global _ZONE2_ANALYSES  # noqa: PLW0603
-    if _ZONE2_ANALYSES is None:
-        from dataraum.entropy.dimensions import AnalysisKey
-
-        _ZONE2_ANALYSES = _zone1_analyses() | {
-            AnalysisKey.CORRELATION,
-            AnalysisKey.DRIFT_SUMMARIES,
-            AnalysisKey.SLICE_VARIANCE,
-            AnalysisKey.COLUMN_QUALITY_REPORTS,
-            AnalysisKey.ENRICHED_VIEW,
-        }
-    return _ZONE2_ANALYSES
-
-
-def _zone3_analyses() -> set[Any]:
-    """Return the set of Zone 1 + Zone 2 + Zone 3 analysis keys."""
-    global _ZONE3_ANALYSES  # noqa: PLW0603
-    if _ZONE3_ANALYSES is None:
-        from dataraum.entropy.dimensions import AnalysisKey
-
-        _ZONE3_ANALYSES = _zone2_analyses() | {
-            AnalysisKey.VALIDATION,
-            AnalysisKey.BUSINESS_CYCLES,
-        }
-    return _ZONE3_ANALYSES
-
-
-def _analyses_for_gate(target_phase: str) -> set[Any]:
-    """Return analysis keys available at the given gate."""
-    if target_phase == "computation_review":
-        return _zone3_analyses()
-    if target_phase == "analysis_review":
-        return _zone2_analyses()
-    return _zone1_analyses()
+    ids: list[str] = []
+    seen: set[str] = set()
+    for name in declarations:
+        if name in deps:
+            for d_id in declarations[name].detectors:
+                if d_id not in seen:
+                    ids.append(d_id)
+                    seen.add(d_id)
+    return ids
 
 
 @dataclass
@@ -144,7 +114,7 @@ def apply_fixes(
     from dataraum.core.config import reset_config_root, set_config_root
     from dataraum.core.connections import ConnectionConfig, ConnectionManager
     from dataraum.entropy.config import clear_entropy_config_cache
-    from dataraum.entropy.gate import measure_at_gate, persist_gate_result
+    from dataraum.entropy.gate import aggregate_at_gate, persist_gate_result
     from dataraum.pipeline.cleanup import cleanup_phase_cascade
     from dataraum.pipeline.fixes.interpreters import apply_and_persist
     from dataraum.pipeline.runner import RunConfig
@@ -166,11 +136,10 @@ def apply_fixes(
         with manager.session_scope() as session:
             source = _get_source(session)
 
-            gate_before = measure_at_gate(
+            gate_before = aggregate_at_gate(
                 session,
-                manager._duckdb_conn,
                 source.source_id,
-                _analyses_for_gate(target_phase),
+                _detector_ids_for_gate(target_phase),
             )
 
             applied = apply_and_persist(
@@ -230,11 +199,10 @@ def apply_fixes(
         try:
             with manager2.session_scope() as session2:
                 source2 = _get_source(session2)
-                gate_after = measure_at_gate(
+                gate_after = aggregate_at_gate(
                     session2,
-                    manager2._duckdb_conn,
                     source2.source_id,
-                    _analyses_for_gate(target_phase),
+                    _detector_ids_for_gate(target_phase),
                 )
                 persist_gate_result(
                     session2,

@@ -75,7 +75,7 @@ system_prompt: |
               document_type_override, document_type_pattern,
               document_relationship, document_join_path,
               document_timestamp_role, document_business_name, document_description,
-              document_entity_type, document_business_rule
+              document_entity_type, confirm_expected_pattern
     Acceptance: document_accepted_type_fidelity, document_accepted_relationship_quality,
               document_accepted_null_ratio, document_accepted_outlier_rate,
               document_accepted_benford, document_accepted_temporal_drift,
@@ -88,7 +88,7 @@ system_prompt: |
     document_accepted_*, document_type_override, document_type_pattern,
     document_unit, document_unit_source, document_timestamp_role,
     document_relationship, document_join_path, document_business_name,
-    document_business_rule.
+    confirm_expected_pattern.
   Prefer these over non-executable actions when applicable.
 
   investigate_* (Agent analyzes, user reviews findings):

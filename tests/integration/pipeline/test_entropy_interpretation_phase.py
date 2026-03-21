@@ -16,12 +16,6 @@ if TYPE_CHECKING:
 class TestEntropyInterpretationPhase:
     """Tests for EntropyInterpretationPhase."""
 
-    def test_phase_properties(self):
-        phase = EntropyInterpretationPhase()
-        assert phase.name == "entropy_interpretation"
-        assert phase.description == "LLM interpretation of entropy"
-        assert phase.dependencies == ["entropy", "computation_review"]
-
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):

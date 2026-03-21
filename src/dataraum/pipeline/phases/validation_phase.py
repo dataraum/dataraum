@@ -13,7 +13,6 @@ from sqlalchemy import delete, select
 
 from dataraum.analysis.validation import ValidationAgent
 from dataraum.analysis.validation.db_models import ValidationResultRecord
-from dataraum.entropy.dimensions import AnalysisKey
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
@@ -39,18 +38,6 @@ class ValidationPhase(BasePhase):
     @property
     def name(self) -> str:
         return "validation"
-
-    @property
-    def description(self) -> str:
-        return "LLM-powered validation checks"
-
-    @property
-    def produces_analyses(self) -> set[AnalysisKey]:
-        return {AnalysisKey.VALIDATION}
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["analysis_review", "semantic", "relationships", "enriched_views", "slicing"]
 
     def cleanup(
         self,

@@ -49,14 +49,6 @@ class ColumnEligibilityPhase(BasePhase):
     def name(self) -> str:
         return "column_eligibility"
 
-    @property
-    def description(self) -> str:
-        return "Column eligibility evaluation"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["statistics"]
-
     def cleanup(
         self,
         session: Session,

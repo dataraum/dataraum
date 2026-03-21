@@ -73,7 +73,7 @@ def _build_append_documents(
     """Build append documents — one per affected column.
 
     When the schema has structured fields beyond just "reason" (e.g.,
-    document_business_rule with table, columns, pattern_type), appends
+    confirm_expected_pattern with table, columns, pattern_type), appends
     the parameters dict. Otherwise (e.g., document_accepted_outlier_rate
     with only an optional reason), appends the column reference string.
     """
@@ -217,7 +217,7 @@ def _build_metadata_documents(
       an ORM row directly (SemanticAnnotation, Relationship).
     - **marker**: No ``model`` but has structured fields — stores
       parameters in the DataFix payload for detector queries
-      (e.g. document_join_path, document_business_rule).
+      (e.g. document_join_path, confirm_expected_pattern).
     - **acceptance**: No ``model``, no structured fields — the
       DataFix record itself is the fix; the gate queries it.
     """

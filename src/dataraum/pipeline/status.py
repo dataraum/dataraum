@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.pipeline.db_models import PhaseLog, PipelineRun
-from dataraum.pipeline.registry import get_phase_class, get_registry
+from dataraum.pipeline.pipeline_config import load_phase_declarations
+from dataraum.pipeline.registry import get_phase_class
 from dataraum.storage.base import Base
 
 
@@ -120,18 +121,17 @@ def get_pipeline_status(session: Session, source_id: str) -> PipelineStatus:
         if log.phase_name not in log_by_phase:
             log_by_phase[log.phase_name] = log
 
-    # Build phase status list from registry
-    registry = get_registry()
+    # Build phase status list from YAML declarations
+    declarations = load_phase_declarations()
     phases: list[PhaseStatusInfo] = []
-    for name, cls in registry.items():
-        instance = cls()
+    for name, decl in declarations.items():
         phase_log = log_by_phase.get(name)
         if phase_log is not None:
             status = PhaseStatus(phase_log.status)
             phases.append(
                 PhaseStatusInfo(
                     name=name,
-                    description=instance.description,
+                    description=decl.description,
                     status=status,
                     duration_seconds=phase_log.duration_seconds,
                     completed_at=phase_log.completed_at,
@@ -142,7 +142,7 @@ def get_pipeline_status(session: Session, source_id: str) -> PipelineStatus:
             phases.append(
                 PhaseStatusInfo(
                     name=name,
-                    description=instance.description,
+                    description=decl.description,
                     status=PhaseStatus.PENDING,
                 )
             )

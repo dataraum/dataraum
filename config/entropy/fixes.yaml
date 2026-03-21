@@ -434,11 +434,11 @@ schemas:
     dimension_path: semantic.dimensional.dimensional_patterns
     triage_guidance: ""
     actions:
-      document_business_rule:
+      confirm_expected_pattern:
         target: metadata
         routing: postprocess
         gate: analysis_review
-        description: Document a detected cross-column pattern as a known business rule
+        description: Confirm a detected cross-column pattern as an expected business rule
         guidance: |
           The detector found undocumented cross-column patterns.
           Read the table name from the affected targets in <entropy_evidence>

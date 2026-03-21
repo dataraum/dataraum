@@ -16,19 +16,6 @@ if TYPE_CHECKING:
 class TestBusinessCyclesPhase:
     """Tests for BusinessCyclesPhase."""
 
-    def test_phase_properties(self):
-        phase = BusinessCyclesPhase()
-        assert phase.name == "business_cycles"
-        assert phase.description == "Expert LLM cycle detection"
-        assert phase.dependencies == [
-            "analysis_review",
-            "semantic",
-            "temporal",
-            "enriched_views",
-            "slicing",
-            "quality_summary",
-        ]
-
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):

@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 from dataraum.pipeline.phases.quality_review_phase import QualityReviewPhase
+from dataraum.pipeline.pipeline_config import load_phase_declarations
 
 
 class TestQualityReviewPhase:
@@ -13,17 +14,17 @@ class TestQualityReviewPhase:
         assert phase.name == "quality_review"
 
     def test_depends_on_semantic_and_statistical_quality(self) -> None:
-        phase = QualityReviewPhase()
-        assert "semantic" in phase.dependencies
-        assert "statistical_quality" in phase.dependencies
+        decl = load_phase_declarations()["quality_review"]
+        assert "semantic" in decl.dependencies
+        assert "statistical_quality" in decl.dependencies
 
     def test_is_quality_gate(self) -> None:
-        phase = QualityReviewPhase()
-        assert phase.is_quality_gate is True
+        decl = load_phase_declarations()["quality_review"]
+        assert decl.gate is True
 
     def test_produces_no_analyses(self) -> None:
-        phase = QualityReviewPhase()
-        assert phase.produces_analyses == set()
+        decl = load_phase_declarations()["quality_review"]
+        assert decl.produces == set()
 
     def test_run_is_noop(self) -> None:
         phase = QualityReviewPhase()

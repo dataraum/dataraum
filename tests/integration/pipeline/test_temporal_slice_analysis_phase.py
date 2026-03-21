@@ -16,12 +16,6 @@ if TYPE_CHECKING:
 class TestTemporalSliceAnalysisPhase:
     """Tests for TemporalSliceAnalysisPhase."""
 
-    def test_phase_properties(self):
-        phase = TemporalSliceAnalysisPhase()
-        assert phase.name == "temporal_slice_analysis"
-        assert phase.description == "Distribution drift analysis on slices"
-        assert phase.dependencies == ["slice_analysis", "temporal"]
-
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):

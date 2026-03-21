@@ -3,10 +3,8 @@
 Measures uncertainty from LLM-generated column quality reports.
 Converts ColumnQualityReport scores into entropy: score = 1.0 - avg_quality_score.
 
-Produces one EntropyObject per column, using the same logic that was previously
-inline in entropy_phase._run_dimensional_entropy().
-
-Source: quality_summary analysis (ColumnQualityReport)
+Source: quality_summary analysis (ColumnQualityReport).
+Runs as a post-step of quality_summary (declared in pipeline.yaml).
 """
 
 from __future__ import annotations

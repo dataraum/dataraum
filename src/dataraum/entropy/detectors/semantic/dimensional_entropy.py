@@ -31,31 +31,6 @@ from dataraum.entropy.models import EntropyObject, ResolutionOption
 logger = get_logger(__name__)
 
 
-def _get_documented_patterns(context: DetectorContext) -> list[dict[str, Any]]:
-    """Load documented business rule patterns from applied DataFix records.
-
-    Scoped to the current table to avoid false matches across tables.
-    """
-    if not context.session or not context.source_id:
-        return []
-
-    from dataraum.pipeline.fixes.models import DataFix
-
-    fixes = (
-        context.session.execute(
-            select(DataFix).where(
-                DataFix.source_id == context.source_id,
-                DataFix.action == "document_business_rule",
-                DataFix.table_name == context.table_name,
-                DataFix.status == "applied",
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return [fix.payload.get("parameters", {}) for fix in fixes if fix.payload.get("parameters")]
-
-
 @dataclass
 class ColumnVariancePattern:
     """Detected variance pattern for a column."""
@@ -485,11 +460,6 @@ class DimensionalEntropyDetector(EntropyDetector):
         accepted_tables: list[str] = self.config.get("accepted_tables") or detector_config.get(
             "accepted_tables", []
         )
-        # Documented patterns: list of {"table", "columns", "pattern_type"} dicts.
-        # Patterns matching a documented entry are excluded from scoring.
-        # Loaded from applied DataFix records (document_business_rule action).
-        documented_patterns: list[dict[str, Any]] = _get_documented_patterns(context)
-
         slice_variance = context.get_analysis("slice_variance", {})
         columns_data = slice_variance.get("columns", {})
         slice_data = slice_variance.get("slice_data", {})
@@ -569,50 +539,6 @@ class DimensionalEntropyDetector(EntropyDetector):
             patterns.extend(value_mutex_patterns)
             entropy_score.mutual_exclusivity_count += len(value_mutex_patterns)
 
-        # Filter out documented patterns — these are known business rules,
-        # not undocumented complexity
-        if documented_patterns:
-            documented_keys = set()
-            for dp in documented_patterns:
-                if dp.get("table") == context.table_name:
-                    raw_cols = dp.get("columns", [])
-                    # Handle both list and comma-separated string formats
-                    if isinstance(raw_cols, str):
-                        raw_cols = [c.strip() for c in raw_cols.split(",")]
-                    cols = frozenset(raw_cols)
-                    documented_keys.add((dp.get("pattern_type", ""), cols))
-
-            undocumented: list[CrossColumnPattern] = []
-            for p in patterns:
-                key = (p.pattern_type, frozenset(p.columns))
-                if key not in documented_keys:
-                    undocumented.append(p)
-                else:
-                    logger.info(
-                        "documented_pattern_skipped",
-                        table=context.table_name,
-                        pattern_type=p.pattern_type,
-                        columns=p.columns,
-                    )
-
-            # Recount after filtering
-            patterns = undocumented
-            entropy_score.mutual_exclusivity_count = sum(
-                1 for p in patterns if p.pattern_type == "mutual_exclusivity"
-            )
-            entropy_score.correlated_variance_count = sum(
-                1 for p in patterns if p.pattern_type == "correlated_variance"
-            )
-            entropy_score.conditional_dependency_count = sum(
-                1 for p in patterns if p.pattern_type == "conditional_dependency"
-            )
-            entropy_score.temporal_correlation_count = sum(
-                1 for p in patterns if p.pattern_type == "temporal_correlation"
-            )
-            entropy_score.temporal_drift_count = sum(
-                1 for p in patterns if p.pattern_type == "temporal_drift"
-            )
-
         # Calculate overall entropy score using configurable weights
         num_categorical = max(len(interesting_columns), entropy_score.mutual_exclusivity_count, 1)
         entropy_score.categorical_entropy = (
@@ -651,7 +577,7 @@ class DimensionalEntropyDetector(EntropyDetector):
 
             resolution_options = [
                 ResolutionOption(
-                    action="document_business_rule",
+                    action="confirm_expected_pattern",
                     parameters={
                         "pattern_type": pattern.pattern_type,
                         "columns": pattern.columns,
@@ -704,7 +630,7 @@ class DimensionalEntropyDetector(EntropyDetector):
                     evidence=summary_evidence,
                     resolution_options=[
                         ResolutionOption(
-                            action="document_business_rule",
+                            action="confirm_expected_pattern",
                             parameters={"pattern_count": entropy_score.total_patterns},
                             effort="high",
                             description=f"Document all {entropy_score.total_patterns} detected business rules",

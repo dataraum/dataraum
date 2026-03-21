@@ -21,7 +21,6 @@ from dataraum.analysis.correlation import analyze_correlations
 from dataraum.analysis.correlation.db_models import DerivedColumn
 from dataraum.analysis.correlation.processor import analyze_enriched_correlations
 from dataraum.analysis.views.db_models import EnrichedView
-from dataraum.entropy.dimensions import AnalysisKey
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
@@ -43,18 +42,6 @@ class CorrelationsPhase(BasePhase):
     @property
     def name(self) -> str:
         return "correlations"
-
-    @property
-    def description(self) -> str:
-        return "Within-table correlation analysis"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["enriched_views"]
-
-    @property
-    def produces_analyses(self) -> set[AnalysisKey]:
-        return {AnalysisKey.CORRELATION}
 
     def cleanup(
         self,

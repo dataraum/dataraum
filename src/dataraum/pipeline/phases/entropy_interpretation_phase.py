@@ -8,7 +8,6 @@ LLM-powered interpretation of entropy metrics to generate:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
@@ -82,14 +81,6 @@ class EntropyInterpretationPhase(BasePhase):
     @property
     def name(self) -> str:
         return "entropy_interpretation"
-
-    @property
-    def description(self) -> str:
-        return "LLM interpretation of entropy"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["entropy", "computation_review"]
 
     def cleanup(
         self,
@@ -180,13 +171,6 @@ class EntropyInterpretationPhase(BasePhase):
         all_columns = (ctx.session.execute(cols_stmt)).scalars().all()
         column_ids = [c.column_id for c in all_columns]
         column_map = {c.column_id: c for c in all_columns}
-
-        # --- Run quality-dependent detectors ---
-        # ColumnQualityDetector and DimensionalEntropyDetector need data from
-        # quality_summary (ColumnQualityReport, ColumnSliceProfile). They were
-        # skipped during the entropy phase because that data didn't exist yet.
-        # Run them now and persist the new EntropyObjectRecords.
-        self._run_quality_dependent_detectors(ctx, typed_tables, table_map)
 
         # Load entropy records grouped by column
         # Include both column-level records AND table-level records (column_id is NULL)
@@ -830,67 +814,3 @@ class EntropyInterpretationPhase(BasePhase):
             warnings=all_errors if all_errors else None,
             summary=f"{interp_count} interpretations, {total_actions} resolution actions",
         )
-
-    def _run_quality_dependent_detectors(
-        self,
-        ctx: PhaseContext,
-        typed_tables: Sequence[Any],
-        table_map: dict[str, Any],
-    ) -> int:
-        """Run table-scoped detectors that were skipped during the entropy phase.
-
-        Detectors like ColumnQualityDetector and DimensionalEntropyDetector
-        require data from quality_summary. They fail can_run() during the
-        entropy phase and are silently skipped. Now that quality_summary
-        has run, re-run all table-scoped detectors — can_run() filters
-        naturally — and persist only records from detectors that didn't
-        produce records during the entropy phase.
-
-        Returns:
-            Number of new EntropyObjectRecords created.
-        """
-        from sqlalchemy import func
-
-        from dataraum.entropy.engine import _extract_column_id, _make_record, persist_records
-        from dataraum.entropy.snapshot import take_snapshot
-
-        # Detector IDs that already have records from the entropy phase
-        existing_ids = set(
-            ctx.session.execute(
-                select(func.distinct(EntropyObjectRecord.detector_id)).where(
-                    EntropyObjectRecord.source_id == ctx.source_id
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-        new_records: list[Any] = []
-        for table in typed_tables:
-            snapshot = take_snapshot(
-                target=f"table:{table.table_name}",
-                session=ctx.session,
-            )
-
-            for obj in snapshot.objects:
-                if obj.detector_id in existing_ids:
-                    continue
-                record = _make_record(
-                    source_id=ctx.source_id,
-                    entropy_obj=obj,
-                    table_id=table.table_id,
-                    column_id=_extract_column_id(obj),
-                )
-                new_records.append(record)
-
-        if new_records:
-            persist_records(ctx.session, new_records)
-            new_detector_ids = {r.detector_id for r in new_records}
-            logger.info(
-                "quality_dependent_detectors",
-                source_id=ctx.source_id,
-                records=len(new_records),
-                detectors=sorted(new_detector_ids),
-            )
-
-        return len(new_records)

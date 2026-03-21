@@ -1,22 +1,16 @@
-"""Entropy engine — reusable library for detector execution and network inference.
-
-Extracted from entropy_phase.py so that multiple pipeline phases (entropy,
-quality_summary, entropy_interpretation) can run detectors and build
-network context without duplicating orchestration logic.
+"""Entropy engine — detector execution, persistence, and network inference.
 
 Core API:
-- compute_network: Load records from DB, build Bayesian network. Returns None if no data.
-- run_detectors: Execute detectors on typed tables, return records + domain objects
+- run_detector_post_step: Run a single detector by ID as a phase post-step
+- compute_network: Load records from DB, build Bayesian network
 - persist_records: Add EntropyObjectRecords to session
-- compute_dimension_scores: Aggregate scores by dimension path for gate checking
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from dataraum.core.logging import get_logger
 from dataraum.entropy.db_models import EntropyObjectRecord
@@ -27,103 +21,145 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from dataraum.entropy.views.network_context import EntropyForNetwork
-    from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
 
 
-@dataclass
-class DetectorResults:
-    """Results from running entropy detectors."""
-
-    records: list[EntropyObjectRecord] = field(default_factory=list)
-    domain_objects: list[EntropyObject] = field(default_factory=list)
-    tables_processed: int = 0
-
-
-def run_detectors(
+def run_detector_post_step(
     session: Session,
     source_id: str,
-    typed_tables: list[Table],
-    columns: list[Column],
-) -> DetectorResults:
-    """Execute entropy detectors on typed tables and their columns.
+    detector_id: str,
+) -> int:
+    """Run a single detector as a phase post-step.
 
-    Runs column-scoped detectors on each column and table-scoped
-    detectors on each table, collecting EntropyObjectRecords and
-    in-memory EntropyObjects for network inference.
+    Scoped delete-before-insert: deletes existing records for this
+    (source_id, detector_id) pair, then runs the detector against all
+    typed tables/columns/views and persists new records.
 
     Args:
-        session: SQLAlchemy session for detector data loading.
+        session: SQLAlchemy session (caller manages commit).
         source_id: Source ID for record provenance.
-        typed_tables: Typed tables to analyze.
-        columns: Columns belonging to those tables.
+        detector_id: ID of the detector to run.
 
     Returns:
-        DetectorResults with records, domain objects, and tables processed.
+        Number of records created.
     """
-    # Group columns by table
-    columns_by_table: dict[str, list[Column]] = {}
-    for col in columns:
-        columns_by_table.setdefault(col.table_id, []).append(col)
+    from dataraum.entropy.detectors.base import get_default_registry
+    from dataraum.storage import Column as ColumnModel
+    from dataraum.storage import Table
 
-    # Build table name -> table_id lookup for target resolution
+    registry = get_default_registry()
+    detector = registry.detectors.get(detector_id)
+    if detector is None:
+        logger.warning("post_step_detector_not_found", detector_id=detector_id)
+        return 0
+
+    # Scoped delete: remove stale records for this detector only
+    session.execute(
+        delete(EntropyObjectRecord).where(
+            EntropyObjectRecord.source_id == source_id,
+            EntropyObjectRecord.detector_id == detector_id,
+        )
+    )
+
+    # Get typed tables
+    typed_tables = list(
+        session.execute(select(Table).where(Table.source_id == source_id, Table.layer == "typed"))
+        .scalars()
+        .all()
+    )
+    if not typed_tables:
+        return 0
+
     table_id_by_name = {t.table_name: t.table_id for t in typed_tables}
-
     all_records: list[EntropyObjectRecord] = []
-    all_domain_objects: list[EntropyObject] = []
-    tables_processed = 0
 
-    for table in typed_tables:
-        table_columns = columns_by_table.get(table.table_id, [])
-        if not table_columns:
-            continue
-
-        # --- Column-scoped detectors ---
-        for col in table_columns:
-            target = f"column:{table.table_name}.{col.column_name}"
-            snapshot = take_snapshot(target=target, session=session)
-
-            all_domain_objects.extend(snapshot.objects)
-
-            for entropy_obj in snapshot.objects:
-                record = _make_record(
-                    source_id=source_id,
-                    entropy_obj=entropy_obj,
-                    table_id=table.table_id,
-                    column_id=col.column_id,
+    if detector.scope == "column":
+        # Column-scoped: run on each column of each table
+        for table in typed_tables:
+            columns = list(
+                session.execute(select(ColumnModel).where(ColumnModel.table_id == table.table_id))
+                .scalars()
+                .all()
+            )
+            for col in columns:
+                target = f"column:{table.table_name}.{col.column_name}"
+                snapshot = take_snapshot(
+                    target=target,
+                    session=session,
+                    dimensions=[detector.sub_dimension],
                 )
-                all_records.append(record)
+                for obj in snapshot.objects:
+                    all_records.append(
+                        _make_record(
+                            source_id=source_id,
+                            entropy_obj=obj,
+                            table_id=table.table_id,
+                            column_id=col.column_id,
+                        )
+                    )
 
-        # --- Table-scoped detectors ---
-        table_snapshot = take_snapshot(target=f"table:{table.table_name}", session=session)
-        all_domain_objects.extend(table_snapshot.objects)
+    elif detector.scope == "table":
+        # Table-scoped: run on each table
+        for table in typed_tables:
+            target = f"table:{table.table_name}"
+            snapshot = take_snapshot(
+                target=target,
+                session=session,
+                dimensions=[detector.sub_dimension],
+            )
+            for obj in snapshot.objects:
+                all_records.append(
+                    _make_record(
+                        source_id=source_id,
+                        entropy_obj=obj,
+                        table_id=_resolve_table_id_from_target(
+                            obj.target, table_id_by_name, table.table_id
+                        ),
+                        column_id=_extract_column_id(obj),
+                    )
+                )
 
-        logger.debug(
-            "table_scoped_detectors",
-            table=table.table_name,
-            entropy_objects=len(table_snapshot.objects),
+    elif detector.scope == "view":
+        # View-scoped: run on enriched views
+        from dataraum.analysis.views.db_models import EnrichedView
+
+        enriched_views = list(
+            session.execute(
+                select(EnrichedView).where(
+                    EnrichedView.fact_table_id.in_([t.table_id for t in typed_tables])
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for ev in enriched_views:
+            target = f"view:{ev.view_name}"
+            snapshot = take_snapshot(
+                target=target,
+                session=session,
+                dimensions=[detector.sub_dimension],
+            )
+            for obj in snapshot.objects:
+                all_records.append(
+                    _make_record(
+                        source_id=source_id,
+                        entropy_obj=obj,
+                        table_id=ev.fact_table_id,
+                        column_id=_extract_column_id(obj),
+                    )
+                )
+
+    persist_records(session, all_records)
+
+    if all_records:
+        logger.info(
+            "post_step_detector_done",
+            detector_id=detector_id,
+            records=len(all_records),
         )
 
-        for entropy_obj in table_snapshot.objects:
-            record_column_id = _extract_column_id(entropy_obj)
-            record = _make_record(
-                source_id=source_id,
-                entropy_obj=entropy_obj,
-                table_id=_resolve_table_id_from_target(
-                    entropy_obj.target, table_id_by_name, table.table_id
-                ),
-                column_id=record_column_id,
-            )
-            all_records.append(record)
-
-        tables_processed += 1
-
-    return DetectorResults(
-        records=all_records,
-        domain_objects=all_domain_objects,
-        tables_processed=tables_processed,
-    )
+    return len(all_records)
 
 
 def compute_network(
@@ -186,28 +222,6 @@ def persist_records(
         session.add_all(records)
 
 
-def compute_dimension_scores(
-    domain_objects: list[EntropyObject],
-) -> dict[str, float]:
-    """Compute averaged scores by dimension path for gate checking.
-
-    Keys use full dimension paths (layer.dimension.sub_dimension) so they
-    match contract threshold prefix matching in the scheduler.
-
-    Args:
-        domain_objects: EntropyObjects to aggregate.
-
-    Returns:
-        Dict mapping dimension paths to average scores.
-    """
-    scores_by_dim: dict[str, list[float]] = {}
-    for obj in domain_objects:
-        path = f"{obj.layer}.{obj.dimension}.{obj.sub_dimension}"
-        scores_by_dim.setdefault(path, []).append(obj.score)
-
-    return {dim: sum(scores) / len(scores) for dim, scores in scores_by_dim.items() if scores}
-
-
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -242,6 +256,9 @@ def _make_record(
         evidence=entropy_obj.evidence,
         resolution_options=resolution_dicts if resolution_dicts else None,
         detector_id=entropy_obj.detector_id,
+        expected_business_pattern=entropy_obj.expected_business_pattern,
+        business_rule=entropy_obj.business_rule,
+        filter_confidence=entropy_obj.filter_confidence,
     )
 
 

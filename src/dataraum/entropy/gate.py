@@ -1,7 +1,7 @@
 """Quality gate measurement and contract assessment.
 
 Provides the measurement and assessment logic that runs at quality gate phases:
-- ``measure_at_gate``: run all eligible detectors fresh
+- ``aggregate_at_gate``: read persisted detector records (no re-execution)
 - ``assess_contracts``: check scores against contract thresholds
 - ``match_threshold``: find the applicable threshold for a dimension path
 """
@@ -16,17 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
-from dataraum.entropy.dimensions import AnalysisKey
 
 logger = get_logger(__name__)
-
-
-@dataclass
-class SkippedDetector:
-    """A detector that was eligible but could not run."""
-
-    detector_id: str
-    reason: str  # e.g. "missing analyses: typing, statistics"
 
 
 @dataclass
@@ -37,7 +28,6 @@ class GateResult:
     column_details: dict[str, dict[str, float]] = field(default_factory=dict)
     table_details: dict[str, dict[str, float]] = field(default_factory=dict)
     view_details: dict[str, dict[str, float]] = field(default_factory=dict)
-    skipped_detectors: list[SkippedDetector] = field(default_factory=list)
     # dim_path -> {action_name, ...} — resolution options from all entropy objects
     resolution_actions: dict[str, set[str]] = field(default_factory=dict)
     # Per-target component evidence: dim_path -> target -> {component_key: value}
@@ -45,6 +35,8 @@ class GateResult:
     column_evidence: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
     # dim_path -> {target, ...} — targets accepted via DataFix records
     accepted_targets: dict[str, set[str]] = field(default_factory=dict)
+    # target -> filter_confidence — records discounted by business pattern filter
+    filter_applied: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -112,67 +104,59 @@ def _collect_evidence(
         evidence_by_dim[str(obj.sub_dimension)][target] = dict(ev)
 
 
-def measure_at_gate(
+def aggregate_at_gate(
     session: Session,
-    duckdb_conn: Any,
     source_id: str,
-    available_analyses: set[AnalysisKey],
+    detector_ids: list[str],
 ) -> GateResult:
-    """Run all eligible detectors fresh at a quality gate.
+    """Aggregate persisted detector records at a quality gate.
 
-    Finds detectors whose required_analyses are fully satisfied by
-    available_analyses, then runs them against typed tables/columns/views.
+    Reads ``EntropyObjectRecord`` rows instead of re-running detectors.
+    Records are produced by ``run_detector_post_step()`` after each phase.
 
     Args:
-        session: SQLAlchemy session for DB queries.
-        duckdb_conn: DuckDB connection.
+        session: SQLAlchemy session.
         source_id: The source being processed.
-        available_analyses: Analysis keys produced by completed phases.
+        detector_ids: Detector IDs to include (from completed phases).
 
     Returns:
-        GateResult with dimension scores and per-column details.
+        GateResult with dimension scores and per-column/table/view details.
     """
+    from dataraum.entropy.db_models import EntropyObjectRecord
     from dataraum.entropy.detectors.base import get_default_registry
-    from dataraum.entropy.snapshot import take_snapshot
-    from dataraum.storage.models import Column as ColumnModel
-    from dataraum.storage.models import Table
+
+    if not detector_ids:
+        return GateResult()
 
     registry = get_default_registry()
 
-    # Partition detectors into runnable vs skipped
-    all_detectors = registry.get_all_detectors()
-    runnable = []
-    skipped: list[SkippedDetector] = []
-    for d in all_detectors:
-        missing = [a for a in d.required_analyses if a not in available_analyses]
-        if missing:
-            skipped.append(
-                SkippedDetector(
-                    detector_id=d.detector_id,
-                    reason=f"missing analyses: {', '.join(str(a) for a in missing)}",
-                )
+    # Build sub_dimension -> dimension_path mapping from detector registry
+    sub_dim_to_path: dict[str, str] = {}
+    scope_by_detector: dict[str, str] = {}
+    for d in registry.get_all_detectors():
+        if d.detector_id in detector_ids:
+            sub_dim_to_path[str(d.sub_dimension)] = d.dimension_path
+            scope_by_detector[d.detector_id] = d.scope
+
+    # Load all records for these detectors
+    records = list(
+        session.execute(
+            select(EntropyObjectRecord).where(
+                EntropyObjectRecord.source_id == source_id,
+                EntropyObjectRecord.detector_id.in_(detector_ids),
             )
-        else:
-            runnable.append(d)
-
-    if not runnable:
-        return GateResult(skipped_detectors=skipped)
-
-    # Partition by scope
-    col_detectors = [d for d in runnable if d.scope == "column"]
-    tbl_detectors = [d for d in runnable if d.scope == "table"]
-    view_detectors = [d for d in runnable if d.scope == "view"]
-
-    col_dims = [d.sub_dimension for d in col_detectors]
-    tbl_dims = [d.sub_dimension for d in tbl_detectors]
-    view_dims = [d.sub_dimension for d in view_detectors]
-
-    # Get all typed tables for this source
-    typed_tables = (
-        session.execute(select(Table).where(Table.source_id == source_id, Table.layer == "typed"))
+        )
         .scalars()
         .all()
     )
+
+    if not records:
+        return GateResult()
+
+    # Apply business pattern filter before aggregation
+    from dataraum.entropy.pattern_filter import CONFIDENCE_THRESHOLD, apply_pattern_filter
+
+    records = apply_pattern_filter(session, source_id, records)
 
     scores_by_dim: dict[str, list[float]] = defaultdict(list)
     column_scores: dict[str, dict[str, float]] = defaultdict(dict)
@@ -180,85 +164,41 @@ def measure_at_gate(
     view_scores: dict[str, dict[str, float]] = defaultdict(dict)
     actions_by_dim: dict[str, set[str]] = defaultdict(set)
     evidence_by_dim: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    filter_applied: dict[str, float] = {}
 
-    # Column-scoped pass
-    if col_dims:
-        for table in typed_tables:
-            columns = (
-                session.execute(select(ColumnModel).where(ColumnModel.table_id == table.table_id))
-                .scalars()
-                .all()
-            )
-            for col in columns:
-                target = f"column:{table.table_name}.{col.column_name}"
-                snapshot = take_snapshot(
-                    target=target,
-                    session=session,
-                    duckdb_conn=duckdb_conn,
-                    dimensions=col_dims,
-                )
-                for sub_dim, score in snapshot.scores.items():
-                    scores_by_dim[sub_dim].append(score)
-                    column_scores[sub_dim][target] = score
-                for obj in snapshot.objects:
-                    for opt in obj.resolution_options:
-                        actions_by_dim[str(obj.sub_dimension)].add(opt.action)
-                    _collect_evidence(obj, target, evidence_by_dim)
+    for record in records:
+        sub_dim = record.sub_dimension
+        target = record.target
+        scope = scope_by_detector.get(record.detector_id, "column")
 
-    # Table-scoped pass
-    if tbl_dims:
-        for table in typed_tables:
-            target = f"table:{table.table_name}"
-            snapshot = take_snapshot(
-                target=target,
-                session=session,
-                duckdb_conn=duckdb_conn,
-                dimensions=tbl_dims,
-            )
-            for sub_dim, score in snapshot.scores.items():
-                scores_by_dim[sub_dim].append(score)
-                table_scores[sub_dim][target] = score
-            for obj in snapshot.objects:
-                for opt in obj.resolution_options:
-                    actions_by_dim[str(obj.sub_dimension)].add(opt.action)
-                _collect_evidence(obj, target, evidence_by_dim)
+        scores_by_dim[sub_dim].append(record.score)
 
-    # View-scoped pass
-    if view_dims:
-        from dataraum.analysis.views.db_models import EnrichedView
+        # Track filtered records
+        if (
+            record.filter_confidence is not None
+            and record.filter_confidence >= CONFIDENCE_THRESHOLD
+        ):
+            filter_applied[target] = record.filter_confidence
 
-        enriched_views = (
-            session.execute(
-                select(EnrichedView).where(
-                    EnrichedView.fact_table_id.in_([t.table_id for t in typed_tables])
-                )
-            )
-            .scalars()
-            .all()
-        )
+        # Route to column/table/view details by scope
+        if scope == "table":
+            table_scores[sub_dim][target] = record.score
+        elif scope == "view":
+            view_scores[sub_dim][target] = record.score
+        else:
+            column_scores[sub_dim][target] = record.score
 
-        for ev in enriched_views:
-            target = f"view:{ev.view_name}"
-            snapshot = take_snapshot(
-                target=target,
-                session=session,
-                duckdb_conn=duckdb_conn,
-                dimensions=view_dims,
-            )
-            for sub_dim, score in snapshot.scores.items():
-                scores_by_dim[sub_dim].append(score)
-                view_scores[sub_dim][target] = score
-            for obj in snapshot.objects:
-                for opt in obj.resolution_options:
-                    actions_by_dim[str(obj.sub_dimension)].add(opt.action)
-                _collect_evidence(obj, target, evidence_by_dim)
+        # Reconstruct resolution_actions from record
+        if record.resolution_options:
+            for opt in record.resolution_options:
+                action = opt.get("action")
+                if action:
+                    actions_by_dim[sub_dim].add(action)
 
-    # Build sub_dimension -> dimension_path mapping
-    sub_dim_to_path: dict[str, str] = {str(d.sub_dimension): d.dimension_path for d in runnable}
+        # Reconstruct column_evidence from record
+        _collect_evidence(record, target, evidence_by_dim)
 
     # Aggregate per dimension: max(mean, max²)
-    # The squared-max term ensures a single bad column (e.g. VARCHAR date)
-    # is not diluted away when averaged across many healthy columns.
     result_scores: dict[str, float] = {}
     for sub_dim, score_list in scores_by_dim.items():
         mean_score = sum(score_list) / len(score_list)
@@ -266,31 +206,27 @@ def measure_at_gate(
         path = sub_dim_to_path.get(sub_dim, sub_dim)
         result_scores[path] = round(max(mean_score, max_score**2), 4)
 
-    # Build column details keyed by dimension_path
+    # Build details keyed by dimension_path
     result_column_details: dict[str, dict[str, float]] = {}
     for sd, targets in column_scores.items():
         path = sub_dim_to_path.get(sd, sd)
         result_column_details[path] = targets
 
-    # Build table details keyed by dimension_path
     result_table_details: dict[str, dict[str, float]] = {}
     for sd, targets in table_scores.items():
         path = sub_dim_to_path.get(sd, sd)
         result_table_details[path] = targets
 
-    # Build view details keyed by dimension_path
     result_view_details: dict[str, dict[str, float]] = {}
     for sd, targets in view_scores.items():
         path = sub_dim_to_path.get(sd, sd)
         result_view_details[path] = targets
 
-    # Build resolution actions keyed by dimension_path
     result_actions: dict[str, set[str]] = {}
     for sd, acts in actions_by_dim.items():
         path = sub_dim_to_path.get(sd, sd)
         result_actions.setdefault(path, set()).update(acts)
 
-    # Build evidence keyed by dimension_path
     result_evidence: dict[str, dict[str, dict[str, Any]]] = {}
     for sd, targets_ev in evidence_by_dim.items():
         path = sub_dim_to_path.get(sd, sd)
@@ -304,10 +240,10 @@ def measure_at_gate(
         column_details=result_column_details,
         table_details=result_table_details,
         view_details=result_view_details,
-        skipped_detectors=skipped,
         resolution_actions=result_actions,
         column_evidence=result_evidence,
         accepted_targets=accepted,
+        filter_applied=filter_applied,
     )
 
 
@@ -474,5 +410,7 @@ def persist_gate_result(
         existing_outputs["accepted_targets"] = {
             k: sorted(v) for k, v in gate_result.accepted_targets.items()
         }
+    if gate_result.filter_applied:
+        existing_outputs["filter_applied"] = gate_result.filter_applied
     log.outputs = existing_outputs
     session.commit()

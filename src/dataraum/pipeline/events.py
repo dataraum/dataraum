@@ -53,9 +53,6 @@ class PipelineEvent:
     # EXIT_CHECK: available fixes per violating dimension
     # dim_path -> [{"action_name": str, "phase_name": str, "guidance": str}]
     available_fixes: dict[str, list[dict[str, str]]] = field(default_factory=dict)
-    # POST_VERIFICATION: detectors that could not run
-    # [{"detector_id": str, "reason": str}]
-    skipped_detectors: list[dict[str, str]] = field(default_factory=list)
     # EXIT_CHECK: per-target component evidence for smart context
     # dim_path -> target -> {component_key: value}
     column_evidence: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)

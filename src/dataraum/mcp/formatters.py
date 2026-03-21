@@ -286,7 +286,6 @@ def format_zone_status(
     gate_phase: str,
     violations: list[dict[str, Any]],
     passing: list[dict[str, Any]],
-    skipped_detectors: list[dict[str, str]],
     contract_name: str | None = None,
 ) -> dict[str, Any]:
     """Format zone status as structured dict."""
@@ -299,8 +298,6 @@ def format_zone_status(
             ),
             "Call continue_pipeline to advance to the next zone after fixing",
         ]
-    elif skipped_detectors:
-        next_steps = ["All measured dimensions passing — use continue_pipeline to advance"]
     else:
         next_steps = ["All dimensions passing — pipeline is clean"]
 
@@ -315,7 +312,6 @@ def format_zone_status(
         },
         "violations": violations,
         "passing": passing,
-        "skipped_detectors": skipped_detectors,
         "next_steps": next_steps,
     }
 

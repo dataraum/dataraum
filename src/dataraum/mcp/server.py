@@ -768,7 +768,6 @@ def _get_pipeline_progress(manager: Any) -> dict[str, Any] | None:
     from sqlalchemy import func, select
 
     from dataraum.pipeline.db_models import PhaseLog, PipelineRun
-    from dataraum.pipeline.registry import get_registry
 
     # A "running" pipeline older than this is considered stale (process died).
     _STALE_THRESHOLD_MINUTES = 30
@@ -824,8 +823,10 @@ def _get_pipeline_progress(manager: Any) -> dict[str, Any] | None:
             or 0
         )
 
-        registry = get_registry()
-        total_phases = len(registry)
+        from dataraum.pipeline.pipeline_config import load_phase_declarations
+
+        declarations = load_phase_declarations()
+        total_phases = len(declarations)
 
         # Determine currently running phases from dependency graph
         completed_names: set[str] = set()
@@ -836,11 +837,10 @@ def _get_pipeline_progress(manager: Any) -> dict[str, Any] | None:
             completed_names.add(row[0])
 
         running_phases: list[str] = []
-        for name, cls in registry.items():
+        for name, decl in declarations.items():
             if name in completed_names:
                 continue
-            instance = cls()
-            deps = set(instance.dependencies)
+            deps = set(decl.dependencies)
             if deps.issubset(completed_names):
                 running_phases.append(name)
 
@@ -1832,7 +1832,6 @@ def _get_zone_status(
 
     from dataraum.core.connections import get_manager_for_directory
     from dataraum.entropy.contracts import get_contract, get_contracts
-    from dataraum.entropy.detectors.base import get_default_registry
     from dataraum.entropy.gate import assess_contracts, match_threshold
     from dataraum.pipeline.db_models import PhaseLog
 
@@ -1899,7 +1898,6 @@ def _get_zone_status(
             )
 
             # Build violation entries with full context for agent triage
-            registry = get_default_registry()
             violation_dims = {i.dimension_path for i in issues}
 
             from dataraum.entropy.fix_schemas import (
@@ -2028,26 +2026,6 @@ def _get_zone_status(
                         }
                     )
 
-            # Determine skipped detectors
-            # Detectors whose required_analyses aren't satisfied at this gate.
-            # Uses the canonical gate → analyses mapping from fixes/api.py.
-            from dataraum.pipeline.fixes.api import _analyses_for_gate
-
-            available = {a.value.upper() for a in _analyses_for_gate(gate_phase)}
-            measured_ids = {id_map.get(dp, dp.rsplit(".", 1)[-1]) for dp in scores}
-            skipped = []
-            for d in registry.get_all_detectors():
-                if d.detector_id in measured_ids:
-                    continue
-                missing = [a.value for a in d.required_analyses if a.value.upper() not in available]
-                if missing:
-                    skipped.append(
-                        {
-                            "detector_id": d.detector_id,
-                            "reason": f"missing analyses: {', '.join(missing)}",
-                        }
-                    )
-
             zone_name, gate_label = _GATE_ZONES.get(gate_phase, ("unknown", "Gate ?"))
             return format_zone_status(
                 zone_name,
@@ -2055,7 +2033,6 @@ def _get_zone_status(
                 gate_phase,
                 violations,
                 passing,
-                skipped,
                 contract.name,
             )
     finally:

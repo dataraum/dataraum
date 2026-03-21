@@ -18,15 +18,16 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from dataraum.entropy.engine import run_detector_post_step
 from dataraum.pipeline.base import Phase, PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.phases.correlations_phase import CorrelationsPhase
-from dataraum.pipeline.phases.entropy_phase import EntropyPhase
 from dataraum.pipeline.phases.import_phase import ImportPhase
 from dataraum.pipeline.phases.relationships_phase import RelationshipsPhase
 from dataraum.pipeline.phases.statistical_quality_phase import StatisticalQualityPhase
 from dataraum.pipeline.phases.statistics_phase import StatisticsPhase
 from dataraum.pipeline.phases.temporal_phase import TemporalPhase
 from dataraum.pipeline.phases.typing_phase import TypingPhase
+from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.storage import init_database
 
 # Paths to test data
@@ -61,6 +62,16 @@ class PipelineTestHarness:
 
     # Track phase results
     results: dict[str, PhaseResult] = field(default_factory=dict)
+
+    # YAML declarations cache (loaded once, shared across run_phase calls)
+    _declarations: dict[str, Any] | None = field(default=None, repr=False)
+
+    def _get_detector_ids(self, phase_name: str) -> list[str]:
+        """Get detector IDs declared for a phase in pipeline.yaml."""
+        if self._declarations is None:
+            self._declarations = load_phase_declarations()
+        decl = self._declarations.get(phase_name)
+        return decl.detectors if decl else []
 
     def run_phase(
         self,
@@ -99,6 +110,17 @@ class PipelineTestHarness:
                 result = phase.run(ctx)
 
             session.commit()
+
+        # Run post-step detectors declared in pipeline.yaml
+        if result.status == PhaseStatus.COMPLETED:
+            detector_ids = self._get_detector_ids(phase_name)
+            if detector_ids:
+                with self.session_factory() as detector_session:
+                    for detector_id in detector_ids:
+                        run_detector_post_step(
+                            detector_session, self.source_id, detector_id
+                        )
+                    detector_session.commit()
 
         self.results[phase_name] = result
         return result
@@ -261,7 +283,6 @@ def agent_phases() -> dict[str, Phase]:
         RelationshipsPhase(),
         CorrelationsPhase(),
         TemporalPhase(),
-        EntropyPhase(),
     )
 
 
@@ -309,7 +330,6 @@ def analyzed_small_finance(
         "relationships",
         "correlations",
         "temporal",
-        "entropy",
     ]:
         result = agent_harness.run_phase(phase_name)
         assert result.status == PhaseStatus.COMPLETED, f"{phase_name} failed: {result.error}"

@@ -6,7 +6,7 @@ Contract-driven approach with gate-based entropy measurement at quality checkpoi
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -15,12 +15,12 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
-from dataraum.entropy.dimensions import AnalysisKey, _StrValueMixin
+from dataraum.entropy.dimensions import _StrValueMixin
 from dataraum.entropy.gate import (
     ExitCheckIssue,
     GateResult,
+    aggregate_at_gate,
     assess_contracts,
-    measure_at_gate,
     persist_gate_result,
 )
 from dataraum.pipeline.base import Phase, PhaseContext, PhaseResult, PhaseStatus
@@ -95,7 +95,7 @@ class PipelineScheduler:
 
     def __init__(
         self,
-        phases: dict[str, Phase],
+        phases: Mapping[str, Phase],
         source_id: str,
         run_id: str,
         session: Session,
@@ -203,18 +203,16 @@ class PipelineScheduler:
                 column_evidence: dict[str, dict[str, dict[str, Any]]] = {}
                 resolution_actions: dict[str, set[str]] = {}
                 accepted_targets: dict[str, set[str]] = {}
-                wave_skipped: list[dict[str, str]] = []
                 last_gate_phase: str = ""
 
                 for phase_name, _result in wave_results:
                     phase = self.phases[phase_name]
                     if self._state[phase_name] == PhaseStatus.COMPLETED and phase.is_quality_gate:
-                        available = self._available_analyses()
-                        gate_result = measure_at_gate(
+                        gate_detector_ids = self._gate_detector_ids()
+                        gate_result = aggregate_at_gate(
                             self.session,
-                            self.duckdb_conn,
                             self.source_id,
-                            available,
+                            gate_detector_ids,
                         )
                         all_scores.update(gate_result.scores)
                         column_details.update(gate_result.column_details)
@@ -225,14 +223,6 @@ class PipelineScheduler:
                             accepted_targets.setdefault(dim, set()).update(targets)
                         for path, acts in gate_result.resolution_actions.items():
                             resolution_actions.setdefault(path, set()).update(acts)
-                        # Collect skipped detectors (deduplicate by detector_id)
-                        seen_ids = {s["detector_id"] for s in wave_skipped}
-                        for sd in gate_result.skipped_detectors:
-                            if sd.detector_id not in seen_ids:
-                                wave_skipped.append(
-                                    {"detector_id": sd.detector_id, "reason": sd.reason}
-                                )
-                                seen_ids.add(sd.detector_id)
                         last_gate_phase = phase_name
 
                 # Persist gate scores to PhaseLog for the gate phase
@@ -246,7 +236,6 @@ class PipelineScheduler:
                         phase=last_gate_phase,
                         total=total,
                         scores=dict(all_scores),
-                        skipped_detectors=wave_skipped,
                         column_details=dict(column_details),
                         table_details=dict(table_details),
                         view_details=dict(view_details),
@@ -364,7 +353,7 @@ class PipelineScheduler:
     def _record_phase(
         self, phase_name: str, result: PhaseResult, started_at: datetime, total: int
     ) -> Generator[PipelineEvent]:
-        """Record phase result: update state, write log, yield events."""
+        """Record phase result: update state, write log, run post-step detectors, yield events."""
         if result.status == PhaseStatus.FAILED:
             self._state[phase_name] = PhaseStatus.FAILED
             self._write_phase_log(
@@ -391,6 +380,10 @@ class PipelineScheduler:
             duration=result.duration_seconds,
             outputs=result.outputs or None,
         )
+
+        # Run post-step detectors declared in pipeline.yaml
+        self._run_post_step_detectors(phase_name)
+
         yield self._event(
             EventType.PHASE_COMPLETED,
             phase=phase_name,
@@ -543,6 +536,7 @@ class PipelineScheduler:
     def _validate_analysis_coverage(self) -> None:
         """Warn if detectors require analyses that no phase produces."""
         from dataraum.entropy.detectors.base import get_default_registry
+        from dataraum.entropy.dimensions import AnalysisKey
 
         all_produced: set[AnalysisKey] = set()
         for phase in self.phases.values():
@@ -563,17 +557,46 @@ class PipelineScheduler:
                     ),
                 )
 
-    def _available_analyses(self) -> set[AnalysisKey]:
-        """Build available analyses set from COMPLETED and SKIPPED phases.
+    def _run_post_step_detectors(self, phase_name: str) -> None:
+        """Run detectors declared as post-steps for this phase.
 
-        SKIPPED phases have their output from a prior run, so their
-        analyses are available for gate measurement.
+        Called after a phase completes successfully on the main thread.
+        Uses a fresh session from ``session_factory`` so detectors see
+        data committed by the per-phase session. Falls back to
+        ``self.session`` when no factory is available (unit tests).
+
+        The session_factory context manager auto-commits on exit;
+        self.session relies on the caller (scheduler loop) to commit.
         """
-        available: set[AnalysisKey] = set()
+        from dataraum.entropy.engine import run_detector_post_step
+
+        phase = self.phases[phase_name]
+        if not phase.detectors:
+            return
+
+        if self.session_factory is not None:
+            with self.session_factory() as detector_session:
+                for detector_id in phase.detectors:
+                    run_detector_post_step(detector_session, self.source_id, detector_id)
+        else:
+            for detector_id in phase.detectors:
+                run_detector_post_step(self.session, self.source_id, detector_id)
+
+    def _gate_detector_ids(self) -> list[str]:
+        """Collect detector IDs from all COMPLETED/SKIPPED phases.
+
+        Returns the union of detector IDs declared by phases that have
+        run (or been skipped with prior output).
+        """
+        ids: list[str] = []
+        seen: set[str] = set()
         for name, status in self._state.items():
             if status in (PhaseStatus.COMPLETED, PhaseStatus.SKIPPED):
-                available.update(self.phases[name].produces_analyses)
-        return available
+                for d_id in self.phases[name].detectors:
+                    if d_id not in seen:
+                        ids.append(d_id)
+                        seen.add(d_id)
+        return ids
 
     def _apply_fixes(self, fix_inputs: list[FixInput]) -> None:
         """Apply fix inputs via bridge + interpreters, log to ledger, reset.

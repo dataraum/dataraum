@@ -18,7 +18,6 @@ from dataraum.analysis.relationships import detect_relationships
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.core.config import load_phase_config
 from dataraum.core.logging import get_logger
-from dataraum.entropy.dimensions import AnalysisKey
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
@@ -42,18 +41,6 @@ class RelationshipsPhase(BasePhase):
     @property
     def name(self) -> str:
         return "relationships"
-
-    @property
-    def description(self) -> str:
-        return "Cross-table relationship detection"
-
-    @property
-    def dependencies(self) -> list[str]:
-        return ["column_eligibility"]
-
-    @property
-    def produces_analyses(self) -> set[AnalysisKey]:
-        return {AnalysisKey.RELATIONSHIPS}
 
     def cleanup(
         self,

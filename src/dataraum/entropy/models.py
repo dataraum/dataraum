@@ -58,6 +58,11 @@ class EntropyObject:
     source_analysis_ids: list[str] = field(default_factory=list)  # Links to source analyses
     detector_id: str = ""  # Which detector produced this
 
+    # Business pattern filter (set by pattern_filter at gate time)
+    expected_business_pattern: str | None = None
+    business_rule: str | None = None
+    filter_confidence: float | None = None
+
     @property
     def dimension_path(self) -> str:
         """Return full dimension path (layer.dimension.sub_dimension)."""

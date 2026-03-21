@@ -56,7 +56,10 @@ def apply_pattern_filter(
 
     # Discount scores for high-confidence classifications
     for record in records:
-        if record.filter_confidence is not None and record.filter_confidence >= CONFIDENCE_THRESHOLD:
+        if (
+            record.filter_confidence is not None
+            and record.filter_confidence >= CONFIDENCE_THRESHOLD
+        ):
             record.score = round(record.score * (1 - record.filter_confidence), 4)
 
     return records

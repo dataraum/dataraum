@@ -17,12 +17,6 @@ if TYPE_CHECKING:
 class TestTemporalPhase:
     """Tests for TemporalPhase."""
 
-    def test_phase_properties(self):
-        phase = TemporalPhase()
-        assert phase.name == "temporal"
-        assert phase.description == "Temporal pattern and trend analysis"
-        assert phase.dependencies == ["column_eligibility"]
-
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):

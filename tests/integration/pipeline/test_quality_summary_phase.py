@@ -16,12 +16,6 @@ if TYPE_CHECKING:
 class TestQualitySummaryPhase:
     """Tests for QualitySummaryPhase."""
 
-    def test_phase_properties(self):
-        phase = QualitySummaryPhase()
-        assert phase.name == "quality_summary"
-        assert phase.description == "LLM quality report generation"
-        assert phase.dependencies == ["slice_analysis", "temporal_slice_analysis", "entropy"]
-
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):

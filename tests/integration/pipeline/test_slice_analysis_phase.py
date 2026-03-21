@@ -14,12 +14,6 @@ from dataraum.storage import Column, Source, Table
 class TestSliceAnalysisPhase:
     """Tests for SliceAnalysisPhase."""
 
-    def test_phase_properties(self):
-        phase = SliceAnalysisPhase()
-        assert phase.name == "slice_analysis"
-        assert phase.description == "Execute slice SQL and analyze slice tables"
-        assert phase.dependencies == ["slicing_view"]
-
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):

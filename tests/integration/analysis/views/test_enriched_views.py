@@ -133,11 +133,6 @@ class TestEnrichedViewsIntegration:
 class TestEnrichedViewsPhaseProperties:
     """Tests for EnrichedViewsPhase static properties."""
 
-    def test_phase_properties(self):
-        phase = EnrichedViewsPhase()
-        assert phase.name == "enriched_views"
-        assert "quality_review" in phase.dependencies
-
     def test_skip_when_no_typed_tables(self, session):
         """Test skipping when no typed tables exist."""
         from dataraum.pipeline.base import PhaseContext

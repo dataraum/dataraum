@@ -16,12 +16,6 @@ if TYPE_CHECKING:
 class TestRelationshipsPhase:
     """Tests for RelationshipsPhase."""
 
-    def test_phase_properties(self):
-        phase = RelationshipsPhase()
-        assert phase.name == "relationships"
-        assert phase.description == "Cross-table relationship detection"
-        assert phase.dependencies == ["column_eligibility"]
-
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):

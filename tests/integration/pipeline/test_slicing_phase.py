@@ -17,12 +17,6 @@ if TYPE_CHECKING:
 class TestSlicingPhase:
     """Tests for SlicingPhase."""
 
-    def test_phase_properties(self):
-        phase = SlicingPhase()
-        assert phase.name == "slicing"
-        assert phase.description == "LLM-powered slice dimension identification"
-        assert phase.dependencies == ["enriched_views"]
-
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):

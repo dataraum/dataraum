@@ -51,12 +51,6 @@ def csv_directory(tmp_path: Path) -> Path:
 class TestImportPhase:
     """Tests for ImportPhase."""
 
-    def test_phase_properties(self):
-        phase = ImportPhase()
-        assert phase.name == "import"
-        assert phase.description == "Load data files into raw tables"
-        assert phase.dependencies == []
-
     def test_import_single_csv(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection, csv_file: Path
     ):

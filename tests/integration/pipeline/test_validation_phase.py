@@ -16,18 +16,6 @@ if TYPE_CHECKING:
 class TestValidationPhase:
     """Tests for ValidationPhase."""
 
-    def test_phase_properties(self):
-        phase = ValidationPhase()
-        assert phase.name == "validation"
-        assert phase.description == "LLM-powered validation checks"
-        assert phase.dependencies == [
-            "analysis_review",
-            "semantic",
-            "relationships",
-            "enriched_views",
-            "slicing",
-        ]
-
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):

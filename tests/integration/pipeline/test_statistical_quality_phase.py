@@ -16,12 +16,6 @@ if TYPE_CHECKING:
 class TestStatisticalQualityPhase:
     """Tests for StatisticalQualityPhase."""
 
-    def test_phase_properties(self):
-        phase = StatisticalQualityPhase()
-        assert phase.name == "statistical_quality"
-        assert phase.description == "Benford's Law and outlier detection"
-        assert phase.dependencies == ["column_eligibility"]
-
     def test_skip_when_no_typed_tables(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):

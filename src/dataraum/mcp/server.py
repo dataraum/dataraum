@@ -1515,7 +1515,11 @@ def _query(
             if not result.success or not result.value:
                 return {"error": str(result.error)}
 
-            return format_query_result(result.value)
+            qr = result.value
+            if not qr.success:
+                return {"error": qr.error or "Query generation failed"}
+
+            return format_query_result(qr)
     finally:
         manager.close()
 

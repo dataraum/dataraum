@@ -176,8 +176,10 @@ def run_sql(
     column_quality: dict[str, Any] | None = None
     quality_caveat: str | None = None
     if session is not None and table_ids:
-        # Merge column_mappings from all steps
+        # Merge column_mappings: top-level (raw SQL mode) + per-step mappings
         merged_mappings: dict[str, str] = {}
+        if column_mappings:
+            merged_mappings.update(column_mappings)
         if raw_steps is not None:
             for s in raw_steps:
                 mappings = s.get("column_mappings")
@@ -333,7 +335,7 @@ def _build_column_quality(
     from sqlalchemy import select
 
     from dataraum.analysis.quality_summary.db_models import ColumnQualityReport
-    from dataraum.pipeline.db_models import PhaseLog
+    from dataraum.entropy.db_models import EntropyObjectRecord
     from dataraum.storage import Column as ColumnModel
     from dataraum.storage import Table
 
@@ -419,23 +421,16 @@ def _build_column_quality(
     except Exception:
         _log.debug("Entropy readiness lookup failed", exc_info=True)
 
-    # Check if entropy phase has completed
+    # Check if entropy data exists for these tables
     caveat: str | None = None
     try:
-        source_ids = {t.source_id for t in tables}
-        for sid in source_ids:
-            entropy_log = session.execute(
-                select(PhaseLog)
-                .where(
-                    PhaseLog.source_id == sid,
-                    PhaseLog.phase_name == "entropy",
-                    PhaseLog.status == "completed",
-                )
-                .limit(1)
-            ).scalar_one_or_none()
-            if not entropy_log:
-                caveat = "Quality metadata incomplete: entropy phase has not run yet"
-                break
+        has_entropy = session.execute(
+            select(EntropyObjectRecord.object_id)
+            .where(EntropyObjectRecord.table_id.in_(table_ids))
+            .limit(1)
+        ).scalar_one_or_none()
+        if not has_entropy:
+            caveat = "Quality metadata incomplete: entropy phase has not run yet"
     except Exception:
         pass
 

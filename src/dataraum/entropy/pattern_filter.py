@@ -98,12 +98,14 @@ def _apply_datafix_overrides(
 
     for record in candidates:
         table_name, column_name = _parse_target(record.target)
-        fix = fix_lookup.get((table_name, column_name)) or fix_lookup.get((table_name, None))
-        if fix:
+        matched = fix_lookup.get((table_name, column_name)) or fix_lookup.get(
+            (table_name, None),
+        )
+        if matched is not None:
             record.filter_confidence = 1.0
-            params = fix.payload.get("parameters", {}) if fix.payload else {}
-            record.expected_business_pattern = params.get("pattern_type", fix.action)
-            record.business_rule = params.get("description", fix.description or fix.action)
+            params = matched.payload.get("parameters", {}) if matched.payload else {}
+            record.expected_business_pattern = params.get("pattern_type", matched.action)
+            record.business_rule = params.get("description", matched.description or matched.action)
 
 
 def _parse_target(target: str) -> tuple[str, str | None]:

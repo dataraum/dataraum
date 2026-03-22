@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from dataraum.pipeline.fixes.api import _detector_ids_for_gate
 
 

@@ -150,7 +150,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                                 "Focus on specific section(s) to reduce response size. "
                                 "Omit for full context document."
                             ),
-                            "oneOf": [
+                            "anyOf": [
                                 {
                                     "type": "string",
                                     "enum": [
@@ -226,8 +226,19 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="query",
                 description=(
-                    "Execute a natural language query against the data. "
-                    "Returns answer, confidence level, generated SQL, and data."
+                    "Answer an analytical question using AI reasoning. "
+                    "The query agent understands the data context — column "
+                    "semantics, quality issues, business cycles — and writes "
+                    "SQL that accounts for them (e.g. excluding one-time items, "
+                    "normalizing intervals, handling multi-currency). "
+                    "It tracks assumptions explicitly and evaluates confidence "
+                    "against the active contract. Each SQL step becomes a "
+                    "reusable snippet in the knowledge base. "
+                    "Prerequisites: call get_context first so the agent has "
+                    "metadata to reason over. Use get_quality to understand "
+                    "data quality issues before asking analytical questions. "
+                    "Returns: answer, confidence level, assumptions, SQL steps, "
+                    "and result data."
                 ),
                 inputSchema={
                     "type": "object",
@@ -373,8 +384,14 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="run_sql",
                 description=(
-                    "Execute SQL directly against the analyzed data. Returns rows "
-                    "with per-column quality metadata when available. "
+                    "Execute SQL you write directly against the analyzed data. "
+                    "Returns rows with per-column quality metadata when available. "
+                    "Important: before writing SQL, call get_context to understand "
+                    "the schema, column semantics, and quality issues. Blind SQL "
+                    "without context understanding leads to wrong results. "
+                    "For analytical questions, prefer the query tool — it reasons "
+                    "over context automatically. Use run_sql for spot-checks, "
+                    "drill-downs, or when you already understand the data shape. "
                     "Prefer structured steps over raw SQL: each step computes one "
                     "business concept, becomes a reusable snippet in the knowledge "
                     "base, and can be referenced by later steps as a temp view. "

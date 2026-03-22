@@ -117,9 +117,7 @@ class PipelineTestHarness:
             if detector_ids:
                 with self.session_factory() as detector_session:
                     for detector_id in detector_ids:
-                        run_detector_post_step(
-                            detector_session, self.source_id, detector_id
-                        )
+                        run_detector_post_step(detector_session, self.source_id, detector_id)
                     detector_session.commit()
 
         self.results[phase_name] = result

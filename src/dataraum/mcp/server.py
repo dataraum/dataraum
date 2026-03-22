@@ -150,7 +150,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                                 "Focus on specific section(s) to reduce response size. "
                                 "Omit for full context document."
                             ),
-                            "oneOf": [
+                            "anyOf": [
                                 {
                                     "type": "string",
                                     "enum": [
@@ -226,8 +226,19 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="query",
                 description=(
-                    "Execute a natural language query against the data. "
-                    "Returns answer, confidence level, generated SQL, and data."
+                    "Answer an analytical question using AI reasoning. "
+                    "The query agent understands the data context — column "
+                    "semantics, quality issues, business cycles — and writes "
+                    "SQL that accounts for them (e.g. excluding one-time items, "
+                    "normalizing intervals, handling multi-currency). "
+                    "It tracks assumptions explicitly and evaluates confidence "
+                    "against the active contract. Each SQL step becomes a "
+                    "reusable snippet in the knowledge base. "
+                    "Prerequisites: call get_context first so the agent has "
+                    "metadata to reason over. Use get_quality to understand "
+                    "data quality issues before asking analytical questions. "
+                    "Returns: answer, confidence level, assumptions, SQL steps, "
+                    "and result data."
                 ),
                 inputSchema={
                     "type": "object",
@@ -373,8 +384,14 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="run_sql",
                 description=(
-                    "Execute SQL directly against the analyzed data. Returns rows "
-                    "with per-column quality metadata when available. "
+                    "Execute SQL you write directly against the analyzed data. "
+                    "Returns rows with per-column quality metadata when available. "
+                    "Important: before writing SQL, call get_context to understand "
+                    "the schema, column semantics, and quality issues. Blind SQL "
+                    "without context understanding leads to wrong results. "
+                    "For analytical questions, prefer the query tool — it reasons "
+                    "over context automatically. Use run_sql for spot-checks, "
+                    "drill-downs, or when you already understand the data shape. "
                     "Prefer structured steps over raw SQL: each step computes one "
                     "business concept, becomes a reusable snippet in the knowledge "
                     "base, and can be referenced by later steps as a temp view. "
@@ -1498,7 +1515,11 @@ def _query(
             if not result.success or not result.value:
                 return {"error": str(result.error)}
 
-            return format_query_result(result.value)
+            qr = result.value
+            if not qr.success:
+                return {"error": qr.error or "Query generation failed"}
+
+            return format_query_result(qr)
     finally:
         manager.close()
 
@@ -2195,6 +2216,62 @@ def _parse_target(target: str) -> tuple[str, str | None]:
     return table, col
 
 
+def _validate_fix_expressions(
+    output_dir: Path,
+    documents: list[Any],
+) -> str | None:
+    """Validate standardization expressions in config fix documents against actual data.
+
+    Runs each expression against a single row of the raw table to catch
+    invalid DuckDB functions or syntax before writing to config.
+
+    Returns:
+        Error message string if validation fails, None if all valid.
+    """
+    from dataraum.core.connections import get_manager_for_directory
+
+    # Collect (table_name, expression) pairs from config documents
+    to_validate: list[tuple[str, str, str]] = []  # (table, col, expr)
+    for doc in documents:
+        if doc.target != "config" or not doc.payload:
+            continue
+        value = doc.payload.get("value", {})
+        if not isinstance(value, dict):
+            continue
+        expr = value.get("standardization_expr")
+        if not expr or not doc.table_name:
+            continue
+        col = doc.column_name or "value"
+        to_validate.append((doc.table_name, col, expr))
+
+    if not to_validate:
+        return None
+
+    try:
+        manager = get_manager_for_directory(output_dir)
+    except FileNotFoundError:
+        return None  # Can't validate without data, let it proceed
+
+    try:
+        with manager.duckdb_cursor() as cursor:
+            for table_name, col_name, expr in to_validate:
+                raw_table = f"raw_{table_name}"
+                rendered = expr.format(col=col_name)
+                test_sql = f'SELECT {rendered} FROM "{raw_table}" LIMIT 1'
+                try:
+                    cursor.execute(test_sql)
+                except Exception as e:
+                    error_msg = str(e).split("\n")[0]
+                    return (
+                        f"Invalid standardization_expr for {table_name}.{col_name}: "
+                        f"{error_msg}. Expression: {expr}"
+                    )
+    finally:
+        manager.close()
+
+    return None
+
+
 def _apply_fix(
     output_dir: Path,
     fixes: list[dict[str, Any]],
@@ -2266,6 +2343,11 @@ def _apply_fix(
 
     if not all_documents:
         return {"error": "No fix documents generated. Check action names and parameters."}
+
+    # Validate standardization expressions against actual data before writing
+    validation_error = _validate_fix_expressions(output_dir, all_documents)
+    if validation_error:
+        return {"error": validation_error}
 
     # Determine the latest gate needed for re-measurement
     gate_order = ["quality_review", "analysis_review", "computation_review"]

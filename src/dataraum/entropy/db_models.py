@@ -48,8 +48,10 @@ class EntropyObjectRecord(Base):
 
     # Foreign keys to link to source data
     source_id: Mapped[str | None] = mapped_column(ForeignKey("sources.source_id"))
-    table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id"))
-    column_id: Mapped[str | None] = mapped_column(ForeignKey("columns.column_id"))
+    table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id", ondelete="CASCADE"))
+    column_id: Mapped[str | None] = mapped_column(
+        ForeignKey("columns.column_id", ondelete="CASCADE")
+    )
 
     # Measurement
     score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)

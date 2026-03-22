@@ -131,13 +131,30 @@ class PromptRenderer:
         return full_context
 
     def _render_text(self, text: str, context: dict[str, Any]) -> str:
-        """Render text with context variables."""
-        try:
-            return text.format(**context)
-        except KeyError as e:
+        """Render text with context variables.
+
+        Uses sequential replacement instead of str.format() to avoid
+        interpreting curly braces inside substituted values (e.g. JSON
+        content in schema_info or snippet_context).
+        """
+        result = text
+        for key, value in context.items():
+            placeholder = "{" + key + "}"
+            if placeholder in result:
+                result = result.replace(placeholder, str(value))
+        # Check for unresolved placeholders that look like template variables
+        import re
+
+        unresolved = re.findall(r"\{([a-z_]+)\}", result)
+        # Filter to only flag placeholders that were in the original template
+        original_placeholders = re.findall(r"\{([a-z_]+)\}", text)
+        missing = [p for p in unresolved if p in original_placeholders and p not in context]
+        if missing:
             raise KeyError(
-                f"Template has undefined variable: {e}. Available context: {list(context.keys())}"
-            ) from e
+                f"Template has undefined variable: '{missing[0]}'. "
+                f"Available context: {list(context.keys())}"
+            )
+        return result
 
     def _list_templates(self) -> list[str]:
         """List available template names."""

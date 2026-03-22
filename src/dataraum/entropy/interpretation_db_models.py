@@ -37,8 +37,10 @@ class EntropyInterpretationRecord(Base):
 
     # What was interpreted
     source_id: Mapped[str | None] = mapped_column(ForeignKey("sources.source_id"))
-    table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id"))
-    column_id: Mapped[str | None] = mapped_column(ForeignKey("columns.column_id"))
+    table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.table_id", ondelete="CASCADE"))
+    column_id: Mapped[str | None] = mapped_column(
+        ForeignKey("columns.column_id", ondelete="CASCADE")
+    )
     table_name: Mapped[str] = mapped_column(String, nullable=False)
     column_name: Mapped[str | None] = mapped_column(String, nullable=True)
 

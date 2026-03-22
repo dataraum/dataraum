@@ -208,7 +208,8 @@ class TestFormatRunSqlResult:
             quality_caveat="entropy phase not run",
         )
         assert result["column_quality"] == quality
-        assert result["quality_caveat"] == "entropy phase not run"
+        assert "warnings" in result
+        assert "entropy phase not run" in result["warnings"]
 
 
 # --- Phase 2b: Quality metadata ---
@@ -461,34 +462,22 @@ class TestQualityCaveatWhenIncomplete:
         assert "entropy phase has not run" in caveat
 
     def test_no_caveat_when_entropy_completed(self, session: Session) -> None:
-        from datetime import UTC, datetime
-
-        from dataraum.pipeline.db_models import PhaseLog, PipelineRun
+        from dataraum.entropy.db_models import EntropyObjectRecord
 
         source_id, table_id, _ = _insert_source_and_table(session, "orders", ["amount"])
 
-        # Create pipeline run + phase log for entropy
-        run_id = _id()
-        now = datetime.now(UTC)
+        # Insert an entropy object so the check finds entropy data
         session.add(
-            PipelineRun(
-                run_id=run_id,
+            EntropyObjectRecord(
+                object_id=_id(),
+                layer="structural",
+                dimension="types",
+                sub_dimension="type_fidelity",
+                target="column:orders.amount",
                 source_id=source_id,
-                status="completed",
-                started_at=now,
-                completed_at=now,
-            )
-        )
-        session.add(
-            PhaseLog(
-                log_id=_id(),
-                run_id=run_id,
-                source_id=source_id,
-                phase_name="entropy",
-                status="completed",
-                started_at=now,
-                completed_at=now,
-                duration_seconds=1.0,
+                table_id=table_id,
+                score=0.1,
+                detector_id="test_detector",
             )
         )
         session.flush()

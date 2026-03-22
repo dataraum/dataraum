@@ -355,10 +355,30 @@ def format_run_sql_result(
         "truncated": total_rows > limit,
         "steps_executed": steps_executed,
     }
+    # Surface quality warnings prominently for columns grade C or worse
+    warnings: list[str] = []
+    if quality_caveat:
+        warnings.append(quality_caveat)
+    if column_quality is not None:
+        for col_name, meta in column_quality.items():
+            if not isinstance(meta, dict):
+                continue
+            grade = meta.get("quality_grade")
+            source = meta.get("source_column", col_name)
+            readiness = meta.get("readiness")
+            if grade and grade >= "C":
+                score = meta.get("quality_score", "")
+                score_str = f" ({score})" if score else ""
+                msg = f"{col_name} ({source}): Grade {grade}{score_str}"
+                if readiness == "investigate":
+                    msg += " — investigate before using in aggregations"
+                elif readiness == "blocked":
+                    msg += " — quality too low for reliable analysis"
+                warnings.append(msg)
+    if warnings:
+        result["warnings"] = warnings
     if column_quality is not None:
         result["column_quality"] = column_quality
-    if quality_caveat:
-        result["quality_caveat"] = quality_caveat
     if snippet_summary is not None:
         result["snippet_summary"] = snippet_summary
     return result

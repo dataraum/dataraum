@@ -70,38 +70,49 @@ schemas:
         target: config
         routing: preprocess
         requires_rerun: typing
-        description: Add a custom date/time parsing pattern
+        description: Add custom date/time parsing pattern(s)
         config_path: phases/typing.yaml
         key_path: [overrides, patterns]
         operation: merge
         key_template: "{pattern_name}"
         guidance: |
-          Adds a date/time pattern so the typing phase can parse
-          this column correctly. From the sample values and column
-          name, PROPOSE a concrete pattern:
-            1. The regex that matches the raw values (e.g. ^\d{4}-\d{2}-\d{2}$)
-            2. The DuckDB STRPTIME expression (e.g. STRPTIME("{col}", '%Y-%m-%d'))
-            3. A short pattern_name (e.g. iso_date, fiscal_period)
-          Present your proposal and ask the user to confirm or correct it.
-          Do NOT ask open-ended questions like 'what format is this?' —
-          infer the format from the data and propose it.
+          Adds date/time pattern(s) so the typing phase can parse
+          this column correctly. FIRST check the sample_values in the
+          evidence to see what formats exist. When a column has MULTIPLE
+          date formats (e.g. unix epoch + text dates), use the 'patterns'
+          array to submit all formats at once — the typing phase will
+          combine them via COALESCE automatically.
+          For each format, provide:
+            1. A short pattern_name (e.g. unix_epoch, mon_dd_yyyy)
+            2. The regex matching the raw values
+            3. The DuckDB expression to parse (STRPTIME, EPOCH_S, etc.)
+          Use 'patterns' array for multiple formats, or the single
+          pattern_name/pattern/standardization_expr fields for one format.
         fields:
           pattern_name:
             type: string
-            required: true
-            description: "Short name for this pattern (e.g. fiscal_period, european_date)"
+            required: false
+            description: "Short name for this pattern (e.g. fiscal_period, european_date). Required for single-pattern mode."
           pattern:
             type: regex
-            required: true
-            description: "Regex matching the raw values (e.g. ^\\d{4}-\\d{2}$)"
+            required: false
+            description: "Regex matching the raw values (e.g. ^\\d{4}-\\d{2}$). Required for single-pattern mode."
           standardization_expr:
             type: duckdb_sql
-            required: true
+            required: false
             description: >
               DuckDB expression to parse the value into a date/timestamp.
-              Use STRPTIME with {col} placeholder.
+              Use STRPTIME with {col} placeholder. Required for single-pattern mode.
               Examples: STRPTIME("{col}", '%Y-%m'),
               STRPTIME("{col}", '%d/%m/%Y')
+          patterns:
+            type: array
+            required: false
+            description: >
+              Array of patterns for multi-format columns. Each entry needs
+              pattern_name, pattern (regex), and standardization_expr.
+              When provided, pattern_name/pattern/standardization_expr
+              fields above are ignored.
 
   join_path_determinism:
     dimension_path: structural.relations.join_path_determinism
@@ -367,35 +378,44 @@ schemas:
         target: config
         routing: preprocess
         requires_rerun: typing
-        description: Add a custom date/time parsing pattern
+        description: Add custom date/time parsing pattern(s)
         config_path: phases/typing.yaml
         key_path: [overrides, patterns]
         operation: merge
         key_template: "{pattern_name}"
         guidance: |
-          Adds a date/time pattern so the typing phase can parse
-          this column. Show sample values and ask what date format
-          they represent. Then produce a DuckDB STRPTIME format
-          string (e.g. '%Y-%m' for '2025-01', '%d/%m/%Y' for
-          '15/01/2024'). The regex pattern must match the raw
-          string values.
+          Adds date/time pattern(s) so the typing phase can parse
+          this column. FIRST check the sample_values in the evidence
+          to see what formats exist. When a column has MULTIPLE date
+          formats, use the 'patterns' array to submit all formats at
+          once — the typing phase combines them via COALESCE.
+          For each format, provide pattern_name, regex, and DuckDB
+          parse expression (STRPTIME, EPOCH_S, etc.).
         fields:
           pattern_name:
             type: string
-            required: true
-            description: "Short name for this pattern (e.g. fiscal_period, european_date)"
+            required: false
+            description: "Short name for this pattern (e.g. fiscal_period, european_date). Required for single-pattern mode."
           pattern:
             type: regex
-            required: true
-            description: "Regex matching the raw values (e.g. ^\\d{4}-\\d{2}$)"
+            required: false
+            description: "Regex matching the raw values (e.g. ^\\d{4}-\\d{2}$). Required for single-pattern mode."
           standardization_expr:
             type: duckdb_sql
-            required: true
+            required: false
             description: >
               DuckDB expression to parse the value into a date/timestamp.
-              Use STRPTIME with {col} placeholder.
+              Use STRPTIME with {col} placeholder. Required for single-pattern mode.
               Examples: STRPTIME("{col}", '%Y-%m'),
               STRPTIME("{col}", '%d/%m/%Y')
+          patterns:
+            type: array
+            required: false
+            description: >
+              Array of patterns for multi-format columns. Each entry needs
+              pattern_name, pattern (regex), and standardization_expr.
+              When provided, pattern_name/pattern/standardization_expr
+              fields above are ignored.
 
   business_meaning:
     dimension_path: semantic.business_meaning.naming_clarity

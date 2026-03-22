@@ -158,8 +158,30 @@ def _build_keyed_documents(
     key_path: list[str],
     operation: str,
 ) -> list[FixDocument]:
-    """Build merge/set document — one doc using key_template for key suffix."""
+    """Build merge/set document(s) — using key_template for key suffix.
+
+    Supports a ``patterns`` array parameter for multi-format columns:
+    each entry in the array produces a separate FixDocument, allowing
+    multiple patterns to be written in a single apply_fix call.
+    """
     assert schema.key_template is not None
+
+    # Multi-pattern mode: "patterns" array in parameters
+    patterns_list = fix_input.parameters.get("patterns")
+    if isinstance(patterns_list, list) and patterns_list:
+        return _build_keyed_documents_multi(
+            schema,
+            fix_input,
+            patterns_list,
+            table_name,
+            column_name,
+            dimension,
+            config_path,
+            key_path,
+            operation,
+        )
+
+    # Single-pattern mode (original)
     try:
         key_suffix = schema.key_template.format(**fix_input.parameters)
     except KeyError:
@@ -200,6 +222,55 @@ def _build_keyed_documents(
             },
         )
     ]
+
+
+def _build_keyed_documents_multi(
+    schema: FixSchema,
+    fix_input: FixInput,
+    patterns_list: list[object],
+    table_name: str,
+    column_name: str | None,
+    dimension: str,
+    config_path: str,
+    key_path: list[str],
+    operation: str,
+) -> list[FixDocument]:
+    """Build one FixDocument per entry in a patterns array."""
+    assert schema.key_template is not None
+    docs: list[FixDocument] = []
+    key_fields = _extract_template_fields(schema.key_template)
+    reason = fix_input.interpretation or f"{schema.action} for {table_name}"
+
+    for i, entry in enumerate(patterns_list):
+        if not isinstance(entry, dict):
+            continue
+        try:
+            key_suffix = schema.key_template.format(**entry)
+        except KeyError:
+            continue
+
+        value = {k: v for k, v in entry.items() if k not in key_fields}
+
+        docs.append(
+            FixDocument(
+                target="config",
+                action=schema.action,
+                table_name=table_name,
+                column_name=column_name,
+                dimension=dimension,
+                ordinal=i,
+                description=f"{schema.action}: {key_suffix}",
+                payload={
+                    "config_path": config_path,
+                    "key_path": key_path + [key_suffix],
+                    "operation": operation,
+                    "value": value,
+                    "reason": reason,
+                },
+            )
+        )
+
+    return docs
 
 
 def _build_metadata_documents(

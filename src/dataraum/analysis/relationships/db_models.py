@@ -61,12 +61,20 @@ class Relationship(Base):
     )
 
     # Source side
-    from_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
-    from_column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
+    from_table_id: Mapped[str] = mapped_column(
+        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
+    )
+    from_column_id: Mapped[str] = mapped_column(
+        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
+    )
 
     # Target side
-    to_table_id: Mapped[str] = mapped_column(ForeignKey("tables.table_id"), nullable=False)
-    to_column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
+    to_table_id: Mapped[str] = mapped_column(
+        ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
+    )
+    to_column_id: Mapped[str] = mapped_column(
+        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
+    )
 
     # Classification
     relationship_type: Mapped[str] = mapped_column(

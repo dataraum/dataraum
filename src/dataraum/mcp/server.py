@@ -2256,7 +2256,7 @@ def _validate_fix_expressions(
         with manager.duckdb_cursor() as cursor:
             for table_name, col_name, expr in to_validate:
                 raw_table = f"raw_{table_name}"
-                rendered = expr.replace("{col}", f'"{col_name}"')
+                rendered = expr.format(col=col_name)
                 test_sql = f'SELECT {rendered} FROM "{raw_table}" LIMIT 1'
                 try:
                     cursor.execute(test_sql)

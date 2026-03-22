@@ -286,11 +286,13 @@ def _infer_column_types(
                 continue  # Need multiple patterns to COALESCE
 
             # Build COALESCE(TRY_STRPTIME(col, fmt1), TRY_STRPTIME(col, fmt2), ...)
-            # Replace STRPTIME→TRY_STRPTIME so mismatches return NULL not error
+            # Replace error-throwing functions with TRY_ variants so mismatches
+            # return NULL instead of failing the entire COALESCE expression.
             parts = []
             for p in type_patterns:
                 expr = p.standardization_expr.format(col=col_name)  # type: ignore[union-attr]
                 expr = expr.replace("STRPTIME(", "TRY_STRPTIME(")
+                expr = expr.replace("CAST(", "TRY_CAST(")
                 parts.append(expr)
             coalesce_expr = f"COALESCE({', '.join(parts)})"
 

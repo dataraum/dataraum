@@ -147,6 +147,20 @@ class TemporalEntropyDetector(EntropyDetector):
         }
         if temporal_behavior:
             evidence_entry["temporal_behavior"] = temporal_behavior
+
+        # For mismatch: sample raw values so the agent can see actual formats
+        if temporal_status == "mismatch" and context.duckdb_conn is not None and context.view_name:
+            try:
+                samples = context.duckdb_conn.execute(
+                    f'SELECT DISTINCT "{context.column_name}" '
+                    f'FROM "{context.view_name}" '
+                    f'WHERE "{context.column_name}" IS NOT NULL '
+                    f"LIMIT 10"
+                ).fetchall()
+                evidence_entry["sample_values"] = [str(row[0]) for row in samples]
+            except Exception:
+                pass
+
         evidence = [evidence_entry]
 
         # Resolution options

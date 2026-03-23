@@ -81,7 +81,7 @@ phases:
     description: Distribution drift analysis on slices
     dependencies: [slice_analysis, temporal]
     produces: [drift_summaries]
-    detectors: [temporal_drift]
+    detectors: [temporal_drift, dimensional_entropy]
 
   correlations:
     description: Within-table correlation analysis

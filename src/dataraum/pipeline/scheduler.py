@@ -236,18 +236,14 @@ class PipelineScheduler:
             summary=result.summary,
         )
 
-    def _run_sequential(
-        self, phase_names: list[str], total: int
-    ) -> Generator[PipelineEvent]:
+    def _run_sequential(self, phase_names: list[str], total: int) -> Generator[PipelineEvent]:
         """Run phases sequentially, yield events."""
         for phase_name in phase_names:
             yield self._event(EventType.PHASE_STARTED, phase=phase_name, total=total)
             result, started_at = self._run_phase(phase_name)
             yield from self._record_phase(phase_name, result, started_at, total)
 
-    def _run_parallel(
-        self, phase_names: list[str], total: int
-    ) -> Generator[PipelineEvent]:
+    def _run_parallel(self, phase_names: list[str], total: int) -> Generator[PipelineEvent]:
         """Run phases concurrently via ThreadPoolExecutor.
 
         PHASE_STARTED events are yielded for all phases before execution.
@@ -394,4 +390,3 @@ class PipelineScheduler:
         else:
             for detector_id in phase.detectors:
                 run_detector_post_step(self.session, self.source_id, detector_id)
-

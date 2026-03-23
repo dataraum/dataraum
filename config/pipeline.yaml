@@ -119,9 +119,6 @@ phases:
     dependencies: [business_cycles, validation]
     gate: true
 
-  graph_execution:
-    description: Execute metric graphs
-    dependencies: [semantic, column_eligibility, statistical_quality, temporal, relationships, correlations, slicing, computation_review]
 
 # Limits
 limits:

@@ -752,7 +752,6 @@ _PHASE_LABELS: dict[str, str] = {
     "business_cycles": "Detecting business cycles (AI step)",
     "validation": "Running validation checks (AI step)",
     "computation_review": "Reviewing computation quality (Gate 3)",
-    "graph_execution": "Executing metric graphs",
 }
 
 

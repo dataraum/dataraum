@@ -22,7 +22,6 @@ class TestLoadPhaseDeclarations:
         assert "import" in declarations
         assert "typing" in declarations
         assert "quality_review" in declarations
-        assert "graph_execution" in declarations
 
     def test_import_has_no_dependencies(self):
         declarations = load_phase_declarations()

@@ -6,7 +6,6 @@ Post-step detectors run after each phase completes.
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
 from collections.abc import Callable, Generator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -17,7 +16,6 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import Phase, PhaseContext, PhaseResult, PhaseStatus
-from dataraum.pipeline.cleanup import cleanup_phase
 from dataraum.pipeline.db_models import PhaseLog
 from dataraum.pipeline.events import EventType, PipelineEvent
 
@@ -397,152 +395,3 @@ class PipelineScheduler:
             for detector_id in phase.detectors:
                 run_detector_post_step(self.session, self.source_id, detector_id)
 
-    def _apply_fixes(self, fix_inputs: list[Any]) -> None:
-        """Apply fix inputs via bridge + interpreters, log to ledger, reset.
-
-        Routing:
-        - preprocess: cascade-clean + phase re-run (existing behaviour)
-        - postprocess: MetadataInterpreter patches DB directly, skip
-          cascade-clean. The next measurement picks up the change.
-        """
-        from dataraum.core.config import _get_config_root
-        from dataraum.documentation.ledger import log_fix
-        from dataraum.entropy.detectors.base import get_default_registry
-        from dataraum.pipeline.fixes.bridge import build_fix_documents
-        from dataraum.pipeline.fixes.interpreters import apply_and_persist
-
-        config_root = _get_config_root()
-        detector_registry = get_default_registry()
-        phases_to_rerun: set[str] = set()
-
-        for fix_input in fix_inputs:
-            schema = detector_registry.get_fix_schema(
-                fix_input.action_name, fix_input.dimension or None
-            )
-            if schema is None:
-                logger.warning(
-                    "fix_schema_not_found",
-                    action=fix_input.action_name,
-                )
-                continue
-
-            # Parse all column refs once
-            parsed = [
-                _parse_col_ref(ref)
-                for ref in (fix_input.affected_columns or [fix_input.action_name])
-            ]
-            table_name, column_name = parsed[0]
-            dimension = schema.dimension_path or fix_input.dimension or ""
-
-            documents = build_fix_documents(schema, fix_input, table_name, column_name, dimension)
-
-            if documents:
-                apply_and_persist(
-                    self.source_id,
-                    documents,
-                    session=self.session,
-                    config_root=config_root,
-                )
-
-            # Only preprocess fixes trigger cascade-clean + phase re-run
-            if schema.routing == "preprocess" and schema.requires_rerun:
-                phases_to_rerun.add(schema.requires_rerun)
-
-            # Log to fix ledger
-            for t_name, c_name in parsed:
-                log_fix(
-                    session=self.session,
-                    source_id=self.source_id,
-                    action_name=fix_input.action_name,
-                    table_name=t_name,
-                    column_name=c_name,
-                    user_input=fix_input.interpretation,
-                    interpretation=f"{schema.action}: {', '.join(fix_input.affected_columns)}",
-                )
-
-            logger.info(
-                "fix_applied",
-                action=fix_input.action_name,
-                documents=len(documents),
-                routing=schema.routing,
-                rerun=schema.requires_rerun,
-            )
-
-        # Reload configs from disk so re-runs pick up the patches.
-        # Postprocess metadata fixes are applied directly to DB by
-        # MetadataInterpreter — no config YAML intermediary needed.
-        from dataraum.core.config import load_phase_config
-        from dataraum.entropy.config import clear_entropy_config_cache
-
-        clear_entropy_config_cache()
-
-        for phase_name in phases_to_rerun:
-            self._phase_configs[phase_name] = load_phase_config(phase_name)
-
-        # Cleanup and reset affected phases + all downstream, then commit
-        # so per-phase sessions (via session_factory) see the cleared state.
-        # Order matters: invalidate downstream FIRST to remove FK references,
-        # then clean up the target phase itself.
-        try:
-            for phase_name in phases_to_rerun:
-                if phase_name in self.phases:
-                    self._invalidate_downstream(phase_name)
-                    cleanup_phase(phase_name, self.source_id, self.session, self.duckdb_conn)
-                    self._state[phase_name] = PhaseStatus.PENDING
-
-            if phases_to_rerun:
-                self.session.commit()
-        except Exception:
-            self.session.rollback()
-            logger.error("fix_cleanup_failed", phases=list(phases_to_rerun))
-            raise
-
-    def _invalidate_downstream(self, phase_name: str) -> None:
-        """Reset downstream phases to PENDING so they re-run.
-
-        Resets COMPLETED, SKIPPED, and FAILED phases. COMPLETED phases
-        need cleanup (delete output records). SKIPPED phases need to
-        re-evaluate should_skip() since the upstream data changed.
-        FAILED phases should retry with the corrected data.
-        """
-        dependents = self._transitive_dependents(phase_name)
-        for dep_name in dependents:
-            dep_status = self._state[dep_name]
-            if dep_status in (PhaseStatus.COMPLETED, PhaseStatus.SKIPPED):
-                # Clean outputs so the phase can't skip via should_skip()
-                # when upstream data changed.
-                cleanup_phase(dep_name, self.source_id, self.session, self.duckdb_conn)
-                self._state[dep_name] = PhaseStatus.PENDING
-            elif dep_status == PhaseStatus.FAILED:
-                self._state[dep_name] = PhaseStatus.PENDING
-
-    def _transitive_dependents(self, phase_name: str) -> list[str]:
-        """BFS over reverse dependency graph to find all downstream phases."""
-        # Build reverse adjacency: phase -> phases that depend on it
-        reverse: dict[str, list[str]] = defaultdict(list)
-        for name, phase in self.phases.items():
-            for dep in phase.dependencies:
-                reverse[dep].append(name)
-
-        visited: set[str] = set()
-        queue = deque(reverse.get(phase_name, []))
-        result: list[str] = []
-        while queue:
-            current = queue.popleft()
-            if current in visited:
-                continue
-            visited.add(current)
-            result.append(current)
-            queue.extend(reverse.get(current, []))
-
-        return result
-
-
-def _parse_col_ref(ref: str) -> tuple[str, str | None]:
-    """Parse a column reference like 'column:table.col' → (table, col).
-
-    Handles formats: 'table.col', 'column:table.col', 'table', 'column:table'.
-    """
-    bare = ref.split(":", 1)[-1] if ":" in ref else ref
-    parts = bare.split(".", 1)
-    return parts[0], parts[1] if len(parts) > 1 else None

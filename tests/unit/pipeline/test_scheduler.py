@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.entropy.dimensions import AnalysisKey
 from dataraum.entropy.measurement import match_threshold
-from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
+from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.db_models import PhaseLog, PipelineRun
 from dataraum.pipeline.events import EventType
 from dataraum.pipeline.phases.base import BasePhase
@@ -281,75 +281,6 @@ class TestDependencyOrdering:
         # B should NOT appear in started events
         started = [e.phase for e in events if e.event_type == EventType.PHASE_STARTED]
         assert "B" not in started
-
-
-class TestInvalidateDownstream:
-    def test_invalidate_downstream(self, session: Session, duckdb_conn):
-        """Completed downstream phases set back to PENDING."""
-        run_id = _make_run(session)
-        a = MockPhase("A")
-        b = MockPhase("B", dependencies=["A"])
-        c = MockPhase("C", dependencies=["B"])
-
-        scheduler = PipelineScheduler(
-            phases={"A": a, "B": b, "C": c},
-            source_id="src-1",
-            run_id=run_id,
-            session=session,
-            duckdb_conn=duckdb_conn,
-        )
-
-        # Simulate all phases having completed
-        scheduler._state["A"] = PhaseStatus.COMPLETED
-        scheduler._state["B"] = PhaseStatus.COMPLETED
-        scheduler._state["C"] = PhaseStatus.COMPLETED
-
-        with patch("dataraum.pipeline.scheduler.cleanup_phase"):
-            scheduler._invalidate_downstream("A")
-
-        # B and C (transitive downstream of A) should be back to PENDING
-        assert scheduler._state["B"] == PhaseStatus.PENDING
-        assert scheduler._state["C"] == PhaseStatus.PENDING
-        # A itself should remain COMPLETED
-        assert scheduler._state["A"] == PhaseStatus.COMPLETED
-
-        # _ready_phases should now pick up B (its dep A is still completed)
-        ready = scheduler._ready_phases()
-        assert "B" in ready
-        # C is not ready yet (depends on B which is now PENDING)
-        assert "C" not in ready
-
-    def test_invalidate_skipped_and_failed(self, session: Session, duckdb_conn):
-        """SKIPPED and FAILED downstream phases also reset to PENDING."""
-        run_id = _make_run(session)
-        a = MockPhase("A")
-        b = MockPhase("B", dependencies=["A"])
-        c = MockPhase("C", dependencies=["A"])
-        d = MockPhase("D", dependencies=["A"])
-
-        scheduler = PipelineScheduler(
-            phases={"A": a, "B": b, "C": c, "D": d},
-            source_id="src-1",
-            run_id=run_id,
-            session=session,
-            duckdb_conn=duckdb_conn,
-        )
-
-        scheduler._state["A"] = PhaseStatus.COMPLETED
-        scheduler._state["B"] = PhaseStatus.COMPLETED
-        scheduler._state["C"] = PhaseStatus.SKIPPED
-        scheduler._state["D"] = PhaseStatus.FAILED
-
-        with patch("dataraum.pipeline.scheduler.cleanup_phase") as mock_cleanup:
-            scheduler._invalidate_downstream("A")
-
-        # All three downstream should be PENDING
-        assert scheduler._state["B"] == PhaseStatus.PENDING
-        assert scheduler._state["C"] == PhaseStatus.PENDING
-        assert scheduler._state["D"] == PhaseStatus.PENDING
-
-        # cleanup_phase called for COMPLETED (B) and SKIPPED (C), not FAILED (D)
-        assert mock_cleanup.call_count == 2
 
 
 class TestPhaseLog:

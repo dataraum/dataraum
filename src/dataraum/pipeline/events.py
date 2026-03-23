@@ -33,10 +33,8 @@ class PipelineEvent:
     step: int = 0
     total: int = 0
     message: str = ""
-    scores: dict[str, float] = field(default_factory=dict)
     duration_seconds: float = 0.0
     error: str = ""
-    parallel_phases: list[str] = field(default_factory=list)
     # PHASE_COMPLETED: observability metrics from PhaseResult
     records_processed: int = 0
     records_created: int = 0

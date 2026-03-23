@@ -104,10 +104,10 @@ class TestSliceVarianceDetector:
         )
         results = detector.detect(context)
         assert len(results) == 1
-        # outlier_spread = 0.08, threshold = 0.05
-        # norm = min(0.08 / (2 * 0.05), 1.0) = 0.8
-        assert results[0].score == pytest.approx(0.8, abs=0.01)
-        assert "outlier_spread" in results[0].evidence[0]["exceeded_thresholds"]
+        # outlier_spread = 0.08, threshold = 0.25
+        # norm = min(0.08 / (2 * 0.25), 1.0) = 0.16
+        assert results[0].score == pytest.approx(0.16, abs=0.01)
+        assert "outlier_spread" not in results[0].evidence[0]["exceeded_thresholds"]
 
     def test_fewer_than_two_slices_returns_empty(self, detector: SliceVarianceDetector):
         """With < 2 slices, no variance measurable → empty result."""
@@ -262,10 +262,11 @@ class TestSliceVarianceDetector:
         )
         results = detector.detect(context)
         assert len(results) == 1
-        # distinct_ratio = 3.0, threshold = 2.0
-        # spread = 3.0 - 1.0 = 2.0, norm = min(2.0 / (2 * 1.0), 1.0) = 1.0
-        assert results[0].score == pytest.approx(1.0, abs=0.01)
-        assert "distinct_ratio" in results[0].evidence[0]["exceeded_thresholds"]
+        # distinct_ratio = 3.0, threshold = 5.0
+        # spread = 3.0 - 1.0 = 2.0, threshold_spread = 4.0
+        # norm = min(2.0 / (2 * 4.0), 1.0) = 0.25
+        assert results[0].score == pytest.approx(0.25, abs=0.01)
+        assert "distinct_ratio" not in results[0].evidence[0]["exceeded_thresholds"]
 
     def test_resolution_options_for_nonzero_score(self, detector: SliceVarianceDetector):
         """Non-zero score produces accept_finding resolution option."""
@@ -335,8 +336,10 @@ class TestSliceVarianceDetector:
         )
         results = detector.detect(context)
         assert len(results) == 1
-        # outlier_norm (0.6) > null_norm (0.25) → score = 0.6
-        assert results[0].score == pytest.approx(0.6, abs=0.01)
+        # null_norm = 0.05/(2*0.10) = 0.25
+        # outlier_norm = 0.06/(2*0.25) = 0.12
+        # max(0.25, 0.12) = 0.25
+        assert results[0].score == pytest.approx(0.25, abs=0.01)
 
     def test_zero_distinct_count_reports_none(self, detector: SliceVarianceDetector):
         """When min distinct_count is 0, ratio is None (undefined), not misleading 0.0."""

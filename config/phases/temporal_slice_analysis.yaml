@@ -1,6 +1,6 @@
 # Temporal slice analysis settings
-# Override time column for slice analysis (inherits from temporal if not set)
-time_column: "Transaction date"
+# time_column: Override per-table semantic annotation (optional, rarely needed).
+# Resolved automatically from TableEntity.time_column per table.
 
 # Time granularity: daily, weekly, monthly
 time_grain: monthly

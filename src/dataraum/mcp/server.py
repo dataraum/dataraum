@@ -748,7 +748,6 @@ _PHASE_LABELS: dict[str, str] = {
     "statistical_quality": "Running statistical quality checks",
     "enriched_views": "Creating enriched views",
     "column_eligibility": "Evaluating column eligibility",
-    "quality_summary": "Summarizing quality findings (AI step)",
     "entropy": "Measuring data uncertainty",
     "entropy_interpretation": "Writing quality summaries (AI step)",
     "business_cycles": "Detecting business cycles (AI step)",

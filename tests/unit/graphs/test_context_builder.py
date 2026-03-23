@@ -125,46 +125,6 @@ class TestBuilderExtractsTableEntity:
         assert table.time_column == "created_at"
 
 
-class TestBuilderExtractsQualityReport:
-    """Verify builder reads quality_summary, quality_findings from ColumnQualityReport."""
-
-    def test_quality_narrative(self, session: Session) -> None:
-        from dataraum.analysis.quality_summary.db_models import ColumnQualityReport
-
-        source_id, table_id, column_id = _insert_source_table_column(session)
-
-        # quality_summary needs a slice_column_id — reuse the same column
-        session.add(
-            ColumnQualityReport(
-                report_id=_id(),
-                source_column_id=column_id,
-                slice_column_id=column_id,
-                column_name="amount",
-                source_table_name="invoices",
-                slice_column_name="amount",
-                slice_count=1,
-                overall_quality_score=0.72,
-                quality_grade="C",
-                summary="Amount column has 15% null values in recent months.",
-                report_data={
-                    "key_findings": ["15% null values", "Outliers in Q4"],
-                    "recommendations": ["Investigate null source"],
-                },
-                investigation_views=[],
-            )
-        )
-        session.flush()
-
-        ctx = build_execution_context(session, [table_id])
-
-        col = ctx.tables[0].columns[0]
-        assert col.quality_grade == "C"
-        assert col.quality_score == pytest.approx(0.72)
-        assert col.quality_summary == "Amount column has 15% null values in recent months."
-        assert col.quality_findings == ["15% null values", "Outliers in Q4"]
-        assert col.quality_recommendations == ["Investigate null source"]
-
-
 class TestBuilderExtractsEntropyInterpretation:
     """Verify builder reads entropy_explanation, entropy_assumptions."""
 

@@ -90,7 +90,7 @@ class InterpretationInput:
     detected_type: str
     business_description: str | None
 
-    # Quality context from ColumnQualityReport (optional, added in interpretation phase)
+    # Quality context (retired in v0.2 — BBN readiness replaces LLM grades)
     quality_grade: str | None = None
     quality_findings: list[str] | None = None
 

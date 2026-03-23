@@ -17,7 +17,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from dataraum.analysis.cycles.config import format_cycle_vocabulary_for_context
-from dataraum.analysis.quality_summary.db_models import ColumnQualityReport
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.relationships.graph_topology import (
     analyze_graph_topology,
@@ -228,28 +227,9 @@ def build_cycle_detection_context(
         for tp, col_name, table_name in temporal_results
     ]
 
-    # 7. Quality signals (grades and key findings for columns with issues)
-    quality_stmt = select(ColumnQualityReport).where(
-        ColumnQualityReport.source_table_name.in_([t.table_name for t in tables])
-    )
-    quality_reports = session.execute(quality_stmt).scalars().all()
-
-    quality_signals = []
-    for qr in quality_reports:
-        # Only include columns with notable findings (grade B or worse)
-        if qr.quality_grade in ("A",):
-            continue
-        report_data = qr.report_data or {}
-        quality_signals.append(
-            {
-                "table_name": qr.source_table_name,
-                "column_name": qr.column_name,
-                "quality_grade": qr.quality_grade,
-                "quality_score": qr.overall_quality_score,
-                "summary": qr.summary,
-                "key_findings": report_data.get("key_findings", []),
-            }
-        )
+    # 7. Quality signals — retired with quality_summary phase (v0.2).
+    # BBN readiness signals will replace this in future.
+    quality_signals: list[dict[str, object]] = []
 
     context["quality_signals"] = quality_signals
 

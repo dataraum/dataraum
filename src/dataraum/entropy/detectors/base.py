@@ -331,10 +331,8 @@ def _register_builtin_detectors(registry: DetectorRegistry) -> None:
     registry.register(TemporalEntropyDetector())
     registry.register(DimensionalEntropyDetector())
 
-    from dataraum.entropy.detectors.semantic.column_quality import ColumnQualityDetector
     from dataraum.entropy.detectors.semantic.dimension_coverage import DimensionCoverageDetector
 
-    registry.register(ColumnQualityDetector())
     registry.register(DimensionCoverageDetector())
 
     # Semantic layer detectors (table-scoped, Zone 3)

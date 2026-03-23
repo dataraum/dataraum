@@ -94,15 +94,9 @@ phases:
     produces: [correlation]
     detectors: [derived_value]
 
-  quality_summary:
-    description: LLM quality report generation
-    dependencies: [slice_analysis, temporal_slice_analysis]
-    produces: [column_quality_reports]
-    detectors: [dimensional_entropy, column_quality]
-
   analysis_review:
     description: Quality checkpoint after enrichment — runs Zone 2 entropy detectors
-    dependencies: [correlations, quality_summary, temporal_slice_analysis]
+    dependencies: [correlations, temporal_slice_analysis]
     gate: true
 
   # =========================================================================
@@ -114,7 +108,7 @@ phases:
 
   business_cycles:
     description: Expert LLM cycle detection
-    dependencies: [analysis_review, semantic, relationships, temporal, enriched_views, slicing, quality_summary]
+    dependencies: [analysis_review, semantic, relationships, temporal, enriched_views, slicing]
     produces: [business_cycles]
     detectors: [business_cycle_health]
 
@@ -131,7 +125,7 @@ phases:
 
   graph_execution:
     description: Execute metric graphs
-    dependencies: [semantic, column_eligibility, statistical_quality, temporal, relationships, correlations, slicing, quality_summary, entropy_interpretation]
+    dependencies: [semantic, column_eligibility, statistical_quality, temporal, relationships, correlations, slicing, entropy_interpretation]
 
 # Limits
 limits:

@@ -217,11 +217,6 @@ class TestBuildQualitySection:
 
     def test_quality_data(self) -> None:
         col = _make_column(
-            quality_grade="B",
-            quality_score=0.85,
-            quality_summary="Moderate quality",
-            quality_findings=["3% null values"],
-            quality_recommendations=["Impute missing values"],
             flags=["moderate_nulls"],
         )
         table = _make_table(columns=[col], readiness_for_use="investigate")
@@ -237,8 +232,6 @@ class TestBuildQualitySection:
         t = result["tables"][0]
         assert t["readiness"] == "investigate"
         c = t["columns"][0]
-        assert c["quality_grade"] == "B"
-        assert c["quality_score"] == 0.85
         assert c["flags"] == ["moderate_nulls"]
 
     def test_entropy_data(self) -> None:
@@ -270,7 +263,6 @@ class TestBuildQualitySection:
         ctx = _make_context(tables=[table])
         result = build_quality_section(ctx)
 
-        assert "quality_grades" in result["availability"]
         assert "entropy_scores" in result["availability"]
         assert "entropy_interpretation" in result["availability"]
         assert "hint" in result

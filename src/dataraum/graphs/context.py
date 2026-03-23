@@ -68,15 +68,6 @@ class ColumnContext:
     max_timestamp: str | None = None
     completeness_ratio: float | None = None
 
-    # Quality grade from quality_summary module
-    quality_grade: str | None = None  # A, B, C, D, F
-    quality_score: float | None = None  # 0.0 - 1.0
-
-    # Quality narrative (from ColumnQualityReport)
-    quality_summary: str | None = None  # LLM narrative
-    quality_findings: list[str] = field(default_factory=list)  # key_findings from report_data
-    quality_recommendations: list[str] = field(default_factory=list)
-
     # Derived column info from correlation analysis
     is_derived: bool = False
     derived_formula: str | None = None  # e.g., "quantity * unit_price"
@@ -326,7 +317,6 @@ def build_execution_context(
     # Lazy imports to avoid circular dependencies
     from dataraum.analysis.correlation.db_models import DerivedColumn
     from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
-    from dataraum.analysis.quality_summary.db_models import ColumnQualityReport
     from dataraum.analysis.relationships.db_models import Relationship
     from dataraum.analysis.relationships.graph_topology import (
         analyze_graph_topology,
@@ -473,25 +463,7 @@ def build_execution_context(
     )
     _source_id = source_id_result.scalar()
 
-    # 11. Load quality reports from quality_summary.
-    # Reports are keyed by slicing_view column IDs (source_column_id), but
-    # context uses typed table columns.  Key by "table.column" instead.
-    quality_reports: dict[str, ColumnQualityReport] = {}
-    if _source_id:
-        grade_stmt = select(ColumnQualityReport).where(
-            ColumnQualityReport.source_column_id.in_(
-                select(Column.column_id).where(
-                    Column.table_id.in_(select(Table.table_id).where(Table.source_id == _source_id))
-                )
-            )
-        )
-        for report in session.execute(grade_stmt).scalars().all():
-            typed_name = report.source_table_name
-            if typed_name.startswith("slicing_"):
-                typed_name = typed_name[len("slicing_") :]
-            quality_reports[f"{typed_name}.{report.column_name}"] = report
-
-    # 12. Load derived columns from correlation analysis
+    # 11. Load derived columns from correlation analysis
     derived_columns: dict[str, str] = {}  # column_id -> formula
     if column_ids:
         derived_stmt = select(DerivedColumn).where(DerivedColumn.derived_column_id.in_(column_ids))
@@ -762,9 +734,6 @@ def build_execution_context(
             if flags:
                 quality_flags.extend(flags)
 
-            # Get quality report if available
-            col_report = quality_reports.get(f"{table.table_name}.{col.column_name}")
-
             # Get entropy data for this column
             entropy_key = f"{table.table_name}.{col.column_name}"
             col_entropy = column_entropy_lookup.get(entropy_key)
@@ -799,15 +768,6 @@ def build_execution_context(
                     if temp_profile and temp_profile.max_timestamp
                     else None,
                     completeness_ratio=temp_profile.completeness_ratio if temp_profile else None,
-                    quality_grade=col_report.quality_grade if col_report else None,
-                    quality_score=col_report.overall_quality_score if col_report else None,
-                    quality_summary=col_report.summary if col_report else None,
-                    quality_findings=col_report.report_data.get("key_findings", [])
-                    if col_report and col_report.report_data
-                    else [],
-                    quality_recommendations=col_report.report_data.get("recommendations", [])
-                    if col_report and col_report.report_data
-                    else [],
                     is_derived=is_derived,
                     derived_formula=derived_columns.get(col.column_id),
                     flags=flags,
@@ -1312,9 +1272,6 @@ def _build_column_notes(col: ColumnContext) -> str:
     if col.is_derived and col.derived_formula:
         notes.append(f"Derived: {col.derived_formula}.")
 
-    if col.quality_grade:
-        notes.append(f"Grade: {col.quality_grade}.")
-
     # Entropy readiness indicator
     if col.entropy_scores:
         readiness = col.entropy_scores.get("readiness", "ready")
@@ -1330,19 +1287,7 @@ def _build_column_notes(col: ColumnContext) -> str:
 
 
 def _append_table_quality(lines: list[str], table: TableContext) -> None:
-    """Append quality section for a table."""
-    quality_cols = [col for col in table.columns if col.quality_grade and col.quality_summary]
-    if not quality_cols:
-        return
-
-    lines.append("")
-    lines.append("**Quality**:")
-    for col in quality_cols:
-        lines.append(f"- {col.column_name} (Grade {col.quality_grade}): {col.quality_summary}")
-        for finding in col.quality_findings[:2]:
-            lines.append(f"  - {finding}")
-        for rec in col.quality_recommendations[:2]:
-            lines.append(f"  - Recommendation: {rec}")
+    """Append quality section for a table (placeholder for BBN readiness in v0.2)."""
 
 
 def _append_data_quality_notes(lines: list[str], table: TableContext) -> None:

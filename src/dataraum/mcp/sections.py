@@ -468,11 +468,22 @@ def build_schema_tool_section(context: GraphExecutionContext) -> dict[str, Any]:
     and compact business process summaries. Under 50 lines of JSON per table.
     Does NOT include quality grades, entropy scores, assumptions, or actions.
     """
+    # Build lookup: (table_name, column_name) -> distinct values from SliceContext
+    slice_values: dict[tuple[str, str], list[str]] = {}
+    for s in context.available_slices:
+        if s.distinct_values:
+            slice_values[(s.table_name, s.column_name)] = s.distinct_values[:20]
+
     tables = []
     for table in context.tables:
         t: dict[str, Any] = {"name": table.duckdb_name or table.table_name}
-        if table.table_name != t["name"]:
-            t["source_name"] = table.table_name
+        raw_name = table.table_name
+        if raw_name != t["name"]:
+            t["source_name"] = raw_name
+        display = (
+            table.table_description or raw_name.removeprefix("typed_").replace("_", " ").title()
+        )
+        t["display_name"] = display
         if table.is_fact_table:
             t["type"] = "fact"
         elif table.is_dimension_table:
@@ -486,7 +497,15 @@ def build_schema_tool_section(context: GraphExecutionContext) -> dict[str, Any]:
                 table.grain_columns[0] if len(table.grain_columns) == 1 else table.grain_columns
             )
         if table.time_column:
-            t["time_range"] = {"column": table.time_column}
+            tr: dict[str, Any] = {"column": table.time_column}
+            for col in table.columns:
+                if col.column_name == table.time_column:
+                    if col.min_timestamp:
+                        tr["from"] = col.min_timestamp
+                    if col.max_timestamp:
+                        tr["to"] = col.max_timestamp
+                    break
+            t["time_range"] = tr
 
         columns = []
         for col in table.columns:
@@ -501,6 +520,9 @@ def build_schema_tool_section(context: GraphExecutionContext) -> dict[str, Any]:
                 c["description"] = col.business_name
             if col.unit_source_column:
                 c["unit"] = col.unit_source_column
+            key = (table.table_name, col.column_name)
+            if key in slice_values:
+                c["values"] = slice_values[key]
             columns.append(c)
 
         t["columns"] = columns

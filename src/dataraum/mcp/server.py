@@ -1670,7 +1670,9 @@ def _get_quality(
     resolved_contract = contract_name or _get_cached_contract(output_dir)
 
     if gate:
-        return _get_zone_status(output_dir, gate=gate, contract_name=resolved_contract)
+        return _get_zone_status(
+            output_dir, gate=gate, contract_name=resolved_contract, columns=columns
+        )
 
     from sqlalchemy import select
 
@@ -1923,7 +1925,19 @@ def _query(
             if not qr.success:
                 return {"error": qr.error or "Query generation failed"}
 
-            return format_query_result(qr)
+            # Load persisted user_decision fixes so they appear in decisions_made
+            persisted_decisions: list[str] = []
+            try:
+                from dataraum.documentation.ledger import get_active_fixes
+
+                active_fixes = get_active_fixes(session, source.source_id)
+                persisted_decisions = [
+                    f.user_input for f in active_fixes if f.action_name == "user_decision"
+                ]
+            except Exception:
+                pass
+
+            return format_query_result(qr, persisted_decisions=persisted_decisions)
     finally:
         manager.close()
 
@@ -2245,6 +2259,7 @@ def _get_zone_status(
     output_dir: Path,
     gate: str,
     contract_name: str | None = None,
+    columns: list[str] | None = None,
 ) -> dict[str, Any]:
     """Read persisted gate scores and format zone status for an agent.
 
@@ -2252,6 +2267,7 @@ def _get_zone_status(
         output_dir: Pipeline output directory.
         gate: Gate phase to inspect (quality_review or analysis_review).
         contract_name: Contract to evaluate against. Auto-detects if omitted.
+        columns: Optional column filter — only show violations affecting these columns.
     """
     from sqlalchemy import select
 
@@ -2433,6 +2449,22 @@ def _get_zone_status(
                     violation["accepted_targets"] = dim_accepted
 
                 violations.append(violation)
+
+            # Filter violations to requested columns if specified
+            if columns:
+                col_set = {c.lower() for c in columns}
+                col_set |= {c.rsplit(".", 1)[-1].lower() for c in columns}
+                violations = [
+                    v
+                    for v in violations
+                    if any(
+                        any(
+                            part.lower() in col_set
+                            for part in t.replace("column:", "").split(".", 1)
+                        )
+                        for t in v.get("affected_targets", [])
+                    )
+                ]
 
             # Build passing entries
             passing = []

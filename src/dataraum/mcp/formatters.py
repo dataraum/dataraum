@@ -125,6 +125,7 @@ def format_contract_evaluation(
         result["warnings"] = [{"details": w.details} for w in evaluation.warnings]
 
     if not evaluation.is_compliant and evaluation.worst_dimension:
+        result["top_blocker"] = get_dimension_label(evaluation.worst_dimension)
         result["path_to_compliance"] = {
             "focus_dimension": evaluation.worst_dimension,
             "worst_score": round(evaluation.worst_dimension_score, 2),
@@ -134,7 +135,9 @@ def format_contract_evaluation(
     return result
 
 
-def format_query_result(result: QueryResult) -> dict[str, Any]:
+def format_query_result(
+    result: QueryResult, persisted_decisions: list[str] | None = None
+) -> dict[str, Any]:
     """Format query result as structured dict per spec.
 
     Produces:
@@ -159,9 +162,7 @@ def format_query_result(result: QueryResult) -> dict[str, Any]:
                 {
                     "issue": assumption.assumption,
                     "options": ["Keep as-is", "Provide clarification"],
-                    "impact": f"Affects {assumption.target}"
-                    if assumption.target
-                    else "Unknown impact",
+                    "impact": assumption.assumption,
                 }
             )
         # Low confidence (<0.5) assumptions are suppressed
@@ -180,6 +181,12 @@ def format_query_result(result: QueryResult) -> dict[str, Any]:
     for note in result.validation_notes:
         if note and note not in decisions_made:
             decisions_made.append(note)
+
+    # Prepend persisted user_decision fixes (from prior apply_fix calls)
+    if persisted_decisions:
+        decisions_made = [
+            d for d in persisted_decisions if d not in decisions_made
+        ] + decisions_made
 
     # Build answer block
     answer: dict[str, Any] = {}
@@ -323,6 +330,15 @@ def format_actions_report(
 def format_quality_report(sections: dict[str, Any]) -> dict[str, Any]:
     """Combine quality sections into a unified report dict."""
     result: dict[str, Any] = {}
+
+    # Add top-level overall block derived from entropy section
+    if "entropy" in sections:
+        e = sections["entropy"]
+        overall: dict[str, Any] = {"status": e.get("overall_status", "UNKNOWN")}
+        if "entropy_score" in e:
+            overall["entropy_score"] = e["entropy_score"]
+        result["overall"] = overall
+
     for name in ("entropy", "contract", "actions"):
         content = sections.get(name)
         if content:

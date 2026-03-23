@@ -136,7 +136,7 @@ class QualitySummaryPhase(BasePhase):
         table_ids: list[str],
         column_ids: list[str],
     ) -> int:
-        from dataraum.analysis.quality_summary.db_models import ColumnSliceProfile
+        from dataraum.analysis.slicing.db_models import ColumnSliceProfile
 
         count = 0
         if column_ids:

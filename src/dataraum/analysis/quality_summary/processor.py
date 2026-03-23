@@ -23,7 +23,6 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.quality_summary.db_models import (
     ColumnQualityReport,
-    ColumnSliceProfile,
 )
 from dataraum.analysis.quality_summary.models import (
     AggregatedColumnData,
@@ -31,7 +30,7 @@ from dataraum.analysis.quality_summary.models import (
     QualitySummaryResult,
 )
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
-from dataraum.analysis.slicing.db_models import SliceDefinition
+from dataraum.analysis.slicing.db_models import ColumnSliceProfile, SliceDefinition
 from dataraum.analysis.statistics.db_models import (
     StatisticalProfile,
 )

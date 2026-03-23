@@ -234,8 +234,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         Returns dict with slice_variance and drift_summaries keys,
         or None if no slice profiles exist.
         """
-        from dataraum.analysis.quality_summary.db_models import ColumnSliceProfile
-        from dataraum.analysis.slicing.db_models import SliceDefinition
+        from dataraum.analysis.slicing.db_models import ColumnSliceProfile, SliceDefinition
         from dataraum.analysis.slicing.slice_runner import _get_slice_table_name
         from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
         from dataraum.storage import Column, Table

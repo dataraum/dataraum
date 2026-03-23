@@ -108,7 +108,7 @@ class YAMLAwarePhase:
 
     Delegates runtime behavior (_run, cleanup, should_skip, db_models,
     duckdb_layers) to the inner phase. Returns YAML values for
-    dependencies, description, produces_analyses, is_quality_gate.
+    dependencies, description, produces_analyses.
     """
 
     def __init__(self, inner: BasePhase, declaration: PhaseDeclaration) -> None:
@@ -130,10 +130,6 @@ class YAMLAwarePhase:
     @property
     def produces_analyses(self) -> set[AnalysisKey]:
         return self._decl.produces
-
-    @property
-    def is_quality_gate(self) -> bool:
-        return self._decl.gate
 
     @property
     def detectors(self) -> list[str]:

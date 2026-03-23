@@ -9,13 +9,8 @@ from io import StringIO
 from rich.console import Console
 
 from dataraum.cli.commands.run import _drive_pipeline, _PhaseTracker, _print_summary
-from dataraum.entropy.gate import ExitCheckIssue
 from dataraum.pipeline.events import EventType, PipelineEvent
-from dataraum.pipeline.scheduler import (
-    PipelineResult,
-    Resolution,
-    ResolutionAction,
-)
+from dataraum.pipeline.scheduler import PipelineResult
 
 
 def _strip_ansi(text: str) -> str:
@@ -26,29 +21,9 @@ def _strip_ansi(text: str) -> str:
 def _mock_generator(
     events: list[PipelineEvent],
     result: PipelineResult,
-    expected_resolutions: list[Resolution] | None = None,
-) -> Generator[PipelineEvent, Resolution | None, PipelineResult]:
-    """Create a mock generator that yields scripted events.
-
-    Args:
-        events: Events to yield in order.
-        result: The final PipelineResult to return.
-        expected_resolutions: If provided, EXIT_CHECK events will
-            receive these resolutions via send().
-    """
-    resolution_iter = iter(expected_resolutions or [])
-    for event in events:
-        if event.event_type == EventType.EXIT_CHECK:
-            resolution = yield event
-            # Validate the sent resolution matches expectations
-            try:
-                expected = next(resolution_iter)
-                assert resolution is not None, "Expected a Resolution via send()"
-                assert resolution.action == expected.action
-            except StopIteration:
-                pass
-        else:
-            yield event
+) -> Generator[PipelineEvent, None, PipelineResult]:
+    """Create a mock generator that yields scripted events."""
+    yield from events
     return result
 
 
@@ -61,7 +36,6 @@ def _ok_result(**kwargs) -> PipelineResult:
         "phases_skipped": [],
         "phases_blocked": [],
         "final_scores": {},
-        "deferred_issues": [],
     }
     defaults.update(kwargs)
     return PipelineResult(**defaults)
@@ -110,7 +84,7 @@ class TestDriveBasicPipeline:
         result, stats = _drive_pipeline(
             gen=_mock_generator(events, _ok_result()),
             console=console,
-            interactive=False,
+
         )
 
         rendered = output.getvalue()
@@ -145,7 +119,7 @@ class TestDriveWithSkip:
                 events, _ok_result(phases_skipped=["semantic"], phases_completed=[])
             ),
             console=console,
-            interactive=False,
+
         )
 
         rendered = output.getvalue()
@@ -183,54 +157,13 @@ class TestDriveWithFailure:
                 ),
             ),
             console=console,
-            interactive=False,
+
         )
 
         rendered = output.getvalue()
         assert not result.success
         assert "import" in rendered
         assert "File not found" in rendered
-
-
-class TestExitCheckAutoDefer:
-    def test_auto_sends_defer(self):
-        """Non-interactive mode auto-sends DEFER at EXIT_CHECK."""
-        output = StringIO()
-        console = Console(file=output, force_terminal=True, width=100)
-
-        events = [
-            PipelineEvent(event_type=EventType.PIPELINE_STARTED, step=1, total=2),
-            PipelineEvent(event_type=EventType.PHASE_STARTED, phase="typing", step=2, total=2),
-            PipelineEvent(
-                event_type=EventType.PHASE_COMPLETED,
-                phase="typing",
-                step=3,
-                total=2,
-                duration_seconds=1.0,
-            ),
-            PipelineEvent(
-                event_type=EventType.EXIT_CHECK,
-                step=4,
-                total=2,
-                violations={"structural.types.type_fidelity": (0.62, 0.50)},
-            ),
-            PipelineEvent(event_type=EventType.PIPELINE_COMPLETED, step=5, total=2),
-        ]
-
-        result, stats = _drive_pipeline(
-            gen=_mock_generator(
-                events,
-                _ok_result(),
-                expected_resolutions=[Resolution(action=ResolutionAction.DEFER)],
-            ),
-            console=console,
-            interactive=False,
-        )
-
-        assert result.success
-        rendered = output.getvalue().lower()
-        # Non-interactive mode suppresses inline violation panel (shown in final summary)
-        assert "post-verification" not in rendered
 
 
 class TestQuietMode:
@@ -255,7 +188,7 @@ class TestQuietMode:
         result, stats = _drive_pipeline(
             gen=_mock_generator(events, _ok_result()),
             console=console,
-            interactive=False,
+
             quiet=True,
         )
 
@@ -271,14 +204,6 @@ class TestPipelineResultReturned:
 
         expected_result = _ok_result(
             final_scores={"structural.types.type_fidelity": 0.15},
-            deferred_issues=[
-                ExitCheckIssue(
-                    dimension_path="semantic.units",
-                    score=0.45,
-                    threshold=0.30,
-                    producing_phase="typing",
-                )
-            ],
         )
 
         events = [
@@ -289,13 +214,11 @@ class TestPipelineResultReturned:
         result, stats = _drive_pipeline(
             gen=_mock_generator(events, expected_result),
             console=console,
-            interactive=False,
         )
 
         assert result is not None
         assert result.success
         assert result.final_scores == {"structural.types.type_fidelity": 0.15}
-        assert len(result.deferred_issues) == 1
 
 
 class TestSummaryDisplay:
@@ -319,7 +242,7 @@ class TestSummaryDisplay:
         result, stats = _drive_pipeline(
             gen=_mock_generator(events, result_data),
             console=console,
-            interactive=False,
+
         )
         _print_summary(console, result, stats)
 
@@ -350,7 +273,7 @@ class TestSummaryDisplay:
         result, stats = _drive_pipeline(
             gen=_mock_generator(events, result_data),
             console=console,
-            interactive=False,
+
         )
         _print_summary(
             console,
@@ -387,7 +310,7 @@ class TestSummaryDisplay:
         result, stats = _drive_pipeline(
             gen=_mock_generator(events, result_data),
             console=console,
-            interactive=False,
+
         )
         _print_summary(
             console,
@@ -444,7 +367,7 @@ class TestParallelSpinner:
         result, stats = _drive_pipeline(
             gen=_mock_generator(events, _ok_result()),
             console=console,
-            interactive=False,
+
         )
 
         assert result.success

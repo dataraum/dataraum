@@ -227,13 +227,7 @@ def build_cycle_detection_context(
         for tp, col_name, table_name in temporal_results
     ]
 
-    # 7. Quality signals — retired with quality_summary phase (v0.2).
-    # BBN readiness signals will replace this in future.
-    quality_signals: list[dict[str, object]] = []
-
-    context["quality_signals"] = quality_signals
-
-    # 8. Enriched views (pre-joined table schemas)
+    # 7. Enriched views (pre-joined table schemas)
     enriched_stmt = select(EnrichedView).where(EnrichedView.fact_table_id.in_(table_ids))
     enriched_views = session.execute(enriched_stmt).scalars().all()
 
@@ -263,7 +257,6 @@ def build_cycle_detection_context(
         "total_relationships": len(rel_list),
         "slice_dimensions_found": len(slice_list),
         "temporal_columns": len(context["temporal_profiles"]),
-        "quality_issues": len(quality_signals),
         "enriched_views": len(enriched_list),
         "fact_tables": sum(1 for e in context["entity_classifications"] if e["is_fact_table"]),
         "dimension_tables": sum(
@@ -458,19 +451,6 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
                 f"{tp['date_range_start']} to {tp['date_range_end']}, "
                 f"completeness={tp['completeness']:.0%}{stale_str}"
             )
-        lines.append("")
-
-    # Quality signals (only issues)
-    quality = context.get("quality_signals", [])
-    if quality:
-        lines.append("## DATA QUALITY SIGNALS")
-        for qs in quality:
-            lines.append(
-                f"- {qs['table_name']}.{qs['column_name']}: grade {qs['quality_grade']} ({qs['quality_score']:.2f})"
-            )
-            lines.append(f"  {qs['summary'][:500]}")
-            for finding in qs.get("key_findings", [])[:2]:
-                lines.append(f"  - {finding[:500]}")
         lines.append("")
 
     # Column semantics by table

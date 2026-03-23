@@ -30,10 +30,10 @@ class BusinessCyclesPhase(BasePhase):
     """Expert LLM agent for business cycle detection.
 
     Synthesizes pre-computed pipeline metadata (slice definitions,
-    statistical profiles, temporal patterns, enriched views, quality
-    signals) into business cycle analysis via a single LLM call.
+    statistical profiles, temporal patterns, enriched views) into
+    business cycle analysis via a single LLM call.
 
-    Requires: semantic, temporal, enriched_views, slicing, quality_summary.
+    Requires: semantic, relationships, temporal, enriched_views, slicing, temporal_slice_analysis.
     """
 
     @property

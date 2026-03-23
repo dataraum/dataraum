@@ -38,7 +38,6 @@ class LLMFeatures(BaseModel):
     semantic_analysis: FeatureConfig
     column_annotation: FeatureConfig | None = None
     slicing_analysis: FeatureConfig | None = None
-    quality_summary: FeatureConfig | None = None
     validation: FeatureConfig | None = None
     business_cycles: FeatureConfig | None = None
     entropy_query_interpretation: FeatureConfig | None = None

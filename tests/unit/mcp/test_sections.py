@@ -247,12 +247,6 @@ class TestBuildQualitySection:
         assert c["entropy_scores"]["readiness"] == "investigate"
         assert len(c["resolution_actions"]) == 1
 
-    def test_assumptions_in_effect(self) -> None:
-        assumption = {"table": "orders", "column": "amount", "assumption_text": "nulls are MCAR"}
-        ctx = _make_context(active_assumptions=[assumption])
-        result = build_quality_section(ctx)
-        assert result["assumptions_in_effect"] == [assumption]
-
     def test_availability_warnings(self) -> None:
         col = _make_column()  # No quality data at all
         table = _make_table(columns=[col])

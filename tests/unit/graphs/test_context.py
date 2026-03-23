@@ -149,7 +149,6 @@ class TestGraphExecutionContext:
         assert ctx.relationships == []
         assert ctx.total_tables == 0
         assert ctx.slice_column is None
-        assert ctx.active_assumptions == []
 
     def test_create_full(self) -> None:
         """Create full execution context."""
@@ -179,19 +178,10 @@ class TestGraphExecutionContext:
             quality_issues_by_severity={"warning": 2, "error": 0},
             slice_column="region",
             slice_value="EMEA",
-            active_assumptions=[
-                {
-                    "table": "transactions",
-                    "column": "amount",
-                    "assumption_text": "Local currency",
-                    "confidence": "medium",
-                }
-            ],
         )
         assert len(ctx.tables) == 1
         assert ctx.graph_pattern == "star_schema"
         assert ctx.slice_column == "region"
-        assert len(ctx.active_assumptions) == 1
 
 
 class TestValidationContext:
@@ -506,26 +496,6 @@ class TestFormatMetadataDocument:
 
         assert "VERIFIED" in result
         assert "3/3 validations" in result
-
-    def test_active_assumptions_stored(self) -> None:
-        """Active assumptions stored on context but not rendered (interpretation removed)."""
-        ctx = GraphExecutionContext(
-            active_assumptions=[
-                {
-                    "table": "orders",
-                    "column": "amount",
-                    "assumption_text": "Amounts in local currency",
-                    "confidence": "medium",
-                    "basis": "currency_code present",
-                    "impact": "high",
-                },
-            ],
-        )
-        # Assumptions are stored on context but the rendering section was removed
-        assert len(ctx.active_assumptions) == 1
-        result = format_metadata_document(ctx)
-        # No dedicated assumptions section
-        assert "## Assumptions in Effect" not in result
 
     def test_validation_results(self) -> None:
         """Validation results shown with pass/fail counts."""

@@ -1,8 +1,8 @@
-"""Quality gate measurement and contract assessment.
+"""Entropy measurement and contract assessment.
 
-Provides the measurement and assessment logic that runs at quality gate phases:
-- ``aggregate_at_gate``: read persisted detector records (no re-execution)
-- ``assess_contracts``: check scores against contract thresholds
+Aggregates persisted detector records and checks scores against contracts:
+- ``measure_entropy``: read persisted detector records (no re-execution)
+- ``check_contracts``: check scores against contract thresholds
 - ``match_threshold``: find the applicable threshold for a dimension path
 """
 
@@ -21,8 +21,8 @@ logger = get_logger(__name__)
 
 
 @dataclass
-class GateResult:
-    """Result of measuring entropy at a quality gate."""
+class MeasurementResult:
+    """Result of measuring entropy across detector records."""
 
     scores: dict[str, float] = field(default_factory=dict)
     column_details: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -40,8 +40,8 @@ class GateResult:
 
 
 @dataclass
-class ExitCheckIssue:
-    """A contract violation detected at a quality gate."""
+class ContractViolation:
+    """A contract violation detected during measurement."""
 
     dimension_path: str  # e.g. "structural.types.type_fidelity"
     score: float
@@ -93,7 +93,7 @@ def _collect_evidence(
     """Extract component evidence from an EntropyObject into the evidence dict.
 
     Passes all evidence keys through. Each detector decides what to put
-    in its evidence dict; the gate doesn't filter.
+    in its evidence dict; measurement doesn't filter.
     """
     if not obj.evidence:
         return
@@ -104,12 +104,12 @@ def _collect_evidence(
         evidence_by_dim[str(obj.sub_dimension)][target] = dict(ev)
 
 
-def aggregate_at_gate(
+def measure_entropy(
     session: Session,
     source_id: str,
     detector_ids: list[str],
-) -> GateResult:
-    """Aggregate persisted detector records at a quality gate.
+) -> MeasurementResult:
+    """Aggregate persisted detector records into dimension scores.
 
     Reads ``EntropyObjectRecord`` rows instead of re-running detectors.
     Records are produced by ``run_detector_post_step()`` after each phase.
@@ -117,16 +117,16 @@ def aggregate_at_gate(
     Args:
         session: SQLAlchemy session.
         source_id: The source being processed.
-        detector_ids: Detector IDs to include (from completed phases).
+        detector_ids: Detector IDs to include.
 
     Returns:
-        GateResult with dimension scores and per-column/table/view details.
+        MeasurementResult with dimension scores and per-column/table/view details.
     """
     from dataraum.entropy.db_models import EntropyObjectRecord
     from dataraum.entropy.detectors.base import get_default_registry
 
     if not detector_ids:
-        return GateResult()
+        return MeasurementResult()
 
     registry = get_default_registry()
 
@@ -151,7 +151,7 @@ def aggregate_at_gate(
     )
 
     if not records:
-        return GateResult()
+        return MeasurementResult()
 
     # Apply business pattern filter before aggregation
     from dataraum.entropy.pattern_filter import CONFIDENCE_THRESHOLD, apply_pattern_filter
@@ -235,7 +235,7 @@ def aggregate_at_gate(
     # Query DataFix for accepted targets
     accepted = _get_accepted_targets(session, source_id)
 
-    return GateResult(
+    return MeasurementResult(
         scores=result_scores,
         column_details=result_column_details,
         table_details=result_table_details,
@@ -253,9 +253,8 @@ def match_threshold(
 ) -> float | None:
     """Find contract threshold by prefix match.
 
-    Single source of truth for threshold resolution, used by gate
-    assessment (``assess_contracts``), contract evaluation, and CLI
-    display (``render_gate_scores``, ``_print_summary``).
+    Single source of truth for threshold resolution, used by contract
+    assessment (``check_contracts``), contract evaluation, and CLI display.
 
     Given "structural.types.type_fidelity", checks for thresholds at:
     - "structural.types.type_fidelity" (exact)
@@ -277,14 +276,14 @@ def match_threshold(
     return None
 
 
-def assess_contracts(
+def check_contracts(
     scores: dict[str, float],
     thresholds: dict[str, float],
     column_details: dict[str, dict[str, float]],
     producing_phase: str,
     resolution_actions: dict[str, set[str]] | None = None,
     accepted_targets: dict[str, set[str]] | None = None,
-) -> list[ExitCheckIssue]:
+) -> list[ContractViolation]:
     """Check scores against contract thresholds.
 
     Accepted targets (from DataFix records) are excluded from violation
@@ -312,7 +311,7 @@ def assess_contracts(
 
     accepted = accepted_targets or {}
 
-    issues: list[ExitCheckIssue] = []
+    issues: list[ContractViolation] = []
     for dimension_path, score in scores.items():
         threshold = match_threshold(dimension_path, thresholds)
         if threshold is not None and score > threshold:
@@ -324,7 +323,7 @@ def assess_contracts(
             affected = [t for t in above_threshold if t not in dim_accepted]
 
             # Contract overrule: if all above-threshold targets are accepted,
-            # the dimension is acknowledged — don't block the gate.
+            # the dimension is acknowledged — don't report as violation.
             # Only applies when we have column-level detail; if no column
             # details exist, the dimension score alone triggers the violation.
             if above_threshold and not affected:
@@ -332,7 +331,7 @@ def assess_contracts(
 
             actions = resolution_actions.get(dimension_path, set()) if resolution_actions else set()
             issues.append(
-                ExitCheckIssue(
+                ContractViolation(
                     dimension_path=dimension_path,
                     score=score,
                     threshold=threshold,
@@ -342,75 +341,3 @@ def assess_contracts(
                 )
             )
     return issues
-
-
-def persist_gate_result(
-    session: Session,
-    source_id: str,
-    gate_result: GateResult,
-    *,
-    phase_name: str = "quality_review",
-    run_id: str | None = None,
-) -> None:
-    """Persist gate scores to a PhaseLog record.
-
-    Shared by the scheduler (scoped by run_id) and the standalone fix API
-    (scoped by source_id + phase_name).
-
-    Args:
-        session: SQLAlchemy session.
-        source_id: Source identifier.
-        gate_result: Gate measurement result to persist.
-        phase_name: Phase to update (default: quality_review).
-        run_id: If provided, scope lookup to this run (scheduler path).
-            Otherwise scope by source_id + phase_name (API path).
-    """
-    from sqlalchemy import select as sa_select
-
-    from dataraum.entropy.detectors.base import get_default_registry
-    from dataraum.pipeline.db_models import PhaseLog
-
-    if run_id is not None:
-        log = session.execute(
-            sa_select(PhaseLog)
-            .where(
-                PhaseLog.run_id == run_id,
-                PhaseLog.phase_name == phase_name,
-            )
-            .order_by(PhaseLog.completed_at.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-    else:
-        log = session.execute(
-            sa_select(PhaseLog)
-            .where(
-                PhaseLog.source_id == source_id,
-                PhaseLog.phase_name == phase_name,
-            )
-            .order_by(PhaseLog.completed_at.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-
-    if log is None:
-        return
-
-    registry = get_default_registry()
-    detector_id_map = {d.dimension_path: d.detector_id for d in registry.get_all_detectors()}
-
-    log.entropy_scores = dict(gate_result.scores)
-    existing_outputs = dict(log.outputs) if log.outputs else {}
-    existing_outputs["gate_column_details"] = dict(gate_result.column_details)
-    existing_outputs["gate_table_details"] = dict(gate_result.table_details)
-    existing_outputs["gate_view_details"] = dict(gate_result.view_details)
-    existing_outputs["detector_id_map"] = detector_id_map
-    if gate_result.column_evidence:
-        existing_outputs["gate_column_evidence"] = dict(gate_result.column_evidence)
-    if gate_result.accepted_targets:
-        # Convert sets to lists for JSON serialization
-        existing_outputs["accepted_targets"] = {
-            k: sorted(v) for k, v in gate_result.accepted_targets.items()
-        }
-    if gate_result.filter_applied:
-        existing_outputs["filter_applied"] = gate_result.filter_applied
-    log.outputs = existing_outputs
-    session.commit()

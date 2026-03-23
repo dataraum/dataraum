@@ -29,7 +29,6 @@ class TestPipelineEvent:
         assert event.total == 0
         assert event.message == ""
         assert event.scores == {}
-        assert event.violations == {}
         assert event.duration_seconds == 0.0
         assert event.error == ""
 

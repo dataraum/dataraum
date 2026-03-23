@@ -63,42 +63,6 @@ dataraum run /path/to/data --phase semantic -f
 - `--force` requires `--phase` — it only applies to the target phase, not its dependencies.
 - Only the target phase's output is deleted; dependency phases keep their results.
 
-### `fix` - Document Domain Knowledge
-
-Review data quality actions and document domain knowledge through an interactive agent. Fixes are stored in a durable ledger and used as context when re-running semantic analysis.
-
-```bash
-dataraum fix [OUTPUT_DIR] [OPTIONS]
-```
-
-**Arguments:**
-- `OUTPUT_DIR` - Output directory containing pipeline databases (default: `./pipeline_output`)
-
-**Options:**
-- `--rerun` - After documenting fixes, automatically re-run semantic + all downstream phases and show an entropy impact report
-
-**Workflow:**
-
-1. Run the pipeline: `dataraum run /path/to/data`
-2. Document domain knowledge: `dataraum fix ./pipeline_output`
-3. The agent shows `document_*` actions (e.g. undeclared units, unclear naming) and asks targeted questions
-4. Your answers are interpreted and stored in the fix ledger
-5. With `--rerun`, semantic analysis and all downstream phases re-run automatically, incorporating your fixes
-
-**Examples:**
-
-```bash
-# Interactive fix session
-dataraum fix ./pipeline_output
-
-# Fix and immediately re-run the pipeline
-dataraum fix --rerun ./pipeline_output
-```
-
-The `--rerun` flag handles the full re-run cycle: it snapshots entropy scores before cleaning, re-runs semantic + all downstream phases (enriched views, slicing, correlations, validation, graphs, entropy, etc.), and prints an entropy impact report showing which dimensions improved.
-
-**Stale detection:** Even without `--rerun`, the semantic phase automatically detects when fixes are newer than its last run and re-executes instead of skipping.
-
 ### `tui` - Interactive Dashboard
 
 Open the Textual TUI for interactive exploration of pipeline results. Provides five screens: Home (overview), Entropy (dimension drill-down), Contracts (compliance), Actions (resolution actions), and Query (natural language).

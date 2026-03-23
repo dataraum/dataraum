@@ -1,8 +1,8 @@
 """Base phase implementation.
 
 Provides common functionality for all pipeline phases.
-Structural declarations (description, dependencies, produces_analyses,
-is_quality_gate) are sourced from pipeline.yaml via YAMLAwarePhase.
+Structural declarations (description, dependencies, produces_analyses)
+are sourced from pipeline.yaml via YAMLAwarePhase.
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ class BasePhase(ABC):
     - name property (for registry matching)
     - _run method (the actual phase logic)
 
-    Structural metadata (description, dependencies, produces_analyses,
-    is_quality_gate) comes from pipeline.yaml via YAMLAwarePhase wrapper.
+    Structural metadata (description, dependencies, produces_analyses)
+    comes from pipeline.yaml via YAMLAwarePhase wrapper.
     """
 
     @property

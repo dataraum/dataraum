@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from dataraum.entropy.gate import _get_accepted_targets, assess_contracts
+from dataraum.entropy.measurement import _get_accepted_targets, check_contracts
 from dataraum.pipeline.fixes.models import DataFix
 from dataraum.storage import Source
 
@@ -22,7 +22,7 @@ class TestAssessContractsAcceptance:
             }
         }
 
-        issues = assess_contracts(scores, thresholds, column_details, "gate")
+        issues = check_contracts(scores, thresholds, column_details, "gate")
 
         assert len(issues) == 1
         assert len(issues[0].affected_targets) == 2
@@ -40,7 +40,7 @@ class TestAssessContractsAcceptance:
             "value.nulls.null_ratio": {"column:orders.amount"},
         }
 
-        issues = assess_contracts(
+        issues = check_contracts(
             scores,
             thresholds,
             column_details,
@@ -69,7 +69,7 @@ class TestAssessContractsAcceptance:
             },
         }
 
-        issues = assess_contracts(
+        issues = check_contracts(
             scores,
             thresholds,
             column_details,
@@ -88,7 +88,7 @@ class TestAssessContractsAcceptance:
             }
         }
 
-        issues = assess_contracts(
+        issues = check_contracts(
             scores,
             thresholds,
             column_details,
@@ -111,7 +111,7 @@ class TestAssessContractsAcceptance:
             "value.outliers.outlier_rate": {"column:orders.amount"},
         }
 
-        issues = assess_contracts(
+        issues = check_contracts(
             scores,
             thresholds,
             column_details,

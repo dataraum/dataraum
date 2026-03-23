@@ -239,9 +239,6 @@ def build_quality_section(context: GraphExecutionContext) -> dict[str, Any]:
 
     result["tables"] = tables
 
-    if context.active_assumptions:
-        result["assumptions_in_effect"] = context.active_assumptions
-
     if availability:
         result["availability"] = availability
         result["hint"] = (

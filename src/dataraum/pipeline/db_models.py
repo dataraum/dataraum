@@ -61,5 +61,4 @@ class PhaseLog(Base):
     completed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     error: Mapped[str | None] = mapped_column(String)
-    entropy_scores: Mapped[dict[str, float] | None] = mapped_column(JSON)
     outputs: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=None)

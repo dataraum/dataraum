@@ -8,7 +8,7 @@ from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import Annotated, Any
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -16,11 +16,10 @@ from rich.live import Live
 from rich.text import Text
 
 from dataraum.cli.common import console, setup_logging
-from dataraum.cli.gate_handler import handle_exit_check_interactive
 from dataraum.core.logging import LogBuffer, activate_console, deactivate_console
-from dataraum.entropy.gate import match_threshold
+from dataraum.entropy.measurement import match_threshold
 from dataraum.pipeline.events import EventType, PipelineEvent
-from dataraum.pipeline.scheduler import PipelineResult, Resolution, ResolutionAction
+from dataraum.pipeline.scheduler import PipelineResult
 from dataraum.pipeline.setup import setup_pipeline
 
 
@@ -192,12 +191,9 @@ def run(
         result, stats = _drive_pipeline(
             gen=gen,
             console=console,
-            interactive=False,
             quiet=quiet,
             contract_name=setup.contract_name,
             contract_thresholds=setup.contract_thresholds,
-            session=setup.session,
-            source_id=setup.source_id,
         )
 
     # Update PipelineRun status (all phase data already committed incrementally)
@@ -215,7 +211,6 @@ def run(
             stats,
             contract,
             setup.contract_thresholds,
-            output_dir=output,
         )
 
     raise typer.Exit(0 if result.success else 1)
@@ -268,27 +263,20 @@ class _PhaseTracker:
 
 
 def _drive_pipeline(
-    gen: Generator[PipelineEvent, Resolution | None, PipelineResult],
+    gen: Generator[PipelineEvent, None, PipelineResult],
     console: Console,
-    interactive: bool = False,
     quiet: bool = False,
     contract_name: str | None = None,
     contract_thresholds: dict[str, float] | None = None,
-    session: Any = None,
-    source_id: str | None = None,
 ) -> tuple[PipelineResult, _RunStats]:
     """Drive the scheduler generator, rendering events to the terminal.
 
     Args:
         gen: The scheduler generator.
         console: Rich console for output.
-        interactive: When True, pause at EXIT_CHECK for interactive fix UI.
-            When False, auto-defer all gate violations.
         quiet: Suppress progress output.
         contract_name: Name of the target contract (for summary display).
         contract_thresholds: Dimension thresholds from the contract.
-        session: DB session (required for interactive mode).
-        source_id: Source ID (required for interactive mode).
 
     Returns:
         Tuple of (PipelineResult, _RunStats) from the generator.
@@ -334,42 +322,6 @@ def _drive_pipeline(
                     if not quiet:
                         console.print(f"  [yellow]\u25cb[/yellow] {event.phase}: {event.message}")
 
-                case EventType.POST_VERIFICATION:
-                    if event.scores:
-                        for dim in event.scores:
-                            if dim not in stats.first_scores:
-                                stats.first_scores[dim] = event.scores[dim]
-                        if not quiet:
-                            from dataraum.cli.gate_handler import render_gate_scores
-
-                            render_gate_scores(
-                                console,
-                                event.scores,
-                                contract_thresholds=contract_thresholds,
-                                phase_name=event.phase,
-                                column_details=event.column_details,
-                                accepted_targets=event.accepted_targets,
-                            )
-                case EventType.EXIT_CHECK:
-                    if interactive:
-                        if live:
-                            deactivate_console()
-                            live.stop()
-                        resolution = handle_exit_check_interactive(
-                            console,
-                            event,
-                            contract_thresholds=contract_thresholds,
-                            session=session,
-                            source_id=source_id,
-                        )
-                        event = gen.send(resolution)
-                        if live:
-                            live.start()
-                            activate_console(console, log_buffer=log_buffer)
-                    else:
-                        event = gen.send(Resolution(action=ResolutionAction.DEFER))
-                    continue
-
                 case EventType.PIPELINE_COMPLETED:
                     pass  # Handled after loop
 
@@ -383,7 +335,6 @@ def _drive_pipeline(
             live.stop()
 
     if result is None:
-        # Should not happen, but be defensive
         result = PipelineResult(
             success=False,
             phases_completed=[],
@@ -391,7 +342,6 @@ def _drive_pipeline(
             phases_skipped=[],
             phases_blocked=[],
             final_scores={},
-            deferred_issues=[],
             error="Generator ended without returning a result",
         )
 
@@ -416,7 +366,6 @@ def _print_summary(
     stats: _RunStats,
     contract_name: str | None = None,
     contract_thresholds: dict[str, float] | None = None,
-    output_dir: Path | None = None,
 ) -> None:
     """Print post-run summary with phase breakdown and data overview.
 
@@ -426,7 +375,6 @@ def _print_summary(
         stats: Accumulated stats from phase events.
         contract_name: Name of the evaluated contract.
         contract_thresholds: Dimension thresholds from the contract.
-        output_dir: Pipeline output directory (for fix command hint).
     """
     thresholds = contract_thresholds or {}
 
@@ -540,17 +488,6 @@ def _print_summary(
             console.print()
             console.print(f"  [{compliance_color}]Contract: {parts} ({pct}%)[/{compliance_color}]")
 
-    # Deferred issues
-    if result.deferred_issues:
-        console.print()
-        console.print(f"[yellow]Deferred issues: {len(result.deferred_issues)}[/yellow]")
-        for issue in result.deferred_issues:
-            console.print(
-                f"  - {issue.dimension_path}: "
-                f"{issue.score:.2f} > {issue.threshold:.2f} "
-                f"(from {issue.producing_phase})"
-            )
-
     # Error
     if result.error:
         console.print()
@@ -562,12 +499,4 @@ def _print_summary(
         console.print("[green]Pipeline completed successfully[/green]")
     else:
         console.print("[red]Pipeline completed with failures[/red]")
-
-    # Fix command hint (when there are deferred issues or high-entropy dimensions)
-    has_high_entropy = any(s >= 0.5 for s in result.final_scores.values())
-    if result.deferred_issues or has_high_entropy:
-        out = output_dir
-        console.print()
-        console.print("[dim]To improve data quality, document domain knowledge:[/dim]")
-        console.print(f"[dim]  dataraum fix {out}[/dim]")
     console.print()

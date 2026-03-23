@@ -1,6 +1,7 @@
 """Pipeline scheduler — generator-based reactive execution loop.
 
-Contract-driven approach with gate-based entropy measurement at quality checkpoints.
+Runs phases in dependency order with concurrent execution for independent phases.
+Post-step detectors run after each phase completes.
 """
 
 from __future__ import annotations
@@ -8,26 +9,17 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from collections.abc import Callable, Generator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
-from dataraum.entropy.dimensions import _StrValueMixin
-from dataraum.entropy.gate import (
-    ExitCheckIssue,
-    GateResult,
-    aggregate_at_gate,
-    assess_contracts,
-    persist_gate_result,
-)
 from dataraum.pipeline.base import Phase, PhaseContext, PhaseResult, PhaseStatus
 from dataraum.pipeline.cleanup import cleanup_phase
 from dataraum.pipeline.db_models import PhaseLog
 from dataraum.pipeline.events import EventType, PipelineEvent
-from dataraum.pipeline.fixes import FixInput
 
 logger = get_logger(__name__)
 
@@ -35,22 +27,6 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Public types
 # ---------------------------------------------------------------------------
-
-
-class ResolutionAction(_StrValueMixin):
-    """How the caller wants to resolve an exit check."""
-
-    DEFER = "defer"
-    ABORT = "abort"
-    FIX = "fix"
-
-
-@dataclass
-class Resolution:
-    """Caller's response to an EXIT_CHECK event."""
-
-    action: ResolutionAction
-    fix_inputs: list[FixInput] = field(default_factory=list)
 
 
 @dataclass
@@ -63,22 +39,7 @@ class PipelineResult:
     phases_skipped: list[str]
     phases_blocked: list[str]  # PENDING phases blocked by failed dependencies
     final_scores: dict[str, float]  # dimension_path -> score
-    deferred_issues: list[ExitCheckIssue]
     error: str | None = None
-
-
-class PipelineAborted(Exception):
-    """Raised when the caller sends ABORT resolution."""
-
-
-def _parse_col_ref(ref: str) -> tuple[str, str | None]:
-    """Parse a column reference like 'column:table.col' → (table, col).
-
-    Handles formats: 'table.col', 'column:table.col', 'table', 'column:table'.
-    """
-    bare = ref.split(":", 1)[-1] if ":" in ref else ref
-    parts = bare.split(".", 1)
-    return parts[0], parts[1] if len(parts) > 1 else None
 
 
 # ---------------------------------------------------------------------------
@@ -89,8 +50,9 @@ def _parse_col_ref(ref: str) -> tuple[str, str | None]:
 class PipelineScheduler:
     """Generator-based reactive pipeline scheduler.
 
-    Yields PipelineEvent objects and receives Resolution objects via
-    generator.send() at EXIT_CHECK points.
+    Yields PipelineEvent objects for each lifecycle event.  Phases in
+    the same dependency wave run concurrently when a session_factory
+    is available.
     """
 
     def __init__(
@@ -134,18 +96,14 @@ class PipelineScheduler:
     # Public API
     # ------------------------------------------------------------------
 
-    def run(self) -> Generator[PipelineEvent, Resolution | None, PipelineResult]:
+    def run(self) -> Generator[PipelineEvent, None, PipelineResult]:
         """Execute the pipeline as a generator.
 
         Phases in the same dependency wave run concurrently when a
-        session_factory is available.  Gate measurement and contract
-        assessment run on the main thread after each wave.
+        session_factory is available.
 
         Yields:
             PipelineEvent for each lifecycle event.
-
-        Receives:
-            Resolution via send() after EXIT_CHECK events.
 
         Returns:
             PipelineResult summarising the run.
@@ -153,149 +111,34 @@ class PipelineScheduler:
         total = len(self.phases)
         yield self._event(EventType.PIPELINE_STARTED, total=total)
 
-        all_scores: dict[str, float] = {}
-        deferred_issues: list[ExitCheckIssue] = []
-
-        try:
-            while ready := self._ready_phases():
-                # 1. Check should_skip on main thread
-                to_run: list[str] = []
-                for phase_name in ready:
-                    phase = self.phases[phase_name]
-                    ctx = self._build_context(phase_name)
-                    skip_reason = phase.should_skip(ctx)
-                    if skip_reason:
-                        self._state[phase_name] = PhaseStatus.SKIPPED
-                        self._write_phase_log(phase_name, "skipped", error=skip_reason)
-                        yield self._event(
-                            EventType.PHASE_SKIPPED,
-                            phase=phase_name,
-                            total=total,
-                            message=skip_reason,
-                        )
-                    else:
-                        to_run.append(phase_name)
-
-                if not to_run:
-                    continue
-
-                # 2. Execute phases
-                use_parallel = len(to_run) > 1 and self.session_factory is not None
-                if use_parallel:
-                    wave_results: list[tuple[str, PhaseResult]] = yield from self._run_parallel(
-                        to_run, total
+        while ready := self._ready_phases():
+            # 1. Check should_skip on main thread
+            to_run: list[str] = []
+            for phase_name in ready:
+                phase = self.phases[phase_name]
+                ctx = self._build_context(phase_name)
+                skip_reason = phase.should_skip(ctx)
+                if skip_reason:
+                    self._state[phase_name] = PhaseStatus.SKIPPED
+                    self._write_phase_log(phase_name, "skipped", error=skip_reason)
+                    yield self._event(
+                        EventType.PHASE_SKIPPED,
+                        phase=phase_name,
+                        total=total,
+                        message=skip_reason,
                     )
                 else:
-                    wave_results = yield from self._run_sequential(to_run, total)
+                    to_run.append(phase_name)
 
-                # 3. Merge entropy scores from phase outputs
-                for _phase_name, result in wave_results:
-                    if result.outputs and "entropy_scores" in result.outputs:
-                        all_scores.update(result.outputs["entropy_scores"])
+            if not to_run:
+                continue
 
-                # 4. Gate-based measurement for quality gate phases.
-                # column_details is per-wave (reset each wave) while
-                # all_scores accumulates across the entire run.
-                pending_issues: list[ExitCheckIssue] = []
-                column_details: dict[str, dict[str, float]] = {}
-                table_details: dict[str, dict[str, float]] = {}
-                view_details: dict[str, dict[str, float]] = {}
-                column_evidence: dict[str, dict[str, dict[str, Any]]] = {}
-                resolution_actions: dict[str, set[str]] = {}
-                accepted_targets: dict[str, set[str]] = {}
-                last_gate_phase: str = ""
-
-                for phase_name, _result in wave_results:
-                    phase = self.phases[phase_name]
-                    if self._state[phase_name] == PhaseStatus.COMPLETED and phase.is_quality_gate:
-                        gate_detector_ids = self._gate_detector_ids()
-                        gate_result = aggregate_at_gate(
-                            self.session,
-                            self.source_id,
-                            gate_detector_ids,
-                        )
-                        all_scores.update(gate_result.scores)
-                        column_details.update(gate_result.column_details)
-                        table_details.update(gate_result.table_details)
-                        view_details.update(gate_result.view_details)
-                        column_evidence.update(gate_result.column_evidence)
-                        for dim, targets in gate_result.accepted_targets.items():
-                            accepted_targets.setdefault(dim, set()).update(targets)
-                        for path, acts in gate_result.resolution_actions.items():
-                            resolution_actions.setdefault(path, set()).update(acts)
-                        last_gate_phase = phase_name
-
-                # Persist gate scores to PhaseLog for the gate phase
-                if last_gate_phase:
-                    self._persist_gate_scores(last_gate_phase, gate_result)
-
-                # Emit one POST_VERIFICATION per wave (after all gates measured)
-                if last_gate_phase and all_scores:
-                    yield self._event(
-                        EventType.POST_VERIFICATION,
-                        phase=last_gate_phase,
-                        total=total,
-                        scores=dict(all_scores),
-                        column_details=dict(column_details),
-                        table_details=dict(table_details),
-                        view_details=dict(view_details),
-                        column_evidence=dict(column_evidence),
-                    )
-                    issues = assess_contracts(
-                        dict(all_scores),
-                        self.contract_thresholds,
-                        column_details,
-                        last_gate_phase,
-                        resolution_actions=resolution_actions,
-                        accepted_targets=accepted_targets,
-                    )
-                    pending_issues.extend(issues)
-
-                # 5. EXIT_CHECK — natural pause after wave
-                if pending_issues:
-                    violations = {
-                        issue.dimension_path: (issue.score, issue.threshold)
-                        for issue in pending_issues
-                    }
-                    fixes = self._gather_available_fixes(pending_issues)
-                    resolution = yield self._event(
-                        EventType.EXIT_CHECK,
-                        total=total,
-                        violations=violations,
-                        scores=dict(all_scores),
-                        column_details=dict(column_details),
-                        table_details=dict(table_details),
-                        view_details=dict(view_details),
-                        column_evidence=dict(column_evidence),
-                        accepted_targets=accepted_targets,
-                        available_fixes=fixes,
-                    )
-                    if resolution is not None:
-                        if resolution.action == ResolutionAction.DEFER:
-                            deferred_issues.extend(pending_issues)
-                        elif resolution.action == ResolutionAction.ABORT:
-                            raise PipelineAborted("Pipeline aborted by user")
-                        elif resolution.action == ResolutionAction.FIX:
-                            if not resolution.fix_inputs:
-                                logger.warning("fix_resolution_empty")
-                                deferred_issues.extend(pending_issues)
-                            else:
-                                self._apply_fixes(resolution.fix_inputs)
-                                # Clear all scores (including any from phase
-                                # outputs) so gates re-measure from scratch.
-                                all_scores.clear()
-
-        except PipelineAborted as e:
-            return PipelineResult(
-                success=False,
-                phases_completed=self._phases_with_status(PhaseStatus.COMPLETED),
-                phases_failed=self._phases_with_status(PhaseStatus.FAILED),
-                phases_skipped=self._phases_with_status(PhaseStatus.SKIPPED),
-                phases_blocked=self._phases_with_status(PhaseStatus.PENDING),
-                final_scores=dict(all_scores),
-                deferred_issues=deferred_issues,
-                error=str(e) or "Pipeline aborted by user",
-            )
+            # 2. Execute phases
+            use_parallel = len(to_run) > 1 and self.session_factory is not None
+            if use_parallel:
+                yield from self._run_parallel(to_run, total)
+            else:
+                yield from self._run_sequential(to_run, total)
 
         yield self._event(EventType.PIPELINE_COMPLETED, total=total)
 
@@ -305,8 +148,7 @@ class PipelineScheduler:
             phases_failed=self._phases_with_status(PhaseStatus.FAILED),
             phases_skipped=self._phases_with_status(PhaseStatus.SKIPPED),
             phases_blocked=self._phases_with_status(PhaseStatus.PENDING),
-            final_scores=dict(all_scores),
-            deferred_issues=deferred_issues,
+            final_scores={},
         )
 
     def _run_phase(self, phase_name: str) -> tuple[PhaseResult, datetime]:
@@ -398,26 +240,21 @@ class PipelineScheduler:
 
     def _run_sequential(
         self, phase_names: list[str], total: int
-    ) -> Generator[PipelineEvent, None, list[tuple[str, PhaseResult]]]:
-        """Run phases sequentially, yield events, return results."""
-        results: list[tuple[str, PhaseResult]] = []
+    ) -> Generator[PipelineEvent]:
+        """Run phases sequentially, yield events."""
         for phase_name in phase_names:
             yield self._event(EventType.PHASE_STARTED, phase=phase_name, total=total)
             result, started_at = self._run_phase(phase_name)
             yield from self._record_phase(phase_name, result, started_at, total)
-            results.append((phase_name, result))
-        return results
 
     def _run_parallel(
         self, phase_names: list[str], total: int
-    ) -> Generator[PipelineEvent, None, list[tuple[str, PhaseResult]]]:
+    ) -> Generator[PipelineEvent]:
         """Run phases concurrently via ThreadPoolExecutor.
 
         PHASE_STARTED events are yielded for all phases before execution.
         Results are recorded on the main thread as they complete.
         """
-        results: list[tuple[str, PhaseResult]] = []
-
         # Yield STARTED for all phases in this wave
         for phase_name in phase_names:
             yield self._event(EventType.PHASE_STARTED, phase=phase_name, total=total)
@@ -434,9 +271,6 @@ class PipelineScheduler:
                     result = PhaseResult.failed(str(exc))
                     started_at = datetime.now(UTC)
                 yield from self._record_phase(phase_name, result, started_at, total)
-                results.append((phase_name, result))
-
-        return results
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -496,7 +330,6 @@ class PipelineScheduler:
         started_at: datetime | None = None,
         duration: float = 0.0,
         error: str | None = None,
-        scores: dict[str, float] | None = None,
         outputs: dict[str, Any] | None = None,
     ) -> None:
         """Write a PhaseLog record."""
@@ -510,28 +343,10 @@ class PipelineScheduler:
             completed_at=now,
             duration_seconds=duration,
             error=error,
-            entropy_scores=scores,
             outputs=outputs,
         )
         self.session.add(log)
         self.session.commit()
-
-    def _persist_gate_scores(
-        self,
-        gate_phase: str,
-        gate_result: GateResult,
-    ) -> None:
-        """Update the PhaseLog for a gate phase with entropy scores.
-
-        Delegates to the shared ``persist_gate_result`` utility.
-        """
-        persist_gate_result(
-            self.session,
-            self.source_id,
-            gate_result,
-            phase_name=gate_phase,
-            run_id=self.run_id,
-        )
 
     def _validate_analysis_coverage(self) -> None:
         """Warn if detectors require analyses that no phase produces."""
@@ -582,29 +397,13 @@ class PipelineScheduler:
             for detector_id in phase.detectors:
                 run_detector_post_step(self.session, self.source_id, detector_id)
 
-    def _gate_detector_ids(self) -> list[str]:
-        """Collect detector IDs from all COMPLETED/SKIPPED phases.
-
-        Returns the union of detector IDs declared by phases that have
-        run (or been skipped with prior output).
-        """
-        ids: list[str] = []
-        seen: set[str] = set()
-        for name, status in self._state.items():
-            if status in (PhaseStatus.COMPLETED, PhaseStatus.SKIPPED):
-                for d_id in self.phases[name].detectors:
-                    if d_id not in seen:
-                        ids.append(d_id)
-                        seen.add(d_id)
-        return ids
-
-    def _apply_fixes(self, fix_inputs: list[FixInput]) -> None:
+    def _apply_fixes(self, fix_inputs: list[Any]) -> None:
         """Apply fix inputs via bridge + interpreters, log to ledger, reset.
 
         Routing:
         - preprocess: cascade-clean + phase re-run (existing behaviour)
         - postprocess: MetadataInterpreter patches DB directly, skip
-          cascade-clean. The next gate measurement picks up the change.
+          cascade-clean. The next measurement picks up the change.
         """
         from dataraum.core.config import _get_config_root
         from dataraum.documentation.ledger import log_fix
@@ -698,64 +497,6 @@ class PipelineScheduler:
             logger.error("fix_cleanup_failed", phases=list(phases_to_rerun))
             raise
 
-    @staticmethod
-    def _gather_available_fixes(
-        issues: list[ExitCheckIssue],
-    ) -> dict[str, list[dict[str, str]]]:
-        """Gather available fixes for EXIT_CHECK event display.
-
-        Consults the YAML fix schema loader, filtered to only actions
-        that appear in the entropy objects' resolution options.
-
-        Returns:
-            dim_path -> [{"action_name": str, "phase_name": str, ...}]
-        """
-        from dataraum.entropy.detectors.base import get_default_registry
-
-        detector_registry = get_default_registry()
-
-        # Build dim_path -> detector lookup for matching issues
-        from dataraum.entropy.fix_schemas import get_schemas_for_detector
-
-        detector_by_path = {d.dimension_path: d for d in detector_registry.get_all_detectors()}
-
-        result: dict[str, list[dict[str, str]]] = {}
-        for issue in issues:
-            detector = detector_by_path.get(issue.dimension_path)
-            if detector:
-                actions: list[dict[str, str]] = []
-                for schema in get_schemas_for_detector(detector.detector_id):
-                    # Only include schemas matching actual resolution options
-                    if issue.available_actions and schema.action not in issue.available_actions:
-                        continue
-                    action_dict: dict[str, str] = {
-                        "action_name": schema.action,
-                        "phase_name": schema.requires_rerun or schema.gate or "",
-                    }
-                    if schema.guidance:
-                        action_dict["guidance"] = schema.guidance
-                    if schema.fields:
-                        # Serialize field schema as structured text for LLM
-                        field_lines: list[str] = []
-                        for fname, fschema in schema.fields.items():
-                            parts = [f"{fname} ({fschema.type}"]
-                            if fschema.required:
-                                parts[0] += ", required"
-                            parts[0] += ")"
-                            if fschema.description:
-                                parts.append(f"  {fschema.description}")
-                            if fschema.enum_values:
-                                parts.append(f"  values: {fschema.enum_values}")
-                            if fschema.examples:
-                                parts.append(f"  examples: {fschema.examples}")
-                            field_lines.append("\n".join(parts))
-                        action_dict["fields"] = "\n".join(field_lines)
-                    actions.append(action_dict)
-                if actions:
-                    result[issue.dimension_path] = actions
-
-        return result
-
     def _invalidate_downstream(self, phase_name: str) -> None:
         """Reset downstream phases to PENDING so they re-run.
 
@@ -795,3 +536,13 @@ class PipelineScheduler:
             queue.extend(reverse.get(current, []))
 
         return result
+
+
+def _parse_col_ref(ref: str) -> tuple[str, str | None]:
+    """Parse a column reference like 'column:table.col' → (table, col).
+
+    Handles formats: 'table.col', 'column:table.col', 'table', 'column:table'.
+    """
+    bare = ref.split(":", 1)[-1] if ":" in ref else ref
+    parts = bare.split(".", 1)
+    return parts[0], parts[1] if len(parts) > 1 else None

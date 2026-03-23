@@ -92,17 +92,18 @@ class TestMakeTaskEventCallback:
 
     @pytest.mark.asyncio
     async def test_callback_ignores_non_progress_events(self):
-        """Events like POST_VERIFICATION don't trigger update_status."""
+        """Events like PHASE_SKIPPED don't trigger update_status."""
         task = MagicMock()
         task.update_status = AsyncMock()
 
         callback = _make_task_event_callback(task, asyncio.get_running_loop())
 
         event = PipelineEvent(
-            event_type=EventType.POST_VERIFICATION,
-            phase="typing",
-            step=3,
+            event_type=EventType.PHASE_SKIPPED,
+            phase="semantic",
+            step=5,
             total=10,
+            message="No data",
         )
         await asyncio.to_thread(callback, event)
 

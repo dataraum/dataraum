@@ -24,7 +24,6 @@ class TestPipelineEvent:
         assert event.step == 0
         assert event.total == 0
         assert event.scores == {}
-        assert event.violations == {}
         assert event.parallel_phases == []
 
     def test_creation_with_data(self):
@@ -46,14 +45,6 @@ class TestPipelineEvent:
         event = PipelineEvent(event_type=EventType.PHASE_STARTED, phase="test")
         with pytest.raises(AttributeError):
             event.phase = "other"  # type: ignore[misc]
-
-    def test_event_with_violations(self):
-        event = PipelineEvent(
-            event_type=EventType.EXIT_CHECK,
-            phase="semantic",
-            violations={"join_path_determinism": (-1.0, 0.5)},
-        )
-        assert event.violations["join_path_determinism"] == (-1.0, 0.5)
 
     def test_parallel_phases(self):
         event = PipelineEvent(

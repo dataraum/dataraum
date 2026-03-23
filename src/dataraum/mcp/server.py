@@ -877,7 +877,6 @@ def _build_pipeline_status(session: Any, source_id: str) -> dict[str, Any] | Non
     from sqlalchemy import func, select
 
     from dataraum.entropy.contracts import get_contracts
-    from dataraum.entropy.gate import assess_contracts
     from dataraum.pipeline.db_models import PhaseLog, PipelineRun
 
     # Latest completed run
@@ -945,38 +944,15 @@ def _build_pipeline_status(session: Any, source_id: str) -> dict[str, Any] | Non
             gate_states[gate_phase] = None
             continue
 
-        scores = gate_log.entropy_scores or {}
-        if not scores:
-            gates[gate_phase] = {
-                "zone": zone_name,
-                "label": gate_label,
-                "status": "measured",
-                "violations": 0,
-            }
-            gate_states[gate_phase] = 0
-            continue
-
-        n_violations = 0
-        if contract:
-            column_details = gate_log.outputs.get("gate_column_details", {})
-            accepted_raw = gate_log.outputs.get("accepted_targets", {})
-            accepted = {k: set(v) for k, v in accepted_raw.items()}
-            issues = assess_contracts(
-                scores,
-                contract.dimension_thresholds,
-                column_details,
-                gate_phase,
-                accepted_targets=accepted,
-            )
-            n_violations = len(issues)
-
+        # Gate phases no longer exist in v0.2; always report not_reached.
+        # This entire _GATE_ZONES loop is dead code, retained until DAT-175
+        # replaces it with the measure MCP tool.
         gates[gate_phase] = {
             "zone": zone_name,
             "label": gate_label,
-            "status": "violations" if n_violations > 0 else "passing",
-            "violations": n_violations,
+            "status": "not_reached",
         }
-        gate_states[gate_phase] = n_violations
+        gate_states[gate_phase] = None
 
     result["gates"] = gates
 
@@ -1837,7 +1813,7 @@ def _get_zone_status(
 
     from dataraum.core.connections import get_manager_for_directory
     from dataraum.entropy.contracts import get_contract, get_contracts
-    from dataraum.entropy.gate import assess_contracts, match_threshold
+    from dataraum.entropy.measurement import check_contracts, match_threshold
     from dataraum.pipeline.db_models import PhaseLog
 
     try:
@@ -1875,7 +1851,8 @@ def _get_zone_status(
                 }
 
             outputs = log.outputs
-            scores = log.entropy_scores or {}
+            # Gate scores were stored in outputs by persist_gate_result (v0.1)
+            scores: dict[str, float] = outputs.get("gate_scores", {})
             column_details = outputs.get("gate_column_details", {})
             id_map = outputs.get("detector_id_map", {})
 
@@ -1894,7 +1871,7 @@ def _get_zone_status(
             # Assess violations (accepted targets excluded via contract overrule)
             accepted_raw = outputs.get("accepted_targets", {})
             accepted = {k: set(v) for k, v in accepted_raw.items()}
-            issues = assess_contracts(
+            issues = check_contracts(
                 scores,
                 thresholds,
                 column_details,

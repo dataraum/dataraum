@@ -265,9 +265,6 @@ class GraphExecutionContext:
     # Field mappings (business_concept → column mappings for metrics)
     field_mappings: FieldMappings | None = None
 
-    # Aggregated assumptions across all columns (for top-level section)
-    active_assumptions: list[dict[str, Any]] = field(default_factory=list)
-
     # Metadata
     built_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -1167,13 +1164,9 @@ def _build_readiness_summary(context: GraphExecutionContext) -> str | None:
 
     summary = context.entropy_summary
     readiness = summary.get("overall_readiness", "unknown")
-    columns_with_assumptions = 0
     blocked_count = summary.get("critical_entropy_count", 0)
 
-    return (
-        f"Data readiness: {readiness} "
-        f"({columns_with_assumptions} columns need assumptions, {blocked_count} blocked)."
-    )
+    return f"Data readiness: {readiness} ({blocked_count} blocked)."
 
 
 def _build_column_description(col: ColumnContext) -> str:

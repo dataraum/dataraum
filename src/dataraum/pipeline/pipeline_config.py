@@ -1,6 +1,6 @@
 """YAML-driven pipeline declarations.
 
-Reads structural phase metadata (dependencies, produces, gate, detectors)
+Reads structural phase metadata (dependencies, produces, detectors)
 from config/pipeline.yaml. The scheduler reads this instead of Python
 class properties.
 """
@@ -22,7 +22,6 @@ class PhaseDeclaration:
     description: str
     dependencies: list[str]
     produces: set[AnalysisKey] = field(default_factory=set)
-    gate: bool = False
     detectors: list[str] = field(default_factory=list)
 
 
@@ -72,7 +71,6 @@ def load_phase_declarations(
             description=spec.get("description", ""),
             dependencies=spec.get("dependencies", []),
             produces=produces,
-            gate=spec.get("gate", False),
             detectors=spec.get("detectors", []),
         )
 

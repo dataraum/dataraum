@@ -149,11 +149,6 @@ class Phase(Protocol):
         ...
 
     @property
-    def is_quality_gate(self) -> bool:
-        """Whether this phase is a quality gate for entropy assessment."""
-        ...
-
-    @property
     def detectors(self) -> list[str]:
         """Detector IDs to run as post-steps after this phase completes."""
         ...

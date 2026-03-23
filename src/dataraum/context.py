@@ -141,7 +141,7 @@ class Context:
         """
         import warnings
 
-        from dataraum.pipeline.scheduler import PipelineResult, Resolution, ResolutionAction
+        from dataraum.pipeline.scheduler import PipelineResult
         from dataraum.pipeline.setup import setup_pipeline
 
         source_path = Path(source).resolve() if source else None
@@ -164,14 +164,9 @@ class Context:
 
                 result: PipelineResult | None = None
                 try:
-                    event = next(gen)
+                    next(gen)
                     while True:
-                        from dataraum.pipeline.events import EventType
-
-                        if event.event_type == EventType.EXIT_CHECK:
-                            event = gen.send(Resolution(action=ResolutionAction.DEFER))
-                        else:
-                            event = next(gen)
+                        next(gen)
                 except StopIteration as e:
                     result = e.value
         finally:

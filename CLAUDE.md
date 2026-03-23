@@ -308,8 +308,9 @@ Check [Linear](https://linear.app/dataraum) for active issues, plans, and projec
 - **Quarantine pattern** — Failed type casts go to quarantine tables for review, not pipeline failure.
 - **Pre-computed context** — AI receives a pre-assembled `ContextDocument` with all metadata already computed and interpreted through the selected ontology. No runtime discovery.
 - **Ontologies as configuration** — Domain ontologies (financial_reporting, marketing, etc.) are YAML configs that map column patterns to business terms, define computable metrics, and guide semantic interpretation.
-- **Zone-by-zone quality gates** — Pipeline pauses at Gate 1 (after semantic) and Gate 2 (after quality_summary). Agents inspect violations, apply fixes, and advance zone by zone.
-- **MCP tools** — 5 core + 3 quality/fix + 2 source management (10 total). See `src/dataraum/mcp/server.py`.
+- **Pipeline measures, doesn't interpret** — Pipeline runs detectors as post-steps. Interpretation (why, hypothesize) happens interactively via MCP tools. No gate phases.
+- **BBN readiness replaces LLM quality grades** — Per-column readiness (ready/investigate/blocked) via Bayesian network. `column_quality` detector retired (was circular with BBN).
+- **MCP tools** — 10 total (5 core + 3 quality/fix + 2 source mgmt). Being replaced by 15 practitioner-verb tools in v0.2. See `src/dataraum/mcp/server.py`.
 - **Free-threading** — Python 3.14t with GIL disabled for true CPU parallelism in pipeline phases.
 
 ### Module Structure
@@ -317,16 +318,17 @@ Check [Linear](https://linear.app/dataraum) for active issues, plans, and projec
 ```
 src/dataraum/
 ├── analysis/       # Data analysis (typing, statistics, correlations, relationships,
-│                   #   semantic, temporal, slicing, cycles, validation, quality_summary)
-├── entropy/        # Uncertainty quantification (detectors, context, interpretation)
+│                   #   semantic, temporal, slicing, cycles, validation)
+├── entropy/        # Uncertainty quantification (detectors, measurement, BBN)
 ├── graphs/         # Calculation graphs, context assembly
-├── pipeline/       # Pipeline orchestrator (21 phases), gates, fixes
+├── investigation/  # Session trace models for MCP audit trail
+├── pipeline/       # Pipeline orchestrator (17 phases), fixes
 ├── sources/        # Data source loaders (CSV, Parquet)
 ├── storage/        # SQLAlchemy models, migrations
 ├── llm/            # LLM providers and prompts
 ├── core/           # Config, connections, utilities
-├── cli/            # Typer CLI + Textual TUI
-└── mcp/            # MCP server (12 tools)
+├── cli/            # Typer CLI (run, tui, query) + Textual TUI
+└── mcp/            # MCP server (10 tools)
 ```
 
 SQLAlchemy DB models are co-located with business logic in `db_models.py` files within each module.

@@ -21,8 +21,8 @@ from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 # Fallback thresholds (matching variance.py defaults)
 _DEFAULT_NULL_SPREAD = 0.10
-_DEFAULT_DISTINCT_RATIO = 2.0
-_DEFAULT_OUTLIER_SPREAD = 0.05
+_DEFAULT_DISTINCT_RATIO = 5.0
+_DEFAULT_OUTLIER_SPREAD = 0.25
 _DEFAULT_BENFORD_SPREAD = 0.30
 
 

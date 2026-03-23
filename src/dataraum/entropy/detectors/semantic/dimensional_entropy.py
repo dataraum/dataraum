@@ -647,19 +647,19 @@ class DimensionalEntropyDetector(EntropyDetector):
         columns_data: dict[str, Any],
         network_readiness: dict[str, bool],
     ) -> list[ColumnVariancePattern]:
-        """Extract columns that need cross-column pattern analysis.
+        """Extract columns for cross-column pattern analysis.
 
-        Uses Bayesian network readiness (needs_attention) to determine
-        which columns warrant deeper analysis.
+        Includes all columns with slice variance data. Network readiness
+        is advisory — structural patterns (mutual exclusivity, conditional
+        dependencies) exist regardless of BBN posteriors.
 
         Args:
             columns_data: Per-column slice variance metrics.
-            network_readiness: {col_name: needs_attention} from base network.
+            network_readiness: {col_name: needs_attention} from base network
+                (currently unused — kept for signature compatibility).
         """
         interesting = []
         for col_name, metrics in columns_data.items():
-            if not network_readiness.get(col_name, False):
-                continue
             interesting.append(
                 ColumnVariancePattern(
                     column_name=col_name,

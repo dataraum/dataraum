@@ -532,6 +532,7 @@ class ValidationAgent(LLMFeature):
         """
         check_type = spec.check_type
         params = spec.parameters
+        tolerance = params.get("tolerance", self.DEFAULT_TOLERANCE)
 
         if check_type == "balance":
             # Balance checks compare two values
@@ -539,7 +540,6 @@ class ValidationAgent(LLMFeature):
                 return (False, "No results returned", {"check_type": check_type})
 
             row = result_rows[0]
-            tolerance = params.get("tolerance", self.DEFAULT_TOLERANCE)
 
             # Look for difference column first (preferred: LLM computes the diff)
             if "difference" in row or "diff" in row:
@@ -648,12 +648,26 @@ class ValidationAgent(LLMFeature):
             )
 
         elif check_type == "aggregate":
-            # Aggregate checks return summary values
+            # Aggregate checks return summary values with a rate metric
             if row_count == 0:
                 return (False, "No results returned", {"check_type": check_type})
 
             row = result_rows[0]
-            return (True, "Aggregate check completed", {**row, "check_type": check_type})
+            details = {**row, "check_type": check_type}
+
+            # Check orphan_rate / violation_rate against tolerance
+            rate = None
+            for key in ("orphan_rate", "violation_rate", "mismatch_rate", "error_rate"):
+                val = row.get(key)
+                if val is not None:
+                    rate = float(val)
+                    break
+
+            if rate is not None:
+                passed = rate <= tolerance
+                return (passed, f"Aggregate rate: {rate:.4f}", details)
+
+            return (True, "Aggregate check completed", details)
 
         else:
             # Custom check - assume passing if any results

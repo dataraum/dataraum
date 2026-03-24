@@ -27,19 +27,24 @@ parameters:
   tolerance: 0.05
 
 sql_hints: >
-  Compare payment amounts with bank transaction amounts. Look for:
-  - A payments table with amount columns
-  - A bank_transactions table with amount columns
-  - A relationship between them (shared reference, date+amount match, or FK)
+  Compare payment amounts with bank transaction amounts.
+
+  IMPORTANT: Use the FK join path first. Look for a payment_id column
+  in bank_transactions that references payments.payment_id. If this FK
+  exists, join on it — do NOT fall back to fuzzy matching.
 
   Check semantic annotations and relationships to find the join path.
 
-  Calculate the orphan rate: what percentage of payments have no matching
-  bank transaction (or vice versa)? Return: total_payments, matched_payments,
-  unmatched_payments, orphan_rate.
+  After joining on payment_id, compare amounts:
+  - payment.amount should equal ABS(bank_transaction.amount) within tolerance
+  - Bank transactions use negative amounts for outflows (debits)
 
-  If no clear join path exists, try matching on amount + date proximity.
-  If that also fails, return orphan_rate = NULL.
+  Calculate the orphan rate as a FRACTION (0.0 to 1.0):
+    orphan_rate = unmatched_payments / total_payments
+
+  Return: total_payments, matched_payments, unmatched_payments, orphan_rate.
+
+  If no FK join path exists, return orphan_rate = NULL.
 
 expected_outcome: >
   Most payments should have corresponding bank transactions. An orphan_rate

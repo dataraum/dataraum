@@ -311,6 +311,69 @@ class TestPhaseLog:
         assert log.error is None
 
 
+class TestPhaseLogWithFactory:
+    """PhaseLog via factory path — covers _check_should_skip and _write_phase_log with scoped sessions."""
+
+    @staticmethod
+    def _make_manager_stub(duckdb_conn):
+        from contextlib import contextmanager
+        from unittest.mock import MagicMock
+
+        stub = MagicMock()
+
+        @contextmanager
+        def _cursor():
+            yield duckdb_conn
+
+        stub.duckdb_cursor = _cursor
+        return stub
+
+    def test_skipped_phase_log_via_factory(self, session: Session, duckdb_conn, engine):
+        """Skipped phase writes PhaseLog through the factory session path."""
+        from contextlib import contextmanager
+
+        from sqlalchemy.orm import sessionmaker
+
+        factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+        @contextmanager
+        def session_scope():
+            s = factory()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        run_id = _make_run(session)
+        a = MockPhase("A", skip_reason="already done")
+        b = MockPhase("B", dependencies=["A"])
+
+        scheduler = PipelineScheduler(
+            phases={"A": a, "B": b},
+            source_id="src-1",
+            run_id=run_id,
+            session=session,
+            duckdb_conn=duckdb_conn,
+            session_factory=session_scope,
+            manager=self._make_manager_stub(duckdb_conn),
+        )
+
+        events, result = _drive(scheduler.run())
+
+        assert "A" in result.phases_skipped
+        assert "B" in result.phases_completed
+
+        # PhaseLog for the skipped phase must exist (written via factory session)
+        logs = session.execute(select(PhaseLog).where(PhaseLog.phase_name == "A")).scalars().all()
+        assert len(logs) == 1
+        assert logs[0].status == "skipped"
+        assert logs[0].error == "already done"
+
+
 class TestPipelineResult:
     def test_pipeline_result(self, session: Session, duckdb_conn):
         """Final result has correct completed/failed/skipped fields."""

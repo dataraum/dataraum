@@ -376,9 +376,12 @@ class PipelineScheduler:
             error=error,
             outputs=outputs,
         )
-        if self.session_factory:
+        if self.session_factory and self.manager:
             with self.session_factory() as log_session:
                 log_session.add(log)
+                # Explicit commit — don't rely on session_scope auto-commit
+                # convention, since other factories may not auto-commit.
+                log_session.commit()
         else:
             self.session.add(log)
             self.session.commit()

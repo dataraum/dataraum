@@ -8,7 +8,7 @@ Core API:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, select
 
@@ -29,6 +29,7 @@ def run_detector_post_step(
     session: Session,
     source_id: str,
     detector_id: str,
+    duckdb_conn: Any = None,
 ) -> int:
     """Run a single detector as a phase post-step.
 
@@ -40,6 +41,7 @@ def run_detector_post_step(
         session: SQLAlchemy session (caller manages commit).
         source_id: Source ID for record provenance.
         detector_id: ID of the detector to run.
+        duckdb_conn: DuckDB connection for detectors that query data directly.
 
     Returns:
         Number of records created.
@@ -87,6 +89,7 @@ def run_detector_post_step(
                 snapshot = take_snapshot(
                     target=target,
                     session=session,
+                    duckdb_conn=duckdb_conn,
                     dimensions=[detector.sub_dimension],
                 )
                 for obj in snapshot.objects:
@@ -106,6 +109,7 @@ def run_detector_post_step(
             snapshot = take_snapshot(
                 target=target,
                 session=session,
+                duckdb_conn=duckdb_conn,
                 dimensions=[detector.sub_dimension],
             )
             for obj in snapshot.objects:
@@ -138,6 +142,7 @@ def run_detector_post_step(
             snapshot = take_snapshot(
                 target=target,
                 session=session,
+                duckdb_conn=duckdb_conn,
                 dimensions=[detector.sub_dimension],
             )
             for obj in snapshot.objects:

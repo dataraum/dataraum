@@ -386,7 +386,9 @@ class PipelineScheduler:
         if self.session_factory is not None:
             with self.session_factory() as detector_session:
                 for detector_id in phase.detectors:
-                    run_detector_post_step(detector_session, self.source_id, detector_id)
+                    run_detector_post_step(
+                        detector_session, self.source_id, detector_id, self.duckdb_conn
+                    )
         else:
             for detector_id in phase.detectors:
-                run_detector_post_step(self.session, self.source_id, detector_id)
+                run_detector_post_step(self.session, self.source_id, detector_id, self.duckdb_conn)

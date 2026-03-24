@@ -267,6 +267,12 @@ class SlicingViewPhase(BasePhase):
             ctx.session.add(sv_table)
 
             duckdb_cols = ctx.duckdb_conn.execute(f'DESCRIBE "{view_name}"').fetchall()
+            if not duckdb_cols:
+                logger.error(
+                    "slicing_view_describe_empty",
+                    view_name=view_name,
+                    fact_table=fact_table.table_name,
+                )
             for pos, row in enumerate(duckdb_cols):
                 ctx.session.add(
                     Column(

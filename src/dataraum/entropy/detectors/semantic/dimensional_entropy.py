@@ -531,12 +531,19 @@ class DimensionalEntropyDetector(EntropyDetector):
         # (high null_spread). For debit/credit-style columns where one is
         # always zero when the other has a value, null_spread is 0.0 but the
         # mutual exclusivity is real. Check directly via DuckDB.
-        if context.duckdb_conn is not None and entropy_score.mutual_exclusivity_count == 0:
-            value_mutex_patterns = self._detect_value_mutual_exclusivity(
-                context, mutual_exclusivity_threshold
-            )
-            patterns.extend(value_mutex_patterns)
-            entropy_score.mutual_exclusivity_count += len(value_mutex_patterns)
+        if entropy_score.mutual_exclusivity_count == 0:
+            if context.duckdb_conn is None:
+                logger.error(
+                    "dimensional_entropy_no_duckdb_conn",
+                    table=context.table_name,
+                    message="duckdb_conn required for value-based mutual exclusivity detection",
+                )
+            else:
+                value_mutex_patterns = self._detect_value_mutual_exclusivity(
+                    context, mutual_exclusivity_threshold
+                )
+                patterns.extend(value_mutex_patterns)
+                entropy_score.mutual_exclusivity_count += len(value_mutex_patterns)
 
         # Calculate overall entropy score using configurable weights
         num_categorical = max(len(interesting_columns), entropy_score.mutual_exclusivity_count, 1)

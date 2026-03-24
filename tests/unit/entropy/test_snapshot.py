@@ -155,7 +155,9 @@ class TestTakeSnapshot:
                 return_value=registry,
             ),
         ):
-            snap = take_snapshot("column:orders.amount", session=MagicMock())
+            snap = take_snapshot(
+                "column:orders.amount", session=MagicMock(), duckdb_conn=MagicMock()
+            )
 
         assert "type_fidelity" in snap.scores
         assert "naming_clarity" in snap.scores
@@ -181,6 +183,7 @@ class TestTakeSnapshot:
             snap = take_snapshot(
                 "column:orders.amount",
                 session=MagicMock(),
+                duckdb_conn=MagicMock(),
                 dimensions=["type_fidelity"],
             )
 
@@ -193,7 +196,7 @@ class TestTakeSnapshot:
             "dataraum.entropy.snapshot._resolve_column_target",
             return_value=None,
         ):
-            snap = take_snapshot("column:missing.col", session=MagicMock())
+            snap = take_snapshot("column:missing.col", session=MagicMock(), duckdb_conn=MagicMock())
 
         assert snap.scores == {}
         assert snap.detectors_run == []
@@ -214,7 +217,9 @@ class TestTakeSnapshot:
                 return_value=registry,
             ),
         ):
-            snap = take_snapshot("column:orders.amount", session=MagicMock())
+            snap = take_snapshot(
+                "column:orders.amount", session=MagicMock(), duckdb_conn=MagicMock()
+            )
 
         # StubTypingDetector succeeded
         assert "type_fidelity" in snap.scores
@@ -237,7 +242,9 @@ class TestTakeSnapshot:
                 return_value=registry,
             ),
         ):
-            snap = take_snapshot("column:orders.amount", session=MagicMock())
+            snap = take_snapshot(
+                "column:orders.amount", session=MagicMock(), duckdb_conn=MagicMock()
+            )
 
         assert len(snap.objects) == 2
         sub_dims = {obj.sub_dimension for obj in snap.objects}
@@ -261,7 +268,9 @@ class TestTakeSnapshot:
                 return_value=registry,
             ),
         ):
-            snap = take_snapshot("column:orders.amount", session=MagicMock())
+            snap = take_snapshot(
+                "column:orders.amount", session=MagicMock(), duckdb_conn=MagicMock()
+            )
 
         assert snap.scores == {}
         assert snap.detectors_run == []
@@ -291,7 +300,9 @@ class TestTakeSnapshot:
                 return_value=registry,
             ),
         ):
-            snap = take_snapshot("column:orders.amount", session=MagicMock())
+            snap = take_snapshot(
+                "column:orders.amount", session=MagicMock(), duckdb_conn=MagicMock()
+            )
 
         assert "type_fidelity" in snap.scores
 
@@ -337,7 +348,7 @@ class TestTakeSnapshotTableScope:
                 return_value=registry,
             ),
         ):
-            snap = take_snapshot("table:orders", session=MagicMock())
+            snap = take_snapshot("table:orders", session=MagicMock(), duckdb_conn=MagicMock())
 
         assert "cross_column_patterns" in snap.scores
         assert "stub_table" in snap.detectors_run
@@ -360,7 +371,7 @@ class TestTakeSnapshotTableScope:
                 return_value=registry,
             ),
         ):
-            snap = take_snapshot("table:orders", session=MagicMock())
+            snap = take_snapshot("table:orders", session=MagicMock(), duckdb_conn=MagicMock())
 
         assert "stub_table" in snap.detectors_run
         assert "null_ratio" not in snap.detectors_run
@@ -381,7 +392,9 @@ class TestTakeSnapshotTableScope:
                 return_value=registry,
             ),
         ):
-            snap = take_snapshot("column:orders.amount", session=MagicMock())
+            snap = take_snapshot(
+                "column:orders.amount", session=MagicMock(), duckdb_conn=MagicMock()
+            )
 
         assert "type_fidelity" in snap.scores
         assert "stub_typing" in snap.detectors_run
@@ -393,7 +406,7 @@ class TestTakeSnapshotTableScope:
             "dataraum.entropy.snapshot._resolve_table_target",
             return_value=None,
         ):
-            snap = take_snapshot("table:missing", session=MagicMock())
+            snap = take_snapshot("table:missing", session=MagicMock(), duckdb_conn=MagicMock())
 
         assert snap.scores == {}
         assert snap.detectors_run == []
@@ -442,7 +455,9 @@ class TestTakeSnapshotViewScope:
                 return_value=registry,
             ),
         ):
-            snap = take_snapshot("view:enriched_orders", session=MagicMock())
+            snap = take_snapshot(
+                "view:enriched_orders", session=MagicMock(), duckdb_conn=MagicMock()
+            )
 
         assert "dimension_coverage" in snap.scores
         assert "stub_view" in snap.detectors_run
@@ -463,7 +478,9 @@ class TestTakeSnapshotViewScope:
                 return_value=registry,
             ),
         ):
-            snap = take_snapshot("view:enriched_orders", session=MagicMock())
+            snap = take_snapshot(
+                "view:enriched_orders", session=MagicMock(), duckdb_conn=MagicMock()
+            )
 
         assert "stub_typing" not in snap.detectors_run
 
@@ -483,7 +500,9 @@ class TestTakeSnapshotViewScope:
                 return_value=registry,
             ),
         ):
-            snap = take_snapshot("column:orders.amount", session=MagicMock())
+            snap = take_snapshot(
+                "column:orders.amount", session=MagicMock(), duckdb_conn=MagicMock()
+            )
 
         assert "stub_typing" in snap.detectors_run
         assert "stub_view" not in snap.detectors_run
@@ -494,7 +513,7 @@ class TestTakeSnapshotViewScope:
             "dataraum.entropy.snapshot._resolve_view_target",
             return_value=None,
         ):
-            snap = take_snapshot("view:missing", session=MagicMock())
+            snap = take_snapshot("view:missing", session=MagicMock(), duckdb_conn=MagicMock())
 
         assert snap.scores == {}
         assert snap.detectors_run == []

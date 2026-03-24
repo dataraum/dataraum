@@ -273,16 +273,29 @@ class SlicingViewPhase(BasePhase):
                     view_name=view_name,
                     fact_table=fact_table.table_name,
                 )
+            # Use relationship append instead of session.add(Column(...))
+            # to make the parent-child link explicit in the ORM graph.
+            # With cascade="all, delete-orphan" on Table.columns, this
+            # ensures Columns are committed as part of the Table's unit.
             for pos, row in enumerate(duckdb_cols):
-                ctx.session.add(
+                sv_table.columns.append(
                     Column(
                         column_id=str(uuid4()),
-                        table_id=sv_table.table_id,
                         column_name=row[0],
                         column_position=pos,
                         raw_type=row[1],
                         resolved_type=row[1],
                     )
+                )
+
+            # Diagnostic: verify columns are tracked by the session
+            sv_col_count = len(sv_table.columns)
+            if sv_col_count != len(duckdb_cols):
+                logger.error(
+                    "slicing_view_column_mismatch",
+                    view_name=view_name,
+                    describe_count=len(duckdb_cols),
+                    session_count=sv_col_count,
                 )
 
             # Rewrite sql_templates so they reference the slicing view instead of

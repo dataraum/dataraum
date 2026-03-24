@@ -252,6 +252,14 @@ class ConnectionManager:
         session = self._session_factory()
         try:
             yield session
+            # Diagnostic: log pending objects before commit to detect
+            # silent data loss (e.g., Column records not in session.new).
+            if session.new:
+                new_by_type: dict[str, int] = {}
+                for obj in session.new:
+                    name = type(obj).__name__
+                    new_by_type[name] = new_by_type.get(name, 0) + 1
+                logger.debug("session_scope_commit", pending=new_by_type)
             session.commit()
         except Exception:
             session.rollback()

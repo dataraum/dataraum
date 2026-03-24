@@ -288,14 +288,19 @@ class SlicingViewPhase(BasePhase):
                     )
                 )
 
-            # Diagnostic: verify columns are tracked by the session
-            sv_col_count = len(sv_table.columns)
-            if sv_col_count != len(duckdb_cols):
+            # Diagnostic: verify columns are tracked by the session.
+            # Check session.new (not sv_table.columns, which trivially matches).
+            sv_pending = sum(
+                1
+                for obj in ctx.session.new
+                if isinstance(obj, Column) and getattr(obj, "table_id", None) == sv_table.table_id
+            )
+            if sv_pending != len(duckdb_cols):
                 logger.error(
                     "slicing_view_column_mismatch",
                     view_name=view_name,
                     describe_count=len(duckdb_cols),
-                    session_count=sv_col_count,
+                    session_pending=sv_pending,
                 )
 
             # Rewrite sql_templates so they reference the slicing view instead of

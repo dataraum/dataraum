@@ -224,15 +224,19 @@ class SliceVarianceDetector(EntropyDetector):
         Returns:
             List with single EntropyObject, or empty if < 2 slices.
         """
-        # Skip columns whose semantic role makes variance meaningless
-        if context.session is not None and context.column_id is not None:
+        # Skip columns whose semantic role makes variance meaningless.
+        # Check analysis_results first (populated by _load_data on prior calls
+        # or injected by test fixtures), then fall back to DB lookup.
+        semantic_role = context.analysis_results.get("semantic_role")
+        if semantic_role is None and context.session is not None and context.column_id is not None:
             from dataraum.entropy.detectors.loaders import load_semantic
 
             sem = load_semantic(context.session, context.column_id)
             if sem is not None:
-                role = sem.get("semantic_role")
-                if role in self._SKIP_ROLES:
-                    return []
+                semantic_role = sem.get("semantic_role")
+                context.analysis_results["semantic_role"] = semantic_role
+        if semantic_role in self._SKIP_ROLES:
+            return []
 
         slice_profiles: list[dict[str, Any]] = self._load_data(context)
 

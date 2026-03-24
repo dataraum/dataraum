@@ -594,13 +594,11 @@ class ValidationAgent(LLMFeature):
                     if val is not None:
                         details["total_rows"] = int(val)
                         break
-                # Also check for violation_count column (LLM may return summary rows)
+                # Check for violation_count column (LLM may return a single summary row)
                 vc = result_rows[0].get("violation_count")
-                if vc is not None and row_count <= 5:
-                    # Few rows with a violation_count column → summary, not raw violations
-                    details["violation_count"] = sum(
-                        int(r.get("violation_count", 0)) for r in result_rows
-                    )
+                if vc is not None and row_count == 1:
+                    # Single row with violation_count → summary, not raw violations
+                    details["violation_count"] = int(vc)
             return (
                 False,
                 f"Found {details['violation_count']} constraint violations",

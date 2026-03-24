@@ -61,15 +61,18 @@ def _score_validation_result(result: Any) -> float:
     if check_type == "comparison":
         # If the comparison has numeric difference, score proportionally
         # like a balance check (e.g., trial_balance equation mismatch).
-        difference = details.get("difference")
-        if difference is not None:
-            diff = abs(float(difference))
+        comp_difference = details.get("difference")
+        if comp_difference is not None:
+            diff = abs(float(comp_difference))
+            if diff == 0:
+                # passed=False but difference=0 is inconsistent — treat as failure
+                return 1.0
             # Use left_side as magnitude reference
             magnitude = abs(float(details.get("left_side", details.get("magnitude", 1))))
             if magnitude == 0:
                 return 1.0
             raw = min(1.0, diff / magnitude)
-            return min(1.0, math.sqrt(raw)) if raw > 0 else 0.0
+            return min(1.0, math.sqrt(raw))
         # Binary: critical checks either hold or don't
         return 1.0
 

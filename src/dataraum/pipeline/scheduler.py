@@ -110,12 +110,13 @@ class PipelineScheduler:
         yield self._event(EventType.PIPELINE_STARTED, total=total)
 
         while ready := self._ready_phases():
-            # 1. Check should_skip on main thread
+            # 1. Check should_skip on main thread with a scoped session.
+            # Each wave gets a fresh session so the scheduler session
+            # never accumulates ORM objects across waves.
             to_run: list[str] = []
             for phase_name in ready:
                 phase = self.phases[phase_name]
-                ctx = self._build_context(phase_name)
-                skip_reason = phase.should_skip(ctx)
+                skip_reason = self._check_should_skip(phase_name, phase)
                 if skip_reason:
                     self._state[phase_name] = PhaseStatus.SKIPPED
                     self._write_phase_log(phase_name, "skipped", error=skip_reason)
@@ -304,8 +305,37 @@ class PipelineScheduler:
         ready.sort(key=lambda n: len(self.phases[n].dependencies))
         return ready
 
+    def _check_should_skip(self, phase_name: str, phase: Phase) -> str | None:
+        """Run should_skip with a scoped session so objects don't leak into self.session."""
+        config: dict[str, Any] = {}
+        config.update(self._phase_configs.get(phase_name, {}))
+        config.update(self._runtime_config)
+
+        if self.session_factory and self.manager:
+            with self.session_factory() as skip_session:
+                ctx = PhaseContext(
+                    session=skip_session,
+                    duckdb_conn=self.duckdb_conn,
+                    source_id=self.source_id,
+                    config=config,
+                    session_factory=self.session_factory,
+                    manager=self.manager,
+                )
+                return phase.should_skip(ctx)
+
+        # Fallback for unit tests without factory
+        ctx = PhaseContext(
+            session=self.session,
+            duckdb_conn=self.duckdb_conn,
+            source_id=self.source_id,
+            config=config,
+            session_factory=self.session_factory,
+            manager=self.manager,
+        )
+        return phase.should_skip(ctx)
+
     def _build_context(self, phase_name: str = "") -> PhaseContext:
-        """Build a PhaseContext from current state."""
+        """Build a PhaseContext using the scheduler session (unit-test fallback only)."""
         config: dict[str, Any] = {}
         if phase_name:
             config.update(self._phase_configs.get(phase_name, {}))
@@ -329,7 +359,11 @@ class PipelineScheduler:
         error: str | None = None,
         outputs: dict[str, Any] | None = None,
     ) -> None:
-        """Write a PhaseLog record."""
+        """Write a PhaseLog record with a scoped session.
+
+        Uses session_factory when available so the scheduler session
+        never accumulates ORM objects from phase-log commits.
+        """
         now = datetime.now(UTC)
         log = PhaseLog(
             run_id=self.run_id,
@@ -342,8 +376,12 @@ class PipelineScheduler:
             error=error,
             outputs=outputs,
         )
-        self.session.add(log)
-        self.session.commit()
+        if self.session_factory:
+            with self.session_factory() as log_session:
+                log_session.add(log)
+        else:
+            self.session.add(log)
+            self.session.commit()
 
     def _validate_analysis_coverage(self) -> None:
         """Warn if detectors require analyses that no phase produces."""

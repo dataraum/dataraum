@@ -273,23 +273,22 @@ class SlicingViewPhase(BasePhase):
                     view_name=view_name,
                     fact_table=fact_table.table_name,
                 )
-            # Use relationship append instead of session.add(Column(...))
-            # to make the parent-child link explicit in the ORM graph.
-            # With cascade="all, delete-orphan" on Table.columns, this
-            # ensures Columns are committed as part of the Table's unit.
+            # Explicit table_id + session.add per Column.
+            # Relationship append alone is unreliable under free-threading:
+            # cascade may not populate session.new before commit.
             for pos, row in enumerate(duckdb_cols):
-                sv_table.columns.append(
-                    Column(
-                        column_id=str(uuid4()),
-                        column_name=row[0],
-                        column_position=pos,
-                        raw_type=row[1],
-                        resolved_type=row[1],
-                    )
+                col = Column(
+                    column_id=str(uuid4()),
+                    table_id=sv_table.table_id,
+                    column_name=row[0],
+                    column_position=pos,
+                    raw_type=row[1],
+                    resolved_type=row[1],
                 )
+                sv_table.columns.append(col)
+                ctx.session.add(col)
 
-            # Diagnostic: verify columns are tracked by the session.
-            # Check session.new (not sv_table.columns, which trivially matches).
+            # Diagnostic: verify columns are tracked by the session
             sv_pending = sum(
                 1
                 for obj in ctx.session.new

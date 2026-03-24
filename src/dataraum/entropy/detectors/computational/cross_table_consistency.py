@@ -59,6 +59,17 @@ def _score_validation_result(result: Any) -> float:
         return min(1.0, math.sqrt(raw)) if raw > 0 else 0.0
 
     if check_type == "comparison":
+        # If the comparison has numeric difference, score proportionally
+        # like a balance check (e.g., trial_balance equation mismatch).
+        difference = details.get("difference")
+        if difference is not None:
+            diff = abs(float(difference))
+            # Use left_side as magnitude reference
+            magnitude = abs(float(details.get("left_side", details.get("magnitude", 1))))
+            if magnitude == 0:
+                return 1.0
+            raw = min(1.0, diff / magnitude)
+            return min(1.0, math.sqrt(raw)) if raw > 0 else 0.0
         # Binary: critical checks either hold or don't
         return 1.0
 
@@ -68,10 +79,13 @@ def _score_validation_result(result: Any) -> float:
 
     if check_type == "constraint":
         count = float(details.get("violation_count", 0))
-        total = float(details.get("total_rows", 1))
-        if total == 0:
-            return 0.0
-        raw = min(1.0, count / total)
+        total = float(details.get("total_rows", 0))
+        if total > 0:
+            raw = min(1.0, count / total)
+            return min(1.0, math.sqrt(raw)) if raw > 0 else 0.0
+        # No total_rows available — score based on violation count alone.
+        # 1 violation ~ 0.1, 10 ~ 0.32, 100+ ~ 1.0
+        raw = min(1.0, count / 100.0)
         return min(1.0, math.sqrt(raw)) if raw > 0 else 0.0
 
     # Unknown check type — use severity as fallback

@@ -407,6 +407,18 @@ class SlicingViewPhase(BasePhase):
         try:
             result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{view_name}"').fetchone()
             actual_count = result[0] if result else 0
+            if actual_count != expected_count:
+                logger.warning(
+                    "slicing_view_grain_mismatch",
+                    view_name=view_name,
+                    expected_count=expected_count,
+                    actual_count=actual_count,
+                )
             return actual_count == expected_count
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "slicing_view_grain_query_failed",
+                view_name=view_name,
+                error=str(exc),
+            )
             return False

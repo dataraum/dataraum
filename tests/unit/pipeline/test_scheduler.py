@@ -403,6 +403,21 @@ class TestDiamondDependency:
 class TestParallelExecution:
     """Tests for ThreadPoolExecutor-based parallel phase execution."""
 
+    @staticmethod
+    def _make_manager_stub(duckdb_conn):
+        """Minimal manager stub with duckdb_cursor() context manager."""
+        from contextlib import contextmanager
+        from unittest.mock import MagicMock
+
+        stub = MagicMock()
+
+        @contextmanager
+        def _cursor():
+            yield duckdb_conn
+
+        stub.duckdb_cursor = _cursor
+        return stub
+
     def test_parallel_diamond_with_session_factory(self, session: Session, duckdb_conn, engine):
         """With session_factory, B and C in diamond run via ThreadPoolExecutor."""
         from contextlib import contextmanager
@@ -436,6 +451,7 @@ class TestParallelExecution:
             session=session,
             duckdb_conn=duckdb_conn,
             session_factory=session_scope,
+            manager=self._make_manager_stub(duckdb_conn),
         )
 
         events, result = _drive(scheduler.run())
@@ -504,6 +520,7 @@ class TestParallelExecution:
             session=session,
             duckdb_conn=duckdb_conn,
             session_factory=session_scope,
+            manager=self._make_manager_stub(duckdb_conn),
         )
 
         events, result = _drive(scheduler.run())
@@ -543,6 +560,7 @@ class TestParallelExecution:
             session=session,
             duckdb_conn=duckdb_conn,
             session_factory=session_scope,
+            manager=self._make_manager_stub(duckdb_conn),
         )
 
         events, result = _drive(scheduler.run())

@@ -163,14 +163,17 @@ class PipelineScheduler:
         started_at = datetime.now(UTC)
         logger.info("phase.start", phase=phase_name)
 
-        if self.session_factory is not None:
-            with self.session_factory() as phase_session:
+        if self.session_factory and self.manager:
+            with (
+                self.session_factory() as phase_session,
+                self.manager.duckdb_cursor() as phase_cursor,
+            ):
                 config: dict[str, Any] = {}
                 config.update(self._phase_configs.get(phase_name, {}))
                 config.update(self._runtime_config)
                 ctx = PhaseContext(
                     session=phase_session,
-                    duckdb_conn=self.duckdb_conn,
+                    duckdb_conn=phase_cursor,
                     source_id=self.source_id,
                     config=config,
                     session_factory=self.session_factory,
@@ -383,11 +386,14 @@ class PipelineScheduler:
         if not phase.detectors:
             return
 
-        if self.session_factory is not None:
-            with self.session_factory() as detector_session:
+        if self.session_factory and self.manager:
+            with (
+                self.session_factory() as detector_session,
+                self.manager.duckdb_cursor() as detector_cursor,
+            ):
                 for detector_id in phase.detectors:
                     run_detector_post_step(
-                        detector_session, self.source_id, detector_id, self.duckdb_conn
+                        detector_session, self.source_id, detector_id, detector_cursor
                     )
         else:
             for detector_id in phase.detectors:

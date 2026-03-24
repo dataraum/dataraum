@@ -29,21 +29,28 @@ parameters:
   credit_normal_types: ["liability", "liabilities", "equity", "revenue", "income"]
 
 sql_hints: >
-  Look for columns that represent amounts and account types.
-  Check semantic annotations for entity_type: amount, account_type.
+  IMPORTANT: Check sign conventions on AGGREGATED account balances, not
+  individual transaction lines. Individual journal lines naturally have
+  both debits and credits — that is correct double-entry bookkeeping.
 
-  Find records where the sign convention is violated:
-  - Asset/Expense accounts with negative amounts
-  - Liability/Equity/Revenue accounts with unexpected signs
+  Steps:
+  1. Join journal lines with chart of accounts on account_id
+  2. GROUP BY account_id, account_type
+  3. Compute net_balance = SUM(debit) - SUM(credit) per account
+  4. Check the NET BALANCE sign against the expected convention:
+     - Asset/Expense accounts: net_balance should be >= 0 (debit normal)
+     - Liability/Equity/Revenue accounts: net_balance should be <= 0 (credit normal)
+  5. Exclude contra accounts: accounts with names containing 'accumulated',
+     'allowance', 'contra', or 'reserve' — these legitimately have the
+     opposite sign of their account type.
 
-  Return violating rows with: account_identifier (if available), account_type, amount,
-  expected_sign, actual_sign.
+  Return violating accounts with: account_id, account_name, account_type,
+  net_balance, expected_sign.
 
-  Note: Some violations may be valid (contra accounts, adjustments).
-  Return all potential violations for review.
+  Also return a total_rows column with the total number of accounts checked
+  (for proportional scoring).
 
 expected_outcome: >
-  Ideally returns 0 rows (no violations).
-  Any returned rows represent potential sign convention violations
-  that may need review. A small number of violations may be acceptable
-  for contra accounts.
+  Most accounts should follow sign conventions. A small number of
+  violations (1-3) may be acceptable for contra accounts not caught
+  by the name filter. Zero violations on well-structured data.

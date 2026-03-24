@@ -583,13 +583,28 @@ class ValidationAgent(LLMFeature):
             )
 
         elif check_type == "constraint":
-            # Constraint checks return violating rows
+            # Constraint checks return violating rows.
             if row_count == 0:
                 return (True, "No constraint violations found", {"check_type": check_type})
+            # Extract total_rows from result columns if the LLM included it
+            details: dict[str, Any] = {"check_type": check_type, "violation_count": row_count}
+            if result_rows:
+                for key in ("total_rows", "total_count", "total"):
+                    val = result_rows[0].get(key)
+                    if val is not None:
+                        details["total_rows"] = int(val)
+                        break
+                # Also check for violation_count column (LLM may return summary rows)
+                vc = result_rows[0].get("violation_count")
+                if vc is not None and row_count <= 5:
+                    # Few rows with a violation_count column → summary, not raw violations
+                    details["violation_count"] = sum(
+                        int(r.get("violation_count", 0)) for r in result_rows
+                    )
             return (
                 False,
-                f"Found {row_count} constraint violations",
-                {"check_type": check_type, "violation_count": row_count},
+                f"Found {details['violation_count']} constraint violations",
+                details,
             )
 
         elif check_type == "comparison":

@@ -1,15 +1,20 @@
 # Trial Balance Validation
-# Checks if Assets = Liabilities + Equity (accounting equation)
+# Checks the expanded accounting equation:
+#   Assets + Expenses = Liabilities + Equity + Revenue
+# This form works mid-year before closing entries.
 
 validation_id: trial_balance
 name: Trial Balance (Accounting Equation)
 description: >
-  Validates the fundamental accounting equation: Assets = Liabilities + Equity.
-  This equation must always balance and is the foundation of the balance sheet.
+  Validates the expanded accounting equation:
+  Assets + Expenses = Liabilities + Equity + Revenue.
+  The basic form (Assets = Liabilities + Equity) only holds after closing
+  entries move revenue/expenses into retained earnings. The expanded form
+  must always balance and is the foundation of double-entry bookkeeping.
 
 category: financial
 severity: critical
-version: "1.0"
+version: "1.1"
 
 tags:
   - accounting
@@ -22,7 +27,7 @@ relevant_cycles:
   - accounts_receivable
   - accounts_payable
 
-check_type: comparison
+check_type: balance
 
 parameters:
   tolerance: 0.01
@@ -30,19 +35,29 @@ parameters:
   asset_types: ["asset", "assets"]
   liability_types: ["liability", "liabilities"]
   equity_types: ["equity", "stockholders equity", "shareholders equity", "capital"]
+  revenue_types: ["revenue", "income", "sales"]
+  expense_types: ["expense", "expenses", "cost"]
 
 sql_hints: >
-  Look for columns that represent amounts and account types/categories.
-  Check semantic annotations for entity_type: amount, account_type.
+  Join the trial balance table with the chart of accounts to get account types.
+  Sum (debit_balance - credit_balance) as net_balance per account_type.
 
-  Group by account_type and sum amounts for each category:
-  - Assets: account types containing 'asset'
-  - Liabilities: account types containing 'liability'
-  - Equity: account types containing 'equity', 'capital'
+  Classify each account_type into one of: asset, liability, equity, revenue, expense.
+  Use LOWER() and look for keywords from the parameters above.
 
-  Calculate: assets, liabilities, equity, difference = assets - (liabilities + equity)
-  Include equation_holds = (ABS(difference) <= tolerance) as boolean.
+  Compute the expanded accounting equation:
+    left_side  = SUM(net_balance) for asset + expense accounts
+    right_side = SUM(net_balance) for liability + equity + revenue accounts
+    (Revenue and liability accounts normally have negative net_balance since credits > debits)
+
+  Return: left_side, right_side, difference = left_side + right_side,
+  magnitude = ABS(left_side), equation_holds = (ABS(difference) <= tolerance).
+
+  IMPORTANT: Use ALL five account types (asset, liability, equity, revenue, expense),
+  not just asset/liability/equity. The basic equation only balances after year-end
+  closing entries. The expanded equation always balances.
 
 expected_outcome: >
-  Assets should equal Liabilities + Equity within tolerance.
+  Total debits must equal total credits across all account types.
+  left_side + right_side should equal zero (or within tolerance).
   The equation_holds column should be true for a passing check.

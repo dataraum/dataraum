@@ -38,6 +38,13 @@ class SliceVarianceDetector(EntropyDetector):
     so that at-threshold = 0.5, at 2x threshold = 1.0.
     """
 
+    # Semantic roles where slice variance is meaningless —
+    # keys/FKs are unique by construction, attributes are free text,
+    # timestamps and measures naturally vary across categorical slices.
+    _SKIP_ROLES = frozenset(
+        {"key", "foreign_key", "identifier", "attribute", "timestamp", "measure"}
+    )
+
     detector_id = "slice_variance"
     layer = Layer.VALUE
     dimension = Dimension.VARIANCE
@@ -217,6 +224,16 @@ class SliceVarianceDetector(EntropyDetector):
         Returns:
             List with single EntropyObject, or empty if < 2 slices.
         """
+        # Skip columns whose semantic role makes variance meaningless
+        if context.session is not None and context.column_id is not None:
+            from dataraum.entropy.detectors.loaders import load_semantic
+
+            sem = load_semantic(context.session, context.column_id)
+            if sem is not None:
+                role = sem.get("semantic_role")
+                if role in self._SKIP_ROLES:
+                    return []
+
         slice_profiles: list[dict[str, Any]] = self._load_data(context)
 
         if len(slice_profiles) < 2:

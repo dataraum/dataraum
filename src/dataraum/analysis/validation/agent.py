@@ -238,17 +238,19 @@ class ValidationAgent(LLMFeature):
         table_ids via the schema. Returns empty list (with warning) if
         no tables can be resolved — never falls back to all_table_ids.
         """
-        # Build name → id map from schema
-        name_to_id: dict[str, str] = {}
+        # Build duckdb_path → id map from schema (SQL references duckdb paths
+        # like typed_bank_transactions, not logical names like bank_transactions)
+        path_to_id: dict[str, str] = {}
         for t in schema.get("tables", []):
-            name_to_id[t["table_name"]] = t.get("table_id", "")
+            duckdb_path = t.get("duckdb_path", t["table_name"])
+            path_to_id[duckdb_path] = t.get("table_id", "")
 
         # Find all typed_* table references in SQL
         referenced_names = set(re.findall(r"\btyped_\w+", sql))
 
         scoped_ids = []
         for name in referenced_names:
-            tid = name_to_id.get(name)
+            tid = path_to_id.get(name)
             if tid and tid in all_table_ids:
                 scoped_ids.append(tid)
 
@@ -256,7 +258,7 @@ class ValidationAgent(LLMFeature):
             logger.warning(
                 "validation_table_scope_empty",
                 referenced_tables=list(referenced_names),
-                available_tables=list(name_to_id.keys()),
+                available_tables=list(path_to_id.keys()),
             )
 
         return scoped_ids

@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -88,6 +89,13 @@ def create_server(output_dir: Path | None = None) -> Server:
     if output_dir is None:
         output_dir = Path(os.environ.get("DATARAUM_OUTPUT_DIR", "./pipeline_output"))
 
+    # Server-side session state — agent never sees session_id.
+    # Set by begin_session, used by call_tool for recording and contract threading.
+    # TODO: session teardown (deliver/end_session) not yet implemented —
+    # currently permanent until process restart. Planned for later phase.
+    _active_session_id: str | None = None
+    _active_contract: str | None = None
+
     server = Server("dataraum")
     server.experimental.enable_tasks()
 
@@ -122,10 +130,6 @@ def create_server(output_dir: Path | None = None) -> Server:
                             "type": "integer",
                             "description": "Return N sample rows from the table. Requires target to include a table name.",
                         },
-                        "session_id": {
-                            "type": "string",
-                            "description": "Session ID from begin_session for audit trail.",
-                        },
                     },
                 },
             ),
@@ -134,11 +138,11 @@ def create_server(output_dir: Path | None = None) -> Server:
                 name="measure",
                 description=(
                     "Measure data entropy (uncertainty). Returns measurement "
-                    "points per column+dimension, layer scores, BBN readiness "
-                    "per column, and contract status. Triggers pipeline if no "
-                    "data exists yet. Use target to filter to a specific table "
-                    "or column. Poll by calling measure again to get partial "
-                    "results during a pipeline run."
+                    "points per column+dimension, layer scores, and BBN readiness "
+                    "per column. Triggers pipeline if no data exists yet. Use "
+                    "target to filter to a specific table or column. Poll by "
+                    "calling measure again to get partial results during a "
+                    "pipeline run."
                 ),
                 inputSchema={
                     "type": "object",
@@ -149,10 +153,6 @@ def create_server(output_dir: Path | None = None) -> Server:
                                 "Filter to a table or column. E.g. 'orders' or 'orders.amount'."
                             ),
                         },
-                        "session_id": {
-                            "type": "string",
-                            "description": "Session ID from begin_session for audit trail.",
-                        },
                     },
                 },
                 execution=ToolExecution(taskSupport="optional"),
@@ -161,10 +161,20 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="begin_session",
                 description=(
-                    "Start an investigation session. Returns a session_id to pass "
-                    "to subsequent tool calls for audit trail. Also returns "
-                    "registered sources and whether pipeline data exists. "
-                    "Use look to explore schema, measure for entropy scores."
+                    "Start an investigation session. You MUST call this before "
+                    "using look, measure, query, or run_sql. First register "
+                    "sources with add_source, then begin the session.\n\n"
+                    "The contract defines data readiness thresholds for the "
+                    "intended use case. Ask the user what they're trying to "
+                    "accomplish, then choose the appropriate contract:\n\n"
+                    "- exploratory_analysis: Data exploration, hypothesis testing (lenient)\n"
+                    "- data_science: Feature engineering, model training (moderate)\n"
+                    "- operational_analytics: Ops reports, team dashboards (moderate)\n"
+                    "- aggregation_safe: SUM/AVG/COUNT queries — unit + null focus (moderate)\n"
+                    "- executive_dashboard: C-level dashboards, KPI tracking (strict)\n"
+                    "- regulatory_reporting: Financial statements, audit submissions (very strict)\n\n"
+                    "If unsure, start with exploratory_analysis — you can always "
+                    "start a new session with a stricter contract later."
                 ),
                 inputSchema={
                     "type": "object",
@@ -176,7 +186,9 @@ def create_server(output_dir: Path | None = None) -> Server:
                         },
                         "contract": {
                             "type": "string",
-                            "description": "Contract to evaluate against (e.g. 'executive_dashboard').",
+                            "description": (
+                                "Contract name. Defaults to 'exploratory_analysis' if not provided."
+                            ),
                         },
                     },
                 },
@@ -201,10 +213,6 @@ def create_server(output_dir: Path | None = None) -> Server:
                         "question": {
                             "type": "string",
                             "description": "Natural language question about the data",
-                        },
-                        "contract_name": {
-                            "type": "string",
-                            "description": "Optional: contract to evaluate against",
                         },
                     },
                     "required": ["question"],
@@ -325,14 +333,27 @@ def create_server(output_dir: Path | None = None) -> Server:
         name: str, arguments: dict[str, Any]
     ) -> list[TextContent] | CallToolResult | CreateTaskResult:
         """Execute a tool and return JSON results."""
-        from datetime import UTC, datetime
+        nonlocal _active_session_id, _active_contract
 
-        # Extract session_id before dispatching — it's infrastructure, not a tool argument.
-        # Popping ensures handlers don't receive it. The audit trail links via session_id,
-        # not by storing it in step arguments.
-        session_id: str | None = arguments.pop("session_id", None)
         started_at = datetime.now(UTC)
 
+        # --- Flow enforcement ---
+        if name == "add_source":
+            if _active_session_id is not None:
+                return _json_text_content(
+                    {"error": "Session active. Complete the investigation before adding sources."}
+                )
+        elif name == "begin_session":
+            if _active_session_id is not None:
+                return _json_text_content(
+                    {"error": "Session already active. Only one session at a time."}
+                )
+        else:
+            # look, measure, query, run_sql — require active session
+            if _active_session_id is None:
+                return _json_text_content({"error": "No active session. Call begin_session first."})
+
+        # --- Dispatch ---
         if name == "look":
             result = _look(
                 output_dir,
@@ -380,15 +401,19 @@ def create_server(output_dir: Path | None = None) -> Server:
                         "hint": "Pipeline started. Call measure() again to poll for results.",
                     }
         elif name == "begin_session":
-            result = _begin_session(
+            raw = _begin_session(
                 output_dir,
                 intent=arguments["intent"],
                 contract=arguments.get("contract"),
             )
+            # Separate internal state from agent-facing response
+            session_id_internal = raw.pop("_session_id", None)
+            result = raw
+            if "error" not in result and session_id_internal:
+                _active_session_id = session_id_internal
+                _active_contract = result["contract"]["name"]
         elif name == "query":
-            question = arguments["question"]
-            contract_name = arguments.get("contract_name")
-            result = _query(output_dir, question, contract_name)
+            result = _query(output_dir, arguments["question"], _active_contract)
         elif name == "run_sql":
             result = _run_sql(
                 output_dir,
@@ -402,11 +427,12 @@ def create_server(output_dir: Path | None = None) -> Server:
         else:
             result = {"error": f"Unknown tool: {name}"}
 
-        # Record step in investigation session if session_id was provided
-        if session_id is not None:
+        # Record step in investigation trace. begin_session is excluded because
+        # the session record itself (InvestigationSession) captures intent + contract.
+        if _active_session_id is not None and name != "begin_session":
             _record_tool_step(
                 output_dir,
-                session_id=session_id,
+                session_id=_active_session_id,
                 tool_name=name,
                 arguments=arguments,
                 result=result,
@@ -454,14 +480,12 @@ def _record_tool_step(
     tool_name: str,
     arguments: dict[str, Any],
     result: dict[str, Any],
-    started_at: Any,
+    started_at: datetime,
 ) -> None:
     """Record a tool invocation in the investigation session trace.
 
     Never raises — recording failure must not break tool execution.
     """
-    from datetime import UTC, datetime
-
     from dataraum.investigation.recorder import record_step
 
     try:
@@ -715,25 +739,34 @@ def _begin_session(
 ) -> dict[str, Any]:
     """Start an investigation session.
 
-    Creates an InvestigationSession and returns the session_id plus
-    basic orientation (sources, pipeline status). The agent should call
-    look and measure separately for schema/scores — begin_session is
-    deliberately thin.
+    Creates an InvestigationSession and returns orientation info.
+    The ``_session_id`` key is popped by call_tool for server-side state —
+    it is never surfaced to the agent.
 
     Args:
         output_dir: Pipeline output directory.
         intent: What the agent is investigating.
-        contract: Optional contract name to evaluate against.
+        contract: Contract name. Defaults to ``exploratory_analysis``.
 
     Returns:
-        Dict with session_id, sources, has_pipeline_data, and hints.
+        Dict with _session_id (internal), sources, contract, has_pipeline_data, hint.
     """
     from sqlalchemy import select
 
     from dataraum.core.connections import get_manager_for_directory
+    from dataraum.entropy.contracts import get_contract
     from dataraum.entropy.db_models import EntropyObjectRecord
     from dataraum.investigation.recorder import begin_session
     from dataraum.storage import Source
+
+    # Validate and default contract
+    contract_name = contract or "exploratory_analysis"
+    contract_profile = get_contract(contract_name)
+    if contract_profile is None:
+        from dataraum.entropy.contracts import list_contracts
+
+        available = [c["name"] for c in list_contracts()]
+        return {"error": f"Unknown contract '{contract_name}'. Available: {available}"}
 
     try:
         manager = get_manager_for_directory(output_dir)
@@ -742,31 +775,41 @@ def _begin_session(
 
     try:
         with manager.session_scope() as session:
+            # Require at least one registered source
+            all_sources = list(
+                session.execute(
+                    select(Source).where(Source.archived_at.is_(None)).order_by(Source.created_at)
+                )
+                .scalars()
+                .all()
+            )
+            if not all_sources:
+                return {"error": "No sources registered. Use add_source first."}
+
             source = _get_pipeline_source(session)
-            if not source:
-                return {"error": "No sources found. Use add_source first."}
+            source_id = source.source_id if source else all_sources[0].source_id
 
             # Create investigation session
-            inv = begin_session(session, source.source_id, intent, contract=contract)
-
-            # All registered sources
-            all_sources = list(
-                session.execute(select(Source).order_by(Source.created_at)).scalars().all()
-            )
+            inv = begin_session(session, source_id, intent, contract=contract_name)
 
             # Check if pipeline has run (quick existence check, not full measurement)
             has_data = (
                 session.execute(
                     select(EntropyObjectRecord.object_id)
-                    .where(EntropyObjectRecord.source_id == source.source_id)
+                    .where(EntropyObjectRecord.source_id == source_id)
                     .limit(1)
                 ).scalar_one_or_none()
                 is not None
             )
 
             return {
-                "session_id": inv.session_id,
+                "_session_id": inv.session_id,
                 "sources": [s.name for s in all_sources],
+                "contract": {
+                    "name": contract_profile.name,
+                    "display_name": contract_profile.display_name,
+                    "description": contract_profile.description,
+                },
                 "has_pipeline_data": has_data,
                 "hint": (
                     "Use look to explore the schema, measure to check entropy scores."

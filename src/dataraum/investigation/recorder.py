@@ -190,22 +190,6 @@ def get_session_trace(
     }
 
 
-def get_sessions_for_source(
-    session: Session,
-    source_id: str,
-) -> list[InvestigationSession]:
-    """List all investigation sessions for a source, newest first."""
-    return list(
-        session.execute(
-            select(InvestigationSession)
-            .where(InvestigationSession.source_id == source_id)
-            .order_by(InvestigationSession.started_at.desc())
-        )
-        .scalars()
-        .all()
-    )
-
-
 def summarize_result(tool_name: str, result: dict[str, Any] | str | None) -> str:
     """Extract a storage-friendly summary from a tool result.
 

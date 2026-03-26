@@ -105,6 +105,52 @@ Examples: `feat/bayesian-network`, `fix/cpt-ordering`, `refactor/streamline`.
 3. **When done**: create a PR to `main` via `gh pr create` (only when the user asks).
 4. **Never push directly to `main`.**
 
+## Development Workflow
+
+This project uses skills to structure development work. Skills encode the checkpoints, reviews, and handoffs that are otherwise easy to skip or shortcut.
+
+### Intent routing
+
+| User says | You do | Why |
+|-----------|--------|-----|
+| "What if we...", "I have an idea", "We need..." | `/ideate` | Explore before committing to a direction |
+| "Let's break this down", "Create the epic" | `/decompose` | Turn designs into Linear work items |
+| "Implement X", "Build X", "Work on DAT-nnn" | `/refine` first | Understand before committing — the model's "obvious" is often wrong |
+| "Is X feasible?", "How should we approach X?" | `/refine` | Stop after alignment, don't start coding |
+| Approved approach after `/refine` | `/implement` | Phased execution with checkpoints and review gate |
+| MCP tool changes completed | Remind: restart session, then `/smoke` | Server runs old code until restarted |
+| Implementation verified and reviewed | Update `.claude/handoff.md` | Bridge to dataraum-eval and dataraum-testdata |
+| Quick fix, <3 files, obvious change | Direct implementation | S-size tasks don't need ceremony |
+
+### Skills (`.claude/skills/`)
+
+**Product thinking:**
+- **`/ideate <topic>`** — Explore an idea: check existing work, read the codebase, think through feasibility, produce a design document. No issues, no code.
+- **`/decompose <doc or issue>`** — Turn a design into Linear artifacts: epic, phase issues, acceptance criteria, dependency relations. Follows the DAT-173 pattern.
+
+**Execution:**
+- **`/refine <issue>`** — Pre-implementation: explore feasibility, surface spec vs. reality conflicts, align on approach. No code.
+- **`/implement <issue>`** — Phased execution with mandatory self-audit checkpoints. Invokes senior-code-reviewer + spec-compliance-reviewer at the end. Updates `handoff.md`.
+- **`/smoke [tool]`** — Quick MCP UX check: call the tools you just built, feel how they work. Requires session restart if server code changed.
+
+### Cross-repo handoff
+
+`.claude/handoff.md` records what needs attention in other repos:
+- **dataraum-eval**: which tools/detectors changed, what to calibrate (consumed by `/accept` skill in eval)
+- **dataraum-testdata**: directional hints for new injections or ground truth (not specs — testdata has its own design concerns)
+
+### When to skip
+
+- **S-size tasks** (1-3 files, <50 lines, obvious): implement directly
+- **Bug fixes with failing tests**: fix → verify → done
+- **Documentation-only changes**: no workflow needed
+
+### When NOT to skip
+
+- **M+ tasks**: always `/refine` first
+- **MCP tool changes**: always `/smoke` after — UX can't be judged from source code
+- **Detector changes**: always update `handoff.md` — calibration is the definition of done
+
 ## Work Decomposition Protocol
 
 ### Task Sizing

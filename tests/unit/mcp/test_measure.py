@@ -162,14 +162,20 @@ class TestMeasureComplete:
         assert scores["structural"] == 0.1  # single dimension
 
     def test_includes_bbn_readiness(self, session: Session) -> None:
-        """Readiness per column from BBN inference."""
+        """Readiness per column, table (worst-of), and dataset from BBN."""
         source_id, table_id, col_ids = _setup_source_and_table(session)
 
         # Mock BBN results
         mock_network = MagicMock()
-        col_result = MagicMock()
-        col_result.readiness = "investigate"
-        mock_network.columns = {"orders.amount": col_result}
+        amount_result = MagicMock()
+        amount_result.readiness = "investigate"
+        region_result = MagicMock()
+        region_result.readiness = "ready"
+        mock_network.columns = {
+            "column:orders.amount": amount_result,
+            "column:orders.region": region_result,
+        }
+        mock_network.overall_readiness = "investigate"
 
         with (
             patch(
@@ -189,7 +195,13 @@ class TestMeasureComplete:
 
             result = _measure(session)
 
-        assert result["readiness"]["orders.amount"] == "investigate"
+        # Column readiness
+        assert result["readiness"]["column:orders.amount"] == "investigate"
+        assert result["readiness"]["column:orders.region"] == "ready"
+        # Table readiness (worst-of columns)
+        assert result["readiness"]["table:orders"] == "investigate"
+        # Dataset readiness
+        assert result["readiness"]["dataset"] == "investigate"
 
 
 class TestMeasureNoData:
@@ -420,7 +432,7 @@ class TestMeasureTargetFilter:
         assert all_result["scores"]["semantic"] == 0.4
 
     def test_readiness_populated_with_target(self, session: Session) -> None:
-        """Readiness keys use 'column:' prefix — filter works with target."""
+        """Readiness filter includes table-level readiness for table targets."""
         source_id, table_id, col_ids = _setup_source_and_table(session)
 
         mock_network = MagicMock()
@@ -432,6 +444,7 @@ class TestMeasureTargetFilter:
             "column:orders.amount": amount_result,
             "column:orders.region": region_result,
         }
+        mock_network.overall_readiness = "investigate"
 
         with (
             patch(
@@ -449,12 +462,14 @@ class TestMeasureTargetFilter:
         ):
             from dataraum.mcp.server import _measure
 
-            # Table-level target
+            # Table-level target: 2 columns + 1 table readiness
             table_result = _measure(session, target="orders")
-            assert len(table_result["readiness"]) == 2
             assert table_result["readiness"]["column:orders.amount"] == "investigate"
+            assert table_result["readiness"]["column:orders.region"] == "ready"
+            assert table_result["readiness"]["table:orders"] == "investigate"
+            assert "dataset" not in table_result["readiness"]
 
-            # Column-level target
+            # Column-level target: just the one column
             col_result = _measure(session, target="orders.amount")
             assert len(col_result["readiness"]) == 1
             assert col_result["readiness"]["column:orders.amount"] == "investigate"

@@ -1345,6 +1345,20 @@ def _measure(
                 readiness = {
                     col_key: col_result.readiness for col_key, col_result in network.columns.items()
                 }
+                # Aggregate table-level readiness (worst-of columns per table)
+                table_cols: dict[str, list[str]] = {}
+                for col_key, col_result in network.columns.items():
+                    # col_key is "column:table.col" — extract table
+                    bare = col_key.removeprefix("column:")
+                    tbl = bare.split(".")[0]
+                    table_cols.setdefault(tbl, []).append(col_result.readiness)
+                _rank = {"blocked": 2, "investigate": 1, "ready": 0}
+                for tbl, col_readiness_list in table_cols.items():
+                    readiness[f"table:{tbl}"] = max(
+                        col_readiness_list, key=lambda r: _rank.get(r, 0)
+                    )
+                # Dataset-level readiness from BBN
+                readiness["dataset"] = network.overall_readiness
         except Exception:
             _log.debug("BBN readiness unavailable", exc_info=True)
 
@@ -1404,7 +1418,9 @@ def _measure(
                 for p in points
                 if p["target"] == table_target or p["target"].startswith(col_prefix)
             ]
-            result["readiness"] = {k: v for k, v in readiness.items() if k.startswith(col_prefix)}
+            result["readiness"] = {
+                k: v for k, v in readiness.items() if k == table_target or k.startswith(col_prefix)
+            }
 
         # Recompute scores from filtered points
         if result["points"]:

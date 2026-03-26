@@ -351,7 +351,7 @@ def create_server(output_dir: Path | None = None) -> Server:
 
                     async def _measure_work(task: ServerTaskContext) -> CallToolResult:
                         callback = _make_task_event_callback(task, loop)
-                        await asyncio.to_thread(_analyze, output_dir, None, None, callback)
+                        await asyncio.to_thread(_run_pipeline, output_dir, callback)
                         measure_result = _measure(output_dir, target=measure_target)
                         return CallToolResult(
                             content=[
@@ -372,7 +372,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                     )
                 else:
                     # No task API: fire-and-forget
-                    bg = asyncio.create_task(_run_analyze_background(output_dir, None, None))
+                    bg = asyncio.create_task(_run_pipeline_background(output_dir))
                     _background_tasks.add(bg)
                     bg.add_done_callback(_background_tasks.discard)
                     result = {
@@ -498,44 +498,33 @@ def _get_phase_labels() -> dict[str, str]:
     return {name: decl.description for name, decl in declarations.items()}
 
 
-def _analyze(
+def _run_pipeline(
     output_dir: Path,
-    path: str | None = None,
-    name: str | None = None,
     event_callback: EventCallback | None = None,
-    target_gate: str | None = None,
-    contract: str | None = None,
 ) -> dict[str, Any]:
-    """Run the pipeline on a data source.
+    """Run the pipeline on registered sources.
+
+    Reads source path and contract from the database. Used by the measure
+    trigger when no entropy data exists yet.
 
     Args:
         output_dir: Pipeline output directory.
-        path: Path to CSV/Parquet file or directory.
-        name: Optional source name.
         event_callback: Optional callback for pipeline events.
-        target_gate: Optional phase to stop at.
-        contract: Optional contract name.
 
     Returns:
         Dict with pipeline result.
     """
     from dataraum.pipeline.runner import RunConfig, run
 
-    source_path: Path | None = None
-    if path:
-        source_path = Path(path)
-        if not source_path.exists():
-            return {"error": f"Path not found: {path}"}
-
-    resolved_contract = contract or _get_cached_contract(output_dir)
+    source_path_str = _resolve_source_path(output_dir)
+    source_path = Path(source_path_str) if source_path_str else None
+    contract = _get_cached_contract(output_dir)
 
     config = RunConfig(
         source_path=source_path,
         output_dir=output_dir,
-        source_name=name,
         event_callback=event_callback,
-        target_phase=target_gate,
-        contract=resolved_contract,
+        contract=contract,
     )
 
     result = run(config)
@@ -546,20 +535,12 @@ def _analyze(
     return {"status": "complete", "phases_completed": result.value.phases_completed}
 
 
-async def _run_analyze_background(
-    output_dir: Path,
-    path: str | None,
-    source_name: str | None,
-    target_gate: str | None = None,
-    contract: str | None = None,
-) -> None:
-    """Run _analyze in a background thread, logging errors."""
+async def _run_pipeline_background(output_dir: Path) -> None:
+    """Run _run_pipeline in a background thread, logging errors."""
     try:
-        await asyncio.to_thread(
-            _analyze, output_dir, path, source_name, None, target_gate, contract
-        )
+        await asyncio.to_thread(_run_pipeline, output_dir)
     except Exception:
-        _log.exception("Background pipeline failed for %s", path or "(registered sources)")
+        _log.exception("Background pipeline failed for %s", output_dir)
 
 
 def _query(
@@ -973,6 +954,8 @@ def _look_dataset(session: SASession, tables: list[TableModel]) -> dict[str, Any
                     col_info["entity_type"] = ann.entity_type
                 if ann.temporal_behavior:
                     col_info["temporal_behavior"] = ann.temporal_behavior
+                if ann.unit_source_column:
+                    col_info["unit_source_column"] = ann.unit_source_column
             col_list.append(col_info)
 
         table_info: dict[str, Any] = {
@@ -1090,8 +1073,11 @@ def _look_table(session: SASession, tbl: TableModel) -> dict[str, Any]:
                 col_info["business_name"] = ann.business_name
             if ann.business_concept:
                 col_info["business_concept"] = ann.business_concept
+            if ann.unit_source_column:
+                col_info["unit_source_column"] = ann.unit_source_column
 
         if profile:
+            col_info["nullable"] = profile.null_count > 0
             stats: dict[str, Any] = {
                 "total_count": profile.total_count,
                 "null_count": profile.null_count,

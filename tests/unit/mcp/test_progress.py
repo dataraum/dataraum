@@ -1,15 +1,14 @@
-"""Tests for MCP tasks API integration in the analyze tool."""
+"""Tests for MCP tasks API integration and pipeline trigger."""
 
 from __future__ import annotations
 
 import asyncio
-import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from dataraum.mcp.server import _analyze, _make_task_event_callback
+from dataraum.mcp.server import _make_task_event_callback, _run_pipeline
 from dataraum.pipeline.events import EventType, PipelineEvent
 
 
@@ -129,18 +128,8 @@ class TestMakeTaskEventCallback:
         assert task.update_status.call_count == 3
 
 
-class TestAnalyzeFunction:
-    """Tests for the _analyze sync function."""
-
-    def test_missing_path_returns_error(self, tmp_path):
-        """Returns error dict for non-existent path."""
-        result = _analyze(
-            output_dir=tmp_path,
-            path="/nonexistent/path/to/data.csv",
-        )
-
-        assert isinstance(result, dict)
-        assert "Path not found" in result["error"]
+class TestRunPipeline:
+    """Tests for the _run_pipeline function."""
 
     def test_pipeline_failure_returns_error(self, tmp_path):
         """Returns error when pipeline fails."""
@@ -149,45 +138,33 @@ class TestAnalyzeFunction:
         mock_result.value = None
         mock_result.error = "something broke"
 
-        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
-            csv_path = f.name
-
-        try:
-            with patch("dataraum.pipeline.runner.run", return_value=mock_result):
-                result = _analyze(
-                    output_dir=tmp_path,
-                    path=csv_path,
-                )
-        finally:
-            Path(csv_path).unlink(missing_ok=True)
+        with (
+            patch("dataraum.pipeline.runner.run", return_value=mock_result),
+            patch("dataraum.mcp.server._resolve_source_path", return_value=None),
+            patch("dataraum.mcp.server._get_cached_contract", return_value=None),
+        ):
+            result = _run_pipeline(output_dir=tmp_path)
 
         assert isinstance(result, dict)
         assert "Pipeline failed" in result["error"]
 
-    def test_success_returns_status_complete(self):
+    def test_success_returns_status_complete(self, tmp_path):
         """Returns status=complete on success."""
         mock_result = MagicMock()
         mock_result.success = True
         mock_result.value = MagicMock()
         mock_result.value.phases_completed = 17
-        mock_result.error = None
 
-        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
-            tmp_path = f.name
-
-        try:
-            with patch("dataraum.pipeline.runner.run", return_value=mock_result):
-                result = _analyze(
-                    output_dir=Path("/tmp/test_output"),
-                    path=tmp_path,
-                    name="test_source",
-                )
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
+        with (
+            patch("dataraum.pipeline.runner.run", return_value=mock_result),
+            patch("dataraum.mcp.server._resolve_source_path", return_value=None),
+            patch("dataraum.mcp.server._get_cached_contract", return_value=None),
+        ):
+            result = _run_pipeline(output_dir=tmp_path)
 
         assert result["status"] == "complete"
 
-    def test_event_callback_forwarded(self):
+    def test_event_callback_forwarded(self, tmp_path):
         """Event callback is passed through to RunConfig."""
         mock_result = MagicMock()
         mock_result.success = True
@@ -196,44 +173,55 @@ class TestAnalyzeFunction:
 
         cb = MagicMock()
 
-        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
-            tmp_path = f.name
-
-        try:
-            with patch("dataraum.pipeline.runner.run", return_value=mock_result) as mock_run:
-                _analyze(
-                    output_dir=Path("/tmp/test_output"),
-                    path=tmp_path,
-                    event_callback=cb,
-                )
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
+        with (
+            patch("dataraum.pipeline.runner.run", return_value=mock_result) as mock_run,
+            patch("dataraum.mcp.server._resolve_source_path", return_value=None),
+            patch("dataraum.mcp.server._get_cached_contract", return_value=None),
+        ):
+            _run_pipeline(output_dir=tmp_path, event_callback=cb)
 
         run_config = mock_run.call_args[0][0]
         assert run_config.event_callback is cb
 
-    def test_contract_forwarded(self):
-        """Contract is passed through to RunConfig."""
+    def test_reads_contract_from_cache(self, tmp_path):
+        """Contract is read from pipeline config cache."""
         mock_result = MagicMock()
         mock_result.success = True
         mock_result.value = MagicMock()
         mock_result.value.phases_completed = 17
 
-        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
-            tmp_path = f.name
-
-        try:
-            with patch("dataraum.pipeline.runner.run", return_value=mock_result) as mock_run:
-                _analyze(
-                    output_dir=Path("/tmp/test_output"),
-                    path=tmp_path,
-                    contract="executive_dashboard",
-                )
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
+        with (
+            patch("dataraum.pipeline.runner.run", return_value=mock_result) as mock_run,
+            patch("dataraum.mcp.server._resolve_source_path", return_value=None),
+            patch(
+                "dataraum.mcp.server._get_cached_contract",
+                return_value="executive_dashboard",
+            ),
+        ):
+            _run_pipeline(output_dir=tmp_path)
 
         run_config = mock_run.call_args[0][0]
         assert run_config.contract == "executive_dashboard"
+
+    def test_reads_source_path_from_db(self, tmp_path):
+        """Source path is resolved from the database."""
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.value = MagicMock()
+        mock_result.value.phases_completed = 17
+
+        with (
+            patch("dataraum.pipeline.runner.run", return_value=mock_result) as mock_run,
+            patch(
+                "dataraum.mcp.server._resolve_source_path",
+                return_value="/data/invoices.csv",
+            ),
+            patch("dataraum.mcp.server._get_cached_contract", return_value=None),
+        ):
+            _run_pipeline(output_dir=tmp_path)
+
+        run_config = mock_run.call_args[0][0]
+        assert run_config.source_path == Path("/data/invoices.csv")
 
 
 class TestCreateServer:
@@ -243,9 +231,8 @@ class TestCreateServer:
         """ToolExecution with taskSupport='optional' is a valid configuration."""
         from mcp.types import Tool, ToolExecution
 
-        # Verify the exact configuration used for the analyze tool
         tool = Tool(
-            name="analyze",
+            name="measure",
             description="test",
             inputSchema={"type": "object", "properties": {}},
             execution=ToolExecution(taskSupport="optional"),

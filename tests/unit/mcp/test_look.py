@@ -233,6 +233,34 @@ class TestLookDataset:
         assert rel["type"] == "foreign_key"
         assert rel["confidence"] == 0.95
 
+    def test_includes_unit_source_column(self, session: Session, tmp_path) -> None:
+        """unit_source_column from SemanticAnnotation is included at dataset level."""
+        source_id, table_id, col_ids = _setup_source_and_table(session)
+        amount_id = col_ids[1][0]  # "amount"
+
+        session.add(
+            SemanticAnnotation(
+                column_id=amount_id,
+                semantic_role="measure",
+                unit_source_column="currency",
+            )
+        )
+        session.flush()
+
+        with (
+            _mock_manager(session),
+            patch(
+                "dataraum.mcp.server._get_pipeline_source",
+                return_value=session.get(Source, source_id),
+            ),
+        ):
+            from dataraum.mcp.server import _look
+
+            result = _look(tmp_path)
+
+        amount_col = next(c for c in result["tables"][0]["columns"] if c["name"] == "amount")
+        assert amount_col["unit_source_column"] == "currency"
+
     def test_no_entropy_in_response(self, session: Session, tmp_path) -> None:
         """look never returns entropy scores or readiness."""
         source_id, table_id, col_ids = _setup_source_and_table(session)
@@ -295,6 +323,82 @@ class TestLookTable:
         assert amount_col["stats"]["null_count"] == 5
         assert "numeric" in amount_col["stats"]
         assert amount_col["stats"]["numeric"]["mean"] == 250.5
+
+    def test_includes_nullable_from_profile(self, session: Session, tmp_path) -> None:
+        """nullable derived from StatisticalProfile.null_count > 0."""
+        source_id, table_id, col_ids = _setup_source_and_table(session)
+        amount_id = col_ids[1][0]
+        region_id = col_ids[2][0]
+
+        # amount has nulls
+        session.add(
+            StatisticalProfile(
+                column_id=amount_id,
+                layer="typed",
+                total_count=100,
+                null_count=5,
+                distinct_count=80,
+                cardinality_ratio=0.8,
+                profile_data={},
+            )
+        )
+        # region has no nulls
+        session.add(
+            StatisticalProfile(
+                column_id=region_id,
+                layer="typed",
+                total_count=100,
+                null_count=0,
+                distinct_count=3,
+                cardinality_ratio=0.03,
+                profile_data={},
+            )
+        )
+        session.flush()
+
+        with (
+            _mock_manager(session),
+            patch(
+                "dataraum.mcp.server._get_pipeline_source",
+                return_value=session.get(Source, source_id),
+            ),
+        ):
+            from dataraum.mcp.server import _look
+
+            result = _look(tmp_path, target="orders")
+
+        amount_col = next(c for c in result["columns"] if c["name"] == "amount")
+        region_col = next(c for c in result["columns"] if c["name"] == "region")
+        assert amount_col["nullable"] is True
+        assert region_col["nullable"] is False
+
+    def test_includes_unit_source_column(self, session: Session, tmp_path) -> None:
+        """unit_source_column included at table level."""
+        source_id, table_id, col_ids = _setup_source_and_table(session)
+        amount_id = col_ids[1][0]
+
+        session.add(
+            SemanticAnnotation(
+                column_id=amount_id,
+                semantic_role="measure",
+                unit_source_column="currency",
+            )
+        )
+        session.flush()
+
+        with (
+            _mock_manager(session),
+            patch(
+                "dataraum.mcp.server._get_pipeline_source",
+                return_value=session.get(Source, source_id),
+            ),
+        ):
+            from dataraum.mcp.server import _look
+
+            result = _look(tmp_path, target="orders")
+
+        amount_col = next(c for c in result["columns"] if c["name"] == "amount")
+        assert amount_col["unit_source_column"] == "currency"
 
 
 class TestLookColumn:

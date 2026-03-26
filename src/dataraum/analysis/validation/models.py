@@ -74,8 +74,9 @@ class ValidationSQLOutput(BaseModel):
     sql: str | None = Field(
         description="The DuckDB SQL query to execute. Null if validation cannot be performed."
     )
-    explanation: str = Field(
-        description="Brief explanation of what this query validates and which tables/columns are used."
+    explanation: str | None = Field(
+        default=None,
+        description="Brief explanation of what this query validates and which tables/columns are used.",
     )
     columns_used: list[str] = Field(
         default_factory=list,

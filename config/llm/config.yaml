@@ -66,6 +66,10 @@ features:
     model_tier: fast
     max_repair_attempts: 2
 
+  vertical_creation:
+    enabled: true
+    model_tier: balanced
+
 # Cost controls
 limits:
   max_output_tokens_per_request: 16000

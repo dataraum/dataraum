@@ -1,0 +1,88 @@
+# Vertical Creation Prompt
+#
+# Generates an ontology definition for a new vertical from a target taxonomy
+# (e.g. DATEV accounts) and source column names.
+# One concept is created per taxonomy entry, with indicators derived from source columns.
+
+name: vertical_creation
+version: "1.0.0"
+description: Generate a domain ontology from a target taxonomy and source column names
+
+temperature: 0.0
+
+system_prompt: |
+  You are a domain expert creating ontology definitions for data transformation pipelines.
+  Your task is to define semantic concepts that map source data columns to a target taxonomy.
+
+  <guidelines>
+  - Each target taxonomy entry becomes exactly one ontology concept
+  - concept name: snake_case identifier for the entry
+    (e.g. "Erlöse 19% USt" → datev_revenue_standard, "Gift Card" → gift_card_liability)
+  - indicators: source column name fragments (substrings) that signal this concept applies
+    * Use actual fragments from the source column names provided
+    * Prefer short, unambiguous fragments (e.g. "total" not "total_price_including_taxes")
+    * A column name containing any indicator will be considered a candidate for this concept
+  - exclude_patterns: fragments that disqualify a column from matching this concept
+  - temporal_behavior:
+    * "additive" — flow values that accumulate over time (revenue, expense, fees)
+    * "point_in_time" — balance/stock values valid at a single moment (liabilities, receivables)
+  - typical_role:
+    * "measure" — numeric amounts to aggregate
+    * "dimension" — categorical classifier for grouping/filtering
+    * "timestamp" — date or datetime column
+  - Be semantically precise:
+    * A gift card sold creates a LIABILITY (point_in_time), not revenue (additive)
+    * A reverse charge sale has 0% VAT and different booking logic than domestic revenue
+    * Shipping fees are their own revenue category, not bundled with product revenue
+  - unit_from_concept: set to "currency" for monetary measures
+  - is_unit_dimension: true only for concepts that define the unit for other measures
+    (e.g. a currency code column)
+  </guidelines>
+
+  Use the create_ontology tool to provide your output.
+
+user_prompt: |
+  Create a vertical ontology for this domain:
+
+  <domain>
+  Name: {vertical_name}
+  Description: {domain_description}
+  </domain>
+
+  <source_columns>
+  These are the actual column names from the source data.
+  Extract meaningful fragments from these names to use as indicators.
+  {source_columns}
+  </source_columns>
+
+  <target_taxonomy>
+  Each entry below must become exactly one ontology concept.
+  Use the entry's name/type to determine temporal_behavior and typical_role.
+  {target_taxonomy_json}
+  </target_taxonomy>
+
+  {base_concepts_section}
+
+  Use the create_ontology tool to provide the complete ontology definition.
+
+inputs:
+  vertical_name:
+    description: Name of the new vertical (e.g. 'shopify_datev')
+    required: true
+
+  domain_description:
+    description: Human description of the domain and transformation goal
+    required: true
+
+  source_columns:
+    description: Source data column names, formatted as a bulleted list
+    required: true
+
+  target_taxonomy_json:
+    description: JSON array of target taxonomy entries (code, name, type, description)
+    required: true
+
+  base_concepts_section:
+    description: Optional XML block with concepts from a base vertical to extend
+    required: false
+    default: ""

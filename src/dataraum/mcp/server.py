@@ -422,6 +422,99 @@ def create_server(output_dir: Path | None = None) -> Server:
                     },
                 },
             ),
+            # --- Ontology / vertical management tools ---
+            Tool(
+                name="get_ontology",
+                description=(
+                    "Inspect a vertical's ontology — concepts, indicators, and temporal behaviors. "
+                    "Use before analyze to understand what business concepts the pipeline will map "
+                    "columns to. Use after analyze to verify which columns were matched. "
+                    "Omit vertical to inspect the currently active vertical."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "vertical": {
+                            "type": "string",
+                            "description": "Vertical to inspect. Omit to use the currently active vertical.",
+                        },
+                        "concept": {
+                            "type": "string",
+                            "description": "Filter to a specific concept by name (e.g. 'revenue').",
+                        },
+                        "list_verticals": {
+                            "type": "boolean",
+                            "description": "If true, return only the list of available vertical names.",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="set_vertical",
+                description=(
+                    "Set the active vertical for the next analyze run. "
+                    "The vertical determines the ontology concepts used for semantic annotation, "
+                    "the validation rules, and the metric graphs. "
+                    "Use get_ontology to inspect a vertical before activating it, "
+                    "or create_vertical to generate a new one."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "required": ["vertical"],
+                    "properties": {
+                        "vertical": {
+                            "type": "string",
+                            "description": "Vertical name to activate (must exist in config/verticals/).",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="create_vertical",
+                description=(
+                    "Create a new vertical ontology using AI. "
+                    "Provide a domain description and target taxonomy (e.g. DATEV accounts) — "
+                    "the system generates ontology concepts that map source columns to target "
+                    "classification entries. One concept is created per taxonomy entry. "
+                    "Use get_ontology to review the result, then set_vertical to activate it."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "required": ["name", "description"],
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Vertical name (e.g. 'shopify_datev'). Creates config/verticals/<name>/.",
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Domain description — what the data represents and what the target taxonomy is.",
+                        },
+                        "source_columns": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Column names from the source data. Used to generate concept indicators.",
+                        },
+                        "target_taxonomy": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "code": {"type": "string"},
+                                    "name": {"type": "string"},
+                                    "type": {"type": "string"},
+                                    "description": {"type": "string"},
+                                },
+                            },
+                            "description": "Target classification entries. Each becomes one ontology concept.",
+                        },
+                        "base_vertical": {
+                            "type": "string",
+                            "description": "Inherit concepts from this existing vertical and extend.",
+                        },
+                    },
+                },
+            ),
             # --- Continue pipeline tool ---
             Tool(
                 name="continue_pipeline",
@@ -779,6 +872,16 @@ def create_server(output_dir: Path | None = None) -> Server:
                 )
             else:
                 result = _apply_fix(output_dir, arguments["fixes"], fix_source_path)
+        elif name == "get_ontology":
+            result = _get_ontology(
+                vertical=arguments.get("vertical"),
+                concept=arguments.get("concept"),
+                list_verticals=bool(arguments.get("list_verticals", False)),
+            )
+        elif name == "set_vertical":
+            result = _set_vertical(arguments["vertical"])
+        elif name == "create_vertical":
+            result = _create_vertical(arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
 
@@ -2947,6 +3050,189 @@ def main() -> None:
     import asyncio
 
     asyncio.run(run_server())
+
+
+# ---------------------------------------------------------------------------
+# Ontology / vertical management helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_ontology(
+    vertical: str | None,
+    concept: str | None,
+    list_verticals: bool,
+) -> dict[str, Any]:
+    """Inspect a vertical's ontology definition."""
+    import yaml
+
+    from dataraum.analysis.semantic.ontology import OntologyLoader
+    from dataraum.core.config import get_config_dir, get_config_file
+
+    verticals_dir = get_config_dir("verticals")
+    loader = OntologyLoader(verticals_dir)
+
+    if list_verticals:
+        return {"verticals": sorted(loader.list_verticals())}
+
+    # Resolve active vertical from phase config when not specified
+    if not vertical:
+        try:
+            phase_cfg = get_config_file("phases/semantic.yaml")
+            with open(phase_cfg) as f:
+                vertical = (yaml.safe_load(f) or {}).get("vertical", "finance")
+        except Exception:
+            vertical = "finance"
+
+    ontology = loader.load(vertical)
+    if ontology is None:
+        return {
+            "error": f"Vertical '{vertical}' not found.",
+            "available": sorted(loader.list_verticals()),
+        }
+
+    concepts = [c.model_dump(exclude_none=True) for c in ontology.concepts]
+    if concept:
+        concepts = [c for c in concepts if c["name"] == concept]
+        if not concepts:
+            return {
+                "error": f"Concept '{concept}' not found in vertical '{vertical}'.",
+                "available_concepts": [
+                    c["name"] for c in [c.model_dump() for c in ontology.concepts]
+                ],
+            }
+
+    return {
+        "vertical": ontology.name,
+        "version": ontology.version,
+        "description": ontology.description,
+        "concept_count": len(ontology.concepts),
+        "concepts": concepts,
+    }
+
+
+def _set_vertical(vertical: str) -> dict[str, Any]:
+    """Switch the active vertical in all phase config files."""
+    import yaml
+
+    from dataraum.analysis.semantic.ontology import OntologyLoader
+    from dataraum.core.config import get_config_dir, get_config_file
+
+    # Validate existence before touching any files
+    loader = OntologyLoader(get_config_dir("verticals"))
+    if loader.load(vertical) is None:
+        return {
+            "error": f"Vertical '{vertical}' not found.",
+            "available": sorted(loader.list_verticals()),
+        }
+
+    phase_files = [
+        "phases/semantic.yaml",
+        "phases/validation.yaml",
+        "phases/graph_execution.yaml",
+        "phases/business_cycles.yaml",
+    ]
+    updated = []
+    for phase in phase_files:
+        try:
+            path = get_config_file(phase)
+        except FileNotFoundError:
+            continue
+        if not path.exists():
+            continue
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+        if "vertical" not in data:
+            continue
+        data["vertical"] = vertical
+        with open(path, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+        updated.append(phase)
+
+    return {
+        "vertical": vertical,
+        "updated_phase_configs": updated,
+        "next_step": "Run analyze to process data with this vertical's ontology.",
+    }
+
+
+def _create_vertical(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Generate a new vertical ontology via LLM and write it to disk."""
+    import yaml
+
+    from dataraum.analysis.semantic.ontology import OntologyLoader
+    from dataraum.analysis.semantic.vertical_agent import VerticalAgent
+    from dataraum.core.config import get_config_dir
+    from dataraum.llm.config import load_llm_config
+    from dataraum.llm.prompts import PromptRenderer
+    from dataraum.llm.providers import create_provider
+
+    name = arguments["name"]
+    verticals_dir = get_config_dir("verticals")
+    target_dir = verticals_dir / name
+
+    if target_dir.exists():
+        return {
+            "error": f"Vertical '{name}' already exists. Use get_ontology to inspect it.",
+            "hint": f"Call get_ontology(vertical='{name}') to see its current definition.",
+        }
+
+    try:
+        llm_config = load_llm_config()
+        provider_cfg = llm_config.providers[llm_config.active_provider]
+        provider = create_provider(llm_config.active_provider, provider_cfg.model_dump())
+        renderer = PromptRenderer()
+        agent = VerticalAgent(
+            config=llm_config,
+            provider=provider,
+            prompt_renderer=renderer,
+            verticals_dir=verticals_dir,
+        )
+    except Exception as e:
+        return {"error": f"Failed to initialise LLM agent: {e}"}
+
+    result = agent.generate(
+        vertical_name=name,
+        domain_description=arguments["description"],
+        source_columns=arguments.get("source_columns") or [],
+        target_taxonomy=arguments.get("target_taxonomy") or [],
+        base_vertical=arguments.get("base_vertical"),
+    )
+
+    if not result.success:
+        return {"error": f"Ontology generation failed: {result.error}"}
+
+    ontology = result.unwrap()
+
+    try:
+        target_dir.mkdir(parents=True)
+        (target_dir / "validations").mkdir()
+        (target_dir / "metrics").mkdir()
+        (target_dir / "filters").mkdir()
+
+        ontology_data = ontology.model_dump(exclude_none=True)
+        with open(target_dir / "ontology.yaml", "w") as f:
+            yaml.dump(ontology_data, f, default_flow_style=False, allow_unicode=True)
+
+        with open(target_dir / "cycles.yaml", "w") as f:
+            yaml.dump({"cycles": []}, f)
+    except Exception as e:
+        return {"error": f"Failed to write vertical to disk: {e}"}
+
+    # Confirm readable after write
+    loader = OntologyLoader(verticals_dir)
+    loader._cache.clear()  # bust cache so the new file is picked up
+
+    return {
+        "vertical": name,
+        "concepts_generated": len(ontology.concepts),
+        "concept_names": [c.name for c in ontology.concepts],
+        "path": str(target_dir / "ontology.yaml"),
+        "next_steps": [
+            f"Inspect with get_ontology(vertical='{name}')",
+            f"Activate with set_vertical(vertical='{name}')",
+            "Then run analyze",
+        ],
+    }
 
 
 if __name__ == "__main__":

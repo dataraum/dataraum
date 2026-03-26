@@ -515,3 +515,48 @@ class TestLookErrors:
             assert column.get("name") == "amount"
             assert column.get("table") == "orders"
             assert "tables" not in column
+
+
+class TestLookShortNames:
+    """Short table names resolve via suffix match (e.g. 'orders' → 'zone1__orders')."""
+
+    def test_short_name_table_level(self, session: Session) -> None:
+        source_id, table_id, col_ids = _setup_source_and_table(session, table_name="zone1__orders")
+
+        with patch(
+            "dataraum.mcp.server._get_pipeline_source",
+            return_value=session.get(Source, source_id),
+        ):
+            from dataraum.mcp.server import _look
+
+            result = _look(session, target="orders")
+
+        assert result.get("name") == "zone1__orders"
+        assert "columns" in result
+
+    def test_short_name_column_level(self, session: Session) -> None:
+        source_id, table_id, col_ids = _setup_source_and_table(session, table_name="zone1__orders")
+
+        with patch(
+            "dataraum.mcp.server._get_pipeline_source",
+            return_value=session.get(Source, source_id),
+        ):
+            from dataraum.mcp.server import _look
+
+            result = _look(session, target="orders.amount")
+
+        assert result.get("name") == "amount"
+        assert result.get("table") == "zone1__orders"
+
+    def test_full_name_still_works(self, session: Session) -> None:
+        source_id, table_id, col_ids = _setup_source_and_table(session, table_name="zone1__orders")
+
+        with patch(
+            "dataraum.mcp.server._get_pipeline_source",
+            return_value=session.get(Source, source_id),
+        ):
+            from dataraum.mcp.server import _look
+
+            result = _look(session, target="zone1__orders")
+
+        assert result.get("name") == "zone1__orders"

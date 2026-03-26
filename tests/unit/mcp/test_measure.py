@@ -315,3 +315,146 @@ class TestMeasureTargetFilter:
         # Only amount column points
         for p in result["points"]:
             assert p["target"] == "column:orders.amount"
+
+    def test_short_table_name_resolves(self, session: Session) -> None:
+        """Target='orders' resolves 'zone1__orders' via suffix match."""
+        source_id, table_id, col_ids = _setup_source_and_table(session, table_name="zone1__orders")
+
+        measurement = MeasurementResult(
+            scores={"semantic.naming": 0.5},
+            column_details={
+                "semantic.naming": {
+                    "column:zone1__orders.amount": 0.8,
+                    "column:zone1__orders.region": 0.2,
+                },
+            },
+            table_details={
+                "computational.reconciliation": {"table:zone1__orders": 0.3},
+            },
+        )
+
+        with (
+            patch(
+                "dataraum.mcp.server._get_pipeline_source",
+                return_value=session.get(Source, source_id),
+            ),
+            patch(
+                "dataraum.entropy.measurement.measure_entropy",
+                return_value=measurement,
+            ),
+        ):
+            from dataraum.mcp.server import _measure
+
+            result = _measure(session, target="orders")
+
+        assert len(result["points"]) == 3
+        for p in result["points"]:
+            assert "zone1__orders" in p["target"]
+
+    def test_error_for_nonexistent_target(self, session: Session) -> None:
+        """Nonexistent target returns error, not empty results."""
+        source_id, table_id, col_ids = _setup_source_and_table(session)
+
+        with (
+            patch(
+                "dataraum.mcp.server._get_pipeline_source",
+                return_value=session.get(Source, source_id),
+            ),
+            patch(
+                "dataraum.entropy.measurement.measure_entropy",
+                return_value=_measurement_with_scores(),
+            ),
+        ):
+            from dataraum.mcp.server import _measure
+
+            result = _measure(session, target="nonexistent")
+
+        assert "error" in result
+        assert "nonexistent" in result["error"]
+
+    def test_error_for_nonexistent_column(self, session: Session) -> None:
+        """Nonexistent column target returns error."""
+        source_id, table_id, col_ids = _setup_source_and_table(session)
+
+        with (
+            patch(
+                "dataraum.mcp.server._get_pipeline_source",
+                return_value=session.get(Source, source_id),
+            ),
+            patch(
+                "dataraum.entropy.measurement.measure_entropy",
+                return_value=_measurement_with_scores(),
+            ),
+        ):
+            from dataraum.mcp.server import _measure
+
+            result = _measure(session, target="orders.nonexistent")
+
+        assert "error" in result
+        assert "nonexistent" in result["error"]
+
+    def test_scores_filtered_by_target(self, session: Session) -> None:
+        """Scores recomputed from filtered points, not dataset-wide."""
+        source_id, table_id, col_ids = _setup_source_and_table(session)
+
+        with (
+            patch(
+                "dataraum.mcp.server._get_pipeline_source",
+                return_value=session.get(Source, source_id),
+            ),
+            patch(
+                "dataraum.entropy.measurement.measure_entropy",
+                return_value=_measurement_with_scores(),
+            ),
+        ):
+            from dataraum.mcp.server import _measure
+
+            all_result = _measure(session)
+            filtered_result = _measure(session, target="orders.amount")
+
+        # Filtered scores should differ from dataset-wide scores
+        # amount has naming_clarity=0.8 and type_fidelity=0.05
+        assert filtered_result["scores"]["semantic"] == 0.8
+        assert filtered_result["scores"]["structural"] == 0.05
+        # Dataset-wide averages are different
+        assert all_result["scores"]["semantic"] == 0.4
+
+    def test_readiness_populated_with_target(self, session: Session) -> None:
+        """Readiness keys use 'column:' prefix — filter works with target."""
+        source_id, table_id, col_ids = _setup_source_and_table(session)
+
+        mock_network = MagicMock()
+        amount_result = MagicMock()
+        amount_result.readiness = "investigate"
+        region_result = MagicMock()
+        region_result.readiness = "ready"
+        mock_network.columns = {
+            "column:orders.amount": amount_result,
+            "column:orders.region": region_result,
+        }
+
+        with (
+            patch(
+                "dataraum.mcp.server._get_pipeline_source",
+                return_value=session.get(Source, source_id),
+            ),
+            patch(
+                "dataraum.entropy.measurement.measure_entropy",
+                return_value=_measurement_with_scores(),
+            ),
+            patch(
+                "dataraum.entropy.views.network_context.build_for_network",
+                return_value=mock_network,
+            ),
+        ):
+            from dataraum.mcp.server import _measure
+
+            # Table-level target
+            table_result = _measure(session, target="orders")
+            assert len(table_result["readiness"]) == 2
+            assert table_result["readiness"]["column:orders.amount"] == "investigate"
+
+            # Column-level target
+            col_result = _measure(session, target="orders.amount")
+            assert len(col_result["readiness"]) == 1
+            assert col_result["readiness"]["column:orders.amount"] == "investigate"

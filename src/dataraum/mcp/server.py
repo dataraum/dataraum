@@ -752,6 +752,22 @@ def _begin_session(
     }
 
 
+def _resolve_table_name(tables: list[TableModel], name: str) -> TableModel | None:
+    """Resolve a table name, supporting short names without source prefix.
+
+    Tries exact match first, then suffix match (e.g. "invoices" → "zone1__invoices").
+    Returns None if no match or ambiguous (multiple suffix matches).
+    """
+    exact = next((t for t in tables if t.table_name == name), None)
+    if exact:
+        return exact
+    suffix = f"__{name}"
+    matches = [t for t in tables if t.table_name.endswith(suffix)]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def _aggregate_layer_scores(scores: dict[str, float]) -> dict[str, float]:
     """Aggregate dimension scores by top-level layer (mean per layer)."""
     layer_totals: dict[str, list[float]] = {}
@@ -809,43 +825,41 @@ def _look(
         if len(parts) == 2:
             column_name = parts[1]
 
+    # Resolve short table names (e.g. "invoices" → "zone1__invoices")
+    resolved_table: TableModel | None = None
+    if table_name:
+        resolved_table = _resolve_table_name(tables, table_name)
+        if not resolved_table:
+            available = [t.table_name for t in tables]
+            return {"error": f"Table '{table_name}' not found. Available: {available}"}
+        table_name = resolved_table.table_name
+
     # Sample mode: return actual rows
     if sample is not None:
         if not table_name:
             return {
                 "error": "sample requires a target table (e.g. look(target='orders', sample=10))"
             }
-        # Validate table exists
-        tbl = next((t for t in tables if t.table_name == table_name), None)
-        if not tbl:
-            available = [t.table_name for t in tables]
-            return {"error": f"Table '{table_name}' not found. Available: {available}"}
         return _look_sample(cursor, table_name, min(sample, 1000))
 
     # Column level
     if column_name:
-        tbl = next((t for t in tables if t.table_name == table_name), None)
-        if not tbl:
-            available = [t.table_name for t in tables]
-            return {"error": f"Table '{table_name}' not found. Available: {available}"}
+        assert resolved_table is not None
         col = session.execute(
             select(Column).where(
-                Column.table_id == tbl.table_id,
+                Column.table_id == resolved_table.table_id,
                 Column.column_name == column_name,
             )
         ).scalar_one_or_none()
         if not col:
             return {"error": f"Column '{column_name}' not found in table '{table_name}'."}
-        assert table_name is not None  # Guaranteed by column_name being set
+        assert table_name is not None  # guaranteed by column_name being set
         return _look_column(session, col, table_name)
 
     # Table level
     if table_name:
-        tbl = next((t for t in tables if t.table_name == table_name), None)
-        if not tbl:
-            available = [t.table_name for t in tables]
-            return {"error": f"Table '{table_name}' not found. Available: {available}"}
-        return _look_table(session, tbl)
+        assert resolved_table is not None
+        return _look_table(session, resolved_table)
 
     # Dataset level
     return _look_dataset(session, tables)
@@ -1257,7 +1271,7 @@ def _measure(
     from dataraum.entropy.detectors.base import get_default_registry
     from dataraum.entropy.measurement import measure_entropy
     from dataraum.pipeline.db_models import PhaseLog, PipelineRun
-    from dataraum.storage import Table
+    from dataraum.storage import Column, Table
 
     source = _get_pipeline_source(session)
     if not source:
@@ -1359,20 +1373,50 @@ def _measure(
 
     # Filter by target if provided
     if target:
-        target_prefix = f"column:{target}" if "." in target else f"table:{target}"
-        # For table-level filter, also include its columns
-        if "." not in target:
-            table_prefix = f"column:{target}."
+        parts = target.split(".", 1)
+        raw_table = parts[0]
+        col_name = parts[1] if len(parts) == 2 else None
+
+        resolved = _resolve_table_name(tables, raw_table)
+        if not resolved:
+            available = [t.table_name for t in tables]
+            return {"error": f"Table '{raw_table}' not found. Available: {available}"}
+
+        full_table = resolved.table_name
+
+        if col_name:
+            col_exists = session.execute(
+                select(Column).where(
+                    Column.table_id == resolved.table_id,
+                    Column.column_name == col_name,
+                )
+            ).scalar_one_or_none()
+            if not col_exists:
+                return {"error": f"Column '{col_name}' not found in table '{full_table}'."}
+            col_target = f"column:{full_table}.{col_name}"
+            result["points"] = [p for p in points if p["target"] == col_target]
+            result["readiness"] = {k: v for k, v in readiness.items() if k == col_target}
+        else:
+            table_target = f"table:{full_table}"
+            col_prefix = f"column:{full_table}."
             result["points"] = [
                 p
                 for p in points
-                if p["target"].startswith(target_prefix) or p["target"].startswith(table_prefix)
+                if p["target"] == table_target or p["target"].startswith(col_prefix)
             ]
-            result["readiness"] = {k: v for k, v in readiness.items() if k.startswith(f"{target}.")}
+            result["readiness"] = {k: v for k, v in readiness.items() if k.startswith(col_prefix)}
+
+        # Recompute scores from filtered points
+        if result["points"]:
+            layer_totals: dict[str, list[float]] = {}
+            for p in result["points"]:
+                layer = p["dimension"].split(".")[0]
+                layer_totals.setdefault(layer, []).append(p["score"])
+            result["scores"] = {
+                layer: round(sum(vals) / len(vals), 4) for layer, vals in layer_totals.items()
+            }
         else:
-            result["points"] = [p for p in points if p["target"] == target_prefix]
-            col_key = target  # "table.column"
-            result["readiness"] = {k: v for k, v in readiness.items() if k == col_key}
+            result["scores"] = {}
 
     return result
 

@@ -75,8 +75,8 @@ Every tool works from column to dataset. No maximum resolution.
 
 | Tool | Min | Default | Notes |
 |------|-----|---------|-------|
-| look | column | dataset | `look()` = full schema. `look(target="table")` = columns. `look(target="table.col")` = profile. `look(target="table", sample=N)` = rows. |
-| measure | column | table | Pipeline runs broadly; target filters output. Returns partial results while running. |
+| look | column | dataset | `look()` = full schema. `look(target="table")` = columns. `look(target="table.col")` = profile. `look(target="table", sample=N)` = rows. Short names resolve via suffix match. |
+| measure | column | table | Pipeline runs broadly; target filters output. Short names resolve via suffix match (`"invoices"` → `"zone1__invoices"`). Returns partial results while running. |
 | why | column+dimension | table+dimension | Agent-powered. Can operate at dataset+dimension level too. |
 | hypothesize | column | column | Dispatches on input shape: concept, teach_type, sql, or dimension. See [hypothesize design](https://linear.app/dataraum/document/hypothesize-fix-design-document-08990bae7bff). |
 | query | question-scoped | — | LLM agent: NL → SQL → execute → format. Contract confidence from server state. |
@@ -225,7 +225,7 @@ between calls — `look`, `why` (on completed dimensions), `run_sql` all work.
 | Tool | Returns | Does NOT return |
 |------|---------|-----------------|
 | look | Schema, types, stats (nullable, unit_source_column), semantic enrichment (roles, business names), relationships, samples | Entropy scores, readiness |
-| measure | Measurement points (target+dimension+score), BBN readiness per column, pipeline progress | Evidence detail, resolution options, contract evaluation |
+| measure | Measurement points (target+dimension+score), BBN readiness (column, table, dataset), pipeline progress. Scores/readiness filtered when target specified. | Evidence detail, resolution options, contract evaluation |
 | why | LLM-synthesized analysis: evidence narrative, resolution options as teach types or hypothesize suggestions, **contract violation context** | Full column profiles |
 | hypothesize | Intent deltas, readiness change, confidence, detector evidence. For concepts: properties, related metrics, related columns, snippets | Does not suggest what to do — agent decides |
 | query | Answer (summary+data+sql), confidence (against active contract). Phase 5 adds: decisions_made, open_questions, teachable_decisions | Entropy scores |

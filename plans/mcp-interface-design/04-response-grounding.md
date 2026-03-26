@@ -89,6 +89,13 @@ All column-level fields above, plus full `StatisticalProfile.profile_data`:
 | `scores.value` | Aggregation | Mean where `layer='value'` |
 | `scores.computational` | Aggregation | Mean where `layer='computational'` |
 | `readiness.{column}` | BBN inference | `ColumnNetworkResult.readiness` from `build_for_network()` |
+| `readiness.{table}` | Aggregation | Worst-of column readiness per table (blocked > investigate > ready) |
+| `readiness.dataset` | BBN inference | `EntropyForNetwork.overall_readiness` from `build_for_network()` |
+
+**Target filtering:** When `target` is specified, points, readiness, and scores are filtered
+to the target scope. Short table names resolve via suffix match (`"invoices"` → `"zone1__invoices"`).
+Nonexistent targets return an error with available table names. Scores are recomputed from
+filtered points (not dataset-wide averages).
 
 **Source detail:** `measure_entropy()` in `entropy/measurement.py` reads `EntropyObjectRecord` rows.
 BBN readiness comes from `build_for_network()` in `entropy/views/network_context.py` which runs
@@ -504,11 +511,11 @@ Tool description lists all contracts to nudge the agent to ask the user.
 | **query decisions_made** | Restructure `QueryResult.assumptions` into user-facing format | `QueryAssumption` model has `basis`, `confidence`. Needs formatting layer. |
 | **query teachable_decisions** | LLM identifies generalizable decisions in query output | Extend `QueryAnalysisOutput` Pydantic schema with new field. |
 | **query open_questions** | Structure `validation_notes` + ambiguity detection | `QueryAnalysisOutput.validation_notes` exists. Needs structuring. |
-| **measure polling** | Return partial results while pipeline runs | `PipelineEvent` callbacks exist. Need async bridge from pipeline thread to MCP response. |
-| **begin_session cached_scores** | Aggregate entropy by table, return cached | `measure_entropy()` does this. Need table-level grouping. |
-| **look semantic enrichment** | Include SemanticAnnotation fields in look response | Models exist. Need assembly in look handler. |
+| ~~**measure polling**~~ | ~~Return partial results while pipeline runs~~ | **DONE** (DAT-175). `_measure` checks `PipelineRun.status`, returns `status: "running"` with `phases_completed`. Pipeline runs in background via `asyncio.to_thread`. |
+| ~~**begin_session cached_scores**~~ | ~~Aggregate entropy by table, return cached~~ | **Dropped by design** (DAT-194 Area 3). Agent calls `measure` for this. `begin_session` returns `has_pipeline_data` flag instead. |
+| ~~**look semantic enrichment**~~ | ~~Include SemanticAnnotation fields in look response~~ | **DONE** (DAT-175). `_look_dataset` and `_look_table` include semantic_role, business_name, business_concept, entity_type, temporal_behavior, unit_source_column. |
 | **Ontology typical_relationships** | Cross-concept relationship definitions | Not in current `ontology.yaml`. Needs schema extension. |
-| **Pipeline trigger from measure** | Start pipeline if no records exist | Pipeline orchestrator exists. Needs conditional trigger in measure. |
+| ~~**Pipeline trigger from measure**~~ | ~~Start pipeline if no records exist~~ | **DONE** (DAT-175). `_measure` returns `no_data` hint, `call_tool` triggers `_run_pipeline` via `asyncio.to_thread`, returns running status with progress. |
 
 ### Ontology extension needed for hypothesize
 

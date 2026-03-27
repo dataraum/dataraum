@@ -2,8 +2,21 @@
 
 Measures uncertainty from outlier values.
 High outlier rate indicates data quality issues that affect aggregations.
+
+Distribution-aware: adapts to the data shape using semantic and statistical
+context from the pipeline.
+
+- **Zero-inflated columns** (e.g. debit/credit mutual exclusivity): IQR is
+  compressed by the zero mass, producing false outlier ratios. Detected via
+  zero_ratio > 30%. The detector excludes zeros before computing outlier ratio.
+- **Right-skewed distributions** (e.g. invoice amounts): IQR on linear values
+  flags the natural long tail as outliers. Detected via skewness > 1.5. The
+  detector uses log-IQR instead (outlier detection in log-space).
+- **Dimensionless columns** (rates, ratios): skipped entirely — value ranges
+  are structurally determined, not quality signals.
 """
 
+import math
 from typing import Any
 
 from dataraum.entropy.config import get_entropy_config
@@ -11,15 +24,22 @@ from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
 from dataraum.entropy.models import EntropyObject, ResolutionOption
 
+# Thresholds for distribution shape detection
+_ZERO_INFLATED_THRESHOLD = 0.30  # > 30% zeros → exclude zeros before IQR
+_SKEWNESS_THRESHOLD = 1.5  # skewness > 1.5 → use log-IQR
+
 
 class OutlierRateDetector(EntropyDetector):
     """Detector for outlier-based uncertainty.
 
-    Uses IQR outlier detection from statistical quality analysis.
-    High outlier rates suggest data quality issues or extreme values
-    that can skew aggregations.
+    Uses IQR outlier detection from statistical quality analysis, adapted
+    to the distribution shape:
 
-    Source: statistics/quality.iqr_outlier_ratio
+    - Zero-inflated: excludes structural zeros before computing IQR
+    - Right-skewed (log-normal): uses log-IQR instead of linear IQR
+    - Normal/symmetric: uses standard IQR
+
+    Source: statistics/quality.iqr_outlier_ratio (linear) or recomputed
     Formula: piecewise-linear mapping aligned with impact thresholds.
     0% → 0.0, 1% → 0.15, 5% → 0.4, 10% → 0.65, 20%+ → 1.0
 
@@ -145,6 +165,107 @@ class OutlierRateDetector(EntropyDetector):
         # robust for non-normal data (Iglewicz & Hoaglin 1993, Leys et al. 2013).
         outlier_ratio = max(outlier_ratio, zscore_ratio or 0.0)
 
+        # --- Distribution shape adaptation ---
+        # IQR/zscore outlier detection fails on two common financial data shapes:
+        #
+        # 1. Zero-inflated (e.g. debit column where 50% are zero because those
+        #    rows are credit entries): the zero mass compresses IQR, making
+        #    normal values look like outliers. Fix: exclude zeros, recompute.
+        #
+        # 2. Right-skewed / log-normal (e.g. invoice amounts ranging 100–50k):
+        #    IQR on linear values flags the natural long tail. Fix: compute
+        #    IQR in log-space where the distribution is approximately normal.
+        #
+        # Both use statistics already computed by the profiler.
+        shape_adjusted = False
+        profile_data = stats.get("profile_data", {})
+        numeric_stats = (
+            profile_data.get("numeric_stats", {}) if isinstance(profile_data, dict) else {}
+        )
+
+        if isinstance(numeric_stats, dict):
+            skewness = numeric_stats.get("skewness")
+            percentiles = numeric_stats.get("percentiles", {})
+            p25 = percentiles.get("p25")
+            p75 = percentiles.get("p75")
+            min_val = numeric_stats.get("min_value")
+            max_val = numeric_stats.get("max_value")
+
+            # Detect zero-inflation: check if >30% of values are at zero
+            top_values = (
+                profile_data.get("top_values", []) if isinstance(profile_data, dict) else []
+            )
+            zero_pct = 0.0
+            for tv in top_values:
+                if isinstance(tv, dict) and tv.get("value") in (0, 0.0):
+                    zero_pct = tv.get("percentage", 0.0) / 100.0
+                    break
+
+            # For log-IQR we need positive Q1 and Q3. Zero-inflated columns
+            # have Q1=0 (and sometimes median=0), so find the first positive
+            # percentile to use as Q1.
+            effective_q1 = p25 if (p25 is not None and p25 > 0) else None
+            p50 = percentiles.get("p50")
+            if effective_q1 is None and p50 is not None and p50 > 0:
+                effective_q1 = p50  # Median is positive — use as Q1 proxy
+            if effective_q1 is None and zero_pct > 0.5:
+                # More than 50% zeros with median at zero — IQR is structurally
+                # unreliable. These are typically mutual exclusivity columns
+                # (debit/credit, where one is always zero) handled by the
+                # dimensional_entropy detector. Skip outlier scoring entirely.
+                return []
+
+            # Determine if the column is right-skewed (log-normal shaped).
+            # Zero-inflated columns are also right-skewed in their non-zero part,
+            # so both cases use the same log-IQR path.
+            is_right_skewed = skewness is not None and skewness > _SKEWNESS_THRESHOLD
+            is_zero_inflated = zero_pct > _ZERO_INFLATED_THRESHOLD
+            needs_log_iqr = (is_right_skewed or is_zero_inflated) and (
+                effective_q1 is not None
+                and effective_q1 > 0
+                and p75 is not None
+                and p75 > 0
+                and p75 > effective_q1
+            )
+
+            if needs_log_iqr:
+                # Log-IQR: compute outlier fences in log-space where the
+                # distribution is approximately normal. This correctly handles
+                # both pure right-skew (invoice amounts) and zero-inflated
+                # columns (debit/credit mutual exclusivity).
+                log_q1 = math.log(effective_q1)
+                log_q3 = math.log(p75)
+                log_iqr = log_q3 - log_q1
+                log_upper = log_q3 + 1.5 * log_iqr
+                log_lower = log_q1 - 1.5 * log_iqr
+
+                upper_threshold = math.exp(log_upper)
+                lower_threshold = math.exp(log_lower)
+
+                # Estimate outlier ratio from percentiles
+                p01 = percentiles.get("p01", min_val or 0)
+                p99 = percentiles.get("p99", max_val)
+
+                # Fraction below lower threshold (only among non-zero values)
+                lower_outliers = 0.0
+                if p01 > 0 and p01 < lower_threshold and effective_q1 > lower_threshold:
+                    lower_outliers = (
+                        0.01 * (lower_threshold - p01) / (effective_q1 - p01)
+                        if effective_q1 > p01
+                        else 0.0
+                    )
+
+                # Fraction above upper threshold
+                upper_outliers = 0.0
+                if p99 is not None and p99 > upper_threshold:
+                    if p99 > p75:
+                        upper_outliers = 0.25 * (p99 - upper_threshold) / (p99 - p75)
+                    else:
+                        upper_outliers = 0.0
+
+                outlier_ratio = max(0.0, min(lower_outliers + upper_outliers, 1.0))
+                shape_adjusted = True
+
         # Calculate entropy using piecewise-linear mapping aligned with impact thresholds
         # 0% → 0.0, impact_minimal → score_at_minimal, impact_moderate → score_at_moderate,
         # impact_significant → score_at_significant, 2×impact_significant → 1.0
@@ -206,6 +327,16 @@ class OutlierRateDetector(EntropyDetector):
             "iqr_lower_fence": lower_fence,
             "iqr_upper_fence": upper_fence,
         }
+        if shape_adjusted:
+            evidence_dict["shape_adjusted"] = True
+            reasons = []
+            if zero_pct > _ZERO_INFLATED_THRESHOLD:
+                reasons.append("zero_inflated")
+                evidence_dict["zero_pct"] = zero_pct
+            if skewness is not None and skewness > _SKEWNESS_THRESHOLD:
+                reasons.append("log_normal")
+                evidence_dict["skewness"] = skewness
+            evidence_dict["adjustment_reason"] = "+".join(reasons) if reasons else "log_iqr"
         if cv_attenuated:
             evidence_dict["cv_attenuated"] = True
             evidence_dict["robust_cv"] = cv  # type: ignore[possibly-undefined]

@@ -75,14 +75,14 @@ Every tool works from column to dataset. No maximum resolution.
 
 | Tool | Min | Default | Notes |
 |------|-----|---------|-------|
-| look | column | dataset | `look()` = full schema. `look(target="table")` = columns. `look(target="table.col")` = profile. `look(target="table", sample=N)` = rows. |
-| measure | column | table | Pipeline runs broadly; target filters output. Returns partial results while running. |
+| look | column | dataset | `look()` = full schema. `look(target="table")` = columns. `look(target="table.col")` = profile. `look(target="table", sample=N)` = rows. Short names resolve via suffix match. |
+| measure | column | table | Pipeline runs broadly; target filters output. Short names resolve via suffix match (`"invoices"` → `"zone1__invoices"`). Returns partial results while running. |
 | why | column+dimension | table+dimension | Agent-powered. Can operate at dataset+dimension level too. |
 | hypothesize | column | column | Dispatches on input shape: concept, teach_type, sql, or dimension. See [hypothesize design](https://linear.app/dataraum/document/hypothesize-fix-design-document-08990bae7bff). |
-| query | question-scoped | — | LLM agent: NL → SQL → execute → format with decisions_made. |
-| run_sql | sql-scoped | — | Just rows. No enrichment. |
+| query | question-scoped | — | LLM agent: NL → SQL → execute → format. Contract confidence from server state. |
+| run_sql | sql-scoped | — | Results + existing metadata (column_quality, snippets). No new computation. |
 | teach | column | column | Typed overlay. Each type has a validation schema. |
-| begin_session | session | — | Declares intent + contract. Returns feasibility. |
+| begin_session | session | — | Declares intent + contract. Returns sources, contract info, orientation. |
 | add_source | one source | — | Source registration. |
 
 ## teach: the unified overlay tool
@@ -224,25 +224,32 @@ between calls — `look`, `why` (on completed dimensions), `run_sql` all work.
 
 | Tool | Returns | Does NOT return |
 |------|---------|-----------------|
-| look | Schema, types, stats, semantic enrichment (roles, business names), relationships, samples | Entropy scores, readiness |
-| measure | Measurement points (target+dimension+score), BBN readiness per column, contract status, pipeline progress | Evidence detail, resolution options |
-| why | LLM-synthesized analysis: evidence narrative, resolution options as teach types or hypothesize suggestions | Full column profiles |
+| look | Schema, types, stats (nullable, unit_source_column), semantic enrichment (roles, business names), relationships, samples | Entropy scores, readiness |
+| measure | Measurement points (target+dimension+score), BBN readiness (column, table, dataset), pipeline progress. Scores/readiness filtered when target specified. | Evidence detail, resolution options, contract evaluation |
+| why | LLM-synthesized analysis: evidence narrative, resolution options as teach types or hypothesize suggestions, **contract violation context** | Full column profiles |
 | hypothesize | Intent deltas, readiness change, confidence, detector evidence. For concepts: properties, related metrics, related columns, snippets | Does not suggest what to do — agent decides |
-| query | Answer (summary+data+sql), decisions_made, open_questions, confidence, teachable_decisions | Entropy scores |
-| run_sql | Columns, rows | Nothing else |
+| query | Answer (summary+data+sql), confidence (against active contract). Phase 5 adds: decisions_made, open_questions, teachable_decisions | Entropy scores |
+| run_sql | Columns, rows, row_count, truncated, steps_executed, column_quality, snippet_summary | Does not compute new analysis — returns results + existing metadata |
 | teach | Status, type, scope, teaching_id, measurement_hint | Full score vector |
-| begin_session | Session ID, cached scores, known issues, feasibility | Full schema |
+| begin_session | Sources, contract info, has_pipeline_data, hint | Session ID (server-side only), cached scores, full schema |
+
+**Contract evaluation placement:** Contracts are a read-time concern, not a pipeline concern.
+`measure` returns raw scores. Contract evaluation happens in `why` (LLM synthesizes which
+scores violate the active contract) and `query` (confidence level). The active contract is
+set at `begin_session` and threaded server-side — the agent never passes it explicitly.
 
 ## Session anchor
 
-`begin_session` returns a `session_id`. This ID is the anchor for everything:
-- All tool calls within the session are logged to the trace (DAT-184)
+Session state is server-side — the agent never sees or passes `session_id`.
+`begin_session` sets the active session in the server closure. All subsequent tool
+calls are automatically recorded in the investigation trace (DAT-184).
+
 - When `deliver` is added later, it seals this session with a provenance chain
 - When `report` is added, it compiles the narrative from this session's trace
 - `teach` records are linked to the session
+- Session teardown (end/deliver) is deferred — currently permanent until process restart
 
 Nothing about the current design prevents adding session lifecycle tools later.
-The session_id threading must be correct from day one.
 
 ## teach absorbs fix
 
@@ -311,3 +318,8 @@ See:
 - [01-scenario-investigation.md](01-scenario-investigation.md) — Investigation flow (look, measure, why, run_sql, teach)
 - [02-scenario-business-question.md](02-scenario-business-question.md) — Business question → investigation bridge (begin_session, query, teach, run_sql)
 - [03-scenario-concept-mapping.md](03-scenario-concept-mapping.md) — Concept mapping with hypothesize (why, hypothesize, run_sql, teach, measure)
+
+## Response grounding
+
+Every response field in the scenarios is grounded in actual data models. See:
+- [04-response-grounding.md](04-response-grounding.md) — Field-by-field mapping to SQLAlchemy models, DuckDB queries, BBN inference, config YAML, and LLM outputs. Includes gap analysis (what exists vs. what needs implementation).

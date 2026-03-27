@@ -126,11 +126,11 @@ agent behavior, not detector scores. Future query calls find this decision and
 auto-apply it.
 
 ```yaml
-status: applied
+status: taught
 type: decision
 target: table:stripe_invoices
-layer: soft
 teaching_id: teach-006
+measurement_hint: "Decision recorded. Future query calls will auto-apply."
 ```
 
 **Agent reads:** Decision persisted.
@@ -238,10 +238,9 @@ CALLS: teach(
 ```
 
 ```yaml
-status: applied
+status: taught
 type: assumption
 target: table:stripe_invoices
-layer: soft
 teaching_id: teach-007
 ```
 
@@ -262,10 +261,9 @@ CALLS: teach(
 ```
 
 ```yaml
-status: applied
+status: taught
 type: assumption
 target: column:stripe_invoices.billing_reason
-layer: soft
 teaching_id: teach-008
 ```
 
@@ -309,11 +307,11 @@ enriched the semantic analysis context.
 | semantic | 0.13 | 0.10 |
 | computational | 0.12 | 0.12 |
 
-| Teaching | Type | Layer |
-|----------|------|-------|
-| teach-006: yearly normalization (decision) | decision | soft |
-| teach-007: yearly normalization (assumption, generalized) | assumption | soft |
-| teach-008: billing_reason MRR filtering rule | assumption | soft |
+| Teaching | Type |
+|----------|------|
+| teach-006: yearly normalization (decision) | decision |
+| teach-007: yearly normalization (assumption, generalized) | assumption |
+| teach-008: billing_reason MRR filtering rule | assumption |
 
 ## Observations
 

@@ -10,7 +10,6 @@ from dataraum.investigation.recorder import (
     begin_session,
     end_session,
     get_session_trace,
-    get_sessions_for_source,
     record_step,
     summarize_result,
 )
@@ -221,30 +220,6 @@ class TestGetSessionTrace:
     def test_invalid_session_raises(self, session: Session) -> None:
         with pytest.raises(ValueError, match="No session"):
             get_session_trace(session, "nonexistent-id")
-
-
-class TestGetSessionsForSource:
-    def test_returns_sessions_newest_first(self, session: Session) -> None:
-        _ensure_source(session)
-        s1 = begin_session(session, "src-1", intent="first")
-        s2 = begin_session(session, "src-1", intent="second")
-
-        sessions = get_sessions_for_source(session, "src-1")
-
-        assert len(sessions) == 2
-        # Newest first
-        assert sessions[0].session_id == s2.session_id
-        assert sessions[1].session_id == s1.session_id
-
-    def test_scoped_to_source(self, session: Session) -> None:
-        _ensure_source(session, "src-1")
-        _ensure_source(session, "src-2")
-        begin_session(session, "src-1", intent="for src-1")
-        begin_session(session, "src-2", intent="for src-2")
-
-        sessions = get_sessions_for_source(session, "src-1")
-        assert len(sessions) == 1
-        assert sessions[0].intent == "for src-1"
 
 
 class TestSummarizeResult:

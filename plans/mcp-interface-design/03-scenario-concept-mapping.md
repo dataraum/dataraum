@@ -387,7 +387,8 @@ Only hypothesize previews these cascading effects before the agent commits.
 hypothesize returns `confidence: must_validate` for concept mappings. This tells the
 agent: "the BBN prediction is directionally correct but you MUST check against data."
 The agent responds by running validation SQL. For high-confidence predictions
-(e.g., `hypothesize(teach_type="unit")`), the agent could skip validation.
+(e.g., `hypothesize(teach_type="concept_property")` for a unit declaration),
+the agent could skip validation.
 
 ### "Teach three, measure once" is more efficient
 

@@ -620,51 +620,46 @@ readiness:
 
 ## Observations
 
-### One tool for everything the agent learns
+### One tool for all knowledge
 
-Every resolution action is a `teach` call. The agent doesn't need to decide between
-fix and teach — there's only teach. The `type` field determines what happens:
-- Hard types (unit, business_name) correct measurement inputs → scores change
-- Soft types (assumption) enrich context → query agent benefits
-- Neutral types (acceptance) record understanding → score unchanged
-- Validation types get promoted to snippet library → reusable
+Every resolution action is `teach` with a type. The agent never decides between
+fix and teach — there's only teach. `concept_property` covers column facts (unit,
+business name). `assumption` covers domain knowledge. `acceptance` records
+understanding. `validation` creates reusable SQL checks.
 
-### why drives the entire investigation
+### "Teach three, measure once"
 
-why doesn't just explain scores — it tells the agent exactly what to do:
-- Which teach type to call with which params
-- Which SQL to run for verification
-- What order to resolve things in
-- What the BBN impact will be
+Steps 4-6: three teach calls. Step 7: one measure call. The agent batches knowledge
+provision and verifies in one shot — more efficient than the old fix-then-measure
+cycle.
 
-The agent follows why's suggestions. This makes why the most critical tool.
+### Detectors verify teachings against data
 
-### The three layers in action
+Step 7: billing_reason drops from 0.22 to 0.06 after teach-002 (assumption). The
+detector re-evaluates with enriched context — the assumption provides information
+the detector uses to reduce ambiguity. But it checks against data: if the assumption
+contradicted the observed values, the score wouldn't improve. This is the Goodhart
+firewall: agents provide knowledge, detectors verify it.
 
-The scenario shows all three layers working:
-- **Hard** (steps 4, 6): correct measurement inputs → scores drop on re-measure
-- **Soft** (steps 5, 10): teach domain knowledge → enriches future interactions
-- **Neutral** (step 9): accept known issue → documented, score unchanged
+### why suggests teach for simple cases, hypothesize for complex ones
 
-### Snippets as validation infrastructure
+Steps 4-6: why suggested teach calls directly — the decisions were simple enough.
+For concept mappings with cascading effects (metric activation, related columns,
+identities), why suggests hypothesize first. See Scenario C.
 
-Step 10 shows the compare/validate emergence pattern:
-verify with run_sql → teach as validation → SQL in snippet library → future reuse.
+### Snippets as compare/validate infrastructure
+
+Step 10: verify with run_sql → teach as validation → SQL in snippet library →
+future reuse. Compare/validate emerge from usage patterns.
 
 ### Open questions
 
-- **Soft-layer assumption affecting scores**: Step 7 shows billing_reason dropping
-  from 0.22 to 0.06 after a soft-layer assumption (teach-002). How? If soft-layer
-  doesn't affect hard-layer scores, this shouldn't happen. Possible: the assumption
-  enables better semantic analysis on re-run, which changes the hard-layer detector
-  output. Need to clarify this mechanism.
-- **teach params validation**: Each type has a validation schema. How does the schema
-  get to the agent? why receives the teach vocabulary, so the agent gets valid params
-  from why's suggestions. But what if the agent constructs a teach call without why?
-  Should teach validate params and return a clear error?
+- **teach params validation**: Each type has a schema. The agent gets valid params
+  from why's suggestions. What if the agent constructs a teach call without why?
+  teach should validate and return clear errors.
 - **Snippet discovery in why**: Could why check the snippet library and suggest
-  existing validation snippets? "A validation for this pattern exists: run it with
-  run_sql(snippet='invoice_plan_match')"
-- **hypothesize usage**: Not needed in this scenario because why gave high-confidence
-  suggestions. When IS hypothesize valuable? Probably: complex mappings where the
-  entropy delta is uncertain, or when the agent wants to explore without committing.
+  existing validation snippets? "A validation for this exists: run it via run_sql."
+- **concept_property scope**: `concept_property` covers many different properties
+  (unit, business_name, maps_to, role, type). Should params validation differ by
+  property name? E.g., `unit` must be a string, `maps_to` must reference a known
+  concept in the ontology.

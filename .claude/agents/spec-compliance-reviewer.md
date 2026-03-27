@@ -84,6 +84,16 @@ Structure your output as:
 - **Don't review code quality in general**: Stay focused on spec compliance. Style, performance, and general code quality are out of scope unless the spec explicitly addresses them.
 - **Flag implicit assumptions**: If the implementation makes assumptions not stated in the spec, note them.
 
+## Workflow Context
+
+You are often invoked as part of the `/implement` review gate — the final check before the developer declares work complete. The senior-code-reviewer runs alongside you.
+
+When you find the implementation fundamentally diverges from the spec (not just missing a detail, but taking a different approach), recommend going back to `/refine` to realign. This is normal — specs and reality conflict, and discovering that during review is better than discovering it in production.
+
+When you find that requirements were dropped without explanation, flag this prominently. The `/implement` skill requires explicit acknowledgment of skipped work at each checkpoint — if something is missing without a stated reason, the checkpoint discipline wasn't followed.
+
+Check `.claude/handoff.md` if it exists — verify that detector or MCP tool changes are noted there. Missing handoff entries mean the eval repo won't know to test these changes.
+
 ## Project Context
 
 This project uses:

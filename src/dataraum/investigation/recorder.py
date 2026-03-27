@@ -10,7 +10,6 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.investigation.db_models import InvestigationSession, InvestigationStep
@@ -188,22 +187,6 @@ def get_session_trace(
             for step in inv.steps
         ],
     }
-
-
-def get_sessions_for_source(
-    session: Session,
-    source_id: str,
-) -> list[InvestigationSession]:
-    """List all investigation sessions for a source, newest first."""
-    return list(
-        session.execute(
-            select(InvestigationSession)
-            .where(InvestigationSession.source_id == source_id)
-            .order_by(InvestigationSession.started_at.desc())
-        )
-        .scalars()
-        .all()
-    )
 
 
 def summarize_result(tool_name: str, result: dict[str, Any] | str | None) -> str:

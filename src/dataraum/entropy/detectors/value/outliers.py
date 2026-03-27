@@ -33,8 +33,15 @@ class OutlierRateDetector(EntropyDetector):
     required_analyses = [AnalysisKey.STATISTICS, AnalysisKey.SEMANTIC]
     description = "Measures uncertainty from outlier values"
 
-    # Semantic roles where outlier detection is meaningless
-    _SKIP_ROLES = frozenset({"key", "foreign_key"})
+    # Only measure columns benefit from outlier analysis.
+    # Dimensions, attributes, timestamps, keys — outliers are meaningless.
+    _APPLICABLE_ROLES = frozenset({"measure"})
+
+    # Columns where the unit is "dimensionless" are rates, ratios, indices,
+    # or percentages — not quantities. IQR/zscore outlier detection on
+    # exchange rates (0.006 for JPY, 1.2 for EUR) is structurally wrong,
+    # not a data quality signal.
+    _SKIP_UNIT_SOURCES = frozenset({"dimensionless"})
 
     def load_data(self, context: DetectorContext) -> None:
         """Load statistics and semantic annotation for this column."""
@@ -62,13 +69,23 @@ class OutlierRateDetector(EntropyDetector):
             List with single EntropyObject for outlier rate,
             or empty list if not applicable
         """
-        # Skip identifier columns — outliers are meaningless for keys
+        # Only apply to measure columns — outliers are meaningless for
+        # keys, dimensions, attributes, timestamps
         semantic = context.get_analysis("semantic", {})
         if hasattr(semantic, "semantic_role"):
             role = semantic.semantic_role
         else:
             role = semantic.get("semantic_role")
-        if role in self._SKIP_ROLES:
+        if role not in self._APPLICABLE_ROLES:
+            return []
+
+        # Skip dimensionless columns (rates, ratios, indices) — their
+        # value ranges are structurally determined, not quality signals
+        if hasattr(semantic, "unit_source_column"):
+            unit_src = semantic.unit_source_column
+        else:
+            unit_src = semantic.get("unit_source_column")
+        if unit_src in self._SKIP_UNIT_SOURCES:
             return []
 
         # Load configuration

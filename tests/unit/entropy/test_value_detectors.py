@@ -474,11 +474,14 @@ class TestTemporalDriftDetector:
 
     def test_zero_drift(self, detector: TemporalDriftDetector):
         """Score is 0 when JS divergence is 0."""
-        summary = _MockDriftSummary("status", 0.0, 0.0, 5, 0)
+        summary = _MockDriftSummary("amount", 0.0, 0.0, 5, 0)
         context = DetectorContext(
             table_name="orders",
-            column_name="status",
-            analysis_results={"drift_summaries": [summary]},
+            column_name="amount",
+            analysis_results={
+                "drift_summaries": [summary],
+                "semantic": {"semantic_role": "measure"},
+            },
         )
         results = detector.detect(context)
         assert len(results) == 1
@@ -486,11 +489,14 @@ class TestTemporalDriftDetector:
 
     def test_mild_drift(self, detector: TemporalDriftDetector):
         """Score ~0.3 for mean JS 0.1 (scoring uses mean, not max)."""
-        summary = _MockDriftSummary("status", 0.2, 0.1, 5, 1)
+        summary = _MockDriftSummary("amount", 0.2, 0.1, 5, 1)
         context = DetectorContext(
             table_name="orders",
-            column_name="status",
-            analysis_results={"drift_summaries": [summary]},
+            column_name="amount",
+            analysis_results={
+                "drift_summaries": [summary],
+                "semantic": {"semantic_role": "measure"},
+            },
         )
         results = detector.detect(context)
         assert len(results) == 1
@@ -498,11 +504,14 @@ class TestTemporalDriftDetector:
 
     def test_moderate_drift(self, detector: TemporalDriftDetector):
         """Score ~0.7 for mean JS 0.3."""
-        summary = _MockDriftSummary("status", 0.5, 0.3, 5, 2)
+        summary = _MockDriftSummary("amount", 0.5, 0.3, 5, 2)
         context = DetectorContext(
             table_name="orders",
-            column_name="status",
-            analysis_results={"drift_summaries": [summary]},
+            column_name="amount",
+            analysis_results={
+                "drift_summaries": [summary],
+                "semantic": {"semantic_role": "measure"},
+            },
         )
         results = detector.detect(context)
         assert len(results) == 1
@@ -510,11 +519,14 @@ class TestTemporalDriftDetector:
 
     def test_severe_drift(self, detector: TemporalDriftDetector):
         """Score 1.0 for mean JS 0.5+."""
-        summary = _MockDriftSummary("status", 0.7, 0.6, 5, 4)
+        summary = _MockDriftSummary("amount", 0.7, 0.6, 5, 4)
         context = DetectorContext(
             table_name="orders",
-            column_name="status",
-            analysis_results={"drift_summaries": [summary]},
+            column_name="amount",
+            analysis_results={
+                "drift_summaries": [summary],
+                "semantic": {"semantic_role": "measure"},
+            },
         )
         results = detector.detect(context)
         assert len(results) == 1
@@ -523,7 +535,7 @@ class TestTemporalDriftDetector:
     def test_evidence_includes_drift_details(self, detector: TemporalDriftDetector):
         """Evidence includes drift summary info."""
         summary = _MockDriftSummary(
-            "status",
+            "amount",
             0.4,
             0.2,
             5,
@@ -543,8 +555,11 @@ class TestTemporalDriftDetector:
         )
         context = DetectorContext(
             table_name="orders",
-            column_name="status",
-            analysis_results={"drift_summaries": [summary]},
+            column_name="amount",
+            analysis_results={
+                "drift_summaries": [summary],
+                "semantic": {"semantic_role": "measure"},
+            },
         )
         results = detector.detect(context)
         assert len(results) == 1
@@ -555,11 +570,14 @@ class TestTemporalDriftDetector:
 
     def test_resolution_options_for_high_drift(self, detector: TemporalDriftDetector):
         """High drift produces document_accepted_temporal_drift resolution option."""
-        summary = _MockDriftSummary("status", 0.8, 0.4, 5, 4)
+        summary = _MockDriftSummary("amount", 0.8, 0.4, 5, 4)
         context = DetectorContext(
             table_name="orders",
-            column_name="status",
-            analysis_results={"drift_summaries": [summary]},
+            column_name="amount",
+            analysis_results={
+                "drift_summaries": [summary],
+                "semantic": {"semantic_role": "measure"},
+            },
         )
         results = detector.detect(context)
         actions = [opt.action for opt in results[0].resolution_options]

@@ -61,6 +61,21 @@ Think about:
 - **Dependencies**: Does this need other work to land first? Does it block anything?
 - **UX**: If this changes what a practitioner sees (MCP tools, CLI, reports), what does the experience actually look like? Walk through a concrete example.
 
+### Value vs. Effort assessment
+
+Before investing in a full design document, place the idea in the PO's value/effort matrix:
+
+| | Low Effort | High Effort |
+|---|---|---|
+| **High Value** | **Quick win** — do it soon, maybe skip the design doc entirely | **Big bet** — worth it, but needs careful phasing |
+| **Low Value** | **Fill-in** — nice to have, do when convenient | **Money pit** — probably don't build this |
+
+Be honest about both axes:
+- **Value** = how much does this improve the practitioner's experience or the system's correctness? Not "how cool is it" — how much does it matter?
+- **Effort** = total cost including: code, tests, cross-repo calibration, migration, cognitive overhead for future maintainers
+
+If the idea lands in **money pit**, say so. "This isn't worth building" is a valid and valuable outcome. If it lands in **quick win**, it might not need `/decompose` at all — suggest direct implementation.
+
 Talk through your thinking with the user as you go. This is a conversation, not a presentation.
 
 ## Step 4: Produce the design document

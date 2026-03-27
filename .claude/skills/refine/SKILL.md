@@ -51,9 +51,10 @@ Be explicit about three categories:
 Present the trade-offs. 1-3 options with:
 - **Scope**: what changes, what explicitly does NOT change
 - **Size**: S / M / L / XL classification
+- **Value/effort**: where does this option land in the PO matrix? High value / low effort = quick win. High value / high effort = big bet. Low value / high effort = money pit — flag it and ask if the scope should change.
 - **Risk**: what could go wrong, and how bad is it
 - **Test strategy**: how do we KNOW it works (unit? calibration? manual MCP exercise?)
-- **What I'd recommend and why**
+- **What I'd recommend and why** — the value/effort ratio should weigh heavily here. Between two options that both work, prefer the one with better return.
 
 ## Step 5: Align with user
 

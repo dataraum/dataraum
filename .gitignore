@@ -5,6 +5,7 @@ pipeline_output/
 pipeline_testdata/
 examples/
 prototypes/
+plans/
 
 # AI assistants
 .claire/

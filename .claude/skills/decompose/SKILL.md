@@ -62,6 +62,14 @@ For each phase, identify:
 - Size estimate (S/M/L)
 - Dependencies on other phases
 - Whether it touches eval or testdata (cross-repo implications)
+- **Value/effort quadrant** — classify each phase:
+
+| | Low Effort | High Effort |
+|---|---|---|
+| **High Value** | **Quick win** — schedule early, build momentum | **Big bet** — worth it, but phase carefully |
+| **Low Value** | **Fill-in** — slot in when convenient | **Money pit** — defer or cut |
+
+This drives phase ordering: quick wins first (early value, team confidence), then big bets (the core work), fill-ins whenever there's a gap. Money pits get flagged — ask the user whether to keep or cut them. A phase that's high-effort/low-value often means the scope is wrong, not that it should be built anyway.
 
 ## Step 3: Write acceptance criteria
 

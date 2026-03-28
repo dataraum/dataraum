@@ -32,13 +32,15 @@ class Context:
     Provides accessors for exploring data, entropy, contracts, and querying.
     """
 
-    def __init__(self, output_dir: str | Path) -> None:
+    def __init__(self, output_dir: str | Path, *, source: str | None = None) -> None:
         """Initialize context from a pipeline output directory.
 
         Args:
-            output_dir: Path to pipeline output directory
+            output_dir: Path to pipeline output directory.
+            source: Source name to use. If None, picks the source with typed tables.
         """
         self._output_dir = Path(output_dir)
+        self._source_name = source
         self._manager: ConnectionManager | None = None
         self._entropy: EntropyAccessor | None = None
         self._contracts: ContractsAccessor | None = None
@@ -73,21 +75,62 @@ class Context:
         """Context manager exit."""
         self.close()
 
+    def _resolve_source(self, session: Any) -> Any:
+        """Find the active source — the one with typed tables.
+
+        Args:
+            session: SQLAlchemy session.
+
+        Returns:
+            Source object, or None if no sources exist.
+
+        Raises:
+            ValueError: If an explicit source name was given but not found.
+        """
+        from sqlalchemy import func, select
+
+        from dataraum.storage import Source, Table
+
+        sources_result = session.execute(select(Source).where(Source.archived_at.is_(None)))
+        sources = sources_result.scalars().all()
+        if not sources:
+            return None
+
+        # Explicit source name
+        if self._source_name:
+            for s in sources:
+                if s.name == self._source_name:
+                    return s
+            available = [s.name for s in sources]
+            raise ValueError(f"Source '{self._source_name}' not found. Available: {available}")
+
+        # Pick the source that has typed tables
+        for s in sources:
+            count = session.execute(
+                select(func.count())
+                .select_from(Table)
+                .where(
+                    Table.source_id == s.source_id,
+                    Table.layer == "typed",
+                )
+            ).scalar()
+            if count > 0:
+                return s
+
+        # Fallback to first source
+        return sources[0]
+
     @property
     def tables(self) -> list[str]:
         """Get list of table names."""
         from sqlalchemy import select
 
-        from dataraum.storage import Source, Table
+        from dataraum.storage import Table
 
         with self.manager.session_scope() as session:
-            sources_result = session.execute(select(Source))
-            sources = sources_result.scalars().all()
-
-            if not sources:
+            source = self._resolve_source(session)
+            if not source:
                 return []
-
-            source = sources[0]
 
             tables_result = session.execute(
                 select(Table).where(
@@ -134,7 +177,7 @@ class Context:
             source: Path to CSV file or directory. None uses registered sources.
             name: Name for the data source (default: derived from path).
             phase: Run only this phase and its dependencies.
-            contract: Target contract name for gate evaluation.
+            contract: Contract name for entropy thresholds (e.g., "aggregation_safe").
 
         Returns:
             RunResultWrapper with pipeline results summary.
@@ -218,16 +261,12 @@ class Context:
         from dataraum.entropy.db_models import EntropyObjectRecord
         from dataraum.entropy.views.network_context import build_for_network
         from dataraum.entropy.views.query_context import network_to_column_summaries
-        from dataraum.storage import Column, Source, Table
+        from dataraum.storage import Column, Table
 
         with self.manager.session_scope() as session:
-            sources_result = session.execute(select(Source))
-            sources = sources_result.scalars().all()
-
-            if not sources:
+            source = self._resolve_source(session)
+            if not source:
                 return ActionsResultWrapper([])
-
-            source = sources[0]
 
             tables_result = session.execute(
                 select(Table).where(
@@ -295,19 +334,12 @@ class Context:
         Returns:
             QueryResultWrapper with answer, SQL, data, and confidence
         """
-        from sqlalchemy import select
-
         from dataraum.query import answer_question
-        from dataraum.storage import Source
 
         with self.manager.session_scope() as session:
-            sources_result = session.execute(select(Source))
-            sources = sources_result.scalars().all()
-
-            if not sources:
+            source = self._resolve_source(session)
+            if not source:
                 raise ValueError("No sources found in database")
-
-            source = sources[0]
 
             with self.manager.duckdb_cursor() as cursor:
                 result = answer_question(
@@ -339,20 +371,13 @@ class EntropyAccessor:
         Returns:
             EntropyResultWrapper with readiness, dimension scores, and Jupyter rendering.
         """
-        from sqlalchemy import select
-
         from dataraum.entropy.engine import compute_network
         from dataraum.entropy.views.query_context import network_to_column_summaries
-        from dataraum.storage import Source
 
         with self._ctx.manager.session_scope() as session:
-            sources_result = session.execute(select(Source))
-            sources = sources_result.scalars().all()
-
-            if not sources:
+            source = self._ctx._resolve_source(session)
+            if not source:
                 return EntropyResultWrapper({"error": "No sources found"})
-
-            source = sources[0]
 
             # Compute network from persisted records
             network_ctx = compute_network(session, source.source_id)
@@ -410,16 +435,12 @@ class EntropyAccessor:
         from sqlalchemy import select
 
         from dataraum.entropy.db_models import EntropyObjectRecord
-        from dataraum.storage import Source
 
         with self._ctx.manager.session_scope() as session:
-            sources_result = session.execute(select(Source))
-            sources = sources_result.scalars().all()
-
-            if not sources:
+            source = self._ctx._resolve_source(session)
+            if not source:
                 return {"error": "No sources found"}
 
-            source = sources[0]
             target = f"column:{table_name}.{column_name}"
 
             objects_result = session.execute(
@@ -479,16 +500,12 @@ class ContractsAccessor:
         from dataraum.entropy.contracts import evaluate_contract, get_contract
         from dataraum.entropy.views.network_context import build_for_network
         from dataraum.entropy.views.query_context import network_to_column_summaries
-        from dataraum.storage import Source, Table
+        from dataraum.storage import Table
 
         with self._ctx.manager.session_scope() as session:
-            sources_result = session.execute(select(Source))
-            sources = sources_result.scalars().all()
-
-            if not sources:
+            source = self._ctx._resolve_source(session)
+            if not source:
                 return ContractResultWrapper({"error": "No sources found"})
-
-            source = sources[0]
 
             tables_result = session.execute(
                 select(Table).where(

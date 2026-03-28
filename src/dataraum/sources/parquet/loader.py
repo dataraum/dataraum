@@ -29,7 +29,8 @@ def _describe_parquet(
 
     Returns list of (column_name, duckdb_type, nullable).
     """
-    rows = conn.execute(f"DESCRIBE SELECT * FROM read_parquet('{file_path}')").fetchall()
+    safe_path = str(file_path).replace("'", "''")
+    rows = conn.execute(f"DESCRIBE SELECT * FROM read_parquet('{safe_path}')").fetchall()
     return [(row[0], row[1], row[2] == "YES") for row in rows]
 
 
@@ -204,10 +205,11 @@ class ParquetLoader(LoaderBase):
             ]
 
             # DuckDB reads Parquet natively — preserves types
+            safe_path = str(file_path).replace("'", "''")
             sql = f"""
                 CREATE TABLE "{raw_table_name}" AS
                 SELECT {", ".join(select_exprs)}
-                FROM read_parquet('{file_path}')
+                FROM read_parquet('{safe_path}')
             """
             duckdb_conn.execute(sql)
 

@@ -45,11 +45,12 @@ class CSVLoader(LoaderBase):
 
         try:
             # Use DuckDB to read CSV header and sample
+            safe_path = str(path).replace("'", "''")
             conn = duckdb.connect(":memory:")
 
             # Read first few rows to get schema
             sample_df = conn.execute(f"""
-                SELECT * FROM read_csv_auto('{path}')
+                SELECT * FROM read_csv_auto('{safe_path}')
                 LIMIT 10
             """).df()
 
@@ -220,13 +221,14 @@ class CSVLoader(LoaderBase):
 
             # Build SELECT with aliasing: "OriginalName" AS "normalized_name"
             select_exprs = [f'"{col.original_name}" AS "{col.name}"' for col in kept_columns]
+            safe_path = str(file_path).replace("'", "''")
 
             # Create the raw table with normalized column names
             sql = f"""
                 CREATE TABLE "{raw_table_name}" AS
                 SELECT {", ".join(select_exprs)}
                 FROM read_csv(
-                    '{file_path}',
+                    '{safe_path}',
                     columns = {column_spec},
                     header = true,
                     nullstr = [{null_str_param}],

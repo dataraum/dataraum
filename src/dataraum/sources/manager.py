@@ -397,25 +397,24 @@ class SourceManager:
 
 def _read_file_preview(conn: duckdb.DuckDBPyConnection, path: Path) -> tuple[list[str], int | None]:
     """Read column names and row count from a file."""
-    path_str = str(path)
+    safe = str(path).replace("'", "''")
     suffix = path.suffix.lower()
 
     if suffix in (".csv", ".tsv"):
-        result = conn.execute(f"SELECT * FROM read_csv_auto('{path_str}') LIMIT 0")
+        result = conn.execute(f"SELECT * FROM read_csv_auto('{safe}') LIMIT 0")
         columns = [desc[0] for desc in result.description]
         try:
-            count = conn.execute(f"SELECT count(*) FROM read_csv_auto('{path_str}')").fetchone()
+            count = conn.execute(f"SELECT count(*) FROM read_csv_auto('{safe}')").fetchone()
             return columns, count[0] if count else None
         except Exception:
             return columns, None
 
     elif suffix == ".parquet":
-        result = conn.execute(f"SELECT * FROM read_parquet('{path_str}') LIMIT 0")
+        result = conn.execute(f"SELECT * FROM read_parquet('{safe}') LIMIT 0")
         columns = [desc[0] for desc in result.description]
         return columns, None
 
     elif suffix in (".json", ".jsonl"):
-        safe = path_str.replace("'", "''")
         result = conn.execute(f"SELECT * FROM read_json_auto('{safe}') LIMIT 0")
         columns = [desc[0] for desc in result.description]
         try:

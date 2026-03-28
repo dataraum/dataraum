@@ -1,5 +1,7 @@
 """Tests for shared SQL step execution function."""
 
+from __future__ import annotations
+
 import duckdb
 import pytest
 

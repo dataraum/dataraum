@@ -1,5 +1,7 @@
 """Tests for enriched derived column detection (cross-table formulas)."""
 
+from __future__ import annotations
+
 from uuid import uuid4
 
 import duckdb

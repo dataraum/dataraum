@@ -4,6 +4,8 @@ Tests the sources.parquet module which implements strongly-typed Parquet loading
 Uses DuckDB to generate Parquet test fixtures.
 """
 
+from __future__ import annotations
+
 import duckdb
 import pytest
 from sqlalchemy import create_engine, event

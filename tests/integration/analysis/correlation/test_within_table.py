@@ -1,5 +1,7 @@
 """Tests for within-table correlation analysis."""
 
+from __future__ import annotations
+
 from datetime import UTC, datetime
 from uuid import uuid4
 

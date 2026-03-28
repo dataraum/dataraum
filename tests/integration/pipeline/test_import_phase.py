@@ -1,5 +1,7 @@
 """Tests for import phase."""
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4

@@ -29,11 +29,11 @@ class TemporalDriftDetector(EntropyDetector):
     required_analyses = [AnalysisKey.DRIFT_SUMMARIES, AnalysisKey.SEMANTIC]
     description = "Measures uncertainty from distribution drift over time"
 
-    # Semantic roles where drift detection is meaningless —
+    # Only measure columns benefit from temporal drift analysis.
     # IDs naturally differ across periods (JS divergence = ln(2) guaranteed).
-    # Dimensions (counterparty, category) naturally vary across periods — that's
-    # expected business behavior, not a data quality problem.
-    _SKIP_ROLES = frozenset({"key", "foreign_key", "identifier", "dimension", "category"})
+    # Dimensions/categories naturally vary — that's business, not drift.
+    # Attributes (descriptions, notes) are free text that changes by definition.
+    _APPLICABLE_ROLES = frozenset({"measure"})
 
     # Columns with cardinality ratio above this are near-unique (IDs, references)
     # and naturally produce max JS divergence — skip to avoid false positives.
@@ -70,13 +70,14 @@ class TemporalDriftDetector(EntropyDetector):
         Returns:
             List with single EntropyObject for drift score, or empty if no data
         """
-        # Skip identifier columns — IDs naturally differ across periods
+        # Only apply to measure columns — drift on IDs, dimensions, attributes,
+        # and text is expected business behavior, not a data quality signal
         semantic = context.get_analysis("semantic", {})
         if hasattr(semantic, "semantic_role"):
             role = semantic.semantic_role
         else:
             role = semantic.get("semantic_role")
-        if role in self._SKIP_ROLES:
+        if role not in self._APPLICABLE_ROLES:
             return []
 
         # Skip high-cardinality columns — near-unique values (references, codes)
@@ -103,16 +104,23 @@ class TemporalDriftDetector(EntropyDetector):
             return []
 
         max_js = col_summary.max_js_divergence
+        mean_js = col_summary.mean_js_divergence
+
+        # Use mean JS divergence for scoring. Mean reflects the average
+        # drift across all periods, which distinguishes natural temporal
+        # change (low mean, high max — one bad period) from genuine
+        # distribution shift (high mean — consistent change).
+        js = mean_js
 
         # Score mapping: piecewise linear
-        if max_js <= 0.0:
+        if js <= 0.0:
             score = 0.0
-        elif max_js <= 0.1:
-            score = max_js * 3.0  # 0->0, 0.1->0.3
-        elif max_js <= 0.3:
-            score = 0.3 + (max_js - 0.1) * 2.0  # 0.1->0.3, 0.3->0.7
-        elif max_js <= 0.5:
-            score = 0.7 + (max_js - 0.3) * 1.5  # 0.3->0.7, 0.5->1.0
+        elif js <= 0.1:
+            score = js * 3.0  # 0->0, 0.1->0.3
+        elif js <= 0.3:
+            score = 0.3 + (js - 0.1) * 2.0  # 0.1->0.3, 0.3->0.7
+        elif js <= 0.5:
+            score = 0.7 + (js - 0.3) * 1.5  # 0.3->0.7, 0.5->1.0
         else:
             score = 1.0
 

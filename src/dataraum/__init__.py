@@ -14,7 +14,7 @@ Example:
     result = ctx.query("What is the total revenue?")
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from dataraum.context import Context
 from dataraum.core.models.base import Result

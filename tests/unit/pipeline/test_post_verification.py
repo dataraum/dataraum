@@ -35,21 +35,12 @@ class TestPhaseProducesAnalyses:
         decl = load_phase_declarations()["slice_analysis"]
         assert decl.produces == {AnalysisKey.SLICE_VARIANCE}
 
-    def test_quality_summary_produces_column_quality_reports(self):
-        decl = load_phase_declarations()["quality_summary"]
-        assert decl.produces == {AnalysisKey.COLUMN_QUALITY_REPORTS}
-
     def test_enriched_views_produces_enriched_view(self):
         decl = load_phase_declarations()["enriched_views"]
         assert decl.produces == {AnalysisKey.ENRICHED_VIEW}
 
     def test_import_phase_produces_nothing(self):
         decl = load_phase_declarations()["import"]
-        assert decl.produces == set()
-
-    def test_quality_review_is_quality_gate(self):
-        decl = load_phase_declarations()["quality_review"]
-        assert decl.gate is True
         assert decl.produces == set()
 
 

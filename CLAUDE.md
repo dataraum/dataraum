@@ -26,12 +26,30 @@ Do not:
 - Label broken detectors as "design gaps" or "out of scope"
 - Write tests that assert against current (broken) behavior
 - Set weak thresholds (coverage >= 0.5) to make tests pass
-- Create Linear issues to defer bugs instead of fixing them
+- Create Jira issues to defer bugs instead of fixing them
 - Claim the system "works" when it finds 3 of 15 known problems
 
 When something doesn't work, say so plainly, then fix it or propose how to fix it.
 
 ## Critical Rules
+
+### Investigate Before Acting
+
+This is the most important rule. The codebase evolves fast — modules get deleted, APIs get renamed, entire subsystems get redesigned. **Your training data is stale. Your assumptions are wrong.** The only source of truth is the code on disk right now.
+
+Before proposing or implementing anything:
+1. **Read the actual code** involved — not just the file you plan to edit, but its callers and dependencies. Skim, don't assume.
+2. **Grep for the thing you're about to use** — does that function, class, config key, or CLI command actually exist? If you can't find it, it was probably deleted or renamed.
+3. **Check imports and call sites** — if you're changing a function signature, find every caller first. If you're adding an import, verify the module exists.
+4. **When in doubt, read more code, not less.** A 30-second grep saves a 30-minute wrong-direction detour.
+
+Do NOT:
+- Assume a module, function, or pattern exists because it "should" or because it "makes sense for this kind of project"
+- Propose using framework features without verifying they're actually in this codebase
+- Generate code that imports from modules you haven't confirmed exist
+- Suggest architectural patterns based on what's common in similar projects — check what THIS project actually does
+
+When you catch yourself thinking "this project probably has X" — stop and grep for X. If it's not there, it's not there.
 
 ### Never Claim "Done" Until:
 1. ALL tests pass (not just the file you changed)
@@ -68,11 +86,6 @@ A detector is "done" when its calibration tests pass. Unit tests in this repo ve
 
 ## Problem-Solving Standards
 
-### Before Writing Any Code
-- Understand the actual requirement, not what you assume it to be
-- If the requirement is ambiguous, ask for clarification
-- Consider edge cases upfront, not as an afterthought
-
 ### When Something Doesn't Work
 1. **Read the actual error message** — quote it in your response
 2. **Form a hypothesis** about WHY this error occurred
@@ -105,6 +118,52 @@ Examples: `feat/bayesian-network`, `fix/cpt-ordering`, `refactor/streamline`.
 3. **When done**: create a PR to `main` via `gh pr create` (only when the user asks).
 4. **Never push directly to `main`.**
 
+## Development Workflow
+
+This project uses skills to structure development work. Skills encode the checkpoints, reviews, and handoffs that are otherwise easy to skip or shortcut.
+
+### Intent routing
+
+| User says | You do | Why |
+|-----------|--------|-----|
+| "What if we...", "I have an idea", "We need..." | `/ideate` | Explore before committing to a direction |
+| "Let's break this down", "Create the epic" | `/decompose` | Turn designs into Jira work items |
+| "Implement X", "Build X", "Work on DAT-nnn" | `/refine` first | Understand before committing — the model's "obvious" is often wrong |
+| "Is X feasible?", "How should we approach X?" | `/refine` | Stop after alignment, don't start coding |
+| Approved approach after `/refine` | `/implement` | Phased execution with checkpoints and review gate |
+| MCP tool changes completed | Remind: restart session, then `/smoke` | Server runs old code until restarted |
+| Implementation verified and reviewed | Update `.claude/handoff.md` | Bridge to dataraum-eval and dataraum-testdata |
+| Quick fix, <3 files, obvious change | Direct implementation | S-size tasks don't need ceremony |
+
+### Skills (`.claude/skills/`)
+
+**Product thinking:**
+- **`/ideate <topic>`** — Explore an idea: check existing work, read the codebase, think through feasibility, produce a design document. No issues, no code.
+- **`/decompose <doc or issue>`** — Turn a design into Jira artifacts: epic, phase issues, acceptance criteria, dependency relations. Follows the DAT-173 pattern.
+
+**Execution:**
+- **`/refine <issue>`** — Pre-implementation: explore feasibility, surface spec vs. reality conflicts, align on approach. No code.
+- **`/implement <issue>`** — Phased execution with mandatory self-audit checkpoints. Invokes senior-code-reviewer + spec-compliance-reviewer at the end. Updates `handoff.md`.
+- **`/smoke [tool]`** — Quick MCP UX check: call the tools you just built, feel how they work. Requires session restart if server code changed.
+
+### Cross-repo handoff
+
+`.claude/handoff.md` records what needs attention in other repos:
+- **dataraum-eval**: which tools/detectors changed, what to calibrate (consumed by `/accept` skill in eval)
+- **dataraum-testdata**: directional hints for new injections or ground truth (not specs — testdata has its own design concerns)
+
+### When to skip
+
+- **S-size tasks** (1-3 files, <50 lines, obvious): implement directly
+- **Bug fixes with failing tests**: fix → verify → done
+- **Documentation-only changes**: no workflow needed
+
+### When NOT to skip
+
+- **M+ tasks**: always `/refine` first
+- **MCP tool changes**: always `/smoke` after — UX can't be judged from source code
+- **Detector changes**: always update `handoff.md` — calibration is the definition of done
+
 ## Work Decomposition Protocol
 
 ### Task Sizing
@@ -114,11 +173,11 @@ Before starting any work item, classify it:
 |------|-----------|----------|
 | **S** | 1-3 files, <50 lines changed | Feature branch, direct implementation, no plan needed |
 | **M** | 3-8 files, <200 lines changed | Feature branch, Plan Mode, single session |
-| **L** | 8+ files or 200+ lines | Feature branch, Linear document linked to issue, phased execution |
+| **L** | 8+ files or 200+ lines | Feature branch, Confluence document linked to issue, phased execution |
 | **XL** | Spans multiple modules or repos | Plan approval required, integration branch, phased PRs |
 
 ### For M/L/XL tasks: mandatory plan structure
-Plans live as Linear documents (linked to the relevant Linear issue) and must include:
+Plans live as Confluence documents (linked to the relevant Jira issue) and must include:
 1. **Scope**: What changes. What explicitly does NOT change.
 2. **Files affected**: List every file. Mark read-only/do-not-touch files.
 3. **Dependency order**: Which steps block which (e.g., A1a → A1b).
@@ -196,7 +255,7 @@ uv run pytest --testmon tests -q
 - The end-of-turn hook runs testmon automatically — don't duplicate its work
 
 ### Calibration Tests (separate repo: dataraum-eval)
-Calibration tests run the full pipeline against testdata with known injections. They are the ultimate measure of detector correctness. See DAT-133 / DAT-135 in Linear.
+Calibration tests run the full pipeline against testdata with known injections. They are the ultimate measure of detector correctness. See DAT-133 / DAT-135 in Jira.
 
 ```bash
 # Run calibration (from dataraum-eval repo)
@@ -268,7 +327,7 @@ User-facing documentation lives in `docs/` and is published via [Zensical](https
 
 - **New user-facing feature or behavior change** → update the relevant `docs/*.md` page
 - **Internal implementation detail** → use docstrings in source code
-- **Design decision or project plan** → create a Linear document
+- **Design decision or project plan** → create a Confluence document
 
 ### Docstring Convention
 
@@ -298,7 +357,7 @@ Rules:
 
 ## Current Work
 
-Check [Linear](https://linear.app/dataraum) for active issues, plans, and project documents. Linear MCP is available.
+Check [Jira](https://real-dataraum.atlassian.net/jira/software/projects/DAT/boards/35) for active issues, plans, and project documents. Jira MCP is available.
 
 ## Architecture
 
@@ -308,8 +367,9 @@ Check [Linear](https://linear.app/dataraum) for active issues, plans, and projec
 - **Quarantine pattern** — Failed type casts go to quarantine tables for review, not pipeline failure.
 - **Pre-computed context** — AI receives a pre-assembled `ContextDocument` with all metadata already computed and interpreted through the selected ontology. No runtime discovery.
 - **Ontologies as configuration** — Domain ontologies (financial_reporting, marketing, etc.) are YAML configs that map column patterns to business terms, define computable metrics, and guide semantic interpretation.
-- **Zone-by-zone quality gates** — Pipeline pauses at Gate 1 (after semantic) and Gate 2 (after quality_summary). Agents inspect violations, apply fixes, and advance zone by zone.
-- **MCP tools** — 5 core + 3 quality/fix + 2 source management (10 total). See `src/dataraum/mcp/server.py`.
+- **Pipeline measures, doesn't interpret** — Pipeline runs detectors as post-steps. Interpretation (why, hypothesize) happens interactively via MCP tools. No gate phases.
+- **BBN readiness replaces LLM quality grades** — Per-column readiness (ready/investigate/blocked) via Bayesian network. `column_quality` detector retired (was circular with BBN).
+- **MCP tools** — 6 practitioner tools: look, measure, begin_session, query, run_sql, add_source. See `src/dataraum/mcp/server.py`.
 - **Free-threading** — Python 3.14t with GIL disabled for true CPU parallelism in pipeline phases.
 
 ### Module Structure
@@ -317,16 +377,17 @@ Check [Linear](https://linear.app/dataraum) for active issues, plans, and projec
 ```
 src/dataraum/
 ├── analysis/       # Data analysis (typing, statistics, correlations, relationships,
-│                   #   semantic, temporal, slicing, cycles, validation, quality_summary)
-├── entropy/        # Uncertainty quantification (detectors, context, interpretation)
+│                   #   semantic, temporal, slicing, cycles, validation)
+├── entropy/        # Uncertainty quantification (detectors, measurement, BBN)
 ├── graphs/         # Calculation graphs, context assembly
-├── pipeline/       # Pipeline orchestrator (21 phases), gates, fixes
+├── investigation/  # Session trace models for MCP audit trail
+├── pipeline/       # Pipeline orchestrator (17 phases), fixes
 ├── sources/        # Data source loaders (CSV, Parquet)
 ├── storage/        # SQLAlchemy models, migrations
 ├── llm/            # LLM providers and prompts
 ├── core/           # Config, connections, utilities
-├── cli/            # Typer CLI + Textual TUI
-└── mcp/            # MCP server (12 tools)
+├── cli/            # Typer CLI (run, dev) — MCP server is primary interface
+└── mcp/            # MCP server (6 tools: look, measure, begin_session, query, run_sql, add_source)
 ```
 
 SQLAlchemy DB models are co-located with business logic in `db_models.py` files within each module.
@@ -334,7 +395,7 @@ SQLAlchemy DB models are co-located with business logic in `db_models.py` files 
 ### Data Flow
 
 ```
-Source (CSV/Parquet) → [staging] VARCHAR → raw_{table}
+Source (CSV/Parquet/JSON) → [staging] VARCHAR → raw_{table}
   → [profiling] Type inference → typed_{table}, quarantine_{table}
   → [enrichment] LLM semantic analysis → roles, entities, relationships
   → [enrichment] Temporal + topology → additional metadata
@@ -347,16 +408,9 @@ Source (CSV/Parquet) → [staging] VARCHAR → raw_{table}
 # Run pipeline
 dataraum run /path/to/data --output ./output
 
-# Interactive dashboard
-dataraum tui ./output
-
-# Source management
-dataraum sources discover /path/to/data
-dataraum sources add mydata /path/to/file.csv
-
 # Developer tools
 dataraum dev phases
-dataraum dev inspect ./output
+dataraum dev context ./output
 
 # Start MCP server
 dataraum-mcp

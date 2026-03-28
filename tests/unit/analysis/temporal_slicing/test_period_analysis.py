@@ -518,7 +518,6 @@ class TestPersistPeriodResults:
         # Must import ALL model modules to satisfy cross-model relationships
         import dataraum.analysis.correlation.db_models  # noqa: F401
         import dataraum.analysis.cycles.db_models  # noqa: F401
-        import dataraum.analysis.quality_summary.db_models  # noqa: F401
         import dataraum.analysis.relationships.db_models  # noqa: F401
         import dataraum.analysis.semantic.db_models  # noqa: F401
         import dataraum.analysis.slicing.db_models  # noqa: F401

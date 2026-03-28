@@ -42,7 +42,6 @@ from dataraum.entropy.detectors.computational import (
 from dataraum.entropy.detectors.semantic import (
     BusinessCycleHealthDetector,
     BusinessMeaningDetector,
-    ColumnQualityDetector,
     DimensionalEntropyDetector,
     DimensionCoverageDetector,
     TemporalEntropyDetector,
@@ -83,7 +82,6 @@ BUILTIN_DETECTORS: list[type[EntropyDetector]] = [
     TemporalEntropyDetector,
     # Semantic (table-scoped)
     DimensionalEntropyDetector,
-    ColumnQualityDetector,
     BusinessCycleHealthDetector,
     # Semantic (view-scoped)
     DimensionCoverageDetector,
@@ -132,7 +130,6 @@ __all__ = [
     "BusinessMeaningDetector",
     "UnitEntropyDetector",
     "TemporalEntropyDetector",
-    "ColumnQualityDetector",
     "DimensionalEntropyDetector",
     "DimensionCoverageDetector",
     # Computational detectors

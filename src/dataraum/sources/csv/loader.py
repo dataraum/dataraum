@@ -1,5 +1,7 @@
 """CSV file loader - untyped source with VARCHAR-first approach."""
 
+from __future__ import annotations
+
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -15,6 +17,18 @@ from dataraum.sources.csv.null_values import NullValueConfig, load_null_value_co
 from dataraum.storage import Column, Source, Table
 
 logger = get_logger(__name__)
+
+_ENCODING_ERROR_MSG = (
+    "File is not UTF-8 encoded (likely Excel export with Latin-1/CP1252). "
+    "Re-save as UTF-8: in Excel use 'Save As → CSV UTF-8 (Comma delimited)'."
+)
+
+
+def _check_encoding_error(error: str) -> str:
+    """Return a clear message if the error is a DuckDB encoding failure."""
+    if "not utf-8 encoded" in error.lower() or "byte sequence mismatch" in error.lower():
+        return _ENCODING_ERROR_MSG
+    return error
 
 
 class CSVLoader(LoaderBase):
@@ -45,11 +59,12 @@ class CSVLoader(LoaderBase):
 
         try:
             # Use DuckDB to read CSV header and sample
+            safe_path = str(path).replace("'", "''")
             conn = duckdb.connect(":memory:")
 
             # Read first few rows to get schema
             sample_df = conn.execute(f"""
-                SELECT * FROM read_csv_auto('{path}')
+                SELECT * FROM read_csv_auto('{safe_path}')
                 LIMIT 10
             """).df()
 
@@ -72,7 +87,7 @@ class CSVLoader(LoaderBase):
             return Result.ok(columns)
 
         except Exception as e:
-            return Result.fail(f"Failed to read CSV schema: {e}")
+            return Result.fail(f"Failed to read CSV schema: {_check_encoding_error(str(e))}")
 
     def load(
         self,
@@ -220,13 +235,14 @@ class CSVLoader(LoaderBase):
 
             # Build SELECT with aliasing: "OriginalName" AS "normalized_name"
             select_exprs = [f'"{col.original_name}" AS "{col.name}"' for col in kept_columns]
+            safe_path = str(file_path).replace("'", "''")
 
             # Create the raw table with normalized column names
             sql = f"""
                 CREATE TABLE "{raw_table_name}" AS
                 SELECT {", ".join(select_exprs)}
                 FROM read_csv(
-                    '{file_path}',
+                    '{safe_path}',
                     columns = {column_spec},
                     header = true,
                     nullstr = [{null_str_param}],
@@ -282,4 +298,4 @@ class CSVLoader(LoaderBase):
             )
 
         except Exception as e:
-            return Result.fail(f"Failed to load {file_path.name}: {e}")
+            return Result.fail(f"Failed to load {file_path.name}: {_check_encoding_error(str(e))}")

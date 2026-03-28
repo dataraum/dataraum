@@ -1,5 +1,7 @@
 """Tests for parallel processing in relationships detection."""
 
+from __future__ import annotations
+
 import duckdb
 import pytest
 

@@ -185,7 +185,7 @@ def _run_detectors(
 def take_snapshot(
     target: str,
     session: Session,
-    duckdb_conn: Any = None,
+    duckdb_conn: Any,
     dimensions: Sequence[str] | None = None,
 ) -> Snapshot:
     """Run detectors on a target and return canonical scores.
@@ -200,7 +200,7 @@ def take_snapshot(
     Args:
         target: Target reference (e.g., "column:orders.amount" or "table:orders")
         session: SQLAlchemy session for loading analysis data
-        duckdb_conn: DuckDB connection (unused currently, reserved for future)
+        duckdb_conn: DuckDB connection for detectors that query data directly
         dimensions: Optional filter -- only run detectors for these sub_dimensions
 
     Returns:

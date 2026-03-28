@@ -1,5 +1,7 @@
 """Integration tests for enriched views phase."""
 
+from __future__ import annotations
+
 import duckdb
 import pytest
 

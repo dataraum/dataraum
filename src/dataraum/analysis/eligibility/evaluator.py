@@ -108,7 +108,7 @@ def format_reason(template: str, metrics: dict[str, Any]) -> str:
     """Format reason template with actual values."""
     try:
         return template.format(**metrics)
-    except KeyError, ValueError:
+    except (KeyError, ValueError):
         return template
 
 

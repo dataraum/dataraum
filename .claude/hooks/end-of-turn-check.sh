@@ -11,7 +11,7 @@ echo "Running quality checks..."
 
 # Run ruff linter
 echo "Checking: ruff..."
-if ! uv run python -m ruff check . --quiet 2>/dev/null; then
+if ! uv run ruff format --check . --quiet 2>/dev/null; then
     echo "❌ Linting failed. Fix lint errors before continuing." >&2
     exit 2
 fi

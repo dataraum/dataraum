@@ -1,5 +1,10 @@
 # DataRaum Context Engine
 
+[![PyPI version](https://img.shields.io/pypi/v/dataraum)](https://pypi.org/project/dataraum/)
+[![Python](https://img.shields.io/pypi/pyversions/dataraum)](https://pypi.org/project/dataraum/)
+[![License](https://img.shields.io/github/license/dataraum/dataraum)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/dataraum/dataraum/ci.yml?branch=main)](https://github.com/dataraum/dataraum/actions)
+
 A rich metadata context engine for AI-driven data analytics.
 
 Traditional semantic layers tell BI tools "what things are called." DataRaum tells AI "what the data means, how it behaves, how it relates, and what you can compute from it."
@@ -30,64 +35,45 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
 }
 ```
 
-Then in Claude Desktop, point the `analyze` tool at your data:
+Then in Claude Desktop:
 
-> Analyze the CSV files in /path/to/my/data
+> Add the CSV files in /path/to/my/data and measure data quality
 
-The server runs a 21-phase analysis pipeline with two quality gates and makes these tools available:
+The server runs a 17-phase analysis pipeline and makes these tools available:
 
 | Tool | Description |
 |------|-------------|
-| `analyze` | Run the pipeline on CSV/Parquet data (zone-aware with `target_gate`) |
-| `get_context` | Get the full metadata context document |
-| `get_quality` | Quality report or zone-specific gate status (with `gate` param) |
+| `begin_session` | Start an investigation session with a contract |
+| `add_source` | Register a data source (CSV, Parquet, JSON, or directory) |
+| `look` | Explore data structure, relationships, and semantic metadata |
+| `measure` | Measure entropy scores, readiness, and data quality |
 | `query` | Natural language query against the data |
-| `export` | Export query results to CSV/Parquet/JSON with provenance metadata |
-| `discover_sources` | Scan workspace for data files |
-| `add_source` | Register a new data source (file or database) |
-| `apply_fix` | Apply fixes (action + target + parameters) and re-run affected phases |
-| `continue_pipeline` | Advance pipeline to the next zone (returns inline gate status) |
+| `run_sql` | Execute SQL directly with export support |
+| `end_session` | Archive workspace and end the session |
 
-### Agentic Quality Loop
-
-An AI agent drives quality improvement zone by zone:
+### Typical Workflow
 
 ```
-analyze(target_gate="quality_review", contract="executive_dashboard")
-  → get_quality(gate="quality_review")           # See violations, triage guidance, fix actions
-  → apply_fix(fixes=[{action, target, ...}])     # Apply fixes
-  → continue_pipeline(target_gate="analysis_review")
-  → ... repeat until clean
-  → continue_pipeline(target_gate="end")
+add_source(name="accounting", path="/path/to/data")
+  → begin_session(intent="explore data quality", contract="exploratory_analysis")
+  → look()                    # Understand the data
+  → measure()                 # Check quality scores and readiness
+  → query("total revenue?")   # Ask questions
+  → run_sql(sql="...", export_format="csv", export_name="report")
+  → end_session(outcome="delivered")
 ```
-
-Claude triages violations directly using the enriched `get_quality` output (triage guidance, interpretation context, executable actions with parameters).
 
 ## Quick Start — CLI
 
 ```bash
-# Run analysis pipeline
-dataraum run /path/to/data --output ./output
+# Run analysis pipeline (writes metadata.db + data.duckdb to ./pipeline_output)
+dataraum run /path/to/data
 
-# Interactive dashboard
-dataraum tui ./output
-
-# Natural language query
-dataraum query ./output "What is the total revenue?"
+# Inspect what was produced
+dataraum dev context ./pipeline_output
 ```
 
-## Quick Start — Python
-
-```python
-from dataraum import Context
-
-ctx = Context("./pipeline_output")
-ctx.tables                                   # List of tables
-ctx.entropy.summary()                        # Entropy scores and readiness
-ctx.contracts.evaluate("aggregation_safe")   # Contract compliance
-ctx.actions()                                # Resolution actions
-result = ctx.query("What's the total revenue?")
-```
+See [CLI Reference](docs/cli.md) for all options.
 
 ## What It Produces
 
@@ -109,13 +95,13 @@ Semantic analysis requires an Anthropic API key:
 export ANTHROPIC_API_KEY="sk-..."
 ```
 
-Configure the LLM provider in `config/llm.yaml` or use `config/semantic_overrides.yaml` for manual definitions without an LLM.
+Configure the LLM provider in `config/llm/config.yaml`. See [Configuration](docs/configuration.md) for details.
 
 ## Development
 
 ```bash
-git clone https://github.com/dataraum/dataraum-context
-cd dataraum-context
+git clone https://github.com/dataraum/dataraum
+cd dataraum
 
 # Install with dev dependencies (using uv)
 uv sync --group dev
@@ -134,7 +120,7 @@ uv run ruff format --check src/
 ## Documentation
 
 - [Architecture](docs/architecture.md) — system design and pipeline overview
-- [Pipeline](docs/pipeline.md) — 20-phase pipeline reference
+- [Pipeline](docs/pipeline.md) — 17-phase pipeline reference
 - [Entropy](docs/entropy.md) — uncertainty quantification system
 - [Data Model](docs/data-model.md) — metadata schema
 - [CLI Reference](docs/cli.md) — command-line interface

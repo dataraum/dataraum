@@ -1,5 +1,7 @@
 """Tests for slice analysis phase."""
 
+from __future__ import annotations
+
 from uuid import uuid4
 
 import duckdb
@@ -129,7 +131,7 @@ class TestSliceAnalysisPhase:
             value_count=3,
             reasoning="Test slice",
             detection_source="llm",
-            sql_template="CREATE TABLE IF NOT EXISTS slice_category_{value} AS SELECT * FROM typed_test_table WHERE category = '{value}'",
+            sql_template="CREATE OR REPLACE VIEW slice_category_{value} AS SELECT * FROM typed_test_table WHERE category = '{value}'",
         )
         session.add(slice_def)
         session.commit()

@@ -158,7 +158,7 @@ def detect_unit(values: list[str], sample_size: int = 100) -> UnitDetectionResul
                 detected_units[unit_str] = detected_units.get(unit_str, 0) + 1
                 successfully_parsed += 1
 
-        except pint.UndefinedUnitError, pint.DimensionalityError, AttributeError, ValueError:
+        except (pint.UndefinedUnitError, pint.DimensionalityError, AttributeError, ValueError):
             # Value doesn't have valid units, skip
             continue
 

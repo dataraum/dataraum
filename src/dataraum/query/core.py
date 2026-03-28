@@ -35,6 +35,7 @@ def answer_question(
     auto_contract: bool = False,
     table_ids: list[str] | None = None,
     ephemeral: bool = False,
+    display_limit: int = 10_000,
 ) -> Result[QueryResult]:
     """Answer a natural language question about the data.
 
@@ -122,4 +123,5 @@ def answer_question(
         auto_contract=auto_contract,
         source_id=source_id,
         ephemeral=ephemeral,
+        display_limit=display_limit,
     )

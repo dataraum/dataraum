@@ -5,6 +5,8 @@ to recommend dimension joins that add analytical value to main datasets.
 Uses tool-based output for structured responses.
 """
 
+from __future__ import annotations
+
 import json
 from typing import TYPE_CHECKING, Any
 

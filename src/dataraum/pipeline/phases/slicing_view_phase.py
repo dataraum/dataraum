@@ -267,16 +267,39 @@ class SlicingViewPhase(BasePhase):
             ctx.session.add(sv_table)
 
             duckdb_cols = ctx.duckdb_conn.execute(f'DESCRIBE "{view_name}"').fetchall()
+            if not duckdb_cols:
+                logger.error(
+                    "slicing_view_describe_empty",
+                    view_name=view_name,
+                    fact_table=fact_table.table_name,
+                )
+            # Explicit table_id + session.add per Column.
+            # Relationship append alone is unreliable under free-threading:
+            # cascade may not populate session.new before commit.
             for pos, row in enumerate(duckdb_cols):
-                ctx.session.add(
-                    Column(
-                        column_id=str(uuid4()),
-                        table_id=sv_table.table_id,
-                        column_name=row[0],
-                        column_position=pos,
-                        raw_type=row[1],
-                        resolved_type=row[1],
-                    )
+                col = Column(
+                    column_id=str(uuid4()),
+                    table_id=sv_table.table_id,
+                    column_name=row[0],
+                    column_position=pos,
+                    raw_type=row[1],
+                    resolved_type=row[1],
+                )
+                sv_table.columns.append(col)
+                ctx.session.add(col)
+
+            # Diagnostic: verify columns are tracked by the session
+            sv_pending = sum(
+                1
+                for obj in ctx.session.new
+                if isinstance(obj, Column) and getattr(obj, "table_id", None) == sv_table.table_id
+            )
+            if sv_pending != len(duckdb_cols):
+                logger.error(
+                    "slicing_view_column_mismatch",
+                    view_name=view_name,
+                    describe_count=len(duckdb_cols),
+                    session_pending=sv_pending,
                 )
 
             # Rewrite sql_templates so they reference the slicing view instead of
@@ -388,6 +411,18 @@ class SlicingViewPhase(BasePhase):
         try:
             result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{view_name}"').fetchone()
             actual_count = result[0] if result else 0
+            if actual_count != expected_count:
+                logger.warning(
+                    "slicing_view_grain_mismatch",
+                    view_name=view_name,
+                    expected_count=expected_count,
+                    actual_count=actual_count,
+                )
             return actual_count == expected_count
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "slicing_view_grain_query_failed",
+                view_name=view_name,
+                error=str(exc),
+            )
             return False

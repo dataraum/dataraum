@@ -21,8 +21,7 @@ class TestLoadPhaseDeclarations:
         # Should have all active phases
         assert "import" in declarations
         assert "typing" in declarations
-        assert "quality_review" in declarations
-        assert "graph_execution" in declarations
+        assert "semantic" in declarations
 
     def test_import_has_no_dependencies(self):
         declarations = load_phase_declarations()
@@ -31,14 +30,6 @@ class TestLoadPhaseDeclarations:
     def test_typing_produces_typing(self):
         declarations = load_phase_declarations()
         assert declarations["typing"].produces == {AnalysisKey.TYPING}
-
-    def test_quality_review_is_gate(self):
-        declarations = load_phase_declarations()
-        assert declarations["quality_review"].gate is True
-
-    def test_non_gate_phase_is_not_gate(self):
-        declarations = load_phase_declarations()
-        assert declarations["typing"].gate is False
 
     def test_detectors_are_listed(self):
         declarations = load_phase_declarations()

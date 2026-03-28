@@ -139,12 +139,14 @@ class TestRowLimit:
         # Insert enough rows to exceed default limit (100)
         cursor.execute("CREATE TABLE big AS SELECT i AS id FROM generate_series(1, 200) t(i)")
         result = run_sql(cursor, sql="SELECT * FROM big")
-        assert result["row_count"] == 100
+        assert result["row_count"] == 200  # total count from DuckDB
+        assert result["rows_returned"] == 100  # display limit
         assert result["truncated"] is True
 
     def test_custom_limit(self, cursor: duckdb.DuckDBPyConnection) -> None:
         result = run_sql(cursor, sql="SELECT * FROM orders", limit=2)
-        assert result["row_count"] == 2
+        assert result["row_count"] == 3  # total count
+        assert result["rows_returned"] == 2  # display limit
         assert result["truncated"] is True
 
     def test_max_limit_enforced(self, cursor: duckdb.DuckDBPyConnection) -> None:
@@ -153,6 +155,7 @@ class TestRowLimit:
         # With only 3 rows, truncated should be False — the cap is 10000
         assert result["truncated"] is False
         assert result["row_count"] == 3
+        assert result["rows_returned"] == 3
 
 
 class TestSqlError:
@@ -217,29 +220,9 @@ class TestFormatRunSqlResult:
 
 class TestQualityMetadataForMappedColumns:
     def test_quality_attached_via_mapping(self, session: Session) -> None:
-        from dataraum.analysis.quality_summary.db_models import ColumnQualityReport
-
         source_id, table_id, col_ids = _insert_source_and_table(
             session, "orders", ["Betrag", "Region"]
         )
-        # Add quality report for Betrag
-        session.add(
-            ColumnQualityReport(
-                report_id=_id(),
-                source_column_id=col_ids[0],
-                slice_column_id=col_ids[0],
-                column_name="Betrag",
-                source_table_name="orders",
-                slice_column_name="Betrag",
-                slice_count=1,
-                overall_quality_score=0.72,
-                quality_grade="B",
-                summary="Moderate quality",
-                report_data={},
-                investigation_views=[],
-            )
-        )
-        session.flush()
 
         quality, caveat = _build_column_quality(
             session,
@@ -250,87 +233,6 @@ class TestQualityMetadataForMappedColumns:
 
         assert quality["revenue"] is not None
         assert quality["revenue"]["source_column"] == "orders.Betrag"
-        assert quality["revenue"]["quality_grade"] == "B"
-        assert quality["revenue"]["quality_score"] == 0.72
-
-
-class TestQualityViaSlicingView:
-    def test_quality_resolved_via_slicing_view(self, session: Session) -> None:
-        """ColumnQualityReport.source_column_id points to slicing_view columns.
-
-        Verify that _build_column_quality resolves through the slicing_view layer
-        to find quality grades — the same pattern as ColumnQualityDetector.
-        """
-        from dataraum.analysis.quality_summary.db_models import ColumnQualityReport
-        from dataraum.storage import Column, Source, Table
-
-        source_id = _id()
-        session.add(Source(source_id=source_id, name="test", source_type="csv"))
-
-        # Typed table
-        typed_id = _id()
-        session.add(
-            Table(
-                table_id=typed_id,
-                source_id=source_id,
-                table_name="orders",
-                layer="typed",
-                duckdb_path="typed_orders",
-            )
-        )
-        typed_col_id = _id()
-        session.add(
-            Column(
-                column_id=typed_col_id, table_id=typed_id, column_name="amount", column_position=0
-            )
-        )
-
-        # Slicing view table (what quality reports actually reference)
-        sv_id = _id()
-        session.add(
-            Table(
-                table_id=sv_id,
-                source_id=source_id,
-                table_name="slicing_orders",
-                layer="slicing_view",
-                duckdb_path="slicing_orders",
-            )
-        )
-        sv_col_id = _id()
-        session.add(
-            Column(column_id=sv_col_id, table_id=sv_id, column_name="amount", column_position=0)
-        )
-
-        # Quality report references slicing_view column (production behavior)
-        session.add(
-            ColumnQualityReport(
-                report_id=_id(),
-                source_column_id=sv_col_id,
-                slice_column_id=sv_col_id,
-                column_name="amount",
-                source_table_name="slicing_orders",
-                slice_column_name="amount",
-                slice_count=1,
-                overall_quality_score=0.85,
-                quality_grade="A",
-                summary="Good quality",
-                report_data={},
-                investigation_views=[],
-            )
-        )
-        session.flush()
-
-        quality, _ = _build_column_quality(
-            session,
-            table_ids=[typed_id],
-            output_columns=["amount"],
-            column_mappings={},
-        )
-
-        assert quality["amount"] is not None
-        assert quality["amount"]["source_column"] == "orders.amount"
-        assert quality["amount"]["quality_grade"] == "A"
-        assert quality["amount"]["quality_score"] == 0.85
 
 
 class TestQualifiedColumnMappings:

@@ -4,6 +4,8 @@ Wraps pgmpy's DiscreteBayesianNetwork with configuration-driven construction
 and provides a clean interface for the entropy layer.
 """
 
+from __future__ import annotations
+
 from pgmpy.models import DiscreteBayesianNetwork
 
 from dataraum.entropy.network.config import NetworkConfig, NodeConfig, get_network_config

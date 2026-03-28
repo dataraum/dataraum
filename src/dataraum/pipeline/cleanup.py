@@ -63,8 +63,8 @@ def _drop_duckdb_tables(
     duckdb_conn: duckdb.DuckDBPyConnection, paths: list[str], layers: list[str]
 ) -> None:
     """Drop DuckDB tables/views that were collected before metadata cleanup."""
-    # Enriched and slicing_view layers create VIEWs, other layers create TABLEs
-    view_layers = {"enriched", "slicing_view"}
+    # Enriched, slicing_view, and slice layers create VIEWs, other layers create TABLEs
+    view_layers = {"enriched", "slicing_view", "slice"}
     has_views = bool(view_layers & set(layers))
     for path in paths:
         kind = "VIEW" if has_views else "TABLE"

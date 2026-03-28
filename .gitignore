@@ -3,8 +3,12 @@ data/
 test_output/
 pipeline_output/
 pipeline_testdata/
-examples/
+examples/*
+!examples/*.ipynb
 prototypes/
+plans/
+data_sources/
+.mcpregistry_*
 
 # AI assistants
 .claire/

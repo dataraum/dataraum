@@ -1,8 +1,8 @@
 """Data fixes phase — replays stored fix documents on pipeline re-run.
 
-Runs after semantic, before quality_review. Loads all DataFix records
-for the source, ordered by ordinal, and applies metadata fixes via
-MetadataInterpreter. Config fixes are skipped (already on disk).
+Runs after semantic. Loads all DataFix records for the source, ordered
+by ordinal, and applies metadata fixes via MetadataInterpreter. Config
+fixes are skipped (already on disk).
 
 Metadata fixes are re-applied because column IDs and typed tables
 are regenerated on --force re-runs.

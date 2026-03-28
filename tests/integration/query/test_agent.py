@@ -8,6 +8,8 @@ Tests cover:
 - Contract-based confidence evaluation
 """
 
+from __future__ import annotations
+
 from unittest.mock import MagicMock
 
 import duckdb

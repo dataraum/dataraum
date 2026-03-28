@@ -21,8 +21,8 @@ from dataraum.pipeline.fixes.models import FixSchema, FixSchemaField
 
 # Fallback thresholds (matching variance.py defaults)
 _DEFAULT_NULL_SPREAD = 0.10
-_DEFAULT_DISTINCT_RATIO = 2.0
-_DEFAULT_OUTLIER_SPREAD = 0.05
+_DEFAULT_DISTINCT_RATIO = 5.0
+_DEFAULT_OUTLIER_SPREAD = 0.25
 _DEFAULT_BENFORD_SPREAD = 0.30
 
 
@@ -37,6 +37,13 @@ class SliceVarianceDetector(EntropyDetector):
     Each spread is normalized: min(spread / (2 * threshold), 1.0)
     so that at-threshold = 0.5, at 2x threshold = 1.0.
     """
+
+    # Semantic roles where slice variance is meaningless —
+    # keys/FKs are unique by construction, attributes are free text,
+    # timestamps and measures naturally vary across categorical slices.
+    _SKIP_ROLES = frozenset(
+        {"key", "foreign_key", "identifier", "attribute", "timestamp", "measure"}
+    )
 
     detector_id = "slice_variance"
     layer = Layer.VALUE
@@ -217,6 +224,20 @@ class SliceVarianceDetector(EntropyDetector):
         Returns:
             List with single EntropyObject, or empty if < 2 slices.
         """
+        # Skip columns whose semantic role makes variance meaningless.
+        # Check analysis_results first (populated by _load_data on prior calls
+        # or injected by test fixtures), then fall back to DB lookup.
+        semantic_role = context.analysis_results.get("semantic_role")
+        if semantic_role is None and context.session is not None and context.column_id is not None:
+            from dataraum.entropy.detectors.loaders import load_semantic
+
+            sem = load_semantic(context.session, context.column_id)
+            if sem is not None:
+                semantic_role = sem.get("semantic_role")
+                context.analysis_results["semantic_role"] = semantic_role
+        if semantic_role in self._SKIP_ROLES:
+            return []
+
         slice_profiles: list[dict[str, Any]] = self._load_data(context)
 
         if len(slice_profiles) < 2:

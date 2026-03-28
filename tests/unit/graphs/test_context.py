@@ -33,7 +33,7 @@ class TestColumnContext:
         assert ctx.data_type is None
         assert ctx.flags == []
         assert ctx.business_name is None
-        assert ctx.entropy_assumptions == []
+        assert ctx.resolution_hints == []
 
     def test_create_full(self) -> None:
         """Create column context with all fields."""
@@ -55,27 +55,19 @@ class TestColumnContext:
             outlier_ratio=0.02,
             is_stale=False,
             detected_granularity="daily",
-            quality_grade="B",
-            quality_score=0.82,
-            quality_summary="Generally good quality with minor null issues.",
-            quality_findings=["5% null values in recent months"],
             flags=["high_cardinality"],
-            entropy_explanation="Amount column has multi-currency uncertainty.",
-            entropy_assumptions=[
+            resolution_hints=[
                 {
-                    "dimension": "semantic.units",
-                    "assumption_text": "Amounts are in local currency",
-                    "confidence": "medium",
-                    "impact": "high",
-                    "basis": "currency_code column present",
+                    "action": "normalize_currency",
+                    "description": "Convert to EUR",
+                    "effort": "medium",
                 }
             ],
         )
         assert ctx.data_type == "DOUBLE"
         assert ctx.business_name == "Invoice Amount"
         assert ctx.unit_source_column == "currency_code"
-        assert ctx.quality_summary == "Generally good quality with minor null issues."
-        assert len(ctx.entropy_assumptions) == 1
+        assert len(ctx.resolution_hints) == 1
 
 
 class TestTableContext:
@@ -93,7 +85,7 @@ class TestTableContext:
         assert ctx.flags == []
         assert ctx.table_description is None
         assert ctx.grain_columns == []
-        assert ctx.table_entropy_assumptions == []
+        assert ctx.readiness_for_use is None
 
     def test_create_with_columns(self) -> None:
         """Create table context with columns."""
@@ -157,7 +149,6 @@ class TestGraphExecutionContext:
         assert ctx.relationships == []
         assert ctx.total_tables == 0
         assert ctx.slice_column is None
-        assert ctx.active_assumptions == []
 
     def test_create_full(self) -> None:
         """Create full execution context."""
@@ -187,19 +178,10 @@ class TestGraphExecutionContext:
             quality_issues_by_severity={"warning": 2, "error": 0},
             slice_column="region",
             slice_value="EMEA",
-            active_assumptions=[
-                {
-                    "table": "transactions",
-                    "column": "amount",
-                    "assumption_text": "Local currency",
-                    "confidence": "medium",
-                }
-            ],
         )
         assert len(ctx.tables) == 1
         assert ctx.graph_pattern == "star_schema"
         assert ctx.slice_column == "region"
-        assert len(ctx.active_assumptions) == 1
 
 
 class TestValidationContext:
@@ -306,7 +288,6 @@ class TestFormatMetadataDocument:
             business_name="Invoice Amount",
             business_description="Total before tax",
             unit_source_column="currency_code",
-            quality_grade="B",
             is_derived=True,
             derived_formula="qty * price",
         )
@@ -326,78 +307,8 @@ class TestFormatMetadataDocument:
         assert "currency_code" in result
         assert "qty * price" in result
 
-    def test_quality_narrative(self) -> None:
-        """Quality summary and findings are shown per column."""
-        col = ColumnContext(
-            column_id="col-1",
-            column_name="email",
-            table_name="users",
-            quality_grade="C",
-            quality_summary="Email column has 15% invalid formats across slices.",
-            quality_findings=["15% invalid email formats", "Higher null rate in EMEA slice"],
-            quality_recommendations=["Investigate null source"],
-        )
-        table = TableContext(
-            table_id="tbl-1",
-            table_name="users",
-            columns=[col],
-        )
-        ctx = GraphExecutionContext(tables=[table], total_tables=1)
-        result = format_metadata_document(ctx)
-
-        assert "**Quality**:" in result
-        assert "email (Grade C):" in result
-        assert "Email column has 15% invalid formats across slices." in result
-        assert "15% invalid email formats" in result
-        assert "Recommendation: Investigate null source" in result
-
-    def test_quality_multiple_columns(self) -> None:
-        """Quality narratives shown for all columns, not just the first."""
-        col1 = ColumnContext(
-            column_id="col-1",
-            column_name="email",
-            table_name="users",
-            quality_grade="C",
-            quality_summary="Email has issues.",
-        )
-        col2 = ColumnContext(
-            column_id="col-2",
-            column_name="phone",
-            table_name="users",
-            quality_grade="D",
-            quality_summary="Phone has severe issues.",
-        )
-        table = TableContext(
-            table_id="tbl-1",
-            table_name="users",
-            columns=[col1, col2],
-        )
-        ctx = GraphExecutionContext(tables=[table], total_tables=1)
-        result = format_metadata_document(ctx)
-
-        assert "email (Grade C):" in result
-        assert "phone (Grade D):" in result
-
-    def test_table_entropy_explanation_rendered(self) -> None:
-        """Table-level entropy explanation appears in data quality notes."""
-        table = TableContext(
-            table_id="tbl-1",
-            table_name="orders",
-            table_entropy_explanation="Table-level currency ambiguity across columns.",
-            table_entropy_assumptions=[
-                {"assumption_text": "EUR assumed", "confidence": "high", "basis": "config"},
-            ],
-            columns=[],
-        )
-        ctx = GraphExecutionContext(tables=[table], total_tables=1)
-        result = format_metadata_document(ctx)
-
-        assert "Data Quality Notes" in result
-        assert "Table: Table-level currency ambiguity across columns." in result
-        assert "EUR assumed" in result
-
-    def test_entropy_assumptions_and_actions_per_column(self) -> None:
-        """Entropy explanation, assumptions, and resolution actions shown."""
+    def test_entropy_scores_per_column(self) -> None:
+        """Entropy scores shown per column in data quality notes."""
         col = ColumnContext(
             column_id="col-1",
             column_name="amount",
@@ -406,15 +317,7 @@ class TestFormatMetadataDocument:
                 "worst_intent_p_high": 0.75,
                 "readiness": "investigate",
             },
-            entropy_explanation="Amount column has multi-currency uncertainty.",
-            entropy_assumptions=[
-                {
-                    "assumption_text": "Amounts are in local currency",
-                    "confidence": "medium",
-                    "basis": "currency_code present",
-                }
-            ],
-            entropy_resolution_actions=[
+            resolution_hints=[
                 {
                     "action": "normalize_currency",
                     "description": "Join with fx_rates to convert amounts to EUR",
@@ -431,11 +334,8 @@ class TestFormatMetadataDocument:
         ctx = GraphExecutionContext(tables=[table], total_tables=1)
         result = format_metadata_document(ctx)
 
-        assert "Data Quality Notes" in result
-        assert "amount: Amount column has multi-currency uncertainty." in result
-        assert "Amounts are in local currency" in result
-        assert "Join with fx_rates to convert amounts to EUR" in result
-        assert "effort: medium" in result
+        # Column notes include entropy readiness indicator
+        assert "investigate" in result
 
     def test_relationships_table(self) -> None:
         """Relationships rendered as a table."""
@@ -597,27 +497,6 @@ class TestFormatMetadataDocument:
         assert "VERIFIED" in result
         assert "3/3 validations" in result
 
-    def test_active_assumptions_section(self) -> None:
-        """Active assumptions aggregated in top-level section."""
-        ctx = GraphExecutionContext(
-            active_assumptions=[
-                {
-                    "table": "orders",
-                    "column": "amount",
-                    "assumption_text": "Amounts in local currency",
-                    "confidence": "medium",
-                    "basis": "currency_code present",
-                    "impact": "high",
-                },
-            ],
-        )
-        result = format_metadata_document(ctx)
-
-        assert "## Assumptions in Effect" in result
-        assert "orders.amount" in result
-        assert "Amounts in local currency" in result
-        assert "currency_code present" in result
-
     def test_validation_results(self) -> None:
         """Validation results shown with pass/fail counts."""
         ctx = GraphExecutionContext(
@@ -676,15 +555,10 @@ class TestFormatMetadataDocument:
                 "overall_readiness": "investigate",
                 "critical_entropy_count": 1,
             },
-            active_assumptions=[
-                {"table": "t", "column": "c", "assumption_text": "x", "confidence": "m"},
-                {"table": "t", "column": "d", "assumption_text": "y", "confidence": "m"},
-            ],
         )
         result = format_metadata_document(ctx)
 
         assert "Data readiness: investigate" in result
-        assert "2 columns need assumptions" in result
         assert "1 blocked" in result
 
     def test_entropy_blocked_indicator_in_notes(self) -> None:

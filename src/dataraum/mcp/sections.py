@@ -190,21 +190,13 @@ def build_semantics_section(context: GraphExecutionContext) -> dict[str, Any]:
 
 
 def build_quality_section(context: GraphExecutionContext) -> dict[str, Any]:
-    """Build quality section: grades, entropy, interpretations, assumptions."""
+    """Build quality section: grades, entropy, assumptions."""
     # Check what's available
-    has_quality_grades = any(col.quality_grade for table in context.tables for col in table.columns)
     has_entropy = any(col.entropy_scores for table in context.tables for col in table.columns)
-    has_interpretation = any(
-        col.entropy_explanation for table in context.tables for col in table.columns
-    )
 
     availability: dict[str, Any] = {}
-    if not has_quality_grades:
-        availability["quality_grades"] = "not_yet_available"
     if not has_entropy:
         availability["entropy_scores"] = "not_yet_available"
-    if not has_interpretation:
-        availability["entropy_interpretation"] = "not_yet_available"
 
     tables = []
     for table in context.tables:
@@ -212,43 +204,25 @@ def build_quality_section(context: GraphExecutionContext) -> dict[str, Any]:
 
         if table.readiness_for_use:
             t["readiness"] = table.readiness_for_use
-        if table.table_entropy_explanation:
-            t["explanation"] = table.table_entropy_explanation
 
         columns = []
         for col in table.columns:
             # Only include columns with quality data
             if not any(
                 [
-                    col.quality_grade,
                     col.entropy_scores,
-                    col.entropy_explanation,
                     col.flags,
                 ]
             ):
                 continue
 
             c: dict[str, Any] = {"name": col.column_name}
-            if col.quality_grade:
-                c["quality_grade"] = col.quality_grade
-            if col.quality_score is not None:
-                c["quality_score"] = round(col.quality_score, 3)
-            if col.quality_summary:
-                c["quality_summary"] = col.quality_summary
-            if col.quality_findings:
-                c["findings"] = col.quality_findings
-            if col.quality_recommendations:
-                c["recommendations"] = col.quality_recommendations
             if col.entropy_scores:
                 c["entropy_scores"] = col.entropy_scores
-            if col.entropy_explanation:
-                c["explanation"] = col.entropy_explanation
             if col.flags:
                 c["flags"] = col.flags
-            if col.entropy_assumptions:
-                c["assumptions"] = col.entropy_assumptions
-            if col.entropy_resolution_actions:
-                c["resolution_actions"] = col.entropy_resolution_actions
+            if col.resolution_hints:
+                c["resolution_actions"] = col.resolution_hints
             columns.append(c)
 
         if columns:
@@ -265,16 +239,12 @@ def build_quality_section(context: GraphExecutionContext) -> dict[str, Any]:
 
     result["tables"] = tables
 
-    if context.active_assumptions:
-        result["assumptions_in_effect"] = context.active_assumptions
-
     if availability:
         result["availability"] = availability
         result["hint"] = (
             "Some quality data is not yet available. The pipeline produces quality "
-            "data progressively: quality_grades after quality_summary phase, "
-            "entropy_scores after entropy phase, interpretations after "
-            "entropy_interpretation phase. Use get_quality(gate=...) for "
+            "data progressively: entropy_scores after each phase's detectors run. "
+            "Use get_quality(gate=...) for "
             "zone-specific violations and fix actions."
         )
 

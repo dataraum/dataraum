@@ -13,7 +13,6 @@ from sqlalchemy.orm import Session
 
 from dataraum.entropy.contracts import evaluate_all_contracts
 from dataraum.entropy.db_models import EntropyObjectRecord
-from dataraum.entropy.interpretation_db_models import EntropyInterpretationRecord
 from dataraum.entropy.views.network_context import build_for_network
 from dataraum.entropy.views.query_context import network_to_column_summaries
 from dataraum.storage import Column, Source, Table
@@ -77,7 +76,7 @@ def merge_actions(
     """Merge actions from all sources into a unified list.
 
     Args:
-        interp_by_col: Column key -> EntropyInterpretationRecord from LLM
+        interp_by_col: Column key -> interpretation record with resolution_actions_json
         entropy_objects_by_col: Column key -> list of EntropyObjectRecord
         violation_dims: Dimension -> list of affected column keys from contracts
         network_context: Optional EntropyForNetwork with per-column Bayesian
@@ -237,19 +236,8 @@ def load_actions(session: Session, source: Source) -> list[dict[str, Any]]:
     network_context = build_for_network(session, table_ids)
     column_summaries = network_to_column_summaries(network_context)
 
-    # Get LLM interpretations with resolution actions (column-level and table-level)
-    interp_result = session.execute(
-        select(EntropyInterpretationRecord).where(
-            EntropyInterpretationRecord.source_id == source.source_id,
-        )
-    )
+    # Interpretation records removed; pass empty dict
     interp_by_col: dict[str, Any] = {}
-    for interp in interp_result.scalars().all():
-        if interp.column_name:
-            col_key = f"{interp.table_name}.{interp.column_name}"
-        else:
-            col_key = interp.table_name
-        interp_by_col[col_key] = interp
 
     # Get entropy objects for evidence
     entropy_objects_by_col: dict[str, list[Any]] = defaultdict(list)

@@ -2,7 +2,7 @@
 
 Routes fixes by schema routing field:
 - preprocess: ``cleanup_phase_cascade()`` + ``pipeline_run()``
-- postprocess: MetadataInterpreter patches DB directly, measured at next gate
+- postprocess: MetadataInterpreter patches DB directly, measured at next run
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ def apply_fixes(
 
     This is the main entry point for programmatic fix application.
     Wraps existing components: apply_and_persist, cleanup_phase_cascade,
-    pipeline_run, and persist_gate_result.
+    and pipeline_run.
 
     Args:
         output_dir: Pipeline output directory to fix.
@@ -114,7 +114,7 @@ def apply_fixes(
     from dataraum.core.config import reset_config_root, set_config_root
     from dataraum.core.connections import ConnectionConfig, ConnectionManager
     from dataraum.entropy.config import clear_entropy_config_cache
-    from dataraum.entropy.gate import aggregate_at_gate, persist_gate_result
+    from dataraum.entropy.measurement import measure_entropy
     from dataraum.pipeline.cleanup import cleanup_phase_cascade
     from dataraum.pipeline.fixes.interpreters import apply_and_persist
     from dataraum.pipeline.runner import RunConfig
@@ -132,11 +132,11 @@ def apply_fixes(
         rerun_phases = _determine_rerun_phases(fix_documents)
         has_preprocess = bool(rerun_phases)
 
-        # 1. Snapshot gate BEFORE, apply fixes
+        # 1. Snapshot measurement BEFORE, apply fixes
         with manager.session_scope() as session:
             source = _get_source(session)
 
-            gate_before = aggregate_at_gate(
+            measurement_before = measure_entropy(
                 session,
                 source.source_id,
                 _detector_ids_for_gate(target_phase),
@@ -189,7 +189,7 @@ def apply_fixes(
                 phases_completed=run_result.phases_completed,
             )
 
-        # 3. Read gate AFTER
+        # 3. Read measurement AFTER
         reset_config_root()
         set_config_root(config_root)
         clear_entropy_config_cache()
@@ -199,16 +199,10 @@ def apply_fixes(
         try:
             with manager2.session_scope() as session2:
                 source2 = _get_source(session2)
-                gate_after = aggregate_at_gate(
+                measurement_after = measure_entropy(
                     session2,
                     source2.source_id,
                     _detector_ids_for_gate(target_phase),
-                )
-                persist_gate_result(
-                    session2,
-                    source2.source_id,
-                    gate_after,
-                    phase_name=target_phase,
                 )
         finally:
             manager2.close()
@@ -216,8 +210,8 @@ def apply_fixes(
         return ApplyFixResult(
             applied_fixes=applied,
             phases_rerun=sorted(rerun_phases),
-            gate_before=dict(gate_before.column_details),
-            gate_after=dict(gate_after.column_details),
+            gate_before=dict(measurement_before.column_details),
+            gate_after=dict(measurement_after.column_details),
         )
 
     except Exception as e:

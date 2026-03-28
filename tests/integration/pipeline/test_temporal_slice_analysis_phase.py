@@ -1,5 +1,7 @@
 """Tests for temporal slice analysis phase."""
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -382,9 +384,9 @@ class TestTemporalSliceAnalysisPhase:
         session.add(slice_def_b)
         session.commit()
 
-        # -- Create DuckDB slice tables for table A only (table B would fail anyway)
+        # -- Create DuckDB slice views for table A only (table B would fail anyway)
         duckdb_conn.execute("""
-            CREATE TABLE slice_region_us AS
+            CREATE OR REPLACE VIEW slice_region_us AS
             SELECT '2024-01-15'::DATE AS date, 'US' AS region, 100.0 AS amount
             UNION ALL
             SELECT '2024-02-15'::DATE, 'US', 200.0
@@ -392,7 +394,7 @@ class TestTemporalSliceAnalysisPhase:
             SELECT '2024-03-15'::DATE, 'US', 150.0
         """)
         duckdb_conn.execute("""
-            CREATE TABLE slice_region_eu AS
+            CREATE OR REPLACE VIEW slice_region_eu AS
             SELECT '2024-01-20'::DATE AS date, 'EU' AS region, 300.0 AS amount
             UNION ALL
             SELECT '2024-02-20'::DATE, 'EU', 250.0

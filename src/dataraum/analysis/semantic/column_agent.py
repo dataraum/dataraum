@@ -8,6 +8,8 @@ The output feeds into the tier 2 SemanticAgent as additional context,
 allowing the capable model to focus on relationships and table analysis.
 """
 
+from __future__ import annotations
+
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -155,7 +157,7 @@ class ColumnAnnotationAgent(LLMFeature):
                     parsed = json.loads(response.content)
                     output = ColumnAnnotationOutput.model_validate(parsed)
                     return Result.ok(output)
-                except json.JSONDecodeError, Exception:
+                except Exception:
                     pass
             return Result.fail("LLM did not use the annotate_columns tool")
 

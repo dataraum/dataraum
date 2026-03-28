@@ -296,7 +296,7 @@ class TestMultiSourceImport:
         duckdb_conn: duckdb.DuckDBPyConnection,
         two_csv_sources: tuple[Path, Path],
     ):
-        """source_path config still works (legacy mode)."""
+        """source_path config still works — tables prefixed with source name."""
         orders_csv, _ = two_csv_sources
         phase = ImportPhase()
         source_id = str(uuid4())
@@ -317,8 +317,8 @@ class TestMultiSourceImport:
             .scalars()
             .all()
         )
-        # No prefix — legacy mode uses the file stem directly
-        assert tables[0].table_name == "orders"
+        # source_name defaults to file stem ("orders"), table prefixed: orders__orders
+        assert tables[0].table_name == "orders__orders"
 
 
 # ---------------------------------------------------------------------------

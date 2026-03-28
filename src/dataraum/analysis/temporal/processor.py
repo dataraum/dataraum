@@ -14,6 +14,8 @@ This analyzes temporal characteristics like:
 Uses parallel processing for large tables to speed up profiling.
 """
 
+from __future__ import annotations
+
 import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor

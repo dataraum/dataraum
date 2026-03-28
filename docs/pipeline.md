@@ -1,6 +1,6 @@
 # Pipeline
 
-The DataRaum pipeline extracts metadata from CSV and Parquet files through 20 phases (21 exist, 1 de-configured by default). Each phase produces structured metadata stored in SQLite (metadata) and DuckDB (data). Phases declare their dependencies and execute in topological order with parallel execution where possible.
+The DataRaum pipeline extracts metadata from data files through 17 phases. Each phase produces structured metadata stored in SQLite (metadata) and DuckDB (data). Phases declare their dependencies and execute in topological order with parallel execution where possible.
 
 ## Running the Pipeline
 
@@ -20,117 +20,93 @@ dataraum run /path/to/data --contract aggregation_safe
 
 Via MCP (Claude Code, Claude Desktop):
 ```
-> Analyze the CSV at /path/to/data.csv
+> Add the CSV files in /path/to/data and analyze them
 ```
 
 Via Python:
 ```python
 from dataraum import Context
 
-# Pipeline runs via CLI or MCP; Context reads the results
 ctx = Context("./pipeline_output")
+ctx.run("/path/to/data")
 ```
 
 ## Phase Overview
 
-| # | Phase | Purpose | LLM | Gate Preconditions |
-|---|-------|---------|-----|--------------------|
-| 1 | **import** | Load files into raw VARCHAR tables | — | — |
-| 2 | **typing** | Type inference and resolution with quarantine | — | — |
-| 3 | **temporal** | Temporal pattern and trend analysis | — | — |
-| 4 | **statistics** | Statistical profiling of typed columns | — | type_fidelity ≤ 0.5 |
-| 5 | **column_eligibility** | Determine which columns qualify for analysis | — | — |
-| 6 | **correlations** | Derived column detection (same + cross-table via enriched views) | — | — |
-| 7 | **relationships** | Cross-table join detection (FK candidates) | — | — |
-| 8 | **statistical_quality** | Benford's Law compliance, outlier detection | — | — |
-| 9 | **semantic** | Business meaning, roles, entity types (dual-tier) | Yes | type_fidelity ≤ 0.3, join_path_determinism ≤ 0.5 |
-| 10 | **enriched_views** | Fact + dimension joined views | — | — |
-| 11 | **slicing** | Identify slice dimensions for analysis | Yes | — |
-| 12 | **slicing_view** | Create enriched views projected to slice-relevant columns | — | — |
-| 13 | **slice_analysis** | Execute slicing SQL, build slice tables | — | — |
-| 14 | **temporal_slice_analysis** | Distribution drift across slices over time | — | — |
-| 15 | **quality_summary** | Synthesize quality report per table | Yes | — |
-| 16 | **entropy** | Measure uncertainty across 4 dimensions | — | — |
-| 17 | **entropy_interpretation** | LLM interpretation of entropy scores | Yes | — |
-| 18 | **business_cycles** | Detect business processes across tables | Yes | — |
-| 19 | **validation** | Domain-specific validation checks | Yes | — |
-| 20 | **graph_execution** | Execute metric calculation graphs | Yes | type_fidelity ≤ 0.3, naming_clarity ≤ 0.4 |
+| # | Phase | Purpose | LLM |
+|---|-------|---------|-----|
+| 1 | **import** | Load files into raw VARCHAR tables | — |
+| 2 | **typing** | Type inference and resolution with quarantine | — |
+| 3 | **statistics** | Statistical profiling of typed columns | — |
+| 4 | **column_eligibility** | Determine which columns qualify for analysis | — |
+| 5 | **statistical_quality** | Benford's Law compliance, outlier detection | — |
+| 6 | **relationships** | Cross-table join detection (FK candidates) | — |
+| 7 | **temporal** | Temporal pattern and trend analysis | — |
+| 8 | **semantic** | Business meaning, roles, entity types (dual-tier) | Yes |
+| 9 | **data_fixes** | Apply stored metadata fixes | — |
+| 10 | **enriched_views** | Fact + dimension joined views | Yes |
+| 11 | **slicing** | Identify slice dimensions for analysis | Yes |
+| 12 | **slicing_view** | Create enriched views projected to slice-relevant columns | — |
+| 13 | **slice_analysis** | Execute slicing SQL, build slice tables | — |
+| 14 | **temporal_slice_analysis** | Distribution drift across slices over time | — |
+| 15 | **correlations** | Derived column detection (same + cross-table via enriched views) | — |
+| 16 | **business_cycles** | Detect business processes across tables | Yes |
+| 17 | **validation** | Domain-specific validation checks | Yes |
 
-7 of 20 active phases require an LLM.
+5 of 17 phases require an LLM.
 
 ## Phase Categories
 
 ### Data Layer (Phases 1–2)
-**Import** loads CSV/Parquet files as VARCHAR columns into DuckDB (`raw_{table}`). **Typing** infers column types via pattern matching and cast testing, producing `typed_{table}` and `quarantine_{table}` for rows that fail type conversion.
+**Import** loads CSV, Parquet, and JSON files as VARCHAR columns into DuckDB. **Typing** infers column types via pattern matching and cast testing, producing typed tables and quarantine tables for rows that fail type conversion.
 
-### Profiling Layer (Phases 3–8)
-Statistical profiling, temporal analysis, correlation detection, relationship discovery, and quality checks. These phases are purely computational — no LLM calls.
+### Profiling Layer (Phases 3–7)
+Statistical profiling, column eligibility evaluation, Benford's Law and outlier detection, relationship discovery, and temporal analysis. These phases are purely computational — no LLM calls.
 
-### Enrichment Layer (Phases 9–14)
-LLM-powered semantic analysis assigns business meaning to columns. Enriched views join fact and dimension tables. Slicing identifies meaningful data segments for deeper analysis.
+### Enrichment Layer (Phases 8–15)
+LLM-powered semantic analysis assigns business meaning to columns. Enriched views join fact and dimension tables. Slicing identifies meaningful data segments for deeper analysis. Correlations detect derived columns.
 
-### Quality Layer (Phases 15–17)
-Quality summaries synthesize per-table reports. Entropy detection measures uncertainty across structural, semantic, value, and computational dimensions. LLM interpretation provides human-readable explanations.
+### Domain Layer (Phases 16–17)
+Business cycle detection finds multi-table processes (e.g., order-to-cash). Validation runs domain-specific checks (e.g., debits = credits).
 
-### Domain Layer (Phases 18–20)
-Business cycle detection finds multi-table processes (e.g., order-to-cash). Validation runs domain-specific checks (e.g., debits = credits). Graph execution computes configured metrics.
+## Post-Phase Detectors
 
-## Entropy Gates
-
-Gates are checkpoints between pipeline phases where **entropy preconditions** are verified. When a phase's preconditions are not met (entropy is too high), the gate fires.
-
-- **`dataraum run`** defers all gate violations — they appear in the final summary but don't block the pipeline.
-- **`dataraum fix`** re-runs the pipeline interactively, pausing at each gate so you can review violations and apply fixes.
-
-Gates use **detector scores** — machine-verifiable metrics that can objectively gate the pipeline. All detectors calculate metrics from pre-computed metadata and can be used at gates.
-
-### Post-Verification
-
-After each phase completes, the orchestrator runs **post-verification** — re-measuring detector scores for dimensions that the phase's output affects. For example:
+After each phase completes, the orchestrator runs **post-step detectors** — entropy detectors declared in `config/pipeline.yaml` that measure uncertainty in the outputs of that phase. For example:
 
 - After `typing`: measures `type_fidelity`
-- After `statistics`: measures `null_ratio`, `outlier_rate`
-- After `relationships`: measures `join_path_determinism`, `relationship_quality`
-- After `semantic`: measures `naming_clarity`, `unit_declaration`
+- After `statistics`: measures `null_ratio`
+- After `semantic`: measures `business_meaning`, `unit_entropy`, `temporal_entropy`, `outlier_rate`, `benford`, `join_path_determinism`, `relationship_entropy`
+- After `enriched_views`: measures `dimension_coverage`
+- After `correlations`: measures `derived_value`
 
-This populates the `PipelineEntropyState` so that subsequent gates can fire on the first pipeline run (without requiring a prior entropy phase to have run).
+This populates entropy scores incrementally so that `measure` (via MCP) can report quality at any point during or after the pipeline run.
 
 ## Dependency Graph
 
 ```
-import ──► typing ──► statistics ──► column_eligibility ──┬──► correlations ──────┐
-                                                          ├──► relationships ─────┤
-                                                          └──► statistical_quality│
-                                                                                  │
-temporal ─────────────────────────────────────────────────────────────────────┐    │
-                                                                             │    │
-                                          semantic ◄──────────────────────────────┘
-                                             │
-                                    ┌────────┼──────────┐
-                                    ▼        ▼          ▼
-                          cross_table    enriched    validation
-                          _quality       _views
-                                           │
-                                           ▼
-                                        slicing
-                                           │
-                                           ▼
-                                     slice_analysis
-                                           │
-                              ┌─────────────┤
-                              ▼             ▼
-                     temporal_slice    quality_summary
-                     _analysis
-                              │             │
-                              └──────┬──────┘
-                                     ▼
-                                  entropy
-                                     │
-                                     ▼
-                            entropy_interpretation
-
-business_cycles ──── (independent)
-graph_execution ──── (independent)
+import ──► typing ──► statistics ──► column_eligibility ──┬──► statistical_quality ───┐
+                                                          ├──► relationships           │
+                                                          └──► temporal                │
+                                                                   │                   │
+                                                          semantic ◄┘                  │
+                                                              │                        │
+                                                         data_fixes                    │
+                                                              │                        │
+                                                     enriched_views ◄──────────────────┘
+                                                         │       │
+                                                  ┌──────┘       └──────┐
+                                                  ▼                     ▼
+                                               slicing            correlations
+                                                  │
+                                            slicing_view
+                                                  │
+                                           slice_analysis
+                                                  │
+                                    temporal_slice_analysis ◄── temporal
+                                                  │
+                                    business_cycles, validation
+                                    (depend on semantic, relationships,
+                                     temporal, enriched_views, slicing)
 ```
 
 ## Output Files
@@ -139,15 +115,8 @@ The pipeline writes to the output directory (default: `./pipeline_output`):
 
 | File | Engine | Contents |
 |------|--------|----------|
-| `metadata.db` | SQLite | All metadata: sources, tables, columns, relationships, semantic annotations, quality reports, entropy scores, etc. |
+| `metadata.db` | SQLite | All metadata: sources, tables, columns, relationships, semantic annotations, entropy scores, etc. |
 | `data.duckdb` | DuckDB | Raw, typed, and quarantine data tables plus enriched views |
-
-## Checking Pipeline Status
-
-```bash
-# Interactive dashboard with phase history, tables, entropy
-dataraum tui ./pipeline_output
-```
 
 ## Rerunning Phases
 

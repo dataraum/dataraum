@@ -100,7 +100,7 @@ def register_slice_tables(
         if not slice_definitions:
             return Result.ok([])
 
-        # Get all existing slice tables in DuckDB
+        # Get all existing slice views in DuckDB (SHOW TABLES includes views)
         tables_result = duckdb_conn.execute("SHOW TABLES").fetchall()
         duckdb_tables = {t[0] for t in tables_result}
         slice_tables_in_duckdb = {t for t in duckdb_tables if t.startswith("slice_")}

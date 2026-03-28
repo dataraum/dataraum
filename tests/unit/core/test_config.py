@@ -102,10 +102,10 @@ class TestLoadPhaseConfig:
         assert isinstance(data, dict)
         assert "vertical" in data
 
-    def test_loads_quality_summary_phase_config(self):
-        data = load_phase_config("quality_summary")
+    def test_loads_missing_phase_config_returns_empty(self):
+        data = load_phase_config("nonexistent_phase")
         assert isinstance(data, dict)
-        assert "variance_filter" in data
+        assert data == {}
 
 
 class TestLoadPipelineConfig:

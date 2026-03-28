@@ -85,6 +85,94 @@ class TestAddFileSource:
         assert source.source_type == "csv"
         assert source.status == "configured"
 
+    def test_register_json(self, manager: SourceManager, tmp_path: Path) -> None:
+        import json
+
+        data = [{"id": 1, "name": "Alice"}]
+        json_file = tmp_path / "records.json"
+        json_file.write_text(json.dumps(data))
+
+        result = manager.add_file_source("records", str(json_file))
+
+        assert result.success
+        info = result.unwrap()
+        assert info.source_type == "json"
+        assert info.status == "configured"
+        assert "id" in info.columns
+
+    def test_register_jsonl(self, manager: SourceManager, tmp_path: Path) -> None:
+        import json
+
+        lines = [json.dumps({"x": 1}), json.dumps({"x": 2})]
+        jsonl_file = tmp_path / "data.jsonl"
+        jsonl_file.write_text("\n".join(lines))
+
+        result = manager.add_file_source("jsonl_src", str(jsonl_file))
+
+        assert result.success
+        info = result.unwrap()
+        assert info.source_type == "json"
+        assert "x" in info.columns
+
+    def test_reject_unsupported_format(self, manager: SourceManager, tmp_path: Path) -> None:
+        xlsx = tmp_path / "data.xlsx"
+        xlsx.write_bytes(b"fake excel content")
+
+        result = manager.add_file_source("bad_fmt", str(xlsx))
+
+        assert not result.success
+        assert "Unsupported file format" in (result.error or "")
+        assert ".xlsx" in (result.error or "")
+        assert ".csv" in (result.error or "")
+
+    def test_register_directory(self, manager: SourceManager, tmp_path: Path) -> None:
+        (tmp_path / "a.csv").write_text("id,name\n1,Alice\n")
+        (tmp_path / "b.csv").write_text("id,name\n2,Bob\n")
+
+        result = manager.add_file_source("dir_src", str(tmp_path))
+
+        assert result.success
+        info = result.unwrap()
+        assert info.source_type == "csv"
+        assert info.discovered_schema is not None
+        assert info.discovered_schema["file_count"] == 2
+        assert info.discovered_schema["formats"] == {"csv": 2}
+        assert "2 csv" in info.discovered_schema["breakdown"]
+
+    def test_reject_empty_directory(self, manager: SourceManager, tmp_path: Path) -> None:
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+
+        result = manager.add_file_source("empty_dir", str(empty_dir))
+
+        assert not result.success
+        assert "No supported data files" in (result.error or "")
+
+    def test_directory_ignores_unsupported_files(
+        self, manager: SourceManager, tmp_path: Path
+    ) -> None:
+        (tmp_path / "data.csv").write_text("id\n1\n")
+        (tmp_path / "readme.txt").write_text("ignore me")
+        (tmp_path / "image.png").write_bytes(b"\x89PNG")
+
+        result = manager.add_file_source("mixed_dir", str(tmp_path))
+
+        assert result.success
+        info = result.unwrap()
+        assert info.discovered_schema is not None
+        assert info.discovered_schema["file_count"] == 1
+
+    def test_reject_too_many_files(self, manager: SourceManager, tmp_path: Path) -> None:
+        from dataraum.sources.manager import MAX_FILES_PER_SOURCE
+
+        for i in range(MAX_FILES_PER_SOURCE + 1):
+            (tmp_path / f"file_{i:03d}.csv").write_text("id\n1\n")
+
+        result = manager.add_file_source("big_dir", str(tmp_path))
+
+        assert not result.success
+        assert str(MAX_FILES_PER_SOURCE) in str(result.error)
+
 
 class TestAddDatabaseSource:
     def test_needs_credentials(self, session: Session, credential_chain: CredentialChain) -> None:

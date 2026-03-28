@@ -3,8 +3,7 @@
 SQLAlchemy models for persisting entropy measurements:
 - EntropyObjectRecord: Individual entropy measurements
 
-EntropyInterpretationRecord lives in interpretation_db_models.py
-(owned by the entropy_interpretation phase).
+See also interpretation_db_models.py (deprecated, scheduled for removal).
 """
 
 from __future__ import annotations

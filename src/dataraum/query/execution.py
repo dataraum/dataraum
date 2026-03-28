@@ -53,6 +53,7 @@ class ExecutionResult:
     step_results: list[StepExecutionResult]
     columns: list[str] | None = None
     rows: list[tuple[Any, ...]] | None = None
+    total_count: int | None = None
     final_value: Any = None
 
 
@@ -68,6 +69,7 @@ def execute_sql_steps(
     max_repair_attempts: int = 2,
     repair_fn: RepairFn | None = None,
     return_table: bool = False,
+    display_limit: int | None = None,
 ) -> Result[ExecutionResult]:
     """Execute SQL steps as temp views and run final SQL.
 
@@ -83,62 +85,57 @@ def execute_sql_steps(
         max_repair_attempts: Max repair retries per step (default 2)
         repair_fn: Optional function(failed_sql, error_msg, description) -> Result[repaired_sql]
         return_table: If True, return columns+rows from final SQL. If False, return scalar value.
+        display_limit: If set and return_table is True, push LIMIT to DuckDB
+            and compute total_count via COUNT(*). Avoids loading unbounded
+            results into Python memory.
 
     Returns:
         Result with ExecutionResult on success
     """
-    created_views: list[str] = []
     step_results: list[StepExecutionResult] = []
 
-    try:
-        # Execute each step as a temp view
-        for step in steps:
-            step_result = _execute_step(
-                step=step,
-                duckdb_conn=duckdb_conn,
-                created_views=created_views,
-                max_repair_attempts=max_repair_attempts,
-                repair_fn=repair_fn,
-            )
-            if not step_result.success or not step_result.value:
-                return Result.fail(step_result.error or f"Step '{step.step_id}' failed")
-            step_results.append(step_result.value)
-
-        # Execute final SQL
-        final_result = _execute_final(
-            final_sql=final_sql,
+    # Execute each step as a temp view
+    for step in steps:
+        step_result = _execute_step(
+            step=step,
             duckdb_conn=duckdb_conn,
             max_repair_attempts=max_repair_attempts,
             repair_fn=repair_fn,
-            return_table=return_table,
         )
-        if not final_result.success or not final_result.value:
-            return Result.fail(final_result.error or "Final SQL failed")
+        if not step_result.success or not step_result.value:
+            return Result.fail(step_result.error or f"Step '{step.step_id}' failed")
+        step_results.append(step_result.value)
 
-        execution_result = ExecutionResult(step_results=step_results)
+    # Execute final SQL
+    final_result = _execute_final(
+        final_sql=final_sql,
+        duckdb_conn=duckdb_conn,
+        max_repair_attempts=max_repair_attempts,
+        repair_fn=repair_fn,
+        return_table=return_table,
+        display_limit=display_limit,
+    )
+    if not final_result.success or not final_result.value:
+        return Result.fail(final_result.error or "Final SQL failed")
 
-        if return_table:
-            columns, rows = final_result.value
-            execution_result.columns = columns
-            execution_result.rows = rows
-        else:
-            execution_result.final_value = final_result.value
+    execution_result = ExecutionResult(step_results=step_results)
 
-        return Result.ok(execution_result)
+    if return_table:
+        columns, rows, total_count = final_result.value
+        execution_result.columns = columns
+        execution_result.rows = rows
+        execution_result.total_count = total_count
+    else:
+        execution_result.final_value = final_result.value
 
-    finally:
-        # Clean up temporary views
-        for view_name in created_views:
-            try:
-                duckdb_conn.execute(f"DROP VIEW IF EXISTS {view_name}")
-            except Exception:
-                pass
+    # Temp views are NOT dropped — they die when the cursor closes.
+    # This allows callers (e.g. export) to reuse them on the same cursor.
+    return Result.ok(execution_result)
 
 
 def _execute_step(
     step: SQLStep,
     duckdb_conn: duckdb.DuckDBPyConnection,
-    created_views: list[str],
     max_repair_attempts: int,
     repair_fn: RepairFn | None,
 ) -> Result[StepExecutionResult]:
@@ -150,7 +147,6 @@ def _execute_step(
         try:
             view_sql = f"CREATE OR REPLACE TEMP VIEW {step.step_id} AS {current_sql}"
             duckdb_conn.execute(view_sql)
-            created_views.append(step.step_id)
 
             # Get the result value
             result = duckdb_conn.execute(f"SELECT * FROM {step.step_id}").fetchone()
@@ -198,19 +194,38 @@ def _execute_final(
     max_repair_attempts: int,
     repair_fn: RepairFn | None,
     return_table: bool,
+    display_limit: int | None = None,
 ) -> Result[Any]:
-    """Execute the final SQL with retry/repair logic."""
+    """Execute the final SQL with retry/repair logic.
+
+    When display_limit is set and return_table is True, the LIMIT is pushed
+    to DuckDB (not applied as a Python slice) and total_count is computed
+    via COUNT(*) on the original SQL. Returns (columns, rows, total_count).
+    """
     current_sql = final_sql
     last_error: str | None = None
 
     for attempt in range(max_repair_attempts + 1):
         try:
-            result = duckdb_conn.execute(current_sql)
-            if return_table:
+            if return_table and display_limit is not None:
+                # Push LIMIT to DuckDB — avoids loading unbounded results
+                limited_sql = f"SELECT * FROM ({current_sql}) AS _dr_limited LIMIT {display_limit}"
+                result = duckdb_conn.execute(limited_sql)
                 columns = [desc[0] for desc in result.description]
                 rows = result.fetchall()
-                return Result.ok((columns, rows))
+                # Get total count from original (unlimited) SQL
+                count_row = duckdb_conn.execute(
+                    f"SELECT COUNT(*) FROM ({current_sql}) AS _dr_count"
+                ).fetchone()
+                total_count = count_row[0] if count_row else len(rows)
+                return Result.ok((columns, rows, total_count))
+            elif return_table:
+                result = duckdb_conn.execute(current_sql)
+                columns = [desc[0] for desc in result.description]
+                rows = result.fetchall()
+                return Result.ok((columns, rows, len(rows)))
             else:
+                result = duckdb_conn.execute(current_sql)
                 row = result.fetchone()
                 return Result.ok(row[0] if row else None)
         except Exception as e:

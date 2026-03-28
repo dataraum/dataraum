@@ -135,30 +135,28 @@ def _read_schema(
     suffix: str,
 ) -> tuple[list[str], int | None]:
     """Read column names and approximate row count for a file."""
-    path_str = str(path)
+    safe = str(path).replace("'", "''")
 
     if suffix in (".csv", ".tsv"):
         # Read just the header
-        result = conn.execute(f"SELECT * FROM read_csv_auto('{path_str}') LIMIT 0")
+        result = conn.execute(f"SELECT * FROM read_csv_auto('{safe}') LIMIT 0")
         columns = [desc[0] for desc in result.description]
         # Estimate row count from file size (rough)
         row_count = None
         try:
-            count_result = conn.execute(
-                f"SELECT count(*) FROM read_csv_auto('{path_str}')"
-            ).fetchone()
+            count_result = conn.execute(f"SELECT count(*) FROM read_csv_auto('{safe}')").fetchone()
             row_count = count_result[0] if count_result else None
         except Exception:
             pass
         return columns, row_count
 
     elif suffix == ".parquet":
-        result = conn.execute(f"SELECT * FROM read_parquet('{path_str}') LIMIT 0")
+        result = conn.execute(f"SELECT * FROM read_parquet('{safe}') LIMIT 0")
         columns = [desc[0] for desc in result.description]
         # Parquet metadata has exact count
         try:
             count_result = conn.execute(
-                f"SELECT count(*) FROM parquet_metadata('{path_str}')"
+                f"SELECT count(*) FROM parquet_metadata('{safe}')"
             ).fetchone()
             row_count = count_result[0] if count_result else None
         except Exception:
@@ -166,7 +164,7 @@ def _read_schema(
         return columns, row_count
 
     elif suffix in (".json", ".jsonl"):
-        result = conn.execute(f"SELECT * FROM read_json_auto('{path_str}') LIMIT 0")
+        result = conn.execute(f"SELECT * FROM read_json_auto('{safe}') LIMIT 0")
         columns = [desc[0] for desc in result.description]
         return columns, None
 

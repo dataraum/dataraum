@@ -36,11 +36,7 @@ from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.pipeline.db_models import PhaseLog, PipelineRun
 from dataraum.pipeline.events import EventCallback, EventType, PipelineEvent  # noqa: F401
-from dataraum.pipeline.scheduler import (
-    PipelineResult,
-    Resolution,
-    ResolutionAction,
-)
+from dataraum.pipeline.scheduler import PipelineResult
 from dataraum.pipeline.setup import setup_pipeline
 
 logger = get_logger(__name__)
@@ -72,9 +68,6 @@ class PhaseRunResult:
     status: str  # completed, failed, skipped
     duration_seconds: float = 0.0
     error: str | None = None
-
-    # Entropy scores from post-verification
-    post_verification_scores: dict[str, float] = field(default_factory=dict)
 
     # Phase outputs (typed tables, relationship counts, etc.)
     outputs: dict[str, Any] = field(default_factory=dict)
@@ -157,7 +150,7 @@ def run(config: RunConfig) -> Result[RunResult]:
             target_phase=config.target_phase,
         )
 
-        # Drive the generator — collect events, auto-defer gates
+        # Drive the generator — collect events
         gen = setup.scheduler.run()
         collected_events: list[PipelineEvent] = []
         pipeline_result: PipelineResult | None = None
@@ -174,11 +167,7 @@ def run(config: RunConfig) -> Result[RunResult]:
                     except Exception:
                         pass  # Never let callback failures break the pipeline
 
-                if event.event_type == EventType.EXIT_CHECK:
-                    # Programmatic runs always defer gate violations
-                    event = gen.send(Resolution(action=ResolutionAction.DEFER))
-                else:
-                    event = next(gen)
+                event = next(gen)
         except StopIteration as e:
             pipeline_result = e.value
 
@@ -190,7 +179,6 @@ def run(config: RunConfig) -> Result[RunResult]:
                 phases_skipped=[],
                 phases_blocked=[],
                 final_scores={},
-                deferred_issues=[],
                 error="Generator ended without returning a result",
             )
 
@@ -215,7 +203,6 @@ def run(config: RunConfig) -> Result[RunResult]:
                     status=log.status if log else "unknown",
                     duration_seconds=log.duration_seconds if log else 0.0,
                     error=log.error if log else None,
-                    post_verification_scores=log.entropy_scores or {} if log else {},
                     outputs=log.outputs or {} if log else {},
                 )
             )
@@ -352,7 +339,7 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Run the dataraum-context pipeline on CSV data.",
+        description="Run the dataraum pipeline on CSV data.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

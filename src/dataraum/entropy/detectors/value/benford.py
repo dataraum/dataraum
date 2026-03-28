@@ -48,6 +48,10 @@ class BenfordDetector(EntropyDetector):
     # Only measure columns benefit from Benford analysis
     _APPLICABLE_ROLES = frozenset({"measure"})
 
+    # Dimensionless columns (rates, ratios, indices) don't follow Benford's
+    # Law — their leading digits are determined by scale, not transaction counts.
+    _SKIP_UNIT_SOURCES = frozenset({"dimensionless"})
+
     def load_data(self, context: DetectorContext) -> None:
         """Load statistics and semantic annotation for this column."""
         if context.session is None or context.column_id is None:
@@ -81,6 +85,15 @@ class BenfordDetector(EntropyDetector):
         else:
             role = semantic.get("semantic_role")
         if role not in self._APPLICABLE_ROLES:
+            return []
+
+        # Skip dimensionless columns (rates, ratios, indices) — their
+        # leading digit distributions are scale-determined, not transaction-count-driven
+        if hasattr(semantic, "unit_source_column"):
+            unit_src = semantic.unit_source_column
+        else:
+            unit_src = semantic.get("unit_source_column")
+        if unit_src in self._SKIP_UNIT_SOURCES:
             return []
 
         # Load configuration

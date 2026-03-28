@@ -11,12 +11,12 @@ class TestGetDownstreamPhases:
         downstream = get_downstream_phases("semantic")
         # These phases all transitively depend on semantic
         assert "enriched_views" in downstream
-        assert "entropy_interpretation" in downstream
+        assert "enriched_views" in downstream
 
     def test_leaf_phase_has_no_downstream(self) -> None:
         """A leaf phase (nothing depends on it) returns empty set."""
-        downstream = get_downstream_phases("entropy_interpretation")
-        assert "graph_execution" in downstream
+        downstream = get_downstream_phases("validation")
+        assert downstream == set()
 
     def test_unknown_phase_returns_empty(self) -> None:
         """Unknown phase name returns empty set."""

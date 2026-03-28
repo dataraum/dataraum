@@ -12,12 +12,6 @@ from dataraum.entropy.core import (
     EntropyRepository,
     ResolutionOption,
 )
-from dataraum.entropy.interpretation import (
-    EntropyInterpretation,
-    EntropyInterpreter,
-    InterpretationInput,
-    TableInterpretationInput,
-)
 from dataraum.entropy.views import (
     EntropyForNetwork,
     EntropyForQuery,
@@ -39,9 +33,4 @@ __all__ = [
     "build_for_query",
     # Config
     "get_entropy_config",
-    # Interpretation
-    "EntropyInterpretation",
-    "EntropyInterpreter",
-    "InterpretationInput",
-    "TableInterpretationInput",
 ]

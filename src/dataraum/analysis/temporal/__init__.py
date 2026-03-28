@@ -19,6 +19,8 @@ Example:
             print(f"{profile.column_name}: {profile.detected_granularity}")
 """
 
+from __future__ import annotations
+
 from dataraum.analysis.temporal.db_models import (
     TemporalColumnProfile,
 )

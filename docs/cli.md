@@ -1,44 +1,49 @@
 # CLI Reference
 
-The `dataraum` command provides commands for running the metadata extraction pipeline, documenting domain knowledge, and querying your data.
+The `dataraum` CLI runs the metadata extraction pipeline and provides developer utilities. For interactive data exploration, querying, and source management, use the MCP server via Claude or another MCP client.
 
 ## Installation
 
 The CLI is installed automatically when you install the package:
 
 ```bash
-uv pip install -e .
+pip install dataraum
 ```
 
 ## Commands
 
 ### `run` - Run the Pipeline
 
-Execute the pipeline on CSV data sources.
+Execute the pipeline on data sources.
 
 ```bash
-dataraum run SOURCE [OPTIONS]
+dataraum run [SOURCE] [OPTIONS]
 ```
 
 **Arguments:**
-- `SOURCE` - Path to a CSV file or directory containing CSV files (required)
+- `SOURCE` - Path to a data file or directory (optional; uses registered sources when omitted)
 
 **Options:**
 - `-o, --output PATH` - Output directory for database files (default: `./pipeline_output`)
 - `-n, --name TEXT` - Name for the data source (default: derived from path)
 - `-p, --phase TEXT` - Run only this phase and its dependencies
 - `-f, --force` - Force re-run of target phase, deleting previous results (requires `--phase`)
-- `--contract TEXT` - Target contract name for gate evaluation
+- `--contract TEXT` - Target contract name for entropy evaluation
 - `-q, --quiet` - Suppress progress output
+- `-v, --verbose` - Increase logging verbosity (`-v` = INFO, `-vv` = DEBUG)
+- `--log-format TEXT` - Log output format: `console` (default) or `json`
 
 **Examples:**
 
 ```bash
 # Run full pipeline on a directory
-dataraum run /path/to/csv/directory
+dataraum run /path/to/data
 
 # Run on a single file with custom output
 dataraum run /path/to/file.csv --output ./my_output
+
+# Run using already-registered sources
+dataraum run --output ./output
 
 # Run only up to the statistics phase
 dataraum run /path/to/data --phase statistics
@@ -63,118 +68,18 @@ dataraum run /path/to/data --phase semantic -f
 - `--force` requires `--phase` — it only applies to the target phase, not its dependencies.
 - Only the target phase's output is deleted; dependency phases keep their results.
 
-### `fix` - Document Domain Knowledge
-
-Review data quality actions and document domain knowledge through an interactive agent. Fixes are stored in a durable ledger and used as context when re-running semantic analysis.
-
-```bash
-dataraum fix [OUTPUT_DIR] [OPTIONS]
-```
-
-**Arguments:**
-- `OUTPUT_DIR` - Output directory containing pipeline databases (default: `./pipeline_output`)
-
-**Options:**
-- `--rerun` - After documenting fixes, automatically re-run semantic + all downstream phases and show an entropy impact report
-
-**Workflow:**
-
-1. Run the pipeline: `dataraum run /path/to/data`
-2. Document domain knowledge: `dataraum fix ./pipeline_output`
-3. The agent shows `document_*` actions (e.g. undeclared units, unclear naming) and asks targeted questions
-4. Your answers are interpreted and stored in the fix ledger
-5. With `--rerun`, semantic analysis and all downstream phases re-run automatically, incorporating your fixes
-
-**Examples:**
-
-```bash
-# Interactive fix session
-dataraum fix ./pipeline_output
-
-# Fix and immediately re-run the pipeline
-dataraum fix --rerun ./pipeline_output
-```
-
-The `--rerun` flag handles the full re-run cycle: it snapshots entropy scores before cleaning, re-runs semantic + all downstream phases (enriched views, slicing, correlations, validation, graphs, entropy, etc.), and prints an entropy impact report showing which dimensions improved.
-
-**Stale detection:** Even without `--rerun`, the semantic phase automatically detects when fixes are newer than its last run and re-executes instead of skipping.
-
-### `tui` - Interactive Dashboard
-
-Open the Textual TUI for interactive exploration of pipeline results. Provides five screens: Home (overview), Entropy (dimension drill-down), Contracts (compliance), Actions (resolution actions), and Query (natural language).
-
-```bash
-dataraum tui [OUTPUT_DIR]
-```
-
-**Arguments:**
-- `OUTPUT_DIR` - Output directory containing pipeline databases (default: `./pipeline_output`)
-
-### `sources` - Manage Data Sources
-
-Subcommand group for discovering and registering data sources.
-
-```bash
-dataraum sources list [-o OUTPUT_DIR]
-dataraum sources add NAME PATH [-o OUTPUT_DIR]
-dataraum sources discover [PATH] [--no-recursive] [-o OUTPUT_DIR]
-dataraum sources remove NAME [--purge] [-o OUTPUT_DIR]
-```
-
-**Examples:**
-
-```bash
-# Scan for data files
-dataraum sources discover /path/to/data
-
-# Register a CSV file
-dataraum sources add sales /path/to/sales.csv
-
-# List registered sources
-dataraum sources list
-
-# Remove a source (keep analysis results)
-dataraum sources remove old_data
-```
-
 ### `dev` - Developer Utilities
 
-Subcommand group for pipeline debugging and maintenance.
+Subcommand group for pipeline debugging.
 
 ```bash
 dataraum dev phases [--reset PHASE] [-o OUTPUT_DIR]
-dataraum dev inspect [OUTPUT_DIR] [--vertical VERTICAL]
-dataraum dev reset [OUTPUT_DIR] [--force]
+dataraum dev context [OUTPUT_DIR]
 ```
 
 - `dev phases` — List all pipeline phases and their dependencies
 - `dev phases --reset PHASE` — Reset a specific phase (delete its data and checkpoint)
-- `dev inspect` — Inspect graph definitions, filter coverage, and execution context
-- `dev reset` — Delete all database files from an output directory
-
-### `query` - Natural Language Data Query
-
-Ask questions about your data in natural language. The query engine generates SQL, executes it, and returns an answer with confidence levels.
-
-```bash
-dataraum query OUTPUT_DIR QUESTION
-```
-
-**Arguments:**
-- `OUTPUT_DIR` - Output directory containing pipeline databases (required)
-- `QUESTION` - Natural language question about the data (required)
-
-**Example:**
-
-```bash
-dataraum query ./pipeline_output "What is the total revenue by month?"
-```
-
-**Output includes:**
-- Natural language answer
-- Generated SQL
-- Result data
-- Confidence level
+- `dev context` — Print the full metadata document that agents receive when generating SQL
 
 ## Output Files
 
@@ -184,12 +89,3 @@ After running the pipeline, the output directory contains:
 |------|-------------|
 | `metadata.db` | SQLite database with all metadata (sources, tables, columns, relationships, etc.) |
 | `data.duckdb` | DuckDB database with raw, typed, and quarantine tables |
-
-## Configuration
-
-The command name can be changed in `pyproject.toml`:
-
-```toml
-[project.scripts]
-dataraum = "dataraum_context.cli:app"
-```

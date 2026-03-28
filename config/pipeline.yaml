@@ -54,17 +54,12 @@ phases:
     description: Apply stored metadata fixes
     dependencies: [semantic]
 
-  quality_review:
-    description: Quality checkpoint after semantic — runs foundation entropy detectors
-    dependencies: [semantic, statistical_quality]
-    gate: true
-
   # =========================================================================
   # Zone 2: Enrichment
   # =========================================================================
   enriched_views:
     description: Create enriched views joining fact + dimension tables
-    dependencies: [quality_review]
+    dependencies: [semantic, statistical_quality]
     produces: [enriched_view]
     detectors: [dimension_coverage]
 
@@ -86,7 +81,7 @@ phases:
     description: Distribution drift analysis on slices
     dependencies: [slice_analysis, temporal]
     produces: [drift_summaries]
-    detectors: [temporal_drift]
+    detectors: [temporal_drift, dimensional_entropy]
 
   correlations:
     description: Within-table correlation analysis
@@ -94,44 +89,20 @@ phases:
     produces: [correlation]
     detectors: [derived_value]
 
-  quality_summary:
-    description: LLM quality report generation
-    dependencies: [slice_analysis, temporal_slice_analysis]
-    produces: [column_quality_reports]
-    detectors: [dimensional_entropy, column_quality]
-
-  analysis_review:
-    description: Quality checkpoint after enrichment — runs Zone 2 entropy detectors
-    dependencies: [correlations, quality_summary, temporal_slice_analysis]
-    gate: true
-
   # =========================================================================
   # Zone 3: Interpretation
   # =========================================================================
-  entropy_interpretation:
-    description: LLM interpretation of entropy
-    dependencies: [computation_review]
-
   business_cycles:
     description: Expert LLM cycle detection
-    dependencies: [analysis_review, semantic, relationships, temporal, enriched_views, slicing, quality_summary]
+    dependencies: [semantic, relationships, temporal, enriched_views, slicing]
     produces: [business_cycles]
     detectors: [business_cycle_health]
 
   validation:
     description: LLM-powered validation checks
-    dependencies: [analysis_review, semantic, relationships, enriched_views, slicing]
+    dependencies: [semantic, relationships, enriched_views, slicing]
     produces: [validation]
     detectors: [cross_table_consistency]
-
-  computation_review:
-    description: Quality checkpoint after Zone 3 analysis
-    dependencies: [business_cycles, validation]
-    gate: true
-
-  graph_execution:
-    description: Execute metric graphs
-    dependencies: [semantic, column_eligibility, statistical_quality, temporal, relationships, correlations, slicing, quality_summary, entropy_interpretation]
 
 # Limits
 limits:

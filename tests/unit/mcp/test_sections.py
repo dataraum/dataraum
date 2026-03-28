@@ -217,11 +217,6 @@ class TestBuildQualitySection:
 
     def test_quality_data(self) -> None:
         col = _make_column(
-            quality_grade="B",
-            quality_score=0.85,
-            quality_summary="Moderate quality",
-            quality_findings=["3% null values"],
-            quality_recommendations=["Impute missing values"],
             flags=["moderate_nulls"],
         )
         table = _make_table(columns=[col], readiness_for_use="investigate")
@@ -237,16 +232,12 @@ class TestBuildQualitySection:
         t = result["tables"][0]
         assert t["readiness"] == "investigate"
         c = t["columns"][0]
-        assert c["quality_grade"] == "B"
-        assert c["quality_score"] == 0.85
         assert c["flags"] == ["moderate_nulls"]
 
     def test_entropy_data(self) -> None:
         col = _make_column(
             entropy_scores={"readiness": "investigate", "composite": 0.3},
-            entropy_explanation="High null ratio detected",
-            entropy_assumptions=[{"assumption_text": "nulls are MCAR", "confidence": "high"}],
-            entropy_resolution_actions=[{"action": "impute", "effort": "low"}],
+            resolution_hints=[{"action": "impute", "effort": "low"}],
         )
         table = _make_table(columns=[col])
         ctx = _make_context(tables=[table])
@@ -254,15 +245,7 @@ class TestBuildQualitySection:
 
         c = result["tables"][0]["columns"][0]
         assert c["entropy_scores"]["readiness"] == "investigate"
-        assert c["explanation"] == "High null ratio detected"
-        assert len(c["assumptions"]) == 1
         assert len(c["resolution_actions"]) == 1
-
-    def test_assumptions_in_effect(self) -> None:
-        assumption = {"table": "orders", "column": "amount", "assumption_text": "nulls are MCAR"}
-        ctx = _make_context(active_assumptions=[assumption])
-        result = build_quality_section(ctx)
-        assert result["assumptions_in_effect"] == [assumption]
 
     def test_availability_warnings(self) -> None:
         col = _make_column()  # No quality data at all
@@ -270,9 +253,7 @@ class TestBuildQualitySection:
         ctx = _make_context(tables=[table])
         result = build_quality_section(ctx)
 
-        assert "quality_grades" in result["availability"]
         assert "entropy_scores" in result["availability"]
-        assert "entropy_interpretation" in result["availability"]
         assert "hint" in result
 
 

@@ -1,5 +1,7 @@
 """Tests for shared SQL step execution function."""
 
+from __future__ import annotations
+
 import duckdb
 import pytest
 
@@ -127,47 +129,26 @@ class TestExecuteSqlSteps:
         assert not result.success
         assert "Final SQL failed" in result.error
 
-    def test_views_are_cleaned_up_on_success(self, duckdb_conn):
-        """Temp views are cleaned up after successful execution."""
+    def test_views_survive_for_export_reuse(self, duckdb_conn):
+        """Temp views survive after execution (cursor-scoped, not explicitly dropped)."""
         steps = [
             SQLStep(
-                step_id="cleanup_test",
+                step_id="reuse_test",
                 sql="SELECT 42 AS val",
-                description="Test cleanup",
+                description="Test view survival",
             )
         ]
 
         result = execute_sql_steps(
             steps=steps,
-            final_sql="SELECT val FROM cleanup_test",
+            final_sql="SELECT val FROM reuse_test",
             duckdb_conn=duckdb_conn,
         )
 
         assert result.success
-
-        # View should be dropped
-        with pytest.raises(duckdb.CatalogException):
-            duckdb_conn.execute("SELECT * FROM cleanup_test")
-
-    def test_views_are_cleaned_up_on_failure(self, duckdb_conn):
-        """Temp views are cleaned up even after failure."""
-        steps = [
-            SQLStep(
-                step_id="cleanup_fail_test",
-                sql="SELECT 42 AS val",
-                description="Good step",
-            )
-        ]
-
-        execute_sql_steps(
-            steps=steps,
-            final_sql="SELECT * FROM nonexistent",
-            duckdb_conn=duckdb_conn,
-        )
-
-        # View should be dropped despite failure
-        with pytest.raises(duckdb.CatalogException):
-            duckdb_conn.execute("SELECT * FROM cleanup_fail_test")
+        # Views survive for export reuse — they die when the connection/cursor closes
+        row = duckdb_conn.execute("SELECT * FROM reuse_test").fetchone()
+        assert row is not None
 
     def test_repair_function_called_on_failure(self, duckdb_conn):
         """Repair function is called when a step fails."""

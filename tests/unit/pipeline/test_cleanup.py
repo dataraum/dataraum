@@ -215,7 +215,7 @@ class TestCleanupPhaseCascade:
         # Create phase logs for semantic and some downstream phases
         _make_phase_log(session, source.source_id, "semantic")
         _make_phase_log(session, source.source_id, "enriched_views")
-        _make_phase_log(session, source.source_id, "entropy_interpretation")
+        _make_phase_log(session, source.source_id, "slicing")
         session.flush()
 
         cleaned = cleanup_phase_cascade("semantic", source.source_id, session, duck)
@@ -224,7 +224,7 @@ class TestCleanupPhaseCascade:
         # Should include semantic and downstream phases
         assert "semantic" in cleaned
         assert "enriched_views" in cleaned
-        assert "entropy_interpretation" in cleaned
+        assert "slicing" in cleaned
 
         # Phase logs should be deleted
         remaining = (

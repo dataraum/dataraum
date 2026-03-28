@@ -1,1 +1,1 @@
-"""Tests for dataraum-context."""
+"""Tests for dataraum."""

@@ -19,7 +19,6 @@ ALL_DETECTOR_IDS = {
     "unit_entropy",
     "temporal_entropy",
     "dimensional_entropy",
-    "column_quality",
     "dimension_coverage",
     "business_cycle_health",
     "cross_table_consistency",

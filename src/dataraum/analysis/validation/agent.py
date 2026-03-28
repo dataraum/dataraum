@@ -8,6 +8,7 @@ relevant columns and generate cross-table JOINs when needed.
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -225,6 +226,43 @@ class ValidationAgent(LLMFeature):
 
         return list(all_specs.values())
 
+    @staticmethod
+    def _scope_table_ids_from_sql(
+        sql: str,
+        schema: dict[str, Any],
+        all_table_ids: list[str],
+    ) -> list[str]:
+        """Derive which tables a validation SQL actually references.
+
+        Parses typed_* table names from the SQL and maps them back to
+        table_ids via the schema. Returns empty list (with warning) if
+        no tables can be resolved — never falls back to all_table_ids.
+        """
+        # Build duckdb_path → id map from schema (SQL references duckdb paths
+        # like typed_bank_transactions, not logical names like bank_transactions)
+        path_to_id: dict[str, str] = {}
+        for t in schema.get("tables", []):
+            duckdb_path = t.get("duckdb_path", t["table_name"])
+            path_to_id[duckdb_path] = t.get("table_id", "")
+
+        # Find all typed_* table references in SQL
+        referenced_names = set(re.findall(r"\btyped_\w+", sql))
+
+        scoped_ids = []
+        for name in referenced_names:
+            tid = path_to_id.get(name)
+            if tid and tid in all_table_ids:
+                scoped_ids.append(tid)
+
+        if not scoped_ids and referenced_names:
+            logger.warning(
+                "validation_table_scope_empty",
+                referenced_tables=list(referenced_names),
+                available_tables=list(path_to_id.keys()),
+            )
+
+        return scoped_ids
+
     def _run_single_validation(
         self,
         duckdb_conn: duckdb.DuckDBPyConnection,
@@ -263,6 +301,14 @@ class ValidationAgent(LLMFeature):
 
         generated = sql_result.value
 
+        # Scope table_ids to tables actually referenced in the SQL
+        if generated.sql_query:
+            scoped_table_ids = self._scope_table_ids_from_sql(
+                generated.sql_query, schema, table_ids
+            )
+        else:
+            scoped_table_ids = []
+
         # Check if validation can be performed
         if not generated.is_valid:
             return ValidationResult(
@@ -270,7 +316,7 @@ class ValidationAgent(LLMFeature):
                 spec_name=spec.name,
                 status=ValidationStatus.SKIPPED,
                 severity=spec.severity,
-                table_ids=table_ids,
+                table_ids=scoped_table_ids,
                 table_name=combined_table_name,
                 passed=False,
                 message=generated.validation_error or "Validation cannot be performed",
@@ -287,7 +333,7 @@ class ValidationAgent(LLMFeature):
                 spec_name=spec.name,
                 status=ValidationStatus.ERROR,
                 severity=spec.severity,
-                table_ids=table_ids,
+                table_ids=scoped_table_ids,
                 table_name=combined_table_name,
                 passed=False,
                 message=f"Generated SQL is invalid: {e}",
@@ -317,7 +363,7 @@ class ValidationAgent(LLMFeature):
                 spec_name=spec.name,
                 status=ValidationStatus.PASSED if passed else ValidationStatus.FAILED,
                 severity=spec.severity,
-                table_ids=table_ids,
+                table_ids=scoped_table_ids,
                 table_name=combined_table_name,
                 passed=passed,
                 message=message,
@@ -335,7 +381,7 @@ class ValidationAgent(LLMFeature):
                 spec_name=spec.name,
                 status=ValidationStatus.ERROR,
                 severity=spec.severity,
-                table_ids=table_ids,
+                table_ids=scoped_table_ids,
                 table_name=combined_table_name,
                 passed=False,
                 message=f"SQL execution error: {e}",
@@ -486,23 +532,32 @@ class ValidationAgent(LLMFeature):
         """
         check_type = spec.check_type
         params = spec.parameters
+        tolerance = params.get("tolerance", self.DEFAULT_TOLERANCE)
 
         if check_type == "balance":
             # Balance checks compare two values
             if row_count == 0:
-                return (False, "No results returned", {})
+                return (False, "No results returned", {"check_type": check_type})
 
             row = result_rows[0]
-            tolerance = params.get("tolerance", self.DEFAULT_TOLERANCE)
 
             # Look for difference column first (preferred: LLM computes the diff)
             if "difference" in row or "diff" in row:
                 diff = abs(float(row.get("difference", row.get("diff", 0)) or 0))
                 passed = diff <= tolerance
+                # Promote magnitude into flat details so the scorer can
+                # read it directly (it expects details["magnitude"]).
+                mag = abs(float(row.get("magnitude") or 0)) or abs(diff) or 1
                 return (
                     passed,
                     f"Balance difference: {diff:.2f} (tolerance: {tolerance})",
-                    {"difference": diff, "tolerance": tolerance, "row": row},
+                    {
+                        "check_type": check_type,
+                        "difference": diff,
+                        "magnitude": mag,
+                        "tolerance": tolerance,
+                        "row": row,
+                    },
                 )
 
             # Look for standard balance column names
@@ -515,7 +570,12 @@ class ValidationAgent(LLMFeature):
                 return (
                     passed,
                     f"Balance check: {value_cols[0]}={val1:.2f}, {value_cols[1]}={val2:.2f}, diff={diff:.2f}",
-                    {"values": row, "difference": diff, "tolerance": tolerance},
+                    {
+                        "check_type": check_type,
+                        "values": row,
+                        "difference": diff,
+                        "tolerance": tolerance,
+                    },
                 )
 
             # No recognizable columns — fail explicitly rather than silently pass
@@ -523,23 +583,36 @@ class ValidationAgent(LLMFeature):
                 False,
                 f"Balance check inconclusive: could not identify balance columns in result. "
                 f"Columns returned: {list(row.keys())}",
-                {"row": row},
+                {"check_type": check_type, "row": row},
             )
 
         elif check_type == "constraint":
-            # Constraint checks return violating rows
+            # Constraint checks return violating rows.
             if row_count == 0:
-                return (True, "No constraint violations found", {})
+                return (True, "No constraint violations found", {"check_type": check_type})
+            # Extract total_rows from result columns if the LLM included it
+            details: dict[str, Any] = {"check_type": check_type, "violation_count": row_count}
+            if result_rows:
+                for key in ("total_rows", "total_count", "total"):
+                    val = result_rows[0].get(key)
+                    if val is not None:
+                        details["total_rows"] = int(val)
+                        break
+                # Check for violation_count column (LLM may return a single summary row)
+                vc = result_rows[0].get("violation_count")
+                if vc is not None and row_count == 1:
+                    # Single row with violation_count → summary, not raw violations
+                    details["violation_count"] = int(vc)
             return (
                 False,
-                f"Found {row_count} constraint violations",
-                {"violation_count": row_count},
+                f"Found {details['violation_count']} constraint violations",
+                details,
             )
 
         elif check_type == "comparison":
             # Comparison checks (e.g., Assets = Liabilities + Equity)
             if row_count == 0:
-                return (False, "No results returned", {})
+                return (False, "No results returned", {"check_type": check_type})
 
             row = result_rows[0]
             tolerance = params.get("tolerance", self.DEFAULT_TOLERANCE)
@@ -547,11 +620,19 @@ class ValidationAgent(LLMFeature):
             # Check for an equation_holds or is_valid column
             if "equation_holds" in row:
                 passed = bool(row["equation_holds"])
-                return (passed, f"Equation check: {'passed' if passed else 'failed'}", row)
+                return (
+                    passed,
+                    f"Equation check: {'passed' if passed else 'failed'}",
+                    {**row, "check_type": check_type},
+                )
 
             if "is_valid" in row:
                 passed = bool(row["is_valid"])
-                return (passed, f"Comparison check: {'passed' if passed else 'failed'}", row)
+                return (
+                    passed,
+                    f"Comparison check: {'passed' if passed else 'failed'}",
+                    {**row, "check_type": check_type},
+                )
 
             # Check for difference column
             if "difference" in row:
@@ -560,30 +641,44 @@ class ValidationAgent(LLMFeature):
                 return (
                     passed,
                     f"Comparison difference: {diff:.2f}",
-                    {"difference": diff},
+                    {"check_type": check_type, "difference": diff},
                 )
 
             return (
                 False,
                 f"Comparison check inconclusive: could not identify comparison columns in result. "
                 f"Columns returned: {list(row.keys())}",
-                {"row": row},
+                {"check_type": check_type, "row": row},
             )
 
         elif check_type == "aggregate":
-            # Aggregate checks return summary values
+            # Aggregate checks return summary values with a rate metric
             if row_count == 0:
-                return (False, "No results returned", {})
+                return (False, "No results returned", {"check_type": check_type})
 
             row = result_rows[0]
-            return (True, "Aggregate check completed", row)
+            details = {**row, "check_type": check_type}
+
+            # Check orphan_rate / violation_rate against tolerance
+            rate = None
+            for key in ("orphan_rate", "violation_rate", "mismatch_rate", "error_rate"):
+                val = row.get(key)
+                if val is not None:
+                    rate = float(val)
+                    break
+
+            if rate is not None:
+                passed = rate <= tolerance
+                return (passed, f"Aggregate rate: {rate:.4f}", details)
+
+            return (True, "Aggregate check completed", details)
 
         else:
             # Custom check - assume passing if any results
             return (
                 row_count > 0,
                 f"Custom check returned {row_count} rows",
-                {"row_count": row_count},
+                {"check_type": check_type, "row_count": row_count},
             )
 
     def _persist_results(

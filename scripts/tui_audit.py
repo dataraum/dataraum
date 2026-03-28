@@ -59,7 +59,7 @@ async def main() -> None:
         print(f"[{status}] {msg}")
         results.append((name, ok, msg))
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     passed = sum(1 for _, ok, _ in results if ok)
     print(f"Result: {passed}/{len(results)} screens passed")
 

@@ -31,6 +31,18 @@ _log = logging.getLogger(__name__)
 # Source name pattern: lowercase, starts with letter, 2-49 chars total.
 _NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,48}$")
 
+# Max files per directory source. Prevents accidental data lake ingestion.
+MAX_FILES_PER_SOURCE = 20
+
+# Supported file extensions → source type.
+_EXTENSION_MAP: dict[str, str] = {
+    ".csv": "csv",
+    ".tsv": "csv",
+    ".parquet": "parquet",
+    ".json": "json",
+    ".jsonl": "json",
+}
+
 
 @dataclass
 class SourceInfo:
@@ -85,16 +97,19 @@ class SourceManager:
         if not file_path.exists():
             return Result.fail(f"Path not found: {path}")
 
+        # Directory source: scan for supported files
+        if file_path.is_dir():
+            return self._add_directory_source(name, file_path)
+
         # Determine source type from extension
         suffix = file_path.suffix.lower()
-        type_map = {
-            ".csv": "csv",
-            ".tsv": "csv",
-            ".parquet": "parquet",
-            ".json": "json",
-            ".jsonl": "json",
-        }
-        source_type = type_map.get(suffix, "file")
+        source_type = _EXTENSION_MAP.get(suffix)
+
+        if source_type is None:
+            supported = ", ".join(sorted(_EXTENSION_MAP.keys()))
+            return Result.fail(
+                f"Unsupported file format: '{suffix}'. Supported extensions: {supported}"
+            )
 
         # Get column preview via DuckDB
         columns: list[str] = []
@@ -126,6 +141,85 @@ class SourceManager:
                 path=str(file_path),
                 columns=columns,
                 row_count_estimate=row_count,
+            )
+        )
+
+    def _add_directory_source(self, name: str, directory: Path) -> Result[SourceInfo]:
+        """Register a directory source by scanning for supported files.
+
+        Args:
+            name: Unique source name.
+            directory: Path to directory.
+
+        Returns:
+            Result with source info including file count and format breakdown.
+        """
+        # Scan for supported files
+        format_counts: dict[str, int] = {}
+        total_files = 0
+        for child in sorted(directory.iterdir()):
+            if not child.is_file():
+                continue
+            fmt = _EXTENSION_MAP.get(child.suffix.lower())
+            if fmt:
+                format_counts[fmt] = format_counts.get(fmt, 0) + 1
+                total_files += 1
+
+        if total_files == 0:
+            supported = ", ".join(sorted(_EXTENSION_MAP.keys()))
+            return Result.fail(
+                f"No supported data files found in '{directory}'. Supported extensions: {supported}"
+            )
+
+        if total_files > MAX_FILES_PER_SOURCE:
+            return Result.fail(
+                f"Directory contains {total_files} data files (max {MAX_FILES_PER_SOURCE}). "
+                f"Split into multiple sources or reduce the number of files."
+            )
+
+        # Determine dominant format for source_type
+        source_type = max(format_counts, key=lambda k: format_counts[k])
+
+        # Preview columns from first file of dominant format
+        columns: list[str] = []
+        row_count: int | None = None
+        for child in sorted(directory.iterdir()):
+            if child.is_file() and _EXTENSION_MAP.get(child.suffix.lower()) == source_type:
+                try:
+                    conn = duckdb.connect()
+                    try:
+                        columns, row_count = _read_file_preview(conn, child)
+                    finally:
+                        conn.close()
+                except Exception:
+                    _log.debug("Preview failed for %s", child, exc_info=True)
+                break
+
+        source = Source(
+            name=name,
+            source_type=source_type,
+            connection_config={"path": str(directory.resolve())},
+            status="configured",
+        )
+        self._session.add(source)
+        self._session.flush()
+
+        # Build format breakdown string for discovery info
+        breakdown = ", ".join(f"{count} {fmt}" for fmt, count in sorted(format_counts.items()))
+
+        return Result.ok(
+            SourceInfo(
+                name=name,
+                source_type=source_type,
+                status="configured",
+                path=str(directory),
+                columns=columns,
+                row_count_estimate=row_count,
+                discovered_schema={
+                    "file_count": total_files,
+                    "formats": format_counts,
+                    "breakdown": breakdown,
+                },
             )
         )
 
@@ -312,22 +406,41 @@ class SourceManager:
 
 def _read_file_preview(conn: duckdb.DuckDBPyConnection, path: Path) -> tuple[list[str], int | None]:
     """Read column names and row count from a file."""
-    path_str = str(path)
+    safe = str(path).replace("'", "''")
     suffix = path.suffix.lower()
 
     if suffix in (".csv", ".tsv"):
-        result = conn.execute(f"SELECT * FROM read_csv_auto('{path_str}') LIMIT 0")
+        try:
+            result = conn.execute(f"SELECT * FROM read_csv_auto('{safe}') LIMIT 0")
+        except Exception as e:
+            err = str(e).lower()
+            if "not utf-8 encoded" in err or "byte sequence mismatch" in err:
+                msg = (
+                    f"File is not UTF-8 encoded: {path.name}. "
+                    "Re-save as UTF-8 (in Excel: Save As → CSV UTF-8)."
+                )
+                raise ValueError(msg) from e
+            raise
         columns = [desc[0] for desc in result.description]
         try:
-            count = conn.execute(f"SELECT count(*) FROM read_csv_auto('{path_str}')").fetchone()
+            count = conn.execute(f"SELECT count(*) FROM read_csv_auto('{safe}')").fetchone()
             return columns, count[0] if count else None
         except Exception:
             return columns, None
 
     elif suffix == ".parquet":
-        result = conn.execute(f"SELECT * FROM read_parquet('{path_str}') LIMIT 0")
+        result = conn.execute(f"SELECT * FROM read_parquet('{safe}') LIMIT 0")
         columns = [desc[0] for desc in result.description]
         return columns, None
+
+    elif suffix in (".json", ".jsonl"):
+        result = conn.execute(f"SELECT * FROM read_json_auto('{safe}') LIMIT 0")
+        columns = [desc[0] for desc in result.description]
+        try:
+            count = conn.execute(f"SELECT count(*) FROM read_json_auto('{safe}')").fetchone()
+            return columns, count[0] if count else None
+        except Exception:
+            return columns, None
 
     return [], None
 

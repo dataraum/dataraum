@@ -23,9 +23,7 @@ class TestPipelineEvent:
         assert event.phase == ""
         assert event.step == 0
         assert event.total == 0
-        assert event.scores == {}
-        assert event.violations == {}
-        assert event.parallel_phases == []
+        assert event.duration_seconds == 0.0
 
     def test_creation_with_data(self):
         event = PipelineEvent(
@@ -34,35 +32,16 @@ class TestPipelineEvent:
             step=3,
             total=19,
             duration_seconds=1.5,
-            scores={"type_fidelity": 0.1, "null_ratio": 0.05},
         )
         assert event.phase == "statistics"
         assert event.step == 3
         assert event.total == 19
         assert event.duration_seconds == 1.5
-        assert event.scores["type_fidelity"] == 0.1
 
     def test_frozen_immutability(self):
         event = PipelineEvent(event_type=EventType.PHASE_STARTED, phase="test")
         with pytest.raises(AttributeError):
             event.phase = "other"  # type: ignore[misc]
-
-    def test_event_with_violations(self):
-        event = PipelineEvent(
-            event_type=EventType.EXIT_CHECK,
-            phase="semantic",
-            violations={"join_path_determinism": (-1.0, 0.5)},
-        )
-        assert event.violations["join_path_determinism"] == (-1.0, 0.5)
-
-    def test_parallel_phases(self):
-        event = PipelineEvent(
-            event_type=EventType.PHASE_STARTED,
-            phase="correlations",
-            parallel_phases=["statistics", "correlations", "column_eligibility"],
-        )
-        assert len(event.parallel_phases) == 3
-        assert "statistics" in event.parallel_phases
 
 
 class TestLegacyAdapter:
@@ -75,7 +54,6 @@ class TestLegacyAdapter:
         def legacy_callback(current: int, total: int, message: str) -> None:
             calls.append((current, total, message))
 
-        # Simulate what the legacy adapter would do
         event = PipelineEvent(
             event_type=EventType.PHASE_STARTED,
             phase="statistics",

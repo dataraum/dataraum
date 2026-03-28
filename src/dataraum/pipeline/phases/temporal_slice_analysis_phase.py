@@ -89,6 +89,16 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 TemporalSliceAnalysis.slice_table_name.in_(slice_names)
             ),
         )
+        # Clean ColumnSliceProfile records (written by build_slice_profiles)
+        if column_ids:
+            from dataraum.analysis.slicing.db_models import ColumnSliceProfile
+
+            count += exec_delete(
+                session,
+                delete(ColumnSliceProfile).where(
+                    ColumnSliceProfile.source_column_id.in_(column_ids)
+                ),
+            )
         return count
 
     @property
@@ -312,9 +322,15 @@ class TemporalSliceAnalysisPhase(BasePhase):
                 except Exception as e:
                     errors.append(f"Analysis error for {si.slice_table_name}: {e}")
 
+        # Build ColumnSliceProfile records for dimensional_entropy detector
+        from dataraum.analysis.slicing.profiling import build_slice_profiles
+
+        slice_profiles_count = build_slice_profiles(ctx.session, ctx.source_id)
+
         outputs: dict[str, object] = {
             "drift_summaries": total_drift_summaries,
             "period_analyses": total_period_analyses,
+            "slice_profiles": slice_profiles_count,
             "time_columns": sorted(time_columns_used),
             "time_grain": time_grain,
         }
@@ -325,8 +341,12 @@ class TemporalSliceAnalysisPhase(BasePhase):
         return PhaseResult.success(
             outputs=outputs,
             records_processed=len(slice_definitions),
-            records_created=total_drift_summaries + total_period_analyses,
-            summary=f"{total_drift_summaries} drift summaries, {total_period_analyses} period analyses",
+            records_created=total_drift_summaries + total_period_analyses + slice_profiles_count,
+            summary=(
+                f"{total_drift_summaries} drift summaries, "
+                f"{total_period_analyses} period analyses, "
+                f"{slice_profiles_count} slice profiles"
+            ),
         )
 
     def _resolve_time_columns_per_table(

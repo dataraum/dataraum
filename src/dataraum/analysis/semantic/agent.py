@@ -8,6 +8,8 @@ This agent follows the same pattern as graphs/agent.py:
 Uses Pydantic tool for structured output via Anthropic tool use API.
 """
 
+from __future__ import annotations
+
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any

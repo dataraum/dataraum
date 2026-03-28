@@ -1,4 +1,6 @@
 # Slicing settings
 
-# Maximum number of slice dimension recommendations across all tables
-max_recommendations: 6
+# Maximum number of slice dimension recommendations across all tables.
+# Budget 12 ensures ~2 dimensions per fact table (6 tables typical).
+# At ~5 slice tables per dimension, this produces ~60 slice tables.
+max_recommendations: 12

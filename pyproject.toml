@@ -1,9 +1,9 @@
 [project]
 name = "dataraum"
-version = "0.1.0"
+version = "0.2.0"
 description = "Rich metadata context engine for AI-driven data analytics"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [
     { name = "DataRaum", email = "hello@dataraum.com" }
@@ -13,6 +13,9 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Database",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -42,13 +45,11 @@ dependencies = [
     "typer>=0.9.0",
     "rich>=13.0.0",
     "networkx>=3.6",
-    "pgmpy>=0.1.25",
-    "torch>=2.0.0",
+    "pgmpy>=1.0.0",
+    "torch>=2.8.0",
     "anthropic>=0.76.0",
     # SQL parsing
     "sqlglot>=26.0.0",
-    # TUI
-    "textual>=0.50.0",
 ]
 
 [project.scripts]
@@ -56,9 +57,9 @@ dataraum = "dataraum.cli:app"
 dataraum-mcp = "dataraum.mcp.server:main"
 
 [project.urls]
-Homepage = "https://github.com/dataraum/dataraum-context"
-Documentation = "https://docs.dataraum.com/context"
-Repository = "https://github.com/dataraum/dataraum-context"
+Homepage = "https://github.com/dataraum/dataraum"
+Documentation = "https://dataraum.github.io/dataraum"
+Repository = "https://github.com/dataraum/dataraum"
 
 [dependency-groups]
 dev = [
@@ -110,7 +111,7 @@ filterwarnings = [
 ]
 
 [tool.ruff]
-target-version = "py314"
+target-version = "py312"
 line-length = 100
 extend-exclude = [
     "prototypes/",
@@ -156,7 +157,7 @@ convention = "google"
 known-first-party = ["dataraum"]
 
 [tool.mypy]
-python_version = "3.14"
+python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_ignores = false  # Allow unused ignores during migration
@@ -178,7 +179,6 @@ module = [
     "ruptures.*",
     "networkx.*",
     "pgmpy.*",
-    "textual.*",
     "typer.*",
     "sqlglot.*",
 ]

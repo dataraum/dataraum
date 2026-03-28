@@ -1,0 +1,54 @@
+# GL-Invoice Reconciliation
+# Checks if invoice amounts match journal line totals
+
+validation_id: gl_invoice_match
+name: GL-Invoice Amount Reconciliation
+description: >
+  Validates that invoice amounts reconcile with corresponding journal line
+  entries. For each invoice, the total of related journal lines (matched via
+  shared account or reference) should approximate the invoice amount.
+
+category: financial
+severity: warning
+version: "1.0"
+
+tags:
+  - reconciliation
+  - invoices
+  - journal-lines
+
+relevant_cycles:
+  - accounts_payable
+  - accounts_receivable
+
+check_type: aggregate
+
+parameters:
+  tolerance: 0.05
+
+sql_hints: >
+  Compare invoice amounts with journal line totals.
+
+  IMPORTANT: Use the FK join path. Invoices have an entry_id column that
+  references journal_entries.entry_id. Journal lines also reference
+  journal_entries via entry_id. Join: invoices.entry_id = journal_lines.entry_id.
+
+  Check semantic annotations and relationships to confirm the join path.
+
+  For each invoice, sum the matching journal line debits (the expense side
+  of the invoice posting). Compare invoice.amount to SUM(journal_lines.debit)
+  for lines sharing the same entry_id. A mismatch indicates the invoice
+  amount was modified after posting.
+
+  Calculate the orphan rate as a FRACTION (0.0 to 1.0):
+    orphan_rate = unmatched_invoices / total_invoices
+  where "unmatched" means the invoice amount differs from journal line
+  total by more than the tolerance.
+
+  Return: total_invoices, matched_invoices, unmatched_invoices, orphan_rate.
+
+  If no FK join path exists, return orphan_rate = NULL.
+
+expected_outcome: >
+  Most invoices should have corresponding journal entries. An orphan_rate
+  above 5% suggests missing postings or data integrity issues.

@@ -50,9 +50,9 @@ class TestImportPhaseSmoke:
         tables = harness.get_duckdb_tables()
         assert len(tables) == 5
 
-        # All tables should have raw_ prefix
+        # All tables should have {source_name}__ prefix (renamed from raw_ during import)
         for table in tables:
-            assert table.startswith("raw_")
+            assert table.startswith("small_finance__")
 
     def test_import_creates_metadata_records(
         self,
@@ -104,13 +104,13 @@ class TestImportPhaseSmoke:
 
         # Check row counts match synthetic fixtures
         for table_name, expected_rows in [
-            ("raw_customers", 100),
-            ("raw_vendors", 50),
-            ("raw_products", 30),
-            ("raw_payment_methods", 10),
-            ("raw_transactions", 500),
+            ("small_finance__customers", 100),
+            ("small_finance__vendors", 50),
+            ("small_finance__products", 30),
+            ("small_finance__payment_methods", 10),
+            ("small_finance__transactions", 500),
         ]:
-            result = harness.query_duckdb(f"SELECT COUNT(*) FROM {table_name}")
+            result = harness.query_duckdb(f'SELECT COUNT(*) FROM "{table_name}"')
             actual_rows = result[0][0]
             assert actual_rows == expected_rows, (
                 f"{table_name}: expected {expected_rows}, got {actual_rows}"
@@ -129,7 +129,7 @@ class TestImportPhaseSmoke:
         )
 
         # Get columns for transactions table (which has Unnamed columns)
-        result = harness.query_duckdb("DESCRIBE raw_transactions")
+        result = harness.query_duckdb('DESCRIBE "small_finance__transactions"')
         columns = [row[0] for row in result]
 
         # None of the junk columns should be present
@@ -175,12 +175,16 @@ class TestTypingPhaseSmoke:
 
         tables = harness.get_duckdb_tables()
 
-        # Should have raw, typed, and quarantine tables
-        raw_tables = [t for t in tables if t.startswith("raw_")]
-        typed_tables = [t for t in tables if t.startswith("typed_")]
-        quarantine_tables = [t for t in tables if t.startswith("quarantine_")]
+        # After typing: original tables + typed + quarantine (all prefixed with source name)
+        source_tables = [
+            t
+            for t in tables
+            if t.startswith("small_finance__") and not t.startswith(("typed_", "quarantine_"))
+        ]
+        typed_tables = [t for t in tables if t.startswith("typed_small_finance__")]
+        quarantine_tables = [t for t in tables if t.startswith("quarantine_small_finance__")]
 
-        assert len(raw_tables) == 5
+        assert len(source_tables) == 5
         assert len(typed_tables) == 5
         assert len(quarantine_tables) == 5
 
@@ -197,8 +201,8 @@ class TestTypingPhaseSmoke:
         )
         harness.run_phase("typing")
 
-        # Check transaction table types
-        columns = harness.query_duckdb("DESCRIBE typed_transactions")
+        # Check transaction table types (typed tables get typed_ prefix from typing phase)
+        columns = harness.query_duckdb('DESCRIBE "typed_small_finance__transactions"')
         col_types = {row[0]: row[1] for row in columns}
 
         # Transaction ID should be integer
@@ -224,11 +228,12 @@ class TestTypingPhaseSmoke:
         harness.run_phase("typing")
 
         for base_name in ["customers", "vendors", "products", "transactions", "payment_methods"]:
-            raw_count = harness.query_duckdb(f"SELECT COUNT(*) FROM raw_{base_name}")[0][0]
-            typed_count = harness.query_duckdb(f"SELECT COUNT(*) FROM typed_{base_name}")[0][0]
-            quarantine_count = harness.query_duckdb(f"SELECT COUNT(*) FROM quarantine_{base_name}")[
-                0
-            ][0]
+            prefixed = f"small_finance__{base_name}"
+            raw_count = harness.query_duckdb(f'SELECT COUNT(*) FROM "{prefixed}"')[0][0]
+            typed_count = harness.query_duckdb(f'SELECT COUNT(*) FROM "typed_{prefixed}"')[0][0]
+            quarantine_count = harness.query_duckdb(
+                f'SELECT COUNT(*) FROM "quarantine_{prefixed}"'
+            )[0][0]
 
             # Typed + quarantine should equal raw
             assert typed_count + quarantine_count == raw_count, (
@@ -250,9 +255,9 @@ class TestTypingPhaseSmoke:
 
         # All quarantine tables should be empty for clean data
         for base_name in ["customers", "vendors", "products", "transactions", "payment_methods"]:
-            quarantine_count = harness.query_duckdb(f"SELECT COUNT(*) FROM quarantine_{base_name}")[
-                0
-            ][0]
+            quarantine_count = harness.query_duckdb(
+                f'SELECT COUNT(*) FROM "quarantine_small_finance__{base_name}"'
+            )[0][0]
             assert quarantine_count == 0, f"Unexpected quarantine rows in {base_name}"
 
 
@@ -333,7 +338,7 @@ class TestStatisticsPhaseSmoke:
         with harness.session_factory() as session:
             # Find the transactions table
             table_stmt = select(Table).where(
-                Table.table_name == "transactions",
+                Table.table_name == "small_finance__transactions",
                 Table.layer == "typed",
             )
             table = (session.execute(table_stmt)).scalar_one_or_none()
@@ -386,7 +391,7 @@ class TestStatisticsPhaseSmoke:
         with harness.session_factory() as session:
             # Find the transactions table
             table_stmt = select(Table).where(
-                Table.table_name == "transactions",
+                Table.table_name == "small_finance__transactions",
                 Table.layer == "typed",
             )
             table = (session.execute(table_stmt)).scalar_one_or_none()
@@ -430,7 +435,7 @@ class TestStatisticsPhaseSmoke:
         with harness.session_factory() as session:
             # Find the transactions table
             table_stmt = select(Table).where(
-                Table.table_name == "transactions",
+                Table.table_name == "small_finance__transactions",
                 Table.layer == "typed",
             )
             table = (session.execute(table_stmt)).scalar_one_or_none()

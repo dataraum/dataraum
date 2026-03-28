@@ -17,7 +17,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from dataraum.analysis.cycles.config import format_cycle_vocabulary_for_context
-from dataraum.analysis.quality_summary.db_models import ColumnQualityReport
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.relationships.graph_topology import (
     analyze_graph_topology,
@@ -228,32 +227,7 @@ def build_cycle_detection_context(
         for tp, col_name, table_name in temporal_results
     ]
 
-    # 7. Quality signals (grades and key findings for columns with issues)
-    quality_stmt = select(ColumnQualityReport).where(
-        ColumnQualityReport.source_table_name.in_([t.table_name for t in tables])
-    )
-    quality_reports = session.execute(quality_stmt).scalars().all()
-
-    quality_signals = []
-    for qr in quality_reports:
-        # Only include columns with notable findings (grade B or worse)
-        if qr.quality_grade in ("A",):
-            continue
-        report_data = qr.report_data or {}
-        quality_signals.append(
-            {
-                "table_name": qr.source_table_name,
-                "column_name": qr.column_name,
-                "quality_grade": qr.quality_grade,
-                "quality_score": qr.overall_quality_score,
-                "summary": qr.summary,
-                "key_findings": report_data.get("key_findings", []),
-            }
-        )
-
-    context["quality_signals"] = quality_signals
-
-    # 8. Enriched views (pre-joined table schemas)
+    # 7. Enriched views (pre-joined table schemas)
     enriched_stmt = select(EnrichedView).where(EnrichedView.fact_table_id.in_(table_ids))
     enriched_views = session.execute(enriched_stmt).scalars().all()
 
@@ -283,7 +257,6 @@ def build_cycle_detection_context(
         "total_relationships": len(rel_list),
         "slice_dimensions_found": len(slice_list),
         "temporal_columns": len(context["temporal_profiles"]),
-        "quality_issues": len(quality_signals),
         "enriched_views": len(enriched_list),
         "fact_tables": sum(1 for e in context["entity_classifications"] if e["is_fact_table"]),
         "dimension_tables": sum(
@@ -478,19 +451,6 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
                 f"{tp['date_range_start']} to {tp['date_range_end']}, "
                 f"completeness={tp['completeness']:.0%}{stale_str}"
             )
-        lines.append("")
-
-    # Quality signals (only issues)
-    quality = context.get("quality_signals", [])
-    if quality:
-        lines.append("## DATA QUALITY SIGNALS")
-        for qs in quality:
-            lines.append(
-                f"- {qs['table_name']}.{qs['column_name']}: grade {qs['quality_grade']} ({qs['quality_score']:.2f})"
-            )
-            lines.append(f"  {qs['summary'][:500]}")
-            for finding in qs.get("key_findings", [])[:2]:
-                lines.append(f"  - {finding[:500]}")
         lines.append("")
 
     # Column semantics by table

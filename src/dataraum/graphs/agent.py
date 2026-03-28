@@ -650,7 +650,7 @@ class GraphAgent(LLMFeature):
         """Create QueryAssumption objects from entropy interpretations.
 
         Reads assumptions from ColumnContext.entropy_assumptions (populated
-        from EntropyInterpretationRecord by build_execution_context).
+        from entropy data by build_execution_context).
 
         Args:
             execution_id: ID of the current execution

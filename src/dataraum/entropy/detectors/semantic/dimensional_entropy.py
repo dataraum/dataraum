@@ -234,8 +234,7 @@ class DimensionalEntropyDetector(EntropyDetector):
         Returns dict with slice_variance and drift_summaries keys,
         or None if no slice profiles exist.
         """
-        from dataraum.analysis.quality_summary.db_models import ColumnSliceProfile
-        from dataraum.analysis.slicing.db_models import SliceDefinition
+        from dataraum.analysis.slicing.db_models import ColumnSliceProfile, SliceDefinition
         from dataraum.analysis.slicing.slice_runner import _get_slice_table_name
         from dataraum.analysis.temporal_slicing.db_models import ColumnDriftSummary
         from dataraum.storage import Column, Table
@@ -532,12 +531,19 @@ class DimensionalEntropyDetector(EntropyDetector):
         # (high null_spread). For debit/credit-style columns where one is
         # always zero when the other has a value, null_spread is 0.0 but the
         # mutual exclusivity is real. Check directly via DuckDB.
-        if context.duckdb_conn is not None and entropy_score.mutual_exclusivity_count == 0:
-            value_mutex_patterns = self._detect_value_mutual_exclusivity(
-                context, mutual_exclusivity_threshold
-            )
-            patterns.extend(value_mutex_patterns)
-            entropy_score.mutual_exclusivity_count += len(value_mutex_patterns)
+        if entropy_score.mutual_exclusivity_count == 0:
+            if context.duckdb_conn is None:
+                logger.error(
+                    "dimensional_entropy_no_duckdb_conn",
+                    table=context.table_name,
+                    message="duckdb_conn required for value-based mutual exclusivity detection",
+                )
+            else:
+                value_mutex_patterns = self._detect_value_mutual_exclusivity(
+                    context, mutual_exclusivity_threshold
+                )
+                patterns.extend(value_mutex_patterns)
+                entropy_score.mutual_exclusivity_count += len(value_mutex_patterns)
 
         # Calculate overall entropy score using configurable weights
         num_categorical = max(len(interesting_columns), entropy_score.mutual_exclusivity_count, 1)
@@ -648,19 +654,19 @@ class DimensionalEntropyDetector(EntropyDetector):
         columns_data: dict[str, Any],
         network_readiness: dict[str, bool],
     ) -> list[ColumnVariancePattern]:
-        """Extract columns that need cross-column pattern analysis.
+        """Extract columns for cross-column pattern analysis.
 
-        Uses Bayesian network readiness (needs_attention) to determine
-        which columns warrant deeper analysis.
+        Includes all columns with slice variance data. Network readiness
+        is advisory — structural patterns (mutual exclusivity, conditional
+        dependencies) exist regardless of BBN posteriors.
 
         Args:
             columns_data: Per-column slice variance metrics.
-            network_readiness: {col_name: needs_attention} from base network.
+            network_readiness: {col_name: needs_attention} from base network
+                (currently unused — kept for signature compatibility).
         """
         interesting = []
         for col_name, metrics in columns_data.items():
-            if not network_readiness.get(col_name, False):
-                continue
             interesting.append(
                 ColumnVariancePattern(
                     column_name=col_name,

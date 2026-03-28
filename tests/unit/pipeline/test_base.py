@@ -3,7 +3,7 @@
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.pipeline_config import load_phase_declarations
-from dataraum.pipeline.registry import get_all_dependencies, get_phase_class, get_registry
+from dataraum.pipeline.registry import get_all_dependencies, get_registry
 
 
 class TestPhaseRegistry:
@@ -33,10 +33,6 @@ class TestPhaseRegistry:
     def test_typing_depends_on_import(self):
         declarations = load_phase_declarations()
         assert "import" in declarations["typing"].dependencies
-
-    def test_graph_execution_phase_exists(self):
-        cls = get_phase_class("graph_execution")
-        assert cls is not None
 
 
 class TestBasePhaseProperties:
@@ -89,13 +85,6 @@ class TestDependencyResolution:
         deps = get_all_dependencies("statistics")
         assert "import" in deps
         assert "typing" in deps
-
-    def test_get_all_dependencies_for_entropy_interpretation(self):
-        deps = get_all_dependencies("entropy_interpretation")
-        assert "import" in deps
-        assert "typing" in deps
-        assert "semantic" in deps
-        assert "computation_review" in deps
 
     def test_unknown_phase_returns_empty(self):
         deps = get_all_dependencies("nonexistent")

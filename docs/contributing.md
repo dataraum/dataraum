@@ -4,22 +4,25 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/dataraum/dataraum-context.git
-cd dataraum-context
+git clone https://github.com/dataraum/dataraum.git
+cd dataraum
 
-# Install dependencies (requires uv and Python 3.14t free-threaded)
+# Install dependencies (requires uv and Python 3.12+)
 uv sync
 
 # Verify installation
 uv run dataraum --help
 ```
 
-### Python 3.14 Free-Threaded
+### Python Version
 
-This project uses Python 3.14 with free-threading (no GIL). The pipeline uses `ThreadPoolExecutor` for true CPU parallelism.
+This project requires Python 3.12 or later. On Python 3.14 with the free-threaded build, the pipeline uses `ThreadPoolExecutor` for true CPU parallelism (no GIL). On 3.12/3.13, the same code runs under the GIL with no functional difference.
 
 ```bash
-# Verify free-threading
+# Check Python version
+python --version
+
+# On 3.14t, verify free-threading is enabled
 python -c "import sys; print('Free-threading:', not sys._is_gil_enabled())"
 ```
 
@@ -28,7 +31,7 @@ python -c "import sys; print('Free-threading:', not sys._is_gil_enabled())"
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `ANTHROPIC_API_KEY` | For LLM phases | Anthropic API key |
-| `DATARAUM_OUTPUT_DIR` | For MCP server | Path to pipeline output directory |
+| `DATARAUM_HOME` | For MCP server | Root directory for workspaces (default: `~/.dataraum/`) |
 | `PYTHON_GIL` | Recommended | Set to `0` to disable GIL |
 
 ## Running Tests
@@ -51,14 +54,16 @@ uv run pytest --testmon tests -q
 
 ## Code Quality
 
-Automated quality gates run via hooks:
+Quality checks to run before submitting a PR:
 
-| Check | When | Tool |
-|-------|------|------|
-| Formatting | After every file edit | `ruff format` |
-| Linting | End of turn | `ruff check` |
-| Type checking | End of turn | `mypy` |
-| Affected tests | End of turn | `pytest --testmon` |
+| Check | Command | Tool |
+|-------|---------|------|
+| Formatting | `uv run ruff format src/ tests/` | ruff |
+| Linting | `uv run ruff check src/ tests/` | ruff |
+| Type checking | `uv run mypy src/` | mypy |
+| Affected tests | `uv run pytest --testmon tests/unit -q` | pytest |
+
+If you use Claude Code, these run automatically via hooks after each edit.
 
 ```bash
 # Manual runs
@@ -165,15 +170,15 @@ src/dataraum/
 ├── entropy/           # Uncertainty quantification (detectors, contracts, actions)
 ├── graphs/            # Calculation graphs and context assembly
 ├── pipeline/          # Pipeline orchestrator and phase registry
-├── sources/           # Data source loaders (CSV, Parquet)
+├── sources/           # Data source loaders (CSV, Parquet, JSON)
 ├── storage/           # SQLAlchemy base, migrations
 ├── llm/               # LLM provider abstraction
 ├── core/              # Config, connections, utilities
-├── cli/               # Typer CLI + Textual TUI
-└── mcp/               # MCP server (6 tools)
+├── cli/               # Typer CLI (run + dev)
+└── mcp/               # MCP server (7 tools)
 ```
 
-Module documentation is in `docs/internals/`.
+See [Architecture](architecture.md) for detailed module descriptions.
 
 ## Style Guidelines
 

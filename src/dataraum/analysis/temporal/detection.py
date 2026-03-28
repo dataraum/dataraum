@@ -9,6 +9,8 @@ Detects:
 These are foundational functions used by the main processor.
 """
 
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Any
 

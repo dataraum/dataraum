@@ -2,10 +2,7 @@
   "mcpServers": {
     "dataraum": {
       "command": "uv",
-      "args": ["run", "dataraum-mcp"],
-      "env": {
-        "DATARAUM_OUTPUT_DIR": "./pipeline_output"
-      }
+      "args": ["run", "dataraum-mcp"]
     }
   }
 }

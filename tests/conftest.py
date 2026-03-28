@@ -1,5 +1,7 @@
 """Shared pytest fixtures for all tests."""
 
+from __future__ import annotations
+
 import duckdb
 import pytest
 from sqlalchemy import create_engine, event

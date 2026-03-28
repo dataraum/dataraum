@@ -11,6 +11,8 @@ For correlation analysis, 100K samples provide very accurate estimates
 (standard error ~0.003 for r near 0).
 """
 
+from __future__ import annotations
+
 from datetime import UTC, datetime
 from uuid import uuid4
 

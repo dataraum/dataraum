@@ -188,3 +188,99 @@ class TestExportSql:
         assert meta["sql"] == "SELECT x FROM t"
         assert meta["description"] == "Test export"
         assert meta["row_count"] == 1
+
+
+class TestExportData:
+    """Tests for export_data (pre-materialized tabular data)."""
+
+    def test_csv_export(self, tmp_path: Path) -> None:
+        from dataraum.export import export_data
+
+        rows = [{"name": "Alice", "val": 10}, {"name": "Bob", "val": 20}]
+        path = export_data(["name", "val"], rows, tmp_path / "out.csv", fmt="csv")
+
+        assert path.exists()
+        with open(path) as f:
+            reader = csv.DictReader(f)
+            data = list(reader)
+        assert len(data) == 2
+        assert data[0]["name"] == "Alice"
+
+    def test_json_export(self, tmp_path: Path) -> None:
+        from dataraum.export import export_data
+
+        rows = [{"x": 1}]
+        path = export_data(["x"], rows, tmp_path / "out.json", fmt="json")
+
+        with open(path) as f:
+            data = json.load(f)
+        assert data["columns"] == ["x"]
+        assert data["data"] == [{"x": 1}]
+
+    def test_sidecar_includes_custom_metadata(self, tmp_path: Path) -> None:
+        from dataraum.export import export_data
+
+        rows = [{"a": 1}]
+        path = export_data(
+            ["a"],
+            rows,
+            tmp_path / "out.csv",
+            metadata={"steps_executed": [{"step_id": "s1", "sql": "SELECT 1"}]},
+        )
+
+        sidecar = path.with_suffix(".csv.meta.json")
+        with open(sidecar) as f:
+            meta = json.load(f)
+        assert meta["row_count"] == 1
+        assert meta["column_count"] == 1
+        assert meta["steps_executed"][0]["step_id"] == "s1"
+
+    def test_raises_on_empty_data(self, tmp_path: Path) -> None:
+        from dataraum.export import export_data
+
+        with pytest.raises(ValueError, match="No data"):
+            export_data([], [], tmp_path / "out.csv")
+
+    def test_creates_parent_directories(self, tmp_path: Path) -> None:
+        from dataraum.export import export_data
+
+        rows = [{"x": 1}]
+        path = export_data(["x"], rows, tmp_path / "deep" / "nested" / "out.csv")
+        assert path.exists()
+
+
+class TestExportToolResult:
+    """Tests for _export_tool_result in server.py."""
+
+    def test_exports_run_sql_result(self, tmp_path: Path) -> None:
+        from dataraum.mcp.server import _export_tool_result
+
+        result = {
+            "columns": ["name", "amount"],
+            "rows": [{"name": "Alice", "amount": 100}],
+            "steps_executed": [{"step_id": "s1", "sql": "SELECT ..."}],
+        }
+        export = _export_tool_result(result, tmp_path, "csv", "my_export", tool="run_sql")
+
+        assert "error" not in export
+        assert "export_path" in export
+        assert export["format"] == "csv"
+        assert export["row_count"] == 1
+        assert Path(export["export_path"]).exists()
+        assert "exports" in export["export_path"]
+
+    def test_returns_error_on_empty_data(self, tmp_path: Path) -> None:
+        from dataraum.mcp.server import _export_tool_result
+
+        result = {"columns": [], "rows": []}
+        export = _export_tool_result(result, tmp_path, "csv")
+        assert "error" in export
+
+    def test_auto_generates_filename(self, tmp_path: Path) -> None:
+        from dataraum.mcp.server import _export_tool_result
+
+        result = {"columns": ["x"], "rows": [{"x": 1}]}
+        export = _export_tool_result(result, tmp_path, "json", tool="query")
+
+        assert "error" not in export
+        assert "query_" in export["export_path"]

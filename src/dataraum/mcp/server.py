@@ -326,6 +326,15 @@ def create_server(output_dir: Path | None = None) -> Server:
                             "type": "string",
                             "description": "Natural language question about the data",
                         },
+                        "export_format": {
+                            "type": "string",
+                            "enum": ["csv", "parquet", "json"],
+                            "description": "Export results to a file. Omit to skip export.",
+                        },
+                        "export_name": {
+                            "type": "string",
+                            "description": "Filename stem for the export (e.g. 'revenue_by_month'). Auto-generated if omitted.",
+                        },
                     },
                     "required": ["question"],
                 },
@@ -334,15 +343,20 @@ def create_server(output_dir: Path | None = None) -> Server:
                 name="run_sql",
                 description=(
                     "Execute SQL directly against the analyzed data. "
-                    "Returns rows with per-column quality metadata when available. "
+                    "Returns rows with per-column quality metadata when available.\n\n"
                     "Important: call look first to understand the schema, column "
                     "semantics, and quality issues. For analytical questions, "
                     "prefer query — it reasons over context automatically. "
                     "Use run_sql for spot-checks, drill-downs, or when you "
-                    "already understand the data shape. "
-                    "Prefer structured steps over raw SQL: each step computes one "
-                    "business concept, becomes a reusable snippet in the knowledge "
-                    "base, and can be referenced by later steps as a temp view."
+                    "already understand the data shape.\n\n"
+                    "Snippets: previous queries are auto-saved as reusable "
+                    "snippets in a knowledge base. The response includes a "
+                    "snippet_summary showing how many were reused vs. newly saved. "
+                    "Each step_id becomes both a temp view name (referenceable by "
+                    "later steps) and a snippet key.\n\n"
+                    "Column mappings: map output columns to source columns "
+                    "(e.g. {\"revenue\": \"orders.amount\"}) to get per-column "
+                    "quality metadata in the response."
                 ),
                 inputSchema={
                     "type": "object",
@@ -396,6 +410,15 @@ def create_server(output_dir: Path | None = None) -> Server:
                             "type": "integer",
                             "description": "Max rows to return. Default: 100, max: 10000.",
                             "default": 100,
+                        },
+                        "export_format": {
+                            "type": "string",
+                            "enum": ["csv", "parquet", "json"],
+                            "description": "Export results to a file. Omit to skip export.",
+                        },
+                        "export_name": {
+                            "type": "string",
+                            "description": "Filename stem for the export (e.g. 'monthly_revenue'). Auto-generated if omitted.",
                         },
                     },
                 },
@@ -559,6 +582,17 @@ def create_server(output_dir: Path | None = None) -> Server:
         elif name == "query":
             with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
                 result = _query(session, cursor, arguments["question"], active_contract)
+            # Export if requested — query nests data under result["data"]
+            export_fmt = arguments.get("export_format")
+            if export_fmt and "error" not in result and "data" in result:
+                export_input = {
+                    "columns": result["data"].get("columns", []),
+                    "rows": result["data"].get("rows", []),
+                    "steps_executed": result.get("execution_steps", []),
+                }
+                result["export"] = _export_tool_result(
+                    export_input, root_dir, export_fmt, arguments.get("export_name"), tool="query"
+                )
         elif name == "run_sql":
             with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
                 result = _run_sql(
@@ -568,6 +602,12 @@ def create_server(output_dir: Path | None = None) -> Server:
                     sql=arguments.get("sql"),
                     column_mappings=arguments.get("column_mappings"),
                     limit=arguments.get("limit", 100),
+                )
+            # Export if requested
+            export_fmt = arguments.get("export_format")
+            if export_fmt and "error" not in result:
+                result["export"] = _export_tool_result(
+                    result, root_dir, export_fmt, arguments.get("export_name"), tool="run_sql"
                 )
         elif name == "add_source":
             with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
@@ -892,6 +932,49 @@ def _run_sql(
         column_mappings=column_mappings,
         limit=limit,
     )
+
+
+def _export_tool_result(
+    result: dict[str, Any],
+    root_dir: Path,
+    fmt: str,
+    name: str | None = None,
+    *,
+    tool: str = "run_sql",
+) -> dict[str, Any]:
+    """Export MCP tool results to a file via export_data().
+
+    Args:
+        result: Tool result dict with 'columns' and 'rows'.
+        root_dir: DataRaum root directory (exports go to root/exports/).
+        fmt: Export format — csv, parquet, or json.
+        name: Filename stem. Auto-generated if omitted.
+        tool: Tool name for auto-generated filenames.
+
+    Returns:
+        Dict with export_path, format, row_count.
+    """
+    from dataraum.export import export_data
+
+    columns = result.get("columns", [])
+    rows = result.get("rows", [])
+    if not columns or not rows:
+        return {"error": "No data to export"}
+
+    stem = name or f"{tool}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
+    output_path = root_dir / "exports" / f"{stem}.{fmt}"
+
+    try:
+        exported = export_data(
+            columns,
+            rows,
+            output_path,
+            fmt,  # type: ignore[arg-type]
+            metadata={"steps_executed": result.get("steps_executed", [])},
+        )
+        return {"export_path": str(exported), "format": fmt, "row_count": len(rows)}
+    except Exception as e:
+        return {"error": f"Export failed: {e}"}
 
 
 def _check_prerequisites() -> str | None:

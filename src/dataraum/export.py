@@ -124,6 +124,55 @@ def export_sql(
     return output_path
 
 
+def export_data(
+    columns: list[str],
+    rows: list[dict[str, Any]],
+    output_path: Path,
+    fmt: ExportFormat = "csv",
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> Path:
+    """Export pre-materialized tabular data to a file with metadata sidecar.
+
+    For use when data is already in memory (e.g. MCP tool results).
+    For SQL-based export with DuckDB COPY optimization, use export_sql().
+
+    Args:
+        columns: Column names.
+        rows: List of row dicts.
+        output_path: Destination file path.
+        fmt: Export format — csv, parquet, or json.
+        metadata: Extra fields to include in the .meta.json sidecar.
+
+    Returns:
+        Path to the exported data file.
+
+    Raises:
+        ValueError: If columns or rows are empty.
+    """
+    if not columns or not rows:
+        msg = "No data to export"
+        raise ValueError(msg)
+
+    output_path = _ensure_extension(output_path, fmt)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    _write_data(columns, rows, output_path, fmt)
+
+    sidecar: dict[str, Any] = {
+        "exported_at": datetime.now(UTC).isoformat(),
+        "format": fmt,
+        "row_count": len(rows),
+        "column_count": len(columns),
+    }
+    if metadata:
+        sidecar.update(metadata)
+    _write_sidecar(output_path, sidecar)
+
+    logger.info("exported_data", path=str(output_path), format=fmt, rows=len(rows))
+    return output_path
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

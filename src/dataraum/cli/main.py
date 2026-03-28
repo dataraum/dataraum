@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typer
 
-from dataraum.cli.commands import dev, query, run, sources, tui_cmd
+from dataraum.cli.commands import dev, run
 
 app = typer.Typer(
     name="dataraum",
@@ -14,11 +14,8 @@ app = typer.Typer(
 
 # User commands
 app.command()(run.run)
-app.command(name="tui")(tui_cmd.tui)
-app.command()(query.query)
 
 # Subcommand groups
-app.add_typer(sources.app, name="sources")
 app.add_typer(dev.app, name="dev")
 
 

@@ -32,27 +32,6 @@ OutputDirArg = Annotated[
     ),
 ]
 
-OutputDirOption = Annotated[
-    Path,
-    typer.Option(
-        "--output",
-        "-o",
-        help="Output directory containing pipeline databases",
-        exists=True,
-        dir_okay=True,
-        file_okay=False,
-        resolve_path=True,
-    ),
-]
-
-VerticalOption = Annotated[
-    str,
-    typer.Option(
-        "--vertical",
-        help="Vertical name (e.g. 'finance'). Must match a directory in config/verticals/.",
-    ),
-]
-
 
 def setup_logging(verbosity: int = 0, log_format: str = "console") -> None:
     """Configure structured logging based on verbosity level.

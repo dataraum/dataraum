@@ -47,8 +47,6 @@ dependencies = [
     "anthropic>=0.76.0",
     # SQL parsing
     "sqlglot>=26.0.0",
-    # TUI
-    "textual>=0.50.0",
 ]
 
 [project.scripts]
@@ -178,7 +176,6 @@ module = [
     "ruptures.*",
     "networkx.*",
     "pgmpy.*",
-    "textual.*",
     "typer.*",
     "sqlglot.*",
 ]

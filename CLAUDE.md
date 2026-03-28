@@ -356,7 +356,7 @@ Check [Jira](https://real-dataraum.atlassian.net/jira/software/projects/DAT/boar
 - **Ontologies as configuration** — Domain ontologies (financial_reporting, marketing, etc.) are YAML configs that map column patterns to business terms, define computable metrics, and guide semantic interpretation.
 - **Pipeline measures, doesn't interpret** — Pipeline runs detectors as post-steps. Interpretation (why, hypothesize) happens interactively via MCP tools. No gate phases.
 - **BBN readiness replaces LLM quality grades** — Per-column readiness (ready/investigate/blocked) via Bayesian network. `column_quality` detector retired (was circular with BBN).
-- **MCP tools** — 10 total (5 core + 3 quality/fix + 2 source mgmt). Being replaced by 15 practitioner-verb tools in v0.2. See `src/dataraum/mcp/server.py`.
+- **MCP tools** — 6 practitioner tools: look, measure, begin_session, query, run_sql, add_source. See `src/dataraum/mcp/server.py`.
 - **Free-threading** — Python 3.14t with GIL disabled for true CPU parallelism in pipeline phases.
 
 ### Module Structure
@@ -373,8 +373,8 @@ src/dataraum/
 ├── storage/        # SQLAlchemy models, migrations
 ├── llm/            # LLM providers and prompts
 ├── core/           # Config, connections, utilities
-├── cli/            # Typer CLI (run, tui, query) + Textual TUI
-└── mcp/            # MCP server (10 tools)
+├── cli/            # Typer CLI (run, dev) — MCP server is primary interface
+└── mcp/            # MCP server (6 tools: look, measure, begin_session, query, run_sql, add_source)
 ```
 
 SQLAlchemy DB models are co-located with business logic in `db_models.py` files within each module.
@@ -382,7 +382,7 @@ SQLAlchemy DB models are co-located with business logic in `db_models.py` files 
 ### Data Flow
 
 ```
-Source (CSV/Parquet) → [staging] VARCHAR → raw_{table}
+Source (CSV/Parquet/JSON) → [staging] VARCHAR → raw_{table}
   → [profiling] Type inference → typed_{table}, quarantine_{table}
   → [enrichment] LLM semantic analysis → roles, entities, relationships
   → [enrichment] Temporal + topology → additional metadata
@@ -395,16 +395,9 @@ Source (CSV/Parquet) → [staging] VARCHAR → raw_{table}
 # Run pipeline
 dataraum run /path/to/data --output ./output
 
-# Interactive dashboard
-dataraum tui ./output
-
-# Source management
-dataraum sources discover /path/to/data
-dataraum sources add mydata /path/to/file.csv
-
 # Developer tools
 dataraum dev phases
-dataraum dev inspect ./output
+dataraum dev context ./output
 
 # Start MCP server
 dataraum-mcp

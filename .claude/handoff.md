@@ -38,6 +38,32 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 ### Known issues (not in this handoff)
 - DAT-196: session model redesign (workspace vs. session isolation). Design doc published, blocked by DAT-197.
 
+## 2026-03-28: Package A — CLI slimdown (DAT-227)
+
+### dataraum-eval
+- **Changed**: `src/dataraum/cli/` — removed tui, query, sources commands, dev inspect/reset. Only `run` and `dev {phases, context}` remain.
+- **Affects**: any eval harness code that calls CLI commands (e.g. `dataraum sources add`, `dataraum query`). Use MCP tools instead.
+- **Notes**: `textual` dependency removed from pyproject.toml.
+- **Status**: pending
+
+## 2026-03-28: Package B — JSON/JSONL loader, format rejection, directory support (DAT-197, DAT-198, DAT-199)
+
+### dataraum-eval
+- **Changed**: `src/dataraum/sources/json/` (new), `src/dataraum/sources/manager.py`, `src/dataraum/pipeline/phases/import_phase.py`
+- **Affects**: `add_source` MCP tool — three behavior changes:
+  1. JSON/JSONL files now accepted and loaded as VARCHAR (like CSV)
+  2. Unsupported file formats (e.g. .xlsx) now rejected with clear error instead of silent acceptance
+  3. Directories now accepted — returns file count, format breakdown, preview from first file
+- **Calibrate**: run format matrix suite (DAT-216) once testdata has JSON fixtures (DAT-219). Smoke-test `add_source` with .json, .jsonl, directory, and unsupported format.
+- **Notes**:
+  - Nested JSON objects/arrays serialized via `to_json()` → VARCHAR (not `CAST`). Values stored as JSON strings like `{"city":"Berlin"}`.
+  - Path escaping fixed across all loaders (CSV, Parquet, JSON, discovery) — single quotes in filenames no longer break SQL.
+- **Status**: pending
+
+### dataraum-testdata (hints)
+- **Suggestion**: Add JSON and JSONL fixtures alongside existing CSV testdata. Same data, different format — enables format matrix testing.
+- **Rationale**: DAT-216 (format matrix suite) needs multi-format fixtures to verify pipeline completion per source format.
+
 <!--
 ## YYYY-MM-DD: brief description
 

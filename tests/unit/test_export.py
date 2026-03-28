@@ -299,3 +299,29 @@ class TestExportToolResult:
 
         assert "error" not in export
         assert "query_" in export["export_path"]
+
+    def test_sanitizes_path_traversal(self, tmp_path: Path) -> None:
+        from dataraum.mcp.server import _export_tool_result
+
+        result = {"columns": ["x"], "rows": [{"x": 1}]}
+        export = _export_tool_result(result, tmp_path, "csv", "../../../etc/evil")
+
+        # Should sanitize to safe stem, not traverse
+        assert "error" not in export
+        path = Path(export["export_path"])
+        assert path.exists()
+        assert "exports" in str(path)
+        assert ".." not in str(path)
+
+    def test_sanitizes_special_chars(self, tmp_path: Path) -> None:
+        from dataraum.mcp.server import _export_tool_result
+
+        result = {"columns": ["x"], "rows": [{"x": 1}]}
+        export = _export_tool_result(result, tmp_path, "csv", "my file (1)/test")
+
+        assert "error" not in export
+        path = Path(export["export_path"])
+        assert path.exists()
+        # Slashes and parens replaced with underscores
+        assert "/" not in path.stem
+        assert "(" not in path.stem

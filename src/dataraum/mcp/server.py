@@ -587,9 +587,10 @@ def create_server(output_dir: Path | None = None) -> Server:
             # Export if requested — query nests data under result["data"]
             export_fmt = arguments.get("export_format")
             if export_fmt and "error" not in result and "data" in result:
+                rows = result["data"].get("rows", [])
                 export_input = {
                     "columns": result["data"].get("columns", []),
-                    "rows": result["data"].get("rows", []),
+                    "rows": rows,
                     "steps_executed": result.get("execution_steps", []),
                 }
                 export_info = _export_tool_result(
@@ -597,6 +598,12 @@ def create_server(output_dir: Path | None = None) -> Server:
                 )
                 if "export_path" in export_info:
                     result["export_path"] = export_info["export_path"]
+                    # query display is truncated to 50 rows — warn if export hit ceiling
+                    if len(rows) >= 50:
+                        result["export_warning"] = (
+                            "Query export limited to 50 rows (display limit). "
+                            "Use run_sql with export_format for full dataset exports."
+                        )
         elif name == "run_sql":
             with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
                 result = _run_sql(
@@ -960,6 +967,8 @@ def _export_tool_result(
     Returns:
         Dict with export_path, format, row_count.
     """
+    import re
+
     from dataraum.export import export_data
 
     columns = result.get("columns", [])
@@ -967,8 +976,15 @@ def _export_tool_result(
     if not columns or not rows:
         return {"error": "No data to export"}
 
-    stem = name or f"{tool}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
-    output_path = root_dir / "exports" / f"{stem}.{fmt}"
+    # Sanitize filename stem — strip path separators and special chars
+    raw_stem = name or f"{tool}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
+    stem = re.sub(r"[^\w\-]", "_", raw_stem)[:128]
+    export_dir = (root_dir / "exports").resolve()
+    output_path = export_dir / f"{stem}.{fmt}"
+
+    # Defense-in-depth: verify path stays inside exports dir
+    if not str(output_path.resolve()).startswith(str(export_dir)):
+        return {"error": "Invalid export name"}
 
     try:
         exported = export_data(

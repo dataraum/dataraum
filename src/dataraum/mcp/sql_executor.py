@@ -215,14 +215,8 @@ def run_sql(
         quality_caveat=quality_caveat,
         snippet_summary=snippet_summary,
     )
-    # Surface CTE-form SQL for export (temp views are gone after execute_sql_steps).
-    # Inline step SQLs as CTEs for a self-contained query.
-    if sql_steps:
-        ctes = ", ".join(f"{s.step_id} AS ({s.sql})" for s in sql_steps)
-        export_sql_str = f"WITH {ctes} {final_sql}"
-    else:
-        export_sql_str = final_sql
-    formatted["_export_sql"] = export_sql_str
+    # Surface final_sql for export — temp views survive on the same cursor.
+    formatted["_export_sql"] = final_sql
     return formatted
 
 

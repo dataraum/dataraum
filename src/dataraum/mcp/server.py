@@ -596,17 +596,12 @@ def create_server(output_dir: Path | None = None) -> Server:
                     display_limit=arguments.get("limit", 10000),
                 )
                 # Export via DuckDB COPY — full data, no Python materialization.
-                # Build CTE-form SQL: temp views are dropped after execute_sql_steps,
-                # so we inline the step SQLs as CTEs for a self-contained query.
+                # Temp views from execute_sql_steps survive on this cursor.
                 export_fmt = arguments.get("export_format")
                 if export_fmt and qr is not None and qr.sql and "error" not in result:
-                    export_sql_str = qr.sql
-                    if qr.execution_steps:
-                        ctes = ", ".join(f"{s.step_id} AS ({s.sql})" for s in qr.execution_steps)
-                        export_sql_str = f"WITH {ctes} {qr.sql}"
                     _do_export(
                         result,
-                        export_sql_str,
+                        qr.sql,
                         cursor,
                         root_dir,
                         export_fmt,

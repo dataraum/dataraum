@@ -140,7 +140,11 @@ def end_session(
     now = datetime.now(UTC)
     inv.status = outcome
     inv.ended_at = now
-    inv.duration_seconds = (now - inv.started_at).total_seconds()
+    # started_at may be naive after SQLite round-trip — normalize before subtraction
+    started = (
+        inv.started_at.replace(tzinfo=UTC) if inv.started_at.tzinfo is None else inv.started_at
+    )
+    inv.duration_seconds = (now - started).total_seconds()
     inv.outcome_summary = summary
     inv.outcome_payload = payload
     session.flush()

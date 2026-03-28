@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session as SASession
 
     from dataraum.core.connections import ConnectionManager
+    from dataraum.investigation.db_models import InvestigationSession
     from dataraum.storage import Column as ColumnModel
     from dataraum.storage import Table as TableModel
 
@@ -80,15 +81,33 @@ def _make_task_event_callback(
     return _callback
 
 
+def _resolve_root_dir() -> Path:
+    """Resolve the DataRaum root directory.
+
+    The root contains workspace/, archive/, and credentials.yaml.
+    Reads DATARAUM_HOME env var, falling back to ~/.dataraum/.
+    Legacy DATARAUM_OUTPUT_DIR is also accepted (treated as root).
+    """
+    home = os.environ.get("DATARAUM_HOME") or os.environ.get("DATARAUM_OUTPUT_DIR")
+    if home:
+        return Path(home).expanduser()
+    return Path("~/.dataraum").expanduser()
+
+
 def create_server(output_dir: Path | None = None) -> Server:
     """Create and configure the MCP server with DataRaum tools.
 
     Args:
-        output_dir: Pipeline output directory. If not provided, reads from
-            DATARAUM_OUTPUT_DIR env var, defaulting to ./pipeline_output.
+        output_dir: Explicit workspace directory (for tests). If not provided,
+            resolves root via DATARAUM_HOME env var (default ~/.dataraum/)
+            and uses root/workspace/ as the workspace.
     """
     if output_dir is None:
-        output_dir = Path(os.environ.get("DATARAUM_OUTPUT_DIR", "./pipeline_output"))
+        root_dir = _resolve_root_dir()
+        output_dir = root_dir / "workspace"
+    else:
+        # Explicit output_dir (tests, CLI) — root is the parent
+        root_dir = output_dir.parent
 
     # Server-level ConnectionManager — lazy-initialized on first tool call.
     # Stays alive for the server lifetime. call_tool opens session/cursor
@@ -111,12 +130,54 @@ def create_server(output_dir: Path | None = None) -> Server:
             _manager.initialize()
         return _manager
 
-    # Server-side session state — agent never sees session_id.
-    # Set by begin_session, used by call_tool for recording and contract threading.
-    # TODO: session teardown (deliver/end_session) not yet implemented —
-    # currently permanent until process restart. Planned for DAT-196.
-    _active_session_id: str | None = None
-    _active_contract: str | None = None
+    def _get_active_session(db_session: SASession) -> InvestigationSession | None:
+        """Query DB for the most recent active investigation session.
+
+        Session state is DB-derived, not held in closure variables.
+        This survives server restarts and avoids orphan cleanup.
+        """
+        from sqlalchemy import select
+
+        from dataraum.investigation.db_models import InvestigationSession
+
+        return db_session.execute(
+            select(InvestigationSession)
+            .where(InvestigationSession.status == "active")
+            .order_by(InvestigationSession.started_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+    def _archive_and_reset(session_id: str) -> str | None:
+        """Archive the workspace and reset manager for a fresh session.
+
+        Moves the workspace to {root}/archive/{session_id}/, then clears
+        the ConnectionManager so the next tool call creates a fresh workspace.
+
+        Returns:
+            Warning message if archival failed, None on success.
+        """
+        import shutil
+
+        nonlocal _manager
+
+        # Close DB connections before moving files
+        if _manager is not None:
+            _manager.close()
+
+        archive_dir = root_dir / "archive" / session_id
+        try:
+            archive_dir.parent.mkdir(parents=True, exist_ok=True)
+            if output_dir.exists():
+                shutil.move(str(output_dir), str(archive_dir))
+                _log.info("Archived workspace to %s", archive_dir)
+            _manager = None
+            return None
+        except OSError:
+            _manager = None  # Still reset — connections are closed
+            _log.warning(
+                "Failed to archive workspace %s → %s", output_dir, archive_dir, exc_info=True
+            )
+            return f"Session ended but workspace archival failed. {output_dir} may need manual cleanup."
 
     server = Server("dataraum")
     server.experimental.enable_tasks()
@@ -211,6 +272,35 @@ def create_server(output_dir: Path | None = None) -> Server:
                             "description": (
                                 "Contract name. Defaults to 'exploratory_analysis' if not provided."
                             ),
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="end_session",
+                description=(
+                    "End the current investigation session. Call this when the "
+                    "investigation is complete, the user wants to start fresh, "
+                    "or the request cannot be fulfilled. The workspace will be "
+                    "archived. A fresh workspace is created when you next call "
+                    "begin_session."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "required": ["outcome"],
+                    "properties": {
+                        "outcome": {
+                            "type": "string",
+                            "enum": ["delivered", "refused", "escalated", "abandoned"],
+                            "description": (
+                                "Session outcome. 'delivered': analysis complete. "
+                                "'refused': data unsuitable. 'escalated': needs human. "
+                                "'abandoned': user stopped."
+                            ),
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "Brief justification for the outcome.",
                         },
                     },
                 },
@@ -355,28 +445,37 @@ def create_server(output_dir: Path | None = None) -> Server:
         name: str, arguments: dict[str, Any]
     ) -> list[TextContent] | CallToolResult | CreateTaskResult:
         """Execute a tool and return JSON results."""
-        nonlocal _active_session_id, _active_contract
-
         started_at = datetime.now(UTC)
+
+        # --- Resolve session state from DB (read scalars inside scope) ---
+        mgr = _get_manager()
+        with mgr.session_scope() as session:
+            active_session = _get_active_session(session)
+            active_session_id = active_session.session_id if active_session else None
+            active_contract = active_session.contract if active_session else None
 
         # --- Flow enforcement ---
         if name == "add_source":
-            if _active_session_id is not None:
+            if active_session_id is not None:
                 return _json_text_content(
-                    {"error": "Session active. Complete the investigation before adding sources."}
+                    {
+                        "error": (
+                            "Sources are sealed at session start. "
+                            "Call end_session first, then add_source, then begin_session."
+                        )
+                    }
                 )
         elif name == "begin_session":
-            if _active_session_id is not None:
-                return _json_text_content(
-                    {"error": "Session already active. Only one session at a time."}
-                )
+            pass  # begin_session handles its own logic (idempotent resume)
+        elif name == "end_session":
+            if active_session_id is None:
+                return _json_text_content({"error": "No active session to end."})
         else:
             # look, measure, query, run_sql — require active session
-            if _active_session_id is None:
+            if active_session_id is None:
                 return _json_text_content({"error": "No active session. Call begin_session first."})
 
         # --- Dispatch (each tool gets its own session/cursor scope) ---
-        mgr = _get_manager()
         result: dict[str, Any]
 
         if name == "look":
@@ -397,12 +496,12 @@ def create_server(output_dir: Path | None = None) -> Server:
                 measure_experimental: Experimental = ctx.experimental
                 if measure_experimental and measure_experimental.is_task:
                     loop = asyncio.get_running_loop()
+                    # Capture contract as local — session scope is closed
+                    _contract = active_contract
 
                     async def _measure_work(task: ServerTaskContext) -> CallToolResult:
                         callback = _make_task_event_callback(task, loop)
-                        await asyncio.to_thread(
-                            _run_pipeline, output_dir, callback, _active_contract
-                        )
+                        await asyncio.to_thread(_run_pipeline, output_dir, callback, _contract)
                         with _get_manager().session_scope() as post_session:
                             measure_result = _measure(post_session, target=measure_target)
                         return CallToolResult(
@@ -424,7 +523,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                     )
                 else:
                     # No task API: fire-and-forget
-                    bg = asyncio.create_task(_run_pipeline_background(output_dir, _active_contract))
+                    bg = asyncio.create_task(_run_pipeline_background(output_dir, active_contract))
                     _background_tasks.add(bg)
                     bg.add_done_callback(_background_tasks.discard)
                     result = {
@@ -432,21 +531,34 @@ def create_server(output_dir: Path | None = None) -> Server:
                         "hint": "Pipeline started. Call measure() again to poll for results.",
                     }
         elif name == "begin_session":
-            with mgr.session_scope() as session:
-                raw = _begin_session(
-                    session,
-                    intent=arguments["intent"],
-                    contract=arguments.get("contract"),
-                )
-            # Separate internal state from agent-facing response
-            session_id_internal = raw.pop("_session_id", None)
-            result = raw
-            if "error" not in result and session_id_internal:
-                _active_session_id = session_id_internal
-                _active_contract = result["contract"]["name"]
+            if active_session is not None:
+                # Idempotent: resume existing session instead of creating new
+                result = _resume_session(mgr, active_session)
+            else:
+                with mgr.session_scope() as session:
+                    result = _begin_session(
+                        session,
+                        intent=arguments["intent"],
+                        contract=arguments.get("contract"),
+                    )
+                # _session_id is internal bookkeeping — strip from agent response
+                result.pop("_session_id", None)
+        elif name == "end_session":
+            result = _end_session(
+                mgr,
+                session_id=active_session_id,  # type: ignore[arg-type]  # guarded above
+                outcome=arguments.get("outcome", ""),
+                summary=arguments.get("summary"),
+            )
+            # Archive workspace and reset manager for fresh next session
+            if "error" not in result:
+                assert active_session_id is not None  # guarded by flow enforcement
+                archive_warning = _archive_and_reset(active_session_id)
+                if archive_warning:
+                    result["warning"] = archive_warning
         elif name == "query":
             with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
-                result = _query(session, cursor, arguments["question"], _active_contract)
+                result = _query(session, cursor, arguments["question"], active_contract)
         elif name == "run_sql":
             with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
                 result = _run_sql(
@@ -464,11 +576,11 @@ def create_server(output_dir: Path | None = None) -> Server:
             result = {"error": f"Unknown tool: {name}"}
 
         # Record step in investigation trace (separate session scope for isolation).
-        # begin_session is excluded — the InvestigationSession record captures intent.
-        if _active_session_id is not None and name != "begin_session":
+        # begin_session/end_session excluded — session records capture their own state.
+        if active_session_id is not None and name not in ("begin_session", "end_session"):
             _record_tool_step(
                 mgr,
-                session_id=_active_session_id,
+                session_id=active_session_id,
                 tool_name=name,
                 arguments=arguments,
                 result=result,
@@ -498,6 +610,115 @@ def _get_pipeline_source(session: Any) -> Any | None:
         return source
     # Single-source mode: exactly one source exists
     return session.execute(select(Source).order_by(Source.created_at).limit(1)).scalar_one_or_none()
+
+
+def _resume_session(
+    manager: ConnectionManager,
+    active_session: InvestigationSession,
+) -> dict[str, Any]:
+    """Resume an existing active session.
+
+    Returns orientation info matching the _begin_session response shape,
+    with a hint that the session is being resumed.
+
+    Args:
+        manager: Server-level ConnectionManager.
+        active_session: The active InvestigationSession from DB.
+
+    Returns:
+        Dict with sources, contract, pipeline data status, and resume hint.
+    """
+    from sqlalchemy import select
+
+    from dataraum.entropy.contracts import get_contract
+    from dataraum.entropy.db_models import EntropyObjectRecord
+    from dataraum.storage import Source
+
+    with manager.session_scope() as session:
+        all_sources = list(
+            session.execute(
+                select(Source).where(Source.archived_at.is_(None)).order_by(Source.created_at)
+            )
+            .scalars()
+            .all()
+        )
+
+        source = _get_pipeline_source(session)
+        source_id = source.source_id if source else active_session.source_id
+
+        has_data = (
+            session.execute(
+                select(EntropyObjectRecord.object_id)
+                .where(EntropyObjectRecord.source_id == source_id)
+                .limit(1)
+            ).scalar_one_or_none()
+            is not None
+        )
+
+    contract_profile = get_contract(active_session.contract or "exploratory_analysis")
+    contract_info = (
+        {
+            "name": contract_profile.name,
+            "display_name": contract_profile.display_name,
+            "description": contract_profile.description,
+        }
+        if contract_profile
+        else {
+            "name": active_session.contract or "unknown",
+            "display_name": active_session.contract or "unknown",
+        }
+    )
+
+    return {
+        "sources": [s.name for s in all_sources],
+        "contract": contract_info,
+        "has_pipeline_data": has_data,
+        "resumed": True,
+        "step_count": active_session.step_count,
+        "hint": (
+            "Resuming session from earlier. If you'd like to start fresh, call end_session first."
+        ),
+    }
+
+
+def _end_session(
+    manager: ConnectionManager,
+    session_id: str,
+    outcome: str,
+    summary: str | None = None,
+) -> dict[str, Any]:
+    """End the active investigation session.
+
+    Closes the session record in the DB. Workspace archival and manager
+    reset are handled by the caller (_archive_and_reset in call_tool).
+
+    Args:
+        manager: Server-level ConnectionManager.
+        session_id: Active session to close.
+        outcome: One of delivered, refused, escalated, abandoned.
+        summary: Agent's justification for the outcome.
+
+    Returns:
+        Dict with session outcome summary.
+    """
+    from dataraum.investigation.recorder import end_session
+
+    _VALID_OUTCOMES = {"delivered", "refused", "escalated", "abandoned"}
+    if outcome not in _VALID_OUTCOMES:
+        return {"error": f"Invalid outcome '{outcome}'. Must be one of: {sorted(_VALID_OUTCOMES)}"}
+
+    try:
+        with manager.session_scope() as session:
+            inv = end_session(session, session_id, outcome, summary=summary)
+            return {
+                "status": "ended",
+                "outcome": inv.status,
+                "duration_seconds": inv.duration_seconds,
+                "step_count": inv.step_count,
+                "summary": inv.outcome_summary,
+            }
+    except ValueError as e:
+        return {"error": str(e)}
 
 
 def _record_tool_step(

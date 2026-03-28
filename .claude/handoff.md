@@ -64,6 +64,24 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 - **Suggestion**: Add JSON and JSONL fixtures alongside existing CSV testdata. Same data, different format — enables format matrix testing.
 - **Rationale**: DAT-216 (format matrix suite) needs multi-format fixtures to verify pipeline completion per source format.
 
+## 2026-03-28: Package C1 — Session lifecycle (DAT-205, DAT-207, DAT-211)
+
+### dataraum-eval
+- **Changed**: `src/dataraum/mcp/server.py` — new `end_session` tool, idempotent `begin_session` (resume), DB-derived session state, default output dir change
+- **Affects**: all MCP tools (session state is now DB-derived, not closure vars), new `end_session` tool
+- **Calibrate**: session lifecycle suite (DAT-208). Key flows:
+  1. `begin_session → look → measure → end_session(delivered)` → workspace archived
+  2. Server restart → `begin_session` resumes existing session (`resumed: true`)
+  3. `add_source` during session → error mentions "sealed"
+  4. `end_session` → `add_source` → `begin_session` → fresh workspace
+- **Notes**:
+  - Default output dir changed from `./pipeline_output` to `~/.dataraum/workspace/`. Override via `DATARAUM_OUTPUT_DIR` env var.
+  - `.mcp.json` no longer sets `DATARAUM_OUTPUT_DIR`.
+  - `end_session` archives workspace to `~/.dataraum/archive/{session_id}/`. Archive failure is non-fatal (warning in response).
+  - `begin_session` response has new field `resumed: true` and `step_count` when resuming.
+  - `recorder.end_session()` bug fixed: naive/aware datetime mismatch on SQLite round-trip.
+- **Status**: pending
+
 <!--
 ## YYYY-MM-DD: brief description
 

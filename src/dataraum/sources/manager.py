@@ -413,10 +413,11 @@ def _read_file_preview(conn: duckdb.DuckDBPyConnection, path: Path) -> tuple[lis
         return columns, None
 
     elif suffix in (".json", ".jsonl"):
-        result = conn.execute(f"SELECT * FROM read_json_auto('{path_str}') LIMIT 0")
+        safe = path_str.replace("'", "''")
+        result = conn.execute(f"SELECT * FROM read_json_auto('{safe}') LIMIT 0")
         columns = [desc[0] for desc in result.description]
         try:
-            count = conn.execute(f"SELECT count(*) FROM read_json_auto('{path_str}')").fetchone()
+            count = conn.execute(f"SELECT count(*) FROM read_json_auto('{safe}')").fetchone()
             return columns, count[0] if count else None
         except Exception:
             return columns, None

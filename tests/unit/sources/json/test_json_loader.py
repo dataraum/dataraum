@@ -142,6 +142,40 @@ class TestLoadSingleFile:
         assert "c_123bad" in col_names
         conn.close()
 
+    def test_nested_objects_become_varchar(
+        self, loader: JsonLoader, tmp_path: Path, session: Session
+    ) -> None:
+        """Nested JSON objects and arrays must be serialized to VARCHAR, not fail."""
+        data = [
+            {"id": 1, "address": {"city": "Berlin", "zip": "10115"}, "tags": ["a", "b"]},
+            {"id": 2, "address": {"city": "Munich", "zip": "80331"}, "tags": ["c"]},
+        ]
+        path = tmp_path / "nested.json"
+        path.write_text(json.dumps(data))
+
+        conn = duckdb.connect(":memory:")
+        result = loader._load_single_file(
+            file_path=path, source_id="src_1", duckdb_conn=conn, session=session
+        )
+
+        assert result.success
+        staged = result.unwrap()
+        assert staged.column_count == 3
+
+        # All columns should be VARCHAR, including nested ones
+        types = conn.execute(
+            f"SELECT column_name, data_type FROM information_schema.columns "
+            f"WHERE table_name = '{staged.raw_table_name}'"
+        ).fetchall()
+        for _col_name, data_type in types:
+            assert data_type == "VARCHAR"
+
+        # Nested object should be serialized as JSON string
+        rows = conn.execute(f'SELECT address FROM "{staged.raw_table_name}" LIMIT 1').fetchone()
+        assert rows is not None
+        assert "Berlin" in rows[0]  # JSON-serialized string
+        conn.close()
+
     def test_empty_json_array(self, loader: JsonLoader, tmp_path: Path, session: Session) -> None:
         path = tmp_path / "empty.json"
         path.write_text("[]")

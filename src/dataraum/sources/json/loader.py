@@ -49,10 +49,11 @@ class JsonLoader(LoaderBase):
             return Result.fail(f"JSON file not found: {path}")
 
         try:
+            safe_path = str(path).replace("'", "''")
             conn = duckdb.connect(":memory:")
             try:
                 sample_df = conn.execute(f"""
-                    SELECT * FROM read_json_auto('{path}')
+                    SELECT * FROM read_json_auto('{safe_path}')
                     LIMIT 10
                 """).df()
             finally:
@@ -167,9 +168,12 @@ class JsonLoader(LoaderBase):
             Result containing StagedTable.
         """
         try:
+            # Escape single quotes in path for SQL safety
+            safe_path = str(file_path).replace("'", "''")
+
             # Discover columns via read_json_auto
             schema = duckdb_conn.execute(
-                f"DESCRIBE SELECT * FROM read_json_auto('{file_path}')"
+                f"DESCRIBE SELECT * FROM read_json_auto('{safe_path}')"
             ).fetchall()
 
             if not schema:
@@ -193,16 +197,18 @@ class JsonLoader(LoaderBase):
             table_name = self._sanitize_table_name(file_path.stem)
             raw_table_name = f"raw_{table_name}"
 
-            # Build SELECT: cast every column to VARCHAR and alias to normalized name
+            # Build SELECT: serialize every column to VARCHAR via to_json().
+            # Plain CAST(col AS VARCHAR) fails on STRUCT/LIST types that
+            # read_json_auto infers for nested objects/arrays.
             select_exprs = [
-                f'CAST("{original}" AS VARCHAR) AS "{normalized}"'
+                f'CAST(to_json("{original}") AS VARCHAR) AS "{normalized}"'
                 for original, normalized in col_mapping
             ]
 
             sql = f"""
                 CREATE TABLE "{raw_table_name}" AS
                 SELECT {", ".join(select_exprs)}
-                FROM read_json_auto('{file_path}')
+                FROM read_json_auto('{safe_path}')
             """
             duckdb_conn.execute(sql)
 

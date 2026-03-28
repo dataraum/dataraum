@@ -111,7 +111,9 @@ class TestAddFileSource:
         result = manager.add_file_source("jsonl_src", str(jsonl_file))
 
         assert result.success
-        assert result.unwrap().source_type == "json"
+        info = result.unwrap()
+        assert info.source_type == "json"
+        assert "x" in info.columns
 
     def test_reject_unsupported_format(self, manager: SourceManager, tmp_path: Path) -> None:
         xlsx = tmp_path / "data.xlsx"
@@ -135,6 +137,8 @@ class TestAddFileSource:
         assert info.source_type == "csv"
         assert info.discovered_schema is not None
         assert info.discovered_schema["file_count"] == 2
+        assert info.discovered_schema["formats"] == {"csv": 2}
+        assert "2 csv" in info.discovered_schema["breakdown"]
 
     def test_reject_empty_directory(self, manager: SourceManager, tmp_path: Path) -> None:
         empty_dir = tmp_path / "empty"

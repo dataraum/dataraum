@@ -260,6 +260,7 @@ class QueryAgent(LLMFeature):
             exec_result = self._execute_query(
                 sql=analysis_output.final_sql,
                 duckdb_conn=duckdb_conn,
+                display_limit=display_limit,
             )
 
         data: list[dict[str, Any]] | None = None
@@ -956,15 +957,20 @@ class QueryAgent(LLMFeature):
         self,
         sql: str,
         duckdb_conn: duckdb.DuckDBPyConnection,
+        display_limit: int = 10_000,
     ) -> Result[tuple[list[str], list[dict[str, Any]]]]:
-        """Execute generated SQL and return results."""
+        """Execute generated SQL and return results.
+
+        Pushes LIMIT to DuckDB to avoid loading unbounded results into memory.
+        """
         try:
             # Validate SQL is read-only
             safety_error = self._is_read_only_sql(sql)
             if safety_error:
                 return Result.fail(safety_error)
 
-            result = duckdb_conn.execute(sql)
+            limited_sql = f"SELECT * FROM ({sql}) AS _dr_limited LIMIT {display_limit}"
+            result = duckdb_conn.execute(limited_sql)
             columns = [desc[0] for desc in result.description]
             rows = result.fetchall()
 

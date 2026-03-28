@@ -85,6 +85,28 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
   - Root dir configurable via `DATARAUM_HOME` env var. `DATARAUM_OUTPUT_DIR` accepted as legacy fallback.
 - **Status**: pending
 
+## 2026-03-28: Package D — Export + query UX (DAT-213, DAT-224)
+
+### dataraum-eval
+- **Changed**: `src/dataraum/export.py` (rewrite — single `export_sql` with DuckDB COPY), `src/dataraum/mcp/server.py`, `src/dataraum/mcp/formatters.py`, `src/dataraum/mcp/sql_executor.py`, `src/dataraum/query/core.py`, `src/dataraum/query/agent.py`, `src/dataraum/query/execution.py`
+- **Affects**: `run_sql` and `query` tools — export, display limits, truncation signaling
+- **Calibrate**: export suite. Key flows:
+  1. `run_sql(sql="...", export_format="csv", export_name="test")` → CSV + sidecar at `{root}/exports/`
+  2. `query(question="...", export_format="parquet")` → Parquet + rich sidecar (confidence, assumptions, SQL)
+  3. Truncation: `run_sql` with 200+ rows → `truncated: true`, `row_count` shows total, `rows_returned` shows display
+  4. No export when `export_format` omitted (backward compatible)
+- **Notes**:
+  - Export is DuckDB COPY only — no Python materialization. CSV and Parquet formats. JSON dropped.
+  - `display_limit` pushed to DuckDB via `execute_sql_steps` — no unbounded `fetchall()` anywhere.
+  - Temp views NOT dropped after execution — they survive on the cursor for export reuse.
+  - `run_sql` response now includes `row_count` (total), `rows_returned` (display), `truncated`, `hint` when capped.
+  - `query` response `data` block now includes `rows_returned`, `truncated`, `hint` when capped.
+  - Sidecar = MCP result minus rows/data. Caller builds it, export just writes to disk.
+  - Export path sanitized: regex strips special chars, resolve() containment check.
+  - `run_sql` tool description updated with snippet/step/column-mapping guidance (DAT-224).
+  - `export_query_result()`, `export_data()`, `_export_tool_result()` all deleted. Net -300 lines.
+- **Status**: pending
+
 <!--
 ## YYYY-MM-DD: brief description
 

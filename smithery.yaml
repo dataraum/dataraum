@@ -1,0 +1,21 @@
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      DATARAUM_HOME:
+        type: string
+        description: Root directory for DataRaum workspaces (sessions, archives, exports)
+      ANTHROPIC_API_KEY:
+        type: string
+        description: Anthropic API key for LLM-powered analysis (semantic enrichment, query agent)
+    required:
+      - ANTHROPIC_API_KEY
+  commandFunction:
+    # Smithery invokes this as a container — see Dockerfile
+    - name: dataraum-mcp
+      command: dataraum-mcp
+      env:
+        DATARAUM_HOME: "{{config.DATARAUM_HOME}}"
+        ANTHROPIC_API_KEY: "{{config.ANTHROPIC_API_KEY}}"
+        PYTHON_GIL: "0"

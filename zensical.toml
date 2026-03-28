@@ -1,7 +1,7 @@
 [project]
 site_name = "DataRaum"
 site_description = "Rich metadata context engine for AI-driven data analytics"
-site_url = "https://dataraum.github.io/dataraum-context"
+site_url = "https://dataraum.github.io/dataraum"
 docs_dir = "docs"
 
 nav = [

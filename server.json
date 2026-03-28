@@ -1,0 +1,44 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.dataraum/dataraum",
+  "display_name": "DataRaum",
+  "description": "Rich metadata context engine for AI-driven data analytics. Pre-computes comprehensive metadata (types, statistics, entropy, relationships, semantic annotations) and serves it as structured context optimized for LLM consumption.",
+  "repository": {
+    "url": "https://github.com/dataraum/dataraum",
+    "source": "github"
+  },
+  "version_detail": {
+    "version": "0.2.0",
+    "release_date": "2026-03-28"
+  },
+  "packages": [
+    {
+      "registry_name": "pypi",
+      "name": "dataraum",
+      "version": "0.2.0",
+      "runtime": "python",
+      "environment_variables": [
+        {
+          "name": "ANTHROPIC_API_KEY",
+          "description": "Anthropic API key for LLM-powered semantic analysis",
+          "required": true
+        },
+        {
+          "name": "DATARAUM_HOME",
+          "description": "Root directory for workspaces, sessions, and exports",
+          "required": false
+        }
+      ]
+    }
+  ],
+  "tools": [
+    { "name": "look", "description": "Explore data schema, profiles, and statistics" },
+    { "name": "measure", "description": "Run entropy detectors and get data quality scores" },
+    { "name": "begin_session", "description": "Start an investigation session with intent and contract" },
+    { "name": "end_session", "description": "End session, archive workspace" },
+    { "name": "query", "description": "Natural language question answering over your data" },
+    { "name": "run_sql", "description": "Execute SQL with quality metadata and snippet reuse" },
+    { "name": "add_source", "description": "Register CSV, Parquet, JSON files or database connections" }
+  ],
+  "remotes": []
+}

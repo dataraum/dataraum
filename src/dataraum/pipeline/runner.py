@@ -339,7 +339,7 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Run the dataraum-context pipeline on CSV data.",
+        description="Run the dataraum pipeline on CSV data.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

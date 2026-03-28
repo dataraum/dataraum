@@ -57,9 +57,9 @@ dataraum = "dataraum.cli:app"
 dataraum-mcp = "dataraum.mcp.server:main"
 
 [project.urls]
-Homepage = "https://github.com/dataraum/dataraum-context"
-Documentation = "https://docs.dataraum.com/context"
-Repository = "https://github.com/dataraum/dataraum-context"
+Homepage = "https://github.com/dataraum/dataraum"
+Documentation = "https://dataraum.github.io/dataraum"
+Repository = "https://github.com/dataraum/dataraum"
 
 [dependency-groups]
 dev = [

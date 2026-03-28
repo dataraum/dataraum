@@ -449,7 +449,11 @@ def create_server(output_dir: Path | None = None) -> Server:
                         },
                         "path": {
                             "type": "string",
-                            "description": "File path. Mutually exclusive with 'backend'.",
+                            "description": (
+                                "File or directory path. Mutually exclusive with 'backend'. "
+                                "In Docker, data is mounted at /sources — try /sources "
+                                "or /sources/<filename> if the user hasn't specified a path."
+                            ),
                         },
                         "backend": {
                             "type": "string",

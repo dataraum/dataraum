@@ -392,6 +392,15 @@ class EntropyAccessor:
             dim_warning: str | None = None
             try:
                 col_summaries = network_to_column_summaries(network_ctx)
+
+                # Filter by table_name if requested
+                if table_name:
+                    col_summaries = {
+                        k: v
+                        for k, v in col_summaries.items()
+                        if v.table_name == table_name or v.table_name.endswith(f"__{table_name}")
+                    }
+
                 dim_totals: dict[str, list[float]] = {}
                 for col_summary in col_summaries.values():
                     for dim_path, score in col_summary.dimension_scores.items():

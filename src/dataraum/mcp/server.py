@@ -655,23 +655,42 @@ def create_server(output_dir: Path | None = None) -> Server:
 
 
 def _get_pipeline_source(session: Any) -> Any | None:
-    """Find the source that has pipeline runs.
+    """Find the source that has pipeline data (typed tables).
 
     In multi-source mode (MCP onboarding flow), the pipeline runs against a
-    synthetic "multi_source" record.  In single-file mode there is only one
-    Source row.
+    synthetic "multi_source" record.  Otherwise, pick the source that has
+    typed tables.
     """
-    from sqlalchemy import select
+    from sqlalchemy import func, select
 
-    from dataraum.storage import Source
+    from dataraum.storage import Source, Table
 
+    # Multi-source mode: explicit record
     source = session.execute(
-        select(Source).where(Source.name == "multi_source")
+        select(Source).where(Source.name == "multi_source", Source.archived_at.is_(None))
     ).scalar_one_or_none()
     if source:
         return source
-    # Single-source mode: exactly one source exists
-    return session.execute(select(Source).order_by(Source.created_at).limit(1)).scalar_one_or_none()
+
+    # Find the source with typed tables
+    sources = list(
+        session.execute(
+            select(Source).where(Source.archived_at.is_(None)).order_by(Source.created_at)
+        )
+        .scalars()
+        .all()
+    )
+    for s in sources:
+        count = session.execute(
+            select(func.count())
+            .select_from(Table)
+            .where(Table.source_id == s.source_id, Table.layer == "typed")
+        ).scalar()
+        if count > 0:
+            return s
+
+    # Fallback to first active source
+    return sources[0] if sources else None
 
 
 def _resume_session(

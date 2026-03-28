@@ -5,15 +5,16 @@ How to connect DataRaum to Claude Code, Claude Desktop, and Claude for Work.
 ## Prerequisites
 
 ```bash
-# 1. Install dependencies
-uv sync
+# 1. Install
+pip install dataraum
 
-# 2. Verify the MCP server starts
-uv run dataraum-mcp
+# 2. Set your Anthropic API key (required for semantic analysis)
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# 3. Verify the MCP server starts
+dataraum-mcp
 # Should hang waiting for stdio input — Ctrl+C to stop
 ```
-
-> **Note:** You no longer need to run the pipeline from the CLI first. The `analyze` MCP tool lets Claude run the pipeline directly.
 
 ---
 
@@ -29,7 +30,7 @@ claude
 /mcp
 ```
 
-If `DATARAUM_OUTPUT_DIR` needs to point elsewhere, edit `.mcp.json`:
+If you need to customize, edit `.mcp.json`:
 
 ```json
 {
@@ -40,7 +41,7 @@ If `DATARAUM_OUTPUT_DIR` needs to point elsewhere, edit `.mcp.json`:
         "run", "--project", "/absolute/path/to/dataraum-context", "dataraum-mcp"
       ],
       "env": {
-        "DATARAUM_OUTPUT_DIR": "/absolute/path/to/pipeline_output",
+        "DATARAUM_HOME": "/absolute/path/to/workspace",
         "PYTHON_GIL": "0",
         "ANTHROPIC_API_KEY": "sk-ant-..."
       }
@@ -52,12 +53,11 @@ If `DATARAUM_OUTPUT_DIR` needs to point elsewhere, edit `.mcp.json`:
 ### Test it
 
 ```
-> Analyze the CSV at /path/to/data.csv
+> Add the CSV files in /path/to/my/data and analyze them
 > What tables do I have?
-> Show me the entropy for the orders table
+> Show me the entropy scores
 > Is my data aggregation safe?
 > How many rows are in each table?
-> What should I fix first?
 ```
 
 ---
@@ -83,7 +83,7 @@ Add this to the file (create it if it doesn't exist):
         "run", "--project", "/absolute/path/to/dataraum-context", "dataraum-mcp"
       ],
       "env": {
-        "DATARAUM_OUTPUT_DIR": "/absolute/path/to/pipeline_output",
+        "DATARAUM_HOME": "/absolute/path/to/workspace",
         "PYTHON_GIL": "0",
         "ANTHROPIC_API_KEY": "sk-ant-..."
       }
@@ -92,9 +92,9 @@ Add this to the file (create it if it doesn't exist):
 }
 ```
 
-**Important:** Claude Desktop doesn't inherit your shell's working directory, so use absolute paths for both `--project` and `DATARAUM_OUTPUT_DIR`.
+**Important:** Claude Desktop doesn't inherit your shell's working directory, so use absolute paths for both `--project` and `DATARAUM_HOME`.
 
-Restart Claude Desktop after editing. The hammer icon in the text input should show 10 DataRaum tools.
+Restart Claude Desktop after editing. The hammer icon in the text input should show 7 DataRaum tools.
 
 ---
 
@@ -108,57 +108,45 @@ See the plugin repo's README for installation and configuration instructions. Th
 
 ## Available Tools
 
-### Core tools
+7 tools organized around a session-based workflow:
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `analyze` | `path`, `name?`, `target_gate?`, `contract?` | Run pipeline on CSV/Parquet data. Stop at a gate for zone-by-zone review. |
-| `get_context` | — | Schema, relationships, semantic annotations, quality |
-| `get_quality` | `gate?`, `contract_name?`, `table_name?`, `priority?`, `include?` | Without `gate`: unified quality report. With `gate`: zone-specific violations and fix actions. |
-| `query` | `question`, `contract_name?` | Natural language query with confidence level |
-| `export` | `question?`, `sql?`, `output_path`, `format?` | Export results to CSV/Parquet/JSON with provenance sidecar |
+| `begin_session` | `contract?` | Start an investigation session. Optionally pick a contract (default: `exploratory_analysis`). |
+| `add_source` | `name`, `path` | Register a data source (CSV, Parquet, JSON, or directory). Runs the analysis pipeline automatically. |
+| `look` | `target?`, `sample?` | Explore data structure, relationships, and semantic metadata. Target: omit for dataset, `table` for table, `table.col` for column. |
+| `measure` | `target?` | Measure entropy scores, readiness, and data quality. Triggers pipeline if no data exists. |
+| `query` | `question` | Natural language query with confidence level. Contract is threaded from the session. |
+| `run_sql` | `sql`, `limit?`, `export_format?`, `export_name?` | Execute SQL directly with optional export (CSV/Parquet). |
+| `end_session` | `outcome?` | Archive workspace and end the session. |
 
-The `include` parameter on `get_quality` accepts a list of sections: `entropy`, `contract`, `actions`. Defaults to all three. The `gate` parameter (`quality_review` or `analysis_review`) switches to zone-specific status.
-
-### Zone-by-zone quality tools
-
-These tools enable an agent to drive quality improvement zone by zone:
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `apply_fix` | `fixes`, `source_path?` | Apply fixes (action + target + parameters), re-run affected phases, return score deltas |
-| `continue_pipeline` | `target_gate`, `source_path?` | Advance to the next zone boundary (returns inline gate status) |
-
-**Gates:** `quality_review` (Gate 1, after semantic) and `analysis_review` (Gate 2, after quality_summary). Source path is auto-resolved from registered sources.
-
-### Source management tools
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `discover_sources` | `path?`, `recursive?` | Scan workspace for data files (CSV, Parquet, JSON, XLSX) |
-| `add_source` | `name`, `path?`, `backend?`, `tables?`, `credential_ref?` | Register a file or database source |
-
-### Agentic fix flow
-
-An AI agent drives quality improvement zone by zone:
+### Typical workflow
 
 ```
-1. analyze(path="/data",                               # Run to Gate 1
-     target_gate="quality_review",
-     contract="executive_dashboard")
-2. get_quality(gate="quality_review")                   # See violations + fix actions
-3. apply_fix(fixes=[{action: "document_type_override",  # Apply fixes
-     target: "column:orders.date", parameters: {...}}])
-4. continue_pipeline(target_gate="analysis_review")    # Advance to Gate 2
-5. ... repeat steps 2-3 for remaining violations
-6. continue_pipeline(target_gate="end")                # Run to completion
+begin_session(contract="exploratory_analysis")
+  → add_source(name="accounting", path="/path/to/data")
+  → look()                    # Understand the data
+  → measure()                 # Check quality scores and readiness
+  → query("total revenue?")   # Ask questions
+  → run_sql(sql="...", export_format="csv", export_name="report")
+  → end_session(outcome="delivered")
 ```
 
-Claude triages violations directly using the enriched `get_quality` output (triage guidance, interpretation context, executable actions with field schemas).
+### Session flow
 
-### Contract names
+1. **`begin_session`** — creates a workspace, picks a contract. The contract determines what entropy thresholds are acceptable for your use case.
+2. **`add_source`** — registers data and runs the 17-phase analysis pipeline. Source is "sealed" after this — no modifications during the session.
+3. **`look` / `measure`** — explore structure and quality. `look` shows schema, relationships, semantic metadata. `measure` shows entropy scores and readiness.
+4. **`query` / `run_sql`** — ask questions or run SQL. `query` uses AI reasoning; `run_sql` executes SQL directly with export support.
+5. **`end_session`** — archives the workspace. Start a new session for new data.
+
+### Contracts
+
+Contracts define acceptable entropy thresholds for specific use cases:
 
 `exploratory_analysis`, `data_science`, `operational_analytics`, `aggregation_safe`, `executive_dashboard`, `regulatory_reporting`
+
+See [Entropy](entropy.md) for details on each contract.
 
 ---
 
@@ -166,18 +154,18 @@ Claude triages violations directly using the enriched `get_quality` output (tria
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `DATARAUM_OUTPUT_DIR` | Yes | Path to directory containing `metadata.db` and `data.duckdb` |
-| `PYTHON_GIL` | Recommended | Set to `0` to enable free-threading for better performance |
-| `ANTHROPIC_API_KEY` | If using LLM features | API key for LLM-powered analysis (semantic, quality rules, etc.) |
+| `DATARAUM_HOME` | No | Root directory for workspaces (default: `~/.dataraum/`). Legacy `DATARAUM_OUTPUT_DIR` also accepted. |
+| `ANTHROPIC_API_KEY` | Yes | API key for LLM-powered analysis (semantic, quality rules, etc.) |
+| `PYTHON_GIL` | Recommended | Set to `0` to enable free-threading for better performance (Python 3.14) |
 
 ---
 
 ## Troubleshooting
 
-**"No analyzed data found"** — Use the `analyze` tool first: `analyze(path='/path/to/data.csv')`. Or run from CLI: `uv run dataraum run /path/to/data --output ./pipeline_output`
+**"No analyzed data found"** — Use `add_source` to register and analyze data first. Or run from CLI: `dataraum run /path/to/data`
 
 **Server not showing up in Claude Code** — Run `/mcp` to check status. Make sure you're in the project root where `.mcp.json` lives.
 
 **Server not showing up in Claude Desktop** — Check the config path is correct for your OS. Restart Claude Desktop. Check logs at `~/Library/Logs/Claude/` (macOS).
 
-**Tools return errors** — Verify `DATARAUM_OUTPUT_DIR` points to a directory containing `metadata.db` and `data.duckdb`.
+**Tools return errors** — Check that `ANTHROPIC_API_KEY` is set. Verify data was added via `add_source`.

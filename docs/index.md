@@ -13,7 +13,7 @@ The core insight: AI agents don't need tools to discover metadata at runtime. Th
 
 ## Concepts
 
-- [Pipeline](pipeline.md) — the 19-phase analysis pipeline
+- [Pipeline](pipeline.md) — the 17-phase analysis pipeline
 - [Entropy](entropy.md) — uncertainty quantification across all metadata dimensions
 - [Architecture](architecture.md) — system design and key decisions
 

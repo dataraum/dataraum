@@ -12,19 +12,19 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           CONSUMERS                                         │
 │                                                                             │
-│   Claude Code ──── MCP Server (6 tools)                                      │
+│   Claude Code ──── MCP Server (7 tools)                                     │
 │   Claude Desktop ─┘                       ContextDocument (pre-assembled)   │
 │   Python ──────── Context API                                               │
-│   Terminal ────── CLI + TUI (4 commands + 2 subgroups)                       │
+│   Terminal ────── CLI (run + dev)                                            │
 └─────────────────────────────────────────────────────────────────────────────┘
                                        ↑
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           ENTROPY LAYER                                     │
 │                                                                             │
-│   12 Detectors (8 hard, 4 soft) ──▶  Contracts (6 built-in)                 │
-│   Bayesian Network              ──▶  Actions (prioritized fixes)            │
-│   Gates (entropy preconditions) ──▶  Fix Ledger (domain knowledge)         │
-│   LLM Interpretation            ──▶  Confidence Levels (traffic light)      │
+│   16 Detectors (4 layers)           ──▶  Contracts (6 built-in)             │
+│   Bayesian Network                  ──▶  Readiness (ready/investigate/      │
+│   Post-phase measurement            ──▶    blocked per column)              │
+│                                          Confidence Levels (traffic light)  │
 └─────────────────────────────────────────────────────────────────────────────┘
                                        ↑
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -46,8 +46,8 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 │   ┌─────────────┐  ┌──────────────────┐  ┌─────────────────────┐          │
 │   │   Quality   │  │   Slicing &      │  │   Business Cycles   │          │
 │   │             │  │   Enriched Views │  │   & Validation      │          │
-│   │ • summaries │  │ • dimensions    │  │ • multi-table       │          │
-│   │ • Benford   │  │ • drift         │  │ • domain rules      │          │
+│   │ • Benford   │  │ • dimensions    │  │ • multi-table       │          │
+│   │ • outliers  │  │ • drift         │  │ • domain rules      │          │
 │   └─────────────┘  └──────────────────┘  └─────────────────────┘          │
 └─────────────────────────────────────────────────────────────────────────────┘
                                        ↑
@@ -60,14 +60,14 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 │        │                ▼                                                   │
 │        │        quarantine_{table}                                          │
 │        ▼                                                                    │
-│   Source files (CSV, Parquet)                                               │
+│   Source files (CSV, Parquet, JSON)                                         │
 └─────────────────────────────────────────────────────────────────────────────┘
                                        ↑
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           PIPELINE ORCHESTRATOR                             │
 │                                                                             │
-│   19 phases with dependency-based execution                                 │
-│   Entropy gates between phases (detector preconditions)                     │
+│   17 phases with dependency-based execution                                 │
+│   Post-phase entropy detectors (scores computed incrementally)              │
 │   ThreadPoolExecutor (true parallelism via Python 3.14 free-threading)      │
 │   Idempotent phases, checkpoint-based resumption                            │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -82,10 +82,9 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 │   │ type_candidates,     │      │ quarantine_{table}   │                   │
 │   │ semantic_annotations,│      │ enriched views       │                   │
 │   │ relationships,       │      └──────────────────────┘                   │
-│   │ quality_reports,     │                                                  │
-│   │ entropy_snapshots,   │                                                  │
 │   │ entropy_records,     │                                                  │
-│   │ decisions,           │                                                  │
+│   │ entropy_objects,     │                                                  │
+│   │ investigation_steps, │                                                  │
 │   │ slice_definitions,   │                                                  │
 │   │ validation_results,  │                                                  │
 │   │ ...                  │                                                  │
@@ -97,9 +96,8 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 
 | Layer | Technology | Purpose |
 |-------|------------|---------|
-| **AI Interface** | MCP Server | 6 tools for AI agents (Claude Code, Claude Desktop) |
-| **CLI** | Typer + Rich | 4 commands + 2 subgroups for terminal use |
-| **TUI** | Textual | Interactive terminal dashboards |
+| **AI Interface** | MCP Server | 7 tools for AI agents (Claude Code, Claude Desktop) |
+| **CLI** | Typer + Rich | `run` command + `dev` subgroup for terminal use |
 | **Python API** | `Context` class | Programmatic access for notebooks and scripts |
 | **Pipeline** | ThreadPoolExecutor | Parallel phase execution (free-threaded Python 3.14) |
 | **Metadata Store** | SQLAlchemy + SQLite | Structured metadata persistence |
@@ -107,7 +105,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 | **Data Exchange** | PyArrow | Efficient data transfer between engines |
 | **Statistical** | SciPy, StatsModels, Ruptures | Distributions, regressions, changepoints |
 | **Probabilistic** | PGMPy, NetworkX | Bayesian networks for entropy causality |
-| **LLM** | Anthropic (primary) | Semantic analysis, quality rules, interpretation |
+| **LLM** | Anthropic (primary) | Semantic analysis, enrichment, interpretation |
 | **Configuration** | YAML | Ontologies, verticals, thresholds, prompts |
 
 ## Key Design Decisions
@@ -120,13 +118,13 @@ All data is loaded as VARCHAR to preserve raw values. Type inference happens in 
 
 AI doesn't discover metadata at runtime via tools. It receives a pre-assembled context document with all relevant metadata already computed and interpreted through domain ontologies. This makes AI interactions faster and more reliable.
 
-### Minimal Tool Surface
+### Session-Based Tool Surface
 
-6 MCP tools: 4 core (`analyze`, `get_context`, `get_quality`, `query`) + 2 source management (`discover_sources`, `add_source`). `get_quality` returns a unified report combining entropy, contract evaluation, and resolution actions. Rich context upfront instead of many discovery tools.
+7 MCP tools organized around investigation sessions: `begin_session` → `add_source` → `look` / `measure` / `query` / `run_sql` → `end_session`. The session carries the contract (entropy threshold profile) so the agent doesn't need to pass it on every call.
 
 ### Entropy Over Binary Quality
 
-Instead of pass/fail quality checks, entropy quantifies uncertainty on a continuous 0–1 scale across 4 dimensions. Contracts translate these scores into use-case-specific readiness assessments.
+Instead of pass/fail quality checks, entropy quantifies uncertainty on a continuous 0–1 scale across 4 layers. Contracts translate these scores into use-case-specific readiness assessments.
 
 ### Ontologies as Configuration
 
@@ -138,7 +136,7 @@ Domain knowledge is encoded in YAML verticals (`config/verticals/`), not hard-co
 
 ### Free-Threading
 
-Python 3.14 free-threaded build enables true CPU parallelism. Pipeline phases run in parallel via `ThreadPoolExecutor` without GIL contention. DuckDB read cursors are thread-safe; writes are serialized via mutex.
+Python 3.14 free-threaded build enables true CPU parallelism. Pipeline phases run in parallel via `ThreadPoolExecutor` without GIL contention. On Python 3.12/3.13, the same code runs under the GIL with no functional difference. DuckDB read cursors are thread-safe; writes are serialized via mutex.
 
 ## Module Structure
 
@@ -154,39 +152,39 @@ src/dataraum/
 │   ├── slicing/           # Data slicing and drift detection
 │   ├── cycles/            # Business cycle detection
 │   ├── validation/        # Domain validation rules
-│   └── quality_summary/   # Quality report synthesis
+│   ├── eligibility/       # Column eligibility evaluation
+│   └── views/             # Enriched view construction
 ├── entropy/               # Uncertainty quantification
-│   ├── detectors/         # 12 detectors across 4 layers (8 hard, 4 soft)
+│   ├── detectors/         # 16 detectors across 4 layers
 │   │   ├── structural/    # Type fidelity, join paths, relationship quality
-│   │   ├── semantic/      # Business meaning, units, temporal, dimensional
-│   │   ├── value/         # Nulls, outliers, drift, Benford
-│   │   └── computational/ # Derived values, aggregation safety
+│   │   ├── semantic/      # Business meaning, units, temporal, dimensional, coverage, cycles
+│   │   ├── value/         # Nulls, outliers, drift, Benford, slice variance
+│   │   └── computational/ # Derived values, cross-table consistency
 │   ├── contracts/         # Use-case threshold evaluation
 │   ├── network/           # Bayesian causal network
-│   ├── snapshot.py        # Snapshot: run detectors, before/after measurement
+│   ├── measurement.py     # measure_entropy(), check_contracts()
 │   ├── actions.py         # Merge resolution actions from all sources
-│   ├── context.py         # Entropy context builder
-│   └── interpretation.py  # LLM entropy interpretation
-├── documentation/           # Fix ledger + document agent
-├── graphs/                # Metric calculation graphs
+│   └── engine.py          # Detector orchestration, post-step hooks
+├── investigation/         # Session trace models (MCP audit trail)
+├── documentation/         # Fix ledger + document agent
+├── graphs/                # Metric calculation graphs, context assembly
 ├── query/                 # Natural language query execution
 ├── pipeline/              # Pipeline orchestrator
 │   ├── registry.py        # Phase auto-discovery
 │   ├── runner.py          # Execution engine + RunConfig
-│   └── phases/            # 20 phase implementations
-├── sources/               # Data source loaders (CSV, Parquet)
+│   └── phases/            # 17 phase implementations
+├── sources/               # Data source loaders (CSV, Parquet, JSON)
 ├── storage/               # SQLAlchemy base, migrations
 ├── llm/                   # LLM provider abstraction, prompt management
 ├── core/                  # Config, connections, utilities, models
-├── cli/                   # Typer commands + Textual TUI
-│   ├── main.py            # CLI entry point (4 commands + 2 subgroups)
-│   ├── commands/          # run, tui, query, fix, sources (subgroup), dev (subgroup)
-│   ├── gate_handler.py    # Interactive CLI gate handler (Rich prompts)
-│   ├── tui/               # Textual application + screens + widgets
-│   └── ...
+├── cli/                   # Typer CLI
+│   ├── main.py            # CLI entry point
+│   └── commands/          # run, dev (subgroup)
 └── mcp/                   # MCP server
-    ├── server.py          # 6 tool definitions
-    └── formatters.py      # LLM-optimized markdown output
+    ├── server.py          # 7 tool definitions
+    ├── formatters.py      # LLM-optimized markdown output
+    ├── sections.py        # Response section builders
+    └── sql_executor.py    # SQL execution with export support
 ```
 
 SQLAlchemy models are co-located with business logic in `db_models.py` files within each module.
@@ -194,62 +192,48 @@ SQLAlchemy models are co-located with business logic in `db_models.py` files wit
 ## Data Flow
 
 ```
-Source (CSV/Parquet)
+Source (CSV/Parquet/JSON)
     ↓
 [import] Load as VARCHAR → raw_{table}
     ↓
 [typing] Type inference + cast testing → typed_{table}, quarantine_{table}
     ↓
- ⊘ GATE: type_fidelity ≤ 0.5
-    ↓
-[statistics, temporal, correlations, relationships] Statistical metadata
-    ↓
- ⊘ GATE: type_fidelity ≤ 0.3, join_path_determinism ≤ 0.5
-    ↓
+[statistics, temporal, relationships, statistical_quality] Statistical metadata
+    ↓                                                      (+ post-phase detectors)
 [semantic] LLM analysis → roles, entities, business terms
     ↓
-[enriched_views, slicing, slice_analysis] Joined views, data segments
+[enriched_views, slicing, slice_analysis, correlations] Joined views, data segments
     ↓
-[quality_summary] Per-table quality reports
-    ↓
-[entropy] 12 detectors → scores per column per dimension
-    ↓
-[entropy_interpretation] LLM → human-readable explanations + actions
-    ↓
- ⊘ GATE: type_fidelity ≤ 0.3, naming_clarity ≤ 0.4
-    ↓
-[business_cycles, validation, graph_execution] Domain-specific analysis
+[business_cycles, validation] Domain-specific analysis
     ↓
 Context document → MCP / CLI / Python API → AI consumer
 ```
 
-At each gate (⊘), the pipeline checks detector scores against contract thresholds. `dataraum run` defers violations; `dataraum fix` pauses interactively.
+Entropy detectors run as post-steps after each phase, building up scores incrementally. The `measure` MCP tool (or `check_contracts()` in Python) evaluates these scores against contract thresholds at any point.
 
 ## Interfaces
 
-### MCP Server (6 tools)
+### MCP Server (7 tools)
 
 Primary interface for AI agents. Tools return markdown formatted for LLM consumption.
 
 | Tool | Purpose |
 |------|---------|
-| `analyze` | Run pipeline on CSV/Parquet data |
-| `get_context` | Full metadata context document |
-| `get_quality` | Unified quality report (entropy + contracts + actions) |
+| `begin_session` | Start an investigation session with a contract |
+| `add_source` | Register and analyze a data source |
+| `look` | Explore schema, relationships, semantic metadata |
+| `measure` | Entropy scores, readiness, data quality |
 | `query` | Natural language data queries |
-| `discover_sources` | Scan workspace for data files |
-| `add_source` | Register a file or database source |
+| `run_sql` | Execute SQL with export support |
+| `end_session` | Archive workspace and end session |
 
-### CLI (4 commands + 2 subgroups)
+### CLI
 
 | Command | Purpose |
 |---------|---------|
-| `dataraum run` | Execute pipeline (with interactive gate handling) |
-| `dataraum tui` | Interactive dashboard (5 screens) |
-| `dataraum query` | Natural language data query |
-| `dataraum fix` | Document domain knowledge interactively |
-| `dataraum sources {list,add,discover,remove}` | Manage data sources |
-| `dataraum dev {phases,inspect,reset}` | Developer utilities |
+| `dataraum run` | Execute the analysis pipeline |
+| `dataraum dev phases` | List pipeline phases and dependencies |
+| `dataraum dev context` | Print the full metadata context document |
 
 ### Python API
 
@@ -259,7 +243,6 @@ from dataraum import Context
 with Context("./pipeline_output") as ctx:
     # Metadata
     ctx.tables                              # Table names
-    ctx.context_document()                  # Full context for LLM
 
     # Entropy (returns wrapper with Jupyter _repr_html_)
     ctx.entropy.summary()                   # Overall entropy
@@ -273,15 +256,10 @@ with Context("./pipeline_output") as ctx:
     # Actions
     ctx.actions(contract="executive_dashboard")
 
-    # Query
+    # Query (requires ANTHROPIC_API_KEY)
     result = ctx.query("total revenue by month")
     result.answer                           # Natural language answer
     result.sql                              # Generated SQL
-    result.to_dataframe()                   # Pandas DataFrame
-
-    # Source management
-    ctx.sources.list()                      # Registered sources
-    ctx.sources.discover("/path/to/data")   # Scan for files
 
     # Pipeline execution
     ctx.run("/path/to/data.csv")            # Run pipeline from notebook
@@ -289,17 +267,17 @@ with Context("./pipeline_output") as ctx:
 
 ## LLM Integration
 
-7 of 20 pipeline phases use LLM (19 active, 1 de-configured).
+5 of 17 pipeline phases use LLM.
 
 | Feature | Model Tier | Purpose |
 |---------|------------|---------|
 | Semantic Analysis | balanced | Column roles, entity types, relationships |
 | Column Annotation | fast | Individual column descriptions |
+| Enrichment Analysis | balanced | Enriched view construction |
 | Slicing Analysis | balanced | Identify meaningful data segments |
-| Quality Summary | fast | Synthesize per-table quality reports |
-| Entropy Interpretation | balanced | Human-readable entropy explanations |
 | Business Cycles | balanced | Multi-table process detection |
 | Validation | balanced | Domain-specific SQL generation |
+| SQL Repair | fast | Fix broken generated SQL |
 
 LLM configuration: `config/llm/config.yaml`. Prompts: `config/llm/prompts/`. Provider: Anthropic (primary).
 

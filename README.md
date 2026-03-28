@@ -90,7 +90,7 @@ Semantic analysis requires an Anthropic API key:
 export ANTHROPIC_API_KEY="sk-..."
 ```
 
-Configure the LLM provider in `config/llm.yaml` or use `config/semantic_overrides.yaml` for manual definitions without an LLM.
+Configure the LLM provider in `config/llm/config.yaml`. See [Configuration](docs/configuration.md) for details.
 
 ## Development
 

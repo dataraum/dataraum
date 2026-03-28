@@ -27,8 +27,9 @@ SQLAlchemy models are **co-located with their business logic** for better mainta
 | Domain Quality | `quality/domains/db_models.py` | DomainQualityMetrics, FinancialQualityMetrics, detail tables |
 | LLM | `llm/db_models.py` | LLMCache |
 | Graphs | `graphs/db_models.py` | GeneratedCodeRecord, GraphExecutionRecord, StepResultRecord |
-| Decisions | `entropy/decisions.py` | DecisionRecord (gate fix audit trail) |
-| Pipeline | `pipeline/db_models.py` | PipelineRun, PhaseCheckpoint (with gate_status, entropy_hard_scores) |
+| Entropy | `entropy/db_models.py` | EntropyRecord, EntropyObjectRecord |
+| Investigation | `investigation/db_models.py` | InvestigationSession, InvestigationStep |
+| Pipeline | `pipeline/db_models.py` | PipelineRun, PhaseCheckpoint |
 
 All models inherit from `storage/models_v2/base.py:Base` and are registered via imports in `storage/schema.py`.
 

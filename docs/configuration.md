@@ -19,10 +19,7 @@ config/
 │   ├── slicing.yaml
 │   ├── temporal.yaml
 │   ├── temporal_slice_analysis.yaml
-│   ├── quality_summary.yaml
 │   ├── business_cycles.yaml
-│   ├── entropy_interpretation.yaml
-│   ├── graph_execution.yaml
 │   └── validation.yaml
 │
 ├── entropy/
@@ -42,12 +39,12 @@ config/
 │       ├── semantic_analysis.yaml
 │       ├── column_annotation.yaml
 │       ├── slicing_analysis.yaml
-│       ├── quality_summary_batch.yaml
-│       ├── entropy_interpretation.yaml
+│       ├── enrichment_analysis.yaml
 │       ├── entropy_table_interpretation.yaml
 │       ├── business_cycles.yaml
 │       ├── validation_sql.yaml
 │       ├── graph_sql_generation.yaml
+│       ├── config_fix.yaml
 │       ├── query_analysis.yaml
 │       └── sql_repair.yaml
 │
@@ -122,10 +119,13 @@ features:
   semantic_analysis:
     enabled: true
     model_tier: balanced     # Use the "balanced" model
-  quality_summary:
+  column_annotation:
     enabled: true
     model_tier: fast         # Use the cheaper "fast" model
-  # ... per-feature toggles
+  enrichment_analysis:
+    enabled: true
+    model_tier: balanced
+  # ... per-feature toggles (7 features total)
 
 privacy:
   max_sample_values: 10

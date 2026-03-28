@@ -28,6 +28,8 @@ How well-documented is what the data means?
 | UnitEntropyDetector | `units > unit_declaration` | Whether numeric measures have declared units (USD, kg, etc.) |
 | TemporalEntropyDetector | `temporal > time_role` | Whether temporal columns are properly identified and typed |
 | DimensionalEntropyDetector | `dimensional > cross_column_patterns` | Undocumented business rules between columns (mutual exclusivity, conditional dependencies) |
+| DimensionCoverageDetector | `coverage > dimension_coverage` | Whether enriched views adequately cover the available dimensions |
+| BusinessCycleHealthDetector | `cycles > business_cycle_health` | Whether detected business cycles have complete, healthy data |
 
 ### Value (Data Quality)
 
@@ -39,6 +41,7 @@ How clean and reliable are the actual values?
 | OutlierRateDetector | `outliers > outlier_rate` | Proportion of statistical outliers, attenuated for high-variance columns |
 | TemporalDriftDetector | `temporal > temporal_drift` | Changes in data distribution over time |
 | BenfordDetector | `distribution > benford_compliance` | Whether first-digit distribution follows Benford's Law (applicable to financial/count data) |
+| SliceVarianceDetector | `variance > slice_stability` | Whether data quality is consistent across slices (segments) of the data |
 
 ### Computational (Aggregation Safety)
 
@@ -47,17 +50,7 @@ Can you safely compute on this data?
 | Detector | Dimension | What It Measures |
 |----------|-----------|-----------------|
 | DerivedValueDetector | `derived_values > formula_match` | Whether calculated columns match their source formula |
-
-## Detector Trust
-
-Each detector has a **trust level** that determines whether it can gate the pipeline:
-
-| Trust | Detectors | Meaning |
-|-------|-----------|---------|
-| **HARD** | type_fidelity, join_path_determinism, relationship_entropy, null_ratio, outlier_rate, benford, temporal_drift, derived_value | Machine-verifiable. Can block pipeline phases via gates. |
-| **SOFT** | business_meaning, unit_entropy, temporal_entropy, dimensional_entropy | LLM/heuristic-derived. Inform actions but don't block phases. |
-
-Hard detectors produce scores that are objectively measurable — you can re-run them and get the same result. Soft detectors depend on LLM interpretation and are inherently less deterministic.
+| CrossTableConsistencyDetector | `reconciliation > cross_table_consistency` | Whether values that should agree across tables actually do |
 
 ## Score Interpretation
 
@@ -97,8 +90,14 @@ Contract evaluation produces a traffic-light confidence level:
 
 ### Evaluating Contracts
 
+Via MCP:
+```
+> Is my data aggregation safe?
+> Evaluate the executive_dashboard contract
+```
+
+Via Python:
 ```python
-# Python
 from dataraum import Context
 
 with Context("./pipeline_output") as ctx:
@@ -107,58 +106,32 @@ with Context("./pipeline_output") as ctx:
     print(result["violations"])        # List of threshold breaches
 ```
 
-Via MCP:
-```
-> Is my data aggregation safe?
-> Evaluate the executive_dashboard contract
-```
-
-Via CLI (contract can be evaluated during a pipeline run):
+Via CLI (contract evaluated during pipeline run):
 ```bash
 dataraum run /path/to/data --contract aggregation_safe
 ```
 
-## Actions
+## Readiness
 
-When entropy is too high, DataRaum generates prioritized **actions** — concrete steps to improve data quality. Actions are ranked by impact-to-effort ratio and traced to their source (LLM interpretation or Bayesian network analysis).
+Per-column readiness is derived from the Bayesian entropy network:
 
-```python
-from dataraum import Context
+| Level | Meaning |
+|-------|---------|
+| **ready** | Column is reliable for the selected contract |
+| **investigate** | Some dimensions have elevated uncertainty |
+| **blocked** | Critical uncertainty — do not use without remediation |
 
-with Context("./pipeline_output") as ctx:
-    actions = ctx.actions(contract="aggregation_safe")
-    for action in actions:
-        print(f"[{action['priority']}] {action['description']}")
-        print(f"  Affects: {action['affected_columns']}")
-        print(f"  Effort: {action['effort']}")
-```
-
-Via MCP:
-```
-> What should I fix first?
-> Show high priority actions for the orders table
-```
-
-Via CLI — the `fix` command walks you through `document_*` actions interactively:
-```bash
-# Document domain knowledge (units, naming, business rules)
-dataraum fix ./pipeline_output
-
-# Document fixes and re-run the pipeline in one step
-dataraum fix --rerun ./pipeline_output
-```
-
-The `--rerun` flag re-runs semantic analysis + all downstream phases after you document fixes, and prints an entropy impact report showing score changes.
-
-### Action Priority
-
-Actions are scored based on:
-- **Impact**: How many columns benefit, plus causal network impact
-- **Effort**: Low, medium, or high (estimated remediation work)
-- **Priority score**: `impact / effort_factor` — higher means better ROI
+Use `measure` (MCP) or `ctx.entropy.summary()` (Python) to see readiness at column, table, and dataset levels.
 
 ## Viewing Entropy
 
+Via MCP:
+```
+> Show me the entropy scores
+> What's the readiness for the orders table?
+```
+
+Via Python:
 ```python
 from dataraum import Context
 
@@ -171,10 +144,4 @@ with Context("./pipeline_output") as ctx:
 
     # Per-column detail with evidence
     detail = ctx.entropy.details("orders", "amount")
-```
-
-Via MCP:
-```
-> Show me the entropy for the orders table
-> What are the entropy details for orders.amount?
 ```

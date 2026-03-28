@@ -7,7 +7,7 @@ on:
         branches: [main]
 
 jobs:
-    check:
+    test:
         runs-on: ubuntu-latest
         strategy:
             fail-fast: false
@@ -56,6 +56,19 @@ jobs:
               with:
                   name: coverage-report-${{ matrix.python-version }}
                   path: coverage.xml
+
+    # Single status for branch protection (matrix jobs report as "check (3.x)")
+    check:
+        if: always()
+        needs: [test, docs]
+        runs-on: ubuntu-latest
+        steps:
+            - name: All checks passed
+              run: |
+                  if [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.docs.result }}" != "success" ]; then
+                    echo "test=${{ needs.test.result }} docs=${{ needs.docs.result }}"
+                    exit 1
+                  fi
 
     docs:
         runs-on: ubuntu-latest

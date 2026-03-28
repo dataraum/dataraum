@@ -317,7 +317,9 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "Prerequisites: call look first to understand the schema. "
                     "Use measure to understand data quality before asking "
                     "analytical questions. Returns: answer, confidence level, "
-                    "assumptions, SQL steps, and result data."
+                    "assumptions, SQL steps, and result data. "
+                    "Optionally export results to CSV, Parquet, or JSON with "
+                    "export_format and export_name."
                 ),
                 inputSchema={
                     "type": "object",
@@ -355,7 +357,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "Each step_id becomes both a temp view name (referenceable by "
                     "later steps) and a snippet key.\n\n"
                     "Column mappings: map output columns to source columns "
-                    "(e.g. {\"revenue\": \"orders.amount\"}) to get per-column "
+                    '(e.g. {"revenue": "orders.amount"}) to get per-column '
                     "quality metadata in the response."
                 ),
                 inputSchema={
@@ -590,9 +592,11 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "rows": result["data"].get("rows", []),
                     "steps_executed": result.get("execution_steps", []),
                 }
-                result["export"] = _export_tool_result(
+                export_info = _export_tool_result(
                     export_input, root_dir, export_fmt, arguments.get("export_name"), tool="query"
                 )
+                if "export_path" in export_info:
+                    result["export_path"] = export_info["export_path"]
         elif name == "run_sql":
             with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
                 result = _run_sql(
@@ -606,9 +610,11 @@ def create_server(output_dir: Path | None = None) -> Server:
             # Export if requested
             export_fmt = arguments.get("export_format")
             if export_fmt and "error" not in result:
-                result["export"] = _export_tool_result(
+                export_info = _export_tool_result(
                     result, root_dir, export_fmt, arguments.get("export_name"), tool="run_sql"
                 )
+                if "export_path" in export_info:
+                    result["export_path"] = export_info["export_path"]
         elif name == "add_source":
             with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
                 result = _add_source(session, cursor, arguments)

@@ -217,6 +217,21 @@ class TestExportData:
         assert data["columns"] == ["x"]
         assert data["data"] == [{"x": 1}]
 
+    def test_parquet_export(self, tmp_path: Path) -> None:
+        from dataraum.export import export_data
+
+        rows = [{"name": "Alice", "val": 10}, {"name": "Bob", "val": 20}]
+        path = export_data(["name", "val"], rows, tmp_path / "out.parquet", fmt="parquet")
+
+        assert path.exists()
+        assert path.suffix == ".parquet"
+
+        import duckdb
+
+        df = duckdb.execute(f"SELECT * FROM '{path}'").fetchdf()
+        assert len(df) == 2
+        assert list(df.columns) == ["name", "val"]
+
     def test_sidecar_includes_custom_metadata(self, tmp_path: Path) -> None:
         from dataraum.export import export_data
 

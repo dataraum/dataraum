@@ -9,6 +9,8 @@ Enriched view analysis (analyze_enriched_correlations):
 - Same-table + cross-table derived columns via enriched views
 """
 
+from __future__ import annotations
+
 import time
 from datetime import UTC, datetime
 

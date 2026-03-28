@@ -12,6 +12,8 @@ Dependencies:
 Uses parallel processing for large tables to speed up assessment.
 """
 
+from __future__ import annotations
+
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any

@@ -330,7 +330,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                         },
                         "export_format": {
                             "type": "string",
-                            "enum": ["csv", "parquet", "json"],
+                            "enum": ["csv", "parquet"],
                             "description": "Export results to a file. Omit to skip export.",
                         },
                         "export_name": {
@@ -420,7 +420,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                         },
                         "export_format": {
                             "type": "string",
-                            "enum": ["csv", "parquet", "json"],
+                            "enum": ["csv", "parquet"],
                             "description": "Export results to a file. Omit to skip export.",
                         },
                         "export_name": {
@@ -593,24 +593,20 @@ def create_server(output_dir: Path | None = None) -> Server:
                     cursor,
                     arguments["question"],
                     active_contract,
-                    limit=arguments.get("limit", 10000),
+                    display_limit=arguments.get("limit", 10000),
                 )
-            # Export if requested — use full QueryResult, not truncated display
-            export_fmt = arguments.get("export_format")
-            if export_fmt and qr is not None and "error" not in result:
-                from dataraum.export import export_query_result
-
-                path_or_error = _safe_export_path(
-                    root_dir, arguments.get("export_name"), export_fmt, "query"
-                )
-                if isinstance(path_or_error, str):
-                    result["export_error"] = path_or_error
-                else:
-                    try:
-                        exported = export_query_result(qr, path_or_error, fmt=export_fmt)
-                        result["export_path"] = str(exported)
-                    except Exception as e:
-                        result["export_error"] = str(e)
+                # Export via DuckDB COPY �� full data, no Python materialization
+                export_fmt = arguments.get("export_format")
+                if export_fmt and qr is not None and qr.sql and "error" not in result:
+                    _do_export(
+                        result,
+                        qr.sql,
+                        cursor,
+                        root_dir,
+                        export_fmt,
+                        arguments.get("export_name"),
+                        "query",
+                    )
         elif name == "run_sql":
             with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
                 result = _run_sql(
@@ -621,16 +617,19 @@ def create_server(output_dir: Path | None = None) -> Server:
                     column_mappings=arguments.get("column_mappings"),
                     limit=arguments.get("limit", 100),
                 )
-            # Export if requested
-            export_fmt = arguments.get("export_format")
-            if export_fmt and "error" not in result:
-                export_info = _export_tool_result(
-                    result, root_dir, export_fmt, arguments.get("export_name"), tool="run_sql"
-                )
-                if "export_path" in export_info:
-                    result["export_path"] = export_info["export_path"]
-                elif "error" in export_info:
-                    result["export_error"] = export_info["error"]
+                # Export via DuckDB COPY — full data, no Python materialization
+                export_fmt = arguments.get("export_format")
+                final_sql = result.pop("_final_sql", None)
+                if export_fmt and final_sql and "error" not in result:
+                    _do_export(
+                        result,
+                        final_sql,
+                        cursor,
+                        root_dir,
+                        export_fmt,
+                        arguments.get("export_name"),
+                        "run_sql",
+                    )
         elif name == "add_source":
             with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
                 result = _add_source(session, cursor, arguments)
@@ -873,7 +872,7 @@ def _query(
     cursor: Any,
     question: str,
     contract_name: str | None = None,
-    limit: int = 10000,
+    display_limit: int = 10_000,
 ) -> tuple[dict[str, Any], Any]:
     """Execute a natural language query.
 
@@ -882,11 +881,12 @@ def _query(
         cursor: DuckDB cursor from server-level manager.
         question: Natural language question.
         contract_name: Active contract name for confidence evaluation.
-        limit: Max rows to retrieve from DuckDB. Default 10000.
+        display_limit: Max rows for display. Pushed to DuckDB via execute_sql_steps.
+            Export gets full data via DuckDB COPY regardless.
 
     Returns:
         Tuple of (formatted_dict, QueryResult_or_None).
-        QueryResult is returned for export — it contains full data.
+        QueryResult is returned for export — it has the SQL for COPY.
     """
     from dataraum.query import answer_question
 
@@ -900,6 +900,7 @@ def _query(
         duckdb_conn=cursor,
         source_id=source.source_id,
         contract=contract_name,
+        display_limit=display_limit,
     )
 
     if not result.success or not result.value:
@@ -909,11 +910,7 @@ def _query(
     if not qr.success:
         return {"error": qr.error or "Query generation failed"}, None
 
-    # Apply execution limit — truncate data if over limit
-    if qr.data and len(qr.data) > limit:
-        qr.data = qr.data[:limit]
-
-    return format_query_result(qr, limit=limit), qr
+    return format_query_result(qr), qr
 
 
 def _run_sql(
@@ -990,49 +987,47 @@ def _safe_export_path(
     return output_path
 
 
-def _export_tool_result(
+def _do_export(
     result: dict[str, Any],
+    sql: str,
+    cursor: Any,
     root_dir: Path,
     fmt: str,
-    name: str | None = None,
-    *,
-    tool: str = "run_sql",
-) -> dict[str, Any]:
-    """Export MCP tool results to a file via export_data().
+    name: str | None,
+    tool: str,
+) -> None:
+    """Export tool results via DuckDB COPY with sidecar metadata.
+
+    Writes full data to disk via DuckDB COPY (no Python materialization).
+    Sidecar is the MCP result dict minus rows/data.
+    Mutates result dict: adds export_path or export_error.
 
     Args:
-        result: Tool result dict with 'columns' and 'rows'.
-        root_dir: DataRaum root directory (exports go to root/exports/).
-        fmt: Export format — csv, parquet, or json.
+        result: MCP tool result dict (will be mutated with export_path).
+        sql: SQL query for DuckDB COPY (original, without LIMIT).
+        cursor: DuckDB cursor.
+        root_dir: DataRaum root directory.
+        fmt: Export format — csv or parquet.
         name: Filename stem. Auto-generated if omitted.
         tool: Tool name for auto-generated filenames.
-
-    Returns:
-        Dict with export_path, format, row_count.
     """
-    from dataraum.export import export_data
-
-    columns = result.get("columns", [])
-    rows = result.get("rows", [])
-    if not columns or not rows:
-        return {"error": "No data to export"}
+    from dataraum.export import export_sql
 
     path_or_error = _safe_export_path(root_dir, name, fmt, tool)
     if isinstance(path_or_error, str):
-        return {"error": path_or_error}
-    output_path = path_or_error
+        result["export_error"] = path_or_error
+        return
+
+    # Build sidecar: result minus rows/data (provenance only)
+    sidecar = result.copy()
+    for key in ("rows", "data", "row_count", "rows_returned", "truncated", "hint"):
+        sidecar.pop(key, None)
 
     try:
-        exported = export_data(
-            columns,
-            rows,
-            output_path,
-            fmt,  # type: ignore[arg-type]
-            metadata={"steps_executed": result.get("steps_executed", [])},
-        )
-        return {"export_path": str(exported), "format": fmt, "row_count": len(rows)}
+        exported = export_sql(sql, cursor, path_or_error, fmt=fmt, sidecar=sidecar)  # type: ignore[arg-type]
+        result["export_path"] = str(exported)
     except Exception as e:
-        return {"error": f"Export failed: {e}"}
+        result["export_error"] = str(e)
 
 
 def _check_prerequisites() -> str | None:

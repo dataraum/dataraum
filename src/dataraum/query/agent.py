@@ -95,6 +95,7 @@ class QueryAgent(LLMFeature):
         auto_contract: bool = False,
         source_id: str | None = None,
         ephemeral: bool = False,
+        display_limit: int = 10_000,
     ) -> Result[QueryResult]:
         """Analyze a natural language question and generate SQL.
 
@@ -252,6 +253,7 @@ class QueryAgent(LLMFeature):
                 analysis_output=analysis_output,
                 duckdb_conn=duckdb_conn,
                 execution_context=execution_context,
+                display_limit=display_limit,
             )
         else:
             # Fallback for queries without steps
@@ -1146,6 +1148,7 @@ class QueryAgent(LLMFeature):
         analysis_output: QueryAnalysisOutput,
         duckdb_conn: duckdb.DuckDBPyConnection,
         execution_context: GraphExecutionContext,
+        display_limit: int = 10_000,
     ) -> Result[tuple[list[str], list[dict[str, Any]]]]:
         """Execute query with step-by-step temp view creation.
 
@@ -1184,6 +1187,7 @@ class QueryAgent(LLMFeature):
             max_repair_attempts=2,
             repair_fn=repair_fn,
             return_table=True,
+            display_limit=display_limit,
         )
 
         if not result.success or not result.value:

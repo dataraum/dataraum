@@ -1,12 +1,19 @@
-"""Export layer — materialize query and graph results to files.
+"""Export layer — write SQL results to files via DuckDB COPY.
 
-Converts ExecutionResult / QueryResult data into persistent formats
-(CSV, Parquet, JSON) with metadata sidecars that carry provenance.
+Writes data to CSV or Parquet using DuckDB's native COPY (zero-copy,
+no Python materialization). Caller provides a sidecar dict with
+provenance metadata — export just writes it to disk alongside the data.
 
 Usage:
-    from dataraum.export import export_query_result
+    from dataraum.export import export_sql
 
-    export_query_result(result, Path("./output/revenue.csv"), fmt="csv")
+    export_sql(
+        sql="SELECT * FROM typed_orders",
+        duckdb_conn=cursor,
+        output_path=Path("./exports/orders.csv"),
+        fmt="csv",
+        sidecar={"confidence": "GREEN", "sql": "SELECT ..."},
+    )
 """
 
 from __future__ import annotations
@@ -21,49 +28,9 @@ from dataraum.core.logging import get_logger
 if TYPE_CHECKING:
     import duckdb
 
-    from dataraum.query.models import QueryResult
-
 logger = get_logger(__name__)
 
-ExportFormat = Literal["csv", "parquet", "json"]
-
-
-def export_query_result(
-    result: QueryResult,
-    output_path: Path,
-    fmt: ExportFormat = "csv",
-) -> Path:
-    """Export a QueryResult to a file with metadata sidecar.
-
-    Args:
-        result: QueryResult from answer_question().
-        output_path: Destination file path (extension auto-corrected if needed).
-        fmt: Export format — csv, parquet, or json.
-
-    Returns:
-        Path to the exported data file.
-
-    Raises:
-        ValueError: If result has no data to export.
-    """
-    if not result.data or not result.columns:
-        msg = "QueryResult has no tabular data to export"
-        raise ValueError(msg)
-
-    output_path = _ensure_extension(output_path, fmt)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    _write_data(result.columns, result.data, output_path, fmt)
-    _write_sidecar(output_path, _query_result_metadata(result))
-
-    logger.info(
-        "exported_query_result",
-        path=str(output_path),
-        format=fmt,
-        rows=len(result.data),
-        columns=len(result.columns),
-    )
-    return output_path
+ExportFormat = Literal["csv", "parquet"]
 
 
 def export_sql(
@@ -71,20 +38,20 @@ def export_sql(
     duckdb_conn: duckdb.DuckDBPyConnection,
     output_path: Path,
     fmt: ExportFormat = "csv",
-    *,
-    description: str | None = None,
+    sidecar: dict[str, Any] | None = None,
 ) -> Path:
-    """Export arbitrary SQL results to a file with metadata sidecar.
+    """Export SQL results to a file with metadata sidecar.
 
-    Uses DuckDB's native COPY for CSV/Parquet (zero-copy, efficient).
-    Falls back to fetch + serialize for JSON.
+    Uses DuckDB's native COPY — data flows directly from DuckDB to disk
+    without loading into Python memory.
 
     Args:
         sql: SQL query to execute and export.
         duckdb_conn: DuckDB connection.
-        output_path: Destination file path.
-        fmt: Export format.
-        description: Optional description for the sidecar.
+        output_path: Destination file path (extension auto-corrected).
+        fmt: Export format — csv or parquet.
+        sidecar: Caller-provided metadata dict for the .meta.json file.
+            Typically the MCP tool result minus rows/data.
 
     Returns:
         Path to the exported data file.
@@ -92,144 +59,33 @@ def export_sql(
     output_path = _ensure_extension(output_path, fmt)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if fmt == "json":
-        # JSON needs manual serialization
-        rel = duckdb_conn.execute(sql)
-        columns = [desc[0] for desc in rel.description]
-        rows = rel.fetchall()
-        data = [dict(zip(columns, row, strict=True)) for row in rows]
-        _write_data(columns, data, output_path, "json")
-        row_count = len(data)
-    else:
-        # CSV/Parquet via DuckDB COPY (most efficient path)
-        copy_fmt = "CSV" if fmt == "csv" else "PARQUET"
-        header = ", HEADER" if fmt == "csv" else ""
-        copy_sql = f"COPY ({sql}) TO '{output_path}' (FORMAT {copy_fmt}{header})"
-        duckdb_conn.execute(copy_sql)
-        # Get row count for sidecar
-        count_result = duckdb_conn.execute(f"SELECT COUNT(*) FROM ({sql})").fetchone()
-        row_count = count_result[0] if count_result else 0
+    # DuckDB COPY — zero-copy to disk
+    copy_fmt = "CSV" if fmt == "csv" else "PARQUET"
+    header = ", HEADER" if fmt == "csv" else ""
+    copy_sql = f"COPY ({sql}) TO '{output_path}' (FORMAT {copy_fmt}{header})"
+    duckdb_conn.execute(copy_sql)
 
-    sidecar = {
+    # Row count for sidecar
+    count_result = duckdb_conn.execute(f"SELECT COUNT(*) FROM ({sql})").fetchone()
+    row_count = count_result[0] if count_result else 0
+
+    # Build sidecar: caller metadata + export metadata
+    meta: dict[str, Any] = {
         "exported_at": datetime.now(UTC).isoformat(),
         "format": fmt,
-        "sql": sql,
         "row_count": row_count,
     }
-    if description:
-        sidecar["description"] = description
-    _write_sidecar(output_path, sidecar)
+    if sidecar:
+        meta.update(sidecar)
+    _write_sidecar(output_path, meta)
 
     logger.info("exported_sql", path=str(output_path), format=fmt, rows=row_count)
-    return output_path
-
-
-def export_data(
-    columns: list[str],
-    rows: list[dict[str, Any]],
-    output_path: Path,
-    fmt: ExportFormat = "csv",
-    *,
-    metadata: dict[str, Any] | None = None,
-) -> Path:
-    """Export pre-materialized tabular data to a file with metadata sidecar.
-
-    For use when data is already in memory (e.g. MCP tool results).
-    For SQL-based export with DuckDB COPY optimization, use export_sql().
-
-    Args:
-        columns: Column names.
-        rows: List of row dicts.
-        output_path: Destination file path.
-        fmt: Export format — csv, parquet, or json.
-        metadata: Extra fields to include in the .meta.json sidecar.
-
-    Returns:
-        Path to the exported data file.
-
-    Raises:
-        ValueError: If columns or rows are empty.
-    """
-    if not columns or not rows:
-        msg = "No data to export"
-        raise ValueError(msg)
-
-    output_path = _ensure_extension(output_path, fmt)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    _write_data(columns, rows, output_path, fmt)
-
-    sidecar: dict[str, Any] = {
-        "exported_at": datetime.now(UTC).isoformat(),
-        "format": fmt,
-        "row_count": len(rows),
-        "column_count": len(columns),
-    }
-    if metadata:
-        sidecar.update(metadata)
-    _write_sidecar(output_path, sidecar)
-
-    logger.info("exported_data", path=str(output_path), format=fmt, rows=len(rows))
     return output_path
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _write_data(
-    columns: list[str],
-    data: list[dict[str, Any]],
-    path: Path,
-    fmt: ExportFormat,
-) -> None:
-    """Write tabular data to a file."""
-    if fmt == "csv":
-        import csv
-
-        with open(path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=columns)
-            writer.writeheader()
-            writer.writerows(data)
-    elif fmt == "parquet":
-        _write_parquet_via_duckdb(columns, data, path)
-    elif fmt == "json":
-        with open(path, "w") as f:
-            json.dump(
-                {"columns": columns, "data": data},
-                f,
-                indent=2,
-                default=str,
-            )
-
-
-def _write_parquet_via_duckdb(
-    columns: list[str],
-    data: list[dict[str, Any]],
-    path: Path,
-) -> None:
-    """Write data to parquet using DuckDB's native writer (no pyarrow needed)."""
-    import csv as csv_mod
-    import tempfile
-
-    import duckdb
-
-    # Write to temp CSV, then convert via DuckDB COPY
-    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w", newline="") as f:
-        writer = csv_mod.DictWriter(f, fieldnames=columns)
-        writer.writeheader()
-        writer.writerows(data)
-        tmp_csv = f.name
-
-    conn = duckdb.connect()
-    try:
-        conn.execute(
-            f"COPY (SELECT * FROM read_csv('{tmp_csv}', header=true)) TO '{path}' (FORMAT PARQUET)"
-        )
-    finally:
-        conn.close()
-        Path(tmp_csv).unlink(missing_ok=True)
 
 
 def _write_sidecar(data_path: Path, metadata: dict[str, Any]) -> None:
@@ -241,51 +97,8 @@ def _write_sidecar(data_path: Path, metadata: dict[str, Any]) -> None:
 
 def _ensure_extension(path: Path, fmt: ExportFormat) -> Path:
     """Ensure the file has the correct extension for the format."""
-    expected = {"csv": ".csv", "parquet": ".parquet", "json": ".json"}
+    expected = {"csv": ".csv", "parquet": ".parquet"}
     ext = expected[fmt]
     if path.suffix != ext:
         return path.with_suffix(ext)
     return path
-
-
-def _query_result_metadata(result: QueryResult) -> dict[str, Any]:
-    """Build metadata sidecar dict from a QueryResult."""
-    meta: dict[str, Any] = {
-        "exported_at": datetime.now(UTC).isoformat(),
-        "execution_id": result.execution_id,
-        "question": result.question,
-        "executed_at": result.executed_at.isoformat(),
-        "sql": result.sql,
-        "row_count": len(result.data) if result.data else 0,
-        "column_count": len(result.columns) if result.columns else 0,
-        "confidence": {
-            "level": result.confidence_level.value,
-            "label": result.confidence_level.label,
-        },
-    }
-    if result.entropy_score is not None:
-        meta["entropy_score"] = round(result.entropy_score, 3)
-    if result.entropy_action:
-        meta["entropy_action"] = result.entropy_action
-    if result.assumptions:
-        meta["assumptions"] = [
-            {
-                "dimension": a.dimension,
-                "target": a.target,
-                "assumption": a.assumption,
-                "basis": a.basis.value,
-                "confidence": round(a.confidence, 2),
-            }
-            for a in result.assumptions
-        ]
-    if result.contract_evaluation:
-        meta["contract"] = {
-            "name": result.contract,
-            "evaluation": result.contract_evaluation.to_dict(),
-        }
-    if result.execution_steps:
-        meta["execution_steps"] = [
-            {"step_id": s.step_id, "sql": s.sql, "description": s.description}
-            for s in result.execution_steps
-        ]
-    return meta

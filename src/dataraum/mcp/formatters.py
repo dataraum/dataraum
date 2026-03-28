@@ -14,13 +14,8 @@ if TYPE_CHECKING:
 _QUERY_DISPLAY_ROWS = 50
 
 
-def format_query_result(result: QueryResult, *, limit: int = 10000) -> dict[str, Any]:
-    """Format query result as structured dict.
-
-    Args:
-        result: QueryResult from the query agent.
-        limit: Execution limit that was applied to the data.
-    """
+def format_query_result(result: QueryResult) -> dict[str, Any]:
+    """Format query result as structured dict."""
     output: dict[str, Any] = {
         "confidence": {
             "label": result.confidence_level.label,
@@ -45,8 +40,9 @@ def format_query_result(result: QueryResult, *, limit: int = 10000) -> dict[str,
         }
         if truncated:
             data_block["hint"] = (
-                "Showing first 50 rows. Use run_sql with the SQL above for more, "
-                "or add export_format to export the full dataset."
+                f"{len(displayed)} of {total} rows returned. "
+                "Use run_sql with the SQL above for more rows, "
+                "or add export_format for the full dataset."
             )
         output["data"] = data_block
 

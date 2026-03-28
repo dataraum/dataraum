@@ -205,7 +205,7 @@ def run_sql(
 
     from dataraum.mcp.formatters import format_run_sql_result
 
-    return format_run_sql_result(
+    formatted = format_run_sql_result(
         columns=columns,
         rows=rows_as_dicts,
         limit=effective_limit,
@@ -215,6 +215,9 @@ def run_sql(
         quality_caveat=quality_caveat,
         snippet_summary=snippet_summary,
     )
+    # Surface final_sql for export — stripped by call_tool before MCP response
+    formatted["_final_sql"] = final_sql
+    return formatted
 
 
 def _snippet_key_for_step(step: SQLStep, raw_steps: list[dict[str, Any]]) -> str:

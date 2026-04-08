@@ -219,7 +219,8 @@ def _build_induction_context(
         )
         .where(
             Relationship.from_table_id.in_(table_ids),
-            Relationship.detection_method != "candidate",
+            Relationship.to_table_id.in_(table_ids),
+            Relationship.detection_method == "llm",
         )
     )
     relationships = session.execute(rel_stmt).scalars().all()

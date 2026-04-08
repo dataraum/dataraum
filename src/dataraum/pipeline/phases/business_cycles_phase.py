@@ -14,12 +14,15 @@ from sqlalchemy import delete, func, select
 
 from dataraum.analysis.cycles import BusinessCycleAgent
 from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
+from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
+
+_log = get_logger(__name__)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -128,6 +131,38 @@ class BusinessCyclesPhase(BasePhase):
                 records_created=0,
                 summary="No vertical configured — cycle detection skipped",
             )
+
+        # --- Cycle induction for cold start ---
+        if vertical == "_adhoc":
+            from dataraum.analysis.cycles.config import get_cycle_types
+
+            existing_types = get_cycle_types(vertical)
+            if not existing_types:
+                from dataraum.analysis.cycles.induction import (
+                    CycleInductionAgent,
+                    save_cycles_config,
+                )
+
+                induction_agent = CycleInductionAgent(
+                    config=config,
+                    provider=provider,
+                    prompt_renderer=renderer,
+                )
+                induction_result = induction_agent.induce(
+                    session=ctx.session,
+                    table_ids=table_ids,
+                )
+                if (
+                    induction_result.success
+                    and induction_result.value
+                    and induction_result.value.get("cycle_types")
+                ):
+                    save_cycles_config(vertical, induction_result.value)
+                else:
+                    _log.warning(
+                        "cycle_induction_failed",
+                        error=induction_result.error if not induction_result.success else "empty",
+                    )
 
         # Run analysis
         analysis_result = agent.analyze(

@@ -13,12 +13,15 @@ from sqlalchemy import delete, select
 
 from dataraum.analysis.validation import ValidationAgent
 from dataraum.analysis.validation.db_models import ValidationResultRecord
+from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
+
+_log = get_logger(__name__)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -121,6 +124,34 @@ class ValidationPhase(BasePhase):
                 records_created=0,
                 summary="No vertical configured — validation skipped",
             )
+
+        # --- Validation induction for cold start ---
+        if vertical == "_adhoc":
+            from dataraum.analysis.validation.config import load_all_validation_specs
+
+            existing_specs = load_all_validation_specs(vertical)
+            if not existing_specs:
+                from dataraum.analysis.validation.induction import (
+                    ValidationInductionAgent,
+                    save_validation_specs,
+                )
+
+                induction_agent = ValidationInductionAgent(
+                    config=config,
+                    provider=provider,
+                    prompt_renderer=renderer,
+                )
+                induction_result = induction_agent.induce(
+                    session=ctx.session,
+                    table_ids=table_ids,
+                )
+                if induction_result.success and induction_result.value:
+                    save_validation_specs(vertical, induction_result.value)
+                else:
+                    _log.warning(
+                        "validation_induction_failed",
+                        error=induction_result.error if not induction_result.success else "empty",
+                    )
 
         # Get optional category filter from config
         category = ctx.config.get("validation_category")

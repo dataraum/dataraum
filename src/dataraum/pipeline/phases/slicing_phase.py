@@ -242,9 +242,22 @@ class SlicingPhase(BasePhase):
 
         Enriched dimension columns are exempt from the cardinality_ratio
         check since they are specifically designed for analytical grouping.
+
+        Preserves a ``col_id_by_name`` lookup per table so that
+        ``_propagate_enriched_dimensions`` can resolve FK column_ids
+        even after the FK column itself was filtered out.
         """
         for table_data in context_data.get("tables", []):
             original = table_data.get("columns", [])
+
+            # Snapshot column_id by name before filtering — propagation needs
+            # FK column_ids that the filter removes (high cardinality).
+            table_data["col_id_by_name"] = {
+                col["column_name"]: col.get("column_id", "")
+                for col in original
+                if col.get("column_id")
+            }
+
             filtered = []
             for col in original:
                 distinct = col.get("distinct_count")
@@ -320,13 +333,13 @@ class SlicingPhase(BasePhase):
                 if (target_table_name, col_name) in existing_recs:
                     continue
 
-                # Find the FK column_id in the target table (prefix before __)
+                # Resolve FK column_id from the pre-filter snapshot — the FK
+                # column itself is typically filtered out (high cardinality).
                 fk_prefix = col_name.split("__")[0]
-                target_col_id = ""
-                for col in tdata.get("columns", []):
-                    if col["column_name"] == fk_prefix:
-                        target_col_id = col.get("column_id", "")
-                        break
+                target_col_id = tdata.get("col_id_by_name", {}).get(fk_prefix, "")
+
+                if not target_col_id:
+                    continue
 
                 # Build SQL using target table's enriched view
                 enriched_view = tdata.get("enriched_duckdb_path")

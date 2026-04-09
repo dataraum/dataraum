@@ -67,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - 18-phase analysis pipeline (staging, profiling, enrichment, quality, context)
-- MCP server with 6 tools: `analyze`, `get_context`, `get_entropy`, `evaluate_contract`, `query`, `get_actions`
+- MCP server with 5 tools: `analyze`, `get_context`, `get_entropy`, `evaluate_contract`, `query`
 - Entropy system with uncertainty quantification across 8 dimensions
 - Data readiness contracts (`aggregation_safe`, `executive_dashboard`, etc.)
 - CLI (`dataraum`) with run, status, entropy, and contracts commands

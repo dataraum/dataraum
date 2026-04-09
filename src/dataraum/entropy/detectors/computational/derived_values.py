@@ -14,7 +14,7 @@ from typing import Any
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 
 
 def _boost_mismatch_rate(rate: float) -> float:
@@ -151,13 +151,10 @@ class DerivedValueDetector(EntropyDetector):
             elif isinstance(current_derived, dict) and "derivation_type" in current_derived:
                 evidence[0]["derivation_type"] = current_derived["derivation_type"]
 
-        resolution_options: list[ResolutionOption] = []
-
         return [
             self.create_entropy_object(
                 context=context,
                 score=score,
                 evidence=evidence,
-                resolution_options=resolution_options,
             )
         ]

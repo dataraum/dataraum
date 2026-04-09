@@ -18,7 +18,7 @@ from typing import Any
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 
 
 class RelationshipEntropyDetector(EntropyDetector):
@@ -174,30 +174,11 @@ class RelationshipEntropyDetector(EntropyDetector):
                 },
             }
 
-            # Resolution options
-            resolution_options: list[ResolutionOption] = []
-
-            if score > 0.3:
-                if not is_confirmed:
-                    resolution_options.append(
-                        ResolutionOption(
-                            action="relationship",
-                            parameters={
-                                "from_table": from_table,
-                                "to_table": to_table,
-                                "column": context.column_name,
-                            },
-                            effort="low",
-                            description=f"Confirm relationship between {from_table} and {to_table}",
-                        )
-                    )
-
             objects.append(
                 self.create_entropy_object(
                     context=context,
                     score=score,
                     evidence=[rel_evidence],
-                    resolution_options=resolution_options,
                 )
             )
 

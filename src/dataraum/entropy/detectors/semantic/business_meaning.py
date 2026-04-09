@@ -19,7 +19,7 @@ humans decide whether the inferred meaning is trustworthy.
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 
 
 class BusinessMeaningDetector(EntropyDetector):
@@ -162,36 +162,10 @@ class BusinessMeaningDetector(EntropyDetector):
             }
         ]
 
-        # Resolution options based on missing data (not semantic judgment)
-        resolution_options: list[ResolutionOption] = []
-
-        missing_fields = []
-        if not raw_metrics["has_description"]:
-            missing_fields.append("description")
-        if not raw_metrics["has_business_name"]:
-            missing_fields.append("business_name")
-        if not raw_metrics["has_entity_type"]:
-            missing_fields.append("entity_type")
-
-        if missing_fields:
-            resolution_options.append(
-                ResolutionOption(
-                    action="concept_property",
-                    parameters={
-                        "column": context.column_name,
-                        "table": context.table_name,
-                        "missing_fields": missing_fields,
-                    },
-                    effort="low",
-                    description=f"Document missing: {', '.join(missing_fields)}",
-                )
-            )
-
         return [
             self.create_entropy_object(
                 context=context,
                 score=score,
                 evidence=evidence,
-                resolution_options=resolution_options,
             )
         ]

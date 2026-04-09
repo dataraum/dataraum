@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.entropy.core.storage import EntropyRepository
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 from dataraum.entropy.network.bridge import (
     build_dimension_path_to_node_map,
     entropy_objects_to_evidence,
@@ -41,7 +41,6 @@ class DirectSignal:
     target: str = ""
     score: float = 0.0
     evidence: list[dict[str, Any]] = field(default_factory=list)
-    resolution_options: list[dict[str, Any]] = field(default_factory=list)
     detector_id: str = ""
 
 
@@ -66,7 +65,6 @@ class ColumnNodeEvidence:
     score: float = 0.0
     impact_delta: float = 0.0  # causal impact of fixing this node (from priorities)
     evidence: list[dict[str, Any]] = field(default_factory=list)
-    resolution_options: list[dict[str, Any]] = field(default_factory=list)
     detector_id: str = ""
 
 
@@ -118,7 +116,6 @@ class CrossColumnFix:
     columns_affected: int = 0
     total_intent_delta: float = 0.0
     example_columns: list[str] = field(default_factory=list)
-    resolution_options: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -144,21 +141,6 @@ class EntropyForNetwork:
 # ---------------------------------------------------------------------------
 
 
-def _serialize_resolution_options(
-    options: list[ResolutionOption],
-) -> list[dict[str, Any]]:
-    """Convert ResolutionOption list to serializable dicts."""
-    return [
-        {
-            "action": opt.action,
-            "parameters": opt.parameters,
-            "effort": opt.effort,
-            "description": opt.description,
-        }
-        for opt in options
-    ]
-
-
 def _object_to_direct_signal(obj: EntropyObject) -> DirectSignal:
     """Convert an unmapped EntropyObject to a DirectSignal."""
     return DirectSignal(
@@ -166,7 +148,6 @@ def _object_to_direct_signal(obj: EntropyObject) -> DirectSignal:
         target=obj.target,
         score=obj.score,
         evidence=list(obj.evidence),
-        resolution_options=_serialize_resolution_options(obj.resolution_options),
         detector_id=obj.detector_id,
     )
 
@@ -259,9 +240,6 @@ def _build_column_result(
             score=source_obj.score if source_obj else 0.0,
             impact_delta=node_to_delta.get(node_name, 0.0),
             evidence=list(source_obj.evidence) if source_obj else [],
-            resolution_options=(
-                _serialize_resolution_options(source_obj.resolution_options) if source_obj else []
-            ),
             detector_id=source_obj.detector_id if source_obj else "",
         )
         node_evidence.append(node_ev)
@@ -391,7 +369,6 @@ def _compute_cross_column_fix(
     Returns:
         CrossColumnFix or None if no non-low nodes exist.
     """
-    # node_name -> (columns_affected, total_delta, worst_columns, resolution_options)
     node_stats: dict[str, dict[str, Any]] = {}
 
     for target, col_result in columns.items():
@@ -404,7 +381,6 @@ def _compute_cross_column_fix(
                     "columns_affected": 0,
                     "total_delta": 0.0,
                     "worst_columns": [],  # (impact_delta, target)
-                    "resolution_options": [],
                     "dimension_path": node_ev.dimension_path,
                 }
 
@@ -413,8 +389,6 @@ def _compute_cross_column_fix(
             # Use the node's actual causal impact from network priorities
             stats["total_delta"] += node_ev.impact_delta
             stats["worst_columns"].append((node_ev.impact_delta, target))
-            if node_ev.resolution_options and not stats["resolution_options"]:
-                stats["resolution_options"] = node_ev.resolution_options
 
     if not node_stats:
         return None
@@ -433,7 +407,6 @@ def _compute_cross_column_fix(
         columns_affected=stats["columns_affected"],
         total_intent_delta=round(stats["total_delta"], 4),
         example_columns=example_columns,
-        resolution_options=stats["resolution_options"],
     )
 
 
@@ -635,8 +608,6 @@ def format_network_context(ctx: EntropyForNetwork) -> dict[str, Any]:
             "total_intent_delta": round(tf.total_intent_delta, 3),
             "example_columns": tf.example_columns,
         }
-        if tf.resolution_options:
-            top_fix["best_action"] = tf.resolution_options[0]
         result["top_fix"] = top_fix
 
     # At-risk columns (blocked + investigate), capped at 10
@@ -665,11 +636,6 @@ def format_network_context(ctx: EntropyForNetwork) -> dict[str, Any]:
                     }
                     for ne in high_nodes
                 ]
-            if col.top_priority_node:
-                for ne in col.node_evidence:
-                    if ne.node_name == col.top_priority_node and ne.resolution_options:
-                        entry["suggested_fix"] = ne.resolution_options[0]
-                        break
             at_risk_list.append(entry)
         result["at_risk_columns"] = at_risk_list
         if len(at_risk) > 10:

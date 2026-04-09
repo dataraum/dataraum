@@ -21,12 +21,11 @@ from dataraum.entropy.views.network_context import (
     EntropyForNetwork,
     IntentReadiness,
     _object_to_direct_signal,
-    _serialize_resolution_options,
     assemble_network_context,
     format_network_context,
 )
 
-from .conftest import make_entropy_object, make_resolution_option
+from .conftest import make_entropy_object
 
 # ===================================================================
 # A. Dataclass defaults
@@ -41,7 +40,6 @@ class TestDataclassDefaults:
         assert cne.score == 0.0
         assert cne.impact_delta == 0.0
         assert cne.evidence == []
-        assert cne.resolution_options == []
         assert cne.detector_id == ""
 
     def test_column_network_result_defaults(self):
@@ -73,7 +71,6 @@ class TestDataclassDefaults:
         assert ccf.columns_affected == 0
         assert ccf.total_intent_delta == 0.0
         assert ccf.example_columns == []
-        assert ccf.resolution_options == []
 
     def test_direct_signal_defaults(self):
         ds = DirectSignal()
@@ -106,35 +103,6 @@ class TestDataclassDefaults:
 # ===================================================================
 
 
-class TestSerializeResolutionOptions:
-    def test_empty_list(self):
-        assert _serialize_resolution_options([]) == []
-
-    def test_preserves_all_fields(self):
-        opt = make_resolution_option(
-            action="concept_property",
-            effort="medium",
-            description="Add unit annotation",
-        )
-        result = _serialize_resolution_options([opt])
-        assert len(result) == 1
-        d = result[0]
-        assert d["action"] == "concept_property"
-        assert d["effort"] == "medium"
-        assert d["description"] == "Add unit annotation"
-        assert d["parameters"] == {"key": "value"}
-
-    def test_multiple_options(self):
-        opts = [
-            make_resolution_option(action="a"),
-            make_resolution_option(action="b"),
-        ]
-        result = _serialize_resolution_options(opts)
-        assert len(result) == 2
-        assert result[0]["action"] == "a"
-        assert result[1]["action"] == "b"
-
-
 class TestObjectToDirectSignal:
     def test_correct_mapping(self):
         obj = make_entropy_object(
@@ -152,13 +120,6 @@ class TestObjectToDirectSignal:
         assert ds.score == 0.7
         assert ds.evidence == [{"pattern": "mixed_units"}]
         assert ds.detector_id == "dimensional_detector"
-
-    def test_with_resolution_options(self):
-        opt = make_resolution_option(action="fix_it")
-        obj = make_entropy_object(resolution_options=[opt])
-        ds = _object_to_direct_signal(obj)
-        assert len(ds.resolution_options) == 1
-        assert ds.resolution_options[0]["action"] == "fix_it"
 
 
 # ===================================================================
@@ -801,14 +762,6 @@ class TestFormatNetworkContext:
                 columns_affected=7,
                 total_intent_delta=1.23,
                 example_columns=["column:fx_rates.rate", "column:amounts.val"],
-                resolution_options=[
-                    {
-                        "action": "concept_property",
-                        "description": "Add unit annotation",
-                        "effort": "low",
-                        "parameters": {},
-                    }
-                ],
             ),
         )
         result = format_network_context(ctx)
@@ -816,7 +769,6 @@ class TestFormatNetworkContext:
         tf = result["top_fix"]
         assert tf["node"] == "unit_declaration"
         assert tf["columns_affected"] == 7
-        assert tf["best_action"]["action"] == "concept_property"
 
     def test_at_risk_columns_shown(self):
         ctx = EntropyForNetwork(

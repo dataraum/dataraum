@@ -7,15 +7,11 @@ Layer 1 of the entropy framework - provides:
 """
 
 from dataraum.entropy.core.storage import EntropyRepository
-from dataraum.entropy.models import (
-    EntropyObject,
-    ResolutionOption,
-)
+from dataraum.entropy.models import EntropyObject
 
 __all__ = [
     # Core types (re-exported from models)
     "EntropyObject",
-    "ResolutionOption",
     # Repository
     "EntropyRepository",
 ]

@@ -77,7 +77,6 @@ class ColumnContext:
 
     # Entropy scores (from entropy layer)
     entropy_scores: dict[str, Any] | None = None  # Layer scores and composite
-    resolution_hints: list[dict[str, Any]] = field(default_factory=list)  # Top fixes
 
 
 @dataclass
@@ -739,7 +738,6 @@ def build_execution_context(
                     derived_formula=derived_columns.get(col.column_id),
                     flags=flags,
                     entropy_scores=col_entropy,
-                    resolution_hints=col_entropy.get("resolution_hints", []) if col_entropy else [],
                 )
             )
 
@@ -868,17 +866,6 @@ def _column_network_to_dict(result: Any) -> dict[str, Any]:
         Dict compatible with existing entropy_scores consumers
     """
     high_dims = [ne.dimension_path for ne in result.node_evidence if ne.state != "low"]
-    resolution_hints = []
-    for ne in sorted(result.node_evidence, key=lambda x: x.impact_delta, reverse=True):
-        if ne.resolution_options and ne.state != "low":
-            best = ne.resolution_options[0]
-            resolution_hints.append(
-                {
-                    "action": best.get("action", ""),
-                    "description": best.get("description", ""),
-                    "effort": best.get("effort", ""),
-                }
-            )
     return {
         "worst_intent_p_high": result.worst_intent_p_high,
         "readiness": result.readiness,
@@ -889,7 +876,6 @@ def _column_network_to_dict(result: Any) -> dict[str, Any]:
             {"name": i.intent_name, "p_high": i.p_high, "readiness": i.readiness}
             for i in result.intents
         ],
-        "resolution_hints": resolution_hints,
     }
 
 

@@ -167,6 +167,22 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 - **Notes**: `interpreters.py` now sets `annotation_source="teach"` and `confirmed_by="teach"` (was `"fix_system"`). `_get_preferred_joins` in relations detector queries `action == "relationship"` (was `"document_join_path"`).
 - **Status**: pending
 
+## 2026-04-09: DAT-258 — Retire ResolutionOption
+
+### dataraum-eval
+- **Changed**: entropy models, db_models, engine, measurement, network_context, contracts, all 15 detectors, graphs/context, mcp/sections, context.py
+- **Deleted**: `src/dataraum/entropy/actions.py` (merge_actions, load_actions), `ActionsResultWrapper`
+- **Affects**: `measure` tool (MeasurementResult no longer has `resolution_actions` field), `look` quality section (no more `resolution_actions` per column), network context (no `resolution_options` on nodes, no `suggested_fix` on at-risk columns, no `best_action` on top_fix)
+- **Calibrate**: If eval reads `resolution_actions`, `resolution_options`, `suggested_fix`, or `best_action` from any MCP response — those fields are gone. Score and evidence fields unchanged.
+- **Notes**:
+  - `EntropyObjectRecord` schema changed: `resolution_options` column removed. Existing workspace DBs need recreation.
+  - `ContractViolation` class and `check_contracts()` deleted (had zero callers).
+  - `ContractEvaluation.recommendations` field removed (was never populated).
+  - Python SDK `DataRaumContext.actions()` method deleted.
+  - All detector scoring and evidence logic untouched — only resolution_options production removed.
+  - Replacement: teach system (DAT-251/DAT-257) will provide teachable inventory in `look`.
+- **Status**: pending
+
 <!--
 ## YYYY-MM-DD: brief description
 

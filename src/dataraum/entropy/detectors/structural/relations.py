@@ -11,7 +11,7 @@ from typing import Any
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 
 
 def _get_preferred_joins(context: DetectorContext) -> dict[str, object]:
@@ -164,37 +164,11 @@ class JoinPathDeterminismDetector(EntropyDetector):
             }
         ]
 
-        # Build resolution options
-        resolution_options: list[ResolutionOption] = []
-
-        if path_status == "orphan":
-            resolution_options.append(
-                ResolutionOption(
-                    action="relationship",
-                    parameters={"table": context.table_name, "type": "foreign_key"},
-                    effort="medium",
-                    description="Declare a relationship to connect this table to the schema",
-                )
-            )
-        elif path_status == "ambiguous":
-            resolution_options.append(
-                ResolutionOption(
-                    action="relationship",
-                    parameters={
-                        "table": context.table_name,
-                        "ambiguous_targets": ambiguous_tables,
-                    },
-                    effort="low",
-                    description=f"Specify preferred join path for: {', '.join(ambiguous_tables)}",
-                )
-            )
-
         return [
             self.create_entropy_object(
                 context=context,
                 score=score,
                 evidence=evidence,
-                resolution_options=resolution_options,
             )
         ]
 

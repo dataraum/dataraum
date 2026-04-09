@@ -16,7 +16,7 @@ from typing import Any
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 
 # Fallback thresholds (matching variance.py defaults)
 _DEFAULT_NULL_SPREAD = 0.10
@@ -287,13 +287,10 @@ class SliceVarianceDetector(EntropyDetector):
             }
         ]
 
-        resolution_options: list[ResolutionOption] = []
-
         return [
             self.create_entropy_object(
                 context=context,
                 score=score,
                 evidence=evidence,
-                resolution_options=resolution_options,
             )
         ]

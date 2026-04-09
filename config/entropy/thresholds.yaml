@@ -16,9 +16,9 @@ detectors:
   # TYPE FIDELITY DETECTOR (structural.types.type_fidelity)
   # --------------------------------------------------------------------------
   # Formula: entropy = 1.0 - parse_success_rate
+  # Special case: VARCHAR fallback (inference inconclusive) uses score_fallback
   type_fidelity:
-    suggest_override_threshold: 0.3 # Score above which to suggest type override
-    suggest_quarantine_threshold: 0.1 # Score above which to suggest quarantine
+    score_fallback: 0.5  # Score when type inference falls back to VARCHAR
 
   # --------------------------------------------------------------------------
   # NULL RATIO DETECTOR (value.nulls.null_ratio)
@@ -30,7 +30,6 @@ detectors:
     impact_moderate: 0.20 # < 20% nulls = moderate impact
     impact_significant: 0.50 # < 50% nulls = significant impact
     # >= 50% = critical impact
-    suggest_declare_threshold: 0.1 # Score above which to suggest null meaning declaration
 
   # --------------------------------------------------------------------------
   # OUTLIER RATE DETECTOR (value.outliers.outlier_rate)
@@ -51,7 +50,6 @@ detectors:
     # High-CV columns (e.g., FX rates spanning 0.7–150) have naturally wide
     # ranges — IQR "outliers" are legitimate values, not quality issues.
     cv_attenuation_threshold: 2.0  # CV above which to attenuate outlier score (proportional dampening)
-    suggest_exclude_threshold: 0.5 # Score above which to suggest investigation
 
   # --------------------------------------------------------------------------
   # JOIN PATH DETERMINISM DETECTOR (structural.relations.join_path_determinism)

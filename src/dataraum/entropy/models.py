@@ -3,8 +3,7 @@
 This module defines the core data structures for the entropy layer.
 
 Key models:
-- EntropyObject: Core measurement with evidence and resolution options
-- ResolutionOption: Actionable fix with effort level
+- EntropyObject: Core measurement with evidence
 
 Default thresholds loaded from config/entropy/thresholds.yaml.
 """
@@ -13,20 +12,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
-
-
-@dataclass
-class ResolutionOption:
-    """An actionable resolution that can reduce entropy.
-
-    Each resolution has an action type, parameters, and effort level.
-    Prioritization is done by the Bayesian network's impact_delta.
-    """
-
-    action: str  # e.g., "concept_property", "type_pattern", "relationship"
-    parameters: dict[str, Any]  # Action-specific parameters
-    effort: str  # "low", "medium", "high"
-    description: str = ""  # Human-readable description
 
 
 @dataclass
@@ -49,9 +34,6 @@ class EntropyObject:
 
     # Evidence (dimension-specific)
     evidence: list[dict[str, Any]] = field(default_factory=list)
-
-    # Resolution options
-    resolution_options: list[ResolutionOption] = field(default_factory=list)
 
     # Metadata
     computed_at: datetime = field(default_factory=lambda: datetime.now(UTC))

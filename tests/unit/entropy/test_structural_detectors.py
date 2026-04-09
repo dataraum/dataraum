@@ -57,26 +57,6 @@ class TestTypeFidelityDetector:
 
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.4, abs=0.01)
-        # Should have resolution options for significant failure rate
-        assert len(results[0].resolution_options) >= 1
-
-    def test_resolution_options_at_high_entropy(self, detector: TypeFidelityDetector):
-        """Test resolution options are provided for high entropy."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="value",
-            analysis_results={
-                "typing": {
-                    "parse_success_rate": 0.5,
-                    "failed_examples": ["bad1", "bad2"],
-                }
-            },
-        )
-
-        results = detector.detect(context)
-
-        actions = [opt.action for opt in results[0].resolution_options]
-        assert "type_pattern" in actions
 
     def test_evidence_includes_failure_samples(self, detector: TypeFidelityDetector):
         """Test evidence includes failure samples."""
@@ -144,9 +124,6 @@ class TestJoinPathDeterminismDetector:
         assert len(results) == 1
         assert results[0].score == pytest.approx(0.9, abs=0.01)
         assert results[0].evidence[0]["path_status"] == "orphan"
-        # Should suggest declaring relationship
-        actions = [opt.action for opt in results[0].resolution_options]
-        assert "relationship" in actions
 
     def test_star_schema_deterministic(self, detector: JoinPathDeterminismDetector):
         """Test LOW entropy for star schema (multiple paths to DIFFERENT tables)."""
@@ -192,9 +169,6 @@ class TestJoinPathDeterminismDetector:
         assert results[0].score == pytest.approx(0.7, abs=0.01)
         assert results[0].evidence[0]["path_status"] == "ambiguous"
         assert "customers" in results[0].evidence[0]["ambiguous_tables"]
-        # Should suggest preferred path
-        actions = [opt.action for opt in results[0].resolution_options]
-        assert "relationship" in actions
 
     def test_mixed_deterministic_and_ambiguous(self, detector: JoinPathDeterminismDetector):
         """Test proportional entropy when some tables have multiple paths."""

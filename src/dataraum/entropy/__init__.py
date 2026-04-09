@@ -10,7 +10,6 @@ from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.core import (
     EntropyObject,
     EntropyRepository,
-    ResolutionOption,
 )
 from dataraum.entropy.views import (
     EntropyForNetwork,
@@ -22,7 +21,6 @@ from dataraum.entropy.views import (
 __all__ = [
     # Core
     "EntropyObject",
-    "ResolutionOption",
     "EntropyRepository",
     # Analysis
     "ColumnSummary",

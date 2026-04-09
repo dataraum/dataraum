@@ -6,7 +6,7 @@ plus EntropyObject builders for test data.
 
 import pytest
 
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 from dataraum.entropy.network.config import (
     CptGenerationConfig,
     DiscretizationConfig,
@@ -96,7 +96,6 @@ def make_entropy_object(
     target: str = "column:test_table.col1",
     score: float = 0.5,
     evidence: list | None = None,
-    resolution_options: list | None = None,
     detector_id: str = "test_detector",
 ) -> EntropyObject:
     """Create an EntropyObject for testing."""
@@ -107,21 +106,5 @@ def make_entropy_object(
         target=target,
         score=score,
         evidence=evidence or [{"metric": "test", "value": score}],
-        resolution_options=resolution_options or [],
         detector_id=detector_id,
-    )
-
-
-def make_resolution_option(
-    *,
-    action: str = "fix_something",
-    effort: str = "low",
-    description: str = "Fix the thing",
-) -> ResolutionOption:
-    """Create a ResolutionOption for testing."""
-    return ResolutionOption(
-        action=action,
-        parameters={"key": "value"},
-        effort=effort,
-        description=description,
     )

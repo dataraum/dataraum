@@ -11,7 +11,7 @@ import math
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 
 
 def _boost_rate(rate: float) -> float:
@@ -82,8 +82,6 @@ class TypeFidelityDetector(EntropyDetector):
         detector_config = config.detector("type_fidelity")
 
         # Get configurable thresholds
-        suggest_override = detector_config.get("suggest_override_threshold", 0.3)
-        suggest_quarantine = detector_config.get("suggest_quarantine_threshold", 0.1)
         score_fallback = detector_config.get("score_fallback", 0.5)
         typing_result = context.get_analysis("typing", {})
 
@@ -130,55 +128,10 @@ class TypeFidelityDetector(EntropyDetector):
         if failed_examples:
             evidence[0]["failed_examples"] = failed_examples
 
-        # Build resolution options based on configurable thresholds
-        resolution_options: list[ResolutionOption] = []
-
-        if score > suggest_override:
-            resolution_options.append(
-                ResolutionOption(
-                    action="type_pattern",
-                    parameters={
-                        "column": context.column_name,
-                        "suggested_type": "VARCHAR",
-                    },
-                    effort="low",
-                    description="Override detected type with VARCHAR to preserve all values",
-                )
-            )
-
-        if is_fallback:
-            # Fallback columns always need type review
-            resolution_options.append(
-                ResolutionOption(
-                    action="type_pattern",
-                    parameters={
-                        "column": context.column_name,
-                        "suggested_type": str(detected_type) if detected_type else "VARCHAR",
-                    },
-                    effort="low",
-                    description="Review and confirm type for column where inference was inconclusive",
-                )
-            )
-
-        if score > suggest_quarantine:
-            # Force a different type (e.g. VARCHAR) to avoid quarantine
-            resolution_options.append(
-                ResolutionOption(
-                    action="type_override",
-                    parameters={
-                        "column": context.column_name,
-                        "detected_type": str(detected_type) if detected_type else "VARCHAR",
-                    },
-                    effort="low",
-                    description="Force a specific type for this column, overriding type inference",
-                )
-            )
-
         return [
             self.create_entropy_object(
                 context=context,
                 score=score,
                 evidence=evidence,
-                resolution_options=resolution_options,
             )
         ]

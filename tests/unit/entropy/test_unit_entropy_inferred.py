@@ -118,4 +118,3 @@ class TestUnitEntropyInference:
 
         results = detector.detect(context)
         assert len(results) == 1
-        assert results[0].resolution_options == []

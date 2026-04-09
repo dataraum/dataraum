@@ -22,7 +22,7 @@ from sqlalchemy import select
 from dataraum.core.logging import get_logger
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 
 logger = get_logger(__name__)
 
@@ -108,31 +108,11 @@ class DimensionCoverageDetector(EntropyDetector):
         # (same pattern as relationship_entropy ri_boost)
         score = min(1.0, math.sqrt(raw_score)) if raw_score > 0 else 0.0
 
-        resolution_options: list[ResolutionOption] = []
-        high_null_cols = [e["column"] for e in evidence if e["null_rate"] > 0.5]
-        if high_null_cols:
-            resolution_options.append(
-                ResolutionOption(
-                    action="investigate_relationship",
-                    parameters={
-                        "columns": high_null_cols,
-                        "view_name": context.view_name,
-                    },
-                    effort="medium",
-                    description=(
-                        "Investigate why dimension columns have high NULL rates — "
-                        "the join relationship may be incorrect or the dimension "
-                        "table may have missing keys"
-                    ),
-                )
-            )
-
         return [
             self.create_entropy_object(
                 context=context,
                 score=score,
                 evidence=evidence,
-                resolution_options=resolution_options,
             )
         ]
 

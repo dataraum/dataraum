@@ -26,7 +26,7 @@ from sqlalchemy import select
 from dataraum.core.logging import get_logger
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 
 logger = get_logger(__name__)
 
@@ -164,29 +164,10 @@ class CrossTableConsistencyDetector(EntropyDetector):
         # max() — worst failure drives the score
         final_score = max(scores) if scores else 0.0
 
-        resolution_options: list[ResolutionOption] = []
-        if final_score > 0:
-            failed_ids = [e["validation_id"] for e in evidence if not e["passed"]]
-            resolution_options.append(
-                ResolutionOption(
-                    action="investigate_reconciliation",
-                    parameters={
-                        "table": context.table_name,
-                        "failed_validations": failed_ids,
-                    },
-                    effort="high",
-                    description=(
-                        "Investigate cross-table reconciliation failures — "
-                        "these require human review of the underlying data mismatch"
-                    ),
-                )
-            )
-
         return [
             self.create_entropy_object(
                 context=context,
                 score=final_score,
                 evidence=evidence,
-                resolution_options=resolution_options,
             )
         ]

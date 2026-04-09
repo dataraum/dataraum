@@ -138,19 +138,6 @@ class TestEvidence:
         assert "completion_rate" in evidence[0]
 
 
-class TestResolutionOptions:
-    def test_resolution_on_low_health(self, detector: BusinessCycleHealthDetector):
-        ctx = _make_context(cycles=[_make_cycle(completion_rate=0.2)])
-        objects = detector.detect(ctx)
-        assert len(objects[0].resolution_options) == 1
-        assert objects[0].resolution_options[0].action == "investigate_cycle_health"
-
-    def test_no_resolution_when_healthy(self, detector: BusinessCycleHealthDetector):
-        ctx = _make_context(cycles=[_make_cycle(confidence=0.9, completion_rate=0.9)])
-        objects = detector.detect(ctx)
-        assert len(objects[0].resolution_options) == 0
-
-
 class TestDetectorProperties:
     def test_detector_id(self, detector: BusinessCycleHealthDetector):
         assert detector.detector_id == "business_cycle_health"

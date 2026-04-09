@@ -183,54 +183,6 @@ class TestBusinessMeaningDetector:
         assert raw_metrics["semantic_role"] == "measure"
         assert raw_metrics["semantic_confidence"] == 0.95
 
-    def test_resolution_options_for_missing(self, detector: BusinessMeaningDetector):
-        """Test resolution options for missing description."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="col1",
-            analysis_results={
-                "semantic": {
-                    "business_description": "",
-                }
-            },
-        )
-
-        results = detector.detect(context)
-
-        actions = [opt.action for opt in results[0].resolution_options]
-        assert "concept_property" in actions
-        # All three fields should be listed as missing
-        opt = results[0].resolution_options[0]
-        assert set(opt.parameters["missing_fields"]) == {
-            "description",
-            "business_name",
-            "entity_type",
-        }
-
-    def test_resolution_options_with_description(self, detector: BusinessMeaningDetector):
-        """Test resolution options when description exists but not others."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="amount",
-            analysis_results={
-                "semantic": {
-                    "business_description": "Order amount",
-                    "business_name": None,
-                    "entity_type": None,
-                }
-            },
-        )
-
-        results = detector.detect(context)
-
-        actions = [opt.action for opt in results[0].resolution_options]
-        assert "concept_property" in actions
-        # Has description, so only business_name and entity_type are missing
-        opt = results[0].resolution_options[0]
-        assert "description" not in opt.parameters["missing_fields"]
-        assert "business_name" in opt.parameters["missing_fields"]
-        assert "entity_type" in opt.parameters["missing_fields"]
-
     def test_fully_documented_low_confidence_nonzero(self, detector: BusinessMeaningDetector):
         """Test that fully documented column with low confidence has nonzero score.
 

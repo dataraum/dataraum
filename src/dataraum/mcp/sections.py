@@ -221,8 +221,6 @@ def build_quality_section(context: GraphExecutionContext) -> dict[str, Any]:
                 c["entropy_scores"] = col.entropy_scores
             if col.flags:
                 c["flags"] = col.flags
-            if col.resolution_hints:
-                c["resolution_actions"] = col.resolution_hints
             columns.append(c)
 
         if columns:

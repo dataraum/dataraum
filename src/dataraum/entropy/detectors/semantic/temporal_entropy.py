@@ -11,7 +11,7 @@ Source: semantic.semantic_role, typing.data_type
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 
 
 class TemporalEntropyDetector(EntropyDetector):
@@ -163,42 +163,10 @@ class TemporalEntropyDetector(EntropyDetector):
 
         evidence = [evidence_entry]
 
-        # Resolution options
-        resolution_options: list[ResolutionOption] = []
-
-        if temporal_status == "unmarked":
-            resolution_options.append(
-                ResolutionOption(
-                    action="concept_property",
-                    parameters={
-                        "column": context.column_name,
-                        "table": context.table_name,
-                        "data_type": data_type,
-                    },
-                    effort="low",
-                    description=f"Mark date column '{context.column_name}' as timestamp",
-                )
-            )
-        elif temporal_status == "mismatch":
-            resolution_options.append(
-                ResolutionOption(
-                    action="type_pattern",
-                    parameters={
-                        "column": context.column_name,
-                        "table": context.table_name,
-                        "data_type": data_type,
-                        "semantic_role": semantic_role,
-                    },
-                    effort="medium",
-                    description=f"Add type pattern for '{context.column_name}' (date format not recognized)",
-                )
-            )
-
         return [
             self.create_entropy_object(
                 context=context,
                 score=score,
                 evidence=evidence,
-                resolution_options=resolution_options,
             )
         ]

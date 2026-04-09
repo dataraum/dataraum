@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataraum.context import (
-    ActionsResultWrapper,
     ContractResultWrapper,
     EntropyResultWrapper,
     RunResultWrapper,
@@ -96,43 +95,6 @@ class TestContractResultWrapper:
         assert "contract" in wrapper
 
 
-class TestActionsResultWrapper:
-    def test_empty(self) -> None:
-        wrapper = ActionsResultWrapper([])
-        assert len(wrapper) == 0
-        assert "No resolution actions" in wrapper._repr_html_()
-
-    def test_with_actions(self) -> None:
-        wrapper = ActionsResultWrapper(
-            [
-                {
-                    "action": "concept_property",
-                    "priority_score": 0.8,
-                    "effort": "low",
-                    "affected_columns": ["a.b", "c.d"],
-                },
-                {
-                    "action": "investigate_outliers",
-                    "priority_score": 0.3,
-                    "effort": "medium",
-                    "affected_columns": ["x.y"],
-                },
-            ]
-        )
-        assert len(wrapper) == 2
-        assert wrapper[0]["action"] == "concept_property"
-
-        html = wrapper._repr_html_()
-        assert "concept_property" in html
-        assert "investigate_outliers" in html
-        assert "2" in html  # count in header
-
-    def test_iteration(self) -> None:
-        actions = [{"action": "a"}, {"action": "b"}]
-        wrapper = ActionsResultWrapper(actions)
-        assert [a["action"] for a in wrapper] == ["a", "b"]
-
-
 class TestRunResultWrapper:
     def test_success(self) -> None:
         wrapper = RunResultWrapper(
@@ -175,7 +137,6 @@ class TestContextImport:
 
     def test_wrappers_importable(self) -> None:
         from dataraum.context import (
-            ActionsResultWrapper,
             ContractResultWrapper,
             EntropyResultWrapper,
             QueryResultWrapper,
@@ -188,7 +149,6 @@ class TestContextImport:
             for cls in [
                 EntropyResultWrapper,
                 ContractResultWrapper,
-                ActionsResultWrapper,
                 RunResultWrapper,
                 QueryResultWrapper,
                 SourcesAccessor,

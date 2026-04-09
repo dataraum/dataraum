@@ -319,11 +319,7 @@ entropy_objects (
     column_id                VARCHAR,
     score                    FLOAT NOT NULL,     -- 0.0 (certain) to 1.0 (uncertain)
     evidence                 JSON,               -- detector-specific evidence
-    resolution_options       JSON,               -- suggested actions
     detector_id              VARCHAR NOT NULL,    -- "type_fidelity", "null_ratio", etc.
-    expected_business_pattern VARCHAR,
-    business_rule            VARCHAR,
-    filter_confidence        FLOAT
 );
 ```
 

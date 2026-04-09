@@ -33,7 +33,6 @@ class TestColumnContext:
         assert ctx.data_type is None
         assert ctx.flags == []
         assert ctx.business_name is None
-        assert ctx.resolution_hints == []
 
     def test_create_full(self) -> None:
         """Create column context with all fields."""
@@ -56,18 +55,10 @@ class TestColumnContext:
             is_stale=False,
             detected_granularity="daily",
             flags=["high_cardinality"],
-            resolution_hints=[
-                {
-                    "action": "normalize_currency",
-                    "description": "Convert to EUR",
-                    "effort": "medium",
-                }
-            ],
         )
         assert ctx.data_type == "DOUBLE"
         assert ctx.business_name == "Invoice Amount"
         assert ctx.unit_source_column == "currency_code"
-        assert len(ctx.resolution_hints) == 1
 
 
 class TestTableContext:
@@ -317,14 +308,6 @@ class TestFormatMetadataDocument:
                 "worst_intent_p_high": 0.75,
                 "readiness": "investigate",
             },
-            resolution_hints=[
-                {
-                    "action": "normalize_currency",
-                    "description": "Join with fx_rates to convert amounts to EUR",
-                    "effort": "medium",
-                    "expected_impact": "high",
-                }
-            ],
         )
         table = TableContext(
             table_id="tbl-1",

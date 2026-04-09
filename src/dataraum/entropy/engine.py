@@ -239,16 +239,6 @@ def _make_record(
     column_id: str | None,
 ) -> EntropyObjectRecord:
     """Create an EntropyObjectRecord from an EntropyObject."""
-    resolution_dicts = [
-        {
-            "action": opt.action,
-            "parameters": opt.parameters,
-            "effort": opt.effort,
-            "description": opt.description,
-        }
-        for opt in entropy_obj.resolution_options
-    ]
-
     return EntropyObjectRecord(
         source_id=source_id,
         table_id=table_id,
@@ -259,7 +249,6 @@ def _make_record(
         sub_dimension=entropy_obj.sub_dimension,
         score=entropy_obj.score,
         evidence=entropy_obj.evidence,
-        resolution_options=resolution_dicts if resolution_dicts else None,
         detector_id=entropy_obj.detector_id,
     )
 
@@ -282,8 +271,8 @@ def _extract_column_id(
 ) -> str | None:
     """Extract column_id from an entropy object's evidence.
 
-    For column-level objects produced by table-scoped detectors (e.g. column_quality),
-    the evidence contains column_id.
+    For column-level objects produced by table-scoped detectors,
+    the evidence may contain column_id.
     """
     for ev in entropy_obj.evidence or []:
         col_id = ev.get("column_id")

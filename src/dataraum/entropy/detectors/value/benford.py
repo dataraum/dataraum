@@ -17,7 +17,7 @@ import math
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 
 # Benford's Law uses digits 1-9, so df = k - 1 = 8
 _BENFORD_DF = 8
@@ -191,29 +191,10 @@ class BenfordDetector(EntropyDetector):
             }
         ]
 
-        # Resolution options for non-compliant columns
-        resolution_options: list[ResolutionOption] = []
-        if not is_compliant:
-            resolution_options.append(
-                ResolutionOption(
-                    action="investigate_benford_deviation",
-                    parameters={
-                        "column": context.column_name,
-                        "chi_square": chi_square,
-                        "p_value": p_value,
-                        "cramers_v": round(cramers_v, 4) if cramers_v else None,
-                        "effect_size": effect_size,
-                    },
-                    effort="medium",
-                    description="Investigate Benford's Law deviation — may indicate data quality issues or systematic rounding",
-                )
-            )
-
         return [
             self.create_entropy_object(
                 context=context,
                 score=score,
                 evidence=evidence,
-                resolution_options=resolution_options,
             )
         ]

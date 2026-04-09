@@ -15,7 +15,7 @@ Source: typing.detected_unit, typing.unit_confidence, semantic.semantic_role,
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 
 
 class UnitEntropyDetector(EntropyDetector):
@@ -135,39 +135,10 @@ class UnitEntropyDetector(EntropyDetector):
 
         evidence = [evidence_dict]
 
-        # Resolution options
-        resolution_options: list[ResolutionOption] = []
-
-        if score > 0.3:  # Only suggest resolution for high-entropy columns
-            resolution_options.append(
-                ResolutionOption(
-                    action="concept_property",
-                    parameters={
-                        "column": context.column_name,
-                        "table": context.table_name,
-                        "detected_unit": detected_unit,
-                    },
-                    effort="low",
-                    description=f"Declare a fixed unit for '{context.column_name}'",
-                )
-            )
-            resolution_options.append(
-                ResolutionOption(
-                    action="concept_property",
-                    parameters={
-                        "column": context.column_name,
-                        "table": context.table_name,
-                    },
-                    effort="low",
-                    description=f"Specify which column provides the unit for '{context.column_name}'",
-                )
-            )
-
         return [
             self.create_entropy_object(
                 context=context,
                 score=score,
                 evidence=evidence,
-                resolution_options=resolution_options,
             )
         ]

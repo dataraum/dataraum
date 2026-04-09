@@ -35,12 +35,11 @@ config/
 │
 ├── llm/
 │   ├── config.yaml            # Provider, model tiers, privacy settings
-│   └── prompts/               # LLM prompt templates (11 files)
+│   └── prompts/               # LLM prompt templates (13 files)
 │       ├── semantic_analysis.yaml
 │       ├── column_annotation.yaml
 │       ├── slicing_analysis.yaml
 │       ├── enrichment_analysis.yaml
-│       ├── entropy_table_interpretation.yaml
 │       ├── business_cycles.yaml
 │       ├── validation_sql.yaml
 │       ├── graph_sql_generation.yaml

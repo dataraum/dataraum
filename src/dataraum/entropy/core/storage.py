@@ -14,10 +14,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
 from dataraum.entropy.db_models import EntropyObjectRecord
-from dataraum.entropy.models import (
-    EntropyObject,
-    ResolutionOption,
-)
+from dataraum.entropy.models import EntropyObject
 from dataraum.storage import Table
 
 if TYPE_CHECKING:
@@ -115,19 +112,6 @@ class EntropyRepository:
         Returns:
             EntropyObject with all fields populated
         """
-        # Parse resolution options
-        resolution_options: list[ResolutionOption] = []
-        if record.resolution_options:
-            for opt_dict in record.resolution_options:
-                resolution_options.append(
-                    ResolutionOption(
-                        action=opt_dict.get("action", ""),
-                        parameters=opt_dict.get("parameters", {}),
-                        effort=opt_dict.get("effort", "medium"),
-                        description=opt_dict.get("description", ""),
-                    )
-                )
-
         # Parse evidence
         evidence: list[dict[str, Any]] = []
         if record.evidence:
@@ -144,7 +128,6 @@ class EntropyRepository:
             target=record.target,
             score=record.score,
             evidence=evidence,
-            resolution_options=resolution_options,
             computed_at=record.computed_at,
             source_analysis_ids=record.source_analysis_ids or [],
             detector_id=record.detector_id,

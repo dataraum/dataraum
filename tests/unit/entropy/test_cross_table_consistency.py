@@ -148,19 +148,6 @@ class TestDetectFailures:
         assert evidence[1]["validation_id"] == "v2"
 
 
-class TestResolutionOptions:
-    def test_resolution_on_failure(self, detector: CrossTableConsistencyDetector):
-        ctx = _make_context(validations=[_make_result(details={"check_type": "comparison"})])
-        objects = detector.detect(ctx)
-        assert len(objects[0].resolution_options) == 1
-        assert objects[0].resolution_options[0].action == "investigate_reconciliation"
-
-    def test_no_resolution_when_all_pass(self, detector: CrossTableConsistencyDetector):
-        ctx = _make_context(validations=[_make_result(passed=True, status="passed")])
-        objects = detector.detect(ctx)
-        assert len(objects[0].resolution_options) == 0
-
-
 class TestDetectorProperties:
     def test_detector_id(self, detector: CrossTableConsistencyDetector):
         assert detector.detector_id == "cross_table_consistency"

@@ -7,7 +7,7 @@ High null ratio indicates missing data that affects aggregation reliability.
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 
 
 class NullRatioDetector(EntropyDetector):
@@ -54,7 +54,6 @@ class NullRatioDetector(EntropyDetector):
         impact_minimal = detector_config.get("impact_minimal", 0.05)
         impact_moderate = detector_config.get("impact_moderate", 0.20)
         impact_significant = detector_config.get("impact_significant", 0.50)
-        suggest_declare = detector_config.get("suggest_declare_threshold", 0.1)
         stats = context.get_analysis("statistics", {})
 
         # Extract null ratio
@@ -93,28 +92,10 @@ class NullRatioDetector(EntropyDetector):
             }
         ]
 
-        # Build resolution options using configurable thresholds
-        resolution_options: list[ResolutionOption] = []
-
-        if score > suggest_declare:
-            # Some nulls - suggest null semantics declaration
-            resolution_options.append(
-                ResolutionOption(
-                    action="document_null_semantics",
-                    parameters={
-                        "column": context.column_name,
-                        "meanings": ["not_applicable", "unknown", "not_yet_set"],
-                    },
-                    effort="low",
-                    description="Declare what null values mean in this context",
-                )
-            )
-
         return [
             self.create_entropy_object(
                 context=context,
                 score=score,
                 evidence=evidence,
-                resolution_options=resolution_options,
             )
         ]

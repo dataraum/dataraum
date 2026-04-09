@@ -3,10 +3,7 @@
 import pytest
 
 from dataraum.entropy.detectors.base import DetectorContext, DetectorRegistry
-from dataraum.entropy.models import (
-    EntropyObject,
-    ResolutionOption,
-)
+from dataraum.entropy.models import EntropyObject
 
 
 @pytest.fixture
@@ -125,14 +122,6 @@ def sample_entropy_object() -> EntropyObject:
         score=0.35,
         evidence=[
             {"parse_success_rate": 0.65, "failed_values": ["N/A", "TBD", "-"]},
-        ],
-        resolution_options=[
-            ResolutionOption(
-                action="declare_type",
-                parameters={"column": "amount", "type": "DECIMAL(10,2)"},
-                effort="low",
-                description="Declare explicit type for amount column",
-            ),
         ],
         detector_id="type_fidelity",
     )

@@ -162,8 +162,7 @@ src/dataraum/
 │   │   └── computational/ # Derived values, cross-table consistency
 │   ├── contracts/         # Use-case threshold evaluation
 │   ├── network/           # Bayesian causal network
-│   ├── measurement.py     # measure_entropy(), check_contracts()
-│   ├── actions.py         # Merge resolution actions from all sources
+│   ├── measurement.py     # measure_entropy(), match_threshold()
 │   └── engine.py          # Detector orchestration, post-step hooks
 ├── investigation/         # Session trace models (MCP audit trail)
 ├── documentation/         # Fix ledger + document agent
@@ -209,7 +208,7 @@ Source (CSV/Parquet/JSON)
 Context document → MCP / CLI / Python API → AI consumer
 ```
 
-Entropy detectors run as post-steps after each phase, building up scores incrementally. The `measure` MCP tool (or `check_contracts()` in Python) evaluates these scores against contract thresholds at any point.
+Entropy detectors run as post-steps after each phase, building up scores incrementally. The `measure` MCP tool evaluates these scores against contract thresholds at any point.
 
 ## Interfaces
 

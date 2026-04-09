@@ -23,7 +23,7 @@ from sqlalchemy import select
 from dataraum.core.logging import get_logger
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 
 logger = get_logger(__name__)
 
@@ -119,30 +119,10 @@ class BusinessCycleHealthDetector(EntropyDetector):
 
         final_score = max(per_cycle_scores) if per_cycle_scores else 0.0
 
-        resolution_options: list[ResolutionOption] = []
-        if final_score > 0.5:
-            low_cycles = [e["cycle_name"] for e in evidence if e["score"] > 0.5]
-            resolution_options.append(
-                ResolutionOption(
-                    action="investigate_cycle_health",
-                    parameters={
-                        "table": context.table_name,
-                        "low_health_cycles": low_cycles,
-                    },
-                    effort="medium",
-                    description=(
-                        "Investigate low cycle completion rates or detection "
-                        "confidence — may indicate missing status columns or "
-                        "incomplete data coverage"
-                    ),
-                )
-            )
-
         return [
             self.create_entropy_object(
                 context=context,
                 score=final_score,
                 evidence=evidence,
-                resolution_options=resolution_options,
             )
         ]

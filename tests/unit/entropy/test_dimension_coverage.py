@@ -132,33 +132,6 @@ class TestEvidence:
         assert objects[0].score == pytest.approx(0.6325, abs=1e-3)
 
 
-class TestResolutionOption:
-    def test_resolution_option_present(self, detector: DimensionCoverageDetector):
-        """High NULL columns produce an investigate_relationship resolution."""
-        view = _make_enriched_view(["dim__col"])
-        conn = MagicMock()
-        conn.execute.return_value.fetchone.return_value = (0.8,)
-        ctx = _make_context(view=view, duckdb_conn=conn)
-
-        objects = detector.detect(ctx)
-
-        assert len(objects[0].resolution_options) == 1
-        opt = objects[0].resolution_options[0]
-        assert opt.action == "investigate_relationship"
-        assert opt.effort == "medium"
-
-    def test_no_resolution_when_low_nulls(self, detector: DimensionCoverageDetector):
-        """Low NULL rates → no resolution options."""
-        view = _make_enriched_view(["dim__col"])
-        conn = MagicMock()
-        conn.execute.return_value.fetchone.return_value = (0.1,)
-        ctx = _make_context(view=view, duckdb_conn=conn)
-
-        objects = detector.detect(ctx)
-
-        assert len(objects[0].resolution_options) == 0
-
-
 class TestTargetRef:
     def test_view_target_ref(self):
         """DetectorContext with view_name produces view: target_ref."""

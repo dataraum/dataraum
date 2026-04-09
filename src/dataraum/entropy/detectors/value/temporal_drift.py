@@ -149,6 +149,5 @@ class TemporalDriftDetector(EntropyDetector):
                 context=context,
                 score=score,
                 evidence=evidence,
-                resolution_options=[],
             )
         ]

@@ -22,7 +22,7 @@ from typing import Any
 from dataraum.entropy.config import get_entropy_config
 from dataraum.entropy.detectors.base import DetectorContext, EntropyDetector
 from dataraum.entropy.dimensions import AnalysisKey, Dimension, Layer, SubDimension
-from dataraum.entropy.models import EntropyObject, ResolutionOption
+from dataraum.entropy.models import EntropyObject
 
 # Thresholds for distribution shape detection
 _ZERO_INFLATED_THRESHOLD = 0.30  # > 30% zeros → exclude zeros before IQR
@@ -119,7 +119,6 @@ class OutlierRateDetector(EntropyDetector):
         score_at_minimal = detector_config.get("score_at_minimal", 0.15)
         score_at_moderate = detector_config.get("score_at_moderate", 0.40)
         score_at_significant = detector_config.get("score_at_significant", 0.65)
-        suggest_exclude = detector_config.get("suggest_exclude_threshold", 0.5)
         cv_attenuation_threshold = detector_config.get("cv_attenuation_threshold", 2.0)
         stats = context.get_analysis("statistics", {})
 
@@ -350,27 +349,10 @@ class OutlierRateDetector(EntropyDetector):
 
         evidence = [evidence_dict]
 
-        # Build resolution options using configurable thresholds
-        resolution_options: list[ResolutionOption] = []
-
-        if score > suggest_exclude:
-            # High outliers - suggest review or removal
-            resolution_options.append(
-                ResolutionOption(
-                    action="investigate_outliers",
-                    parameters={
-                        "column": context.column_name,
-                    },
-                    effort="high",
-                    description="Manual review of outlier values for data quality issues",
-                )
-            )
-
         return [
             self.create_entropy_object(
                 context=context,
                 score=score,
                 evidence=evidence,
-                resolution_options=resolution_options,
             )
         ]

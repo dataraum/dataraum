@@ -237,7 +237,6 @@ class TestBuildQualitySection:
     def test_entropy_data(self) -> None:
         col = _make_column(
             entropy_scores={"readiness": "investigate", "composite": 0.3},
-            resolution_hints=[{"action": "impute", "effort": "low"}],
         )
         table = _make_table(columns=[col])
         ctx = _make_context(tables=[table])
@@ -245,7 +244,6 @@ class TestBuildQualitySection:
 
         c = result["tables"][0]["columns"][0]
         assert c["entropy_scores"]["readiness"] == "investigate"
-        assert len(c["resolution_actions"]) == 1
 
     def test_availability_warnings(self) -> None:
         col = _make_column()  # No quality data at all

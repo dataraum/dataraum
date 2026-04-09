@@ -33,7 +33,6 @@ import yaml
 from dataraum.core.config import get_config_file
 from dataraum.core.logging import get_logger
 from dataraum.entropy.config import get_dimension_label
-from dataraum.entropy.models import ResolutionOption
 
 if TYPE_CHECKING:
     from dataraum.entropy.analysis.aggregator import ColumnSummary
@@ -166,9 +165,6 @@ class ContractEvaluation:
 
     # Warnings (approaching threshold)
     warnings: list[Violation] = field(default_factory=list)
-
-    # Recommendations to achieve compliance
-    recommendations: list[ResolutionOption] = field(default_factory=list)
 
     # Metadata
     evaluated_at: datetime = field(default_factory=lambda: datetime.now(UTC))

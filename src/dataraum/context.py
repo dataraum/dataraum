@@ -9,7 +9,6 @@ Example:
     ctx.tables                    # List of tables
     ctx.entropy.summary()         # Entropy scores and readiness
     ctx.contracts.evaluate("aggregation_safe")
-    ctx.actions()                 # Resolution actions
     result = ctx.query("What's the total revenue?")
 """
 
@@ -17,7 +16,6 @@ from __future__ import annotations
 
 import builtins
 import html as html_mod
-from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -243,87 +241,6 @@ class Context:
             }
         )
 
-    def actions(self, contract: str | None = None) -> ActionsResultWrapper:
-        """Get merged resolution actions, optionally filtered by contract.
-
-        Args:
-            contract: Optional contract name to filter violations
-
-        Returns:
-            ActionsResultWrapper with ranked actions and Jupyter rendering.
-        """
-        from collections import defaultdict
-
-        from sqlalchemy import select
-
-        from dataraum.entropy.actions import merge_actions
-        from dataraum.entropy.contracts import evaluate_all_contracts
-        from dataraum.entropy.db_models import EntropyObjectRecord
-        from dataraum.entropy.views.network_context import build_for_network
-        from dataraum.entropy.views.query_context import network_to_column_summaries
-        from dataraum.storage import Column, Table
-
-        with self.manager.session_scope() as session:
-            source = self._resolve_source(session)
-            if not source:
-                return ActionsResultWrapper([])
-
-            tables_result = session.execute(
-                select(Table).where(
-                    Table.source_id == source.source_id,
-                    Table.layer == "typed",
-                )
-            )
-            tables = tables_result.scalars().all()
-
-            if not tables:
-                return ActionsResultWrapper([])
-
-            table_ids = [t.table_id for t in tables]
-
-            # Build column_id -> column_key mapping
-            col_id_to_key: dict[str, str] = {}
-            for tbl in tables:
-                cols_result = session.execute(select(Column).where(Column.table_id == tbl.table_id))
-                for col in cols_result.scalars().all():
-                    col_id_to_key[col.column_id] = f"{tbl.table_name}.{col.column_name}"
-
-            # Build column summaries and network context
-            network_context = build_for_network(session, table_ids)
-            column_summaries = network_to_column_summaries(network_context)
-
-            # Interpretation records removed; pass empty dict
-            interp_by_col: dict[str, Any] = {}
-
-            # Get entropy objects by column
-            entropy_objects_by_col: dict[str, list[Any]] = defaultdict(list)
-            obj_result = session.execute(
-                select(EntropyObjectRecord).where(
-                    EntropyObjectRecord.source_id == source.source_id,
-                )
-            )
-            for obj in obj_result.scalars().all():
-                col_key = obj.target.removeprefix("column:")
-                entropy_objects_by_col[col_key].append(obj)
-
-            # Contract violations
-            violation_dims: dict[str, list[str]] = {}
-            evals = evaluate_all_contracts(column_summaries)
-            target_evals = {contract: evals[contract]} if contract and contract in evals else evals
-            for eval_result in target_evals.values():
-                for v in eval_result.violations:
-                    if v.dimension:
-                        violation_dims.setdefault(v.dimension, []).extend(v.affected_columns)
-
-            actions_list = merge_actions(
-                interp_by_col,
-                entropy_objects_by_col,
-                violation_dims,
-                network_context=network_context,
-            )
-
-            return ActionsResultWrapper(actions_list)
-
     def query(self, question: str, contract: str | None = None) -> QueryResultWrapper:
         """Execute a natural language query.
 
@@ -472,7 +389,6 @@ class EntropyAccessor:
                         "sub_dimension": obj.sub_dimension,
                         "score": obj.score,
                         "evidence": obj.evidence,
-                        "resolution_options": obj.resolution_options,
                     }
                     for obj in objects
                 ],
@@ -784,50 +700,6 @@ class ContractResultWrapper:
             f"ContractResult(contract={self._data.get('contract')!r}, "
             f"status={status}, score={self._data.get('overall_score', 0):.2f})"
         )
-
-
-class ActionsResultWrapper:
-    """Wrapper for resolution actions with Jupyter rendering."""
-
-    def __init__(self, actions: list[dict[str, Any]]) -> None:
-        self._actions = actions
-
-    def __len__(self) -> int:
-        return len(self._actions)
-
-    def __iter__(self) -> Iterator[dict[str, Any]]:
-        return iter(self._actions)
-
-    def __getitem__(self, index: int) -> dict[str, Any]:
-        return self._actions[index]
-
-    def _repr_html_(self) -> str:
-        """Jupyter HTML representation."""
-        if not self._actions:
-            return "<b>No resolution actions found.</b>"
-
-        parts = [f"<h3>Resolution Actions ({len(self._actions)})</h3>"]
-        parts.append(
-            "<table><tr><th>#</th><th>Action</th><th>Score</th><th>Effort</th><th>Columns</th></tr>"
-        )
-
-        for i, action in enumerate(self._actions, 1):
-            score = action.get("priority_score", 0)
-            effort = action.get("effort", "?")
-            cols = len(action.get("affected_columns", []))
-            parts.append(
-                f"<tr><td>{i}</td>"
-                f"<td>{html_mod.escape(action.get('action', ''))}</td>"
-                f"<td>{score:.3f}</td>"
-                f"<td>{html_mod.escape(str(effort))}</td>"
-                f"<td>{cols}</td></tr>"
-            )
-
-        parts.append("</table>")
-        return "\n".join(parts)
-
-    def __repr__(self) -> str:
-        return f"ActionsResult(count={len(self._actions)})"
 
 
 class RunResultWrapper:

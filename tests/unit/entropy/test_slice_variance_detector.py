@@ -268,36 +268,6 @@ class TestSliceVarianceDetector:
         assert results[0].score == pytest.approx(0.25, abs=0.01)
         assert "distinct_ratio" not in results[0].evidence[0]["exceeded_thresholds"]
 
-    def test_no_resolution_options(self, detector: SliceVarianceDetector):
-        """Slice variance has no resolution options (acceptance retired)."""
-        context = DetectorContext(
-            table_name="orders",
-            column_name="amount",
-            analysis_results={
-                "slice_profiles": [
-                    {
-                        "null_ratio": 0.0,
-                        "distinct_count": 100,
-                        "outlier_ratio": 0.0,
-                        "benford_p_value": None,
-                        "row_count": 1000,
-                        "slice_table_name": "slice_a",
-                    },
-                    {
-                        "null_ratio": 0.15,
-                        "distinct_count": 100,
-                        "outlier_ratio": 0.0,
-                        "benford_p_value": None,
-                        "row_count": 1000,
-                        "slice_table_name": "slice_b",
-                    },
-                ]
-            },
-        )
-        results = detector.detect(context)
-        assert len(results) == 1
-        assert results[0].resolution_options == []
-
     def test_detector_properties(self, detector: SliceVarianceDetector):
         """Test detector has correct properties."""
         assert detector.detector_id == "slice_variance"

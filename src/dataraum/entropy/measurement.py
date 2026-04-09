@@ -1,8 +1,7 @@
-"""Entropy measurement and contract assessment.
+"""Entropy measurement.
 
-Aggregates persisted detector records and checks scores against contracts:
+Aggregates persisted detector records:
 - ``measure_entropy``: read persisted detector records (no re-execution)
-- ``check_contracts``: check scores against contract thresholds
 - ``match_threshold``: find the applicable threshold for a dimension path
 """
 
@@ -28,23 +27,9 @@ class MeasurementResult:
     column_details: dict[str, dict[str, float]] = field(default_factory=dict)
     table_details: dict[str, dict[str, float]] = field(default_factory=dict)
     view_details: dict[str, dict[str, float]] = field(default_factory=dict)
-    # dim_path -> {action_name, ...} — resolution options from all entropy objects
-    resolution_actions: dict[str, set[str]] = field(default_factory=dict)
     # Per-target component evidence: dim_path -> target -> {component_key: value}
     # Enables smart context: LLM sees which component drives each column's score
     column_evidence: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
-
-
-@dataclass
-class ContractViolation:
-    """A contract violation detected during measurement."""
-
-    dimension_path: str  # e.g. "structural.types.type_fidelity"
-    score: float
-    threshold: float
-    producing_phase: str  # phase after which this was measured
-    affected_targets: list[str] = field(default_factory=list)
-    available_actions: list[str] = field(default_factory=list)
 
 
 def _collect_evidence(
@@ -119,7 +104,6 @@ def measure_entropy(
     column_scores: dict[str, dict[str, float]] = defaultdict(dict)
     table_scores: dict[str, dict[str, float]] = defaultdict(dict)
     view_scores: dict[str, dict[str, float]] = defaultdict(dict)
-    actions_by_dim: dict[str, set[str]] = defaultdict(set)
     evidence_by_dim: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
 
     for record in records:
@@ -136,13 +120,6 @@ def measure_entropy(
             view_scores[sub_dim][target] = record.score
         else:
             column_scores[sub_dim][target] = record.score
-
-        # Reconstruct resolution_actions from record
-        if record.resolution_options:
-            for opt in record.resolution_options:
-                action = opt.get("action")
-                if action:
-                    actions_by_dim[sub_dim].add(action)
 
         # Reconstruct column_evidence from record
         _collect_evidence(record, target, evidence_by_dim)
@@ -171,11 +148,6 @@ def measure_entropy(
         path = sub_dim_to_path.get(sd, sd)
         result_view_details[path] = targets
 
-    result_actions: dict[str, set[str]] = {}
-    for sd, acts in actions_by_dim.items():
-        path = sub_dim_to_path.get(sd, sd)
-        result_actions.setdefault(path, set()).update(acts)
-
     result_evidence: dict[str, dict[str, dict[str, Any]]] = {}
     for sd, targets_ev in evidence_by_dim.items():
         path = sub_dim_to_path.get(sd, sd)
@@ -186,7 +158,6 @@ def measure_entropy(
         column_details=result_column_details,
         table_details=result_table_details,
         view_details=result_view_details,
-        resolution_actions=result_actions,
         column_evidence=result_evidence,
     )
 
@@ -198,7 +169,7 @@ def match_threshold(
     """Find contract threshold by prefix match.
 
     Single source of truth for threshold resolution, used by contract
-    assessment (``check_contracts``), contract evaluation, and CLI display.
+    evaluation and CLI display.
 
     Given "structural.types.type_fidelity", checks for thresholds at:
     - "structural.types.type_fidelity" (exact)
@@ -218,47 +189,3 @@ def match_threshold(
         if prefix in thresholds:
             return thresholds[prefix]
     return None
-
-
-def check_contracts(
-    scores: dict[str, float],
-    thresholds: dict[str, float],
-    column_details: dict[str, dict[str, float]],
-    producing_phase: str,
-    resolution_actions: dict[str, set[str]] | None = None,
-) -> list[ContractViolation]:
-    """Check scores against contract thresholds.
-
-    Args:
-        scores: Dimension path -> score mapping.
-        thresholds: Contract thresholds to check against.
-        column_details: Per-column scores for affected target identification.
-        producing_phase: Phase name where measurement occurred.
-        resolution_actions: Dimension path -> action names from detector
-            resolution options (teach type names).
-
-    Returns:
-        List of contract violations found.
-    """
-    if not thresholds or not scores:
-        return []
-
-    issues: list[ContractViolation] = []
-    for dimension_path, score in scores.items():
-        threshold = match_threshold(dimension_path, thresholds)
-        if threshold is not None and score > threshold:
-            col_scores = column_details.get(dimension_path, {})
-            affected = [t for t, s in col_scores.items() if s > threshold]
-
-            actions = resolution_actions.get(dimension_path, set()) if resolution_actions else set()
-            issues.append(
-                ContractViolation(
-                    dimension_path=dimension_path,
-                    score=score,
-                    threshold=threshold,
-                    producing_phase=producing_phase,
-                    affected_targets=affected,
-                    available_actions=sorted(actions),
-                )
-            )
-    return issues

@@ -285,7 +285,11 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
   - Phase set includes `deps | {target_phase} | downstream` (was `deps | {target_phase}`)
   - `measurement_hint` now says "downstream phases" and warns about expensive re-runs for type_pattern/null_value
   - Metadata teaches (concept_property, relationship, explanation) unaffected — they were already working
-- **Status**: pending
+- **Status**: failed (2026-04-12, /accept handoff). Selective re-run doesn't work from any entry point:
+  1. `_run_pipeline(source_path=None, target_phase=...)`: import fails because no sources registered in multi-source mode
+  2. `RunConfig(source_path=data_dir, target_phase=...)`: import tries to re-register the source → UNIQUE constraint on sources.name
+  Root cause: RunConfig doesn't support "re-run phase X on existing pipeline output without re-importing." Import always runs and either needs source_path (which re-registers) or source_path=None (which needs pre-registered sources). Neither handles the re-run case.
+  xfail test in `test_adhoc_teach_loop.py::TestConfigTeachWithRerun::test_validation_teach_and_rerun`.
 
 <!--
 ## YYYY-MM-DD: brief description

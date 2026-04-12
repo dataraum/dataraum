@@ -154,7 +154,7 @@ class ExplanationParams(BaseModel):
 # Param model registry
 # ---------------------------------------------------------------------------
 
-_PARAM_MODELS: dict[str, type[BaseModel]] = {
+PARAM_MODELS: dict[str, type[BaseModel]] = {
     "concept": ConceptParams,
     "validation": ValidationParams,
     "cycle": CycleParams,
@@ -459,7 +459,7 @@ def handle_teach(
         }
 
     # Validate params against the Pydantic model
-    param_model_cls = _PARAM_MODELS[teach_type]
+    param_model_cls = PARAM_MODELS[teach_type]
     try:
         validated_params = param_model_cls.model_validate(params)
     except Exception as e:

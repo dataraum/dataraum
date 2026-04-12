@@ -48,6 +48,10 @@ features:
       with geographic, categorical, and reference data dimensions.
       Creates enriched views with no aggregations.
 
+  why_analysis:
+    enabled: true
+    model_tier: balanced
+
   sql_repair:
     enabled: true
     model_tier: fast

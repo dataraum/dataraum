@@ -228,6 +228,26 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 - **Fixed**: `sql_executor.py::_build_column_quality` — short table names in column_mappings now resolve via suffix matching (was returning null for all mapped columns)
 - **New**: `calibration/tools/test_adhoc_teach_loop.py` — 7 tests for teach → measure loop (5 pass, 2 xfail documenting bugs above)
 
+## 2026-04-12: DAT-252 — why (Evidence Synthesis Agent)
+
+### dataraum-eval
+- **Changed**: `src/dataraum/mcp/why.py` (NEW), `src/dataraum/mcp/server.py` (why tool), `config/llm/prompts/why_analysis.yaml` (NEW)
+- **Affects**: New `why` MCP tool
+- **Calibrate**: Smoke test why at all three levels. Key scenarios:
+  1. `why(target="orders.amount")` → column-level analysis with evidence + teach suggestions
+  2. `why(target="orders")` → table-level aggregation across columns
+  3. `why()` → dataset-level summary with top entropy drivers
+  4. `why(target="orders.amount", dimension="semantic")` → filtered to semantic layer
+  5. `why → teach → measure` flow: take first resolution_option, pass to teach, rerun measure, verify improvement (AC#13 from Jira)
+- **Notes**:
+  - Response fields: `target`, `readiness`, `analysis`, `evidence[]`, `resolution_options[]`, `intents`
+  - Each `resolution_option` has `teach_type`, `target`, `params`, `description`, `expected_impact`, `valid`, `validation_warning`
+  - `valid=false` + `validation_warning` when LLM-generated params don't match teach schema (included, not dropped)
+  - Feature toggle: `config.features.why_analysis.enabled`. When disabled, returns raw evidence without LLM synthesis.
+  - Model tier: balanced (Sonnet). LLM call can take 5-30s.
+  - `PARAM_MODELS` renamed from `_PARAM_MODELS` in teach.py (was private, now public — used by why for schema extraction)
+- **Status**: pending
+
 <!--
 ## YYYY-MM-DD: brief description
 

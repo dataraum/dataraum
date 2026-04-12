@@ -532,6 +532,40 @@ def create_server(output_dir: Path | None = None) -> Server:
                     },
                 },
             ),
+            # --- Explanation tools ---
+            Tool(
+                name="why",
+                description=(
+                    "Explain why entropy is elevated and suggest teach actions. "
+                    "Translates detector scores and BBN network inference into "
+                    "domain explanations with executable resolution options.\n\n"
+                    "Three levels:\n"
+                    "- why(target='table.column') — single column focus\n"
+                    "- why(target='table') — aggregated across columns\n"
+                    "- why() — dataset-level summary (top entropy drivers)\n\n"
+                    "Each resolution_option is an executable teach() call. "
+                    "Copy teach_type, target, and params directly to teach()."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "description": (
+                                "What to explain. 'table.column' for column-level, "
+                                "'table' for table-level, omit for dataset-level."
+                            ),
+                        },
+                        "dimension": {
+                            "type": "string",
+                            "description": (
+                                "Filter to a specific entropy layer or dimension. "
+                                "E.g. 'semantic', 'structural.types', 'value.temporal'."
+                            ),
+                        },
+                    },
+                },
+            ),
             # --- Source management ---
             Tool(
                 name="add_source",
@@ -802,6 +836,13 @@ def create_server(output_dir: Path | None = None) -> Server:
                     session,
                     concepts=arguments.get("concepts"),
                     graph_ids=arguments.get("graph_ids"),
+                )
+        elif name == "why":
+            with mgr.session_scope() as session:
+                result = _why(
+                    session,
+                    target=arguments.get("target"),
+                    dimension=arguments.get("dimension"),
                 )
         elif name == "add_source":
             with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
@@ -1198,6 +1239,158 @@ def _search_snippets(
         "matches": formatted_graphs,
         "vocabulary": vocabulary,
     }
+
+
+def _why(
+    session: SASession,
+    target: str | None = None,
+    dimension: str | None = None,
+) -> dict[str, Any]:
+    """Run evidence synthesis — explain entropy and suggest teach actions.
+
+    Args:
+        session: SQLAlchemy session.
+        target: Optional — "table.column", "table", or None (dataset).
+        dimension: Optional dimension filter (e.g. "semantic", "structural.types").
+
+    Returns:
+        Dict with analysis, evidence, resolution_options, and intents.
+    """
+    from sqlalchemy import select
+
+    from dataraum.entropy.views.network_context import build_for_network
+    from dataraum.llm.config import load_llm_config
+    from dataraum.llm.prompts import PromptRenderer
+    from dataraum.llm.providers import create_provider
+    from dataraum.mcp.why import (
+        WhyAgent,
+        build_column_evidence,
+        build_dataset_evidence,
+        build_table_evidence,
+        get_existing_teachings,
+        get_teach_type_schemas,
+    )
+    from dataraum.storage import Table
+
+    source = _get_pipeline_source(session)
+    if not source:
+        return {"error": "No sources found. Use add_source first."}
+
+    # Get typed tables
+    tables = list(
+        session.execute(
+            select(Table).where(
+                Table.source_id == source.source_id,
+                Table.layer == "typed",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    table_ids = [t.table_id for t in tables]
+
+    if not table_ids:
+        return {"error": "No typed tables. Run measure first to process data."}
+
+    # Resolve target
+    target_table: str | None = None
+    target_column: str | None = None
+    if target:
+        if "." in target:
+            target_table, target_column = target.split(".", 1)
+        else:
+            target_table = target
+
+        # Resolve short names
+        resolved = _resolve_table_name(tables, target_table)
+        if resolved:
+            target_table = resolved.table_name
+        elif target_table:
+            return {"error": f"Table not found: {target_table!r}"}
+
+    # Build network context
+    network_ctx = build_for_network(session, table_ids)
+    if not network_ctx.columns:
+        return {
+            "error": "No entropy data. Run measure first.",
+            "hint": "The pipeline needs to complete before why can analyze entropy.",
+        }
+
+    # Assemble evidence based on target level
+    if target_column and target_table:
+        # Column level
+        col_key = f"column:{target_table}.{target_column}"
+        col_result = network_ctx.columns.get(col_key)
+        if not col_result:
+            return {"error": f"No entropy data for {target_table}.{target_column}"}
+        evidence_ctx = build_column_evidence(
+            col_key, col_result, session, dimension_filter=dimension
+        )
+        teachings = get_existing_teachings(
+            session,
+            source.source_id,
+            table_name=target_table,
+            column_name=target_column,
+        )
+    elif target_table:
+        # Table level
+        evidence_ctx = build_table_evidence(
+            target_table, network_ctx, session, dimension_filter=dimension
+        )
+        teachings = get_existing_teachings(session, source.source_id, table_name=target_table)
+    else:
+        # Dataset level
+        evidence_ctx = build_dataset_evidence(network_ctx, dimension_filter=dimension)
+        teachings = get_existing_teachings(session, source.source_id)
+
+    # Check if LLM is available
+    try:
+        config = load_llm_config()
+    except Exception as e:
+        return {"error": f"LLM config not available: {e}"}
+
+    feature_config = config.features.why_analysis
+    if not feature_config or not feature_config.enabled:
+        # Return raw evidence without LLM synthesis
+        return {
+            "target": target or "dataset",
+            "evidence": evidence_ctx,
+            "existing_teachings": teachings,
+            "hint": "why_analysis feature is disabled. Showing raw evidence.",
+        }
+
+    # Initialize LLM
+    try:
+        provider_config = config.providers[config.active_provider]
+        provider = create_provider(config.active_provider, provider_config.model_dump())
+        renderer = PromptRenderer()
+    except Exception as e:
+        return {"error": f"Failed to initialize LLM: {e}"}
+
+    agent = WhyAgent(config, provider, renderer)
+    teach_schemas = get_teach_type_schemas()
+
+    result = agent.analyze(evidence_ctx, teach_schemas, teachings)
+
+    # Format response
+    response: dict[str, Any] = {
+        "target": result.target,
+        "readiness": result.readiness,
+        "analysis": result.analysis,
+    }
+
+    if result.evidence:
+        response["evidence"] = [e.model_dump(exclude_none=True) for e in result.evidence]
+
+    if result.resolution_options:
+        response["resolution_options"] = [
+            o.model_dump(exclude_none=True) for o in result.resolution_options
+        ]
+
+    if result.intents:
+        response["intents"] = result.intents
+
+    return response
 
 
 def _fetch_schema_tables(session: SASession, table_ids: list[str]) -> list[dict[str, Any]]:

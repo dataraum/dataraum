@@ -104,6 +104,10 @@ phases:
     produces: [validation]
     detectors: [cross_table_consistency]
 
+  graph_execution:
+    description: Compute business metrics via graph agent
+    dependencies: [validation]
+
 # Limits
 limits:
   max_columns: 500  # Overall across all tables in a pipeline run

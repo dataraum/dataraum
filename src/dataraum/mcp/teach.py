@@ -1,4 +1,4 @@
-"""Teach type registry — 8 teach types for the MCP teach tool.
+"""Teach type registry — 9 teach types for the MCP teach tool.
 
 Each teach type maps to a handler that builds a FixDocument and applies it
 via apply_and_persist(). Config teaches write YAML (ConfigInterpreter),
@@ -31,6 +31,7 @@ TeachType = Literal[
     "cycle",
     "type_pattern",
     "null_value",
+    "metric",
     "concept_property",
     "relationship",
     "explanation",
@@ -42,6 +43,7 @@ VALID_TEACH_TYPES: set[str] = {
     "cycle",
     "type_pattern",
     "null_value",
+    "metric",
     "concept_property",
     "relationship",
     "explanation",
@@ -122,6 +124,21 @@ class NullValueParams(BaseModel):
     description: str | None = Field(default=None, description="Why this is null in this domain")
 
 
+class MetricParams(BaseModel):
+    """Parameters for teaching a computable metric."""
+
+    graph_id: str = Field(description="Metric identifier (e.g. 'gross_margin')")
+    name: str = Field(description="Human-readable name")
+    description: str = Field(description="What this metric measures")
+    category: str = Field(default="general", description="Metric category for file organization")
+    unit: str = Field(default="ratio", description="Output unit (e.g. 'days', 'ratio', 'percent')")
+    dependencies: dict[str, Any] = Field(
+        description="Named steps: extract (with source.standard_field), constant, formula"
+    )
+    parameters: dict[str, Any] = Field(default_factory=dict, description="Named parameters")
+    interpretation: dict[str, Any] | None = Field(default=None, description="Interpretation ranges")
+
+
 class ConceptPropertyParams(BaseModel):
     """Parameters for patching a SemanticAnnotation field."""
 
@@ -160,6 +177,7 @@ PARAM_MODELS: dict[str, type[BaseModel]] = {
     "cycle": CycleParams,
     "type_pattern": TypePatternParams,
     "null_value": NullValueParams,
+    "metric": MetricParams,
     "concept_property": ConceptPropertyParams,
     "relationship": RelationshipParams,
     "explanation": ExplanationParams,
@@ -175,6 +193,7 @@ _RERUN_PHASES: dict[str, str] = {
     "cycle": "business_cycles",
     "type_pattern": "typing",
     "null_value": "import",
+    "metric": "graph_execution",
 }
 
 # ---------------------------------------------------------------------------
@@ -405,6 +424,53 @@ def _handle_explanation(params: ExplanationParams, target: str, **_kw: Any) -> F
     )
 
 
+def _handle_metric(params: MetricParams, vertical: str, **_kw: Any) -> FixDocument:
+    """Handle metric teach — writes metric YAML via save_metrics_config.
+
+    Uses the same whole-file pattern as validation teach, but writes to
+    metrics/{category}/{graph_id}.yaml instead of validations/.
+    """
+    metric_dict: dict[str, Any] = {
+        "graph_id": params.graph_id,
+        "metadata": {
+            "name": params.name,
+            "description": params.description,
+            "category": params.category,
+            "source": "teach",
+        },
+        "output": {
+            "type": "scalar",
+            "metric_id": params.graph_id,
+            "unit": params.unit,
+        },
+        "dependencies": params.dependencies,
+    }
+    if params.parameters:
+        metric_dict["parameters"] = params.parameters
+    if params.interpretation:
+        metric_dict["interpretation"] = params.interpretation
+
+    return FixDocument(
+        target="config",
+        action="metric",
+        table_name="*",
+        column_name=None,
+        dimension="computation",
+        description=f"Teach metric: {params.name}",
+        payload={
+            "config_path": f"verticals/{vertical}/metrics/{params.category}/{params.graph_id}.yaml",
+            "key_path": [],
+            "operation": "set",
+            "value": {
+                "graph_id": params.graph_id,
+                "graph_type": "metric",
+                "version": "1.0",
+                **{k: v for k, v in metric_dict.items() if k != "graph_id"},
+            },
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Handler registry
 # ---------------------------------------------------------------------------
@@ -415,6 +481,7 @@ _HANDLERS: dict[str, Any] = {
     "cycle": _handle_cycle,
     "type_pattern": _handle_type_pattern,
     "null_value": _handle_null_value,
+    "metric": _handle_metric,
     "concept_property": _handle_concept_property,
     "relationship": _handle_relationship,
     "explanation": _handle_explanation,

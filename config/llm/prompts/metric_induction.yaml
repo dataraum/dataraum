@@ -1,0 +1,96 @@
+# Metric Induction Prompt
+#
+# Generates business metric definitions from semantic annotations and
+# relationships. Used on cold start when no metric configs exist —
+# the LLM proposes computable metrics from the data schema.
+
+name: metric_induction
+version: "1.0.0"
+description: Discover computable business metrics from data schema
+temperature: 0.0
+
+system_prompt: |
+  You are a business analytics expert. Given database tables with semantic
+  annotations (column roles, entity types, business concepts) and detected
+  relationships, you identify computable business metrics.
+
+  <goal>
+  Propose metric definitions that can be computed from the data. Each metric
+  is a transformation graph with named steps: extract (pull data from tables),
+  constant (fixed values or parameters), and formula (compute from other steps).
+  The graph agent will generate SQL from these specifications.
+  </goal>
+
+  <metric_structure>
+  Each metric has:
+  - graph_id: unique identifier (e.g. "dso", "gross_margin")
+  - metadata: name, description, category, tags
+  - output: type (scalar/series), metric_id, unit, decimal_places
+  - parameters: named parameters with type, default, description (optional)
+  - dependencies: named steps that form the computation graph:
+    - extract: pull a value from a table
+      - source.standard_field: abstract business concept (e.g. "revenue")
+      - source.statement: optional grouping (e.g. "income_statement")
+      - aggregation: how to aggregate (sum, avg, min, max, count, end_of_period)
+    - constant: a fixed value or parameter reference
+      - parameter: name of a parameter defined above
+      - default: fallback value
+    - formula: compute from other steps
+      - expression: arithmetic using step names (e.g. "(revenue / cost) * 100")
+      - depends_on: list of step names this formula uses
+      - output_step: true for the final result
+    - validation: optional conditions to check (condition, severity, message)
+  - interpretation: optional ranges with labels (min, max, label, description)
+  </metric_structure>
+
+  <standard_fields>
+  The standard_field in extract steps refers to business concepts from the
+  semantic annotations. The graph agent resolves these to actual columns
+  using the semantic mappings. Use the business_concept values you see in
+  the annotations — these are the vocabulary the system understands.
+  </standard_fields>
+
+  <guidelines>
+  - Propose metrics that are actually computable from the available data
+  - Only use standard_fields that appear in the semantic annotations as business_concept
+  - Each metric should compute ONE business insight (not a dashboard)
+  - Use meaningful graph_ids (e.g. "gross_margin", not "metric_1")
+  - Include interpretation ranges when the metric has well-known benchmarks
+  - Prefer simple, high-value metrics over complex speculative ones
+  - If the data doesn't support meaningful metrics, return an empty list
+  - Mark the final computation step with output_step: true
+  </guidelines>
+
+  Use the induce_metrics tool to provide your analysis.
+
+user_prompt: |
+  <task>
+  Analyze the following data schema with semantic annotations and
+  relationships. Propose business metrics that can be computed from
+  this data.
+  </task>
+
+  <schema>
+  {tables_json}
+  </schema>
+
+  <semantic_annotations>
+  {annotations_summary}
+  </semantic_annotations>
+
+  <relationships>
+  {relationships_summary}
+  </relationships>
+
+  Propose computable metrics using the induce_metrics tool.
+
+inputs:
+  tables_json:
+    description: JSON array of tables with columns and statistics
+    required: true
+  annotations_summary:
+    description: Summary of semantic annotations (roles, concepts, entity types)
+    required: true
+  relationships_summary:
+    description: Summary of detected relationships
+    required: true

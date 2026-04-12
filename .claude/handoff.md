@@ -248,6 +248,28 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
   - `PARAM_MODELS` renamed from `_PARAM_MODELS` in teach.py (was private, now public — used by why for schema extraction)
 - **Status**: pending
 
+## 2026-04-12: DAT-253 — Graph Execution Revival
+
+### dataraum-eval
+- **Changed**: `src/dataraum/pipeline/phases/graph_execution_phase.py` (NEW), `src/dataraum/graphs/induction.py` (NEW), `config/llm/prompts/metric_induction.yaml` (NEW), `config/pipeline.yaml`, `src/dataraum/mcp/teach.py`
+- **Affects**: New `graph_execution` pipeline phase (18th), `teach` tool (new `metric` type, now 9 types), cold-start metric induction
+- **Calibrate**: Key scenarios:
+  1. Pipeline run with finance vertical → graph_execution phase computes applicable metrics, snippets stored
+  2. Cold start (`_adhoc` vertical, no metrics) → metric induction LLM call → metrics generated → executed
+  3. `teach(type="metric", params={graph_id, name, description, dependencies})` → metric YAML written
+  4. `measure(target_phase="graph_execution")` → selective rerun, taught metric computed → snippet stored
+  5. `search_snippets()` → graph-sourced snippets discoverable
+  6. `look(target="table.column")` → relevant snippets from graph execution shown when business_concept matches
+- **Notes**:
+  - Phase runs after `validation` (dependency in pipeline.yaml)
+  - Metrics with unresolvable field mappings (missing `standard_field` → column mapping) are skipped, not failed
+  - `MetricInductionAgent` fires 1 extra LLM call on cold start (balanced tier)
+  - `schema_mapping_id` for graph snippets: `f"{source_id}:semantic"`
+  - `PARAM_MODELS` in teach.py now has 9 entries (was 8)
+  - `_RERUN_PHASES["metric"] = "graph_execution"`
+  - Graph agent (`agent.py`), loader, field_mapping, snippet_library unchanged
+- **Status**: pending
+
 <!--
 ## YYYY-MM-DD: brief description
 

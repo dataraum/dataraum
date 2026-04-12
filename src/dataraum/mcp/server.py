@@ -490,7 +490,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                 description=(
                     "Teach the system domain knowledge. This is the sole write "
                     "tool — use it to extend the world model with concepts, "
-                    "validations, cycles, type patterns, null values, semantic "
+                    "validations, cycles, type patterns, null values, metrics, semantic "
                     "properties, relationships, and explanations.\n\n"
                     "Config teaches (concept, validation, cycle, type_pattern, "
                     "null_value) write to YAML config and need a pipeline rerun "
@@ -511,6 +511,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                                 "cycle",
                                 "type_pattern",
                                 "null_value",
+                                "metric",
                                 "concept_property",
                                 "relationship",
                                 "explanation",

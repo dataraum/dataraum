@@ -393,7 +393,16 @@ def _build_column_quality(
         # Support qualified "table.column" in column_mappings
         if "." in mapping:
             qual_table, qual_col = mapping.split(".", 1)
-            matches = [(qual_table, qual_col)] if col_id_map.get((qual_table, qual_col)) else []
+            # Try exact match first, then suffix match for source-prefixed names
+            if col_id_map.get((qual_table, qual_col)):
+                matches = [(qual_table, qual_col)]
+            else:
+                suffix = f"__{qual_table}"
+                matches = [
+                    (tname, qual_col)
+                    for tname in table_names.values()
+                    if tname.endswith(suffix) and col_id_map.get((tname, qual_col)) is not None
+                ]
         else:
             # Unqualified: collect all tables that have this column
             matches = [

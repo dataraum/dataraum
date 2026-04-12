@@ -200,7 +200,6 @@ def _resolve_semantic_annotation(
     from sqlalchemy import select
 
     from dataraum.analysis.semantic.db_models import SemanticAnnotation
-    from dataraum.storage import Column, Table
 
     if column_name is None:
         raise ValueError("SemanticAnnotation requires a column_name")

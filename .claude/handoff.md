@@ -28,7 +28,7 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
   - `measure(target=...)` now returns error for nonexistent tables/columns (previously returned empty results silently).
   - Readiness filter fixed: keys have `"column:"` prefix, filter now accounts for it. Readiness populates correctly when target is specified.
   - Scores are now recomputed from filtered points when target is specified (previously returned dataset-wide averages regardless of target).
-- **Status**: pending
+- **Status**: verified (2026-04-12, /accept handoff). Short name resolution, score recomputation, readiness filter all working via MCP.
 
 ### dataraum-eval (calibration concerns)
 - **Observation**: outlier_rate detector scores 1.0 on 5 columns (invoices.amount, payments.amount, journal_lines.credit, fx_rates.rate, trial_balance.debit_balance). Score 1.0 means maximum entropy — likely a detector threshold issue, not actual data quality.
@@ -59,7 +59,7 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 - **Notes**:
   - Nested JSON objects/arrays serialized via `to_json()` → VARCHAR (not `CAST`). Values stored as JSON strings like `{"city":"Berlin"}`.
   - Path escaping fixed across all loaders (CSV, Parquet, JSON, discovery) — single quotes in filenames no longer break SQL.
-- **Status**: pending (needs JSON testdata fixtures from DAT-219 for format matrix testing)
+- **Status**: verified (2026-04-12, /accept handoff). Format matrix tests (5/5) pass: CSV, JSON, JSONL, Parquet, mixed directory.
 
 ### dataraum-testdata (hints)
 - **Suggestion**: Add JSON and JSONL fixtures alongside existing CSV testdata. Same data, different format — enables format matrix testing.
@@ -84,7 +84,7 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
   - `begin_session` now checks `ANTHROPIC_API_KEY` (or configured provider's env var) and returns actionable error if missing.
   - `add_source` during active session blocked with "sources are sealed" error (not a soft hint — intentional design decision).
   - Root dir configurable via `DATARAUM_HOME` env var. `DATARAUM_OUTPUT_DIR` accepted as legacy fallback.
-- **Status**: partially_verified (2026-04-10, /accept handoff). begin_session + end_session work. Resume and source sealing not tested.
+- **Status**: verified (2026-04-12, /accept handoff). Session lifecycle tests (14/14) pass: begin/end, resume, source sealing, DB-derived state, outcomes.
 
 ## 2026-03-28: Package D — Export + query UX (DAT-213, DAT-224)
 
@@ -106,7 +106,7 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
   - Export path sanitized: regex strips special chars, resolve() containment check.
   - `run_sql` tool description updated with snippet/step/column-mapping guidance (DAT-224).
   - `export_query_result()`, `export_data()`, `_export_tool_result()` all deleted. Net -300 lines.
-- **Status**: partially_verified (2026-04-10, /accept handoff). Truncation fields and snippet reuse verified. Export not tested.
+- **Status**: partially_verified (2026-04-12, /accept handoff). Truncation fields, snippet reuse, snippet_summary verified via MCP. Export (csv/parquet) still not tested.
 
 ## 2026-03-28: Import path unification + source hardening
 
@@ -133,7 +133,7 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
   - `look` boundary clarified: detector evidence = context/observations, entropy scores = measure only
   - `run_sql` repair is lazy-init — no LLM cost unless SQL actually fails
   - Table layer validation (raw_ table blocking) was deferred — not implemented
-- **Status**: partially_verified (2026-04-10, /accept handoff). Snippet saving works. search_snippets and look column-level enrichments not tested.
+- **Status**: verified (2026-04-12, /accept handoff). search_snippets vocabulary + concept search working. look detector_evidence + relevant_snippets working. SQL repair working (test_invalid_sql needs update). Snippet saving from run_sql working.
 
 ## 2026-04-08: DAT-250 — Cold Start Vertical Bootstrap + Induction Agents
 
@@ -202,7 +202,31 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
   - `type_override` removed — type overrides lead to quarantine, pattern learning (type_pattern) is the right approach
   - `forced_types` dead code removed from typing pipeline
   - Known limitation: relationship resolver uses `scalar_one_or_none()` — fails on columns with multiple relationships
+- **Status**: verified (2026-04-12, /accept handoff). concept_property teach applies immediately. Target resolution correct. teach -> look -> relevant_snippets roundtrip verified. column_quality from column_mappings non-functional (always null).
+
+## 2026-04-12: Bugs found by /accept — config teach re-run path broken
+
+### dataraum-context (blocking for _adhoc UX)
+- **Bug 1: `_run_pipeline(target_phase="import")` fails in multi-source mode**
+  - `source_path=None` means multi-source mode, but the import phase can't find registered sources during a selective re-run. Import exits with `status: failed, duration: 0.00`.
+  - **Repro**: `_run_pipeline(output_dir, target_phase="import", vertical="finance")`
+  - **Affects**: all config teaches that hint re-running import (null_value, type_pattern)
+  - **Test**: `calibration/tools/test_adhoc_teach_loop.py::TestConfigTeachWithRerun::test_null_value_teach_reruns_import` (xfail)
+
+- **Bug 2: cascade cleanup deletes all validation results before re-run**
+  - When `target_phase="validation"` triggers a selective re-run, the cascade cleanup deletes ALL existing validation results (9 → 0). Then import fails (Bug 1), so validation never actually re-runs. Net result: teach a validation rule, lose all previous validation results.
+  - **Repro**: `_run_pipeline(output_dir, target_phase="validation", vertical="finance")`
+  - **Affects**: validation teach type — the teach → measure loop for adding custom validation rules
+  - **Test**: `calibration/tools/test_adhoc_teach_loop.py::TestConfigTeachWithRerun::test_validation_teach_reruns_validation` (xfail)
+
+- **Impact**: The entire config teach → re-measure cycle is broken. `teach` returns a `measurement_hint` telling the agent to call `measure(target_phase=...)`, but that re-run fails. Metadata teaches (concept_property, relationship, explanation) work because they patch the DB directly. Config teaches (concept, validation, cycle, type_pattern, null_value) are write-only — they write YAML but the pipeline can't re-read it.
 - **Status**: pending
+
+### dataraum-eval (also fixed in this session)
+- **Fixed**: `calibration/runner.py` now passes `vertical="finance"` to RunConfig (was missing, defaulted to `_adhoc`)
+- **Fixed**: `test_error_ux.py::test_invalid_sql` updated for LLM SQL repair (DAT-254)
+- **Fixed**: `sql_executor.py::_build_column_quality` — short table names in column_mappings now resolve via suffix matching (was returning null for all mapped columns)
+- **New**: `calibration/tools/test_adhoc_teach_loop.py` — 7 tests for teach → measure loop (5 pass, 2 xfail documenting bugs above)
 
 <!--
 ## YYYY-MM-DD: brief description

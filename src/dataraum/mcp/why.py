@@ -372,7 +372,8 @@ def build_dataset_evidence(
             "overall_readiness": agg.overall_readiness,
         }
 
-    return {
+    total_at_risk = len(at_risk)
+    result: dict[str, Any] = {
         "target": "dataset",
         "overall_readiness": network_ctx.overall_readiness,
         "total_columns": network_ctx.total_columns,
@@ -384,6 +385,10 @@ def build_dataset_evidence(
         "top_fix": top_fix,
         "top_drivers": top_drivers,
     }
+    if total_at_risk > 15:
+        result["top_drivers_truncated"] = True
+        result["total_at_risk_columns"] = total_at_risk
+    return result
 
 
 def get_existing_teachings(

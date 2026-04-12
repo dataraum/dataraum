@@ -53,6 +53,15 @@ system_prompt: |
   {teach_schemas_json}
   </teach_types>
 
+  <target_format>
+  The `target` field in resolution_options MUST be a fully qualified
+  column reference: "table_name.column_name" (e.g. "zone1__invoices.amount").
+  Do NOT use dimension names, detector names, or abstract concepts as targets.
+  For table-scoped teaches (like relationship), use the table name only.
+  For teaches that don't need a target (like concept, validation, cycle),
+  omit the target field.
+  </target_format>
+
   <response_guidelines>
   - Ground every claim in specific evidence. Reference detector names,
     dimension paths, and scores.

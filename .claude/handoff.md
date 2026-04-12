@@ -270,6 +270,23 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
   - Graph agent (`agent.py`), loader, field_mapping, snippet_library unchanged
 - **Status**: pending
 
+## 2026-04-12: DAT-260 — Config teach re-run cascade fix
+
+### dataraum-eval
+- **Changed**: `src/dataraum/pipeline/setup.py` (phase filtering + cascade cleanup), `src/dataraum/mcp/teach.py` (measurement_hint)
+- **Affects**: `measure(target_phase=...)` behavior after any config teach
+- **Calibrate**: The xfail tests in `test_adhoc_teach_loop.py` should now pass. Key flow:
+  1. `teach(type="concept", params={...})` → writes ontology YAML
+  2. `measure(target_phase="semantic")` → re-runs semantic + all downstream (enriched_views, validation, business_cycles, graph_execution, etc.)
+  3. Upstream deps (import, typing, statistics) skip via `should_skip` — no re-import
+  4. `measure()` after re-run → scores reflect the taught concept
+- **Notes**:
+  - `cleanup_phase_cascade` now used instead of `cleanup_phase` — cleans target + all downstream
+  - Phase set includes `deps | {target_phase} | downstream` (was `deps | {target_phase}`)
+  - `measurement_hint` now says "downstream phases" and warns about expensive re-runs for type_pattern/null_value
+  - Metadata teaches (concept_property, relationship, explanation) unaffected — they were already working
+- **Status**: pending
+
 <!--
 ## YYYY-MM-DD: brief description
 

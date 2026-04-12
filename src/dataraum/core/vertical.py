@@ -23,7 +23,6 @@ class VerticalConfig:
         vc.cycles_path       # -> config/verticals/finance/cycles.yaml
         vc.validations_dir   # -> config/verticals/finance/validations/
         vc.metrics_dir       # -> config/verticals/finance/metrics/
-        vc.filters_dir       # -> config/verticals/finance/filters/
         vc.ontology_path     # -> config/verticals/finance/ontology.yaml
     """
 
@@ -66,11 +65,6 @@ class VerticalConfig:
     def validations_dir(self) -> Path:
         """Path to the validations directory."""
         return self.base_dir / "validations"
-
-    @property
-    def filters_dir(self) -> Path:
-        """Path to the filters directory."""
-        return self.base_dir / "filters"
 
     @property
     def metrics_dir(self) -> Path:

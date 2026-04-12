@@ -1,78 +1,70 @@
-graph_id: "gross_margin"
-graph_type: "metric"
-version: "1.0"
-
+graph_id: gross_margin
+graph_type: metric
+version: '1.0'
 metadata:
-  name: "Gross Margin"
-  description: "Gross profit as a percentage of revenue"
-  category: "profitability"
-  source: "system"
-  tags: ["profitability", "margin", "income-statement"]
-
+  name: Gross Margin
+  description: Gross profit as a percentage of revenue
+  category: profitability
+  source: system
+  tags:
+  - profitability
+  - margin
+  - income-statement
 output:
-  type: "scalar"
-  metric_id: "gross_margin"
-  unit: "percentage"
+  type: scalar
+  metric_id: gross_margin
+  unit: percentage
   decimal_places: 1
-
-requires_filters:
-  - graph_id: "technical_quality"
-    required: true
-    required_classification: "clean"
-
 dependencies:
-  # Level 1: Extract base data
   revenue:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "revenue"
-      statement: "income_statement"
-    aggregation: "sum"
+      standard_field: revenue
+      statement: income_statement
+    aggregation: sum
     validation:
-      - condition: "value > 0"
-        severity: "error"
-        message: "Revenue must be positive for margin calculation"
-
+    - condition: value > 0
+      severity: error
+      message: Revenue must be positive for margin calculation
   cost_of_goods_sold:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "cost_of_goods_sold"
-      statement: "income_statement"
-    aggregation: "sum"
-
-  # Level 2: Calculate margin
+      standard_field: cost_of_goods_sold
+      statement: income_statement
+    aggregation: sum
   gross_margin:
     level: 2
-    type: "formula"
-    expression: "(revenue - cost_of_goods_sold) / revenue * 100"
-    depends_on: ["revenue", "cost_of_goods_sold"]
+    type: formula
+    expression: (revenue - cost_of_goods_sold) / revenue * 100
+    depends_on:
+    - revenue
+    - cost_of_goods_sold
     output_step: true
-
 interpretation:
   ranges:
-    - min: -999
-      max: 0
-      label: "NEGATIVE"
-      description: "Selling below cost"
-    - min: 0
-      max: 20
-      label: "POOR"
-      description: "Very thin margins - commodity business"
-    - min: 20
-      max: 40
-      label: "FAIR"
-      description: "Moderate margins"
-    - min: 40
-      max: 60
-      label: "GOOD"
-      description: "Strong margins - pricing power"
-    - min: 60
-      max: 80
-      label: "EXCELLENT"
-      description: "Very high margins - strong competitive position"
-    - min: 80
-      max: 100
-      label: "EXCEPTIONAL"
-      description: "Exceptional margins - software or luxury goods"
+  - min: -999
+    max: 0
+    label: NEGATIVE
+    description: Selling below cost
+  - min: 0
+    max: 20
+    label: POOR
+    description: Very thin margins - commodity business
+  - min: 20
+    max: 40
+    label: FAIR
+    description: Moderate margins
+  - min: 40
+    max: 60
+    label: GOOD
+    description: Strong margins - pricing power
+  - min: 60
+    max: 80
+    label: EXCELLENT
+    description: Very high margins - strong competitive position
+  - min: 80
+    max: 100
+    label: EXCEPTIONAL
+    description: Exceptional margins - software or luxury goods

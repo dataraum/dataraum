@@ -1,82 +1,74 @@
-graph_id: "current_ratio"
-graph_type: "metric"
-version: "1.0"
-
+graph_id: current_ratio
+graph_type: metric
+version: '1.0'
 metadata:
-  name: "Current Ratio"
-  description: "Measure of short-term liquidity - ability to pay current liabilities"
-  category: "liquidity"
-  source: "system"
-  tags: ["liquidity", "solvency", "balance-sheet"]
-
+  name: Current Ratio
+  description: Measure of short-term liquidity - ability to pay current liabilities
+  category: liquidity
+  source: system
+  tags:
+  - liquidity
+  - solvency
+  - balance-sheet
 output:
-  type: "scalar"
-  metric_id: "current_ratio"
-  unit: "ratio"
+  type: scalar
+  metric_id: current_ratio
+  unit: ratio
   decimal_places: 2
-
-requires_filters:
-  - graph_id: "technical_quality"
-    required: true
-    required_classification: "clean"
-
 dependencies:
-  # Level 1: Extract base data
   current_assets:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "current_assets"
-      statement: "balance_sheet"
-    aggregation: "end_of_period"
+      standard_field: current_assets
+      statement: balance_sheet
+    aggregation: end_of_period
     validation:
-      - condition: "value >= 0"
-        severity: "error"
-        message: "Current assets cannot be negative"
-
+    - condition: value >= 0
+      severity: error
+      message: Current assets cannot be negative
   current_liabilities:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "current_liabilities"
-      statement: "balance_sheet"
-    aggregation: "end_of_period"
+      standard_field: current_liabilities
+      statement: balance_sheet
+    aggregation: end_of_period
     validation:
-      - condition: "value > 0"
-        severity: "error"
-        message: "Current liabilities must be positive"
-
-  # Level 2: Calculate ratio
+    - condition: value > 0
+      severity: error
+      message: Current liabilities must be positive
   current_ratio:
     level: 2
-    type: "formula"
-    expression: "current_assets / current_liabilities"
-    depends_on: ["current_assets", "current_liabilities"]
+    type: formula
+    expression: current_assets / current_liabilities
+    depends_on:
+    - current_assets
+    - current_liabilities
     output_step: true
     validation:
-      - condition: "value >= 0"
-        severity: "error"
-        message: "Current ratio cannot be negative"
-
+    - condition: value >= 0
+      severity: error
+      message: Current ratio cannot be negative
 interpretation:
   ranges:
-    - min: 0
-      max: 0.99
-      label: "CRITICAL"
-      description: "Insufficient liquidity - may not meet obligations"
-    - min: 1.0
-      max: 1.49
-      label: "CONCERNING"
-      description: "Tight liquidity - monitor closely"
-    - min: 1.5
-      max: 2.0
-      label: "HEALTHY"
-      description: "Good liquidity position"
-    - min: 2.01
-      max: 3.0
-      label: "STRONG"
-      description: "Very strong liquidity"
-    - min: 3.01
-      max: 999
-      label: "EXCESS"
-      description: "May have idle assets - consider investing"
+  - min: 0
+    max: 0.99
+    label: CRITICAL
+    description: Insufficient liquidity - may not meet obligations
+  - min: 1.0
+    max: 1.49
+    label: CONCERNING
+    description: Tight liquidity - monitor closely
+  - min: 1.5
+    max: 2.0
+    label: HEALTHY
+    description: Good liquidity position
+  - min: 2.01
+    max: 3.0
+    label: STRONG
+    description: Very strong liquidity
+  - min: 3.01
+    max: 999
+    label: EXCESS
+    description: May have idle assets - consider investing

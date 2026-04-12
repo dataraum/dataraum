@@ -367,7 +367,7 @@ def _ensure_adhoc_vertical(output_dir: Path) -> None:
     (which refines them later). Created idempotently on every pipeline setup.
 
     Structure mirrors config/verticals/{name}/:
-        ontology.yaml, cycles.yaml, validations/, metrics/, filters/
+        ontology.yaml, cycles.yaml, validations/, metrics/
 
     Args:
         output_dir: Pipeline output directory.
@@ -394,9 +394,8 @@ def _ensure_adhoc_vertical(output_dir: Path) -> None:
     with open(adhoc_dir / "cycles.yaml", "w") as f:
         yaml.dump({"cycle_types": {}}, f, default_flow_style=False, sort_keys=False)
 
-    # Empty directories for validations, metrics, filters
+    # Empty directories for validations, metrics
     (adhoc_dir / "validations").mkdir()
     (adhoc_dir / "metrics").mkdir()
-    (adhoc_dir / "filters").mkdir()
 
     logger.debug("adhoc_vertical_created", path=str(adhoc_dir))

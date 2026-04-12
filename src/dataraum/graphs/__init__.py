@@ -64,7 +64,6 @@ from .models import (
     ClassificationSummary,
     ColumnMapping,
     DatasetSchemaMapping,
-    FilterRequirement,
     GraphExecution,
     GraphMetadata,
     GraphSource,
@@ -124,7 +123,6 @@ __all__ = [
     "StepValidation",
     "ParameterDef",
     "OutputDef",
-    "FilterRequirement",
     "Interpretation",
     "InterpretationRange",
     # Execution models

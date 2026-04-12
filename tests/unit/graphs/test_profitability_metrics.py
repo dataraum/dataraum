@@ -63,14 +63,6 @@ class TestProfitabilityMetricsLoad:
             f"{graph_id}: expected 1 output_step, got {len(output_steps)}"
         )
 
-    @pytest.mark.parametrize("graph_id", PROFITABILITY_GRAPH_IDS)
-    def test_requires_technical_quality_filter(self, loader: GraphLoader, graph_id: str) -> None:
-        """Each graph requires the technical_quality filter."""
-        graph = loader.graphs.get(graph_id)
-        assert graph is not None
-        filter_ids = [f.graph_id for f in graph.requires_filters]
-        assert "technical_quality" in filter_ids
-
 
 class TestProfitabilityOutputUnits:
     """Currency vs percentage output units are correct."""

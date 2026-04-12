@@ -1,18 +1,12 @@
-"""Unified transformation graph loader.
+"""Transformation graph loader.
 
-Loads transformation graphs (filters and metrics) from YAML files.
-Supports both system-defined and user-defined graphs.
+Loads metric graphs from YAML files in vertical config directories.
 
 Usage:
     from dataraum.graphs.loader import GraphLoader
 
-    loader = GraphLoader()
+    loader = GraphLoader(vertical="finance")
     loader.load_all()
-
-    # Get all filter graphs
-    filters = loader.get_filter_graphs()
-
-    # Get all metric graphs
     metrics = loader.get_metric_graphs()
 """
 
@@ -26,7 +20,6 @@ import yaml
 from .models import (
     AppliesTo,
     Classification,
-    FilterRequirement,
     GraphMetadata,
     GraphSource,
     GraphStep,
@@ -84,16 +77,6 @@ class GraphLoader:
         self.graphs: dict[str, TransformationGraph] = {}
         self._load_errors: list[GraphLoadError] = []
 
-        # Auto-detect system filters only in vertical mode
-        self._system_filters_dir: Path | None = None
-        if vertical is not None:
-            from dataraum.core.config import get_config_dir
-
-            try:
-                self._system_filters_dir = get_config_dir("filters")
-            except FileNotFoundError:
-                pass
-
     def load_all(self) -> dict[str, TransformationGraph]:
         """Load all transformation graphs from the directory.
 
@@ -105,15 +88,6 @@ class GraphLoader:
 
         if not self.graphs_dir.exists():
             return {}
-
-        # System-level filters first (vertical filters can override by graph_id)
-        if self._system_filters_dir and self._system_filters_dir.exists():
-            self._load_directory(self._system_filters_dir, GraphType.FILTER)
-
-        # Vertical-specific filters
-        filters_dir = self.graphs_dir / "filters"
-        if filters_dir.exists():
-            self._load_directory(filters_dir, GraphType.FILTER)
 
         # Load metrics
         metrics_dir = self.graphs_dir / "metrics"
@@ -197,9 +171,6 @@ class GraphLoader:
         # Parse parameters
         parameters = self._parse_parameters(data.get("parameters", {}))
 
-        # Parse filter requirements (for metrics)
-        requires_filters = self._parse_filter_requirements(data.get("requires_filters", []))
-
         # Parse steps/dependencies
         steps = self._parse_steps(path, data.get("dependencies", {}))
 
@@ -214,7 +185,6 @@ class GraphLoader:
             output=output,
             steps=steps,
             parameters=parameters,
-            requires_filters=requires_filters,
             interpretation=interpretation,
         )
 
@@ -313,27 +283,6 @@ class GraphLoader:
                 )
         return parameters
 
-    def _parse_filter_requirements(self, data: list[dict[str, Any]]) -> list[FilterRequirement]:
-        """Parse filter requirements for metric graphs."""
-        requirements = []
-        for req_data in data:
-            graph_id = req_data.get("graph_id")
-            if graph_id:
-                classification_str = req_data.get("required_classification", "clean")
-                try:
-                    classification = Classification(classification_str)
-                except ValueError:
-                    classification = Classification.CLEAN
-
-                requirements.append(
-                    FilterRequirement(
-                        graph_id=graph_id,
-                        required=req_data.get("required", True),
-                        required_classification=classification,
-                    )
-                )
-        return requirements
-
     def _parse_steps(self, path: Path, data: dict[str, Any]) -> dict[str, GraphStep]:
         """Parse graph steps from dependencies section."""
         steps = {}
@@ -429,10 +378,6 @@ class GraphLoader:
 
     # Accessor methods
 
-    def get_filter_graphs(self) -> list[TransformationGraph]:
-        """Get all filter graphs."""
-        return [g for g in self.graphs.values() if g.graph_type == GraphType.FILTER]
-
     def get_metric_graphs(self) -> list[TransformationGraph]:
         """Get all metric graphs."""
         return [g for g in self.graphs.values() if g.graph_type == GraphType.METRIC]
@@ -453,120 +398,6 @@ class GraphLoader:
                 if step.source and step.source.standard_field:
                     fields.add(step.source.standard_field)
         return fields
-
-    def get_applicable_filters(
-        self,
-        column_name: str,
-        semantic_role: str | None = None,
-        data_type: str | None = None,
-        has_profile: bool = False,
-    ) -> list[TransformationGraph]:
-        """Get filter graphs that apply to a column based on its metadata.
-
-        Matches filters based on:
-        - semantic_role: key, timestamp, measure, foreign_key
-        - data_type: DOUBLE, DATE, VARCHAR, etc.
-        - column_pattern: regex pattern matching column name
-        - has_profile: whether statistical profile exists
-
-        Args:
-            column_name: The column name to match against patterns
-            semantic_role: The semantic role of the column (from semantic analysis)
-            data_type: The resolved data type of the column
-            has_profile: Whether the column has a statistical profile
-
-        Returns:
-            List of filter graphs that apply to this column
-        """
-        import re
-
-        applicable = []
-
-        for graph in self.get_filter_graphs():
-            applies_to = graph.metadata.applies_to
-            if not applies_to:
-                continue
-
-            # Check semantic role match
-            if applies_to.semantic_role:
-                if semantic_role != applies_to.semantic_role:
-                    continue
-
-            # Check data type match
-            if applies_to.data_type:
-                if data_type != applies_to.data_type:
-                    continue
-
-            # Check column pattern match
-            if applies_to.column_pattern:
-                try:
-                    if not re.match(applies_to.column_pattern, column_name, re.IGNORECASE):
-                        continue
-                except re.error:
-                    # Invalid regex, skip this filter
-                    continue
-
-            # Check has_profile requirement
-            if applies_to.has_profile is not None:
-                if has_profile != applies_to.has_profile:
-                    continue
-
-            # Skip column_pairs for now - these require cross-column matching
-            if applies_to.column_pairs:
-                continue
-
-            applicable.append(graph)
-
-        return applicable
-
-    def get_filters_for_dataset(
-        self,
-        columns: list[dict[str, Any]],
-    ) -> dict[str, list[TransformationGraph]]:
-        """Get all applicable filters for each column in a dataset.
-
-        This is the main integration point for auto-applying quality rules
-        during analysis phases.
-
-        Args:
-            columns: List of column metadata dicts, each with:
-                - column_name: str (required)
-                - semantic_role: str | None (from semantic analysis)
-                - data_type: str | None (resolved type)
-                - has_profile: bool (whether statistical profile exists)
-
-        Returns:
-            Dict mapping column_name to list of applicable filter graphs
-
-        Example:
-            >>> loader = GraphLoader()
-            >>> loader.load_all()
-            >>> columns = [
-            ...     {"column_name": "id", "semantic_role": "key", "data_type": "BIGINT"},
-            ...     {"column_name": "amount", "semantic_role": "measure", "data_type": "DOUBLE"},
-            ...     {"column_name": "email", "data_type": "VARCHAR"},
-            ... ]
-            >>> filters = loader.get_filters_for_dataset(columns)
-            >>> filters["id"]  # Returns key column filters
-            >>> filters["amount"]  # Returns measure + double filters
-            >>> filters["email"]  # Returns email pattern filter
-        """
-        result: dict[str, list[TransformationGraph]] = {}
-
-        for col in columns:
-            column_name = col.get("column_name", "")
-            if not column_name:
-                continue
-
-            filters = self.get_applicable_filters(
-                column_name=column_name,
-                semantic_role=col.get("semantic_role"),
-                data_type=col.get("data_type"),
-                has_profile=col.get("has_profile", False),
-            )
-            result[column_name] = filters
-
-        return result
 
     def validate_standard_fields(self, vertical: str) -> list[str]:
         """Warn about standard_field values not found in ontology.
@@ -592,37 +423,3 @@ class GraphLoader:
         for field_name in sorted(unknown):
             warnings.append(f"standard_field '{field_name}' not found in {vertical} ontology")
         return warnings
-
-    def get_quality_filter_summary(
-        self,
-        columns: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Get a summary of quality filters applicable to a dataset.
-
-        Useful for displaying which quality checks will be applied.
-
-        Args:
-            columns: List of column metadata dicts
-
-        Returns:
-            Summary dict with:
-                - total_filters: Total unique filters that apply
-                - filters_by_column: Count of filters per column
-                - filter_coverage: Columns with filters / total columns
-                - filter_ids: List of all unique filter graph IDs
-        """
-        filters_by_column = self.get_filters_for_dataset(columns)
-
-        all_filter_ids: set[str] = set()
-        for col_filters in filters_by_column.values():
-            for f in col_filters:
-                all_filter_ids.add(f.graph_id)
-
-        columns_with_filters = sum(1 for f in filters_by_column.values() if f)
-
-        return {
-            "total_filters": len(all_filter_ids),
-            "filters_by_column": {col: len(filters) for col, filters in filters_by_column.items()},
-            "filter_coverage": columns_with_filters / len(columns) if columns else 0,
-            "filter_ids": sorted(all_filter_ids),
-        }

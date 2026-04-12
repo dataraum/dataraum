@@ -1,126 +1,122 @@
-graph_id: "cash_conversion_cycle"
-graph_type: "metric"
-version: "1.0"
-
+graph_id: cash_conversion_cycle
+graph_type: metric
+version: '1.0'
 metadata:
-  name: "Cash Conversion Cycle"
-  description: "Days between paying suppliers and collecting from customers"
-  category: "working_capital"
-  source: "system"
-  tags: ["working-capital", "cash-flow", "efficiency"]
-
+  name: Cash Conversion Cycle
+  description: Days between paying suppliers and collecting from customers
+  category: working_capital
+  source: system
+  tags:
+  - working-capital
+  - cash-flow
+  - efficiency
 output:
-  type: "scalar"
-  metric_id: "ccc"
-  unit: "days"
+  type: scalar
+  metric_id: ccc
+  unit: days
   decimal_places: 1
-
-requires_filters:
-  - graph_id: "technical_quality"
-    required: true
-    required_classification: "clean"
-
 parameters:
   days_in_period:
-    type: "integer"
+    type: integer
     default: 30
-    options: [30, 90, 365]
-    description: "Analysis period length"
-
+    options:
+    - 30
+    - 90
+    - 365
+    description: Analysis period length
 dependencies:
-  # Level 1: Extract base data
   accounts_receivable:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "accounts_receivable"
-      statement: "balance_sheet"
-    aggregation: "end_of_period"
-
+      standard_field: accounts_receivable
+      statement: balance_sheet
+    aggregation: end_of_period
   revenue:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "revenue"
-      statement: "income_statement"
-    aggregation: "sum"
-
+      standard_field: revenue
+      statement: income_statement
+    aggregation: sum
   inventory:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "inventory"
-      statement: "balance_sheet"
-    aggregation: "end_of_period"
-
+      standard_field: inventory
+      statement: balance_sheet
+    aggregation: end_of_period
   cost_of_goods_sold:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "cost_of_goods_sold"
-      statement: "income_statement"
-    aggregation: "sum"
-
+      standard_field: cost_of_goods_sold
+      statement: income_statement
+    aggregation: sum
   accounts_payable:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "accounts_payable"
-      statement: "balance_sheet"
-    aggregation: "end_of_period"
-
+      standard_field: accounts_payable
+      statement: balance_sheet
+    aggregation: end_of_period
   days_in_period:
     level: 1
-    type: "constant"
-    parameter: "days_in_period"
+    type: constant
+    parameter: days_in_period
     default: 30
-
-  # Level 2: Calculate component metrics
   dso:
     level: 2
-    type: "formula"
-    expression: "(accounts_receivable / revenue) * days_in_period"
-    depends_on: ["accounts_receivable", "revenue", "days_in_period"]
-
+    type: formula
+    expression: (accounts_receivable / revenue) * days_in_period
+    depends_on:
+    - accounts_receivable
+    - revenue
+    - days_in_period
   dio:
     level: 2
-    type: "formula"
-    expression: "(inventory / cost_of_goods_sold) * days_in_period"
-    depends_on: ["inventory", "cost_of_goods_sold", "days_in_period"]
-
+    type: formula
+    expression: (inventory / cost_of_goods_sold) * days_in_period
+    depends_on:
+    - inventory
+    - cost_of_goods_sold
+    - days_in_period
   dpo:
     level: 2
-    type: "formula"
-    expression: "(accounts_payable / cost_of_goods_sold) * days_in_period"
-    depends_on: ["accounts_payable", "cost_of_goods_sold", "days_in_period"]
-
-  # Level 3: Calculate CCC
+    type: formula
+    expression: (accounts_payable / cost_of_goods_sold) * days_in_period
+    depends_on:
+    - accounts_payable
+    - cost_of_goods_sold
+    - days_in_period
   cash_conversion_cycle:
     level: 3
-    type: "formula"
-    expression: "dso + dio - dpo"
-    depends_on: ["dso", "dio", "dpo"]
+    type: formula
+    expression: dso + dio - dpo
+    depends_on:
+    - dso
+    - dio
+    - dpo
     output_step: true
-
 interpretation:
   ranges:
-    - min: -999
-      max: 0
-      label: "NEGATIVE"
-      description: "Excellent - collecting before paying suppliers"
-    - min: 1
-      max: 30
-      label: "EFFICIENT"
-      description: "Strong working capital management"
-    - min: 31
-      max: 60
-      label: "MODERATE"
-      description: "Average cash conversion efficiency"
-    - min: 61
-      max: 90
-      label: "EXTENDED"
-      description: "Cash tied up in operations"
-    - min: 91
-      max: 999
-      label: "CONCERNING"
-      description: "Significant cash tied up - review working capital"
+  - min: -999
+    max: 0
+    label: NEGATIVE
+    description: Excellent - collecting before paying suppliers
+  - min: 1
+    max: 30
+    label: EFFICIENT
+    description: Strong working capital management
+  - min: 31
+    max: 60
+    label: MODERATE
+    description: Average cash conversion efficiency
+  - min: 61
+    max: 90
+    label: EXTENDED
+    description: Cash tied up in operations
+  - min: 91
+    max: 999
+    label: CONCERNING
+    description: Significant cash tied up - review working capital

@@ -223,15 +223,6 @@ class Interpretation:
 
 
 @dataclass
-class FilterRequirement:
-    """A filter graph required by a metric graph."""
-
-    graph_id: str
-    required: bool = True
-    required_classification: Classification = Classification.CLEAN
-
-
-@dataclass
 class TransformationGraph:
     """A unified transformation graph (filter or metric)."""
 
@@ -245,7 +236,6 @@ class TransformationGraph:
 
     # Optional
     parameters: list[ParameterDef] = field(default_factory=list)
-    requires_filters: list[FilterRequirement] = field(default_factory=list)
     interpretation: Interpretation | None = None
 
     # Scope for metrics (global vs per-slice)

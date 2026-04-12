@@ -1,70 +1,62 @@
-graph_id: "gross_profit"
-graph_type: "metric"
-version: "1.0"
-
+graph_id: gross_profit
+graph_type: metric
+version: '1.0'
 metadata:
-  name: "Gross Profit"
-  description: "Revenue minus cost of goods sold"
-  category: "profitability"
-  source: "system"
-  tags: ["profitability", "income-statement", "p&l"]
-
+  name: Gross Profit
+  description: Revenue minus cost of goods sold
+  category: profitability
+  source: system
+  tags:
+  - profitability
+  - income-statement
+  - p&l
 output:
-  type: "scalar"
-  metric_id: "gross_profit"
-  unit: "currency"
+  type: scalar
+  metric_id: gross_profit
+  unit: currency
   decimal_places: 0
-
-requires_filters:
-  - graph_id: "technical_quality"
-    required: true
-    required_classification: "clean"
-
 dependencies:
-  # Level 1: Extract base data
   revenue:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "revenue"
-      statement: "income_statement"
-    aggregation: "sum"
+      standard_field: revenue
+      statement: income_statement
+    aggregation: sum
     validation:
-      - condition: "value > 0"
-        severity: "error"
-        message: "Revenue must be positive"
-
+    - condition: value > 0
+      severity: error
+      message: Revenue must be positive
   cost_of_goods_sold:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "cost_of_goods_sold"
-      statement: "income_statement"
-    aggregation: "sum"
+      standard_field: cost_of_goods_sold
+      statement: income_statement
+    aggregation: sum
     validation:
-      - condition: "value >= 0"
-        severity: "error"
-        message: "COGS cannot be negative"
-
-  # Level 2: Calculate gross profit
+    - condition: value >= 0
+      severity: error
+      message: COGS cannot be negative
   gross_profit:
     level: 2
-    type: "formula"
-    expression: "revenue - cost_of_goods_sold"
-    depends_on: ["revenue", "cost_of_goods_sold"]
+    type: formula
+    expression: revenue - cost_of_goods_sold
+    depends_on:
+    - revenue
+    - cost_of_goods_sold
     output_step: true
-
 interpretation:
   ranges:
-    - min: -999999999
-      max: -1
-      label: "CRITICAL"
-      description: "Negative gross profit - selling below cost"
-    - min: 0
-      max: 0
-      label: "BREAKEVEN"
-      description: "No margin on goods sold"
-    - min: 1
-      max: 999999999
-      label: "POSITIVE"
-      description: "Healthy gross profit"
+  - min: -999999999
+    max: -1
+    label: CRITICAL
+    description: Negative gross profit - selling below cost
+  - min: 0
+    max: 0
+    label: BREAKEVEN
+    description: No margin on goods sold
+  - min: 1
+    max: 999999999
+    label: POSITIVE
+    description: Healthy gross profit

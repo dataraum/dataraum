@@ -56,7 +56,6 @@ def sample_graph() -> TransformationGraph:
             decimal_places=0,
         ),
         parameters=[],
-        requires_filters=[],
         steps={
             "value": GraphStep(
                 step_id="value",

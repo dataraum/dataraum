@@ -1,89 +1,81 @@
-graph_id: "operating_margin"
-graph_type: "metric"
-version: "1.0"
-
+graph_id: operating_margin
+graph_type: metric
+version: '1.0'
 metadata:
-  name: "Operating Margin"
-  description: "Operating income as a percentage of revenue"
-  category: "profitability"
-  source: "system"
-  tags: ["profitability", "margin", "income-statement"]
-
+  name: Operating Margin
+  description: Operating income as a percentage of revenue
+  category: profitability
+  source: system
+  tags:
+  - profitability
+  - margin
+  - income-statement
 output:
-  type: "scalar"
-  metric_id: "operating_margin"
-  unit: "percentage"
+  type: scalar
+  metric_id: operating_margin
+  unit: percentage
   decimal_places: 1
-
-requires_filters:
-  - graph_id: "technical_quality"
-    required: true
-    required_classification: "clean"
-
 dependencies:
-  # Level 1: Extract base data
   revenue:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "revenue"
-      statement: "income_statement"
-    aggregation: "sum"
+      standard_field: revenue
+      statement: income_statement
+    aggregation: sum
     validation:
-      - condition: "value > 0"
-        severity: "error"
-        message: "Revenue must be positive for margin calculation"
-
+    - condition: value > 0
+      severity: error
+      message: Revenue must be positive for margin calculation
   cost_of_goods_sold:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "cost_of_goods_sold"
-      statement: "income_statement"
-    aggregation: "sum"
-
+      standard_field: cost_of_goods_sold
+      statement: income_statement
+    aggregation: sum
   operating_expense:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "operating_expense"
-      statement: "income_statement"
-    aggregation: "sum"
-
-  # Level 2: Intermediate - operating income
+      standard_field: operating_expense
+      statement: income_statement
+    aggregation: sum
   operating_income:
     level: 2
-    type: "formula"
-    expression: "revenue - cost_of_goods_sold - operating_expense"
-    depends_on: ["revenue", "cost_of_goods_sold", "operating_expense"]
-
-  # Level 3: Operating margin
+    type: formula
+    expression: revenue - cost_of_goods_sold - operating_expense
+    depends_on:
+    - revenue
+    - cost_of_goods_sold
+    - operating_expense
   operating_margin:
     level: 3
-    type: "formula"
-    expression: "operating_income / revenue * 100"
-    depends_on: ["operating_income", "revenue"]
+    type: formula
+    expression: operating_income / revenue * 100
+    depends_on:
+    - operating_income
+    - revenue
     output_step: true
-
 interpretation:
   ranges:
-    - min: -999
-      max: 0
-      label: "CRITICAL"
-      description: "Operating loss"
-    - min: 0
-      max: 5
-      label: "POOR"
-      description: "Very thin operating margins"
-    - min: 5
-      max: 15
-      label: "FAIR"
-      description: "Moderate operating efficiency"
-    - min: 15
-      max: 25
-      label: "GOOD"
-      description: "Strong operating performance"
-    - min: 25
-      max: 100
-      label: "EXCELLENT"
-      description: "Exceptional operating efficiency"
+  - min: -999
+    max: 0
+    label: CRITICAL
+    description: Operating loss
+  - min: 0
+    max: 5
+    label: POOR
+    description: Very thin operating margins
+  - min: 5
+    max: 15
+    label: FAIR
+    description: Moderate operating efficiency
+  - min: 15
+    max: 25
+    label: GOOD
+    description: Strong operating performance
+  - min: 25
+    max: 100
+    label: EXCELLENT
+    description: Exceptional operating efficiency

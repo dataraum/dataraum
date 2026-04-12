@@ -1,95 +1,89 @@
-graph_id: "dso"
-graph_type: "metric"
-version: "1.0"
-
+graph_id: dso
+graph_type: metric
+version: '1.0'
 metadata:
-  name: "Days Sales Outstanding"
-  description: "Average days to collect payment after sale"
-  category: "working_capital"
-  source: "system"
-  tags: ["ar", "collection", "working-capital"]
-
+  name: Days Sales Outstanding
+  description: Average days to collect payment after sale
+  category: working_capital
+  source: system
+  tags:
+  - ar
+  - collection
+  - working-capital
 output:
-  type: "scalar"
-  metric_id: "dso"
-  unit: "days"
+  type: scalar
+  metric_id: dso
+  unit: days
   decimal_places: 1
-
-requires_filters:
-  - graph_id: "technical_quality"
-    required: true
-    required_classification: "clean"
-
 parameters:
   days_in_period:
-    type: "integer"
+    type: integer
     default: 30
-    options: [30, 90, 365]
-    description: "Analysis period length"
-
+    options:
+    - 30
+    - 90
+    - 365
+    description: Analysis period length
 dependencies:
-  # Level 1: Extract base data
   accounts_receivable:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "accounts_receivable"
-      statement: "balance_sheet"
-    aggregation: "end_of_period"
+      standard_field: accounts_receivable
+      statement: balance_sheet
+    aggregation: end_of_period
     validation:
-      - condition: "value >= 0"
-        severity: "error"
-        message: "AR cannot be negative"
-
+    - condition: value >= 0
+      severity: error
+      message: AR cannot be negative
   revenue:
     level: 1
-    type: "extract"
+    type: extract
     source:
-      standard_field: "revenue"
-      statement: "income_statement"
-    aggregation: "sum"
+      standard_field: revenue
+      statement: income_statement
+    aggregation: sum
     validation:
-      - condition: "value > 0"
-        severity: "error"
-        message: "Revenue must be positive for DSO"
-
+    - condition: value > 0
+      severity: error
+      message: Revenue must be positive for DSO
   days_in_period:
     level: 1
-    type: "constant"
-    parameter: "days_in_period"
+    type: constant
+    parameter: days_in_period
     default: 30
-
-  # Level 2: Calculate DSO
   dso:
     level: 2
-    type: "formula"
-    expression: "(accounts_receivable / revenue) * days_in_period"
-    depends_on: ["accounts_receivable", "revenue", "days_in_period"]
+    type: formula
+    expression: (accounts_receivable / revenue) * days_in_period
+    depends_on:
+    - accounts_receivable
+    - revenue
+    - days_in_period
     output_step: true
     validation:
-      - condition: "value >= 0 AND value <= 365"
-        severity: "warning"
-        message: "DSO outside typical range"
-
+    - condition: value >= 0 AND value <= 365
+      severity: warning
+      message: DSO outside typical range
 interpretation:
   ranges:
-    - min: 0
-      max: 30
-      label: "EXCELLENT"
-      description: "Very efficient collection"
-    - min: 31
-      max: 45
-      label: "GOOD"
-      description: "Strong collection performance"
-    - min: 46
-      max: 60
-      label: "CONCERNING"
-      description: "Review collection processes"
-    - min: 61
-      max: 90
-      label: "POOR"
-      description: "Significant working capital tied up"
-    - min: 91
-      max: 999
-      label: "CRITICAL"
-      description: "Urgent intervention required"
+  - min: 0
+    max: 30
+    label: EXCELLENT
+    description: Very efficient collection
+  - min: 31
+    max: 45
+    label: GOOD
+    description: Strong collection performance
+  - min: 46
+    max: 60
+    label: CONCERNING
+    description: Review collection processes
+  - min: 61
+    max: 90
+    label: POOR
+    description: Significant working capital tied up
+  - min: 91
+    max: 999
+    label: CRITICAL
+    description: Urgent intervention required

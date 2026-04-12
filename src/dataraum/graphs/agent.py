@@ -75,7 +75,6 @@ class ExecutionContext:
     schema_mapping_id: str | None = None
     period: str | None = None
     is_period_final: bool = False
-    filter_execution_id: str | None = None
 
     # Rich metadata context (optional)
     # When provided, gives the LLM additional information about:
@@ -491,9 +490,6 @@ class GraphAgent(LLMFeature):
         # Create execution record
         execution = GraphExecution.create(graph, parameters, context.period)
         execution.is_period_final = context.is_period_final
-
-        if context.filter_execution_id:
-            execution.depends_on_executions.append(context.filter_execution_id)
 
         # Extract entropy information from rich context
         entropy_info = self._extract_entropy_info(context)
@@ -960,7 +956,6 @@ class GraphAgent(LLMFeature):
             "graph": f"{graph.graph_id}@{graph.version}",
             "params": sorted(parameters.items()),
             "schema_mapping_id": context.schema_mapping_id,
-            "filter_execution_id": context.filter_execution_id,
             "period": context.period,
             "code_id": code_id,
         }

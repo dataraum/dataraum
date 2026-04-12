@@ -21,7 +21,6 @@ class TestVerticalConfig:
         assert vc.ontology_path == vc.base_dir / "ontology.yaml"
         assert vc.cycles_path == vc.base_dir / "cycles.yaml"
         assert vc.validations_dir == vc.base_dir / "validations"
-        assert vc.filters_dir == vc.base_dir / "filters"
         assert vc.metrics_dir == vc.base_dir / "metrics"
 
     def test_nonexistent_vertical_raises(self) -> None:

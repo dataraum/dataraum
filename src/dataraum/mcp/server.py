@@ -1,7 +1,7 @@
 """MCP Server implementation for DataRaum.
 
 Exposes high-level tools that call library functions directly (no HTTP).
-Output directory is resolved from DATARAUM_OUTPUT_DIR env var or passed to create_server().
+Output directory is resolved from DATARAUM_HOME env var (default ~/.dataraum/) or passed to create_server().
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -35,6 +36,11 @@ _log = logging.getLogger(__name__)
 
 # Prevent background pipeline tasks from being garbage-collected.
 _background_tasks: set[asyncio.Task[Any]] = set()
+
+# Pipeline-in-progress guard: cleared while pipeline runs, set when idle.
+# threading.Event is safe across asyncio event loop + pipeline worker thread.
+_pipeline_idle = threading.Event()
+_pipeline_idle.set()  # starts idle (query/run_sql allowed)
 
 
 def _json_text_content(data: dict[str, Any]) -> list[TextContent]:
@@ -179,26 +185,93 @@ def create_server(output_dir: Path | None = None) -> Server:
             )
             return f"Session ended but workspace archival failed. {output_dir} may need manual cleanup."
 
-    server = Server("dataraum")
+    server = Server(
+        "dataraum",
+        instructions=(
+            "DataRaum is a metadata context engine — it profiles data sources, "
+            "measures data quality (entropy), and builds a queryable world model "
+            "so you can answer analytical questions with grounded confidence.\n"
+            "\n"
+            "## Session lifecycle\n"
+            "\n"
+            "Every investigation runs inside a session. Sources are sealed at "
+            "session start — add all sources before beginning.\n"
+            "\n"
+            "1. add_source — register data files or directories\n"
+            "2. begin_session — start the investigation (pick a contract for "
+            "the intended use case)\n"
+            "3. investigate — use the tools below\n"
+            "4. end_session — archive and clean up\n"
+            "\n"
+            "## Three scenarios\n"
+            "\n"
+            "**First run** (begin_session returns has_pipeline_data: false):\n"
+            "  begin_session → measure (triggers the pipeline, takes 3-7 min) "
+            "→ look (orient) → query / run_sql\n"
+            "\n"
+            "**Returning** (begin_session returns has_pipeline_data: true):\n"
+            "  begin_session → look (data is already profiled) → query / run_sql\n"
+            "\n"
+            "**Teach + re-measure** (improving the world model):\n"
+            "  Bundle multiple teach calls first, then call measure once with "
+            "target_phase to re-run the affected pipeline segment. Do not "
+            "measure after every teach — batch them.\n"
+            "\n"
+            "## Tool selection\n"
+            "\n"
+            "- **look** — orient yourself. Start here. Progressive detail: "
+            "no target → dataset overview, table → column stats, "
+            "table.column → full profile.\n"
+            "- **measure** — quantify entropy (data uncertainty). First call "
+            "triggers the pipeline if needed. While running, query and run_sql "
+            "are blocked — call measure again to poll progress.\n"
+            "- **why** — explain elevated entropy. Returns executable teach "
+            "suggestions. Use after measure shows high scores.\n"
+            "- **teach** — extend the world model. The sole write tool. "
+            "Config teaches need a re-measure; metadata teaches apply immediately.\n"
+            "- **query** — answer analytical questions via AI reasoning. "
+            "Use when you have a business question. Tracks assumptions and "
+            "confidence.\n"
+            "- **run_sql** — execute SQL directly. Use when you already know "
+            "the query shape. Previous queries become reusable snippets.\n"
+            "- **search_snippets** — discover reusable SQL patterns before "
+            "writing new queries. Use after look to find what's already been "
+            "computed.\n"
+            "- **add_source** — register data before starting a session.\n"
+            "- **begin_session / end_session** — manage session lifecycle.\n"
+            "\n"
+            "## Choosing query vs run_sql\n"
+            "\n"
+            "Use query when you have an analytical question and want the system "
+            "to reason about column semantics, quality, and business cycles. "
+            "Use run_sql when you already know the SQL — for spot-checks, "
+            "drill-downs, or building on snippets.\n"
+        ),
+    )
     server.experimental.enable_tasks()
 
     @server.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
     async def list_tools() -> list[Tool]:
         """List available tools."""
         return [
-            # --- Orientation tools ---
+            # --- Orientation ---
             Tool(
                 name="look",
                 description=(
-                    "Explore the data schema and profiles at progressive detail "
-                    "levels. Start with no target for a dataset overview (tables, "
-                    "columns, types, semantic annotations, relationships). Drill "
-                    "into target='table' for column stats. Drill into "
-                    "target='table.column' for the full column profile including "
-                    "type candidates, outliers, temporal patterns, derived "
-                    "relationships, and detector observations (what detectors "
-                    "noticed about this column). With sample=N: actual rows. "
-                    "No entropy scores — use measure for that."
+                    "Orient yourself in the data. Start here — call look before "
+                    "query or run_sql to understand what you're working with.\n\n"
+                    "Progressive detail levels:\n"
+                    "- No target: dataset overview — tables, columns, types, "
+                    "semantic annotations, relationships.\n"
+                    "- target='table': column stats, type candidates, "
+                    "semantic roles for one table.\n"
+                    "- target='table.column': full column profile — type "
+                    "candidates, outliers, temporal patterns, relationships, "
+                    "and detector observations.\n"
+                    "- sample=N with any table target: actual data rows.\n\n"
+                    "Returns schema and profile data, not entropy scores — "
+                    "use measure for quantitative quality assessment. "
+                    "Available during pipeline runs (reads existing data)."
                 ),
                 inputSchema={
                     "type": "object",
@@ -218,17 +291,23 @@ def create_server(output_dir: Path | None = None) -> Server:
                     },
                 },
             ),
-            # --- Measurement tools ---
+            # --- Measurement ---
             Tool(
                 name="measure",
                 description=(
-                    "Measure data entropy (uncertainty). Returns measurement "
-                    "points per column+dimension, layer scores, and BBN readiness "
-                    "per column. Triggers pipeline if no data exists yet. Use "
-                    "target to filter to a specific table or column. Use "
-                    "target_phase to rerun only a specific phase and its "
-                    "dependencies (e.g. after teach). Poll by calling measure "
-                    "again to get partial results during a pipeline run."
+                    "Quantify data entropy (uncertainty) across all detectors. "
+                    "Returns measurement points per column and dimension, layer "
+                    "scores, and readiness per column.\n\n"
+                    "Two modes:\n"
+                    "- First call (no data): triggers the full pipeline "
+                    "(3-7 min). While running, query and run_sql are blocked. "
+                    "Call measure again to poll progress.\n"
+                    "- After teach: pass target_phase to re-run only the "
+                    "affected phase and its downstream cascade. Bundle multiple "
+                    "teach calls before measuring — do not measure after each "
+                    "teach.\n\n"
+                    "The response includes per-column readiness (ready / "
+                    "investigate / blocked) based on the Bayesian belief network."
                 ),
                 inputSchema={
                     "type": "object",
@@ -242,33 +321,38 @@ def create_server(output_dir: Path | None = None) -> Server:
                         "target_phase": {
                             "type": "string",
                             "description": (
-                                "Rerun only this phase and its dependencies. "
+                                "Re-run this phase and its downstream cascade. "
                                 "Use after teach to see the effect of config changes. "
-                                "E.g. 'semantic', 'typing', 'validation', 'import'."
+                                "Phase names by teach type: concept → 'semantic', "
+                                "validation → 'validation', cycle → 'business_cycles', "
+                                "type_pattern → 'typing', null_value → 'import', "
+                                "metric → 'graph_execution'."
                             ),
                         },
                     },
                 },
                 execution=ToolExecution(taskSupport="optional"),
             ),
-            # --- Session tools ---
+            # --- Session management ---
             Tool(
                 name="begin_session",
                 description=(
-                    "Start an investigation session. You MUST call this before "
-                    "using look, measure, query, or run_sql. First register "
-                    "sources with add_source, then begin the session.\n\n"
-                    "The contract defines data readiness thresholds for the "
-                    "intended use case. Ask the user what they're trying to "
-                    "accomplish, then choose the appropriate contract:\n\n"
-                    "- exploratory_analysis: Data exploration, hypothesis testing (lenient)\n"
-                    "- data_science: Feature engineering, model training (moderate)\n"
-                    "- operational_analytics: Ops reports, team dashboards (moderate)\n"
-                    "- aggregation_safe: SUM/AVG/COUNT queries — unit + null focus (moderate)\n"
-                    "- executive_dashboard: C-level dashboards, KPI tracking (strict)\n"
-                    "- regulatory_reporting: Financial statements, audit submissions (very strict)\n\n"
-                    "If unsure, start with exploratory_analysis — you can always "
-                    "start a new session with a stricter contract later."
+                    "Start an investigation session. Required before using any "
+                    "other tools except add_source. Sources are sealed at session "
+                    "start — register all sources first.\n\n"
+                    "The response includes has_pipeline_data. If false, call "
+                    "measure next to trigger the pipeline. If true, data is "
+                    "already profiled — proceed with look.\n\n"
+                    "Contracts set data readiness thresholds for the intended "
+                    "use case. Ask the user what they're trying to accomplish:\n"
+                    "- exploratory_analysis: exploration, hypothesis testing (lenient)\n"
+                    "- data_science: feature engineering, model training (moderate)\n"
+                    "- operational_analytics: ops reports, dashboards (moderate)\n"
+                    "- aggregation_safe: SUM/AVG/COUNT queries (moderate)\n"
+                    "- executive_dashboard: C-level KPIs (strict)\n"
+                    "- regulatory_reporting: audit submissions (very strict)\n\n"
+                    "Default: exploratory_analysis. You can always end the session "
+                    "and start a new one with a stricter contract."
                 ),
                 inputSchema={
                     "type": "object",
@@ -298,11 +382,12 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="end_session",
                 description=(
-                    "End the current investigation session. Call this when the "
-                    "investigation is complete, the user wants to start fresh, "
-                    "or the request cannot be fulfilled. The workspace will be "
-                    "archived. A fresh workspace is created when you next call "
-                    "begin_session."
+                    "End the current investigation session. The workspace is "
+                    "archived and a fresh one is created on the next "
+                    "begin_session.\n\n"
+                    "Call when: the analysis is complete, the user wants to "
+                    "start fresh with different sources or a different contract, "
+                    "or the request cannot be fulfilled."
                 ),
                 inputSchema={
                     "type": "object",
@@ -324,21 +409,23 @@ def create_server(output_dir: Path | None = None) -> Server:
                     },
                 },
             ),
-            # --- Query tools ---
+            # --- Analytical tools ---
             Tool(
                 name="query",
                 description=(
-                    "Answer an analytical question using AI reasoning. "
-                    "The query agent understands the data context — column "
-                    "semantics, quality issues, business cycles — and writes "
-                    "SQL that accounts for them. It tracks assumptions explicitly "
-                    "and evaluates confidence against the active contract. "
+                    "Answer a business question using AI reasoning. Use when you "
+                    "have an analytical question and want the system to handle "
+                    "column semantics, quality caveats, and business cycles "
+                    "automatically.\n\n"
+                    "The query agent writes SQL that accounts for data context, "
+                    "tracks assumptions explicitly, and evaluates confidence "
+                    "against the active contract.\n\n"
                     "Prerequisites: call look first to understand the schema. "
-                    "Use measure to understand data quality before asking "
-                    "analytical questions. Returns: answer, confidence level, "
-                    "assumptions, SQL steps, and result data. "
-                    "Optionally export results to CSV, Parquet, or JSON with "
-                    "export_format and export_name."
+                    "Returns: answer, confidence level, assumptions, SQL steps, "
+                    "and result data.\n\n"
+                    "Blocked while pipeline is running — call measure to check "
+                    "progress. For direct SQL when you already know the query "
+                    "shape, use run_sql instead."
                 ),
                 inputSchema={
                     "type": "object",
@@ -368,23 +455,20 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="run_sql",
                 description=(
-                    "Execute SQL directly against the analyzed data. "
-                    "Returns rows with per-column quality metadata when available.\n\n"
-                    "Important: call look first to understand the schema, column "
-                    "semantics, and quality issues. For analytical questions, "
-                    "prefer query — it reasons over context automatically. "
-                    "Use run_sql for spot-checks, drill-downs, or when you "
-                    "already understand the data shape.\n\n"
-                    "Snippets: previous queries are auto-saved as reusable "
-                    "snippets in a knowledge base. The response includes a "
-                    "snippet_summary showing how many were reused vs. newly saved. "
-                    "Use business concept names as step_ids (e.g. 'monthly_revenue', "
-                    "not 'step_1') — they become searchable via search_snippets. "
-                    "Each step_id becomes both a temp view name (referenceable by "
-                    "later steps) and a snippet key.\n\n"
-                    "Column mappings: map output columns to source columns "
-                    '(e.g. {"revenue": "orders.amount"}) to get per-column '
-                    "quality metadata in the response."
+                    "Execute SQL directly against the analyzed data. Use when "
+                    "you already know the query shape — for spot-checks, "
+                    "drill-downs, or building on existing snippets. For business "
+                    "questions where context matters, prefer query.\n\n"
+                    "Call look first to understand table names, column types, "
+                    "and quality issues. Returns rows with per-column quality "
+                    "metadata when column_mappings are provided.\n\n"
+                    "Snippets: each step is auto-saved as a reusable snippet. "
+                    "Use business concept names as step_ids (e.g. "
+                    "'monthly_revenue', not 'step_1') — they become searchable "
+                    "via search_snippets and referenceable as temp views by "
+                    "later steps.\n\n"
+                    "Blocked while pipeline is running — call measure to "
+                    "check progress."
                 ),
                 inputSchema={
                     "type": "object",
@@ -451,17 +535,19 @@ def create_server(output_dir: Path | None = None) -> Server:
                     },
                 },
             ),
-            # --- Discovery tools ---
+            # --- Discovery ---
             Tool(
                 name="search_snippets",
                 description=(
-                    "Search the SQL snippet knowledge base. Without arguments: "
-                    "returns the vocabulary (available concepts, statements, "
-                    "graph IDs, aggregations). With concepts or graph_ids: "
-                    "returns matching snippet graphs with SQL and mappings. "
-                    "Both filters use union semantics (any match). "
-                    "Snippets are created by query and run_sql executions "
-                    "— they represent grounded, reusable SQL patterns."
+                    "Discover reusable SQL patterns from prior queries and the "
+                    "graph execution phase. Use after look to find what's already "
+                    "been computed before writing new SQL.\n\n"
+                    "Without arguments: returns the vocabulary — available "
+                    "concepts, statements, graph IDs, aggregations. With "
+                    "concepts or graph_ids: returns matching snippet graphs "
+                    "with full SQL and column mappings.\n\n"
+                    "Typical flow: look (understand schema) → search_snippets "
+                    "(find existing patterns) → run_sql (build on them)."
                 ),
                 inputSchema={
                     "type": "object",
@@ -484,20 +570,37 @@ def create_server(output_dir: Path | None = None) -> Server:
                     },
                 },
             ),
-            # --- Teaching tools ---
+            # --- Teaching ---
             Tool(
                 name="teach",
                 description=(
-                    "Teach the system domain knowledge. This is the sole write "
-                    "tool — use it to extend the world model with concepts, "
-                    "validations, cycles, type patterns, null values, metrics, semantic "
-                    "properties, relationships, and explanations.\n\n"
-                    "Config teaches (concept, validation, cycle, type_pattern, "
-                    "null_value) write to YAML config and need a pipeline rerun "
-                    "to take effect — the response includes a measurement_hint.\n\n"
-                    "Metadata teaches (concept_property, relationship, explanation) "
-                    "apply immediately to the database and are persisted as durable "
-                    "records that survive pipeline reruns."
+                    "Extend the world model with domain knowledge. This is the "
+                    "sole write tool — everything the system learns comes "
+                    "through teach.\n\n"
+                    "Two categories:\n\n"
+                    "Config teaches — write to YAML, need measure(target_phase) "
+                    "to take effect. Bundle multiple teaches before re-measuring:\n"
+                    "- concept: business concept with column indicators "
+                    "(e.g. 'revenue' matching '*amount*'). Re-run: semantic.\n"
+                    "- validation: data quality rule with SQL hints. "
+                    "Re-run: validation.\n"
+                    "- cycle: business process definition with stages. "
+                    "Re-run: business_cycles.\n"
+                    "- type_pattern: custom type inference regex. "
+                    "Re-run: typing (near-full pipeline re-run).\n"
+                    "- null_value: domain-specific null string (e.g. 'TBD'). "
+                    "Re-run: import (full pipeline re-run).\n"
+                    "- metric: computable metric with SQL dependencies. "
+                    "Re-run: graph_execution.\n\n"
+                    "Metadata teaches — apply immediately, no re-run needed:\n"
+                    "- concept_property: patch a column's semantic role or "
+                    "business concept.\n"
+                    "- relationship: confirm or declare a foreign key "
+                    "relationship.\n"
+                    "- explanation: provide domain context for an entropy "
+                    "observation.\n\n"
+                    "The why tool generates executable teach suggestions — "
+                    "copy type, target, and params directly from its output."
                 ),
                 inputSchema={
                     "type": "object",
@@ -533,19 +636,21 @@ def create_server(output_dir: Path | None = None) -> Server:
                     },
                 },
             ),
-            # --- Explanation tools ---
+            # --- Explanation ---
             Tool(
                 name="why",
                 description=(
-                    "Explain why entropy is elevated and suggest teach actions. "
-                    "Translates detector scores and BBN network inference into "
-                    "domain explanations with executable resolution options.\n\n"
-                    "Three levels:\n"
-                    "- why(target='table.column') — single column focus\n"
-                    "- why(target='table') — aggregated across columns\n"
-                    "- why() — dataset-level summary (top entropy drivers)\n\n"
-                    "Each resolution_option is an executable teach() call. "
-                    "Copy teach_type, target, and params directly to teach()."
+                    "Explain why entropy is elevated and suggest how to fix it. "
+                    "Use after measure shows high scores on a column or table.\n\n"
+                    "Synthesizes detector evidence and Bayesian network inference "
+                    "into a domain-level explanation with executable teach "
+                    "suggestions.\n\n"
+                    "Three scope levels:\n"
+                    "- target='table.column': focused analysis of one column.\n"
+                    "- target='table': aggregated across columns in one table.\n"
+                    "- No target: dataset-level summary of top entropy drivers.\n\n"
+                    "Each suggestion in the response is an executable teach call "
+                    "— copy type, target, and params directly to teach()."
                 ),
                 inputSchema={
                     "type": "object",
@@ -571,9 +676,12 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="add_source",
                 description=(
-                    "Register a data source. Add sources before calling measure — "
-                    "the pipeline processes them together. For files, provide a "
-                    "path (file or directory). For databases, provide a backend type."
+                    "Register a data source before starting a session. Sources "
+                    "are sealed when begin_session is called — add all sources "
+                    "first. To change sources, end the current session, add new "
+                    "sources, then begin a new session.\n\n"
+                    "Supports files (CSV, Parquet, JSON/JSONL) and directories "
+                    "(all supported files in the directory are loaded)."
                 ),
                 inputSchema={
                     "type": "object",
@@ -647,6 +755,19 @@ def create_server(output_dir: Path | None = None) -> Server:
             if active_session_id is None:
                 return _json_text_content({"error": "No active session. Call begin_session first."})
 
+        # --- Pipeline guard: block query/run_sql while pipeline is running ---
+        if name in ("query", "run_sql") and not _pipeline_idle.is_set():
+            return _json_text_content(
+                {
+                    "error": (
+                        "Pipeline is currently running. "
+                        "query and run_sql are blocked until it completes. "
+                        "Call measure() to check progress. "
+                        "look, teach, why, and search_snippets remain available."
+                    )
+                }
+            )
+
         # --- Dispatch (each tool gets its own session/cursor scope) ---
         result: dict[str, Any]
 
@@ -666,6 +787,12 @@ def create_server(output_dir: Path | None = None) -> Server:
             # Pipeline trigger: when no entropy data exists OR selective rerun requested
             needs_pipeline = result.get("status") == "no_data" or measure_phase is not None
             if needs_pipeline:
+                # Block query/run_sql immediately — before the pipeline thread
+                # starts.  Cleared synchronously on the event loop so there is
+                # no scheduling gap.  Each async path restores it in its own
+                # finally block (covers both success and failure).
+                _pipeline_idle.clear()
+
                 ctx = server.request_context
                 measure_experimental: Experimental = ctx.experimental
                 if measure_experimental and measure_experimental.is_task:
@@ -675,25 +802,28 @@ def create_server(output_dir: Path | None = None) -> Server:
                     _vertical = active_vertical
 
                     async def _measure_work(task: ServerTaskContext) -> CallToolResult:
-                        callback = _make_task_event_callback(task, loop)
-                        await asyncio.to_thread(
-                            _run_pipeline,
-                            output_dir,
-                            callback,
-                            _contract,
-                            _vertical,
-                            measure_phase,
-                        )
-                        with _get_manager().session_scope() as post_session:
-                            measure_result = _measure(post_session, target=measure_target)
-                        return CallToolResult(
-                            content=[
-                                TextContent(
-                                    type="text",
-                                    text=json.dumps(measure_result, indent=2, default=str),
-                                )
-                            ]
-                        )
+                        try:
+                            callback = _make_task_event_callback(task, loop)
+                            await asyncio.to_thread(
+                                _run_pipeline,
+                                output_dir,
+                                callback,
+                                _contract,
+                                _vertical,
+                                measure_phase,
+                            )
+                            with _get_manager().session_scope() as post_session:
+                                measure_result = _measure(post_session, target=measure_target)
+                            return CallToolResult(
+                                content=[
+                                    TextContent(
+                                        type="text",
+                                        text=json.dumps(measure_result, indent=2, default=str),
+                                    )
+                                ]
+                            )
+                        finally:
+                            _pipeline_idle.set()
 
                     hint = (
                         f"Rerunning phase '{measure_phase}' and dependencies."
@@ -1107,11 +1237,17 @@ async def _run_pipeline_background(
     vertical: str | None = None,
     target_phase: str | None = None,
 ) -> None:
-    """Run _run_pipeline in a background thread, logging errors."""
+    """Run _run_pipeline in a background thread, logging errors.
+
+    The caller clears _pipeline_idle before scheduling this coroutine.
+    This function restores it in its finally block — even on failure.
+    """
     try:
         await asyncio.to_thread(_run_pipeline, output_dir, None, contract, vertical, target_phase)
     except Exception:
         _log.exception("Background pipeline failed for %s", output_dir)
+    finally:
+        _pipeline_idle.set()
 
 
 def _query(
@@ -1844,7 +1980,7 @@ def _look(
         .all()
     )
     if not tables:
-        return {"error": "No tables found. Run the pipeline first."}
+        return {"error": "No tables found. Call measure to trigger the pipeline."}
 
     # Parse target
     table_name: str | None = None
@@ -2450,7 +2586,23 @@ def _measure(
     phases_completed: list[str] = []
     if latest_run:
         if latest_run.status == "running":
-            status = "running"
+            # Return progress only — partial entropy data is misleading
+            # because most detectors haven't fired yet.  Full data comes
+            # when the pipeline completes.
+            phases_completed = [
+                row[0]
+                for row in session.execute(
+                    select(PhaseLog.phase_name).where(
+                        PhaseLog.run_id == latest_run.run_id,
+                        PhaseLog.status == "completed",
+                    )
+                ).all()
+            ]
+            return {
+                "status": "running",
+                "phases_completed": phases_completed,
+                "hint": "Pipeline is running. Call measure() again to poll.",
+            }
         phases_completed = [
             row[0]
             for row in session.execute(

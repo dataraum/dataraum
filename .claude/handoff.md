@@ -287,6 +287,25 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
   - Metadata teaches (concept_property, relationship, explanation) unaffected — they were already working
 - **Status**: verified (2026-04-12, /accept handoff). Config teach → measure(target_phase) works correctly through the MCP call_tool dispatch. Earlier failure reports were test artifacts from calling _run_pipeline directly (wrong preconditions). In-memory MCP client tests confirm the full loop: teach(validation) → measure(target_phase="validation") → pipeline re-runs → scores update.
 
+## 2026-04-13: DAT-255 — Discovery Polish (Server Instructions + Tool Descriptions + Pipeline Guard)
+
+### dataraum-eval
+- **Changed**: `src/dataraum/mcp/server.py` (server instructions, all 10 tool descriptions, pipeline-in-progress guard)
+- **Affects**: All MCP tools — descriptions changed (text only, no behavioral changes). New: `query` and `run_sql` blocked during pipeline execution.
+- **Calibrate**: `/smoke` after restart. Key behaviors:
+  1. Server instructions visible in MCP handshake (three scenarios: first run, returning, teach+re-measure)
+  2. `query` during pipeline → `{"error": "Pipeline is currently running..."}` (not session error)
+  3. `run_sql` during pipeline → same error
+  4. `look`, `teach`, `why`, `search_snippets` still work during pipeline
+  5. Pipeline failure → guard clears → query/run_sql unblocked
+- **Notes**:
+  - `_pipeline_idle` flag (`threading.Event`) cleared before pipeline task/background launch, restored in `finally` blocks of both task and fire-and-forget paths
+  - Server `instructions=` param added to `Server()` constructor — calling agents now get workflow guidance
+  - Tool descriptions are text-only changes — no parameter schemas, return shapes, or dispatch logic changed
+  - teach description now includes per-type re-run phase mapping and cascade cost warnings
+  - measure description includes "bundle teaches before measuring" guidance
+- **Status**: pending
+
 <!--
 ## YYYY-MM-DD: brief description
 

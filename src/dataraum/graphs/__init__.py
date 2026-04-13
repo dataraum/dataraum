@@ -57,13 +57,10 @@ from .entropy_behavior import (
 from .export import export_graph_definition, export_to_react_flow
 from .loader import GraphLoader, GraphLoadError
 from .models import (
-    AggregationDefinition,
     AppliesTo,
     AssumptionBasis,
     Classification,
     ClassificationSummary,
-    ColumnMapping,
-    DatasetSchemaMapping,
     GraphExecution,
     GraphMetadata,
     GraphSource,
@@ -76,7 +73,6 @@ from .models import (
     OutputType,
     ParameterDef,
     QueryAssumption,
-    SchemaMapping,
     StepResult,
     StepSource,
     StepType,
@@ -132,11 +128,6 @@ __all__ = [
     # Assumption tracking
     "QueryAssumption",
     "AssumptionBasis",
-    # Schema mapping models
-    "ColumnMapping",
-    "AggregationDefinition",
-    "SchemaMapping",
-    "DatasetSchemaMapping",
     # Persistence
     "GraphExecutionRecord",
     "StepResultRecord",

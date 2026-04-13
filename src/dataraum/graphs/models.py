@@ -418,58 +418,6 @@ class GraphExecution:
 
 
 # =============================================================================
-# Schema Mapping Models (integrated from calculations/)
-# =============================================================================
-
-
-@dataclass
-class ColumnMapping:
-    """Mapping from a concrete column to an abstract field.
-
-    Represents one source column that contributes to an abstract field.
-    Multiple columns can map to the same abstract field.
-    """
-
-    table: str
-    column: str
-    confidence: float  # 0.0 to 1.0
-    reasoning: str | None = None
-    filter_condition: str | None = None  # Optional WHERE clause
-    sign_adjustment: int = 1  # Multiply by -1 for contra accounts
-
-
-@dataclass
-class AggregationDefinition:
-    """How to aggregate origin columns into the target field."""
-
-    method: str  # sum, end_of_period, average, count, min, max
-    group_by: list[str] = field(default_factory=list)
-    time_column: str | None = None
-    period_type: str | None = None  # month, quarter, year
-
-
-@dataclass
-class SchemaMapping:
-    """Mapping from abstract field to concrete columns."""
-
-    abstract_field: str
-    origin_mappings: list[ColumnMapping]
-    aggregation: AggregationDefinition
-    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    created_by: str | None = None  # "llm", "user", "system"
-
-
-@dataclass
-class DatasetSchemaMapping:
-    """Complete schema mapping for a dataset."""
-
-    dataset_id: str
-    mappings: dict[str, SchemaMapping]  # abstract_field -> mapping
-    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    version: str = "1.0"
-
-
-# =============================================================================
 # Pydantic models for LLM tool output
 # =============================================================================
 

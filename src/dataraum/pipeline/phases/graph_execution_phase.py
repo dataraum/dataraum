@@ -4,7 +4,8 @@ Loads metric graphs from the active vertical, resolves field mappings
 via semantic annotations, and executes each metric through the graph
 agent. Results are stored as SQL snippets for reuse by query/search_snippets.
 
-Metrics with unresolvable field mappings are skipped (logged, not failed).
+Metrics with unresolvable direct field mappings are still attempted — the
+graph agent LLM infers from enriched views and dataset context.
 When no metric YAMLs exist, the phase completes with zero records.
 """
 
@@ -187,7 +188,6 @@ class GraphExecutionPhase(BasePhase):
 
         # Execute metrics sequentially
         executed = 0
-        skipped = 0
         failed = 0
 
         for graph_id, graph in metrics.items():
@@ -198,19 +198,18 @@ class GraphExecutionPhase(BasePhase):
                 if step.source and step.source.standard_field
             ]
 
-            # Check field mappings
+            # Advisory check — log missing direct mappings but let the LLM
+            # infer from enriched views and dataset context (as it did pre-DAT-183).
             if required_fields:
-                can_exec, missing = can_execute_metric(field_mappings, required_fields)
-                if not can_exec:
+                _, missing = can_execute_metric(field_mappings, required_fields)
+                if missing:
                     _log.info(
-                        "metric_skipped_missing_fields",
+                        "metric_missing_direct_mappings",
                         graph_id=graph_id,
                         missing=missing,
                     )
-                    skipped += 1
-                    continue
 
-            # Execute
+            # Execute — LLM will infer missing field mappings
             result = agent.execute(ctx.session, graph, exec_ctx)
             if result.success:
                 executed += 1
@@ -226,8 +225,6 @@ class GraphExecutionPhase(BasePhase):
         summary_parts = []
         if executed:
             summary_parts.append(f"{executed} computed")
-        if skipped:
-            summary_parts.append(f"{skipped} skipped (missing fields)")
         if failed:
             summary_parts.append(f"{failed} failed")
 
@@ -236,7 +233,6 @@ class GraphExecutionPhase(BasePhase):
         return PhaseResult.success(
             outputs={
                 "metrics_executed": executed,
-                "metrics_skipped": skipped,
                 "metrics_failed": failed,
             },
             records_processed=len(metrics),

@@ -33,7 +33,6 @@ from dataraum.llm.providers.base import LLMProvider
 
 from .models import (
     AssumptionBasis,
-    DatasetSchemaMapping,
     GraphExecution,
     GraphSQLGenerationOutput,
     QueryAssumption,
@@ -71,7 +70,6 @@ class ExecutionContext:
     """Context for graph execution."""
 
     duckdb_conn: duckdb.DuckDBPyConnection
-    schema_mapping: DatasetSchemaMapping | None = None
     schema_mapping_id: str | None = None
     period: str | None = None
     is_period_final: bool = False

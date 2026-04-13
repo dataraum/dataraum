@@ -262,7 +262,7 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
   6. `look(target="table.column")` → relevant snippets from graph execution shown when business_concept matches
 - **Notes**:
   - Phase runs after `validation` (dependency in pipeline.yaml)
-  - Metrics with unresolvable field mappings (missing `standard_field` → column mapping) are skipped, not failed
+  - Metrics with unresolvable direct field mappings are still attempted — graph agent LLM infers from enriched views (see DAT-262)
   - `MetricInductionAgent` fires 1 extra LLM call on cold start (balanced tier)
   - `schema_mapping_id` for graph snippets: `f"{source_id}:semantic"`
   - `PARAM_MODELS` in teach.py now has 9 entries (was 8)
@@ -304,6 +304,22 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
   - Tool descriptions are text-only changes — no parameter schemas, return shapes, or dispatch logic changed
   - teach description now includes per-type re-run phase mapping and cascade cost warnings
   - measure description includes "bundle teaches before measuring" guidance
+- **Status**: pending
+
+## 2026-04-13: DAT-262 — Graph execution zero snippets (field mapping gate fix)
+
+### dataraum-eval
+- **Changed**: `src/dataraum/pipeline/phases/graph_execution_phase.py` (gate removed), `src/dataraum/graphs/models.py` (dead SchemaMapping models deleted), `src/dataraum/graphs/agent.py` (dead field removed), `src/dataraum/graphs/__init__.py` (exports cleaned)
+- **Affects**: `graph_execution` pipeline phase — metrics that were previously skipped (missing direct field mappings) are now attempted via LLM inference
+- **Calibrate**: `/smoke` with finance vertical on detection-v1. Key verification:
+  1. `measure` → pipeline completes → `graph_execution` phase shows `metrics_executed > 0` (was `metrics_skipped: 12`)
+  2. `search_snippets()` → graph-sourced snippets present (source prefix `graph:`)
+  3. Finance metrics (gross_profit, DSO, etc.) produce reasonable values from GL data via account-type filtering
+- **Notes**:
+  - Root cause: DAT-253 rewrite added hard gate on `can_execute_metric()` that skipped metrics when `standard_field` had no matching `business_concept`. The pre-removal code (before DAT-183) treated this as advisory.
+  - On GL data, semantic phase correctly assigns GL concepts (`transaction_amount`, `debit`, `credit`), not P&L concepts (`revenue`, `cost_of_goods_sold`). The graph agent LLM infers P&L from enriched views (e.g., `WHERE account_type ILIKE 'revenue'`).
+  - Dead `SchemaMapping`, `DatasetSchemaMapping`, `ColumnMapping`, `AggregationDefinition` removed — these modeled a deterministic mapping approach that SQL snippets replace.
+  - AC3 (teach metric warning) deliberately dropped — calling agent can't act on it, graph agent handles inference.
 - **Status**: pending
 
 <!--

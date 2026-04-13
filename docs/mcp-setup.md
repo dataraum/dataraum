@@ -236,7 +236,7 @@ See [Entropy](entropy.md) for details on each contract.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `DATARAUM_HOME` | No | Root directory for workspaces (default: `~/.dataraum/`). Legacy `DATARAUM_OUTPUT_DIR` also accepted. |
+| `DATARAUM_HOME` | No | Root directory for workspaces (default: `~/.dataraum/`). |
 | `ANTHROPIC_API_KEY` | Yes | API key for LLM-powered analysis (semantic, quality rules, etc.) |
 | `PYTHON_GIL` | Recommended | Set to `0` to enable free-threading for better performance (Python 3.14) |
 

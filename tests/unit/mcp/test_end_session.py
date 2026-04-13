@@ -206,39 +206,20 @@ class TestResolveRootDir:
         """DATARAUM_HOME env var sets the root directory."""
         from dataraum.mcp.server import _resolve_root_dir
 
-        monkeypatch.delenv("DATARAUM_OUTPUT_DIR", raising=False)
         monkeypatch.setenv("DATARAUM_HOME", "/custom/root")
         assert _resolve_root_dir() == Path("/custom/root")
-
-    def test_legacy_output_dir_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """DATARAUM_OUTPUT_DIR is accepted as legacy fallback."""
-        from dataraum.mcp.server import _resolve_root_dir
-
-        monkeypatch.delenv("DATARAUM_HOME", raising=False)
-        monkeypatch.setenv("DATARAUM_OUTPUT_DIR", "/legacy/path")
-        assert _resolve_root_dir() == Path("/legacy/path")
-
-    def test_dataraum_home_takes_precedence(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """DATARAUM_HOME wins over DATARAUM_OUTPUT_DIR."""
-        from dataraum.mcp.server import _resolve_root_dir
-
-        monkeypatch.setenv("DATARAUM_HOME", "/new")
-        monkeypatch.setenv("DATARAUM_OUTPUT_DIR", "/old")
-        assert _resolve_root_dir() == Path("/new")
 
     def test_defaults_to_home_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Without env vars, defaults to ~/.dataraum/."""
         from dataraum.mcp.server import _resolve_root_dir
 
         monkeypatch.delenv("DATARAUM_HOME", raising=False)
-        monkeypatch.delenv("DATARAUM_OUTPUT_DIR", raising=False)
         assert _resolve_root_dir() == Path.home() / ".dataraum"
 
     def test_expands_tilde(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Tilde in env var is expanded."""
         from dataraum.mcp.server import _resolve_root_dir
 
-        monkeypatch.delenv("DATARAUM_OUTPUT_DIR", raising=False)
         monkeypatch.setenv("DATARAUM_HOME", "~/my-data")
         result = _resolve_root_dir()
         assert "~" not in str(result)

@@ -92,9 +92,8 @@ def _resolve_root_dir() -> Path:
 
     The root contains workspace/, archive/, and credentials.yaml.
     Reads DATARAUM_HOME env var, falling back to ~/.dataraum/.
-    Legacy DATARAUM_OUTPUT_DIR is also accepted (treated as root).
     """
-    home = os.environ.get("DATARAUM_HOME") or os.environ.get("DATARAUM_OUTPUT_DIR")
+    home = os.environ.get("DATARAUM_HOME")
     if home:
         return Path(home).expanduser()
     return Path("~/.dataraum").expanduser()

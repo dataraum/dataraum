@@ -32,10 +32,8 @@ from dataraum.llm.prompts import PromptRenderer
 from dataraum.llm.providers.base import LLMProvider
 
 from .models import (
-    AssumptionBasis,
     GraphExecution,
     GraphSQLGenerationOutput,
-    QueryAssumption,
     StepResult,
     StepType,
     TransformationGraph,
@@ -494,10 +492,7 @@ class GraphAgent(LLMFeature):
         execution.max_entropy_score = entropy_info.get("max_entropy", 0.0)
         execution.entropy_warnings = entropy_info.get("warnings", [])
 
-        # Create assumptions from high-entropy columns
-        execution.assumptions = self._create_assumptions_from_entropy(
-            execution.execution_id, entropy_info, context
-        )
+        execution.assumptions = []
 
         # Get max repair attempts from config (default 2)
         feature_config = getattr(self.config.features, "sql_repair", None)
@@ -634,71 +629,6 @@ class GraphAgent(LLMFeature):
         result["readiness_blockers"] = blockers
 
         return result
-
-    def _create_assumptions_from_entropy(
-        self,
-        execution_id: str,
-        entropy_info: dict[str, Any],
-        context: ExecutionContext,
-    ) -> list[QueryAssumption]:
-        """Create QueryAssumption objects from entropy interpretations.
-
-        Reads assumptions from ColumnContext.entropy_assumptions (populated
-        from entropy data by build_execution_context).
-
-        Args:
-            execution_id: ID of the current execution
-            entropy_info: Extracted entropy info with high_entropy_columns
-            context: Execution context with rich_context
-
-        Returns:
-            List of QueryAssumption objects
-        """
-        assumptions: list[QueryAssumption] = []
-
-        if context.rich_context is None:
-            return assumptions
-
-        for table in context.rich_context.tables:
-            for col in table.columns:
-                if not col.entropy_assumptions:
-                    continue
-
-                # Only include assumptions for columns with meaningful entropy
-                if col.entropy_scores:
-                    p_high = col.entropy_scores.get("worst_intent_p_high", 0.0)
-                    if p_high < 0.3:
-                        continue
-
-                target = f"column:{table.table_name}.{col.column_name}"
-
-                for assumption_data in col.entropy_assumptions:
-                    # Map basis string to AssumptionBasis enum
-                    basis_str = assumption_data.get("basis", "inferred")
-                    if basis_str == "default":
-                        basis = AssumptionBasis.SYSTEM_DEFAULT
-                    elif basis_str == "user_specified":
-                        basis = AssumptionBasis.USER_SPECIFIED
-                    else:
-                        basis = AssumptionBasis.INFERRED
-
-                    # Map confidence string to float
-                    confidence_str = assumption_data.get("confidence", "medium")
-                    confidence_map = {"high": 0.9, "medium": 0.6, "low": 0.3}
-                    confidence = confidence_map.get(confidence_str, 0.6)
-
-                    assumptions.append(
-                        QueryAssumption.create(
-                            execution_id=execution_id,
-                            dimension=assumption_data.get("dimension", "unknown"),
-                            target=target,
-                            assumption=assumption_data.get("assumption_text", ""),
-                            basis=basis,
-                            confidence=confidence,
-                        )
-                    )
-
-        return assumptions
 
     def _build_schema_info(
         self,

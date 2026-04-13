@@ -578,6 +578,8 @@ class SnippetLibrary:
                 source=source,
                 llm_model=llm_model,
                 column_hash=column_hash,
+                execution_count=0,
+                failure_count=0,
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
             )

@@ -322,6 +322,30 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
   - AC3 (teach metric warning) deliberately dropped — calling agent can't act on it, graph agent handles inference.
 - **Status**: pending
 
+## 2026-04-16: DAT-263 — Snippet Provenance + Assumption Tracking + Snippet Harmonization
+
+### dataraum-eval
+- **Changed**: `src/dataraum/graphs/models.py`, `src/dataraum/graphs/agent.py`, `src/dataraum/graphs/loader.py`, `config/llm/prompts/graph_sql_generation.yaml`, `src/dataraum/query/snippet_models.py`, `src/dataraum/query/snippet_library.py`, `src/dataraum/query/execution.py`, `src/dataraum/query/agent.py`, `src/dataraum/mcp/server.py`, `src/dataraum/mcp/teach.py`, `src/dataraum/mcp/sql_executor.py`, `src/dataraum/mcp/formatters.py`, `src/dataraum/pipeline/phases/graph_execution_phase.py`, `src/dataraum/core/logging.py`
+- **Affects**: `search_snippets`, `run_sql`, `teach` (metric type), `measure` (graph_execution phase), graph agent, snippet library
+- **Calibrate**: `/smoke` after restart. Key behaviors:
+  1. `search_snippets()` vocabulary excludes `mcp:session_*` sources (run_sql noise filtered)
+  2. `search_snippets(graph_ids=["dso"])` returns full calculation chain (shared snippets from other graphs included)
+  3. `search_snippets` results include `field_resolution` (direct/inferred) and `was_repaired` per snippet
+  4. `run_sql` with broken SQL → repair → response includes `repair_attempts` and `original_sql` in `steps_executed`
+  5. `run_sql` with valid SQL → no repair fields in response
+  6. `teach(type="metric", params={..., inspiration_snippet_id: "..."})` → metric YAML includes `inspiration_snippet_id`
+  7. `measure(target_phase="graph_execution")` → taught metric executes, ad-hoc snippet deleted (`snippet_promoted` in logs)
+  8. Graph agent assumptions stored in snippet provenance dict → surfaced in `search_snippets` results
+- **Notes**:
+  - `SQLSnippetRecord` has new `provenance` JSON column (nullable). Existing workspaces without this column need `end_session` + `begin_session` to get a fresh DB.
+  - `GraphExecution.max_entropy_score` and `entropy_warnings` removed (dead fields from retired entropy interpretation agent)
+  - `GraphSource.TEACH` added to enum — `teach(type="metric")` was silently rejected by graph loader without it
+  - `_save_snippets` in graph agent moved from before to after execution — only saves SQL that actually ran. Repair info available in provenance.
+  - `enable_file_logging()` added to `core/logging.py`. MCP server logs to `{DATARAUM_HOME}/logs/mcp-server.log`.
+  - Server instructions updated with snippet promotion flow.
+  - DAT-265 created under DAT-196 for incremental phase execution (currently re-runs all metrics, not just the new one)
+- **Status**: smoke-tested (2026-04-16). All features verified against live data.
+
 <!--
 ## YYYY-MM-DD: brief description
 

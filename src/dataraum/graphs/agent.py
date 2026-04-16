@@ -971,7 +971,7 @@ class GraphAgent(LLMFeature):
                 if sr.inputs_used.get("repair_attempts", 0) > 0:
                     repair_by_step[sr.step_id] = sr
 
-        # Build provenance dict from LLM output + repair info
+        # Build provenance dict from LLM output + repair info + assumptions
         any_repaired = bool(repair_by_step)
         provenance_dict: dict[str, Any] | None = None
         if generated_code.provenance:
@@ -984,6 +984,15 @@ class GraphAgent(LLMFeature):
             }
         elif any_repaired:
             provenance_dict = {"was_repaired": True}
+
+        # Include assumptions in provenance so they're discoverable via search_snippets
+        if generated_code.assumptions:
+            if provenance_dict is None:
+                provenance_dict = {}
+            provenance_dict["assumptions"] = [
+                {"assumption": a.assumption, "basis": a.basis, "confidence": a.confidence}
+                for a in generated_code.assumptions
+            ]
 
         # Map graph steps to snippets
         for step_id, graph_step in graph.steps.items():

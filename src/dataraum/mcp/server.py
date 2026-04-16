@@ -1346,10 +1346,43 @@ def _search_snippets(
             }
         return {"vocabulary": vocabulary}
 
+    # When graph_ids are requested, resolve graph specs to find ALL snippets
+    # the graph needs — not just those with source='graph:{id}'.
+    # Snippets use first-writer-wins: revenue may belong to ebitda_margin
+    # even though DSO also needs it.
+    resolved_concepts = list(concepts) if concepts else []
+    if graph_ids:
+        try:
+            from sqlalchemy import select as sa_sel
+
+            from dataraum.graphs.loader import GraphLoader
+            from dataraum.investigation.db_models import InvestigationSession
+
+            inv = session.execute(
+                sa_sel(InvestigationSession)
+                .where(InvestigationSession.status == "active")
+                .order_by(InvestigationSession.started_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            vertical_config = inv.vertical if inv else None
+            if vertical_config:
+                loader = GraphLoader(vertical=vertical_config)
+                all_graphs = loader.load_all()
+                for gid in graph_ids:
+                    graph_spec = all_graphs.get(gid)
+                    if graph_spec:
+                        for step in graph_spec.steps.values():
+                            if step.source and step.source.standard_field:
+                                sf = step.source.standard_field
+                                if sf not in resolved_concepts:
+                                    resolved_concepts.append(sf)
+        except Exception:
+            pass  # Fall back to source-based lookup
+
     # Search for matching graphs
     graphs = library.find_graphs_by_keys(
         schema_mapping_id=source_id,
-        standard_fields=concepts,
+        standard_fields=resolved_concepts or None,
         graph_ids=graph_ids,
     )
 
@@ -1381,6 +1414,8 @@ def _search_snippets(
                 entry["field_resolution"] = s.provenance.get("field_resolution")
                 if s.provenance.get("was_repaired"):
                     entry["was_repaired"] = True
+                if s.provenance.get("assumptions"):
+                    entry["assumptions"] = s.provenance["assumptions"]
             snippets.append(entry)
 
         formatted_graphs.append(

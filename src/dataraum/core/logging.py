@@ -42,6 +42,7 @@ _run_context: ContextVar[dict[str, Any] | None] = ContextVar("run_context", defa
 
 _active_console: _RichConsole | None = None
 _active_log_buffer: LogBuffer | None = None  # forward ref, defined below
+_active_log_file: Any | None = None  # file handle for file logging
 
 _LEVEL_STYLES: dict[str, str] = {
     "debug": "dim",
@@ -95,7 +96,7 @@ class _ProxyLogger:
     """
 
     def msg(self, **kv: Any) -> None:
-        kv.pop("timestamp", None)
+        timestamp = kv.pop("timestamp", None)
         level = kv.pop("level", "")
         event = kv.pop("event", "")
         phase = kv.pop("phase", "")
@@ -107,6 +108,10 @@ class _ProxyLogger:
             _active_console.print(self._build_text(level, event, phase, kv), highlight=False)
         else:
             self._stderr_print(level, event, phase, kv)
+
+        # File logging: always write when enabled (alongside any other output)
+        if _active_log_file is not None:
+            self._file_print(_active_log_file, timestamp, level, event, phase, kv)
 
     @staticmethod
     def _build_text(level: str, event: str, phase: str, kv: dict[str, Any]) -> _RichText:
@@ -136,6 +141,27 @@ class _ProxyLogger:
             pairs = ", ".join(f"{k}: {_fmt_value(v)}" for k, v in kv.items())
             parts.append(f"({pairs})")
         print("  ".join(parts), file=sys.stderr, flush=True)
+
+    @staticmethod
+    def _file_print(
+        f: Any,
+        timestamp: str | None,
+        level: str,
+        event: str,
+        phase: str,
+        kv: dict[str, Any],
+    ) -> None:
+        parts: list[str] = []
+        if timestamp:
+            parts.append(str(timestamp))
+        parts.append(f"[{level.upper()}]" if level else "[INFO]")
+        if phase:
+            parts.append(phase)
+        parts.append(str(event))
+        if kv:
+            pairs = ", ".join(f"{k}: {_fmt_value(v)}" for k, v in kv.items())
+            parts.append(f"({pairs})")
+        print("  ".join(parts), file=f, flush=True)
 
     log = debug = info = warn = warning = msg
     err = error = exception = msg
@@ -169,6 +195,28 @@ def deactivate_console() -> None:
     global _active_console, _active_log_buffer
     _active_console = None
     _active_log_buffer = None
+
+
+def enable_file_logging(path: Any) -> None:
+    """Enable file logging alongside any other output.
+
+    Structlog events are written to the file in plain text format.
+    Stdlib logging (library output) also gets a file handler.
+
+    Intended for headless modes (MCP server) where stderr is not visible.
+
+    Args:
+        path: Path to the log file (will be opened in append mode).
+    """
+    global _active_log_file
+    _active_log_file = open(path, "a")  # noqa: SIM115
+
+    # Also route stdlib logging to the file (for library output like httpx, mcp)
+    file_handler = logging.FileHandler(path)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s  %(message)s")
+    )
+    logging.getLogger().addHandler(file_handler)
 
 
 @dataclass

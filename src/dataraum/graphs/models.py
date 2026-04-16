@@ -118,6 +118,7 @@ class GraphMetadata:
     created_at: str | None = None
     tags: list[str] = field(default_factory=list)
     applies_to: AppliesTo | None = None  # For rule-based filters
+    inspiration_snippet_id: str | None = None  # For snippet promotion via teach
 
 
 @dataclass
@@ -393,10 +394,8 @@ class GraphExecution:
     # Links to other executions
     depends_on_executions: list[str] = field(default_factory=list)
 
-    # Entropy-related tracking
+    # Assumptions made during execution (populated from LLM output)
     assumptions: list[QueryAssumption] = field(default_factory=list)
-    max_entropy_score: float = 0.0  # Highest entropy encountered
-    entropy_warnings: list[str] = field(default_factory=list)
 
     @classmethod
     def create(
@@ -434,6 +433,37 @@ class SQLStepOutput(BaseModel):
     description: str = Field(description="What this step does")
 
 
+class GraphAssumptionOutput(BaseModel):
+    """An assumption made during graph SQL generation."""
+
+    dimension: str = Field(description="Entropy dimension (e.g., 'semantic.units', 'value.nulls')")
+    target: str = Field(description="What the assumption applies to (e.g., 'column:orders.amount')")
+    assumption: str = Field(description="Human-readable assumption (e.g., 'Currency is EUR')")
+    basis: str = Field(
+        description="Basis for assumption: 'system_default', 'inferred', or 'user_specified'"
+    )
+    confidence: float = Field(
+        ge=0.0, le=1.0, description="Confidence in this assumption (0.0 to 1.0)"
+    )
+
+
+class GraphProvenanceOutput(BaseModel):
+    """Provenance of how the LLM grounded business concepts to SQL."""
+
+    field_resolution: str = Field(
+        description="How fields were resolved: 'direct' (taught concept, deterministic mapping) "
+        "or 'inferred' (LLM bridged vocabulary gap using enriched views)"
+    )
+    column_mappings_basis: dict[str, dict[str, str]] = Field(
+        default_factory=dict,
+        description="Per-concept grounding: {concept: {column, filter, resolution}}",
+    )
+    llm_reasoning: str = Field(
+        default="",
+        description="Brief explanation of how business concepts were mapped to columns",
+    )
+
+
 class GraphSQLGenerationOutput(BaseModel):
     """Pydantic model for LLM tool output - graph SQL generation.
 
@@ -457,4 +487,12 @@ class GraphSQLGenerationOutput(BaseModel):
     column_mappings: dict[str, str] = Field(
         default_factory=dict,
         description="Mapping from abstract field names to concrete column names",
+    )
+    assumptions: list[GraphAssumptionOutput] = Field(
+        default_factory=list,
+        description="Assumptions made due to data uncertainty during SQL generation",
+    )
+    provenance: GraphProvenanceOutput | None = Field(
+        default=None,
+        description="How business concepts were grounded to concrete columns",
     )

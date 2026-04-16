@@ -441,6 +441,8 @@ class QueryAgent(LLMFeature):
                     entry["column_mappings"] = snippet.column_mappings
                 if snippet.input_fields:
                     entry["input_fields"] = snippet.input_fields
+                if snippet.provenance:
+                    entry["field_resolution"] = snippet.provenance.get("field_resolution")
                 results.append(entry)
         return results
 

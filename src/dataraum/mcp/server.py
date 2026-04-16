@@ -245,6 +245,14 @@ def create_server(output_dir: Path | None = None) -> Server:
             "to reason about column semantics, quality, and business cycles. "
             "Use run_sql when you already know the SQL — for spot-checks, "
             "drill-downs, or building on snippets.\n"
+            "\n"
+            "## Snippet promotion\n"
+            "\n"
+            "Ad-hoc SQL from run_sql can be promoted to an authoritative metric:\n"
+            "  run_sql → get snippet_id from response → "
+            "teach(type='metric', params={..., inspiration_snippet_id: '...'}) → "
+            "measure(target_phase='graph_execution'). The ad-hoc snippet is "
+            "deleted after the metric is verified.\n"
         ),
     )
     server.experimental.enable_tasks()
@@ -467,7 +475,10 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "via search_snippets and referenceable as temp views by "
                     "later steps.\n\n"
                     "Blocked while pipeline is running — call measure to "
-                    "check progress."
+                    "check progress.\n\n"
+                    "Repair: if SQL fails, automatic correction via LLM is "
+                    "attempted. Steps that were repaired show repair_attempts "
+                    "and original_sql in the response."
                 ),
                 inputSchema={
                     "type": "object",
@@ -546,7 +557,10 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "concepts or graph_ids: returns matching snippet graphs "
                     "with full SQL and column mappings.\n\n"
                     "Typical flow: look (understand schema) → search_snippets "
-                    "(find existing patterns) → run_sql (build on them)."
+                    "(find existing patterns) → run_sql (build on them).\n\n"
+                    "Results include provenance: field_resolution (direct vs "
+                    "inferred) indicates how concepts were grounded to columns. "
+                    "was_repaired flags SQL that needed correction."
                 ),
                 inputSchema={
                     "type": "object",
@@ -590,7 +604,9 @@ def create_server(output_dir: Path | None = None) -> Server:
                     "- null_value: domain-specific null string (e.g. 'TBD'). "
                     "Re-run: import (full pipeline re-run).\n"
                     "- metric: computable metric with SQL dependencies. "
-                    "Re-run: graph_execution.\n\n"
+                    "Accepts optional inspiration_snippet_id from a prior "
+                    "run_sql to promote ad-hoc SQL into an authoritative "
+                    "metric. Re-run: graph_execution.\n\n"
                     "Metadata teaches — apply immediately, no re-run needed:\n"
                     "- concept_property: patch a column's semantic role or "
                     "business concept.\n"
@@ -1361,6 +1377,10 @@ def _search_snippets(
                 entry["aggregation"] = s.aggregation
             if s.column_mappings:
                 entry["column_mappings"] = s.column_mappings
+            if s.provenance:
+                entry["field_resolution"] = s.provenance.get("field_resolution")
+                if s.provenance.get("was_repaired"):
+                    entry["was_repaired"] = True
             snippets.append(entry)
 
         formatted_graphs.append(

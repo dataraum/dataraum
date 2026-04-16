@@ -780,3 +780,32 @@ class TestRepairFn:
         assert "error" in result
         # Original SQL error should be visible, not just a generic message
         assert "repair" in result["error"].lower() or "syntax" in result["error"].lower()
+
+    def test_repair_surfaces_in_step_info(self, cursor: duckdb.DuckDBPyConnection) -> None:
+        """When SQL is repaired, step_info includes repair_attempts and original_sql."""
+        from dataraum.core.models import Result
+
+        def mock_repair(failed_sql: str, error_msg: str, desc: str) -> Result[str]:
+            return Result.ok("SELECT 42 AS x")
+
+        result = run_sql(
+            cursor,
+            sql="SELCT BAD SYNTAX",
+            repair_fn=mock_repair,
+        )
+
+        assert "error" not in result
+        steps = result["steps_executed"]
+        assert len(steps) == 1
+        assert steps[0]["repair_attempts"] == 1
+        assert steps[0]["original_sql"] == "SELCT BAD SYNTAX"
+
+    def test_no_repair_fields_on_success(self, cursor: duckdb.DuckDBPyConnection) -> None:
+        """When SQL succeeds without repair, step_info has no repair fields."""
+        result = run_sql(cursor, sql="SELECT 1 AS x")
+
+        assert "error" not in result
+        steps = result["steps_executed"]
+        assert len(steps) == 1
+        assert "repair_attempts" not in steps[0]
+        assert "original_sql" not in steps[0]

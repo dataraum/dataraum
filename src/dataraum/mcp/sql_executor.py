@@ -194,7 +194,7 @@ def run_sql(
         except Exception:
             _log.debug("Quality metadata lookup failed", exc_info=True)
 
-    # --- Build step execution info with snippet status ---
+    # --- Build step execution info with snippet status + repair visibility ---
     step_info: list[dict[str, Any]] = []
     for sr in exec_result.step_results:
         entry: dict[str, Any] = {"step_id": sr.step_id, "sql": sr.sql_executed}
@@ -202,6 +202,9 @@ def run_sql(
         if match:
             entry["snippet_status"] = match[0]
             entry["snippet_id"] = match[1]
+        if sr.repair_attempts > 0:
+            entry["repair_attempts"] = sr.repair_attempts
+            entry["original_sql"] = sr.original_sql
         step_info.append(entry)
 
     from dataraum.mcp.formatters import format_run_sql_result

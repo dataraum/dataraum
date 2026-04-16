@@ -247,3 +247,71 @@ class TestTeachMetric:
         )
         metric = yaml.safe_load(metric_path.read_text())
         assert metric["interpretation"]["ranges"][0]["label"] == "GOOD"
+
+    def test_inspiration_snippet_id_in_yaml(self, session: Session, tmp_path: Path) -> None:
+        """inspiration_snippet_id flows through to metric YAML metadata."""
+        source_id = _setup_typed_tables(session)
+        config_root = _make_config_root(tmp_path)
+
+        result = handle_teach(
+            "metric",
+            {
+                "graph_id": "promoted_metric",
+                "name": "Promoted",
+                "description": "From run_sql",
+                "dependencies": {
+                    "val": {
+                        "level": 1,
+                        "type": "extract",
+                        "source": {"standard_field": "amount"},
+                        "aggregation": "sum",
+                        "output_step": True,
+                    },
+                },
+                "inspiration_snippet_id": "snippet-abc-123",
+            },
+            source_id=source_id,
+            session=session,
+            vertical="_adhoc",
+            config_root=config_root,
+        )
+
+        assert result["status"] == "applied"
+        metric_path = (
+            config_root / "verticals" / "_adhoc" / "metrics" / "general" / "promoted_metric.yaml"
+        )
+        metric = yaml.safe_load(metric_path.read_text())
+        assert metric["metadata"]["inspiration_snippet_id"] == "snippet-abc-123"
+
+    def test_no_inspiration_snippet_id_omitted(self, session: Session, tmp_path: Path) -> None:
+        """When inspiration_snippet_id is not provided, it's absent from YAML."""
+        source_id = _setup_typed_tables(session)
+        config_root = _make_config_root(tmp_path)
+
+        handle_teach(
+            "metric",
+            {
+                "graph_id": "normal_metric",
+                "name": "Normal",
+                "description": "No promotion",
+                "dependencies": {
+                    "val": {
+                        "level": 1,
+                        "type": "extract",
+                        "source": {"standard_field": "amount"},
+                        "aggregation": "sum",
+                        "output_step": True,
+                    },
+                },
+            },
+            source_id=source_id,
+            session=session,
+            vertical="_adhoc",
+            config_root=config_root,
+        )
+
+        metric_path = (
+            config_root / "verticals" / "_adhoc" / "metrics" / "general" / "normal_metric.yaml"
+        )
+        metric = yaml.safe_load(metric_path.read_text())
+        assert "inspiration_snippet_id" not in metric["metadata"]

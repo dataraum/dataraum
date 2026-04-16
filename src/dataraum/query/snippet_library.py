@@ -392,26 +392,34 @@ class SnippetLibrary:
         """
         from sqlalchemy import distinct
 
+        # Exclude run_sql ad-hoc snippets (source like 'mcp:%') from vocabulary.
+        # Their standard_field values are step IDs or content hashes — noise.
+        vocab_filter = SQLSnippetRecord.source.not_like("mcp:%")
+
         sf_stmt = select(distinct(SQLSnippetRecord.standard_field)).where(
             SQLSnippetRecord.schema_mapping_id == schema_mapping_id,
             SQLSnippetRecord.standard_field.isnot(None),
+            vocab_filter,
         )
         standard_fields = sorted(r[0] for r in self.session.execute(sf_stmt).all())
 
         st_stmt = select(distinct(SQLSnippetRecord.statement)).where(
             SQLSnippetRecord.schema_mapping_id == schema_mapping_id,
             SQLSnippetRecord.statement.isnot(None),
+            vocab_filter,
         )
         statements = sorted(r[0] for r in self.session.execute(st_stmt).all())
 
         agg_stmt = select(distinct(SQLSnippetRecord.aggregation)).where(
             SQLSnippetRecord.schema_mapping_id == schema_mapping_id,
             SQLSnippetRecord.aggregation.isnot(None),
+            vocab_filter,
         )
         aggregations = sorted(r[0] for r in self.session.execute(agg_stmt).all())
 
         src_stmt = select(distinct(SQLSnippetRecord.source)).where(
             SQLSnippetRecord.schema_mapping_id == schema_mapping_id,
+            vocab_filter,
         )
         graph_ids = sorted(
             {r[0].split(":", 1)[1] for r in self.session.execute(src_stmt).all() if ":" in r[0]}
@@ -501,6 +509,7 @@ class SnippetLibrary:
         column_mappings: dict[str, str] | None = None,
         llm_model: str | None = None,
         column_hash: str | None = None,
+        provenance: dict[str, Any] | None = None,
     ) -> SQLSnippetRecord:
         """Save a new snippet or update an existing one.
 
@@ -522,6 +531,7 @@ class SnippetLibrary:
             column_mappings: Column mappings
             llm_model: LLM model used to generate
             column_hash: Hash for schema change invalidation
+            provenance: Grounding decisions (field_resolution, column_mappings_basis, etc.)
 
         Returns:
             The created or updated SQLSnippetRecord
@@ -554,6 +564,7 @@ class SnippetLibrary:
             existing.llm_model = llm_model
             existing.column_mappings = column_mappings or {}
             existing.column_hash = column_hash
+            existing.provenance = provenance
             existing.failure_count = 0
             existing.updated_at = datetime.now(UTC)
             record = existing
@@ -578,6 +589,7 @@ class SnippetLibrary:
                 source=source,
                 llm_model=llm_model,
                 column_hash=column_hash,
+                provenance=provenance,
                 execution_count=0,
                 failure_count=0,
                 created_at=datetime.now(UTC),

@@ -36,11 +36,11 @@ class TestQueryAssumption:
         assert assumption.assumption_id is not None  # Auto-generated
 
 
-class TestGraphExecutionWithEntropy:
-    """Tests for entropy-related fields in GraphExecution."""
+class TestGraphExecutionAssumptions:
+    """Tests for assumption tracking in GraphExecution."""
 
-    def test_execution_has_entropy_fields(self) -> None:
-        """GraphExecution should have entropy-related fields."""
+    def test_execution_defaults(self) -> None:
+        """GraphExecution should have empty assumptions by default."""
         execution = GraphExecution(
             execution_id="exec-123",
             graph_id="metric-1",
@@ -50,10 +50,7 @@ class TestGraphExecutionWithEntropy:
             parameters={},
         )
 
-        # Check entropy fields exist with defaults
         assert execution.assumptions == []
-        assert execution.max_entropy_score == 0.0
-        assert execution.entropy_warnings == []
 
     def test_execution_with_assumptions(self) -> None:
         """GraphExecution with assumptions populated."""
@@ -74,14 +71,10 @@ class TestGraphExecutionWithEntropy:
             source=GraphSource.SYSTEM,
             parameters={},
             assumptions=[assumption],
-            max_entropy_score=0.65,
-            entropy_warnings=["High uncertainty in currency data"],
         )
 
         assert len(execution.assumptions) == 1
         assert execution.assumptions[0].dimension == "semantic.units"
-        assert execution.max_entropy_score == 0.65
-        assert len(execution.entropy_warnings) == 1
 
     def test_execution_with_multiple_assumptions(self) -> None:
         """GraphExecution with multiple assumptions."""
@@ -112,7 +105,6 @@ class TestGraphExecutionWithEntropy:
             source=GraphSource.SYSTEM,
             parameters={},
             assumptions=assumptions,
-            max_entropy_score=0.75,
         )
 
         assert len(execution.assumptions) == 2

@@ -44,6 +44,7 @@ class StepExecutionResult:
     sql_executed: str
     value: Any = None
     repair_attempts: int = 0
+    original_sql: str | None = None  # Pre-repair SQL when repair_attempts > 0
 
 
 @dataclass
@@ -140,6 +141,7 @@ def _execute_step(
     repair_fn: RepairFn | None,
 ) -> Result[StepExecutionResult]:
     """Execute a single step with retry/repair logic."""
+    original_sql = step.sql
     current_sql = step.sql
     last_error: str | None = None
 
@@ -158,6 +160,7 @@ def _execute_step(
                     sql_executed=current_sql,
                     value=value,
                     repair_attempts=attempt,
+                    original_sql=original_sql if attempt > 0 else None,
                 )
             )
         except Exception as e:

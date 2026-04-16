@@ -221,6 +221,7 @@ class GraphLoader:
             created_at=data.get("created_at"),
             tags=data.get("tags", []),
             applies_to=applies_to,
+            inspiration_snippet_id=data.get("inspiration_snippet_id"),
         )
 
     def _parse_output(self, path: Path, data: dict[str, Any], graph_type: GraphType) -> OutputDef:

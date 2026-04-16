@@ -190,6 +190,11 @@ class GraphExecutionPhase(BasePhase):
         executed = 0
         failed = 0
 
+        # Resolve inspiration snippets for promotion path
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        snippet_library = SnippetLibrary(ctx.session)
+
         for graph_id, graph in metrics.items():
             # Collect required standard_fields from extract steps
             required_fields = [
@@ -209,11 +214,35 @@ class GraphExecutionPhase(BasePhase):
                         missing=missing,
                     )
 
+            # Resolve inspiration snippet SQL for promotion path
+            hint_sql: str | None = None
+            inspiration_id = graph.metadata.inspiration_snippet_id
+            if inspiration_id:
+                hint_snippet = snippet_library.find_by_id(inspiration_id)
+                if hint_snippet:
+                    hint_sql = hint_snippet.sql
+                    _log.info(
+                        "inspiration_snippet_resolved",
+                        graph_id=graph_id,
+                        snippet_id=inspiration_id,
+                    )
+
             # Execute — LLM will infer missing field mappings
-            result = agent.execute(ctx.session, graph, exec_ctx)
+            result = agent.execute(ctx.session, graph, exec_ctx, inspiration_sql=hint_sql)
             if result.success:
                 executed += 1
                 _log.info("metric_executed", graph_id=graph_id)
+
+                # Snippet promotion: delete ad-hoc snippet after successful execution
+                if inspiration_id:
+                    ad_hoc = snippet_library.find_by_id(inspiration_id)
+                    if ad_hoc:
+                        ctx.session.delete(ad_hoc)
+                        _log.info(
+                            "snippet_promoted",
+                            graph_id=graph_id,
+                            deleted_snippet_id=inspiration_id,
+                        )
             else:
                 failed += 1
                 _log.warning(

@@ -17,6 +17,7 @@ statement, aggregation, and graph_id values.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
@@ -75,6 +76,7 @@ class SQLSnippetRecord(Base):
         String, nullable=False
     )  # e.g. "graph:dso", "query:exec_456"
     llm_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    provenance: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     # --- Quality tracking ---
     execution_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

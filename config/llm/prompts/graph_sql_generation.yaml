@@ -176,6 +176,19 @@ user_prompt: |
      - Reference steps as temp views: SELECT (SELECT value FROM step_1) / (SELECT value FROM step_2)
      - Graph-specific logic (ratios, formulas, multipliers) belongs here
 
+  5. Document provenance — how you grounded business concepts to columns:
+     - field_resolution: "direct" if field_mappings gave you the column, "inferred" if you
+       reasoned from enriched views, sample values, or dataset_context
+     - column_mappings_basis: for each concept you mapped, record the column, any filter,
+       and whether the resolution was direct or inferred
+     - llm_reasoning: brief explanation of your mapping strategy
+
+  6. Document assumptions — interpretation decisions due to data uncertainty:
+     - Only record genuine ambiguity you resolved (e.g., "treating nulls as zero",
+       "using end-of-period balance from latest date", "assuming EUR currency")
+     - Include the entropy dimension, what column/relationship is affected, your
+       decision, the basis (system_default/inferred/user_specified), and confidence
+
   EXAMPLE:
   steps:
     - step_id: "total_revenue"
@@ -188,7 +201,7 @@ user_prompt: |
   final_sql: "SELECT (SELECT value FROM total_ar) / (SELECT value FROM total_revenue) * (SELECT value FROM period_days) AS dso"
   </instructions>
 
-  Use the generate_sql tool to provide the SQL steps, final SQL, and column mappings.
+  Use the generate_sql tool to provide the SQL steps, final SQL, column mappings, provenance, and assumptions.
 
 # Input variable definitions
 inputs:

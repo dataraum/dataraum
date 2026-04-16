@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -32,8 +32,12 @@ from dataraum.llm.prompts import PromptRenderer
 from dataraum.llm.providers.base import LLMProvider
 
 from .models import (
+    AssumptionBasis,
+    GraphAssumptionOutput,
     GraphExecution,
+    GraphProvenanceOutput,
     GraphSQLGenerationOutput,
+    QueryAssumption,
     StepResult,
     StepType,
     TransformationGraph,
@@ -61,6 +65,10 @@ class GeneratedCode:
     llm_model: str
     prompt_hash: str
     generated_at: datetime
+
+    # Provenance and assumptions (from LLM output, optional)
+    provenance: GraphProvenanceOutput | None = None
+    assumptions: list[GraphAssumptionOutput] = field(default_factory=list)
 
 
 @dataclass
@@ -148,6 +156,7 @@ class GraphAgent(LLMFeature):
         context: ExecutionContext,
         parameters: dict[str, Any] | None = None,
         force_regenerate: bool = False,
+        inspiration_sql: str | None = None,
     ) -> Result[GraphExecution]:
         """Execute a graph by generating and running SQL.
 
@@ -157,6 +166,7 @@ class GraphAgent(LLMFeature):
             context: Execution context with data connection
             parameters: Parameter values for the graph
             force_regenerate: If True, regenerate SQL even if cached
+            inspiration_sql: SQL hint from a promoted snippet (injected as cached_step)
 
         Returns:
             Result containing GraphExecution with results
@@ -185,6 +195,14 @@ class GraphAgent(LLMFeature):
                 schema_mapping_id,
                 resolved_params,
             )
+
+            # Inject inspiration SQL as a hint (from snippet promotion path)
+            if inspiration_sql and not cached_snippets:
+                cached_snippets["_inspiration"] = {
+                    "sql": inspiration_sql,
+                    "description": "SQL hint from promoted ad-hoc query",
+                    "snippet_id": None,
+                }
 
             # If ALL steps have cached snippets, assemble without LLM
             if cached_snippets and len(cached_snippets) == len(graph.steps):
@@ -231,14 +249,6 @@ class GraphAgent(LLMFeature):
 
             self._code_cache[cache_key] = generated_code
 
-            # Save generated steps as snippets for cross-graph reuse
-            self._save_snippets(
-                session=session,
-                graph=graph,
-                generated_code=generated_code,
-                schema_mapping_id=schema_mapping_id,
-            )
-
         # Execute the generated SQL
         exec_result = self._execute_sql(generated_code, context, graph, resolved_params)
         if not exec_result.success or not exec_result.value:
@@ -253,6 +263,16 @@ class GraphAgent(LLMFeature):
             return Result.fail(exec_result.error or "SQL execution failed")
 
         execution = exec_result.value
+
+        # Save snippets AFTER successful execution — includes repair info
+        # and only saves SQL that actually works.
+        self._save_snippets(
+            session=session,
+            graph=graph,
+            generated_code=generated_code,
+            schema_mapping_id=schema_mapping_id,
+            step_results=execution.step_results,
+        )
 
         return Result.ok(execution)
 
@@ -462,6 +482,8 @@ class GraphAgent(LLMFeature):
             ],
             final_sql=output.final_sql,
             column_mappings=output.column_mappings,
+            provenance=output.provenance,
+            assumptions=output.assumptions or [],
             llm_model=model,
             prompt_hash=prompt_hash,
             generated_at=datetime.now(UTC),
@@ -487,7 +509,29 @@ class GraphAgent(LLMFeature):
         execution = GraphExecution.create(graph, parameters, context.period)
         execution.is_period_final = context.is_period_final
 
-        execution.assumptions = []
+        # Convert LLM assumptions to QueryAssumption objects
+        basis_map = {
+            "system_default": AssumptionBasis.SYSTEM_DEFAULT,
+            "inferred": AssumptionBasis.INFERRED,
+            "user_specified": AssumptionBasis.USER_SPECIFIED,
+        }
+        assumptions: list[QueryAssumption] = []
+        for a in generated_code.assumptions or []:
+            mapped_basis = basis_map.get(a.basis)
+            if mapped_basis is None:
+                logger.debug("unknown_assumption_basis", basis=a.basis)
+                mapped_basis = AssumptionBasis.INFERRED
+            assumptions.append(
+                QueryAssumption.create(
+                    execution_id=execution.execution_id,
+                    dimension=a.dimension,
+                    target=a.target,
+                    assumption=a.assumption,
+                    basis=mapped_basis,
+                    confidence=a.confidence,
+                )
+            )
+        execution.assumptions = assumptions
 
         # Get max repair attempts from config (default 2)
         feature_config = getattr(self.config.features, "sql_repair", None)
@@ -891,20 +935,20 @@ class GraphAgent(LLMFeature):
         graph: TransformationGraph,
         generated_code: GeneratedCode,
         schema_mapping_id: str,
+        step_results: list[StepResult] | None = None,
     ) -> None:
         """Save generated SQL steps as snippets for cross-graph reuse.
 
-        Decomposes the generated code into individual snippets based on the
-        graph step definitions. Each graph step maps to a snippet type:
-        - extract steps -> extract snippets (keyed by standard_field + statement + aggregation)
-        - constant steps -> constant snippets (keyed by parameter + value)
-        - formula steps -> formula template snippets (keyed by normalized expression)
+        Called AFTER successful execution so that:
+        - Only working SQL is saved (not broken SQL that needs marking as failed)
+        - Repair info from step_results can be included in provenance
 
         Args:
             session: SQLAlchemy session
             graph: Graph specification (defines step types and metadata)
             generated_code: LLM-generated SQL code
             schema_mapping_id: Schema mapping identifier
+            step_results: Execution results for repair detection
         """
         from dataraum.query.snippet_library import SnippetLibrary
         from dataraum.query.snippet_utils import normalize_expression
@@ -920,13 +964,40 @@ class GraphAgent(LLMFeature):
             if step_id:
                 generated_steps[step_id] = step_dict
 
+        # Build repair lookup from execution results
+        repair_by_step: dict[str, StepResult] = {}
+        if step_results:
+            for sr in step_results:
+                if sr.inputs_used.get("repair_attempts", 0) > 0:
+                    repair_by_step[sr.step_id] = sr
+
+        # Build provenance dict from LLM output + repair info
+        any_repaired = bool(repair_by_step)
+        provenance_dict: dict[str, Any] | None = None
+        if generated_code.provenance:
+            prov = generated_code.provenance
+            provenance_dict = {
+                "field_resolution": prov.field_resolution,
+                "was_repaired": any_repaired,
+                "column_mappings_basis": prov.column_mappings_basis,
+                "llm_reasoning": prov.llm_reasoning,
+            }
+        elif any_repaired:
+            provenance_dict = {"was_repaired": True}
+
         # Map graph steps to snippets
         for step_id, graph_step in graph.steps.items():
             gen_step = generated_steps.get(step_id)
             if not gen_step:
                 continue
 
-            sql = gen_step.get("sql", "")
+            # Use repaired SQL if available, otherwise original LLM SQL
+            repaired = repair_by_step.get(step_id)
+            sql = (
+                repaired.source_query
+                if repaired and repaired.source_query
+                else gen_step.get("sql", "")
+            )
             description = gen_step.get("description", "")
 
             if graph_step.step_type == StepType.EXTRACT and graph_step.source:
@@ -942,6 +1013,7 @@ class GraphAgent(LLMFeature):
                     aggregation=graph_step.aggregation,
                     column_mappings=generated_code.column_mappings,
                     llm_model=generated_code.llm_model,
+                    provenance=provenance_dict,
                 )
 
             elif graph_step.step_type == StepType.CONSTANT:
@@ -963,6 +1035,7 @@ class GraphAgent(LLMFeature):
                     standard_field=graph_step.parameter or step_id,
                     parameter_value=param_value,
                     llm_model=generated_code.llm_model,
+                    provenance=provenance_dict,
                 )
 
             elif graph_step.step_type == StepType.FORMULA and graph_step.expression:
@@ -978,6 +1051,7 @@ class GraphAgent(LLMFeature):
                     normalized_expression=normalized,
                     input_fields=sorted_fields,
                     llm_model=generated_code.llm_model,
+                    provenance=provenance_dict,
                 )
 
         logger.debug("saved_snippets", graph_id=graph.graph_id)

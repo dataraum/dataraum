@@ -137,6 +137,12 @@ class MetricParams(BaseModel):
     )
     parameters: dict[str, Any] = Field(default_factory=dict, description="Named parameters")
     interpretation: dict[str, Any] | None = Field(default=None, description="Interpretation ranges")
+    inspiration_snippet_id: str | None = Field(
+        default=None,
+        description="Snippet ID from a prior run_sql execution to use as SQL hint. "
+        "The graph agent receives this snippet's SQL when generating the metric. "
+        "On success, the ad-hoc snippet is deleted (promoted to authoritative).",
+    )
 
 
 class ConceptPropertyParams(BaseModel):
@@ -433,14 +439,18 @@ def _handle_metric(params: MetricParams, vertical: str, **_kw: Any) -> FixDocume
     Uses the same whole-file pattern as validation teach, but writes to
     metrics/{category}/{graph_id}.yaml instead of validations/.
     """
+    metadata: dict[str, Any] = {
+        "name": params.name,
+        "description": params.description,
+        "category": params.category,
+        "source": "teach",
+    }
+    if params.inspiration_snippet_id:
+        metadata["inspiration_snippet_id"] = params.inspiration_snippet_id
+
     metric_dict: dict[str, Any] = {
         "graph_id": params.graph_id,
-        "metadata": {
-            "name": params.name,
-            "description": params.description,
-            "category": params.category,
-            "source": "teach",
-        },
+        "metadata": metadata,
         "output": {
             "type": "scalar",
             "metric_id": params.graph_id,

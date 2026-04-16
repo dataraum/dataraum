@@ -2790,6 +2790,15 @@ async def run_server() -> None:
 def main() -> None:
     """Entry point for dataraum-mcp command."""
     import asyncio
+    import logging
+
+    # MCP uses stdio transport — stderr is swallowed. Add a file handler
+    # so crashes and pipeline logs are recoverable.
+    log_dir = _resolve_root_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_dir / "mcp-server.log")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logging.getLogger().addHandler(file_handler)
 
     asyncio.run(run_server())
 

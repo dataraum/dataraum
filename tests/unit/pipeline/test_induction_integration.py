@@ -25,7 +25,12 @@ def _make_ctx(vertical: str = "_adhoc") -> MagicMock:
 
 @pytest.fixture()
 def _mock_llm():
-    """Patch LLM infrastructure so phases can initialize."""
+    """Patch LLM infrastructure so phases can initialize.
+
+    Patch paths target the consumer modules (business_cycles_phase,
+    validation_phase) because the phases do `from dataraum.llm import ...`
+    at module load, which captures bindings at import time.
+    """
     mock_config = MagicMock()
     mock_config.active_provider = "anthropic"
     mock_config.providers = {"anthropic": MagicMock()}
@@ -33,9 +38,30 @@ def _mock_llm():
     mock_config.limits.max_output_tokens_per_request = 8000
 
     with (
-        patch("dataraum.llm.load_llm_config", return_value=mock_config),
-        patch("dataraum.llm.create_provider", return_value=MagicMock()),
-        patch("dataraum.llm.PromptRenderer", return_value=MagicMock()),
+        patch(
+            "dataraum.pipeline.phases.business_cycles_phase.load_llm_config",
+            return_value=mock_config,
+        ),
+        patch(
+            "dataraum.pipeline.phases.business_cycles_phase.create_provider",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "dataraum.pipeline.phases.business_cycles_phase.PromptRenderer",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "dataraum.pipeline.phases.validation_phase.load_llm_config",
+            return_value=mock_config,
+        ),
+        patch(
+            "dataraum.pipeline.phases.validation_phase.create_provider",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "dataraum.pipeline.phases.validation_phase.PromptRenderer",
+            return_value=MagicMock(),
+        ),
     ):
         yield
 

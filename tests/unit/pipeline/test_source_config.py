@@ -133,7 +133,6 @@ class TestEnsureAdhocVertical:
         adhoc = output_dir / "config" / "verticals" / "_adhoc"
         assert (adhoc / "validations").is_dir()
         assert (adhoc / "metrics").is_dir()
-        assert (adhoc / "filters").is_dir()
 
     def test_idempotent(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "output"

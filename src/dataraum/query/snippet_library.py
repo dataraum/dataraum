@@ -392,9 +392,12 @@ class SnippetLibrary:
         """
         from sqlalchemy import distinct
 
-        # Exclude run_sql ad-hoc snippets (source like 'mcp:%') from vocabulary.
-        # Their standard_field values are step IDs or content hashes — noise.
-        vocab_filter = SQLSnippetRecord.source.not_like("mcp:%")
+        # Vocabulary is curated from graph agent snippets only — those are the
+        # authoritative ontology concepts (stable graph_id, YAML-defined).
+        # Query agent (query:{uuid}) and run_sql (mcp:session_*) snippets are
+        # per-execution artifacts — they pollute vocabulary with step IDs and UUIDs.
+        # They remain searchable via find_by_id / find_by_key.
+        vocab_filter = SQLSnippetRecord.source.like("graph:%")
 
         sf_stmt = select(distinct(SQLSnippetRecord.standard_field)).where(
             SQLSnippetRecord.schema_mapping_id == schema_mapping_id,

@@ -127,7 +127,7 @@ class TestSnippetProvenance:
 
 
 class TestVocabularyHarmonization:
-    """Tests for vocabulary filtering — mcp: sources excluded."""
+    """Tests for vocabulary filtering — only graph: sources contribute."""
 
     def test_mcp_snippets_excluded_from_vocabulary(self, session: Session) -> None:
         """run_sql snippets (source like mcp:%) should not appear in vocabulary."""
@@ -159,16 +159,24 @@ class TestVocabularyHarmonization:
         # mcp session sources should not produce graph_ids
         assert not any(gid.startswith("session_") for gid in vocab["graph_ids"])
 
-    def test_query_agent_snippets_included_in_vocabulary(self, session: Session) -> None:
-        """Query agent snippets (source like query:%) should appear in vocabulary."""
+    def test_query_agent_snippets_excluded_from_vocabulary(self, session: Session) -> None:
+        """Query agent snippets (source like query:%) should NOT appear in vocabulary.
+
+        Query agent snippets are per-execution artifacts — step_ids are LLM-generated
+        names (like revenue_march_2025) and the source UUID pollutes graph_ids.
+        They remain searchable via find_by_id / find_by_key.
+        """
+        # Add a graph snippet (should be in vocabulary)
+        _add_snippet(session, SOURCE_ID, standard_field="revenue", source="graph:dso")
+        # Add a query agent snippet (should NOT be in vocabulary)
         record = SQLSnippetRecord(
             snippet_type="query",
-            standard_field="monthly_revenue",
+            standard_field="revenue_march_2025",
             schema_mapping_id=SOURCE_ID,
-            sql="SELECT SUM(amount) FROM t GROUP BY month",
+            sql="SELECT SUM(amount) FROM t WHERE month = 3",
             description="Monthly revenue query",
             column_mappings={},
-            source="query:exec_456",
+            source="query:df2b8659-7d7d-47f5-969f-076c3912503c",
             execution_count=0,
             failure_count=0,
             created_at=datetime.now(UTC),
@@ -180,4 +188,10 @@ class TestVocabularyHarmonization:
         library = SnippetLibrary(session)
         vocab = library.get_search_vocabulary(schema_mapping_id=SOURCE_ID)
 
-        assert "monthly_revenue" in vocab["standard_fields"]
+        # One-off step_id from query agent should not pollute vocabulary
+        assert "revenue_march_2025" not in vocab["standard_fields"]
+        # Execution UUID should not appear as graph_id
+        assert "df2b8659-7d7d-47f5-969f-076c3912503c" not in vocab["graph_ids"]
+        # Graph snippet vocabulary still present
+        assert "revenue" in vocab["standard_fields"]
+        assert "dso" in vocab["graph_ids"]

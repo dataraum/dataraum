@@ -1,6 +1,8 @@
 # Pipeline
 
-The DataRaum pipeline extracts metadata from data files through 17 phases. Each phase produces structured metadata stored in SQLite (metadata) and DuckDB (data). Phases declare their dependencies and execute in topological order with parallel execution where possible.
+The DataRaum pipeline extracts metadata from data files through 18 phases. Each phase produces structured metadata stored in SQLite (metadata) and DuckDB (data). Phases declare their dependencies and execute in topological order with parallel execution where possible.
+
+When a vertical is not yet configured for a dataset, the pipeline runs a **cold-start bootstrap** during the `semantic` and `business_cycles`/`validation` phases — inducing an ontology, cycles, and validations from the data itself so subsequent phases have grounding.
 
 ## Running the Pipeline
 
@@ -42,7 +44,7 @@ ctx.run("/path/to/data")
 | 5 | **statistical_quality** | Benford's Law compliance, outlier detection | — |
 | 6 | **relationships** | Cross-table join detection (FK candidates) | — |
 | 7 | **temporal** | Temporal pattern and trend analysis | — |
-| 8 | **semantic** | Business meaning, roles, entity types (dual-tier) | Yes |
+| 8 | **semantic** | Business meaning, roles, entity types. Cold-start: induces an ontology if none is configured. | Yes |
 | 9 | **data_fixes** | Apply stored metadata fixes | — |
 | 10 | **enriched_views** | Fact + dimension joined views | Yes |
 | 11 | **slicing** | Identify slice dimensions for analysis | Yes |
@@ -50,10 +52,11 @@ ctx.run("/path/to/data")
 | 13 | **slice_analysis** | Execute slicing SQL, build slice tables | — |
 | 14 | **temporal_slice_analysis** | Distribution drift across slices over time | — |
 | 15 | **correlations** | Derived column detection (same + cross-table via enriched views) | — |
-| 16 | **business_cycles** | Detect business processes across tables | Yes |
-| 17 | **validation** | Domain-specific validation checks | Yes |
+| 16 | **business_cycles** | Detect business processes across tables. Cold-start: induces cycles if none are configured. | Yes |
+| 17 | **validation** | Domain-specific validation checks. Cold-start: induces validations if none are configured. | Yes |
+| 18 | **graph_execution** | Compute business metrics via the graph agent (extract → formula SQL, cached as reusable snippets with provenance) | Yes |
 
-5 of 17 phases require an LLM.
+6 of 18 phases require an LLM.
 
 ## Phase Categories
 
@@ -68,6 +71,9 @@ LLM-powered semantic analysis assigns business meaning to columns. Enriched view
 
 ### Domain Layer (Phases 16–17)
 Business cycle detection finds multi-table processes (e.g., order-to-cash). Validation runs domain-specific checks (e.g., debits = credits).
+
+### Computation Layer (Phase 18)
+**Graph execution** takes metric definitions (from the vertical or taught via `teach(type="metric")`) and the graph agent generates SQL grounded in the semantic layer. Each computed metric is cached as an authoritative `graph:{graph_id}` snippet with provenance (field resolution, column mappings, reasoning, repair status) so downstream `query` and `run_sql` calls can reuse it.
 
 ## Post-Phase Detectors
 
@@ -97,16 +103,20 @@ import ──► typing ──► statistics ──► column_eligibility ──
                                                   ┌──────┘       └──────┐
                                                   ▼                     ▼
                                                slicing            correlations
-                                                  │
-                                            slicing_view
-                                                  │
-                                           slice_analysis
-                                                  │
-                                    temporal_slice_analysis ◄── temporal
-                                                  │
-                                    business_cycles, validation
-                                    (depend on semantic, relationships,
-                                     temporal, enriched_views, slicing)
+                                                  │                     │
+                                            slicing_view                │
+                                                  │                     │
+                                           slice_analysis               │
+                                                  │                     │
+                                    temporal_slice_analysis ◄── temporal│
+                                                  │                     │
+                                     business_cycles, validation        │
+                                     (depend on semantic, relationships,│
+                                      temporal, enriched_views, slicing)│
+                                                  │                     │
+                                                  └─────────┬───────────┘
+                                                            ▼
+                                                    graph_execution
 ```
 
 ## Output Files
@@ -126,5 +136,7 @@ Phases are idempotent. Rerunning the pipeline skips already-completed phases unl
 # Force re-run of a specific phase
 dataraum run /path/to/data --phase statistics --force
 ```
+
+Via MCP, `measure(target_phase="semantic")` reruns a targeted phase and cascades to its dependents. This is the normal path after a `teach` call: teach adds to the vertical overlay, then the caller reruns the affected phase.
 
 To start completely fresh, delete the output directory and re-run.

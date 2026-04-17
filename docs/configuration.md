@@ -35,7 +35,7 @@ config/
 │
 ├── llm/
 │   ├── config.yaml            # Provider, model tiers, privacy settings
-│   └── prompts/               # LLM prompt templates (13 files)
+│   └── prompts/               # LLM prompt templates (15 files)
 │       ├── semantic_analysis.yaml
 │       ├── column_annotation.yaml
 │       ├── slicing_analysis.yaml
@@ -43,8 +43,13 @@ config/
 │       ├── business_cycles.yaml
 │       ├── validation_sql.yaml
 │       ├── graph_sql_generation.yaml
-│       ├── config_fix.yaml
 │       ├── query_analysis.yaml
+│       ├── why_analysis.yaml
+│       ├── ontology_induction.yaml      # Cold-start: induce ontology
+│       ├── cycle_induction.yaml         # Cold-start: induce business cycles
+│       ├── validation_induction.yaml    # Cold-start: induce validations
+│       ├── metric_induction.yaml        # Cold-start: induce metrics
+│       ├── config_fix.yaml
 │       └── sql_repair.yaml
 │
 └── verticals/                 # Industry-specific domain knowledge
@@ -78,18 +83,30 @@ config/
 
 ## Pipeline Configuration
 
-`config/pipeline.yaml` controls which phases run and how the orchestrator behaves.
+`config/pipeline.yaml` declares the pipeline DAG. Each phase has a description, dependencies, and (optionally) post-step detectors that run after it completes.
 
 ```yaml
-# Active phases (execution order determined by dependencies)
 phases:
-  - import
-  - typing
-  - statistics
-  # ... comment out a phase to disable it
+  typing:
+    description: Type inference and resolution
+    dependencies: [import]
+    produces: [typing]
+    detectors: [type_fidelity]
+
+  semantic:
+    description: LLM-powered semantic analysis
+    dependencies: [relationships]
+    produces: [semantic]
+    detectors: [business_meaning, unit_entropy, temporal_entropy,
+                outlier_rate, benford,
+                join_path_determinism, relationship_entropy]
+
+  graph_execution:
+    description: Compute business metrics via graph agent
+    dependencies: [validation, business_cycles, correlations]
 
 pipeline:
-  max_parallel: 4       # ThreadPoolExecutor workers
+  max_parallel: 4        # ThreadPoolExecutor workers
   fail_fast: true        # Stop on first phase failure
   skip_completed: true   # Skip phases with completed checkpoints
   retry:
@@ -97,7 +114,7 @@ pipeline:
     backoff_base: 2.0    # Exponential backoff seconds
 ```
 
-Phases can be disabled by commenting them out. The orchestrator resolves dependencies automatically — if a phase's dependency is disabled, the phase is skipped.
+The orchestrator topologically sorts phases by their `dependencies` list. Post-phase detectors listed under `detectors` run as soon as their phase completes, producing entropy scores incrementally.
 
 ## LLM Configuration
 
@@ -257,6 +274,8 @@ Templates receive structured context (schema, statistics, semantic annotations) 
 
 ## Adding a New Vertical
 
+### Option A: handwritten
+
 To add domain knowledge for a new industry:
 
 1. Create `config/verticals/{name}/ontology.yaml` with concepts and indicators
@@ -266,3 +285,15 @@ To add domain knowledge for a new industry:
 5. Add validation specs in `validations/` for domain rules
 
 The pipeline automatically discovers and applies vertical configuration based on semantic analysis results. System-level filters (role, type, pattern, and generic consistency checks) apply to all verticals without any per-vertical configuration.
+
+### Option B: cold-start induction
+
+When no matching vertical exists for a dataset, the pipeline induces one during the first run. Ontology induction fires during `semantic`, cycles during `business_cycles`, validations during `validation`, and metrics during `graph_execution`. Induced YAML is written to the session's vertical overlay and can be reviewed, edited, or extended via `teach`.
+
+### Teach-driven overlays
+
+The `teach` MCP tool writes to a **session-scoped vertical overlay** at `DATARAUM_HOME/workspace/<session>/vertical/`. It never modifies `config/verticals/` directly. The overlay is merged on top of the base vertical at load time.
+
+Config teaches (concept, metric, cycle, validation, relationship, type_pattern, null_value) write YAML and require a targeted pipeline re-run via `measure(target_phase=...)`. Metadata teaches (concept_property, explanation) write to the metadata store and apply immediately.
+
+To promote a session overlay to a persistent vertical, copy the overlay directory into `config/verticals/<name>/` after the session ends.

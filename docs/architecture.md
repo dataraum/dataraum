@@ -12,8 +12,8 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           CONSUMERS                                         │
 │                                                                             │
-│   Claude Code ──── MCP Server (7 tools)                                     │
-│   Claude Desktop ─┘                       ContextDocument (pre-assembled)   │
+│   Claude Code ──── MCP Server (10 tools)                                    │
+│   Claude Desktop ─┘                       Session + World Model             │
 │   Python ──────── Context API                                               │
 │   Terminal ────── CLI (run + dev)                                            │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -66,7 +66,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           PIPELINE ORCHESTRATOR                             │
 │                                                                             │
-│   17 phases with dependency-based execution                                 │
+│   18 phases with dependency-based execution                                 │
 │   Post-phase entropy detectors (scores computed incrementally)              │
 │   ThreadPoolExecutor (true parallelism via Python 3.14 free-threading)      │
 │   Idempotent phases, checkpoint-based resumption                            │
@@ -82,11 +82,13 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 │   │ type_candidates,     │      │ quarantine_{table}   │                   │
 │   │ semantic_annotations,│      │ enriched views       │                   │
 │   │ relationships,       │      └──────────────────────┘                   │
-│   │ entropy_records,     │                                                  │
 │   │ entropy_objects,     │                                                  │
-│   │ investigation_steps, │                                                  │
+│   │ investigation_*,     │                                                  │
 │   │ slice_definitions,   │                                                  │
 │   │ validation_results,  │                                                  │
+│   │ graph_executions,    │                                                  │
+│   │ sql_snippets (+prov),│                                                  │
+│   │ query_executions,    │                                                  │
 │   │ ...                  │                                                  │
 │   └──────────────────────┘                                                  │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -96,7 +98,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 
 | Layer | Technology | Purpose |
 |-------|------------|---------|
-| **AI Interface** | MCP Server | 7 tools for AI agents (Claude Code, Claude Desktop) |
+| **AI Interface** | MCP Server | 10 tools for AI agents (Claude Code, Claude Desktop) |
 | **CLI** | Typer + Rich | `run` command + `dev` subgroup for terminal use |
 | **Python API** | `Context` class | Programmatic access for notebooks and scripts |
 | **Pipeline** | ThreadPoolExecutor | Parallel phase execution (free-threaded Python 3.14) |
@@ -120,7 +122,35 @@ AI doesn't discover metadata at runtime via tools. It receives a pre-assembled c
 
 ### Session-Based Tool Surface
 
-7 MCP tools organized around investigation sessions: `add_source` → `begin_session` → `look` / `measure` / `query` / `run_sql` → `end_session`. Sources are registered first, then the session seals them. The session carries the contract (entropy threshold profile) so the agent doesn't need to pass it on every call.
+10 MCP tools organized around investigation sessions: `add_source` → `begin_session` → `look` / `measure` / `why` / `teach` / `query` / `run_sql` / `search_snippets` → `end_session`. Sources are registered first, then the session seals them. The session carries the contract (entropy threshold profile) so the agent doesn't need to pass it on every call.
+
+### The Understanding Layer (World Model)
+
+DataRaum maintains a **world model** for each dataset — a structured, queryable representation of what exists and what it means. Five facets:
+
+| Facet | What | Pipeline phase |
+|-------|------|---------------|
+| Concepts | What exists in business terms | semantic |
+| Metrics | What we measure and compute | graph_execution |
+| Cycles | How things flow | business_cycles |
+| Validations | What must be true | validation |
+| Filters | What counts, what's excluded | graph_execution |
+
+The world model is built progressively through **teach + rerun** cycles. `teach` extends a vertical YAML overlay (session-scoped at `DATARAUM_HOME/workspace/<session>/vertical/`); `measure(target_phase=...)` reruns the affected phase so downstream metadata reflects the new knowledge. Config teaches (concept, metric, cycle, validation, relationship, type_pattern, null_value) trigger a rerun; metadata teaches (concept_property, explanation) apply immediately.
+
+### Snippet Provenance and Promotion
+
+The `graph_execution` phase and the `query` / `run_sql` tools produce **SQL snippets** — named, reusable SQL fragments stored with grounding provenance (field resolution, column mappings, LLM reasoning, repair status). Snippets are discoverable via `search_snippets` and injected as cached steps into downstream executions.
+
+Snippet sources form a hierarchy:
+
+- `graph:{graph_id}` — authoritative, produced by graph_execution from vertical metric YAML
+- `query:{execution_id}` — exploratory, produced by the query agent
+- `mcp:session_...` — ad-hoc, produced by `run_sql`
+
+Ad-hoc snippets can be **promoted** into authoritative graph snippets via `teach(type="metric", inspiration_snippet_id=...)`: the teach stores the inspiration ID in metric YAML, graph_execution reruns, and the ad-hoc snippet is deleted once the authoritative snippet is produced.
+
+Only `graph:` snippets currently contribute to the search vocabulary, keeping ad-hoc run_sql noise out of discoverability.
 
 ### Entropy Over Binary Quality
 
@@ -165,25 +195,28 @@ src/dataraum/
 │   ├── measurement.py     # measure_entropy(), match_threshold()
 │   └── engine.py          # Detector orchestration, post-step hooks
 ├── investigation/         # Session trace models (MCP audit trail)
-├── documentation/         # Fix ledger + document agent
-├── graphs/                # Metric calculation graphs, context assembly
-├── query/                 # Natural language query execution
+├── graphs/                # Metric calculation graphs, graph agent, context assembly
+├── query/                 # Natural language query execution + SQL snippet store
+│   ├── agent.py           # Query agent (LLM SQL planner)
+│   ├── snippet_library.py # Snippet search, promotion, vocabulary
+│   └── snippet_models.py  # SQLSnippetRecord with provenance
 ├── pipeline/              # Pipeline orchestrator
 │   ├── registry.py        # Phase auto-discovery
 │   ├── runner.py          # Execution engine + RunConfig
-│   └── phases/            # 17 phase implementations
+│   └── phases/            # 18 phase implementations
 ├── sources/               # Data source loaders (CSV, Parquet, JSON)
 ├── storage/               # SQLAlchemy base, migrations
 ├── llm/                   # LLM provider abstraction, prompt management
-├── core/                  # Config, connections, utilities, models
+├── core/                  # Config, connections, utilities, models, file logging
 ├── cli/                   # Typer CLI
 │   ├── main.py            # CLI entry point
 │   └── commands/          # run, dev (subgroup)
 └── mcp/                   # MCP server
-    ├── server.py          # 7 tool definitions
+    ├── server.py          # 10 tool definitions + session instructions
+    ├── teach.py           # teach dispatch (9 types) + YAML overlay writer
     ├── formatters.py      # LLM-optimized markdown output
     ├── sections.py        # Response section builders
-    └── sql_executor.py    # SQL execution with export support
+    └── sql_executor.py    # SQL execution with auto-repair + export support
 ```
 
 SQLAlchemy models are co-located with business logic in `db_models.py` files within each module.
@@ -212,18 +245,21 @@ Entropy detectors run as post-steps after each phase, building up scores increme
 
 ## Interfaces
 
-### MCP Server (7 tools)
+### MCP Server (10 tools)
 
-Primary interface for AI agents. Tools return markdown formatted for LLM consumption.
+Primary interface for AI agents. Tools return markdown formatted for LLM consumption. The server emits session instructions on connect describing when to use each tool.
 
 | Tool | Purpose |
 |------|---------|
-| `begin_session` | Start an investigation session with a contract |
-| `add_source` | Register and analyze a data source |
-| `look` | Explore schema, relationships, semantic metadata |
-| `measure` | Entropy scores, readiness, data quality |
-| `query` | Natural language data queries |
-| `run_sql` | Execute SQL with export support |
+| `begin_session` | Start an investigation session with a contract; triggers pipeline on first run |
+| `add_source` | Register a data source |
+| `look` | Explore schema, relationships, semantic metadata, readiness |
+| `measure` | Entropy scores + readiness; reruns a target phase on demand |
+| `why` | Evidence synthesis — explains elevated entropy, proposes teaches |
+| `teach` | Extend the world model (9 teach types) |
+| `query` | Natural-language data queries with confidence + assumptions |
+| `run_sql` | Execute SQL with auto-repair, export support, snippet caching |
+| `search_snippets` | Discover reusable SQL snippets with provenance |
 | `end_session` | Archive workspace and end session |
 
 ### CLI
@@ -266,7 +302,7 @@ with Context("./pipeline_output") as ctx:
 
 ## LLM Integration
 
-5 of 17 pipeline phases use LLM.
+6 of 18 pipeline phases use LLM, plus interactive agents invoked via MCP.
 
 | Feature | Model Tier | Purpose |
 |---------|------------|---------|
@@ -276,6 +312,10 @@ with Context("./pipeline_output") as ctx:
 | Slicing Analysis | balanced | Identify meaningful data segments |
 | Business Cycles | balanced | Multi-table process detection |
 | Validation | balanced | Domain-specific SQL generation |
+| Graph SQL Generation | balanced | Metric SQL grounded in the semantic layer + provenance |
+| Metric Induction | balanced | Cold-start metric YAML generation from ontology |
+| Query Agent | balanced | Natural-language → SQL plan with assumptions |
+| Why Agent | balanced | Evidence synthesis → explanation + teach suggestions |
 | SQL Repair | fast | Fix broken generated SQL |
 
 LLM configuration: `config/llm/config.yaml`. Prompts: `config/llm/prompts/`. Provider: Anthropic (primary).

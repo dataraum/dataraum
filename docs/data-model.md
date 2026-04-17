@@ -386,7 +386,7 @@ investigation_steps (
 
 ### Query & Graphs
 
-Query execution history, SQL snippet cache, and metric computation records.
+Query execution history, graph (metric) executions with step results, and the SQL snippet knowledge base.
 
 ```sql
 query_executions (
@@ -397,18 +397,94 @@ query_executions (
     success          BOOLEAN NOT NULL,
     row_count        INTEGER,
     confidence_level VARCHAR NOT NULL,
-    contract_name    VARCHAR
+    contract_name    VARCHAR,
+    assumptions      JSON                   -- LLM-reported assumptions + basis
 );
 
 graph_executions (
-    execution_id    VARCHAR PRIMARY KEY,
-    graph_id        VARCHAR NOT NULL,      -- e.g. "dso", "current_ratio"
-    graph_type      VARCHAR NOT NULL,
-    output_value    JSON,
+    execution_id          VARCHAR PRIMARY KEY,
+    graph_id              VARCHAR NOT NULL,   -- e.g. "dso", "current_ratio"
+    graph_type            VARCHAR NOT NULL,
+    output_value          JSON,
     output_interpretation VARCHAR,
-    period          VARCHAR
+    period                VARCHAR,
+    assumptions           JSON                -- grounding decisions per run
+);
+
+step_results (
+    step_id          VARCHAR PRIMARY KEY,
+    execution_id     VARCHAR NOT NULL,       -- FK → graph_executions
+    step_name        VARCHAR NOT NULL,
+    sql              TEXT,
+    value            JSON,
+    error            VARCHAR
 );
 ```
+
+### SQL Snippets (knowledge base)
+
+Reusable SQL fragments produced by the graph agent (authoritative), query agent (exploratory), and `run_sql` (ad-hoc). Snippets carry grounding provenance so consumers know how they were derived.
+
+```sql
+sql_snippets (
+    snippet_id            VARCHAR PRIMARY KEY,
+    snippet_type          VARCHAR NOT NULL,   -- extract | constant | formula | query
+    standard_field        VARCHAR,            -- e.g. "revenue", "accounts_receivable"
+    statement             VARCHAR,            -- e.g. "income_statement"
+    aggregation           VARCHAR,
+    schema_mapping_id     VARCHAR NOT NULL,
+    parameter_value       VARCHAR,
+    normalized_expression VARCHAR,            -- for formula snippets
+    input_fields          JSON,
+    sql                   TEXT NOT NULL,
+    description           TEXT NOT NULL,
+    column_mappings       JSON NOT NULL,
+    source                VARCHAR NOT NULL,   -- "graph:dso", "query:exec_456", "mcp:session_..."
+    llm_model             VARCHAR,
+    provenance            JSON,               -- field_resolution, was_repaired,
+                                              -- column_mappings_basis, llm_reasoning
+    execution_count       INTEGER NOT NULL,
+    failure_count         INTEGER NOT NULL,
+    last_used_at          DATETIME,
+    column_hash           VARCHAR,            -- schema-change invalidation
+    created_at            DATETIME NOT NULL,
+    updated_at            DATETIME NOT NULL,
+    UNIQUE (snippet_type, standard_field, statement, aggregation,
+            schema_mapping_id, parameter_value)
+);
+
+snippet_usage (
+    usage_id         VARCHAR PRIMARY KEY,
+    execution_id     VARCHAR NOT NULL,
+    execution_type   VARCHAR NOT NULL,       -- "graph" | "query"
+    snippet_id       VARCHAR,                -- NULL for newly_generated
+    usage_type       VARCHAR NOT NULL,       -- exact_reuse | adapted |
+                                             -- provided_not_used | newly_generated
+    match_confidence FLOAT NOT NULL,
+    sql_match_ratio  FLOAT NOT NULL,
+    step_id          VARCHAR,
+    created_at       DATETIME NOT NULL
+);
+```
+
+The `provenance` JSON on `sql_snippets` captures LLM grounding decisions:
+
+```json
+{
+  "field_resolution": "direct | inferred",
+  "was_repaired": false,
+  "column_mappings_basis": {
+    "revenue": {
+      "column": "transactions.amount",
+      "filter": "account_type = 'revenue'",
+      "resolution": "inferred_from_enriched_view"
+    }
+  },
+  "llm_reasoning": "Mapped revenue via account-type filter"
+}
+```
+
+`search_snippets` surfaces provenance so consumers know whether a snippet was directly grounded (field mapping) or inferred (LLM bridged a vocabulary gap), and whether the SQL was auto-repaired.
 
 ## DuckDB Tables
 

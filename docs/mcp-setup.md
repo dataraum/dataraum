@@ -176,7 +176,7 @@ Add this to the file (create it if it doesn't exist):
 
 **Important:** Claude Desktop doesn't inherit your shell's working directory, so use absolute paths for both `--project` and `DATARAUM_HOME`.
 
-Restart Claude Desktop after editing. The hammer icon in the text input should show 7 DataRaum tools.
+Restart Claude Desktop after editing. The hammer icon in the text input should show 10 DataRaum tools.
 
 ---
 
@@ -190,16 +190,19 @@ See the plugin repo's README for installation and configuration instructions. Th
 
 ## Available Tools
 
-7 tools organized around a session-based workflow:
+10 tools organized around a session-based investigation workflow. The server also emits **session instructions** on connect — the host client shows them to the agent as guidance for when to use each tool.
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `add_source` | `name`, `path` | Register a data source (CSV, Parquet, JSON, or directory). Runs the analysis pipeline automatically. |
-| `begin_session` | `intent`, `contract?` | Start an investigation session. `intent` describes the goal. Contract defaults to `exploratory_analysis`. |
-| `look` | `target?`, `sample?` | Explore data structure, relationships, and semantic metadata. Target: omit for dataset, `table` for table, `table.col` for column. |
-| `measure` | `target?` | Measure entropy scores, readiness, and data quality. Triggers pipeline if no data exists. |
-| `query` | `question` | Natural language query with confidence level. Contract is threaded from the session. |
-| `run_sql` | `sql`, `limit?`, `export_format?`, `export_name?` | Execute SQL directly with optional export (CSV/Parquet). |
+| `add_source` | `name`, `path` | Register a data source (CSV, Parquet, JSON, or directory). |
+| `begin_session` | `intent`, `contract?` | Start an investigation session. Triggers the pipeline on first run; resumes if data exists. |
+| `look` | `target?`, `sample?` | Explore structure, relationships, semantic metadata, and readiness. Target: omit for dataset, `table`, or `table.col`. |
+| `measure` | `target?`, `target_phase?` | Entropy scores + readiness. Also polls/triggers pipeline; `target_phase` reruns a specific phase. |
+| `why` | `target` | Evidence-synthesis agent — explains elevated entropy and proposes `teach` actions. |
+| `query` | `question` | Natural-language query with confidence level and assumptions. Contract is threaded from the session. |
+| `run_sql` | `sql`, `limit?`, `export_format?`, `export_name?` | Execute SQL directly. Broken SQL is auto-repaired; results are cached as snippets. |
+| `search_snippets` | `query?` | Discover reusable SQL snippets by term. Shows provenance so consumers know how grounded a snippet is. |
+| `teach` | `type`, `params`, `target?` | World-model write tool. 9 teach types (see below). Config teaches trigger the affected phase. |
 | `end_session` | `outcome` | Archive workspace and end the session. Outcome: `delivered`, `refused`, `escalated`, or `abandoned`. |
 
 ### Typical workflow
@@ -207,20 +210,31 @@ See the plugin repo's README for installation and configuration instructions. Th
 ```
 add_source(name="accounting", path="/path/to/data")
   → begin_session(intent="explore data quality", contract="exploratory_analysis")
-  → look()                    # Understand the data
-  → measure()                 # Check quality scores and readiness
-  → query("total revenue?")   # Ask questions
-  → run_sql(sql="...", export_format="csv", export_name="report")
+  → look()                       # Understand the data
+  → measure()                    # Check quality scores and readiness
+  → why(target="table.col")      # Explain elevated entropy
+  → teach(type="concept", ...)   # Extend the world model
+  → measure(target_phase="semantic")  # Re-run affected phase
+  → query("total revenue?")      # Ask grounded questions
+  → search_snippets(query="dso") # Find reusable SQL
+  → run_sql(sql="...")           # Execute directly
   → end_session(outcome="delivered")
 ```
 
 ### Session flow
 
-1. **`add_source`** — registers data and runs the 17-phase analysis pipeline. Call this before starting a session.
+1. **`add_source`** — registers data. Pipeline runs automatically on first `begin_session`.
 2. **`begin_session`** — creates a workspace, picks a contract. Sources are sealed — no new sources during a session.
-3. **`look` / `measure`** — explore structure and quality. `look` shows schema, relationships, semantic metadata. `measure` shows entropy scores and readiness.
-4. **`query` / `run_sql`** — ask questions or run SQL. `query` uses AI reasoning; `run_sql` executes SQL directly with export support.
-5. **`end_session`** — archives the workspace. Start a new session for new data.
+3. **`look` / `measure` / `why`** — understand structure, quality, and root causes.
+4. **`teach`** — extend the world model: concepts, validations, metrics, cycles, type patterns, relationships, explanations. Config teaches trigger a targeted phase re-run.
+5. **`query` / `run_sql` / `search_snippets`** — answer questions. `query` reasons with context; `run_sql` executes directly; `search_snippets` discovers reusable patterns.
+6. **`end_session`** — archives the workspace.
+
+### Teach types
+
+`concept`, `concept_property`, `validation`, `cycle`, `metric`, `type_pattern`, `null_value`, `relationship`, `explanation`.
+
+Config teaches (concept, metric, cycle, validation, relationship, type_pattern, null_value) update the vertical YAML overlay under `DATARAUM_HOME/workspace/<session>/vertical/` and rerun the affected phase. Metadata teaches (concept_property, explanation) apply immediately.
 
 ### Contracts
 
@@ -244,10 +258,12 @@ See [Entropy](entropy.md) for details on each contract.
 
 ## Troubleshooting
 
-**"No analyzed data found"** — Use `add_source` to register and analyze data first. Or run from CLI: `dataraum run /path/to/data`
+**"No analyzed data found"** — Use `add_source` to register data, then `begin_session` to trigger the pipeline. Or run from CLI: `dataraum run /path/to/data`.
 
 **Server not showing up in Claude Code** — Run `/mcp` to check status. Make sure you're in the project root where `.mcp.json` lives.
 
 **Server not showing up in Claude Desktop** — Check the config path is correct for your OS. Restart Claude Desktop. Check logs at `~/Library/Logs/Claude/` (macOS).
 
-**Tools return errors** — Check that `ANTHROPIC_API_KEY` is set. Verify data was added via `add_source`.
+**Tools return errors** — Check that `ANTHROPIC_API_KEY` is set. Verify data was added via `add_source` and a session was started via `begin_session`.
+
+**MCP server crashes or hangs** — MCP uses stdio, so stderr is swallowed by the host. Check the file log at `$DATARAUM_HOME/logs/mcp-server.log` for full tracebacks.

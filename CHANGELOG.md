@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-17
+
+### Added
+- **New MCP tools**: `teach` (9 teach types: concept, concept_property, validation, cycle, metric, type_pattern, null_value, relationship, explanation), `why` (evidence synthesis agent — explains elevated entropy and proposes teaches), `search_snippets` (discover reusable SQL patterns with provenance)
+- **World model**: teach-driven vertical YAML overlay at `DATARAUM_HOME/workspace/<session>/vertical/`. Config teaches trigger a targeted phase re-run via `measure(target_phase=...)`; metadata teaches apply immediately
+- **Cold-start bootstrap**: induces ontology, business cycles, validations, and metrics from the data when no matching vertical exists. New prompts: `ontology_induction`, `cycle_induction`, `validation_induction`, `metric_induction`
+- **Graph execution phase**: computes business metrics via the graph agent. Each metric is cached as an authoritative `graph:{graph_id}` SQL snippet with provenance (field resolution, column mappings, LLM reasoning, repair status)
+- **SQL snippet knowledge base**: `sql_snippets` + `snippet_usage` tables with `provenance` JSON. `search_snippets` exposes provenance so consumers know trust level. Snippet sources form a hierarchy: `graph:` (authoritative) > `query:` (exploratory) > `mcp:` (ad-hoc)
+- **Snippet promotion path**: `teach(type="metric", inspiration_snippet_id=...)` promotes an ad-hoc `run_sql` or `query` snippet into an authoritative graph snippet on next `measure(target_phase="graph_execution")`
+- **Query agent assumption tracking**: `query` responses include assumptions with dimension, target, basis (system_default/inferred/user_specified), and confidence
+- **run_sql auto-repair visibility**: responses surface `repair_attempts` and `original_sql` when Haiku corrected broken SQL. Snippet provenance includes `was_repaired` flag
+- **Server instructions**: MCP server emits session instructions on connect, guiding hosts when to use each tool
+- **Pipeline guard**: `query` and `run_sql` block while the pipeline is running and return a clear busy state
+- **File logging**: MCP server crashes are now recoverable. Structured logs + stdlib output write to `$DATARAUM_HOME/logs/mcp-server.log`
+- **MCP registry publish**: release workflow publishes to the Model Context Protocol registry (OIDC auth). Server manifest at `server.json` (schema `2025-12-11`)
+
+### Changed
+- Pipeline grew from 17 to **18 phases** with the revived `graph_execution` phase
+- 6 of 18 phases now use an LLM (graph_execution added to the set). Interactive agents (query, why) use LLM via MCP, not as a pipeline phase
+- Snippet vocabulary restricted to `graph:` sources to keep ad-hoc noise out of discovery
+- `measure(target_phase=...)` reruns a specific phase and cascades to its dependents — the normal path after a config teach
+
+### Removed
+- **Fix system retired**: `fixes.yaml`, `fix_schemas.py`, fix API/bridge, pattern filter, acceptance infrastructure. Resolution options renamed to teach types. `apply_fix` and related MCP tools superseded by `teach`
+- `ResolutionOption` system removed from detectors (replaced by `teach` evidence)
+- Dead filter infrastructure removed from graph module
+- `GraphExecution.max_entropy_score` and `GraphExecution.entropy_warnings` (dead fields from the retired entropy interpretation agent)
+
+### Fixed
+- Graph execution now produces non-empty snippets (`standard_field` vocabulary aligned with ontology concepts)
+- Config teach re-run cascade: affected phase and its dependents rerun correctly; `should_skip` logic respects `RunConfig`
+- `search_snippets` resolves the full calculation chain and surfaces assumptions in provenance
+- `teach(type="metric")` YAML now passes the graph loader (new `GraphSource.TEACH` value)
+
 ## [0.2.0] - 2026-03-28
 
 ### Breaking Changes

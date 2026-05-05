@@ -50,7 +50,7 @@ The server runs an 18-phase analysis pipeline and makes these tools available:
 | `look` | Explore data structure, relationships, and semantic metadata |
 | `measure` | Measure entropy scores, readiness, and data quality |
 | `why` | Explain elevated entropy and propose teach suggestions |
-| `teach` | Extend the world model — sole write tool (concepts, metrics, validations, ...) |
+| `teach` | Extend the operation model — sole write tool (concepts, metrics, validations, ...) |
 | `query` | Natural language query against the data |
 | `run_sql` | Execute SQL directly with export support |
 | `search_snippets` | Discover reusable SQL patterns from prior queries and graph execution |

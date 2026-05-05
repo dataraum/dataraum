@@ -13,7 +13,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 │                           CONSUMERS                                         │
 │                                                                             │
 │   Claude Code ──── MCP Server (10 tools)                                    │
-│   Claude Desktop ─┘                       Session + World Model             │
+│   Claude Desktop ─┘                       Session + Operation Model         │
 │   Python ──────── Context API                                               │
 │   Terminal ────── CLI (run + dev)                                            │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -124,9 +124,9 @@ AI doesn't discover metadata at runtime via tools. It receives a pre-assembled c
 
 10 MCP tools organized around investigation sessions: `add_source` → `begin_session` → `look` / `measure` / `why` / `teach` / `query` / `run_sql` / `search_snippets` → `end_session`. Sources are registered first, then the session seals them. The session carries the contract (entropy threshold profile) so the agent doesn't need to pass it on every call.
 
-### The Understanding Layer (World Model)
+### The Understanding Layer (Operation Model)
 
-DataRaum maintains a **world model** for each dataset — a structured, queryable representation of what exists and what it means. Five facets:
+DataRaum maintains an **operation model** for each dataset — a structured, queryable representation of what exists and what it means. Five facets:
 
 | Facet | What | Pipeline phase |
 |-------|------|---------------|
@@ -136,7 +136,7 @@ DataRaum maintains a **world model** for each dataset — a structured, queryabl
 | Validations | What must be true | validation |
 | Filters | What counts, what's excluded | graph_execution |
 
-The world model is built progressively through **teach + rerun** cycles. `teach` extends a vertical YAML overlay (session-scoped at `DATARAUM_HOME/workspace/<session>/vertical/`); `measure(target_phase=...)` reruns the affected phase so downstream metadata reflects the new knowledge. Config teaches (concept, metric, cycle, validation, relationship, type_pattern, null_value) trigger a rerun; metadata teaches (concept_property, explanation) apply immediately.
+The operation model is built progressively through **teach + rerun** cycles. `teach` extends a vertical YAML overlay (session-scoped at `DATARAUM_HOME/workspace/<session>/vertical/`); `measure(target_phase=...)` reruns the affected phase so downstream metadata reflects the new knowledge. Config teaches (concept, metric, cycle, validation, relationship, type_pattern, null_value) trigger a rerun; metadata teaches (concept_property, explanation) apply immediately.
 
 ### Snippet Provenance and Promotion
 
@@ -256,7 +256,7 @@ Primary interface for AI agents. Tools return markdown formatted for LLM consump
 | `look` | Explore schema, relationships, semantic metadata, readiness |
 | `measure` | Entropy scores + readiness; reruns a target phase on demand |
 | `why` | Evidence synthesis — explains elevated entropy, proposes teaches |
-| `teach` | Extend the world model (9 teach types) |
+| `teach` | Extend the operation model (9 teach types) |
 | `query` | Natural-language data queries with confidence + assumptions |
 | `run_sql` | Execute SQL with auto-repair, export support, snippet caching |
 | `search_snippets` | Discover reusable SQL snippets with provenance |

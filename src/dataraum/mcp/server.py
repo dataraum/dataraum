@@ -188,7 +188,7 @@ def create_server(output_dir: Path | None = None) -> Server:
         "dataraum",
         instructions=(
             "DataRaum is a metadata context engine — it profiles data sources, "
-            "measures data quality (entropy), and builds a queryable world model "
+            "measures data quality (entropy), and builds a queryable operation model "
             "so you can answer analytical questions with grounded confidence.\n"
             "\n"
             "## Session lifecycle\n"
@@ -211,7 +211,7 @@ def create_server(output_dir: Path | None = None) -> Server:
             "**Returning** (begin_session returns has_pipeline_data: true):\n"
             "  begin_session → look (data is already profiled) → query / run_sql\n"
             "\n"
-            "**Teach + re-measure** (improving the world model):\n"
+            "**Teach + re-measure** (improving the operation model):\n"
             "  Bundle multiple teach calls first, then call measure once with "
             "target_phase to re-run the affected pipeline segment. Do not "
             "measure after every teach — batch them.\n"
@@ -226,7 +226,7 @@ def create_server(output_dir: Path | None = None) -> Server:
             "are blocked — call measure again to poll progress.\n"
             "- **why** — explain elevated entropy. Returns executable teach "
             "suggestions. Use after measure shows high scores.\n"
-            "- **teach** — extend the world model. The sole write tool. "
+            "- **teach** — extend the operation model. The sole write tool. "
             "Config teaches need a re-measure; metadata teaches apply immediately.\n"
             "- **query** — answer analytical questions via AI reasoning. "
             "Use when you have a business question. Tracks assumptions and "
@@ -587,7 +587,7 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="teach",
                 description=(
-                    "Extend the world model with domain knowledge. This is the "
+                    "Extend the operation model with domain knowledge. This is the "
                     "sole write tool — everything the system learns comes "
                     "through teach.\n\n"
                     "Two categories:\n\n"

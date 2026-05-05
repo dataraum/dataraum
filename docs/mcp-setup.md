@@ -213,7 +213,7 @@ add_source(name="accounting", path="/path/to/data")
   → look()                       # Understand the data
   → measure()                    # Check quality scores and readiness
   → why(target="table.col")      # Explain elevated entropy
-  → teach(type="concept", ...)   # Extend the world model
+  → teach(type="concept", ...)   # Extend the operation model
   → measure(target_phase="semantic")  # Re-run affected phase
   → query("total revenue?")      # Ask grounded questions
   → search_snippets(query="dso") # Find reusable SQL
@@ -226,7 +226,7 @@ add_source(name="accounting", path="/path/to/data")
 1. **`add_source`** — registers data. Pipeline runs automatically on first `begin_session`.
 2. **`begin_session`** — creates a workspace, picks a contract. Sources are sealed — no new sources during a session.
 3. **`look` / `measure` / `why`** — understand structure, quality, and root causes.
-4. **`teach`** — extend the world model: concepts, validations, metrics, cycles, type patterns, relationships, explanations. Config teaches trigger a targeted phase re-run.
+4. **`teach`** — extend the operation model: concepts, validations, metrics, cycles, type patterns, relationships, explanations. Config teaches trigger a targeted phase re-run.
 5. **`query` / `run_sql` / `search_snippets`** — answer questions. `query` reasons with context; `run_sql` executes directly; `search_snippets` discovers reusable patterns.
 6. **`end_session`** — archives the workspace.
 

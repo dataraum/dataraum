@@ -5,15 +5,28 @@
 
 version: 2
 updates:
-  - package-ecosystem: "uv" # See documentation for possible values
-    directory: "/" # Location of package manifests
+  - package-ecosystem: "uv"
+    directory: "/"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "github-actions" # See documentation for possible values
-    directory: ".github/workflows" # Location of package manifests
+    groups:
+      production-dependencies:
+        dependency-type: "production"
+      development-dependencies:
+        dependency-type: "development"
+  - package-ecosystem: "github-actions"
+    directory: ".github/workflows"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "docker" # See documentation for possible values
-    directory: "/" # Location of package manifests
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+  - package-ecosystem: "docker"
+    directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      docker:
+        patterns:
+          - "*"

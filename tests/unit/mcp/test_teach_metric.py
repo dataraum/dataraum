@@ -113,7 +113,6 @@ class TestTeachMetric:
         assert metric_path.exists()
         metric = yaml.safe_load(metric_path.read_text())
         assert metric["graph_id"] == "gross_margin"
-        assert metric["graph_type"] == "metric"
         assert metric["metadata"]["name"] == "Gross Margin"
         assert metric["metadata"]["source"] == "teach"
         assert "revenue" in metric["dependencies"]

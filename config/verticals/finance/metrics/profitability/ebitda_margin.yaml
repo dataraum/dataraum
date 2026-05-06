@@ -1,5 +1,4 @@
 graph_id: ebitda_margin
-graph_type: metric
 version: '1.0'
 metadata:
   name: EBITDA Margin

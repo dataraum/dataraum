@@ -476,7 +476,6 @@ def _handle_metric(params: MetricParams, vertical: str, **_kw: Any) -> FixDocume
             "operation": "set",
             "value": {
                 "graph_id": params.graph_id,
-                "graph_type": "metric",
                 "version": "1.0",
                 **{k: v for k, v in metric_dict.items() if k != "graph_id"},
             },

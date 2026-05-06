@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from dataraum.graphs.loader import GraphLoader
-from dataraum.graphs.models import GraphType, OutputType
+from dataraum.graphs.models import OutputType
 
 PROFITABILITY_GRAPH_IDS = [
     "gross_profit",
@@ -38,13 +38,6 @@ class TestProfitabilityMetricsLoad:
         for graph_id in PROFITABILITY_GRAPH_IDS:
             graph = loader.graphs.get(graph_id)
             assert graph is not None, f"Graph '{graph_id}' not found"
-
-    @pytest.mark.parametrize("graph_id", PROFITABILITY_GRAPH_IDS)
-    def test_graph_type_is_metric(self, loader: GraphLoader, graph_id: str) -> None:
-        """Each profitability graph has graph_type == metric."""
-        graph = loader.graphs.get(graph_id)
-        assert graph is not None
-        assert graph.graph_type == GraphType.METRIC
 
     @pytest.mark.parametrize("graph_id", PROFITABILITY_GRAPH_IDS)
     def test_output_type_is_scalar(self, loader: GraphLoader, graph_id: str) -> None:

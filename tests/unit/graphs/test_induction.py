@@ -61,7 +61,6 @@ class TestSaveMetricsConfig:
         assert gm_path.exists()
         gm = yaml.safe_load(gm_path.read_text())
         assert gm["graph_id"] == "gross_margin"
-        assert gm["graph_type"] == "metric"
         assert gm["metadata"]["source"] == "induced"
 
         # Check working_capital/dso.yaml

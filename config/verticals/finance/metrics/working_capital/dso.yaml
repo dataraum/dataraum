@@ -1,5 +1,4 @@
 graph_id: dso
-graph_type: metric
 version: '1.0'
 metadata:
   name: Days Sales Outstanding

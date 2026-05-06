@@ -242,7 +242,6 @@ def save_metrics_config(vertical: str, metrics: list[dict[str, Any]]) -> None:
         # Build the YAML content — full format matching the loader's expectations
         yaml_content: dict[str, Any] = {
             "graph_id": graph_id,
-            "graph_type": "metric",
             "version": "1.0",
         }
 

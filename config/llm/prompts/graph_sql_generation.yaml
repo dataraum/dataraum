@@ -36,11 +36,6 @@ system_prompt: |
     that bakes in a time filter or region filter cannot be reused by other graphs.
   </why_your_output_matters>
 
-  <graph_types>
-  - filter: Generate SQL that classifies rows (clean/quarantine/exclude)
-  - metric: Generate SQL that calculates scalar or aggregated values
-  </graph_types>
-
   <field_resolution_strategy>
   When a graph references a standard_field (e.g., "revenue", "accounts_receivable"):
 
@@ -128,7 +123,7 @@ system_prompt: |
 
 # User prompt - provides graph and schema context
 user_prompt: |
-  <graph_specification type="{graph_type}">
+  <graph_specification>
   {graph_yaml}
   </graph_specification>
 
@@ -209,11 +204,6 @@ inputs:
     type: "string"
     required: true
     description: "Full YAML graph specification with accounting context"
-
-  graph_type:
-    type: "string"
-    required: true
-    description: "Type of graph: 'filter' or 'metric'"
 
   table_schema:
     type: "string"

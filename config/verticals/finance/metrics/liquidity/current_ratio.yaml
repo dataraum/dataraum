@@ -1,5 +1,4 @@
 graph_id: current_ratio
-graph_type: metric
 version: '1.0'
 metadata:
   name: Current Ratio

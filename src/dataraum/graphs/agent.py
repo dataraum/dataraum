@@ -77,8 +77,6 @@ class ExecutionContext:
 
     duckdb_conn: duckdb.DuckDBPyConnection
     schema_mapping_id: str | None = None
-    period: str | None = None
-    is_period_final: bool = False
 
     # Rich metadata context (optional)
     # When provided, gives the LLM additional information about:
@@ -250,7 +248,7 @@ class GraphAgent(LLMFeature):
             self._code_cache[cache_key] = generated_code
 
         # Execute the generated SQL
-        exec_result = self._execute_sql(generated_code, context, graph, resolved_params)
+        exec_result = self._execute_sql(generated_code, context, graph)
         if not exec_result.success or not exec_result.value:
             # Mark cached snippets as failed so they get skipped next time
             if cached_snippets:
@@ -361,7 +359,6 @@ class GraphAgent(LLMFeature):
         # Build prompt context
         prompt_context = {
             "graph_yaml": graph_yaml,
-            "graph_type": graph.graph_type.value,
             "table_schema": json.dumps(schema_info, indent=2),
             "parameters": json.dumps(parameters, indent=2),
         }
@@ -496,18 +493,15 @@ class GraphAgent(LLMFeature):
         generated_code: GeneratedCode,
         context: ExecutionContext,
         graph: TransformationGraph,
-        parameters: dict[str, Any],
     ) -> Result[GraphExecution]:
         """Execute generated SQL and capture results.
 
         Delegates step execution to shared execute_sql_steps(), then enriches
-        the GraphExecution with entropy info, assumptions, and interpretation.
+        the GraphExecution with assumptions and interpretation.
         """
         from dataraum.query.execution import SQLStep, execute_sql_steps
 
-        # Create execution record
-        execution = GraphExecution.create(graph, parameters, context.period)
-        execution.is_period_final = context.is_period_final
+        execution = GraphExecution.create(graph)
 
         # Convert LLM assumptions to QueryAssumption objects
         basis_map = {
@@ -577,8 +571,6 @@ class GraphAgent(LLMFeature):
         for sr in result.step_results:
             step_result = StepResult(
                 step_id=sr.step_id,
-                level=1,
-                step_type=StepType.FORMULA,
                 source_query=sr.sql_executed,
                 inputs_used={
                     "sql": sr.sql_executed,
@@ -601,11 +593,6 @@ class GraphAgent(LLMFeature):
         # Add interpretation if available
         if graph.interpretation and execution.output_value is not None:
             execution.output_interpretation = self._interpret_value(execution.output_value, graph)
-
-        # Generate execution hash
-        execution.execution_hash = self._generate_execution_hash(
-            graph, parameters, context, generated_code.code_id
-        )
 
         return Result.ok(execution)
 
@@ -686,7 +673,6 @@ class GraphAgent(LLMFeature):
         # Convert graph to dict for YAML serialization
         graph_dict: dict[str, Any] = {
             "graph_id": graph.graph_id,
-            "graph_type": graph.graph_type.value,
             "version": graph.version,
             "metadata": {
                 "name": graph.metadata.name,
@@ -709,7 +695,6 @@ class GraphAgent(LLMFeature):
             ],
             "dependencies": {
                 step_id: {
-                    "level": step.level,
                     "type": step.step_type.value,
                     "source": {
                         "standard_field": step.source.standard_field if step.source else None,
@@ -718,7 +703,6 @@ class GraphAgent(LLMFeature):
                     if step.source
                     else None,
                     "expression": step.expression,
-                    "condition": step.condition,
                     "aggregation": step.aggregation,
                     "depends_on": step.depends_on,
                 }
@@ -850,26 +834,6 @@ class GraphAgent(LLMFeature):
     def _cache_key(self, graph: TransformationGraph, schema_mapping_id: str) -> str:
         """Generate cache key for generated code."""
         return f"{graph.graph_id}:{graph.version}:{schema_mapping_id}"
-
-    def _generate_execution_hash(
-        self,
-        graph: TransformationGraph,
-        parameters: dict[str, Any],
-        context: ExecutionContext,
-        code_id: str,
-    ) -> str:
-        """Generate hash for reproducibility verification."""
-        hash_input = {
-            "graph": f"{graph.graph_id}@{graph.version}",
-            "params": sorted(parameters.items()),
-            "schema_mapping_id": context.schema_mapping_id,
-            "period": context.period,
-            "code_id": code_id,
-        }
-
-        return hashlib.sha256(
-            json.dumps(hash_input, sort_keys=True, default=str).encode()
-        ).hexdigest()[:16]
 
     def _track_snippet_usage(
         self,

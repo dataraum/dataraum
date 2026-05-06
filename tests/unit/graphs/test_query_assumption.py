@@ -6,7 +6,6 @@ from dataraum.graphs.models import (
     AssumptionBasis,
     GraphExecution,
     GraphSource,
-    GraphType,
     QueryAssumption,
 )
 
@@ -31,8 +30,6 @@ class TestQueryAssumption:
         assert assumption.assumption == "Currency is EUR"
         assert assumption.basis == AssumptionBasis.SYSTEM_DEFAULT
         assert assumption.confidence == 0.8
-        assert assumption.can_promote is True
-        assert assumption.promoted_at is None
         assert assumption.assumption_id is not None  # Auto-generated
 
 
@@ -44,10 +41,7 @@ class TestGraphExecutionAssumptions:
         execution = GraphExecution(
             execution_id="exec-123",
             graph_id="metric-1",
-            graph_type=GraphType.METRIC,
-            graph_version="1.0.0",
             source=GraphSource.SYSTEM,
-            parameters={},
         )
 
         assert execution.assumptions == []
@@ -66,10 +60,7 @@ class TestGraphExecutionAssumptions:
         execution = GraphExecution(
             execution_id="exec-123",
             graph_id="metric-1",
-            graph_type=GraphType.METRIC,
-            graph_version="1.0.0",
             source=GraphSource.SYSTEM,
-            parameters={},
             assumptions=[assumption],
         )
 
@@ -100,10 +91,7 @@ class TestGraphExecutionAssumptions:
         execution = GraphExecution(
             execution_id="exec-123",
             graph_id="metric-1",
-            graph_type=GraphType.METRIC,
-            graph_version="1.0.0",
             source=GraphSource.SYSTEM,
-            parameters={},
             assumptions=assumptions,
         )
 

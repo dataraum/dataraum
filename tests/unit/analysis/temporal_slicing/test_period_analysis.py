@@ -526,7 +526,6 @@ class TestPersistPeriodResults:
         import dataraum.analysis.temporal_slicing.db_models  # noqa: F401
         import dataraum.analysis.typing.db_models  # noqa: F401
         import dataraum.analysis.validation.db_models  # noqa: F401
-        import dataraum.graphs.db_models  # noqa: F401
         import dataraum.pipeline.db_models  # noqa: F401
         import dataraum.query.db_models  # noqa: F401
         import dataraum.storage.models  # noqa: F401

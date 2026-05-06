@@ -1,10 +1,4 @@
-"""Unified transformation graph models.
-
-Supports both filter graphs and metric graphs with a single schema.
-
-Filter graphs:
-    - Output: classification (clean/exclude/quarantine/flag)
-    - Steps: predicates that evaluate to boolean
+"""Transformation graph models.
 
 Metric graphs:
     - Output: scalar/series values with units
@@ -14,7 +8,6 @@ Metric graphs:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 from uuid import uuid4
@@ -24,13 +17,6 @@ from pydantic import BaseModel, Field
 # =============================================================================
 # Enums
 # =============================================================================
-
-
-class GraphType(StrEnum):
-    """Type of transformation graph."""
-
-    FILTER = "filter"
-    METRIC = "metric"
 
 
 class GraphSource(StrEnum):
@@ -47,24 +33,12 @@ class StepType(StrEnum):
 
     EXTRACT = "extract"  # Pull data from source
     CONSTANT = "constant"  # Fixed or parameterized value
-    PREDICATE = "predicate"  # Boolean condition (for filters)
-    FORMULA = "formula"  # Calculate derived value (for metrics)
-    COMPOSITE = "composite"  # Combine multiple steps
-
-
-class Classification(StrEnum):
-    """Classification result for filter graphs."""
-
-    CLEAN = "clean"  # Passes all checks, include in analysis
-    EXCLUDE = "exclude"  # Outside scope, skip silently
-    QUARANTINE = "quarantine"  # Quality issue, save for review
-    FLAG = "flag"  # Include but marked for attention
+    FORMULA = "formula"  # Calculate derived value
 
 
 class OutputType(StrEnum):
     """Type of graph output."""
 
-    CLASSIFICATION = "classification"  # For filters
     SCALAR = "scalar"  # Single value
     SERIES = "series"  # Time series or array
     TABLE = "table"  # Multi-column result
@@ -89,36 +63,16 @@ class MetricScope(StrEnum):
 
 
 @dataclass
-class AppliesTo:
-    """Criteria for when a filter graph applies to a column.
-
-    Used by rule-based filters to auto-match columns based on:
-    - semantic_role: key, timestamp, measure, foreign_key
-    - data_type: DOUBLE, DATE, VARCHAR, etc.
-    - column_pattern: regex pattern for column names
-    - column_pairs: patterns for cross-column rules
-    - has_profile: whether statistical profile exists
-    """
-
-    semantic_role: str | None = None
-    data_type: str | None = None
-    column_pattern: str | None = None
-    column_pairs: dict[str, str] | None = None
-    has_profile: bool | None = None
-
-
-@dataclass
 class GraphMetadata:
     """Metadata about a transformation graph."""
 
     name: str
     description: str
-    category: str  # quality, scope, working_capital, profitability, liquidity
+    category: str  # working_capital, profitability, liquidity, ...
     source: GraphSource
     created_by: str | None = None
     created_at: str | None = None
     tags: list[str] = field(default_factory=list)
-    applies_to: AppliesTo | None = None  # For rule-based filters
     inspiration_snippet_id: str | None = None  # For snippet promotion via teach
 
 
@@ -157,7 +111,6 @@ class GraphStep:
     """A single step in a transformation graph."""
 
     step_id: str
-    level: int
     step_type: StepType
 
     # For extract steps
@@ -168,28 +121,14 @@ class GraphStep:
     value: Any | None = None
     parameter: str | None = None  # Reference to a parameter
 
-    # For predicate steps (filters)
-    condition: str | None = None
-    on_false: Classification | None = None  # What to do when predicate fails
-    on_true: Classification | None = None  # What to do when predicate passes (for flags)
-    reason: str | None = None
-
-    # For formula steps (metrics)
+    # For formula steps
     expression: str | None = None
-
-    # For composite steps
-    logic: str | None = None  # Boolean expression combining other steps
 
     # Dependencies
     depends_on: list[str] = field(default_factory=list)
 
-    # Validation
-    validations: list[StepValidation] = field(default_factory=list)
-
-    # Control
-    enabled: str | None = None  # Conditional enable (e.g., "{param}")
-    output_step: bool = False  # Is this the final output step?
-    severity: str | None = None  # For predicates: critical, high, medium, low
+    # Output marker
+    output_step: bool = False
 
 
 @dataclass
@@ -197,11 +136,6 @@ class OutputDef:
     """Definition of graph output."""
 
     output_type: OutputType
-
-    # For classification (filters)
-    categories: dict[str, str] | None = None  # category -> description
-
-    # For scalar/series (metrics)
     metric_id: str | None = None
     unit: str | None = None  # days, currency, ratio, count, percentage
     decimal_places: int | None = None
@@ -226,10 +160,9 @@ class Interpretation:
 
 @dataclass
 class TransformationGraph:
-    """A unified transformation graph (filter or metric)."""
+    """A metric transformation graph."""
 
     graph_id: str
-    graph_type: GraphType
     version: str
 
     metadata: GraphMetadata
@@ -240,7 +173,7 @@ class TransformationGraph:
     parameters: list[ParameterDef] = field(default_factory=list)
     interpretation: Interpretation | None = None
 
-    # Scope for metrics (global vs per-slice)
+    # Scope (global vs per-slice)
     scope: MetricScope = MetricScope.GLOBAL
     slice_dimension: str | None = None  # Column to slice by (for SLICE or BOTH scope)
 
@@ -262,8 +195,6 @@ class StepResult:
     """Result of executing a single step."""
 
     step_id: str
-    level: int
-    step_type: StepType
 
     # Value (polymorphic based on step type)
     value_scalar: float | None = None
@@ -271,16 +202,9 @@ class StepResult:
     value_string: str | None = None
     value_list: list[Any] | None = None
 
-    # Classification (for predicate steps)
-    classification: Classification | None = None
-    rows_passed: int | None = None
-    rows_failed: int | None = None
-
     # Trace information
     inputs_used: dict[str, Any] = field(default_factory=dict)
-    expression_evaluated: str | None = None
     source_query: str | None = None
-    rows_affected: int | None = None
 
     @property
     def value(self) -> Any:
@@ -294,17 +218,6 @@ class StepResult:
         if self.value_list is not None:
             return self.value_list
         return None
-
-
-@dataclass
-class ClassificationSummary:
-    """Summary of filter classification results."""
-
-    clean_count: int = 0
-    exclude_count: int = 0
-    quarantine_count: int = 0
-    flag_count: int = 0
-    total_count: int = 0
 
 
 class AssumptionBasis(StrEnum):
@@ -335,11 +248,6 @@ class QueryAssumption:
     basis: AssumptionBasis
     confidence: float  # 0.0 to 1.0
 
-    # For promotion to permanent rule
-    can_promote: bool = True
-    promoted_at: datetime | None = None
-    promoted_by: str | None = None
-
     @classmethod
     def create(
         cls,
@@ -368,52 +276,25 @@ class GraphExecution:
 
     execution_id: str
     graph_id: str
-    graph_type: GraphType
-    graph_version: str
-
-    # Source tracking
     source: GraphSource
 
-    # Parameters used
-    parameters: dict[str, Any]
-
-    # Period (optional)
-    period: str | None = None
-    is_period_final: bool = False
-
-    # Results
+    # Step results (used internally for snippet saving)
     step_results: list[StepResult] = field(default_factory=list)
 
-    # Output (depends on graph type)
-    output_value: Any = None  # Metric value or ClassificationSummary
+    # Output
+    output_value: Any = None
     output_interpretation: str | None = None
-
-    # Traceability
-    execution_hash: str = ""
-    executed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-
-    # Links to other executions
-    depends_on_executions: list[str] = field(default_factory=list)
 
     # Assumptions made during execution (populated from LLM output)
     assumptions: list[QueryAssumption] = field(default_factory=list)
 
     @classmethod
-    def create(
-        cls,
-        graph: TransformationGraph,
-        parameters: dict[str, Any],
-        period: str | None = None,
-    ) -> GraphExecution:
+    def create(cls, graph: TransformationGraph) -> GraphExecution:
         """Create a new execution for a graph."""
         return cls(
             execution_id=str(uuid4()),
             graph_id=graph.graph_id,
-            graph_type=graph.graph_type,
-            graph_version=graph.version,
             source=graph.metadata.source,
-            parameters=parameters,
-            period=period,
         )
 
 

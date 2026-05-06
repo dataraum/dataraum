@@ -7,9 +7,6 @@ from pathlib import Path
 import pytest
 
 from dataraum.graphs.loader import GraphLoader
-from dataraum.graphs.models import (
-    AppliesTo,
-)
 
 
 class TestGraphLoaderBasics:
@@ -60,35 +57,6 @@ class TestLoadMetricGraphs:
         assert loader.graphs.get("anomaly_rate") is None
 
 
-class TestAppliesTo:
-    """Tests for AppliesTo dataclass."""
-
-    def test_create_empty(self) -> None:
-        """Create empty AppliesTo."""
-        applies_to = AppliesTo()
-        assert applies_to.semantic_role is None
-        assert applies_to.data_type is None
-        assert applies_to.column_pattern is None
-        assert applies_to.column_pairs is None
-        assert applies_to.has_profile is None
-
-    def test_create_with_role(self) -> None:
-        """Create AppliesTo with semantic role."""
-        applies_to = AppliesTo(semantic_role="key")
-        assert applies_to.semantic_role == "key"
-
-    def test_create_with_pairs(self) -> None:
-        """Create AppliesTo with column pairs."""
-        applies_to = AppliesTo(
-            column_pairs={
-                "start_pattern": ".*_start.*",
-                "end_pattern": ".*_end.*",
-            }
-        )
-        assert applies_to.column_pairs is not None
-        assert "start_pattern" in applies_to.column_pairs
-
-
 class TestValidateStandardFields:
     """Tests for validate_standard_fields() method."""
 
@@ -107,7 +75,6 @@ class TestValidateStandardFields:
         graph_yaml.write_text(
             """
 graph_id: fake_metric
-graph_type: metric
 version: "1.0"
 metadata:
   name: Fake Metric

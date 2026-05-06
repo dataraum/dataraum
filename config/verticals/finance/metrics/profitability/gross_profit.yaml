@@ -1,5 +1,4 @@
 graph_id: gross_profit
-graph_type: metric
 version: '1.0'
 metadata:
   name: Gross Profit

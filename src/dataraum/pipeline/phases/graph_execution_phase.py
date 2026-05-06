@@ -122,11 +122,7 @@ class GraphExecutionPhase(BasePhase):
         induction_failed = False
         if vertical == "_adhoc":
             loader_check = GraphLoader(vertical=vertical)
-            existing_metrics = {
-                gid: g
-                for gid, g in loader_check.load_all().items()
-                if g.graph_type.value == "metric"
-            }
+            existing_metrics = loader_check.load_all()
             if not existing_metrics:
                 from dataraum.graphs.induction import (
                     MetricInductionAgent,
@@ -157,8 +153,7 @@ class GraphExecutionPhase(BasePhase):
 
         # Load metrics
         loader = GraphLoader(vertical=vertical)
-        all_graphs = loader.load_all()
-        metrics = {gid: g for gid, g in all_graphs.items() if g.graph_type.value == "metric"}
+        metrics = loader.load_all()
 
         if not metrics:
             summary = (

@@ -29,6 +29,7 @@ from mcp.server.experimental.task_context import ServerTaskContext
 from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, CreateTaskResult, TextContent, Tool, ToolExecution
 
+from dataraum import __version__
 from dataraum.mcp.formatters import format_query_result
 from dataraum.pipeline.events import EventCallback, EventType, PipelineEvent
 
@@ -186,6 +187,7 @@ def create_server(output_dir: Path | None = None) -> Server:
 
     server = Server(
         "dataraum",
+        version=__version__,
         instructions=(
             "DataRaum is a metadata context engine — it profiles data sources, "
             "measures data quality (entropy), and builds a queryable operation model "

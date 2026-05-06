@@ -14,6 +14,8 @@ pip install dataraum
 docker pull ghcr.io/dataraum/dataraum
 ```
 
+> **Python version note:** if you're invoking via `uvx` and have a free-threaded interpreter (`3.14t`) on your system, pin to a non-free-threaded one — e.g. `uvx --python 3.13 --from dataraum dataraum-mcp`. C-extension dependencies (`duckdb`, `pgmpy`) don't yet ship free-threaded wheels and will build from sdist.
+
 Set your Anthropic API key (required for semantic analysis):
 
 ```bash

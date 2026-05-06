@@ -16,10 +16,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sqlalchemy.orm import Session as SASession
 
     from dataraum.core.connections import ConnectionManager
-    from dataraum.investigation.db_models import InvestigationSession
     from dataraum.storage import Column as ColumnModel
     from dataraum.storage import Table as TableModel
 
@@ -104,86 +105,127 @@ def create_server(output_dir: Path | None = None) -> Server:
     """Create and configure the MCP server with DataRaum tools.
 
     Args:
-        output_dir: Explicit workspace directory (for tests). If not provided,
-            resolves root via DATARAUM_HOME env var (default ~/.dataraum/)
-            and uses root/workspace/ as the workspace.
+        output_dir: Explicit base directory (for tests). If not provided,
+            resolves via DATARAUM_HOME (default ~/.dataraum/). The workspace
+            registry lives at root/workspace.db, per-session data at
+            root/sessions/{fingerprint}/, archived sessions at
+            root/archive/{session_id}/.
     """
     if output_dir is None:
         root_dir = _resolve_root_dir()
-        output_dir = root_dir / "workspace"
     else:
-        # Explicit output_dir (tests, CLI) — root is the parent
-        root_dir = output_dir.parent
+        # Tests pass a tmp_path; treat it as the root directly.
+        root_dir = output_dir
 
-    # Server-level ConnectionManager — lazy-initialized on first tool call.
-    # Stays alive for the server lifetime. call_tool opens session/cursor
-    # scopes from this manager and passes them to handlers.
-    # Not shared across threads: all call_tool invocations run on the asyncio
-    # event loop (single-threaded). The pipeline runs in its own thread with
-    # its own manager — no cross-thread sharing of connections.
-    _manager: ConnectionManager | None = None
+    # Two managers, both lazy:
+    # - workspace: SQLite-only registry (sources + ActiveSession pointer).
+    #   Always available; resolves the chicken-and-egg of "which session is active".
+    # - session: opened against sessions/{fingerprint}/ when an active session
+    #   exists. Cached by fingerprint and reopened only on transition.
+    _workspace_manager: ConnectionManager | None = None
+    _session_manager: ConnectionManager | None = None
+    _active_fingerprint: str | None = None
 
-    def _get_manager() -> ConnectionManager:
-        """Get or create the server-level ConnectionManager."""
-        nonlocal _manager
-        if _manager is None:
+    def _get_workspace_manager() -> ConnectionManager:
+        """Get or create the always-available workspace manager."""
+        nonlocal _workspace_manager
+        if _workspace_manager is None:
             from dataraum.core.connections import ConnectionConfig
             from dataraum.core.connections import ConnectionManager as CM
 
-            config = ConnectionConfig.for_directory(output_dir)
+            config = ConnectionConfig.for_workspace(root_dir)
             config.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-            _manager = CM(config)
-            _manager.initialize()
-        return _manager
+            _workspace_manager = CM(config)
+            _workspace_manager.initialize()
+        return _workspace_manager
 
-    def _get_active_session(db_session: SASession) -> InvestigationSession | None:
-        """Query DB for the most recent active investigation session.
+    def _resolve_active_session() -> tuple[str, str] | None:
+        """Read ActiveSession pointer from workspace. Returns (session_id, fingerprint) or None.
 
-        Session state is DB-derived, not held in closure variables.
-        This survives server restarts and avoids orphan cleanup.
+        The pointer is the canonical "is a session active?" signal. It's set
+        by begin_session after the session DB is fully initialized and cleared
+        by end_session after the session is archived.
         """
         from sqlalchemy import select
 
-        from dataraum.investigation.db_models import InvestigationSession
+        from dataraum.mcp.db_models import ActiveSession
 
-        return db_session.execute(
-            select(InvestigationSession)
-            .where(InvestigationSession.status == "active")
-            .order_by(InvestigationSession.started_at.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        ws_mgr = _get_workspace_manager()
+        with ws_mgr.session_scope() as session:
+            pointer = session.execute(select(ActiveSession)).scalar_one_or_none()
+            if pointer is None:
+                return None
+            return (pointer.session_id, pointer.fingerprint)
 
-    def _archive_and_reset(session_id: str) -> str | None:
-        """Archive the workspace and reset manager for a fresh session.
+    def _get_session_manager(fingerprint: str) -> ConnectionManager:
+        """Open or reuse the session manager for the given fingerprint."""
+        nonlocal _session_manager, _active_fingerprint
 
-        Moves the workspace to {root}/archive/{session_id}/, then clears
-        the ConnectionManager so the next tool call creates a fresh workspace.
+        if _session_manager is not None and _active_fingerprint == fingerprint:
+            return _session_manager
+
+        # Different fingerprint than cached — close stale manager and open new
+        if _session_manager is not None:
+            _session_manager.close()
+
+        from dataraum.core.connections import ConnectionConfig
+        from dataraum.core.connections import ConnectionManager as CM
+
+        session_dir = root_dir / "sessions" / fingerprint
+        session_dir.mkdir(parents=True, exist_ok=True)
+        config = ConnectionConfig.for_directory(session_dir)
+        _session_manager = CM(config)
+        _session_manager.initialize()
+        _active_fingerprint = fingerprint
+        return _session_manager
+
+    def _session_dir_for(fingerprint: str) -> Path:
+        """Path to a session's directory for pipeline runs and archive ops."""
+        return root_dir / "sessions" / fingerprint
+
+    def _archive_and_clear_active(session_id: str, fingerprint: str) -> str | None:
+        """Archive sessions/{fingerprint}/ → archive/{session_id}/ and clear the pointer.
+
+        Order: close session manager → move dir → clear ActiveSession pointer.
+        Pointer cleared last so a mid-flight crash leaves an orphan dir (visible
+        and recoverable) rather than a dangling pointer at a missing dir.
 
         Returns:
-            Warning message if archival failed, None on success.
+            Warning message if archival failed (pointer still cleared); None on success.
         """
         import shutil
 
-        nonlocal _manager
+        from sqlalchemy import delete
 
-        # Close DB connections before moving files
-        if _manager is not None:
-            _manager.close()
+        from dataraum.mcp.db_models import ActiveSession
 
+        nonlocal _session_manager, _active_fingerprint
+
+        # Close session connections before moving files
+        if _session_manager is not None:
+            _session_manager.close()
+            _session_manager = None
+            _active_fingerprint = None
+
+        session_dir = _session_dir_for(fingerprint)
         archive_dir = root_dir / "archive" / session_id
+        warning: str | None = None
         try:
             archive_dir.parent.mkdir(parents=True, exist_ok=True)
-            if output_dir.exists():
-                shutil.move(str(output_dir), str(archive_dir))
-                _log.info("Archived workspace to %s", archive_dir)
-            _manager = None
-            return None
+            if session_dir.exists():
+                shutil.move(str(session_dir), str(archive_dir))
+                _log.info("Archived session %s → %s", session_dir, archive_dir)
         except OSError:
-            _manager = None  # Still reset — connections are closed
             _log.warning(
-                "Failed to archive workspace %s → %s", output_dir, archive_dir, exc_info=True
+                "Failed to archive session %s → %s", session_dir, archive_dir, exc_info=True
             )
-            return f"Session ended but workspace archival failed. {output_dir} may need manual cleanup."
+            warning = f"Session ended but archival failed. {session_dir} may need manual cleanup."
+
+        # Clear pointer regardless — stale pointer is worse than orphan dir
+        with _get_workspace_manager().session_scope() as ws_session:
+            ws_session.execute(delete(ActiveSession))
+
+        return warning
 
     server = Server(
         "dataraum",
@@ -743,13 +785,32 @@ def create_server(output_dir: Path | None = None) -> Server:
         """Execute a tool and return JSON results."""
         started_at = datetime.now(UTC)
 
-        # --- Resolve session state from DB (read scalars inside scope) ---
-        mgr = _get_manager()
-        with mgr.session_scope() as session:
-            active_session = _get_active_session(session)
-            active_session_id = active_session.session_id if active_session else None
-            active_contract = active_session.contract if active_session else None
-            active_vertical = active_session.vertical if active_session else None
+        # --- Resolve session state via workspace ActiveSession pointer ---
+        from sqlalchemy import select
+
+        from dataraum.investigation.db_models import InvestigationSession
+
+        ws_mgr = _get_workspace_manager()
+        active = _resolve_active_session()  # (session_id, fingerprint) or None
+
+        active_session_id: str | None = None
+        active_session_fp: str | None = None
+        active_contract: str | None = None
+        active_vertical: str | None = None
+        session_mgr: ConnectionManager | None = None
+
+        if active is not None:
+            active_session_id, active_session_fp = active
+            session_mgr = _get_session_manager(active_session_fp)
+            with session_mgr.session_scope() as session:
+                inv = session.execute(
+                    select(InvestigationSession)
+                    .where(InvestigationSession.session_id == active_session_id)
+                    .limit(1)
+                ).scalar_one_or_none()
+                if inv:
+                    active_contract = inv.contract
+                    active_vertical = inv.vertical
 
         # --- Flow enforcement ---
         if name == "add_source":
@@ -789,7 +850,8 @@ def create_server(output_dir: Path | None = None) -> Server:
         result: dict[str, Any]
 
         if name == "look":
-            with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
+            assert session_mgr is not None  # flow enforcement guarantees active session
+            with session_mgr.session_scope() as session, session_mgr.duckdb_cursor() as cursor:
                 result = _look(
                     session,
                     target=arguments.get("target"),
@@ -797,9 +859,10 @@ def create_server(output_dir: Path | None = None) -> Server:
                     cursor=cursor,
                 )
         elif name == "measure":
+            assert session_mgr is not None and active_session_fp is not None
             measure_target = arguments.get("target")
             measure_phase = arguments.get("target_phase")
-            with mgr.session_scope() as session:
+            with session_mgr.session_scope() as session:
                 result = _measure(session, target=measure_target)
             # Pipeline trigger: when no entropy data exists OR selective rerun requested
             needs_pipeline = result.get("status") == "no_data" or measure_phase is not None
@@ -812,24 +875,26 @@ def create_server(output_dir: Path | None = None) -> Server:
 
                 ctx = server.request_context
                 measure_experimental: Experimental = ctx.experimental
+                session_dir = _session_dir_for(active_session_fp)
                 if measure_experimental and measure_experimental.is_task:
                     loop = asyncio.get_running_loop()
-                    # Capture contract/vertical as locals — session scope is closed
+                    # Capture contract/vertical/fingerprint as locals
                     _contract = active_contract
                     _vertical = active_vertical
+                    _fp = active_session_fp
 
                     async def _measure_work(task: ServerTaskContext) -> CallToolResult:
                         try:
                             callback = _make_task_event_callback(task, loop)
                             await asyncio.to_thread(
                                 _run_pipeline,
-                                output_dir,
+                                session_dir,
                                 callback,
                                 _contract,
                                 _vertical,
                                 measure_phase,
                             )
-                            with _get_manager().session_scope() as post_session:
+                            with _get_session_manager(_fp).session_scope() as post_session:
                                 measure_result = _measure(post_session, target=measure_target)
                             return CallToolResult(
                                 content=[
@@ -856,7 +921,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                     # No task API: fire-and-forget
                     bg = asyncio.create_task(
                         _run_pipeline_background(
-                            output_dir, active_contract, active_vertical, measure_phase
+                            session_dir, active_contract, active_vertical, measure_phase
                         )
                     )
                     _background_tasks.add(bg)
@@ -866,34 +931,38 @@ def create_server(output_dir: Path | None = None) -> Server:
                         "hint": "Pipeline started. Call measure() again to poll for results.",
                     }
         elif name == "begin_session":
-            if active_session is not None:
-                # Idempotent: resume existing session instead of creating new
-                result = _resume_session(mgr, active_session)
+            if active_session_id is not None:
+                # Idempotent: resume existing session
+                assert session_mgr is not None
+                result = _resume_session(session_mgr, active_session_id)
             else:
-                with mgr.session_scope() as session:
-                    result = _begin_session(
-                        session,
-                        intent=arguments["intent"],
-                        contract=arguments.get("contract"),
-                        vertical=arguments.get("vertical"),
-                    )
-                # _session_id is internal bookkeeping — strip from agent response
+                result = _begin_new_session(
+                    workspace_mgr=ws_mgr,
+                    open_session_manager=_get_session_manager,
+                    intent=arguments["intent"],
+                    contract=arguments.get("contract"),
+                    vertical=arguments.get("vertical"),
+                )
+                # Internal bookkeeping fields stripped from agent response
                 result.pop("_session_id", None)
+                result.pop("_fingerprint", None)
         elif name == "end_session":
+            assert session_mgr is not None and active_session_fp is not None
             result = _end_session(
-                mgr,
+                session_mgr,
                 session_id=active_session_id,  # type: ignore[arg-type]  # guarded above
                 outcome=arguments.get("outcome", ""),
                 summary=arguments.get("summary"),
             )
-            # Archive workspace and reset manager for fresh next session
+            # Archive session dir and clear ActiveSession pointer
             if "error" not in result:
                 assert active_session_id is not None  # guarded by flow enforcement
-                archive_warning = _archive_and_reset(active_session_id)
+                archive_warning = _archive_and_clear_active(active_session_id, active_session_fp)
                 if archive_warning:
                     result["warning"] = archive_warning
         elif name == "query":
-            with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
+            assert session_mgr is not None
+            with session_mgr.session_scope() as session, session_mgr.duckdb_cursor() as cursor:
                 result, qr = _query(
                     session,
                     cursor,
@@ -915,7 +984,8 @@ def create_server(output_dir: Path | None = None) -> Server:
                         "query",
                     )
         elif name == "run_sql":
-            with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
+            assert session_mgr is not None
+            with session_mgr.session_scope() as session, session_mgr.duckdb_cursor() as cursor:
                 result = _run_sql(
                     session,
                     cursor,
@@ -938,16 +1008,17 @@ def create_server(output_dir: Path | None = None) -> Server:
                         "run_sql",
                     )
         elif name == "teach":
+            assert session_mgr is not None and active_session_fp is not None
             from dataraum.mcp.teach import handle_teach
 
-            # Use workspace config copy (not global package config).
-            # setup_pipeline copies global config to output_dir/config/.
+            # Use session config copy (not global package config).
+            # setup_pipeline copies global config to session_dir/config/.
             # If pipeline hasn't run yet, config_root is None and config
             # teaches fail with a clear error.
-            workspace_config = output_dir / "config"
-            teach_config_root = workspace_config if workspace_config.is_dir() else None
+            session_config = _session_dir_for(active_session_fp) / "config"
+            teach_config_root = session_config if session_config.is_dir() else None
 
-            with mgr.session_scope() as session:
+            with session_mgr.session_scope() as session:
                 source = _get_pipeline_source(session)
                 if not source:
                     result = {"error": "No sources found. Use add_source first."}
@@ -979,30 +1050,36 @@ def create_server(output_dir: Path | None = None) -> Server:
                         target=teach_target,
                     )
         elif name == "search_snippets":
-            with mgr.session_scope() as session:
+            assert session_mgr is not None
+            with session_mgr.session_scope() as session:
                 result = _search_snippets(
                     session,
                     concepts=arguments.get("concepts"),
                     graph_ids=arguments.get("graph_ids"),
                 )
         elif name == "why":
-            with mgr.session_scope() as session:
+            assert session_mgr is not None
+            with session_mgr.session_scope() as session:
                 result = _why(
                     session,
                     target=arguments.get("target"),
                     dimension=arguments.get("dimension"),
                 )
         elif name == "add_source":
-            with mgr.session_scope() as session, mgr.duckdb_cursor() as cursor:
-                result = _add_source(session, cursor, arguments)
+            with ws_mgr.session_scope() as session:
+                result = _add_source(session, arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
 
-        # Record step in investigation trace (separate session scope for isolation).
+        # Record step in investigation trace (in the session DB).
         # begin_session/end_session excluded — session records capture their own state.
-        if active_session_id is not None and name not in ("begin_session", "end_session"):
+        if (
+            active_session_id is not None
+            and session_mgr is not None
+            and name not in ("begin_session", "end_session")
+        ):
             _record_tool_step(
-                mgr,
+                session_mgr,
                 session_id=active_session_id,
                 tool_name=name,
                 arguments=arguments,
@@ -1055,28 +1132,32 @@ def _get_pipeline_source(session: Any) -> Any | None:
 
 
 def _resume_session(
-    manager: ConnectionManager,
-    active_session: InvestigationSession,
+    session_manager: ConnectionManager,
+    session_id: str,
 ) -> dict[str, Any]:
-    """Resume an existing active session.
+    """Resume an existing active session by reading from its session DB.
 
-    Returns orientation info matching the _begin_session response shape,
-    with a hint that the session is being resumed.
-
-    Args:
-        manager: Server-level ConnectionManager.
-        active_session: The active InvestigationSession from DB.
-
-    Returns:
-        Dict with sources, contract, pipeline data status, and resume hint.
+    Returns orientation info matching the begin_session response shape, with
+    a hint that the session is being resumed. The session manager has already
+    been opened against the correct sessions/{fingerprint}/ directory by the
+    caller — this function just reads the session-DB state.
     """
     from sqlalchemy import select
 
     from dataraum.entropy.contracts import get_contract
     from dataraum.entropy.db_models import EntropyObjectRecord
+    from dataraum.investigation.db_models import InvestigationSession
     from dataraum.storage import Source
 
-    with manager.session_scope() as session:
+    with session_manager.session_scope() as session:
+        inv = session.execute(
+            select(InvestigationSession)
+            .where(InvestigationSession.session_id == session_id)
+            .limit(1)
+        ).scalar_one_or_none()
+        if inv is None:
+            return {"error": f"Active session pointer references missing session {session_id}"}
+
         all_sources = list(
             session.execute(
                 select(Source).where(Source.archived_at.is_(None)).order_by(Source.created_at)
@@ -1086,7 +1167,7 @@ def _resume_session(
         )
 
         source = _get_pipeline_source(session)
-        source_id = source.source_id if source else active_session.source_id
+        source_id = source.source_id if source else inv.source_id
 
         has_data = (
             session.execute(
@@ -1097,7 +1178,11 @@ def _resume_session(
             is not None
         )
 
-    contract_profile = get_contract(active_session.contract or "exploratory_analysis")
+        contract_name = inv.contract or "exploratory_analysis"
+        vertical = inv.vertical or "_adhoc"
+        step_count = inv.step_count
+
+    contract_profile = get_contract(contract_name)
     contract_info = (
         {
             "name": contract_profile.name,
@@ -1105,19 +1190,16 @@ def _resume_session(
             "description": contract_profile.description,
         }
         if contract_profile
-        else {
-            "name": active_session.contract or "unknown",
-            "display_name": active_session.contract or "unknown",
-        }
+        else {"name": contract_name, "display_name": contract_name}
     )
 
     return {
         "sources": [s.name for s in all_sources],
         "contract": contract_info,
         "has_pipeline_data": has_data,
-        "vertical": active_session.vertical or "_adhoc",
+        "vertical": vertical,
         "resumed": True,
-        "step_count": active_session.step_count,
+        "step_count": step_count,
         "hint": (
             "Resuming session from earlier. If you'd like to start fresh, call end_session first."
         ),
@@ -1858,32 +1940,31 @@ def _check_prerequisites() -> str | None:
     return " | ".join(errors)
 
 
-def _begin_session(
-    session: SASession,
+def _begin_new_session(
+    workspace_mgr: ConnectionManager,
+    open_session_manager: Callable[[str], ConnectionManager],
     intent: str,
     contract: str | None = None,
     vertical: str | None = None,
 ) -> dict[str, Any]:
-    """Start an investigation session.
+    """Start a fresh investigation session.
 
-    Creates an InvestigationSession and returns orientation info.
-    The ``_session_id`` key is popped by call_tool for server-side state —
-    it is never surfaced to the agent.
+    Reads sources from the workspace registry, computes a fingerprint of the
+    source set, opens (or reuses) the per-fingerprint session DB, copies
+    Source records into the session DB so the pipeline can find them, creates
+    an InvestigationSession in the session DB, and finally writes the
+    ActiveSession pointer in the workspace.
 
-    Args:
-        session: SQLAlchemy session from server-level manager.
-        intent: What the agent is investigating.
-        contract: Contract name. Defaults to ``exploratory_analysis``.
-        vertical: Domain vertical (e.g. ``finance``). None for cold start.
-
-    Returns:
-        Dict with _session_id (internal), sources, contract, has_pipeline_data, hint.
+    The ``_session_id`` and ``_fingerprint`` keys are stripped by call_tool
+    before the response reaches the agent.
     """
     from sqlalchemy import select
 
     from dataraum.entropy.contracts import get_contract
     from dataraum.entropy.db_models import EntropyObjectRecord
     from dataraum.investigation.recorder import begin_session
+    from dataraum.mcp.db_models import ActiveSession
+    from dataraum.pipeline.setup import _compute_source_set_fingerprint
     from dataraum.storage import Source
 
     # --- Prerequisite checks (fail fast with actionable messages) ---
@@ -1904,40 +1985,110 @@ def _begin_session(
     if vertical is not None:
         from dataraum.analysis.semantic.ontology import OntologyLoader
 
-        available = OntologyLoader().list_verticals()
-        if vertical not in available:
-            return {"error": f"Unknown vertical '{vertical}'. Available: {available}"}
+        available_verticals = OntologyLoader().list_verticals()
+        if vertical not in available_verticals:
+            return {"error": f"Unknown vertical '{vertical}'. Available: {available_verticals}"}
 
-    # Require at least one registered source
-    all_sources = list(
-        session.execute(
-            select(Source).where(Source.archived_at.is_(None)).order_by(Source.created_at)
+    # --- Read sources from workspace ---
+    with workspace_mgr.session_scope() as ws_session:
+        workspace_sources = list(
+            ws_session.execute(
+                select(Source).where(Source.archived_at.is_(None)).order_by(Source.created_at)
+            )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
-    if not all_sources:
-        return {"error": "No sources registered. Use add_source first."}
+        if not workspace_sources:
+            return {"error": "No sources registered. Use add_source first."}
 
-    source = _get_pipeline_source(session)
-    source_id = source.source_id if source else all_sources[0].source_id
+        # Snapshot source data into plain dicts for cross-DB transfer
+        source_snapshots = [
+            {
+                "source_id": s.source_id,
+                "name": s.name,
+                "source_type": s.source_type,
+                "connection_config": s.connection_config,
+                "created_at": s.created_at,
+                "updated_at": s.updated_at,
+                "status": s.status,
+                "backend": s.backend,
+                "credential_ref": s.credential_ref,
+                "discovered_schema": s.discovered_schema,
+                "last_validated": s.last_validated,
+                "archived_at": s.archived_at,
+            }
+            for s in workspace_sources
+        ]
+        fingerprint_input = [
+            {
+                "name": s["name"],
+                "source_type": s["source_type"],
+                "connection_config": s["connection_config"] or {},
+            }
+            for s in source_snapshots
+        ]
 
-    # Create investigation session
-    inv = begin_session(session, source_id, intent, contract=contract_name, vertical=vertical)
+    fingerprint = _compute_source_set_fingerprint(fingerprint_input)
 
-    # Check if pipeline has run (quick existence check, not full measurement)
-    has_data = (
+    # --- Open session manager + seed session DB ---
+    session_mgr = open_session_manager(fingerprint)
+
+    with session_mgr.session_scope() as session:
+        # Copy Source records into session DB if not already present
+        existing_ids = set(session.execute(select(Source.source_id)).scalars().all())
+        for snapshot in source_snapshots:
+            if snapshot["source_id"] in existing_ids:
+                continue
+            session.add(Source(**snapshot))
+
+        # Mark any orphan "active" InvestigationSession rows as abandoned.
+        # Handles retries where a prior begin_session wrote to the session DB
+        # but failed to set the workspace pointer — without cleanup these
+        # rows accumulate silently.
+        from sqlalchemy import update
+
+        from dataraum.investigation.db_models import (
+            InvestigationSession as _InvSession,
+        )
+
         session.execute(
-            select(EntropyObjectRecord.object_id)
-            .where(EntropyObjectRecord.source_id == source_id)
-            .limit(1)
-        ).scalar_one_or_none()
-        is not None
-    )
+            update(_InvSession).where(_InvSession.status == "active").values(status="abandoned")
+        )
+        session.flush()
+
+        # Pick the source_id used to anchor the InvestigationSession
+        pipeline_source = _get_pipeline_source(session)
+        source_id: str = (
+            pipeline_source.source_id if pipeline_source else str(source_snapshots[0]["source_id"])
+        )
+
+        # Create investigation session in the session DB
+        inv = begin_session(session, source_id, intent, contract=contract_name, vertical=vertical)
+
+        # Check if pipeline has run for this session DB
+        has_data = (
+            session.execute(
+                select(EntropyObjectRecord.object_id)
+                .where(EntropyObjectRecord.source_id == source_id)
+                .limit(1)
+            ).scalar_one_or_none()
+            is not None
+        )
+
+        all_source_names = [s["name"] for s in source_snapshots]
+        new_session_id = inv.session_id
+
+    # --- Set ActiveSession pointer in workspace (last, after session DB is ready) ---
+    from sqlalchemy import delete
+
+    with workspace_mgr.session_scope() as ws_session:
+        ws_session.execute(delete(ActiveSession))
+        ws_session.add(ActiveSession(id=1, session_id=new_session_id, fingerprint=fingerprint))
 
     return {
-        "_session_id": inv.session_id,
-        "sources": [s.name for s in all_sources],
+        "_session_id": new_session_id,
+        "_fingerprint": fingerprint,
+        "sources": all_source_names,
         "contract": {
             "name": contract_profile.name,
             "display_name": contract_profile.display_name,
@@ -2731,16 +2882,19 @@ def _measure(
 
 def _add_source(
     session: SASession,
-    cursor: Any,
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
-    """Register a new data source.
+    """Register a new data source in the workspace registry.
+
+    Writes a Source record to the workspace DB. For backend (database) sources,
+    a transient in-memory DuckDB is opened just for backend validation —
+    the workspace itself has no persistent DuckDB.
 
     Args:
-        session: SQLAlchemy session from server-level manager.
-        cursor: DuckDB cursor (used for database backend sources).
+        session: SQLAlchemy session from the workspace manager.
         arguments: Tool arguments (name, path or backend, etc.).
     """
+    import duckdb
     from sqlalchemy import select
 
     from dataraum.core.credentials import CredentialChain
@@ -2757,25 +2911,33 @@ def _add_source(
         return {"error": "Provide 'path' or 'backend', not both."}
 
     credential_chain = CredentialChain()
+    transient_duckdb: duckdb.DuckDBPyConnection | None = None
 
-    if backend:
-        src_mgr = SourceManager(
-            session=session,
-            credential_chain=credential_chain,
-            duckdb_conn=cursor,
-        )
-        tables_arg = arguments.get("tables")
-        credential_ref = arguments.get("credential_ref")
-        result = src_mgr.add_database_source(
-            name, backend, tables=tables_arg, credential_ref=credential_ref
-        )
-    else:
-        src_mgr = SourceManager(
-            session=session,
-            credential_chain=credential_chain,
-        )
-        assert path is not None  # guarded by validation above
-        result = src_mgr.add_file_source(name, path)
+    try:
+        if backend:
+            # Backend validation needs a DuckDB connection (ATTACH). Open a
+            # transient in-memory one — workspace has no persistent DuckDB.
+            transient_duckdb = duckdb.connect(":memory:")
+            src_mgr = SourceManager(
+                session=session,
+                credential_chain=credential_chain,
+                duckdb_conn=transient_duckdb,
+            )
+            tables_arg = arguments.get("tables")
+            credential_ref = arguments.get("credential_ref")
+            result = src_mgr.add_database_source(
+                name, backend, tables=tables_arg, credential_ref=credential_ref
+            )
+        else:
+            src_mgr = SourceManager(
+                session=session,
+                credential_chain=credential_chain,
+            )
+            assert path is not None  # guarded by validation above
+            result = src_mgr.add_file_source(name, path)
+    finally:
+        if transient_duckdb is not None:
+            transient_duckdb.close()
 
     if not result.success:
         return {"error": str(result.error)}

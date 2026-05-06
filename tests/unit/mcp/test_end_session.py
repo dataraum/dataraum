@@ -87,17 +87,18 @@ class TestEndSession:
 
 class TestResumeSession:
     def test_resumes_with_correct_shape(self, session: Session) -> None:
-        """_resume_session returns same shape as _begin_session with resume flag."""
+        """_resume_session reads InvestigationSession from session DB and returns resume payload."""
         from dataraum.mcp.server import _resume_session
 
         source_id = _insert_source(session, name="zone1")
         inv = _create_active_session(session, source_id, contract="exploratory_analysis")
+        session.flush()
 
         with patch(
             "dataraum.mcp.server._get_pipeline_source",
             return_value=session.get(Source, source_id),
         ):
-            result = _resume_session(_mock_manager(session), inv)
+            result = _resume_session(_mock_manager(session), inv.session_id)
 
         assert result["resumed"] is True
         assert result["sources"] == ["zone1"]
@@ -113,15 +114,15 @@ class TestResumeSession:
 
         source_id = _insert_source(session)
         inv = _create_active_session(session, source_id)
-        # Record some steps
         record_step(session, inv.session_id, "look", {"target": "orders"})
         record_step(session, inv.session_id, "measure", {})
+        session.flush()
 
         with patch(
             "dataraum.mcp.server._get_pipeline_source",
             return_value=session.get(Source, source_id),
         ):
-            result = _resume_session(_mock_manager(session), inv)
+            result = _resume_session(_mock_manager(session), inv.session_id)
 
         assert result["step_count"] == 2
 
@@ -142,47 +143,60 @@ class TestEndSessionFullFlow:
         return json.loads(raw.root.content[0].text)
 
     @pytest.mark.asyncio
-    async def test_end_session_archives_and_allows_new(self, tmp_path: Path) -> None:
-        """Full flow: begin → end → workspace archived → begin new session."""
+    async def test_end_session_archives_and_allows_new(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Full flow: begin → end → session dir archived → workspace.db preserved."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
         from dataraum.mcp.server import create_server
 
-        workspace = tmp_path / "workspace"
-        server = create_server(output_dir=workspace)
+        # tmp_path is the root in the new layout
+        server = create_server(output_dir=tmp_path)
 
         csv = tmp_path / "data.csv"
         csv.write_text("a,b\n1,2\n")
 
-        # Setup: add source and begin session
+        # Setup: add source (writes to workspace.db) and begin session
+        # (creates sessions/{fp}/metadata.db,data.duckdb + sets ActiveSession pointer)
         await self._call(server, "add_source", {"name": "src", "path": str(csv)})
         r1 = await self._call(server, "begin_session", {"intent": "first"})
         assert "error" not in r1
 
-        # Workspace exists (created by _get_manager)
-        assert workspace.exists()
+        # Workspace registry exists; sessions/{fp}/ exists; archive does not
+        assert (tmp_path / "workspace.db").exists()
+        sessions_dir = tmp_path / "sessions"
+        assert sessions_dir.exists()
+        session_dirs_before = list(sessions_dir.iterdir())
+        assert len(session_dirs_before) == 1  # one fingerprint
+        assert (session_dirs_before[0] / "metadata.db").exists()
 
         # End the session
         r2 = await self._call(server, "end_session", {"outcome": "delivered", "summary": "done"})
         assert r2["status"] == "ended"
         assert r2["outcome"] == "delivered"
 
-        # Workspace moved to archive (root_dir = workspace.parent = tmp_path)
-        assert not workspace.exists()
+        # Session dir gone, archive populated, workspace.db preserved
+        assert not session_dirs_before[0].exists()
         archive_base = tmp_path / "archive"
         assert archive_base.exists()
-        # Exactly one archived session
         archived = list(archive_base.iterdir())
         assert len(archived) == 1
         assert (archived[0] / "metadata.db").exists()
+        assert (tmp_path / "workspace.db").exists()  # registry preserved
 
     @pytest.mark.asyncio
-    async def test_end_session_without_outcome_rejected_by_schema(self, tmp_path: Path) -> None:
+    async def test_end_session_without_outcome_rejected_by_schema(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """end_session with empty arguments is rejected by MCP schema validation."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
         from mcp.types import CallToolRequest, CallToolRequestParams
 
         from dataraum.mcp.server import create_server
 
-        workspace = tmp_path / "workspace"
-        server = create_server(output_dir=workspace)
+        server = create_server(output_dir=tmp_path)
 
         csv = tmp_path / "data.csv"
         csv.write_text("a,b\n1,2\n")
@@ -253,8 +267,11 @@ class TestFlowEnforcementEndSession:
         assert "No active session" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_add_source_during_session_explains_sealing(self, tmp_path: Path) -> None:
+    async def test_add_source_during_session_explains_sealing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """add_source during active session explains source sealing."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
         from dataraum.mcp.server import create_server
 
         server = create_server(output_dir=tmp_path)
@@ -273,8 +290,11 @@ class TestFlowEnforcementEndSession:
         assert "sealed" in result3["error"].lower()
 
     @pytest.mark.asyncio
-    async def test_begin_session_resumes_active(self, tmp_path: Path) -> None:
+    async def test_begin_session_resumes_active(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """begin_session with active session returns resumed=True."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
         from dataraum.mcp.server import create_server
 
         server = create_server(output_dir=tmp_path)

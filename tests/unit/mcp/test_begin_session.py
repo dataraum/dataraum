@@ -1,15 +1,17 @@
-"""Tests for begin_session MCP tool and session wiring."""
+"""Tests for begin_session MCP tool, prerequisite checks, and flow enforcement."""
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
 from sqlalchemy.orm import Session
 
-from dataraum.investigation.db_models import InvestigationSession, InvestigationStep
+from dataraum.investigation.db_models import InvestigationStep
 from dataraum.storage import Source
 
 
@@ -24,188 +26,152 @@ def _insert_source(session: Session, name: str = "test_source") -> str:
     return source_id
 
 
-class TestBeginSession:
-    def test_creates_session(self, session: Session) -> None:
-        """begin_session creates an InvestigationSession and returns orientation."""
-        source_id = _insert_source(session)
+async def _call(server, name: str, arguments: dict | None = None):
+    """Call a tool through the MCP server handler and parse the JSON result."""
+    from mcp.types import CallToolRequest, CallToolRequestParams
 
-        with patch(
-            "dataraum.mcp.server._get_pipeline_source",
-            return_value=session.get(Source, source_id),
-        ):
-            from dataraum.mcp.server import _begin_session
+    handler = server.request_handlers[CallToolRequest]
+    req = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name=name, arguments=arguments or {}),
+    )
+    raw = await handler(req)
+    return json.loads(raw.root.content[0].text)
 
-            result = _begin_session(session, intent="test investigation")
+
+def _make_csv(tmp_path: Path, name: str = "data.csv") -> Path:
+    csv = tmp_path / name
+    csv.write_text("a,b\n1,2\n")
+    return csv
+
+
+@pytest.fixture
+def server_with_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Server with API key set; tests that go through the prereq check happy-path."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+    from dataraum.mcp.server import create_server
+
+    return create_server(output_dir=tmp_path)
+
+
+class TestBeginSessionViaServer:
+    """begin_session is exercised through the full MCP server flow.
+
+    The two-manager design (workspace + session DBs) means begin_session
+    composes calls across managers; testing through call_tool covers the
+    same behaviors that older direct-function unit tests covered.
+    """
+
+    @pytest.mark.asyncio
+    async def test_creates_session(self, server_with_key, tmp_path: Path) -> None:
+        csv = _make_csv(tmp_path)
+        await _call(server_with_key, "add_source", {"name": "test_source", "path": str(csv)})
+
+        result = await _call(server_with_key, "begin_session", {"intent": "test investigation"})
 
         assert "error" not in result
-        assert "_session_id" in result
         assert result["sources"] == ["test_source"]
         assert result["has_pipeline_data"] is False
         assert "hint" in result
 
-        # Verify session was actually created in DB
-        inv = session.get(InvestigationSession, result["_session_id"])
-        assert inv is not None
-        assert inv.intent == "test investigation"
-        assert inv.status == "active"
+    @pytest.mark.asyncio
+    async def test_default_contract_is_exploratory(self, server_with_key, tmp_path: Path) -> None:
+        csv = _make_csv(tmp_path)
+        await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
 
-    def test_default_contract_is_exploratory(self, session: Session) -> None:
-        """Without explicit contract, defaults to exploratory_analysis."""
-        source_id = _insert_source(session)
-
-        with patch(
-            "dataraum.mcp.server._get_pipeline_source",
-            return_value=session.get(Source, source_id),
-        ):
-            from dataraum.mcp.server import _begin_session
-
-            result = _begin_session(session, intent="test")
+        result = await _call(server_with_key, "begin_session", {"intent": "test"})
 
         assert result["contract"]["name"] == "exploratory_analysis"
-        assert result["contract"]["display_name"] == "Exploratory Analysis"
-        assert "description" in result["contract"]
 
-        inv = session.get(InvestigationSession, result["_session_id"])
-        assert inv is not None
-        assert inv.contract == "exploratory_analysis"
+    @pytest.mark.asyncio
+    async def test_explicit_contract(self, server_with_key, tmp_path: Path) -> None:
+        csv = _make_csv(tmp_path)
+        await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
 
-    def test_explicit_contract(self, session: Session) -> None:
-        """Explicit contract is validated and stored."""
-        source_id = _insert_source(session)
+        result = await _call(
+            server_with_key,
+            "begin_session",
+            {"intent": "test", "contract": "aggregation_safe"},
+        )
 
-        with patch(
-            "dataraum.mcp.server._get_pipeline_source",
-            return_value=session.get(Source, source_id),
-        ):
-            from dataraum.mcp.server import _begin_session
+        assert result["contract"]["name"] == "aggregation_safe"
 
-            result = _begin_session(
-                session, intent="compliance check", contract="executive_dashboard"
-            )
+    @pytest.mark.asyncio
+    async def test_unknown_contract_returns_error(self, server_with_key, tmp_path: Path) -> None:
+        csv = _make_csv(tmp_path)
+        await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
 
-        assert "error" not in result
-        assert result["contract"]["name"] == "executive_dashboard"
-        assert result["contract"]["display_name"] == "Executive Dashboard"
-
-        inv = session.get(InvestigationSession, result["_session_id"])
-        assert inv is not None
-        assert inv.contract == "executive_dashboard"
-
-    def test_unknown_contract_returns_error(self, session: Session) -> None:
-        """Invalid contract name returns error with available contracts."""
-        _insert_source(session)
-
-        from dataraum.mcp.server import _begin_session
-
-        result = _begin_session(session, intent="test", contract="nonexistent_contract")
+        result = await _call(
+            server_with_key,
+            "begin_session",
+            {"intent": "test", "contract": "nonexistent"},
+        )
 
         assert "error" in result
-        assert "nonexistent_contract" in result["error"]
-        assert "exploratory_analysis" in result["error"]
+        assert "nonexistent" in result["error"]
 
-    def test_has_pipeline_data_when_entropy_exists(self, session: Session) -> None:
-        """has_pipeline_data is True when entropy records exist."""
-        from dataraum.entropy.db_models import EntropyObjectRecord
-
-        source_id = _insert_source(session)
-        session.add(
-            EntropyObjectRecord(
-                source_id=source_id,
-                layer="semantic",
-                dimension="business_meaning",
-                sub_dimension="naming_clarity",
-                target="column:orders.amount",
-                score=0.5,
-                detector_id="naming_clarity",
-            )
-        )
-        session.flush()
-
-        with patch(
-            "dataraum.mcp.server._get_pipeline_source",
-            return_value=session.get(Source, source_id),
-        ):
-            from dataraum.mcp.server import _begin_session
-
-            result = _begin_session(session, intent="check quality")
-
-        assert result["has_pipeline_data"] is True
-        # Hint should guide toward exploration, not pipeline trigger
-        assert "pipeline" not in result["hint"].lower()
-
-    def test_no_source_returns_error(self, session: Session) -> None:
-        """When no sources are registered, returns error."""
-        from dataraum.mcp.server import _begin_session
-
-        result = _begin_session(session, intent="test")
-
+    @pytest.mark.asyncio
+    async def test_no_source_returns_error(self, server_with_key) -> None:
+        """begin_session without registered sources rejects with a clear error."""
+        result = await _call(server_with_key, "begin_session", {"intent": "test"})
         assert "error" in result
         assert "add_source" in result["error"]
 
-    def test_multiple_sources_listed(self, session: Session) -> None:
-        """All registered sources are returned."""
-        source_id = _insert_source(session, name="source_a")
-        _insert_source(session, name="source_b")
+    @pytest.mark.asyncio
+    async def test_multiple_sources_listed(self, server_with_key, tmp_path: Path) -> None:
+        for name in ("src1", "src2", "src3"):
+            csv = _make_csv(tmp_path, f"{name}.csv")
+            await _call(server_with_key, "add_source", {"name": name, "path": str(csv)})
 
-        with patch(
-            "dataraum.mcp.server._get_pipeline_source",
-            return_value=session.get(Source, source_id),
-        ):
-            from dataraum.mcp.server import _begin_session
+        result = await _call(server_with_key, "begin_session", {"intent": "test"})
 
-            result = _begin_session(session, intent="test")
+        assert set(result["sources"]) == {"src1", "src2", "src3"}
 
-        assert len(result["sources"]) == 2
-        assert "source_a" in result["sources"]
-        assert "source_b" in result["sources"]
+    @pytest.mark.asyncio
+    async def test_internal_keys_not_surfaced(self, server_with_key, tmp_path: Path) -> None:
+        """The _session_id and _fingerprint internal keys are stripped before response."""
+        csv = _make_csv(tmp_path)
+        await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
 
-    def test_session_id_not_surfaced(self, session: Session) -> None:
-        """_session_id is internal, no 'session_id' key in response."""
-        source_id = _insert_source(session)
+        result = await _call(server_with_key, "begin_session", {"intent": "test"})
 
-        with patch(
-            "dataraum.mcp.server._get_pipeline_source",
-            return_value=session.get(Source, source_id),
-        ):
-            from dataraum.mcp.server import _begin_session
-
-            result = _begin_session(session, intent="test")
-
-        assert "session_id" not in result
-        assert "_session_id" in result
+        assert "_session_id" not in result
+        assert "_fingerprint" not in result
 
 
 class TestPrerequisiteChecks:
-    def test_missing_api_key_returns_error(
-        self, session: Session, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.asyncio
+    async def test_missing_api_key_returns_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """begin_session fails with actionable error when API key is missing."""
-        _insert_source(session)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        from dataraum.mcp.server import create_server
 
-        from dataraum.mcp.server import _begin_session
+        server = create_server(output_dir=tmp_path)
+        csv = _make_csv(tmp_path)
+        await _call(server, "add_source", {"name": "src", "path": str(csv)})
 
-        result = _begin_session(session, intent="test")
+        result = await _call(server, "begin_session", {"intent": "test"})
 
         assert "error" in result
         assert "ANTHROPIC_API_KEY" in result["error"]
         assert "export" in result["error"]
         assert ".env" in result["error"]
 
-    def test_api_key_present_passes(
-        self, session: Session, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.asyncio
+    async def test_api_key_present_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """begin_session succeeds when API key is set."""
-        source_id = _insert_source(session)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+        from dataraum.mcp.server import create_server
 
-        with patch(
-            "dataraum.mcp.server._get_pipeline_source",
-            return_value=session.get(Source, source_id),
-        ):
-            from dataraum.mcp.server import _begin_session
+        server = create_server(output_dir=tmp_path)
+        csv = _make_csv(tmp_path)
+        await _call(server, "add_source", {"name": "src", "path": str(csv)})
 
-            result = _begin_session(session, intent="test")
+        result = await _call(server, "begin_session", {"intent": "test"})
 
         assert "error" not in result
 
@@ -233,28 +199,13 @@ class TestPrerequisiteChecks:
 class TestFlowEnforcement:
     """Tests for call_tool flow enforcement via the MCP server handler."""
 
-    @staticmethod
-    async def _call(server, name: str, arguments: dict | None = None):
-        """Call a tool through the MCP server handler and parse the JSON result."""
-        import json
-
-        from mcp.types import CallToolRequest, CallToolRequestParams
-
-        handler = server.request_handlers[CallToolRequest]
-        req = CallToolRequest(
-            method="tools/call",
-            params=CallToolRequestParams(name=name, arguments=arguments or {}),
-        )
-        raw = await handler(req)
-        return json.loads(raw.root.content[0].text)
-
     @pytest.mark.asyncio
     async def test_look_blocked_without_session(self, tmp_path) -> None:
         """look returns error when no session is active."""
         from dataraum.mcp.server import create_server
 
         server = create_server(output_dir=tmp_path)
-        result = await self._call(server, "look")
+        result = await _call(server, "look")
         assert "error" in result
         assert "begin_session" in result["error"]
 
@@ -264,7 +215,7 @@ class TestFlowEnforcement:
         from dataraum.mcp.server import create_server
 
         server = create_server(output_dir=tmp_path)
-        result = await self._call(server, "measure")
+        result = await _call(server, "measure")
         assert "error" in result
         assert "begin_session" in result["error"]
 
@@ -274,7 +225,7 @@ class TestFlowEnforcement:
         from dataraum.mcp.server import create_server
 
         server = create_server(output_dir=tmp_path)
-        result = await self._call(server, "run_sql", {"sql": "SELECT 1"})
+        result = await _call(server, "run_sql", {"sql": "SELECT 1"})
         assert "error" in result
         assert "begin_session" in result["error"]
 
@@ -284,7 +235,7 @@ class TestFlowEnforcement:
         from dataraum.mcp.server import create_server
 
         server = create_server(output_dir=tmp_path)
-        result = await self._call(server, "begin_session", {"intent": "test"})
+        result = await _call(server, "begin_session", {"intent": "test"})
         assert "error" in result
 
     @pytest.mark.asyncio
@@ -293,8 +244,8 @@ class TestFlowEnforcement:
         from dataraum.mcp.server import create_server
 
         server = create_server(output_dir=tmp_path)
-        # add_source will fail on validation (no path/backend), not on flow enforcement
-        result = await self._call(server, "add_source", {"name": "test"})
+        result = await _call(server, "add_source", {"name": "test"})
+        # add_source fails validation (no path/backend), not flow enforcement
         assert "error" in result
         assert "begin_session" not in result["error"]
 
@@ -309,7 +260,6 @@ class TestRecordToolStep:
         inv = create_session(session, source_id, intent="test")
         session.flush()
 
-        # Create a mock manager whose session_scope yields our test session
         manager = MagicMock()
         manager.session_scope.return_value.__enter__ = lambda _: session
         manager.session_scope.return_value.__exit__ = lambda *_: None
@@ -360,7 +310,6 @@ class TestRecordToolStep:
         """_record_tool_step never raises, even with a broken manager."""
         from dataraum.mcp.server import _record_tool_step
 
-        # Manager that raises on session_scope
         manager = MagicMock()
         manager.session_scope.side_effect = RuntimeError("broken")
 

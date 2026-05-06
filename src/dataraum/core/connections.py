@@ -49,7 +49,8 @@ class ConnectionConfig:
 
     Attributes:
         sqlite_path: Path to SQLite database file
-        duckdb_path: Path to DuckDB database file for data
+        duckdb_path: Path to DuckDB database file. None for SQLite-only
+            configurations (e.g. the MCP server's workspace registry).
         pool_size: SQLAlchemy connection pool size
         max_overflow: Maximum overflow connections beyond pool_size
         pool_timeout: Seconds to wait for a connection from pool
@@ -59,7 +60,7 @@ class ConnectionConfig:
     """
 
     sqlite_path: Path
-    duckdb_path: Path
+    duckdb_path: Path | None = None
 
     # SQLAlchemy pool settings
     pool_size: int = 5
@@ -75,20 +76,26 @@ class ConnectionConfig:
 
     @classmethod
     def for_directory(cls, output_dir: Path, **kwargs: Any) -> ConnectionConfig:
-        """Create config for a pipeline output directory.
+        """Create config for a pipeline output directory (SQLite + DuckDB).
 
-        Args:
-            output_dir: Directory for database files
-            **kwargs: Override any config attributes
-
-        Returns:
-            ConnectionConfig with paths set to output_dir
+        Used by CLI, Python SDK, and the MCP server's per-session managers.
+        Both SQLite metadata and DuckDB data files live in `output_dir`.
         """
         return cls(
             sqlite_path=output_dir / "metadata.db",
             duckdb_path=output_dir / "data.duckdb",
             **kwargs,
         )
+
+    @classmethod
+    def for_workspace(cls, root: Path, **kwargs: Any) -> ConnectionConfig:
+        """Create config for the MCP server's workspace registry (SQLite only).
+
+        The workspace holds source registrations and the active-session
+        pointer. It has no DuckDB — analytical data lives in per-session
+        directories created on `begin_session`.
+        """
+        return cls(sqlite_path=root / "workspace.db", duckdb_path=None, **kwargs)
 
 
 @dataclass
@@ -194,7 +201,13 @@ class ConnectionManager:
         )
 
     def _init_duckdb(self) -> None:
-        """Initialize DuckDB connection for data."""
+        """Initialize DuckDB connection for data, if configured.
+
+        SQLite-only configurations (e.g. workspace registry) skip this entirely;
+        `duckdb_cursor()` will raise on attempted use.
+        """
+        if self.config.duckdb_path is None:
+            return
         if self.config.duckdb_path == Path(":memory:"):
             self._duckdb_conn = duckdb.connect(":memory:")
         else:
@@ -209,6 +222,7 @@ class ConnectionManager:
         # Core models not owned by any phase
         from dataraum.documentation import db_models as _fixes  # noqa: F401
         from dataraum.investigation import db_models as _investigation  # noqa: F401
+        from dataraum.mcp import db_models as _mcp  # noqa: F401
         from dataraum.pipeline import db_models as _pipeline  # noqa: F401
 
         # Phase-owned models: auto-discovered from registry
@@ -294,7 +308,12 @@ class ConnectionManager:
                 df = cursor.execute("SELECT * FROM table").fetchdf()
         """
         self._ensure_initialized()
-        assert self._duckdb_conn is not None
+        if self._duckdb_conn is None:
+            raise RuntimeError(
+                "DuckDB cursor requested on a SQLite-only ConnectionManager. "
+                "Workspace managers (ConnectionConfig.for_workspace) have no "
+                "DuckDB; route data operations through a session manager."
+            )
 
         cursor = self._duckdb_conn.cursor()
         try:

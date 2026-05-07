@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, String
+from sqlalchemy import JSON, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.storage.base import Base
@@ -39,3 +39,33 @@ class ActiveSession(Base):
     started_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
+
+
+class ArchivedSession(Base):
+    """Index of finalized sessions available for resume.
+
+    Written by `end_session` once the session directory has been moved to
+    ``archive/{session_id}/``. ``resume_session`` reads from this table to
+    list available archives and to look up the metadata (fingerprint,
+    contract, vertical) needed to restore a session without scanning every
+    archived metadata.db.
+
+    The row is consumed (deleted) when the session is resumed — the data
+    moves back into the active session DB.
+    """
+
+    __tablename__ = "archived_sessions"
+
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    intent: Mapped[str] = mapped_column(String, nullable=False)
+    contract: Mapped[str] = mapped_column(String, nullable=False)
+    vertical: Mapped[str | None] = mapped_column(String, nullable=True)
+    outcome: Mapped[str] = mapped_column(String, nullable=False)
+    summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_names: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    ended_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    step_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

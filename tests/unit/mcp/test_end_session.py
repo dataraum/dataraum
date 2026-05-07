@@ -85,10 +85,10 @@ class TestEndSession:
             assert result["outcome"] == outcome, f"Failed for outcome={outcome}"
 
 
-class TestResumeSession:
-    def test_resumes_with_correct_shape(self, session: Session) -> None:
-        """_resume_session reads InvestigationSession from session DB and returns resume payload."""
-        from dataraum.mcp.server import _resume_session
+class TestOrientToActiveSession:
+    def test_orients_with_correct_shape(self, session: Session) -> None:
+        """_orient_to_active_session reads InvestigationSession from session DB and returns orientation payload."""
+        from dataraum.mcp.server import _orient_to_active_session
 
         source_id = _insert_source(session, name="zone1")
         inv = _create_active_session(session, source_id, contract="exploratory_analysis")
@@ -98,7 +98,7 @@ class TestResumeSession:
             "dataraum.mcp.server._get_pipeline_source",
             return_value=session.get(Source, source_id),
         ):
-            result = _resume_session(_mock_manager(session), inv.session_id)
+            result = _orient_to_active_session(_mock_manager(session), inv.session_id)
 
         assert result["resumed"] is True
         assert result["sources"] == ["zone1"]
@@ -110,7 +110,7 @@ class TestResumeSession:
     def test_resume_includes_step_count(self, session: Session) -> None:
         """Resumed session shows how many steps have been recorded."""
         from dataraum.investigation.recorder import record_step
-        from dataraum.mcp.server import _resume_session
+        from dataraum.mcp.server import _orient_to_active_session
 
         source_id = _insert_source(session)
         inv = _create_active_session(session, source_id)
@@ -122,7 +122,7 @@ class TestResumeSession:
             "dataraum.mcp.server._get_pipeline_source",
             return_value=session.get(Source, source_id),
         ):
-            result = _resume_session(_mock_manager(session), inv.session_id)
+            result = _orient_to_active_session(_mock_manager(session), inv.session_id)
 
         assert result["step_count"] == 2
 

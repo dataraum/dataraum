@@ -18,6 +18,19 @@ from dataraum.investigation.db_models import InvestigationSession, Investigation
 _MAX_SUMMARY_LENGTH = 2000
 
 
+def _json_default(obj: Any) -> Any:
+    """JSON fallback that emits ISO 8601 UTC for datetimes.
+
+    Storage is always UTC; SQLite strips tzinfo on round-trip so we treat
+    naive datetimes as UTC. Other unknown types fall back to ``str()``.
+    """
+    if isinstance(obj, datetime):
+        if obj.tzinfo is None:
+            obj = obj.replace(tzinfo=UTC)
+        return obj.isoformat().replace("+00:00", "Z")
+    return str(obj)
+
+
 def begin_session(
     session: Session,
     source_id: str,
@@ -208,7 +221,7 @@ def summarize_result(tool_name: str, result: dict[str, Any] | str | None) -> str
     if isinstance(result, str):
         text = result
     else:
-        text = json.dumps(result, default=str, ensure_ascii=False)
+        text = json.dumps(result, default=_json_default, ensure_ascii=False)
 
     if len(text) <= _MAX_SUMMARY_LENGTH:
         return text

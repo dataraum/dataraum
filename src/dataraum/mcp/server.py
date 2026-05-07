@@ -45,9 +45,24 @@ _pipeline_idle = threading.Event()
 _pipeline_idle.set()  # starts idle (query/run_sql allowed)
 
 
+def _json_default(obj: Any) -> Any:
+    """JSON fallback that emits ISO 8601 UTC for datetimes.
+
+    Storage is always UTC (recorders use ``datetime.now(UTC)``), but SQLite
+    strips tzinfo on round-trip so values come back naive. We treat naive
+    datetimes as UTC here and emit ``...Z`` so the wire format is
+    unambiguous. Other unknown types fall back to ``str()``.
+    """
+    if isinstance(obj, datetime):
+        if obj.tzinfo is None:
+            obj = obj.replace(tzinfo=UTC)
+        return obj.isoformat().replace("+00:00", "Z")
+    return str(obj)
+
+
 def _json_text_content(data: dict[str, Any]) -> list[TextContent]:
     """Serialize a dict to JSON and wrap in MCP TextContent."""
-    return [TextContent(type="text", text=json.dumps(data, indent=2, default=str))]
+    return [TextContent(type="text", text=json.dumps(data, indent=2, default=_json_default))]
 
 
 def _make_task_event_callback(
@@ -89,6 +104,12 @@ def _make_task_event_callback(
     return _callback
 
 
+# The pipeline creates a synthetic "multi_source" Source row in the session DB
+# to anchor multi-source runs. It is internal plumbing and must never surface
+# in workspace.db or in archived-session listings shown to the agent.
+_PIPELINE_INTERNAL_SOURCE_NAME = "multi_source"
+
+
 def _resolve_root_dir() -> Path:
     """Resolve the DataRaum root directory.
 
@@ -99,6 +120,65 @@ def _resolve_root_dir() -> Path:
     if home:
         return Path(home).expanduser()
     return Path("~/.dataraum").expanduser()
+
+
+def _read_archive_summary(archive_dir: Path, session_id: str, fingerprint: str) -> Any | None:
+    """Read the just-archived session DB and build an ArchivedSession row.
+
+    Uses sqlite3 directly so we don't spin up a full ConnectionManager (which
+    would also open DuckDB) for a one-shot read. Returns None if the metadata
+    is unreadable — the caller treats that as a non-fatal indexing miss.
+    """
+    import sqlite3
+
+    from dataraum.mcp.db_models import ArchivedSession
+
+    metadata_db = archive_dir / "metadata.db"
+    if not metadata_db.exists():
+        return None
+    try:
+        with sqlite3.connect(str(metadata_db)) as conn:
+            inv_row = conn.execute(
+                "SELECT intent, contract, vertical, status, outcome_summary, "
+                "started_at, ended_at, step_count "
+                "FROM investigation_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if inv_row is None:
+                return None
+            source_rows = conn.execute(
+                "SELECT name FROM sources "
+                "WHERE archived_at IS NULL AND name != ? "
+                "ORDER BY created_at",
+                (_PIPELINE_INTERNAL_SOURCE_NAME,),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        _log.warning("Could not read archive metadata at %s", metadata_db, exc_info=True)
+        return None
+
+    intent, contract, vertical, status, outcome_summary, started_at, ended_at, step_count = inv_row
+    return ArchivedSession(
+        session_id=session_id,
+        fingerprint=fingerprint,
+        intent=intent,
+        contract=contract or "exploratory_analysis",
+        vertical=vertical,
+        outcome=status,
+        summary=outcome_summary,
+        source_names=[r[0] for r in source_rows],
+        started_at=_parse_sqlite_datetime(started_at),
+        ended_at=_parse_sqlite_datetime(ended_at) or datetime.now(UTC),
+        step_count=step_count or 0,
+    )
+
+
+def _parse_sqlite_datetime(value: Any) -> datetime | None:
+    """Convert sqlite3's text/None datetime back to a Python datetime."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value))
 
 
 def create_server(output_dir: Path | None = None) -> Server:
@@ -183,12 +263,26 @@ def create_server(output_dir: Path | None = None) -> Server:
         """Path to a session's directory for pipeline runs and archive ops."""
         return root_dir / "sessions" / fingerprint
 
+    def _close_session_manager() -> None:
+        """Close the cached session manager and clear its closure state.
+
+        Used by callers that need to move/delete the underlying session
+        directory and want to be sure no stale FDs or cached references
+        remain.
+        """
+        nonlocal _session_manager, _active_fingerprint
+        if _session_manager is not None:
+            _session_manager.close()
+            _session_manager = None
+            _active_fingerprint = None
+
     def _archive_and_clear_active(session_id: str, fingerprint: str) -> str | None:
         """Archive sessions/{fingerprint}/ → archive/{session_id}/ and clear the pointer.
 
-        Order: close session manager → move dir → clear ActiveSession pointer.
-        Pointer cleared last so a mid-flight crash leaves an orphan dir (visible
-        and recoverable) rather than a dangling pointer at a missing dir.
+        Order: close session manager → move dir → write ArchivedSession index row
+        → clear ActiveSession pointer. Pointer cleared last so a mid-flight crash
+        leaves an orphan dir (visible and recoverable) rather than a dangling
+        pointer at a missing dir.
 
         Returns:
             Warning message if archival failed (pointer still cleared); None on success.
@@ -199,30 +293,33 @@ def create_server(output_dir: Path | None = None) -> Server:
 
         from dataraum.mcp.db_models import ActiveSession
 
-        nonlocal _session_manager, _active_fingerprint
-
         # Close session connections before moving files
-        if _session_manager is not None:
-            _session_manager.close()
-            _session_manager = None
-            _active_fingerprint = None
+        _close_session_manager()
 
         session_dir = _session_dir_for(fingerprint)
         archive_dir = root_dir / "archive" / session_id
         warning: str | None = None
+        archived_ok = False
         try:
             archive_dir.parent.mkdir(parents=True, exist_ok=True)
             if session_dir.exists():
                 shutil.move(str(session_dir), str(archive_dir))
                 _log.info("Archived session %s → %s", session_dir, archive_dir)
+                archived_ok = True
         except OSError:
             _log.warning(
                 "Failed to archive session %s → %s", session_dir, archive_dir, exc_info=True
             )
             warning = f"Session ended but archival failed. {session_dir} may need manual cleanup."
 
-        # Clear pointer regardless — stale pointer is worse than orphan dir
+        # Index the archived session in workspace.db so resume_session can find
+        # it without scanning every metadata.db. Done before clearing the
+        # pointer so both writes share the workspace transaction lifecycle.
         with _get_workspace_manager().session_scope() as ws_session:
+            if archived_ok:
+                summary = _read_archive_summary(archive_dir, session_id, fingerprint)
+                if summary is not None:
+                    ws_session.add(summary)
             ws_session.execute(delete(ActiveSession))
 
         return warning
@@ -245,6 +342,10 @@ def create_server(output_dir: Path | None = None) -> Server:
             "the intended use case)\n"
             "3. investigate — use the tools below\n"
             "4. end_session — archive and clean up\n"
+            "\n"
+            "To revisit a finalized investigation without re-running the "
+            "pipeline, call resume_session — it restores the archived data, "
+            "snippets, and teach overlays.\n"
             "\n"
             "## Three scenarios\n"
             "\n"
@@ -282,6 +383,8 @@ def create_server(output_dir: Path | None = None) -> Server:
             "computed.\n"
             "- **add_source** — register data before starting a session.\n"
             "- **begin_session / end_session** — manage session lifecycle.\n"
+            "- **resume_session** — restore an archived session. Call without "
+            "arguments to list available archives.\n"
             "\n"
             "## Choosing query vs run_sql\n"
             "\n"
@@ -433,9 +536,11 @@ def create_server(output_dir: Path | None = None) -> Server:
             Tool(
                 name="end_session",
                 description=(
-                    "End the current investigation session. The workspace is "
-                    "archived and a fresh one is created on the next "
-                    "begin_session.\n\n"
+                    "End the current investigation session. The session "
+                    "directory is moved to the archive and indexed; a fresh "
+                    "session can begin immediately.\n\n"
+                    "Pipeline data, snippets, and teach overlays are preserved "
+                    "and can be brought back with resume_session.\n\n"
                     "Call when: the analysis is complete, the user wants to "
                     "start fresh with different sources or a different contract, "
                     "or the request cannot be fulfilled."
@@ -456,6 +561,36 @@ def create_server(output_dir: Path | None = None) -> Server:
                         "summary": {
                             "type": "string",
                             "description": "Brief justification for the outcome.",
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="resume_session",
+                description=(
+                    "Restore a previously-finalized session and make it active. "
+                    "Pipeline data, snippets, teach overlays, and the original "
+                    "contract and vertical are preserved.\n\n"
+                    "Call without arguments to list available archived sessions. "
+                    "Then call again with a session_id to restore.\n\n"
+                    "Cannot be called while another session is active — "
+                    "end_session first."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "session_id": {
+                            "type": "string",
+                            "description": (
+                                "Archived session_id to restore. Omit to list available archives."
+                            ),
+                        },
+                        "intent": {
+                            "type": "string",
+                            "description": (
+                                "Intent for the resumed investigation. Defaults "
+                                "to 'Resumed: <original intent>'."
+                            ),
                         },
                     },
                 },
@@ -828,6 +963,18 @@ def create_server(output_dir: Path | None = None) -> Server:
         elif name == "end_session":
             if active_session_id is None:
                 return _json_text_content({"error": "No active session to end."})
+        elif name == "resume_session":
+            # Listing (no session_id) is always allowed so an agent can browse
+            # archives before deciding whether to end the current session.
+            if active_session_id is not None and arguments.get("session_id"):
+                return _json_text_content(
+                    {
+                        "error": (
+                            "A session is already active. Call end_session "
+                            "before resuming an archived one."
+                        )
+                    }
+                )
         else:
             # All other tools require active session
             if active_session_id is None:
@@ -900,7 +1047,9 @@ def create_server(output_dir: Path | None = None) -> Server:
                                 content=[
                                     TextContent(
                                         type="text",
-                                        text=json.dumps(measure_result, indent=2, default=str),
+                                        text=json.dumps(
+                                            measure_result, indent=2, default=_json_default
+                                        ),
                                     )
                                 ]
                             )
@@ -934,7 +1083,7 @@ def create_server(output_dir: Path | None = None) -> Server:
             if active_session_id is not None:
                 # Idempotent: resume existing session
                 assert session_mgr is not None
-                result = _resume_session(session_mgr, active_session_id)
+                result = _orient_to_active_session(session_mgr, active_session_id)
             else:
                 result = _begin_new_session(
                     workspace_mgr=ws_mgr,
@@ -960,6 +1109,33 @@ def create_server(output_dir: Path | None = None) -> Server:
                 archive_warning = _archive_and_clear_active(active_session_id, active_session_fp)
                 if archive_warning:
                     result["warning"] = archive_warning
+        elif name == "resume_session":
+            target = arguments.get("session_id")
+            if not target:
+                # No id → list available archives.
+                archives = _list_archived_sessions(ws_mgr)
+                result = {
+                    "archived_sessions": archives,
+                    "hint": (
+                        "Pick a session_id from the list and call "
+                        "resume_session(session_id=...) to restore it."
+                        if archives
+                        else "No archived sessions yet. Sessions are archived "
+                        "automatically on end_session."
+                    ),
+                }
+            else:
+                result = _restore_archived_session(
+                    workspace_mgr=ws_mgr,
+                    open_session_manager=_get_session_manager,
+                    close_session_manager=_close_session_manager,
+                    archive_root=root_dir / "archive",
+                    sessions_root=root_dir / "sessions",
+                    session_id=target,
+                    intent=arguments.get("intent"),
+                )
+                result.pop("_session_id", None)
+                result.pop("_fingerprint", None)
         elif name == "query":
             assert session_mgr is not None
             with session_mgr.session_scope() as session, session_mgr.duckdb_cursor() as cursor:
@@ -1131,16 +1307,16 @@ def _get_pipeline_source(session: Any) -> Any | None:
     return sources[0] if sources else None
 
 
-def _resume_session(
+def _orient_to_active_session(
     session_manager: ConnectionManager,
     session_id: str,
 ) -> dict[str, Any]:
-    """Resume an existing active session by reading from its session DB.
+    """Return orientation info for an already-active investigation session.
 
-    Returns orientation info matching the begin_session response shape, with
-    a hint that the session is being resumed. The session manager has already
-    been opened against the correct sessions/{fingerprint}/ directory by the
-    caller — this function just reads the session-DB state.
+    Used when ``begin_session`` is called while a session is already active —
+    the response mirrors the begin_session shape so the agent can pick up
+    where it left off. The session manager has already been opened against
+    the correct sessions/{fingerprint}/ directory by the caller.
     """
     from sqlalchemy import select
 
@@ -1202,6 +1378,258 @@ def _resume_session(
         "step_count": step_count,
         "hint": (
             "Resuming session from earlier. If you'd like to start fresh, call end_session first."
+        ),
+    }
+
+
+def _list_archived_sessions(workspace_mgr: ConnectionManager) -> list[dict[str, Any]]:
+    """Return all archived sessions available for resume, newest first."""
+    from sqlalchemy import select
+
+    from dataraum.mcp.db_models import ArchivedSession
+
+    with workspace_mgr.session_scope() as ws_session:
+        rows = list(
+            ws_session.execute(select(ArchivedSession).order_by(ArchivedSession.ended_at.desc()))
+            .scalars()
+            .all()
+        )
+        return [
+            {
+                "session_id": r.session_id,
+                "fingerprint": r.fingerprint,
+                "intent": r.intent,
+                "contract": r.contract,
+                "vertical": r.vertical or "_adhoc",
+                "outcome": r.outcome,
+                "summary": r.summary,
+                "sources": list(r.source_names),
+                "started_at": r.started_at,
+                "ended_at": r.ended_at,
+                "step_count": r.step_count,
+            }
+            for r in rows
+        ]
+
+
+def _restore_archived_session(
+    workspace_mgr: ConnectionManager,
+    open_session_manager: Callable[[str], ConnectionManager],
+    close_session_manager: Callable[[], None],
+    archive_root: Path,
+    sessions_root: Path,
+    session_id: str,
+    intent: str | None = None,
+) -> dict[str, Any]:
+    """Atomically restore an archived session and make it active.
+
+    Reads the archive index entry from workspace.db, moves the archive
+    directory back into ``sessions/{fingerprint}/``, replaces workspace
+    Sources with the archive's sources (so the fingerprint is consistent),
+    creates a new ``InvestigationSession`` carrying the original contract
+    and vertical, sets the ``ActiveSession`` pointer, and consumes the
+    ``ArchivedSession`` index row.
+
+    The restored InvestigationSession is *new* — the original is preserved
+    in the session DB as a historical record. Pipeline data, snippets, and
+    teach overlays are reused as-is.
+    """
+    import shutil
+
+    from sqlalchemy import delete, select
+
+    from dataraum.entropy.contracts import get_contract
+    from dataraum.entropy.db_models import EntropyObjectRecord
+    from dataraum.investigation.recorder import begin_session
+    from dataraum.mcp.db_models import ActiveSession, ArchivedSession
+    from dataraum.storage import Source
+
+    # 1. Look up the archive index entry, snapshot its fields.
+    with workspace_mgr.session_scope() as ws_session:
+        archived = ws_session.execute(
+            select(ArchivedSession).where(ArchivedSession.session_id == session_id)
+        ).scalar_one_or_none()
+        if archived is None:
+            return {
+                "error": f"Unknown archived session_id: {session_id}",
+                "available": _list_archived_sessions(workspace_mgr),
+            }
+        fingerprint = archived.fingerprint
+        archived_intent = archived.intent
+        archived_contract = archived.contract
+        archived_vertical = archived.vertical
+        prior_step_count = archived.step_count
+
+    # 2. Verify filesystem state.
+    archive_dir = archive_root / session_id
+    if not archive_dir.exists():
+        # Stale index entry — clean up so the user can move on.
+        with workspace_mgr.session_scope() as ws_session:
+            ws_session.execute(
+                delete(ArchivedSession).where(ArchivedSession.session_id == session_id)
+            )
+        return {
+            "error": (
+                f"Archive directory missing for session {session_id}. Index entry has been removed."
+            ),
+            "available": _list_archived_sessions(workspace_mgr),
+        }
+    session_dir = sessions_root / fingerprint
+    if session_dir.exists():
+        return {
+            "error": (
+                f"A session directory for fingerprint {fingerprint} already exists. "
+                "End the active session or remove the stale directory before resuming."
+            )
+        }
+
+    # 3. Move archive → sessions/{fingerprint}/.
+    sessions_root.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(archive_dir), str(session_dir))
+    _log.info("Restored archive %s → %s", archive_dir, session_dir)
+
+    # 4-5 wrapped: if anything below the move fails, put the directory back so
+    # the user can retry. Otherwise the index points at a dir that's silently
+    # blocked from being re-restored.
+    try:
+        session_mgr = open_session_manager(fingerprint)
+        resume_intent = intent or f"Resumed: {archived_intent}"
+
+        with session_mgr.session_scope() as session:
+            # Skip the synthetic multi_source row — pipeline plumbing that
+            # must not be copied into workspace.db or shown to the agent.
+            # The session DB keeps it (pipeline data references its id).
+            archive_sources = list(
+                session.execute(
+                    select(Source)
+                    .where(
+                        Source.archived_at.is_(None),
+                        Source.name != _PIPELINE_INTERNAL_SOURCE_NAME,
+                    )
+                    .order_by(Source.created_at)
+                )
+                .scalars()
+                .all()
+            )
+            if not archive_sources:
+                raise RuntimeError(
+                    "Restored session has no active sources. The archive may be "
+                    "corrupted; investigate manually."
+                )
+            source_snapshots = [
+                {
+                    "source_id": s.source_id,
+                    "name": s.name,
+                    "source_type": s.source_type,
+                    "connection_config": s.connection_config,
+                    "created_at": s.created_at,
+                    "updated_at": s.updated_at,
+                    "status": s.status,
+                    "backend": s.backend,
+                    "credential_ref": s.credential_ref,
+                    "discovered_schema": s.discovered_schema,
+                    "last_validated": s.last_validated,
+                    "archived_at": s.archived_at,
+                }
+                for s in archive_sources
+            ]
+
+            # Defensive: any prior 'active' InvestigationSession in this DB
+            # (e.g. from an aborted end_session) becomes 'abandoned' before
+            # we add a fresh active row. Mirrors _begin_new_session.
+            from sqlalchemy import update
+
+            from dataraum.investigation.db_models import (
+                InvestigationSession as _InvSession,
+            )
+
+            session.execute(
+                update(_InvSession).where(_InvSession.status == "active").values(status="abandoned")
+            )
+            session.flush()
+
+            anchor = _get_pipeline_source(session)
+            anchor_source_id: str = (
+                anchor.source_id if anchor else str(source_snapshots[0]["source_id"])
+            )
+
+            inv = begin_session(
+                session,
+                anchor_source_id,
+                resume_intent,
+                contract=archived_contract,
+                vertical=archived_vertical,
+            )
+            new_session_id = inv.session_id
+
+            has_data = (
+                session.execute(
+                    select(EntropyObjectRecord.object_id)
+                    .where(EntropyObjectRecord.source_id == anchor_source_id)
+                    .limit(1)
+                ).scalar_one_or_none()
+                is not None
+            )
+
+        # Sync workspace: replace Sources, set pointer, consume index row.
+        with workspace_mgr.session_scope() as ws_session:
+            ws_session.execute(delete(Source))
+            for snapshot in source_snapshots:
+                ws_session.add(Source(**snapshot))
+            ws_session.execute(delete(ActiveSession))
+            ws_session.add(ActiveSession(id=1, session_id=new_session_id, fingerprint=fingerprint))
+            ws_session.execute(
+                delete(ArchivedSession).where(ArchivedSession.session_id == session_id)
+            )
+    except Exception as exc:
+        # Close any session manager that may have been opened against the
+        # restored dir — otherwise the move-back below would leave the cache
+        # holding stale handles, and Windows would fail the move outright.
+        close_session_manager()
+        # Roll back the move so the user can retry. If the rollback itself
+        # fails (disk full, permission), log loudly — manual recovery only.
+        try:
+            shutil.move(str(session_dir), str(archive_dir))
+        except OSError:
+            _log.error(
+                "Failed to roll back restore: %s could not be moved back to %s",
+                session_dir,
+                archive_dir,
+                exc_info=True,
+            )
+            return {
+                "error": (
+                    f"Restore failed and rollback also failed. Session data "
+                    f"is at sessions/{fingerprint}/ but the archive index "
+                    f"expects archive/{session_id}/. Manual recovery "
+                    f"required: {exc}"
+                )
+            }
+        return {"error": f"Restore failed (rolled back): {exc}"}
+
+    contract_profile = get_contract(archived_contract)
+    contract_info = (
+        {
+            "name": contract_profile.name,
+            "display_name": contract_profile.display_name,
+            "description": contract_profile.description,
+        }
+        if contract_profile
+        else {"name": archived_contract, "display_name": archived_contract}
+    )
+    return {
+        "_session_id": new_session_id,
+        "_fingerprint": fingerprint,
+        "resumed_from": session_id,
+        "sources": [s["name"] for s in source_snapshots],
+        "contract": contract_info,
+        "has_pipeline_data": has_data,
+        "vertical": archived_vertical or "_adhoc",
+        "prior_step_count": prior_step_count,
+        "hint": (
+            "Restored from archive. Pipeline data, snippets, and teach overlays "
+            "are preserved. Use look to orient. Call end_session to archive "
+            "again when done."
         ),
     }
 

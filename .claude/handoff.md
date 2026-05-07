@@ -357,6 +357,31 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 - **Affects**: `search_snippets` vocabulary cleanliness
 - **Status**: pending
 
+## 2026-05-07: DAT-209 — resume_session MCP tool
+
+### dataraum-eval
+- **Changed**: `src/dataraum/mcp/server.py` (new `_restore_archived_session`, `_list_archived_sessions`, `_read_archive_summary`, `_close_session_manager`; `_archive_and_clear_active` now writes `ArchivedSession` rows; rename `_resume_session` → `_orient_to_active_session`), `src/dataraum/mcp/db_models.py` (new `ArchivedSession` model)
+- **Affects**: New MCP tool `resume_session`. Workspace.db gains a new table `archived_sessions`. Behavioral pairing: `end_session` writes a row; `resume_session` consumes it.
+- **Calibrate**: `/smoke` flow after restart. Key scenarios:
+  1. `add_source → begin_session → end_session(delivered)` → archive dir created at `archive/{session_id}/` AND `archived_sessions` table has one row in workspace.db
+  2. `resume_session()` (no args) → returns `{"archived_sessions": [...]}` ordered newest first; each entry has session_id, fingerprint, intent, contract, vertical, outcome, summary, sources, started_at, ended_at, step_count
+  3. `resume_session(session_id=X)` → archive dir moves back to `sessions/{fingerprint}/`, ActiveSession pointer set, ArchivedSession row consumed. Workspace Sources replaced from archive's sources. New `InvestigationSession` created with carried contract+vertical and intent prefixed with "Resumed:" (or override via `intent` arg).
+  4. After resume, `look`/`measure`/`query` return existing pipeline data without re-running the pipeline (`has_pipeline_data: true`)
+  5. `resume_session(session_id=X)` while a session is active → error "A session is already active. Call end_session before resuming"
+  6. `resume_session()` (no args) while a session is active → returns the listing, NOT an error (so the agent can browse before deciding to end the current session)
+  7. `resume_session(session_id="bad")` → error includes `available` list of archives
+  8. Stale archive (index entry exists but archive dir was manually deleted) → error includes `available`, index entry consumed
+  9. Failure mid-restore (unlikely outside tests) → archive moved back; user can retry
+- **Notes**:
+  - **Schema change**: `workspace.db` gets an `archived_sessions` table. Existing workspaces without it need a wipe (`rm -rf ~/.dataraum/`) — same wipe instruction as DAT-192. CHANGELOG already states this for the v0.2.2 unreleased section.
+  - Response fields for restore: `resumed_from`, `sources`, `contract`, `has_pipeline_data`, `vertical`, `prior_step_count`, `hint`. Internal `_session_id` and `_fingerprint` stripped before reaching the agent (same convention as begin_session).
+  - Resume creates a NEW `InvestigationSession` (new session_id). The original is preserved in the session DB as a historical record with its terminal status. Audit trail: a session DB after resume+end has multiple InvestigationSession rows.
+  - Tool description in `resume_session` schema lists `session_id` (optional) and `intent` (optional). Two-step UX: list first, then restore by id.
+  - Atomicity: restore is wrapped in try/except that rolls back the directory move if any post-move step fails (manager open, source read, InvestigationSession create, workspace replace). Rollback closes the cached session manager before moving — Windows-safe.
+  - `_orient_to_active_session` rename: any eval code that imports `_resume_session` directly from `dataraum.mcp.server` must update to the new name. Public response shape and MCP behavior unchanged.
+  - Server instructions updated to mention resume_session in the lifecycle paragraph and the tool list.
+- **Status**: pending
+
 ### dataraum-context (query agent grounding — critical)
 - **Bug**: Query agent and graph agent misinterpret trial balance structure. They treat each period's row as a balance snapshot, but the trial balance has **periodic (monthly) figures** — debit_balance and credit_balance are monthly activity, not cumulative balances.
 - **Evidence**: CoA has correct account names ("Accounts Receivable", "Cost of Goods Sold"). The pattern matching works. But:

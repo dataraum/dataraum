@@ -238,3 +238,80 @@ class TestGhostSessionCleanup:
         statuses = [r[1] for r in rows]
         assert intents == ["first attempt", "fresh attempt"]
         assert statuses == ["abandoned", "active"]
+
+
+class TestResumeSessionRestoresArchive:
+    """resume_session restores an archived session in place at the original
+    fingerprint directory. After resume, the workspace pointer matches the
+    restored session and the archive index entry is consumed."""
+
+    @pytest.mark.asyncio
+    async def test_full_archive_restore_cycle(self, tmp_path: Path, api_key: None) -> None:
+        from dataraum.mcp.server import create_server
+
+        server = create_server(output_dir=tmp_path)
+        csv = _make_csv(tmp_path, "data.csv")
+        await _call(server, "add_source", {"name": "src1", "path": str(csv)})
+
+        # Begin → end. Archive populated; sessions/ empty.
+        await _call(server, "begin_session", {"intent": "first pass"})
+        sessions_dir = tmp_path / "sessions"
+        original_fp = next(sessions_dir.iterdir()).name
+
+        await _call(server, "end_session", {"outcome": "delivered", "summary": "first done"})
+        assert list(sessions_dir.iterdir()) == []
+        archives_before = list((tmp_path / "archive").iterdir())
+        assert len(archives_before) == 1
+        archive_id = archives_before[0].name
+
+        # Resume by ID.
+        result = await _call(server, "resume_session", {"session_id": archive_id})
+        assert "error" not in result
+        assert result["resumed_from"] == archive_id
+
+        # Filesystem moved back into the original fingerprint dir.
+        restored_dirs = list(sessions_dir.iterdir())
+        assert len(restored_dirs) == 1
+        assert restored_dirs[0].name == original_fp
+        assert (tmp_path / "archive" / archive_id).exists() is False
+
+        # Workspace state.
+        workspace_db = tmp_path / "workspace.db"
+        assert _count(workspace_db, "archived_sessions") == 0
+        active = _query_one(workspace_db, "SELECT fingerprint FROM active_session")
+        assert active == (original_fp,)
+
+        # Session DB has the original InvestigationSession (terminal status)
+        # and a new resumed one (active).
+        rows = _query_all(
+            restored_dirs[0] / "metadata.db",
+            "SELECT intent, status FROM investigation_sessions ORDER BY started_at",
+        )
+        assert [r[0] for r in rows] == ["first pass", "Resumed: first pass"]
+        assert [r[1] for r in rows] == ["delivered", "active"]
+
+    @pytest.mark.asyncio
+    async def test_resume_then_end_creates_new_archive_entry(
+        self, tmp_path: Path, api_key: None
+    ) -> None:
+        """After resume + end_session, the archive index has the new session_id,
+        not the consumed original."""
+        from dataraum.mcp.server import create_server
+
+        server = create_server(output_dir=tmp_path)
+        csv = _make_csv(tmp_path, "data.csv")
+        await _call(server, "add_source", {"name": "src1", "path": str(csv)})
+        await _call(server, "begin_session", {"intent": "x"})
+        await _call(server, "end_session", {"outcome": "delivered"})
+
+        listing = await _call(server, "resume_session", {})
+        first_id = listing["archived_sessions"][0]["session_id"]
+
+        await _call(server, "resume_session", {"session_id": first_id})
+        await _call(server, "end_session", {"outcome": "delivered"})
+
+        listing2 = await _call(server, "resume_session", {})
+        archives = listing2["archived_sessions"]
+        assert len(archives) == 1
+        assert archives[0]["session_id"] != first_id
+        assert archives[0]["intent"] == "Resumed: x"

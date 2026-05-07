@@ -170,15 +170,20 @@ class EnrichedViewsPhase(BasePhase):
         for col in all_columns:
             columns_by_table.setdefault(col.table_id, []).append(col)
 
-        # Get LLM recommendations for valuable enrichments
-        llm_recommendations = self._get_llm_recommendations(
-            ctx=ctx,
-            typed_tables=typed_tables,
-            fact_entities=fact_entities,
-            all_relationships=all_relationships,
-            columns_by_table=columns_by_table,
-            tables_by_id=tables_by_id,
-        )
+        # Get LLM recommendations for valuable enrichments. RuntimeError
+        # signals an attempted LLM call that failed (transient/permanent);
+        # None signals LLM intentionally unavailable (config-disabled).
+        try:
+            llm_recommendations = self._get_llm_recommendations(
+                ctx=ctx,
+                typed_tables=typed_tables,
+                fact_entities=fact_entities,
+                all_relationships=all_relationships,
+                columns_by_table=columns_by_table,
+                tables_by_id=tables_by_id,
+            )
+        except RuntimeError as exc:
+            return PhaseResult.failed(str(exc))
 
         if not llm_recommendations:
             return PhaseResult.success(
@@ -452,8 +457,14 @@ class EnrichedViewsPhase(BasePhase):
     ) -> EnrichmentAnalysisResult | None:
         """Get LLM recommendations for valuable dimension joins.
 
-        Returns None if LLM is disabled or fails. When None, no enriched
-        views are created for the affected fact tables.
+        Returns None when LLM is intentionally unavailable (no config,
+        feature disabled, no provider configured) — pipeline proceeds
+        without enriched views, which is a documented operating mode.
+
+        Raises ``RuntimeError`` when an LLM call was attempted and failed
+        (transient or permanent). The phase translates this into
+        ``PhaseResult.failed`` so the pipeline halts loudly instead of
+        silently producing degraded output.
         """
         # Try to load LLM config
         try:
@@ -470,17 +481,20 @@ class EnrichedViewsPhase(BasePhase):
             logger.info("enrichment_analysis_disabled", result="skipped")
             return None
 
-        # Create provider
+        # Create provider. Missing provider config and provider-creation
+        # failures are configuration errors, not intentional skips —
+        # surface them as runtime failures so the pipeline halts loudly.
         provider_config = config.providers.get(config.active_provider)
         if not provider_config:
-            logger.warning("llm_provider_not_configured", result="skipped")
-            return None
+            raise RuntimeError(
+                f"Provider '{config.active_provider}' not configured — "
+                "enrichment analysis is enabled but cannot run."
+            )
 
         try:
             provider = create_provider(config.active_provider, provider_config.model_dump())
         except Exception as e:
-            logger.warning("llm_provider_creation_failed", error=str(e), result="skipped")
-            return None
+            raise RuntimeError(f"Failed to create LLM provider for enrichment: {e}") from e
 
         # Build context data for the agent
         context_data = self._build_context_data(
@@ -506,12 +520,11 @@ class EnrichedViewsPhase(BasePhase):
         )
 
         if not result.success:
-            logger.warning(
+            logger.error(
                 "enrichment_analysis_failed",
                 error=result.error,
-                result="skipped",
             )
-            return None
+            raise RuntimeError(f"Enrichment analysis failed: {result.error}")
 
         return result.value
 

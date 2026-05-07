@@ -152,17 +152,14 @@ class BusinessCyclesPhase(BasePhase):
                     session=ctx.session,
                     table_ids=table_ids,
                 )
-                if (
-                    induction_result.success
-                    and induction_result.value
-                    and induction_result.value.get("cycle_types")
-                ):
-                    save_cycles_config(vertical, induction_result.value)
-                else:
-                    _log.warning(
-                        "cycle_induction_failed",
-                        error=induction_result.error if not induction_result.success else "empty",
+                if not induction_result.success:
+                    return PhaseResult.failed(f"Cycle induction failed: {induction_result.error}")
+                if not induction_result.value or not induction_result.value.get("cycle_types"):
+                    return PhaseResult.failed(
+                        "Cycle induction returned no cycle types. Cold-start "
+                        "requires at least one cycle for downstream analysis."
                     )
+                save_cycles_config(vertical, induction_result.value)
 
         # Run analysis
         analysis_result = agent.analyze(

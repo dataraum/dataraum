@@ -119,7 +119,6 @@ class GraphExecutionPhase(BasePhase):
         renderer = PromptRenderer()
 
         # --- Metric induction for cold start ---
-        induction_failed = False
         if vertical == "_adhoc":
             loader_check = GraphLoader(vertical=vertical)
             existing_metrics = loader_check.load_all()
@@ -138,30 +137,29 @@ class GraphExecutionPhase(BasePhase):
                     session=ctx.session,
                     table_ids=table_ids,
                 )
-                if induction_result.success and induction_result.value:
-                    save_metrics_config(vertical, induction_result.value)
-                    _log.info(
-                        "metric_induction_complete",
-                        metrics=len(induction_result.value),
+                if not induction_result.success:
+                    return PhaseResult.failed(f"Metric induction failed: {induction_result.error}")
+                if not induction_result.value:
+                    return PhaseResult.failed(
+                        "Metric induction returned no metrics. Cold-start "
+                        "requires at least one metric for graph execution."
                     )
-                else:
-                    induction_failed = True
-                    _log.warning(
-                        "metric_induction_failed",
-                        error=induction_result.error if not induction_result.success else "empty",
-                    )
+                save_metrics_config(vertical, induction_result.value)
+                _log.info(
+                    "metric_induction_complete",
+                    metrics=len(induction_result.value),
+                )
 
         # Load metrics
         loader = GraphLoader(vertical=vertical)
         metrics = loader.load_all()
 
         if not metrics:
-            summary = (
-                "Metric induction failed — no metrics to execute"
-                if induction_failed
-                else "No metrics configured — graph execution skipped"
-            )
-            return PhaseResult.success(summary=summary)
+            # Cold-start induction (above) hard-fails when LLM call fails or
+            # returns empty, so reaching here means: vertical is configured
+            # but its metric set is empty. That's a vertical-config issue,
+            # not a runtime failure.
+            return PhaseResult.success(summary="No metrics configured — graph execution skipped")
 
         # Load field mappings
         field_mappings = load_semantic_mappings(ctx.session, table_ids)
@@ -245,6 +243,15 @@ class GraphExecutionPhase(BasePhase):
                     graph_id=graph_id,
                     error=result.error,
                 )
+
+        # Hard-fail when nothing computed but failures occurred — that's a
+        # systemic issue (LLM down, schema mismatch), not per-metric variance.
+        # Partial success is fine: some metrics legitimately don't apply.
+        if failed and not executed:
+            return PhaseResult.failed(
+                f"All {failed} metrics failed to execute. Likely a systemic "
+                "issue (LLM unavailable, schema mismatch, or missing context)."
+            )
 
         summary_parts = []
         if executed:

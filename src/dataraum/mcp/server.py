@@ -1752,10 +1752,37 @@ def _run_pipeline(
 
     result = run(config)
 
-    if not result.success or not result.value:
-        return {"error": f"Pipeline failed: {result.error}"}
+    if not result.value:
+        # Setup-time failure (no run_result available)
+        return {
+            "pipeline_status": "failed",
+            "error": result.error or "Pipeline setup failed",
+        }
 
-    return {"status": "complete", "phases_completed": result.value.phases_completed}
+    run_result = result.value
+    completed = [p.phase_name for p in run_result.phases if p.status == "completed"]
+    failed = [
+        {"phase": p.phase_name, "error": p.error or "no error message"}
+        for p in run_result.phases
+        if p.status == "failed"
+    ]
+    blocked = [p.phase_name for p in run_result.phases if p.status == "blocked"]
+
+    if not run_result.success:
+        # Outer-boundary exceptions skip per-phase logging; surface the
+        # run-level error as a synthetic entry so the response is never
+        # "failed but no failed phases listed".
+        if not failed and run_result.error:
+            failed = [{"phase": "(unknown)", "error": run_result.error}]
+        return {
+            "pipeline_status": "failed",
+            "phases_completed": completed,
+            "phases_failed": failed,
+            "phases_blocked": blocked,
+            "error": run_result.error or "One or more phases failed",
+        }
+
+    return {"pipeline_status": "complete", "phases_completed": completed}
 
 
 async def _run_pipeline_background(
@@ -3108,6 +3135,55 @@ def _look_sample(cursor: Any, table_name: str, n: int) -> dict[str, Any]:
         return {"error": f"Failed to sample table '{table_name}': {e}"}
 
 
+def _build_failed_pipeline_response(session: SASession, latest_run: Any) -> dict[str, Any]:
+    """Shape the measure() response for a pipeline run that ended in failure.
+
+    Surfaces which phase failed and why, plus dependents that never ran
+    because their upstream failed. Without this the agent sees the
+    earlier-completed phases and assumes everything is fine.
+    """
+    from sqlalchemy import select
+
+    from dataraum.pipeline.db_models import PhaseLog
+
+    logs = list(
+        session.execute(select(PhaseLog).where(PhaseLog.run_id == latest_run.run_id))
+        .scalars()
+        .all()
+    )
+
+    phases_completed = [log.phase_name for log in logs if log.status == "completed"]
+    phases_failed = [
+        {"phase": log.phase_name, "error": log.error or "no error message"}
+        for log in logs
+        if log.status == "failed"
+    ]
+    # When an exception escapes the per-phase try/except (e.g. raised
+    # during commit), the runner catches it at the outer boundary and
+    # records the failure on PipelineRun.error without writing a
+    # PhaseLog row. Surface that as a synthetic phases_failed entry so
+    # the agent never sees status="failed" with an empty failure list.
+    if not phases_failed and latest_run.error:
+        phases_failed = [{"phase": "(unknown)", "error": latest_run.error}]
+    # Dependents that never ran are absent from PhaseLog (no row written
+    # for PENDING phases). The pipeline records them only in
+    # PipelineResult, which isn't persisted — we can't enumerate them
+    # here. Call this out in the hint so the agent doesn't assume the
+    # listed failures are the only impact.
+    return {
+        "status": "failed",
+        "pipeline_status": "failed",
+        "phases_completed": phases_completed,
+        "phases_failed": phases_failed,
+        "error": latest_run.error or "pipeline halted",
+        "hint": (
+            "Pipeline halted. Check phases_failed for the cause. Downstream "
+            "phases may also have been blocked by the cascade — retry "
+            "measure() after resolving the root cause."
+        ),
+    }
+
+
 def _measure(
     session: SASession,
     target: str | None = None,
@@ -3169,12 +3245,17 @@ def _measure(
             ]
             return {
                 "status": "running",
+                "pipeline_status": "running",
                 "phases_completed": completed_names,
                 "hint": "Pipeline is running. Call measure() again to poll.",
             }
 
+        if latest_run and latest_run.status == "failed":
+            return _build_failed_pipeline_response(session, latest_run)
+
         return {
             "status": "no_data",
+            "pipeline_status": "not_started",
             "hint": "No entropy data. Pipeline will be triggered.",
         }
 
@@ -3218,6 +3299,7 @@ def _measure(
             _log.debug("BBN readiness unavailable", exc_info=True)
 
     status = "complete"
+    pipeline_status = "complete"
     phases_completed: list[str] = []
     if latest_run:
         if latest_run.status == "running":
@@ -3235,9 +3317,15 @@ def _measure(
             ]
             return {
                 "status": "running",
+                "pipeline_status": "running",
                 "phases_completed": phases_completed,
                 "hint": "Pipeline is running. Call measure() again to poll.",
             }
+        if latest_run.status == "failed":
+            # Entropy data exists from earlier successful runs but the most
+            # recent run failed. Surface the failure rather than silently
+            # showing stale scores.
+            return _build_failed_pipeline_response(session, latest_run)
         phases_completed = [
             row[0]
             for row in session.execute(
@@ -3250,6 +3338,7 @@ def _measure(
 
     result: dict[str, Any] = {
         "status": status,
+        "pipeline_status": pipeline_status,
         "phases_completed": phases_completed,
         "points": points,
         "scores": scores,

@@ -283,6 +283,136 @@ class TestMeasureNoData:
         assert "typing" in result["phases_completed"]
 
 
+class TestMeasureSurfacesPipelineFailure:
+    """A failed pipeline must surface as failed — never as silent 'complete'
+    with a shortened phases_completed list."""
+
+    def test_no_data_plus_failed_run_surfaces_failure(self, session: Session) -> None:
+        source_id, _, _ = _setup_source_and_table(session)
+
+        run_id = _id()
+        session.add(
+            PipelineRun(
+                run_id=run_id,
+                source_id=source_id,
+                status="failed",
+                started_at=datetime.now(UTC),
+                error="ontology induction LLM down",
+            )
+        )
+        session.flush()
+        session.add(
+            PhaseLog(
+                run_id=run_id,
+                source_id=source_id,
+                phase_name="import",
+                status="completed",
+                started_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC),
+                duration_seconds=1.0,
+            )
+        )
+        session.add(
+            PhaseLog(
+                run_id=run_id,
+                source_id=source_id,
+                phase_name="semantic",
+                status="failed",
+                started_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC),
+                duration_seconds=0.5,
+                error="Ontology induction failed: Anthropic API error (transient): 529",
+            )
+        )
+        session.flush()
+
+        with (
+            patch(
+                "dataraum.mcp.server._get_pipeline_source",
+                return_value=session.get(Source, source_id),
+            ),
+            patch(
+                "dataraum.entropy.measurement.measure_entropy",
+                return_value=MeasurementResult(),
+            ),
+        ):
+            from dataraum.mcp.server import _measure
+
+            result = _measure(session)
+
+        assert result["pipeline_status"] == "failed"
+        assert result["status"] == "failed"
+        assert "import" in result["phases_completed"]
+        assert any(p["phase"] == "semantic" for p in result["phases_failed"])
+        failed_semantic = next(p for p in result["phases_failed"] if p["phase"] == "semantic")
+        assert "529" in failed_semantic["error"]
+        assert "transient" in failed_semantic["error"]
+        assert result["error"] == "ontology induction LLM down"
+        assert "halted" in result["hint"].lower()
+
+    def test_existing_entropy_plus_failed_run_still_surfaces_failure(
+        self, session: Session
+    ) -> None:
+        """Even when stale entropy from an earlier run exists, a failed
+        latest run must surface as failed — silent 'complete' would be
+        the worst-case UX."""
+        source_id, table_id, col_ids = _setup_source_and_table(session)
+
+        run_id = _id()
+        session.add(
+            PipelineRun(
+                run_id=run_id,
+                source_id=source_id,
+                status="failed",
+                started_at=datetime.now(UTC),
+                error="metric induction LLM down",
+            )
+        )
+        session.flush()
+        session.add(
+            PhaseLog(
+                run_id=run_id,
+                source_id=source_id,
+                phase_name="graph_execution",
+                status="failed",
+                started_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC),
+                duration_seconds=0.0,
+                error="Metric induction failed",
+            )
+        )
+        session.flush()
+
+        # Build a non-empty MeasurementResult to simulate stale entropy data.
+        stale_measurement = MeasurementResult(
+            scores={"value.distribution.benford_compliance": 0.5},
+            column_details={
+                "value.distribution.benford_compliance": {
+                    f"column:typed_orders.{col_ids[0][1]}": 0.5,
+                },
+            },
+        )
+
+        with (
+            patch(
+                "dataraum.mcp.server._get_pipeline_source",
+                return_value=session.get(Source, source_id),
+            ),
+            patch(
+                "dataraum.entropy.measurement.measure_entropy",
+                return_value=stale_measurement,
+            ),
+        ):
+            from dataraum.mcp.server import _measure
+
+            result = _measure(session)
+
+        assert result["pipeline_status"] == "failed"
+        assert result["status"] == "failed"
+        # No stale points — measure() short-circuits to the failure response
+        assert "points" not in result
+
+
 class TestMeasureTargetFilter:
     def test_filter_by_table(self, session: Session) -> None:
         """Target='orders' filters points to that table's columns."""

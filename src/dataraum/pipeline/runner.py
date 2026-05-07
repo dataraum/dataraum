@@ -190,26 +190,51 @@ def run(config: RunConfig) -> Result[RunResult]:
         logs_stmt = select(PhaseLog).where(PhaseLog.run_id == setup.run_id)
         phase_logs = {log.phase_name: log for log in session.execute(logs_stmt).scalars().all()}
 
-        # Build phase results from logs
+        # Build phase results from logs. Blocked phases never ran (their
+        # dependency failed) so they have no PhaseLog row — synthesize a
+        # status="blocked" entry so callers can see they were skipped.
         phase_results: list[PhaseRunResult] = []
         all_phase_names = (
             pipeline_result.phases_completed
             + pipeline_result.phases_failed
             + pipeline_result.phases_skipped
+            + pipeline_result.phases_blocked
         )
+        blocked_set = set(pipeline_result.phases_blocked)
         for phase_name in all_phase_names:
             log = phase_logs.get(phase_name)
-            phase_results.append(
-                PhaseRunResult(
-                    phase_name=phase_name,
-                    status=log.status if log else "unknown",
-                    duration_seconds=log.duration_seconds if log else 0.0,
-                    error=log.error if log else None,
-                    outputs=log.outputs or {} if log else {},
+            if log:
+                phase_results.append(
+                    PhaseRunResult(
+                        phase_name=phase_name,
+                        status=log.status,
+                        duration_seconds=log.duration_seconds,
+                        error=log.error,
+                        outputs=log.outputs or {},
+                    )
                 )
-            )
-            if log and log.status == "failed" and log.error:
-                warnings.append(f"{phase_name} failed: {log.error}")
+                if log.status == "failed" and log.error:
+                    warnings.append(f"{phase_name} failed: {log.error}")
+            elif phase_name in blocked_set:
+                phase_results.append(
+                    PhaseRunResult(
+                        phase_name=phase_name,
+                        status="blocked",
+                        duration_seconds=0.0,
+                        error="blocked by upstream phase failure",
+                        outputs={},
+                    )
+                )
+            else:
+                phase_results.append(
+                    PhaseRunResult(
+                        phase_name=phase_name,
+                        status="unknown",
+                        duration_seconds=0.0,
+                        error=None,
+                        outputs={},
+                    )
+                )
 
         # Finalize PipelineRun record
         run_record = session.get(PipelineRun, setup.run_id)

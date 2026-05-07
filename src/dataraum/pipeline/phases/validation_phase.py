@@ -145,13 +145,16 @@ class ValidationPhase(BasePhase):
                     session=ctx.session,
                     table_ids=table_ids,
                 )
-                if induction_result.success and induction_result.value:
-                    save_validation_specs(vertical, induction_result.value)
-                else:
-                    _log.warning(
-                        "validation_induction_failed",
-                        error=induction_result.error if not induction_result.success else "empty",
+                if not induction_result.success:
+                    return PhaseResult.failed(
+                        f"Validation induction failed: {induction_result.error}"
                     )
+                if not induction_result.value:
+                    return PhaseResult.failed(
+                        "Validation induction returned no specs. Cold-start "
+                        "requires at least one validation rule."
+                    )
+                save_validation_specs(vertical, induction_result.value)
 
         # Get optional category filter from config
         category = ctx.config.get("validation_category")

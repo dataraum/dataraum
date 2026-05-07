@@ -131,37 +131,85 @@ class TestMakeTaskEventCallback:
 class TestRunPipeline:
     """Tests for the _run_pipeline function."""
 
-    def test_pipeline_failure_returns_error(self, tmp_path):
-        """Returns error when pipeline fails."""
+    def test_pipeline_setup_failure_returns_failed_status(self, tmp_path):
+        """Setup-time failure (no run_result) surfaces as pipeline_status=failed."""
         mock_result = MagicMock()
         mock_result.success = False
         mock_result.value = None
-        mock_result.error = "something broke"
+        mock_result.error = "Setup failed"
 
         with patch("dataraum.pipeline.runner.run", return_value=mock_result):
             result = _run_pipeline(output_dir=tmp_path)
 
-        assert isinstance(result, dict)
-        assert "Pipeline failed" in result["error"]
+        assert result["pipeline_status"] == "failed"
+        assert result["error"] == "Setup failed"
 
-    def test_success_returns_status_complete(self, tmp_path):
-        """Returns status=complete on success."""
+    def test_phase_failure_returns_per_phase_breakdown(self, tmp_path):
+        """When a phase fails, response surfaces phases_completed/failed/blocked."""
+        from dataraum.pipeline.runner import PhaseRunResult, RunResult
+
+        run_result = RunResult(
+            success=False,
+            source_id="src-1",
+            duration_seconds=1.5,
+            phases=[
+                PhaseRunResult(phase_name="import", status="completed", duration_seconds=1.0),
+                PhaseRunResult(
+                    phase_name="semantic",
+                    status="failed",
+                    duration_seconds=0.5,
+                    error="LLM down (transient)",
+                ),
+                PhaseRunResult(phase_name="enriched_views", status="blocked", duration_seconds=0.0),
+            ],
+            error="semantic failed",
+        )
+        mock_result = MagicMock()
+        mock_result.success = True  # the Result wrapper succeeded; run_result reports the failure
+        mock_result.value = run_result
+        mock_result.error = None
+
+        with patch("dataraum.pipeline.runner.run", return_value=mock_result):
+            result = _run_pipeline(output_dir=tmp_path)
+
+        assert result["pipeline_status"] == "failed"
+        assert result["phases_completed"] == ["import"]
+        assert result["phases_failed"] == [{"phase": "semantic", "error": "LLM down (transient)"}]
+        assert result["phases_blocked"] == ["enriched_views"]
+        assert result["error"] == "semantic failed"
+
+    def test_success_returns_complete(self, tmp_path):
+        """Returns pipeline_status=complete on success with phase names."""
+        from dataraum.pipeline.runner import PhaseRunResult, RunResult
+
+        run_result = RunResult(
+            success=True,
+            source_id="src-1",
+            duration_seconds=2.0,
+            phases=[
+                PhaseRunResult(phase_name="import", status="completed", duration_seconds=1.0),
+                PhaseRunResult(phase_name="typing", status="completed", duration_seconds=1.0),
+            ],
+        )
         mock_result = MagicMock()
         mock_result.success = True
-        mock_result.value = MagicMock()
-        mock_result.value.phases_completed = 17
+        mock_result.value = run_result
 
         with patch("dataraum.pipeline.runner.run", return_value=mock_result):
             result = _run_pipeline(output_dir=tmp_path)
 
-        assert result["status"] == "complete"
+        assert result["pipeline_status"] == "complete"
+        assert result["phases_completed"] == ["import", "typing"]
 
     def test_always_multi_source_mode(self, tmp_path):
         """Pipeline always runs in multi-source mode (source_path=None)."""
+        from dataraum.pipeline.runner import RunResult
+
         mock_result = MagicMock()
         mock_result.success = True
-        mock_result.value = MagicMock()
-        mock_result.value.phases_completed = 17
+        mock_result.value = RunResult(
+            success=True, source_id="src-1", duration_seconds=0.0, phases=[]
+        )
 
         with patch("dataraum.pipeline.runner.run", return_value=mock_result) as mock_run:
             _run_pipeline(output_dir=tmp_path)
@@ -171,10 +219,13 @@ class TestRunPipeline:
 
     def test_event_callback_forwarded(self, tmp_path):
         """Event callback is passed through to RunConfig."""
+        from dataraum.pipeline.runner import RunResult
+
         mock_result = MagicMock()
         mock_result.success = True
-        mock_result.value = MagicMock()
-        mock_result.value.phases_completed = 17
+        mock_result.value = RunResult(
+            success=True, source_id="src-1", duration_seconds=0.0, phases=[]
+        )
 
         cb = MagicMock()
 
@@ -186,10 +237,13 @@ class TestRunPipeline:
 
     def test_contract_passed_through(self, tmp_path):
         """Contract from session is passed to RunConfig."""
+        from dataraum.pipeline.runner import RunResult
+
         mock_result = MagicMock()
         mock_result.success = True
-        mock_result.value = MagicMock()
-        mock_result.value.phases_completed = 17
+        mock_result.value = RunResult(
+            success=True, source_id="src-1", duration_seconds=0.0, phases=[]
+        )
 
         with patch("dataraum.pipeline.runner.run", return_value=mock_result) as mock_run:
             _run_pipeline(output_dir=tmp_path, contract="executive_dashboard")

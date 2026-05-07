@@ -368,6 +368,24 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 - **Affects**: `query` tool accuracy for balance-based metrics (DSO, AR, AP, any balance sheet item), graph snippets for DPO/current_ratio/etc.
 - **Status**: pending
 
+## 2026-05-07: DAT-274 — LLM resilience: hard-fail on systemic failures
+
+### dataraum-eval
+- **Changed**: `src/dataraum/llm/providers/anthropic.py` (error classification), `src/dataraum/pipeline/phases/{semantic,validation,business_cycles,graph_execution,enriched_views}_phase.py` (swallow → hard-fail), `src/dataraum/pipeline/runner.py` (include blocked phases in PhaseRunResult), `src/dataraum/mcp/server.py` (`_run_pipeline` rich return + `_measure` failure response)
+- **Affects**: `measure` MCP tool response shape; pipeline halt behavior on cold-start when an LLM call fails
+- **Calibrate**: `/smoke` after restart. Key changes the harness needs to know:
+  1. **`measure()` response has new `pipeline_status` field**: `complete` / `running` / `failed` / `not_started`. Existing `status` field kept for backward compat (matches `pipeline_status` on the success/running/no_data paths).
+  2. **`measure()` returns `pipeline_status: "failed"` with `phases_failed: [{phase, error}]` when the most recent pipeline run failed.** Eval harness assertions that expected `status: complete` may now turn red on cold-start runs that previously passed silently with degraded data — this is intentional.
+  3. **`_run_pipeline` return shape changed**: was `{"status": "complete", "phases_completed": int}` or `{"error": "Pipeline failed: ..."}`. Now `{"pipeline_status": "complete"|"failed", "phases_completed": [names], "phases_failed": [{phase, error}], "phases_blocked": [names]}`. Note `phases_completed` is now a **list of names**, not an int count.
+  4. **Cold-start pipeline now hard-fails when LLM is down or induction returns empty.** Previously the pipeline ran to "complete" with empty ontology/cycles/validations/metrics. Eval runs that simulated LLM failure to test fallback behavior will turn red — those tests should now assert `pipeline_status: failed`.
+  5. **`Result.fail` from `AnthropicProvider`** now contains `transient` / `permanent` in the error string. Eval-side assertions on exact error text may need updating.
+- **Notes**:
+  - Hard-fail policy: cold-start induction (ontology, column annotation, validation, cycle, metric) and enrichment recommendations now propagate LLM failures to `PhaseResult.failed`. The scheduler's natural cascade halts dependent phases. Independent phases (e.g., correlations) still run.
+  - `graph_execution` per-metric loop unchanged for partial-failure case — keeps warning-on-failure when ≥1 metric succeeds (legitimate per-dataset variance). Hard-fails only when 0 succeed and ≥1 failed (systemic).
+  - `enriched_views` distinguishes "LLM intentionally unavailable" (config-disabled, provider-not-configured) from "LLM call attempted and failed" — only the latter is now a hard fail.
+  - No SDK retry/timeout overrides — Anthropic SDK defaults retain. The user's call: APIs always time out eventually.
+- **Status**: pending
+
 <!--
 ## YYYY-MM-DD: brief description
 

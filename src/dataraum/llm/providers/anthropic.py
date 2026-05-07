@@ -32,6 +32,54 @@ class AnthropicConfig(BaseModel):
 logger = get_logger(__name__)
 
 
+# 4xx codes the user must fix — credentials, schema, request shape.
+# 429 (rate limit) and 408/409 are retryable so they are NOT in this set.
+_PERMANENT_STATUS_CODES = frozenset({400, 401, 403, 404, 413, 422})
+
+
+_AUTH_STATUS_CODES = frozenset({401, 403})
+
+
+def _classify_anthropic_error(exc: anthropic.APIError) -> tuple[str, str]:
+    """Categorize an Anthropic exception so the caller can act on it.
+
+    Returns:
+        (kind, message): ``kind`` is "permanent" (user must fix) or
+        "transient" (retry may help). ``message`` is the human-readable
+        body of the error, with an actionable hint appended for auth
+        failures so practitioners know exactly what to fix.
+
+    Classification:
+        permanent — auth / forbidden / bad request / not found / payload
+            too large / unprocessable. Retrying won't help; the user
+            needs to fix credentials, the input, or configuration.
+        transient — rate limits, 5xx, 408 timeout, 409 conflict, network
+            errors, connection / read timeouts. The SDK retries these by
+            default; if one surfaces here, the retry budget is exhausted
+            but a later retry may still succeed.
+    """
+    # APIStatusError (and subclasses) carry an HTTP status code.
+    if isinstance(exc, anthropic.APIStatusError):
+        message = str(exc)
+        if exc.status_code in _AUTH_STATUS_CODES:
+            message = f"{message}. Check your ANTHROPIC_API_KEY."
+        if exc.status_code in _PERMANENT_STATUS_CODES:
+            return "permanent", message
+        return "transient", message
+    # Connection / timeout errors don't have a status code; they're
+    # always transient by definition.
+    if isinstance(exc, anthropic.APIConnectionError):
+        return "transient", str(exc)
+    # APIResponseValidationError: the server returned something the SDK
+    # couldn't parse. Treat as permanent — retrying the same request
+    # likely produces the same malformed response.
+    if isinstance(exc, anthropic.APIResponseValidationError):
+        return "permanent", str(exc)
+    # Anything else under APIError — default to transient (retry is
+    # the safer default than surfacing as a user error).
+    return "transient", str(exc)
+
+
 class AnthropicProvider(LLMProvider):
     """Anthropic Claude provider implementation.
 
@@ -157,8 +205,9 @@ class AnthropicProvider(LLMProvider):
             )
 
         except anthropic.APIError as e:
-            logger.error("anthropic_api_error", error=str(e), model=model)
-            return Result.fail(f"Anthropic API error: {e}")
+            kind, message = _classify_anthropic_error(e)
+            logger.error("anthropic_api_error", error=str(e), model=model, kind=kind)
+            return Result.fail(f"Anthropic API error ({kind}): {message}")
         except Exception as e:
             logger.error("anthropic_unexpected_error", error=str(e), model=model)
             return Result.fail(f"Unexpected error calling Anthropic: {e}")

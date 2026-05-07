@@ -218,17 +218,16 @@ class SemanticPhase(BasePhase):
                     session=ctx.session,
                     table_ids=table_ids,
                 )
-                if (
-                    induction_result.success
-                    and induction_result.value
-                    and induction_result.value.concepts
-                ):
-                    induction_loader.save("_adhoc", induction_result.value)
-                else:
-                    logger.warning(
-                        "ontology_induction_failed",
-                        error=induction_result.error,
+                if not induction_result.success:
+                    return PhaseResult.failed(
+                        f"Ontology induction failed: {induction_result.error}"
                     )
+                if not induction_result.value or not induction_result.value.concepts:
+                    return PhaseResult.failed(
+                        "Ontology induction returned no concepts. Cold-start "
+                        "requires at least one concept for downstream phases."
+                    )
+                induction_loader.save("_adhoc", induction_result.value)
 
         # Load standard_fields required by metric graphs so the semantic phase
         # can prioritize mapping those concepts to actual dataset columns.
@@ -257,20 +256,17 @@ class SemanticPhase(BasePhase):
                 ontology=ontology,
             )
 
-            if annotation_result.success and annotation_result.value:
-                column_annotations = annotation_result.value
-                total_cols = sum(len(t.columns) for t in column_annotations.tables)
-                logger.info(
-                    "tier1_column_annotation_complete",
-                    tables=len(column_annotations.tables),
-                    columns=total_cols,
+            if not annotation_result.success or not annotation_result.value:
+                return PhaseResult.failed(
+                    f"Column annotation (tier 1) failed: {annotation_result.error}"
                 )
-            else:
-                # Tier 1 failure is non-fatal — tier 2 can still work without it
-                logger.warning(
-                    "tier1_column_annotation_failed",
-                    error=annotation_result.error,
-                )
+            column_annotations = annotation_result.value
+            total_cols = sum(len(t.columns) for t in column_annotations.tables)
+            logger.info(
+                "tier1_column_annotation_complete",
+                tables=len(column_annotations.tables),
+                columns=total_cols,
+            )
         else:
             logger.info("tier1_column_annotation_skipped", reason="disabled in config")
 

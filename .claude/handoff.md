@@ -4,6 +4,26 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-12: DAT-290 — Single source per session, multi_source pattern retired
+
+### dataraum-eval
+- **Changed**: `src/dataraum/mcp/server.py` (begin_session signature; new list_sources tool; multi_source filters purged; _orient_to_active_session shape fix), `src/dataraum/mcp/db_models.py` (ArchivedSession schema), `src/dataraum/pipeline/setup.py` (single-source resolution; fingerprint-of-set deleted), `src/dataraum/pipeline/phases/import_phase.py` (single-source dispatch; _load_registered_sources gone)
+- **Affects**: every MCP call that goes through `begin_session`. The session-bound source must be selected explicitly. `_run_pipeline` semantics unchanged — still runs the pipeline against the active session's source.
+- **Calibrate**: re-run MCP smoke / harness tests. Key adaptations the eval harness must make:
+  1. `begin_session(source="<name>", intent="...", contract=...)` — `source` is required. Calling without it returns a schema-level error (`isError=True`). Calling with an unknown name returns a tool-level error that includes the list of available source names.
+  2. `add_source(name="X", ...)` — calling twice with the same name now errors (`"Source 'X' already exists."`). The registry is append-only via `add_source`; use `SourceManager.remove_source` for archival (no MCP surface yet).
+  3. New `list_sources` MCP tool — returns `{"sources": [{name, type, status, path, backend, recipe_tables}], "count": int}`. No URLs, no credentials. Use to discover what's registered before `begin_session`.
+  4. Response shape change: `begin_session` and `resume_session` now return `source: "name"` (scalar). The previous `sources: [list]` field is gone — every session has exactly one source by construction. `resume_session()` archive listings have `source: "name"` per entry (was `sources: [list]`).
+  5. `_orient_to_active_session` (idempotent-resume path) returns `source: "name"` to match.
+  6. `multi_source` synthetic Source row no longer exists in session.db. Any eval code that filtered it out (`name != "multi_source"`) can be deleted.
+- **Notes**:
+  - **Workspace.db schema change**: `archived_sessions.source_names` (JSON list) → `archived_sessions.source_name` (scalar string). Existing workspaces with the old column require `rm -rf ~/.dataraum/` (consistent with DAT-192 / DAT-209 / DAT-286 precedent — v0.2.2 CHANGELOG documents this).
+  - **What's deleted from the import phase**: `_load_registered_sources`, `_load_from_path`, `_detect_source_type`, `_get_or_create_source`, the `multi_source` row creation block, the silent per-source error swallowing that hid DAT-289's root causes.
+  - **`setup_pipeline` runtime_config** changed shape — now carries `source_id`, `source_name`, `source_type`, `source_connection_config`, `source_backend`, `source_fingerprint` (single source). No `registered_sources` list, no `source_set_fingerprint`.
+  - DAT-288 + DAT-289 close as superseded by this rework (no individual patches landed for them).
+  - Cross-source analysis in a single session is **explicitly out of scope**. v0.4+ direction if it ever comes up: extend the recipe yaml to declare multiple connections (the recipe is already a multi-table aggregate), not reintroduce multi_source.
+- **Status**: pending
+
 ## 2026-03-26: DAT-195 — server-level ConnectionManager, pipeline source_id fix
 
 ### dataraum-eval

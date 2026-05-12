@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Source model: single source per session (DAT-290)**. The `multi_source` synthetic pattern is gone. Each investigation session is bound to exactly one named source from the workspace registry, picked at session start.
+  - **MCP API**: `begin_session(source="name", intent, ...)` — the `source` parameter is now required. `add_source` errors when the name is already registered (the registry is append-only). New `list_sources` MCP tool surfaces what's registered without revealing credentials.
+  - **Response shape**: `begin_session` / `resume_session` return `source: "name"` (scalar). The previous `sources: [list]` field is gone — every session has exactly one source by construction. `resume_session()` archive listings show `source: "name"` per entry.
+  - **`add_source` next_steps hint** now points at `begin_session` instead of `measure`.
+  - **What this fixes**: DAT-288 (the import phase no longer short-circuits when an old session's raw tables exist — `should_skip` queries by the real source_id), DAT-289 (per-source failures surface verbatim instead of being swallowed into a generic warning), DAT-285 in spirit (workspace cleanliness — no synthetic rows to drift).
+  - **What's deferred**: cross-source analysis in a single session. If you need to combine MSSQL with Postgres in one investigation, the answer is to extend the recipe yaml to declare multiple connections (v0.4+); reintroducing multi-source semantics is out of scope.
+- **Workspace.db schema (DAT-290)**: `archived_sessions.source_names` (JSON list) → `archived_sessions.source_name` (scalar string). Existing workspaces with the old column require `rm -rf ~/.dataraum/` — consistent with DAT-192/DAT-209/DAT-286 precedent.
 - **Workspace layout (DAT-192)**: the MCP server now isolates investigations by source set. The flat `~/.dataraum/workspace/{metadata.db, data.duckdb}` layout is gone. New layout:
   - `~/.dataraum/workspace.db` — source registry + active-session pointer (SQLite-only, no DuckDB)
   - `~/.dataraum/sessions/{fingerprint}/{metadata.db, data.duckdb}` — per-source-set analysis data; `begin_session` with the same sources reuses the same fingerprint directory and skips re-running the pipeline

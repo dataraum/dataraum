@@ -72,3 +72,51 @@ class TestAddSourceTool:
         weird.write_text("garbage")
         result = _add_source(session, {"name": "weird", "path": str(weird)})
         assert "error" in result
+
+
+class TestRecipesHomeFallback:
+    """add_source resolves bare names against {DATARAUM_HOME}/recipes/."""
+
+    def test_bare_name_resolves_to_recipes_home(
+        self, session: Session, tmp_path: Path, monkeypatch
+    ) -> None:
+        from dataraum.mcp.server import _add_source
+
+        # Point DATARAUM_HOME at a fake home with a recipes/ subdir
+        recipes_dir = tmp_path / "recipes"
+        recipes_dir.mkdir()
+        (recipes_dir / "warehouse.yaml").write_text(VALID_RECIPE)
+        monkeypatch.setenv("DATARAUM_HOME", str(tmp_path))
+
+        result = _add_source(session, {"name": "warehouse", "path": "warehouse"})
+
+        assert isinstance(result, dict), result
+        assert "error" not in result, result.get("error")
+        assert result["source"]["type"] == "db_recipe"
+        assert result["source"]["backend"] == "mssql"
+
+    def test_filename_resolves_to_recipes_home(
+        self, session: Session, tmp_path: Path, monkeypatch
+    ) -> None:
+        from dataraum.mcp.server import _add_source
+
+        recipes_dir = tmp_path / "recipes"
+        recipes_dir.mkdir()
+        (recipes_dir / "warehouse.yaml").write_text(VALID_RECIPE)
+        monkeypatch.setenv("DATARAUM_HOME", str(tmp_path))
+
+        result = _add_source(session, {"name": "warehouse", "path": "warehouse.yaml"})
+        assert "error" not in result, result.get("error")
+        assert result["source"]["type"] == "db_recipe"
+
+    def test_missing_recipe_error_mentions_recipes_dir(
+        self, session: Session, tmp_path: Path, monkeypatch
+    ) -> None:
+        from dataraum.mcp.server import _add_source
+
+        (tmp_path / "recipes").mkdir()
+        monkeypatch.setenv("DATARAUM_HOME", str(tmp_path))
+
+        result = _add_source(session, {"name": "ghost", "path": "ghost"})
+        assert "error" in result
+        assert "recipes/" in result["error"]

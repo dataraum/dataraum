@@ -895,6 +895,9 @@ def create_server(output_dir: Path | None = None) -> Server:
                                 "(mssql/postgres/mysql/sqlite) and named SELECT "
                                 "queries; credentials are resolved from "
                                 "DATARAUM_{NAME}_URL in the environment. "
+                                "Recipes can be referenced by a bare name (e.g. "
+                                "'erp') or filename — DataRaum searches "
+                                "~/.dataraum/recipes/ as a fallback. "
                                 "In Docker, data is mounted at /sources — try /sources "
                                 "or /sources/<filename> if the user hasn't specified a path."
                             ),
@@ -3401,23 +3404,48 @@ def _add_source(
     from sqlalchemy import select
 
     from dataraum.core.credentials import CredentialChain
-    from dataraum.sources.manager import RECIPE_EXTENSIONS, SourceManager
+    from dataraum.sources.manager import (
+        RECIPE_EXTENSIONS,
+        SourceManager,
+        resolve_source_path,
+    )
     from dataraum.storage import Source
 
     name = arguments["name"]
     path = arguments.get("path")
     if not path:
-        return {"error": "Provide 'path' — a file path, directory, or recipe yaml."}
+        return {
+            "error": (
+                "Provide 'path' — a file path, directory, or a recipe yaml. "
+                "Recipe paths are also looked up under ~/.dataraum/recipes/ "
+                "by name (e.g. path='erp' resolves to ~/.dataraum/recipes/erp.yaml)."
+            )
+        }
+
+    root = _resolve_root_dir()
+    resolved = resolve_source_path(path, root)
+    if resolved is None:
+        suffix = Path(path).suffix.lower()
+        # Direct paths get a "not found" error; recipe-shaped names also
+        # surface the recipes/ candidates that were tried.
+        if not suffix or suffix in RECIPE_EXTENSIONS:
+            return {
+                "error": (
+                    f"Source path not found: {path}. Looked for the path as-given, "
+                    f"and under {root}/recipes/ (with .yaml/.yml suffixes when none was given)."
+                )
+            }
+        return {"error": f"Source path not found: {path}"}
 
     credential_chain = CredentialChain()
     src_mgr = SourceManager(session=session, credential_chain=credential_chain)
 
-    candidate = Path(path)
-    suffix = candidate.suffix.lower() if candidate.is_file() else ""
+    resolved_str = str(resolved.path)
+    suffix = resolved.path.suffix.lower()
     if suffix in RECIPE_EXTENSIONS:
-        result = src_mgr.add_recipe_source(name, path)
+        result = src_mgr.add_recipe_source(name, resolved_str)
     else:
-        result = src_mgr.add_file_source(name, path)
+        result = src_mgr.add_file_source(name, resolved_str)
 
     if not result.success:
         return {"error": str(result.error)}

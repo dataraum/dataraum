@@ -8,11 +8,14 @@ Two source kinds:
 - **File sources** — CSV/TSV, Parquet, JSON/JSONL, or a directory of
   them. Registered via `add_file_source`.
 - **Recipe sources** — yaml declaring a backend (mssql, postgres, mysql,
-  sqlite) plus named SELECT queries. Credentials are resolved at
-  pipeline-import time via `CredentialChain` keyed by source name.
+  sqlite) plus named SELECT queries. Lives under
+  `{DATARAUM_HOME}/recipes/` by convention. Credentials are resolved
+  at pipeline-import time via `CredentialChain` keyed by source name.
   Registered via `add_recipe_source`.
 
-The MCP tool layer dispatches based on file extension.
+The MCP tool layer calls `resolve_source_path()` to find the file
+(falling back to `{DATARAUM_HOME}/recipes/`) and then dispatches based
+on the resolved extension.
 """
 
 from __future__ import annotations
@@ -55,6 +58,66 @@ RECIPE_EXTENSIONS: frozenset[str] = frozenset({".yaml", ".yml"})
 
 # DuckDB-attachable database backends. Mirrored from sources.backends.
 SUPPORTED_BACKENDS: frozenset[str] = frozenset({"mssql", "postgres", "mysql", "sqlite"})
+
+
+@dataclass
+class ResolvedSourcePath:
+    """A user-provided source path resolved against the filesystem."""
+
+    path: Path
+    """The resolved absolute path."""
+
+    fell_back_to_recipes: bool
+    """True if the resolution used the `{root}/recipes/` fallback."""
+
+
+def resolve_source_path(
+    user_path: str, root: Path, recipes_subdir: str = "recipes"
+) -> ResolvedSourcePath | None:
+    """Resolve a user-provided source path.
+
+    Order of attempts:
+
+    1. The path as-given (after `~` expansion). If it exists, use it
+       — handles absolute paths and existing relative paths.
+    2. If the path is recipe-shaped (no extension, or `.yaml`/`.yml`),
+       look under `{root}/{recipes_subdir}/`:
+
+       - The exact filename if a `.yaml`/`.yml` extension was provided.
+       - With `.yaml` appended if no extension.
+       - With `.yml` appended if no extension.
+
+    File-source paths (CSV, Parquet, etc.) get no fallback — practitioners
+    pass explicit paths for those. Only recipes have a conventional home.
+
+    Args:
+        user_path: The path the practitioner passed to add_source.
+        root: The DataRaum home directory (e.g. `~/.dataraum`).
+        recipes_subdir: Subdirectory of `root` to search.
+
+    Returns:
+        ResolvedSourcePath if found, else None.
+    """
+    direct = Path(user_path).expanduser()
+    if direct.exists():
+        return ResolvedSourcePath(path=direct.resolve(), fell_back_to_recipes=False)
+
+    # Only recipe-shaped names get the recipes/ fallback.
+    suffix = direct.suffix.lower()
+    if suffix and suffix not in (".yaml", ".yml"):
+        return None
+
+    name = direct.name
+    recipes_dir = root / recipes_subdir
+    if suffix in (".yaml", ".yml"):
+        candidates = [recipes_dir / name]
+    else:
+        candidates = [recipes_dir / f"{name}.yaml", recipes_dir / f"{name}.yml"]
+
+    for c in candidates:
+        if c.exists():
+            return ResolvedSourcePath(path=c.resolve(), fell_back_to_recipes=True)
+    return None
 
 
 @dataclass

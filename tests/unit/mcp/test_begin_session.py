@@ -251,7 +251,7 @@ class TestFlowEnforcement:
         )
         assert "error" in result
         assert "begin_session" not in result["error"]
-        assert "Path not found" in result["error"] or "Path" in result["error"]
+        assert "not found" in result["error"].lower()
 
 
 class TestRecordToolStep:

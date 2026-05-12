@@ -2,35 +2,48 @@
 
 DataRaum can analyze data sitting in a relational database via DuckDB's database extensions. Today: **Microsoft SQL Server** (other backends arrive in a follow-up release).
 
-You declare *what* to extract in a yaml **recipe** committed to git. Credentials live in `.env`, never in the yaml. At session time, DataRaum reads the recipe, runs the SELECTs against your database, and materializes the results as raw tables — the rest of the pipeline doesn't know or care that the source was a database.
+You declare *what* to extract in a yaml **recipe**. The recipe is per-user state — it lives under `~/.dataraum/recipes/` alongside your DataRaum workspace, not in a project repo. Credentials live in `.env` (or in the container env), never in the yaml. At session time, DataRaum reads the recipe, runs the SELECTs against your database, and materializes the results as raw tables — the rest of the pipeline doesn't know or care that the source was a database.
 
 ## How it works
 
 ```
-sources/erp.yaml          .env / container env
-┌─────────────────┐       ┌─────────────────────────┐
-│ backend: mssql  │       │ DATARAUM_ERP_URL=mssql..│
-│ tables:         │       └─────────────────────────┘
-│   invoices:     │                   │
-│     sql: ...    │                   ▼
-│   customers:    │     ┌─────────────────────────────────┐
-│     sql: ...    ├────▶│  add_source(path="erp.yaml",    │
-└─────────────────┘     │              name="erp")         │
-                        │                                  │
-                        │  → reads DATARAUM_ERP_URL        │
-                        │  → ATTACH READ_ONLY              │
-                        │  → CREATE TABLE raw_invoices AS  │
-                        │       <your SQL>                 │
-                        │  → DETACH                        │
-                        └─────────────────────────────────┘
+~/.dataraum/recipes/erp.yaml    .env / container env
+┌─────────────────────────┐     ┌─────────────────────────┐
+│ backend: mssql          │     │ DATARAUM_ERP_URL=mssql..│
+│ tables:                 │     └─────────────────────────┘
+│   invoices:             │                 │
+│     sql: ...            │                 ▼
+│   customers:            │   ┌─────────────────────────────────┐
+│     sql: ...            ├──▶│  add_source(path="erp",         │
+└─────────────────────────┘   │              name="erp")        │
+                              │                                 │
+                              │  → reads DATARAUM_ERP_URL       │
+                              │  → ATTACH READ_ONLY             │
+                              │  → CREATE TABLE raw_invoices AS │
+                              │       <your SQL>                │
+                              │  → DETACH                       │
+                              └─────────────────────────────────┘
 ```
 
 The recipe name (`erp`) does triple duty: source identity, credential lookup key (`DATARAUM_ERP_URL`), and the prefix for raw tables (`erp__invoices`, `erp__customers`).
 
+## Where recipes live
+
+By convention, recipes live under `~/.dataraum/recipes/` (override the home directory with `DATARAUM_HOME`). DataRaum resolves the `path` argument in this order:
+
+| You pass | DataRaum looks for | Notes |
+|---|---|---|
+| `/abs/path/erp.yaml` | The absolute path | Full flexibility — any location |
+| `./local/erp.yaml` | The relative path from cwd | If it exists, used directly |
+| `erp.yaml` | First `./erp.yaml`, then `~/.dataraum/recipes/erp.yaml` | Filename — recipes home is the fallback |
+| `erp` | `~/.dataraum/recipes/erp.yaml`, then `…/erp.yml` | Bare name — `.yaml` and `.yml` tried in order |
+
+Only recipe-shaped names (`.yaml`/`.yml` or no extension) get the recipes-home fallback. File paths like `data.csv` are taken at face value — DataRaum doesn't hunt for them in `~/.dataraum/recipes/`.
+
 ## Recipe yaml
 
 ```yaml
-# sources/erp.yaml
+# ~/.dataraum/recipes/erp.yaml
 backend: mssql              # mssql (today); postgres/mysql/sqlite follow
 tables:
   invoices:
@@ -47,7 +60,7 @@ tables:
 
 Rules:
 
-- **No credentials.** `connection:`, `credentials:`, `auth:`, `password:`, `secret:` at the top level are rejected at parse time. Recipes commit to git safely.
+- **No credentials in the yaml.** `connection:`, `credentials:`, `auth:`, `password:`, `secret:` at the top level are rejected at parse time. The recipe stays a safe artifact even if it accidentally leaks (the credential lookup happens entirely through env vars at runtime).
 - **At least one entry under `tables:`**, each with a non-empty `sql:` field.
 - **Table names unique** (case-insensitive).
 - **Recipe SQL is parsed by DuckDB first**, then forwarded to your database. Use portable SQL where possible: `LIMIT 10` not `TOP 10`, `||` not `+` for string concat. Standard `SELECT ... FROM schema.Table WHERE x = 1 GROUP BY ...` works.
@@ -113,11 +126,19 @@ Three things to know:
 
 ### 4. Register the source
 
+Place the recipe at `~/.dataraum/recipes/erp.yaml`, then:
+
 ```python
-# Via MCP tool from Claude
-add_source(path="sources/erp.yaml", name="erp")
+# Via MCP tool from Claude — bare name resolves against the recipes home
+add_source(path="erp", name="erp")
 begin_session(...)
 measure  # runs the pipeline — extracts via the recipe and analyzes
+```
+
+Or pass an absolute path if you keep the recipe elsewhere:
+
+```python
+add_source(path="/path/to/my/erp.yaml", name="erp")
 ```
 
 ## How recipe SQL is executed

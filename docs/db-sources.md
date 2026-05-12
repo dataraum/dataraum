@@ -86,17 +86,30 @@ DataRaum resolves a connection URL from the environment via the existing `Creden
 Microsoft ships an image at `mcr.microsoft.com/mssql/server:2025-latest`. With Apple's `container` CLI:
 
 ```bash
-container run -d --name sql2025 \
-  -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD='YourStrongP@ss1' \
+container run \
+  -e ACCEPT_EULA=Y \
+  -e MSSQL_SA_PASSWORD=Test1234 \
+  -e MSSQL_PID=Evaluation \
   -p 1433:1433 \
-  mcr.microsoft.com/mssql/server:2025-latest
+  --name sql2025 \
+  --memory 3g \
+  --platform linux/amd64 \
+  -d mcr.microsoft.com/mssql/server:2025-latest
 ```
 
-(With Docker Desktop the equivalent `docker run` works too.)
+With Docker Desktop, the equivalent `docker run` works — replace `container` with `docker`.
 
-### 2. Create a read-only user
+### 2. Restore a sample DB + read-only user
 
-DataRaum already ATTACHes with `READ_ONLY` — writes are blocked at the extension layer. But it's still best practice to use a database account that has no write permission at all. SQL Server's two-step (server login + database user):
+The repo ships a single idempotent script that downloads Microsoft's [AdventureWorksLT2025](https://github.com/Microsoft/sql-server-samples/tree/master/samples/databases/adventure-works) (~1.8 MB), restores it into your container, and creates a `dataraum_reader` login with `db_datareader` rights:
+
+```bash
+tests/integration/sources/mssql_setup.sh
+```
+
+Output ends with the `DATARAUM_MSSQL_TEST_URL` to export for the integration test. Cold run: <5 s. Re-runs are no-ops.
+
+If you'd rather use your own database, the script's body shows the two SQL statements involved:
 
 ```sql
 USE master;
@@ -110,27 +123,43 @@ ALTER ROLE db_datareader ADD MEMBER dataraum_reader;
 GO
 ```
 
-The `db_datareader` role grants `SELECT` on every table. No `INSERT`/`UPDATE`/`DELETE`/`DROP`.
+DataRaum already ATTACHes with `READ_ONLY` — writes are blocked at the extension layer — but `db_datareader` makes the no-write guarantee belt-and-braces.
 
 ### 3. Connection URL
 
 ```
-DATARAUM_ERP_URL=mssql://dataraum_reader:ReadOnly!2026@host:1433/YourDatabase?TrustServerCertificate=yes
+DATARAUM_ERP_URL=mssql://dataraum_reader:ReadOnly!2026@host:1433/AdventureWorksLT?TrustServerCertificate=yes
 ```
 
 Three things to know:
 
 - **`TrustServerCertificate=yes` is required for typical installs.** SQL Server 2022+ enables TLS by default with a self-signed cert. Without this flag, the handshake fails silently as "Failed to connect." Only set it when you've verified the host out-of-band (or for dev/test containers).
-- **The URL form above is one of three accepted shapes.** Equivalent: `Server=host;Database=YourDatabase;UID=dataraum_reader;PWD=...;TrustServerCertificate=yes;` and the ODBC-style `Driver={ODBC Driver 18 for SQL Server};Server=host,1433;...`. Use whichever your team prefers — they all resolve to the same TDS connection underneath.
+- **The URL form above is one of three accepted shapes.** Equivalent: `Server=host;Database=AdventureWorksLT;UID=dataraum_reader;PWD=...;TrustServerCertificate=yes;` and the ODBC-style `Driver={ODBC Driver 18 for SQL Server};Server=host,1433;...`. Use whichever your team prefers — they all resolve to the same TDS connection underneath.
 - **The DuckDB community `mssql` extension is auto-installed on first use.** No manual setup. It pins to your installed DuckDB version.
 
 ### 4. Register the source
 
-Place the recipe at `~/.dataraum/recipes/erp.yaml`, then:
+Save a recipe pointing at the tables you want. A starter against AdventureWorksLT — drop it at `~/.dataraum/recipes/aw.yaml`:
+
+```yaml
+# ~/.dataraum/recipes/aw.yaml
+backend: mssql
+tables:
+  customers:
+    sql: |
+      SELECT CustomerID, FirstName, LastName, CompanyName
+      FROM SalesLT.Customer
+  products:
+    sql: |
+      SELECT ProductID, Name, ListPrice, SellStartDate
+      FROM SalesLT.Product
+```
+
+Then:
 
 ```python
 # Via MCP tool from Claude — bare name resolves against the recipes home
-add_source(path="erp", name="erp")
+add_source(path="aw", name="aw")
 begin_session(...)
 measure  # runs the pipeline — extracts via the recipe and analyzes
 ```
@@ -138,8 +167,10 @@ measure  # runs the pipeline — extracts via the recipe and analyzes
 Or pass an absolute path if you keep the recipe elsewhere:
 
 ```python
-add_source(path="/path/to/my/erp.yaml", name="erp")
+add_source(path="/path/to/my/aw.yaml", name="aw")
 ```
+
+> **Identifier quoting.** Recipe SQL is parsed by DuckDB before forwarding to MSSQL. If a column or table has a space in its name (e.g. AdventureWorksLT's `dbo.BuildVersion."Database Version"`), quote it with **double quotes**, not square brackets.
 
 ## How recipe SQL is executed
 

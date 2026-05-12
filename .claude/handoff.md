@@ -414,6 +414,18 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
   - **DBMetadataHints (PK/FK/index harvest) was YAGNI'd out of Phase A** (commit `ad554ad5`). The spike confirmed `information_schema` isn't easily visible through the attached MSSQL catalog. Harvest deferred to Phase B alongside its consumer.
 - **Status**: pending
 
+## 2026-05-12: DAT-287 — Integration test fixture: AdventureWorksLT replaces Smoke
+
+### dataraum-eval
+- **Changed**: `tests/integration/sources/mssql_setup.sh` (new — idempotent restore + reader login), `tests/integration/sources/test_db_recipe_mssql.py` (rewrite — points at SalesLT/dbo instead of hand-rolled Smoke), `docs/db-sources.md` (canonical setup path)
+- **Affects**: nothing the eval harness consumes — this is local-test infrastructure only. No behavior changes in any MCP tool, pipeline phase, or response shape.
+- **Calibrate**: nothing. Eval doesn't need to do anything.
+- **Notes**:
+  - The integration test is still skipped unless `DATARAUM_MSSQL_TEST_URL` is set. CI service container still deferred until a customer requests MS SQL.
+  - If anyone in eval-land wants to run the MSSQL integration test against a local container, the setup is now one-liner: `tests/integration/sources/mssql_setup.sh` against a running `sql2025` container (~4 s cold).
+  - Test coverage expanded from 3 cases against a 3-row Smoke table to 8 cases against AdventureWorksLT's ~290-product / ~850-customer schema, including cross-schema, recipe-side JOIN denormalization, DATETIME / MONEY round-trip.
+- **Status**: pending
+
 ## 2026-05-07: DAT-274 — LLM resilience: hard-fail on systemic failures
 
 ### dataraum-eval

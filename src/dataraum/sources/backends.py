@@ -33,6 +33,18 @@ BACKEND_ATTACH_TYPES: dict[str, str] = {
     "sqlite": "SQLITE",
 }
 
+# Default schema used in `USE catalog.schema` after ATTACH. Backends with
+# multi-schema catalogs (mssql, postgres) require an explicit schema so
+# user SQL like `FROM dbo.Invoices` resolves. Backends where the catalog
+# has a single canonical schema (sqlite) can use `USE catalog` alone, but
+# we name the schema explicitly anyway for consistency.
+BACKEND_DEFAULT_SCHEMA: dict[str, str] = {
+    "mssql": "dbo",
+    "postgres": "public",
+    "mysql": "main",
+    "sqlite": "main",
+}
+
 # Some extensions are community-maintained and need INSTALL FROM community.
 # DuckDB's `core` repository hosts postgres/mysql/sqlite directly; mssql
 # lives in the community repository.
@@ -119,13 +131,17 @@ def extract_backend(
     warnings: list[str] = []
     extraction_error: str | None = None
     try:
-        # 3. Switch default catalog so user SQL referencing `schema.table`
-        # resolves against the attached database without alias prefix.
-        # The original `memory` catalog is restored in the finally block.
+        # 3. Switch default catalog+schema so user SQL referencing
+        # `schema.table` (e.g. `FROM dbo.Invoices`) resolves against the
+        # attached database without an alias prefix. The original
+        # `memory` catalog is restored in the finally block. Multi-schema
+        # backends (mssql, postgres) require `USE catalog.schema` —
+        # `USE catalog` alone fails with "no catalog + schema found".
         # Some extensions (e.g., sqlite) defer connection errors to the
         # first USE, so we surface those as ATTACH-level failures.
+        default_schema = BACKEND_DEFAULT_SCHEMA[backend]
         try:
-            duckdb_conn.execute(f"USE {_ATTACH_ALIAS}")
+            duckdb_conn.execute(f"USE {_ATTACH_ALIAS}.{default_schema}")
         except Exception as exc:
             extraction_error = f"ATTACH failed for {backend} source: {exc}"
         else:

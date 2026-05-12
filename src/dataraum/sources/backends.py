@@ -121,9 +121,14 @@ def extract_backend(
     except Exception as exc:
         return Result.fail(f"DuckDB extension '{extension}' failed to install/load: {exc}")
 
-    # 2. ATTACH the source database READ_ONLY.
+    # 2. ATTACH the source database READ_ONLY. Escape single quotes in
+    # the URL so credentials containing apostrophes don't break out of
+    # the string literal.
+    safe_url = url.replace("'", "''")
     try:
-        duckdb_conn.execute(f"ATTACH '{url}' AS {_ATTACH_ALIAS} (TYPE {attach_type}, READ_ONLY)")
+        duckdb_conn.execute(
+            f"ATTACH '{safe_url}' AS {_ATTACH_ALIAS} (TYPE {attach_type}, READ_ONLY)"
+        )
     except Exception as exc:
         return Result.fail(f"ATTACH failed for {backend} source: {exc}")
 
@@ -143,7 +148,14 @@ def extract_backend(
         try:
             duckdb_conn.execute(f"USE {_ATTACH_ALIAS}.{default_schema}")
         except Exception as exc:
-            extraction_error = f"ATTACH failed for {backend} source: {exc}"
+            # Some extensions (sqlite) defer connection errors to this
+            # USE call, so the failure can mean either "ATTACH was a
+            # no-op and now the connection is unreachable" or "the
+            # default schema doesn't exist on this server".
+            extraction_error = (
+                f"Failed to enter {_ATTACH_ALIAS}.{default_schema} after ATTACH "
+                f"for {backend} source: {exc}"
+            )
         else:
             for q in queries:
                 duckdb_table = f"{raw_prefix}{q.name}"

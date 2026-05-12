@@ -8,6 +8,7 @@ extraction time via the existing `CredentialChain`.
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -16,10 +17,18 @@ from pydantic import BaseModel
 
 from dataraum.core.models import Result
 
-# Backends supported via DuckDB extensions. Mirrored in sources/backends.py
-# but duplicated here so parse-time validation fails loud before any
-# database interaction.
-SUPPORTED_BACKENDS: frozenset[str] = frozenset({"mssql", "postgres", "mysql", "sqlite"})
+# Backends accepted in recipe yamls in Phase A. Only `mssql` is wired
+# through the full pipeline today; postgres/mysql/sqlite are present in
+# `sources/backends.py` for internal sqlite testing and a Phase C
+# follow-up, but they are intentionally excluded from the user-facing
+# recipe surface until they are exercised against real instances.
+SUPPORTED_BACKENDS: frozenset[str] = frozenset({"mssql"})
+
+# Recipe table names become DuckDB identifiers (`raw_{name}`) and are
+# interpolated into a CREATE TABLE statement. Restricting the character
+# set at parse time avoids quoted-identifier escape bugs and makes the
+# resulting table names predictable / queryable without quoting.
+_TABLE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # Top-level recipe keys that would suggest credentials in the yaml.
 # Recipes are secret-free; we reject these loud so practitioners never
@@ -112,6 +121,11 @@ def parse_recipe(path: str | Path) -> Result[Recipe]:
         if not isinstance(name, str) or not name.strip():
             return Result.fail(f"Table name must be a non-empty string; got {name!r}.")
         normalized = name.strip()
+        if not _TABLE_NAME_PATTERN.match(normalized):
+            return Result.fail(
+                f"Table name {normalized!r} must match [a-z][a-z0-9_]* "
+                "(lowercase letters, digits, and underscores; starting with a letter)."
+            )
         lowered = normalized.lower()
         if lowered in seen:
             return Result.fail(f"Duplicate table name (case-insensitive): {normalized!r}.")

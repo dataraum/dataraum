@@ -56,9 +56,6 @@ _EXTENSION_MAP: dict[str, str] = {
 # Recipe yaml extensions for the database-source path.
 RECIPE_EXTENSIONS: frozenset[str] = frozenset({".yaml", ".yml"})
 
-# DuckDB-attachable database backends. Mirrored from sources.backends.
-SUPPORTED_BACKENDS: frozenset[str] = frozenset({"mssql", "postgres", "mysql", "sqlite"})
-
 
 @dataclass
 class ResolvedSourcePath:

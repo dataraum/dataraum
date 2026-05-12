@@ -393,6 +393,27 @@ Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 - **Affects**: `query` tool accuracy for balance-based metrics (DSO, AR, AP, any balance sheet item), graph snippets for DPO/current_ratio/etc.
 - **Status**: pending
 
+## 2026-05-12: DAT-286 — DB sources via yaml recipes (MSSQL Phase A)
+
+### dataraum-eval
+- **Changed**: `src/dataraum/sources/db_recipe/` (new), `src/dataraum/sources/backends.py` (rewrite — `extract_backend` replaces `validate_backend`), `src/dataraum/sources/manager.py` (new `add_recipe_source` + `resolve_source_path`; `add_database_source` deleted), `src/dataraum/mcp/server.py` (`add_source` tool surface), `src/dataraum/pipeline/phases/import_phase.py` (`_load_database_source` rewritten to use recipe queries), `src/dataraum/core/credentials.py` (dead code removed), `src/dataraum/storage/models.py` (fields removed), `docs/db-sources.md` (new)
+- **Affects**: `add_source` MCP tool, `list_sources` response shape, pipeline import phase for any source with `source_type='db_recipe'`
+- **Calibrate**: `/smoke` once a customer has MS SQL data. Key changes the harness should be aware of:
+  1. **MCP `add_source` parameters changed**: `backend`, `tables`, `credential_ref` are gone. Surface is now `(name, path)` only. The agent dispatches based on file extension; `.yaml`/`.yml` → recipe loader, files → file loader. Bare names (no extension or `.yaml`/`.yml`) resolve against `{DATARAUM_HOME}/recipes/` as a fallback.
+  2. **`list_sources` response no longer includes** `credential_ref` or `last_validated` fields (those columns were deleted from `Source`). Source dicts now include `recipe_tables: [...]` for `db_recipe` sources.
+  3. **New `source_type='db_recipe'`** registered in workspace.db. Its `connection_config` contains `{recipe_path, backend, recipe_hash, tables: [{name, sql}, ...]}` — credentials never appear here.
+  4. **New env-var contract**: pipeline import resolves `DATARAUM_{NAME}_URL` from `.env` (or `~/.dataraum/credentials.yaml`) at pipeline-import time. Missing creds → loud failure with the specific env-var name. Recipes never contain credentials — yaml top-level keys `connection`/`credentials`/`auth`/`password`/`secret`/`secrets` are rejected at parse time.
+  5. **Recipe table name pattern**: must match `[a-z][a-z0-9_]*` — rejected at parse time. Names get interpolated into `CREATE TABLE` so this is correctness + injection defense.
+  6. **MSSQL is the only end-to-end-supported backend in Phase A.** `postgres`/`mysql`/`sqlite` are present in `extract_backend` for internal sqlite-based unit tests but rejected by the user-facing recipe parser. They re-enable in Phase C.
+  7. **Pipeline import for db_recipe sources**: ATTACH READ_ONLY → `USE catalog.schema` (per-backend default; mssql=`dbo`) → `CREATE TABLE raw_{name} AS {user_sql}` per recipe entry → DETACH. Type fidelity preserved end-to-end (DECIMAL, VARCHAR, BOOLEAN, INTEGER). Every step fails loud (DAT-274 pattern).
+  8. **Spike-pinned behaviors**: `(READ_ONLY)` at ATTACH is enforced by the extension — even sa-level connections cannot CREATE inside an attached read-only DB (test `test_read_only_blocks_writes`). MSSQL requires `?TrustServerCertificate=yes` in the URL for typical self-signed certs (documented, not auto-appended).
+- **Notes**:
+  - **Workspace.db schema change**: `Source.credential_ref` and `Source.last_validated` columns deleted. Existing workspaces with the old columns: same wipe instruction as DAT-192/DAT-209 (`rm -rf ~/.dataraum/`). CHANGELOG states this for v0.2.2 unreleased.
+  - Live MSSQL integration test (`tests/integration/sources/test_db_recipe_mssql.py`) is **skipped in CI** — gated on `DATARAUM_MSSQL_TEST_URL` being set. CI service container deferred until a customer requests MS SQL. Eval harness can opt into running it locally by exporting the env var (see test module docstring for the Smoke schema setup).
+  - **DAT-287 follow-up filed**: replace the hand-rolled Smoke schema in the integration test with a realistic Microsoft sample DB (AdventureWorks LT or WideWorldImporters). The current 3-row schema is enough to pin the contract but doesn't exercise realistic FK chains or BI use cases.
+  - **DBMetadataHints (PK/FK/index harvest) was YAGNI'd out of Phase A** (commit `ad554ad5`). The spike confirmed `information_schema` isn't easily visible through the attached MSSQL catalog. Harvest deferred to Phase B alongside its consumer.
+- **Status**: pending
+
 ## 2026-05-07: DAT-274 — LLM resilience: hard-fail on systemic failures
 
 ### dataraum-eval

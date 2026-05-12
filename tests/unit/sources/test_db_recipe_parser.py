@@ -72,11 +72,20 @@ class TestValidRecipes:
         assert result.success
         assert result.unwrap().backend == "mssql"
 
-    def test_each_supported_backend_accepted(self, write_recipe):
-        for backend in ("mssql", "postgres", "mysql", "sqlite"):
+    def test_only_mssql_accepted_in_phase_a(self, write_recipe):
+        # Phase A: only mssql is wired through end-to-end. postgres/mysql/sqlite
+        # are present in extract_backend (for sqlite-based unit tests + a
+        # Phase C follow-up) but intentionally excluded from the user-facing
+        # recipe parser.
+        for backend, expect_ok in [
+            ("mssql", True),
+            ("postgres", False),
+            ("mysql", False),
+            ("sqlite", False),
+        ]:
             path = write_recipe(f"backend: {backend}\ntables:\n  t:\n    sql: SELECT 1\n")
             result = parse_recipe(path)
-            assert result.success, f"{backend}: {result.error}"
+            assert result.success is expect_ok, f"{backend}: {result.error}"
 
     def test_sql_is_stripped_of_surrounding_whitespace(self, write_recipe):
         path = write_recipe("backend: mssql\ntables:\n  t:\n    sql: '   SELECT 1   '\n")
@@ -208,7 +217,10 @@ class TestTablesRejections:
         assert not result.success
         assert "mapping" in result.error.lower()
 
-    def test_duplicate_table_name_case_insensitive(self, write_recipe):
+    def test_uppercase_variant_rejected_by_pattern(self, write_recipe):
+        # `Invoices` (uppercase) is now rejected by the lowercase-only
+        # pattern check before the duplicate check runs. The pattern
+        # subsumes case-insensitive duplicate concerns at the name level.
         path = write_recipe(
             "backend: mssql\n"
             "tables:\n"
@@ -219,4 +231,47 @@ class TestTablesRejections:
         )
         result = parse_recipe(path)
         assert not result.success
-        assert "duplicate" in result.error.lower()
+        assert "Invoices" in result.error
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Invoices",  # uppercase
+            "1items",  # leading digit
+            "table-name",  # hyphen
+            "table.name",  # dot
+            "tableName",  # mixed case
+            "table__a__b",  # legal, just to confirm we accept underscores in middle
+        ],
+    )
+    def test_table_name_with_disallowed_chars_rejected_or_legal(self, write_recipe, name):
+        # Mixed-case / hyphen / leading-digit / dot are rejected by the
+        # pattern check before any SQL is constructed. This is the
+        # recipe-side defense against quoted-identifier escape into the
+        # CTAS statement.
+        path = write_recipe(f"backend: mssql\ntables:\n  {name}:\n    sql: SELECT 1\n")
+        result = parse_recipe(path)
+        if name == "table__a__b":
+            assert result.success, f"{name!r} should be accepted: {result.error}"
+        else:
+            assert not result.success, f"Name {name!r} should have been rejected"
+            assert "[a-z]" in result.error
+
+    def test_table_name_injection_attempt_rejected(self, write_recipe):
+        """The classic injection attempt: a name containing a SQL break."""
+        path = write_recipe(
+            "backend: mssql\n"
+            "tables:\n"
+            "  'bad\"; DROP TABLE memory.main.raw_foo; --':\n"
+            "    sql: SELECT 1\n"
+        )
+        result = parse_recipe(path)
+        # Either yaml rejects it (quote handling) or our pattern rejects it.
+        # We don't care which — only that the recipe doesn't load.
+        assert not result.success
+
+    @pytest.mark.parametrize("name", ["invoices", "raw_orders", "orders123", "x", "a_b_c_d_e"])
+    def test_table_name_legal_chars_accepted(self, write_recipe, name):
+        path = write_recipe(f"backend: mssql\ntables:\n  {name}:\n    sql: SELECT 1\n")
+        result = parse_recipe(path)
+        assert result.success, f"Name {name!r} should be accepted: {result.error}"

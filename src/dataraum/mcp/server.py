@@ -892,11 +892,11 @@ def create_server(output_dir: Path | None = None) -> Server:
                                 "Path to a data file, directory, or recipe yaml. "
                                 "Files: .csv, .tsv, .parquet, .json, .jsonl. "
                                 "Recipes (.yaml/.yml) declare a database backend "
-                                "(mssql/postgres/mysql/sqlite) and named SELECT "
-                                "queries; credentials are resolved from "
-                                "DATARAUM_{NAME}_URL in the environment. "
-                                "Recipes can be referenced by a bare name (e.g. "
-                                "'erp') or filename — DataRaum searches "
+                                "(mssql today; other backends arrive in a follow-up "
+                                "release) and named SELECT queries; credentials are "
+                                "resolved from DATARAUM_{NAME}_URL in the "
+                                "environment. Recipes can be referenced by a bare "
+                                "name (e.g. 'erp') or filename — DataRaum searches "
                                 "~/.dataraum/recipes/ as a fallback. "
                                 "In Docker, data is mounted at /sources — try /sources "
                                 "or /sources/<filename> if the user hasn't specified a path."
@@ -3393,13 +3393,19 @@ def _add_source(
 ) -> dict[str, Any]:
     """Register a new data source in the workspace registry.
 
-    Writes a Source record to the workspace DB. For backend (database) sources,
-    a transient in-memory DuckDB is opened just for backend validation —
-    the workspace itself has no persistent DuckDB.
+    Dispatch by file extension after resolving the path (bare names
+    resolve against ~/.dataraum/recipes/):
+
+    - `.yaml` / `.yml` → recipe loader (parses + persists the recipe;
+      no database connection at registration time — credentials and
+      connectivity are checked lazily at pipeline-import time)
+    - `.csv` / `.tsv` / `.parquet` / `.json` / `.jsonl` → file loader
+      (reads a column preview via a transient in-memory DuckDB)
+    - directory → directory file loader (scans for supported files)
 
     Args:
         session: SQLAlchemy session from the workspace manager.
-        arguments: Tool arguments (name, path or backend, etc.).
+        arguments: Tool arguments — `name` and `path`.
     """
     from sqlalchemy import select
 

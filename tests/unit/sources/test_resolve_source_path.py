@@ -122,7 +122,9 @@ class TestDirectPathWinsOverFallback:
         # exists, the local one wins.
         local_recipe = tmp_path / "erp.yaml"
         local_recipe.write_text(VALID_RECIPE)
-        (root / "recipes" / "erp.yaml").write_text("backend: sqlite\ntables:\n  x:\n    sql: SELECT 1\n")
+        (root / "recipes" / "erp.yaml").write_text(
+            "backend: sqlite\ntables:\n  x:\n    sql: SELECT 1\n"
+        )
         monkeypatch.chdir(tmp_path)
 
         result = resolve_source_path("erp.yaml", root)

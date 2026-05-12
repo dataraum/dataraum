@@ -73,6 +73,56 @@ class TestAddSourceTool:
         result = _add_source(session, {"name": "weird", "path": str(weird)})
         assert "error" in result
 
+    def test_add_source_duplicate_name_errors(self, session: Session, tmp_path: Path) -> None:
+        """Registering the same source name twice is rejected (the registry is append-only)."""
+        from dataraum.mcp.server import _add_source
+
+        csv = tmp_path / "data.csv"
+        csv.write_text("a,b\n1,2\n")
+        first = _add_source(session, {"name": "twin", "path": str(csv)})
+        assert "error" not in first
+
+        second = _add_source(session, {"name": "twin", "path": str(csv)})
+        assert "error" in second
+        assert "twin" in second["error"]
+        assert "already exists" in second["error"].lower()
+
+
+class TestListSourcesTool:
+    """list_sources surfaces the workspace registry without secrets."""
+
+    def test_empty_workspace(self, session: Session) -> None:
+        from dataraum.mcp.server import _list_sources
+
+        result = _list_sources(session)
+        assert result == {"sources": [], "count": 0}
+
+    def test_lists_file_and_recipe_sources(self, session: Session, tmp_path: Path) -> None:
+        from dataraum.mcp.server import _add_source, _list_sources
+
+        csv = tmp_path / "data.csv"
+        csv.write_text("a,b\n1,2\n")
+        recipe = tmp_path / "erp.yaml"
+        recipe.write_text(VALID_RECIPE)
+
+        _add_source(session, {"name": "files", "path": str(csv)})
+        _add_source(session, {"name": "erp", "path": str(recipe)})
+
+        result = _list_sources(session)
+
+        assert result["count"] == 2
+        by_name = {s["name"]: s for s in result["sources"]}
+        assert by_name["files"]["type"] == "csv"
+        assert by_name["files"]["status"] == "configured"
+        assert by_name["erp"]["type"] == "db_recipe"
+        assert by_name["erp"]["backend"] == "mssql"
+        assert by_name["erp"]["recipe_tables"] == ["invoices"]
+        # No URL/credential fields anywhere
+        for entry in result["sources"]:
+            assert "url" not in entry
+            assert "credentials" not in entry
+            assert "credential_ref" not in entry
+
 
 class TestRecipesHomeFallback:
     """add_source resolves bare names against {DATARAUM_HOME}/recipes/."""

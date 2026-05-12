@@ -160,7 +160,7 @@ class TestEndSessionFullFlow:
         # Setup: add source (writes to workspace.db) and begin session
         # (creates sessions/{fp}/metadata.db,data.duckdb + sets ActiveSession pointer)
         await self._call(server, "add_source", {"name": "src", "path": str(csv)})
-        r1 = await self._call(server, "begin_session", {"intent": "first"})
+        r1 = await self._call(server, "begin_session", {"source": "src", "intent": "first"})
         assert "error" not in r1
 
         # Workspace registry exists; sessions/{fp}/ exists; archive does not
@@ -202,7 +202,7 @@ class TestEndSessionFullFlow:
         csv.write_text("a,b\n1,2\n")
 
         await self._call(server, "add_source", {"name": "src", "path": str(csv)})
-        await self._call(server, "begin_session", {"intent": "test"})
+        await self._call(server, "begin_session", {"source": "src", "intent": "test"})
 
         # MCP framework validates schema before call_tool — returns isError=True
         handler = server.request_handlers[CallToolRequest]
@@ -281,7 +281,7 @@ class TestFlowEnforcementEndSession:
         result1 = await self._call(server, "add_source", {"name": "src1", "path": str(csv)})
         assert "error" not in result1
 
-        result2 = await self._call(server, "begin_session", {"intent": "test"})
+        result2 = await self._call(server, "begin_session", {"source": "src1", "intent": "test"})
         assert "error" not in result2
 
         # Now add_source should be blocked with sealing explanation
@@ -303,11 +303,11 @@ class TestFlowEnforcementEndSession:
         csv.write_text("a,b\n1,2\n")
 
         await self._call(server, "add_source", {"name": "src1", "path": str(csv)})
-        result1 = await self._call(server, "begin_session", {"intent": "first"})
+        result1 = await self._call(server, "begin_session", {"source": "src1", "intent": "first"})
         assert "error" not in result1
 
-        # Second begin_session should resume, not error
-        result2 = await self._call(server, "begin_session", {"intent": "second"})
+        # Second begin_session should resume, not error — `source` accepted but ignored when active
+        result2 = await self._call(server, "begin_session", {"source": "src1", "intent": "second"})
         assert "error" not in result2
         assert result2.get("resumed") is True
         assert "end_session" in result2["hint"]

@@ -60,6 +60,9 @@ class TestBeginSessionViaServer:
     The two-manager design (workspace + session DBs) means begin_session
     composes calls across managers; testing through call_tool covers the
     same behaviors that older direct-function unit tests covered.
+
+    Each session binds to exactly one source — the practitioner names which
+    registered source the session investigates.
     """
 
     @pytest.mark.asyncio
@@ -67,10 +70,14 @@ class TestBeginSessionViaServer:
         csv = _make_csv(tmp_path)
         await _call(server_with_key, "add_source", {"name": "test_source", "path": str(csv)})
 
-        result = await _call(server_with_key, "begin_session", {"intent": "test investigation"})
+        result = await _call(
+            server_with_key,
+            "begin_session",
+            {"source": "test_source", "intent": "test investigation"},
+        )
 
         assert "error" not in result
-        assert result["sources"] == ["test_source"]
+        assert result["source"] == "test_source"
         assert result["has_pipeline_data"] is False
         assert "hint" in result
 
@@ -79,7 +86,7 @@ class TestBeginSessionViaServer:
         csv = _make_csv(tmp_path)
         await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
 
-        result = await _call(server_with_key, "begin_session", {"intent": "test"})
+        result = await _call(server_with_key, "begin_session", {"source": "src", "intent": "test"})
 
         assert result["contract"]["name"] == "exploratory_analysis"
 
@@ -91,7 +98,7 @@ class TestBeginSessionViaServer:
         result = await _call(
             server_with_key,
             "begin_session",
-            {"intent": "test", "contract": "aggregation_safe"},
+            {"source": "src", "intent": "test", "contract": "aggregation_safe"},
         )
 
         assert result["contract"]["name"] == "aggregation_safe"
@@ -104,28 +111,64 @@ class TestBeginSessionViaServer:
         result = await _call(
             server_with_key,
             "begin_session",
-            {"intent": "test", "contract": "nonexistent"},
+            {"source": "src", "intent": "test", "contract": "nonexistent"},
         )
 
         assert "error" in result
         assert "nonexistent" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_no_source_returns_error(self, server_with_key) -> None:
-        """begin_session without registered sources rejects with a clear error."""
-        result = await _call(server_with_key, "begin_session", {"intent": "test"})
+    async def test_missing_source_arg_returns_error(self, server_with_key, tmp_path: Path) -> None:
+        """begin_session without a `source` argument is rejected by the MCP schema."""
+        from mcp.types import CallToolRequest, CallToolRequestParams
+
+        csv = _make_csv(tmp_path)
+        await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
+
+        # The MCP framework validates required-field schema before call_tool —
+        # returns isError=True with a message naming the missing field.
+        handler = server_with_key.request_handlers[CallToolRequest]
+        req = CallToolRequest(
+            method="tools/call",
+            params=CallToolRequestParams(name="begin_session", arguments={"intent": "test"}),
+        )
+        raw = await handler(req)
+        assert raw.root.isError is True
+        assert "source" in raw.root.content[0].text.lower()
+
+    @pytest.mark.asyncio
+    async def test_unknown_source_returns_error(self, server_with_key, tmp_path: Path) -> None:
+        """begin_session with a source name that isn't registered errors with the available list."""
+        csv = _make_csv(tmp_path)
+        await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
+
+        result = await _call(
+            server_with_key, "begin_session", {"source": "ghost", "intent": "test"}
+        )
+
+        assert "error" in result
+        assert "ghost" in result["error"]
+        assert "src" in result["error"]  # available list surfaces what IS registered
+
+    @pytest.mark.asyncio
+    async def test_no_sources_registered_returns_error(self, server_with_key) -> None:
+        """begin_session with a `source` arg but no registered sources surfaces add_source."""
+        result = await _call(
+            server_with_key, "begin_session", {"source": "anything", "intent": "test"}
+        )
         assert "error" in result
         assert "add_source" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_multiple_sources_listed(self, server_with_key, tmp_path: Path) -> None:
+    async def test_can_pick_among_multiple_sources(self, server_with_key, tmp_path: Path) -> None:
+        """Multiple sources can coexist in the workspace; begin_session picks one."""
         for name in ("src1", "src2", "src3"):
             csv = _make_csv(tmp_path, f"{name}.csv")
             await _call(server_with_key, "add_source", {"name": name, "path": str(csv)})
 
-        result = await _call(server_with_key, "begin_session", {"intent": "test"})
+        result = await _call(server_with_key, "begin_session", {"source": "src2", "intent": "test"})
 
-        assert set(result["sources"]) == {"src1", "src2", "src3"}
+        assert result["source"] == "src2"
 
     @pytest.mark.asyncio
     async def test_internal_keys_not_surfaced(self, server_with_key, tmp_path: Path) -> None:
@@ -133,7 +176,7 @@ class TestBeginSessionViaServer:
         csv = _make_csv(tmp_path)
         await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
 
-        result = await _call(server_with_key, "begin_session", {"intent": "test"})
+        result = await _call(server_with_key, "begin_session", {"source": "src", "intent": "test"})
 
         assert "_session_id" not in result
         assert "_fingerprint" not in result
@@ -152,7 +195,7 @@ class TestPrerequisiteChecks:
         csv = _make_csv(tmp_path)
         await _call(server, "add_source", {"name": "src", "path": str(csv)})
 
-        result = await _call(server, "begin_session", {"intent": "test"})
+        result = await _call(server, "begin_session", {"source": "src", "intent": "test"})
 
         assert "error" in result
         assert "ANTHROPIC_API_KEY" in result["error"]
@@ -171,7 +214,7 @@ class TestPrerequisiteChecks:
         csv = _make_csv(tmp_path)
         await _call(server, "add_source", {"name": "src", "path": str(csv)})
 
-        result = await _call(server, "begin_session", {"intent": "test"})
+        result = await _call(server, "begin_session", {"source": "src", "intent": "test"})
 
         assert "error" not in result
 
@@ -235,7 +278,7 @@ class TestFlowEnforcement:
         from dataraum.mcp.server import create_server
 
         server = create_server(output_dir=tmp_path)
-        result = await _call(server, "begin_session", {"intent": "test"})
+        result = await _call(server, "begin_session", {"source": "anything", "intent": "test"})
         assert "error" in result
 
     @pytest.mark.asyncio

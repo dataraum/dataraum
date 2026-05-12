@@ -36,7 +36,7 @@ async def _setup_session(server: Any, tmp_path: Path) -> None:
     csv = tmp_path / "data.csv"
     csv.write_text("a,b\n1,2\n")
     await _call(server, "add_source", {"name": "src", "path": str(csv)})
-    result = await _call(server, "begin_session", {"intent": "test"})
+    result = await _call(server, "begin_session", {"source": "src", "intent": "test"})
     assert "error" not in result
 
 

@@ -101,7 +101,7 @@ class TestSameSourcesReuseSessionDir:
         csv = _make_csv(tmp_path, "data.csv")
         await _call(server, "add_source", {"name": "src1", "path": str(csv)})
 
-        await _call(server, "begin_session", {"intent": "first"})
+        await _call(server, "begin_session", {"source": "src1", "intent": "first"})
         sessions_dir = tmp_path / "sessions"
         first_dirs = sorted(p.name for p in sessions_dir.iterdir())
         assert len(first_dirs) == 1
@@ -109,7 +109,7 @@ class TestSameSourcesReuseSessionDir:
         # End and begin again — same sources → same fingerprint → same dir reused (after archive)
         await _call(server, "end_session", {"outcome": "abandoned"})
         # After end, the session dir is archived; begin again recreates the same fp dir
-        await _call(server, "begin_session", {"intent": "second"})
+        await _call(server, "begin_session", {"source": "src1", "intent": "second"})
 
         second_dirs = sorted(p.name for p in sessions_dir.iterdir())
         assert second_dirs == first_dirs, "Same sources must produce the same fingerprint directory"
@@ -129,13 +129,13 @@ class TestDifferentSourcesIsolation:
         # Cycle 1: source A
         csv_a = _make_csv(tmp_path, "a.csv", "x,y\n1,2\n")
         await _call(server, "add_source", {"name": "src_a", "path": str(csv_a)})
-        await _call(server, "begin_session", {"intent": "session A"})
+        await _call(server, "begin_session", {"source": "src_a", "intent": "session A"})
         await _call(server, "end_session", {"outcome": "abandoned"})
 
         # Cycle 2: source B (different name + path → different fingerprint)
         csv_b = _make_csv(tmp_path, "b.csv", "x,y\n3,4\n")
         await _call(server, "add_source", {"name": "src_b", "path": str(csv_b)})
-        await _call(server, "begin_session", {"intent": "session B"})
+        await _call(server, "begin_session", {"source": "src_b", "intent": "session B"})
         await _call(server, "end_session", {"outcome": "abandoned"})
 
         # Both archived sessions present, in distinct directories
@@ -170,7 +170,7 @@ class TestBeginSessionWritesToBothDBs:
         csv = _make_csv(tmp_path, "data.csv")
         await _call(server, "add_source", {"name": "src1", "path": str(csv)})
 
-        await _call(server, "begin_session", {"intent": "verify_writes"})
+        await _call(server, "begin_session", {"source": "src1", "intent": "verify_writes"})
 
         # Workspace has ActiveSession pointer
         workspace_db = tmp_path / "workspace.db"
@@ -211,7 +211,7 @@ class TestGhostSessionCleanup:
         await _call(server, "add_source", {"name": "src1", "path": str(csv)})
 
         # First begin_session creates a session DB with an active InvestigationSession
-        await _call(server, "begin_session", {"intent": "first attempt"})
+        await _call(server, "begin_session", {"source": "src1", "intent": "first attempt"})
 
         # Simulate a crashed begin_session: clear the workspace ActiveSession
         # pointer but leave the session DB and its 'active' InvestigationSession
@@ -224,7 +224,7 @@ class TestGhostSessionCleanup:
 
         # Retry begin_session. The orphan from "first attempt" must be marked
         # as abandoned, and a fresh active session created.
-        await _call(server, "begin_session", {"intent": "fresh attempt"})
+        await _call(server, "begin_session", {"source": "src1", "intent": "fresh attempt"})
 
         sessions_dir = tmp_path / "sessions"
         session_dirs = list(sessions_dir.iterdir())
@@ -254,7 +254,7 @@ class TestResumeSessionRestoresArchive:
         await _call(server, "add_source", {"name": "src1", "path": str(csv)})
 
         # Begin → end. Archive populated; sessions/ empty.
-        await _call(server, "begin_session", {"intent": "first pass"})
+        await _call(server, "begin_session", {"source": "src1", "intent": "first pass"})
         sessions_dir = tmp_path / "sessions"
         original_fp = next(sessions_dir.iterdir()).name
 
@@ -301,7 +301,7 @@ class TestResumeSessionRestoresArchive:
         server = create_server(output_dir=tmp_path)
         csv = _make_csv(tmp_path, "data.csv")
         await _call(server, "add_source", {"name": "src1", "path": str(csv)})
-        await _call(server, "begin_session", {"intent": "x"})
+        await _call(server, "begin_session", {"source": "src1", "intent": "x"})
         await _call(server, "end_session", {"outcome": "delivered"})
 
         listing = await _call(server, "resume_session", {})

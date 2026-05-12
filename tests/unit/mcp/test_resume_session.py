@@ -46,7 +46,7 @@ class TestArchivedSessionWritten:
         r1 = await _call(
             server_with_key,
             "begin_session",
-            {"intent": "investigate things", "contract": "aggregation_safe"},
+            {"source": "src", "intent": "investigate things", "contract": "aggregation_safe"},
         )
         assert "error" not in r1
         await _call(server_with_key, "end_session", {"outcome": "delivered", "summary": "done"})
@@ -77,7 +77,7 @@ class TestResponseFormatting:
 
         csv = _make_csv(tmp_path)
         await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
-        await _call(server_with_key, "begin_session", {"intent": "fmt"})
+        await _call(server_with_key, "begin_session", {"source": "src", "intent": "fmt"})
         await _call(server_with_key, "end_session", {"outcome": "delivered"})
 
         listing = await _call(server_with_key, "resume_session", {})
@@ -95,7 +95,7 @@ class TestResponseFormatting:
         matching what begin_session and resume_session responses emit."""
         csv = _make_csv(tmp_path)
         await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
-        await _call(server_with_key, "begin_session", {"intent": "fmt"})
+        await _call(server_with_key, "begin_session", {"source": "src", "intent": "fmt"})
         await _call(server_with_key, "end_session", {"outcome": "delivered"})
 
         listing = await _call(server_with_key, "resume_session", {})
@@ -111,7 +111,7 @@ class TestResponseFormatting:
 
         csv = _make_csv(tmp_path)
         await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
-        await _call(server_with_key, "begin_session", {"intent": "fmt"})
+        await _call(server_with_key, "begin_session", {"source": "src", "intent": "fmt"})
 
         # Simulate the pipeline injecting the synthetic multi_source row into
         # the session DB. (Real pipeline does this in import_phase.py.)
@@ -141,7 +141,7 @@ class TestResponseFormatting:
 
         csv = _make_csv(tmp_path)
         await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
-        await _call(server_with_key, "begin_session", {"intent": "fmt"})
+        await _call(server_with_key, "begin_session", {"source": "src", "intent": "fmt"})
 
         session_dirs = list((tmp_path / "sessions").iterdir())
         with sqlite3.connect(str(session_dirs[0] / "metadata.db")) as conn:
@@ -185,11 +185,11 @@ class TestResumeSessionListing:
         csv2 = _make_csv(tmp_path, "b.csv")
         # First cycle: src_a
         await _call(server_with_key, "add_source", {"name": "src_a", "path": str(csv1)})
-        await _call(server_with_key, "begin_session", {"intent": "first"})
+        await _call(server_with_key, "begin_session", {"source": "src_a", "intent": "first"})
         await _call(server_with_key, "end_session", {"outcome": "abandoned"})
         # Second cycle: src_b (different fingerprint)
         await _call(server_with_key, "add_source", {"name": "src_b", "path": str(csv2)})
-        await _call(server_with_key, "begin_session", {"intent": "second"})
+        await _call(server_with_key, "begin_session", {"source": "src_b", "intent": "second"})
         await _call(server_with_key, "end_session", {"outcome": "delivered"})
 
         result = await _call(server_with_key, "resume_session", {})
@@ -223,7 +223,7 @@ class TestResumeSessionRestore:
         r1 = await _call(
             server_with_key,
             "begin_session",
-            {"intent": "original", "contract": "data_science"},
+            {"source": "src", "intent": "original", "contract": "data_science"},
         )
         assert "error" not in r1
         await _call(server_with_key, "end_session", {"outcome": "delivered", "summary": "ship it"})
@@ -272,7 +272,7 @@ class TestResumeSessionRestore:
         await _call(
             server_with_key,
             "begin_session",
-            {"intent": "audit", "contract": "regulatory_reporting"},
+            {"source": "src", "intent": "audit", "contract": "regulatory_reporting"},
         )
         await _call(server_with_key, "end_session", {"outcome": "delivered"})
 
@@ -288,7 +288,7 @@ class TestResumeSessionRestore:
     ) -> None:
         csv = _make_csv(tmp_path)
         await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
-        await _call(server_with_key, "begin_session", {"intent": "look at Q1"})
+        await _call(server_with_key, "begin_session", {"source": "src", "intent": "look at Q1"})
         await _call(server_with_key, "end_session", {"outcome": "abandoned"})
 
         listing = await _call(server_with_key, "resume_session", {})
@@ -317,7 +317,7 @@ class TestResumeSessionRestore:
     ) -> None:
         csv = _make_csv(tmp_path)
         await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
-        await _call(server_with_key, "begin_session", {"intent": "Q1 audit"})
+        await _call(server_with_key, "begin_session", {"source": "src", "intent": "Q1 audit"})
         await _call(server_with_key, "end_session", {"outcome": "delivered"})
         listing = await _call(server_with_key, "resume_session", {})
         archive_id = listing["archived_sessions"][0]["session_id"]
@@ -343,7 +343,7 @@ class TestResumeSessionGuards:
         # Create one archive so the list is non-empty
         csv = _make_csv(tmp_path)
         await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
-        await _call(server_with_key, "begin_session", {"intent": "test"})
+        await _call(server_with_key, "begin_session", {"source": "src", "intent": "test"})
         await _call(server_with_key, "end_session", {"outcome": "delivered"})
 
         result = await _call(server_with_key, "resume_session", {"session_id": "nonexistent-id"})
@@ -358,7 +358,7 @@ class TestResumeSessionGuards:
     ) -> None:
         csv = _make_csv(tmp_path)
         await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
-        await _call(server_with_key, "begin_session", {"intent": "test"})
+        await _call(server_with_key, "begin_session", {"source": "src", "intent": "test"})
 
         result = await _call(server_with_key, "resume_session", {"session_id": "anything"})
         assert "error" in result
@@ -374,13 +374,13 @@ class TestResumeSessionGuards:
         # Create one archive first so the list is non-empty.
         csv = _make_csv(tmp_path, "a.csv")
         await _call(server_with_key, "add_source", {"name": "src_a", "path": str(csv)})
-        await _call(server_with_key, "begin_session", {"intent": "first"})
+        await _call(server_with_key, "begin_session", {"source": "src_a", "intent": "first"})
         await _call(server_with_key, "end_session", {"outcome": "delivered"})
 
         # Now start a new session and confirm listing still works.
         csv2 = _make_csv(tmp_path, "b.csv")
         await _call(server_with_key, "add_source", {"name": "src_b", "path": str(csv2)})
-        await _call(server_with_key, "begin_session", {"intent": "second"})
+        await _call(server_with_key, "begin_session", {"source": "src_b", "intent": "second"})
 
         result = await _call(server_with_key, "resume_session", {})
         assert "error" not in result
@@ -400,7 +400,7 @@ class TestResumeSessionGuards:
         the user can retry instead of being stuck."""
         csv = _make_csv(tmp_path)
         await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
-        await _call(server_with_key, "begin_session", {"intent": "test"})
+        await _call(server_with_key, "begin_session", {"source": "src", "intent": "test"})
         await _call(server_with_key, "end_session", {"outcome": "delivered"})
 
         listing = await _call(server_with_key, "resume_session", {})
@@ -441,7 +441,7 @@ class TestResumeSessionGuards:
 
         csv = _make_csv(tmp_path)
         await _call(server_with_key, "add_source", {"name": "src", "path": str(csv)})
-        await _call(server_with_key, "begin_session", {"intent": "test"})
+        await _call(server_with_key, "begin_session", {"source": "src", "intent": "test"})
         await _call(server_with_key, "end_session", {"outcome": "delivered"})
         listing = await _call(server_with_key, "resume_session", {})
         archive_id = listing["archived_sessions"][0]["session_id"]

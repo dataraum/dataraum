@@ -9,6 +9,7 @@ nav = [
   { "Getting Started" = [
     "mcp-setup.md",
     "cli.md",
+    "db-sources.md",
   ] },
   { "Concepts" = [
     "pipeline.md",

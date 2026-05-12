@@ -283,8 +283,6 @@ def _resolve_registered_sources(manager: ConnectionManager) -> list[dict[str, An
                 entry["path"] = s.connection_config["path"]
             if s.backend:
                 entry["backend"] = s.backend
-            if s.credential_ref:
-                entry["credential_ref"] = s.credential_ref
             if s.connection_config and "tables" in s.connection_config:
                 entry["tables"] = s.connection_config["tables"]
 

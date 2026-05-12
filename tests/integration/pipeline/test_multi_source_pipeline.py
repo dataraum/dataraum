@@ -284,10 +284,11 @@ class TestMultiSourcePipeline:
             },
             {
                 "name": "warehouse",
-                "source_type": "sqlite",
+                "source_type": "db_recipe",
                 "backend": "sqlite",
-                "credential_ref": "warehouse",
-                "tables": ["regions"],
+                "tables": [
+                    {"name": "regions", "sql": "SELECT * FROM regions"},
+                ],
             },
         ]
 

@@ -442,101 +442,104 @@ class ImportPhase(BasePhase):
         source_name: str,
         src: dict[str, Any],
     ) -> PhaseResult:
-        """Load tables from a database source via DuckDB ATTACH."""
-        from dataraum.core.credentials import CredentialChain
+        """Materialize a recipe-driven database source.
 
-        backend = src["backend"]
-        credential_ref = src.get("credential_ref", source_name)
+        Resolves credentials via `CredentialChain` keyed by source name
+        (`DATARAUM_{NAME}_URL`), then delegates to `extract_backend` to
+        ATTACH READ_ONLY and run each named SELECT into raw_{name}.
+        Per DAT-274: any failure surfaces as PhaseResult.failed with
+        the offending step quoted.
+        """
+        from uuid import uuid4
+
+        from dataraum.core.credentials import CredentialChain
+        from dataraum.sources.backends import extract_backend
+        from dataraum.sources.db_recipe import RecipeTable
+
+        backend = src.get("backend")
+        if not backend:
+            return PhaseResult.failed(
+                f"Database source '{source_name}' is missing a backend declaration."
+            )
+
+        raw_queries = src.get("tables") or []
+        if not raw_queries:
+            return PhaseResult.failed(
+                f"Database source '{source_name}' has no recipe queries to materialize."
+            )
+
+        queries: list[RecipeTable] = []
+        for q in raw_queries:
+            if (
+                not isinstance(q, dict)
+                or "name" not in q
+                or "sql" not in q
+                or not isinstance(q["name"], str)
+                or not isinstance(q["sql"], str)
+            ):
+                return PhaseResult.failed(
+                    f"Database source '{source_name}' has a malformed recipe entry: {q!r}"
+                )
+            queries.append(RecipeTable(name=q["name"], sql=q["sql"]))
 
         chain = CredentialChain()
-        credential = chain.resolve(credential_ref)
+        credential = chain.resolve(source_name)
         if credential is None:
             return PhaseResult.failed(
-                f"No credentials found for database source '{source_name}' "
-                f"(credential_ref: {credential_ref})"
+                f"No credentials found for database source '{source_name}'. "
+                f"Set DATARAUM_{source_name.upper()}_URL in .env or add an entry to "
+                f"{chain.credentials_file}."
             )
 
-        tables_filter = src.get("tables", [])
+        prefix = f"{source_name}__"
+        result = extract_backend(
+            backend=backend,
+            url=credential.url,
+            queries=queries,
+            duckdb_conn=ctx.duckdb_conn,
+            raw_prefix=prefix,
+        )
+        if not result.success or result.value is None:
+            return PhaseResult.failed(
+                f"Database source '{source_name}' extraction failed: {result.error}"
+            )
+        payload = result.value
+
         table_ids: list[str] = []
         total_rows = 0
-        warnings: list[str] = []
-
-        try:
-            # Attach the database
-            attach_alias = f"_src_{source_name}"
-            ctx.duckdb_conn.execute(
-                f"ATTACH '{credential.url}' AS \"{attach_alias}\" (TYPE {backend}, READ_ONLY)"
+        for extracted in payload.tables:
+            table_id = str(uuid4())
+            ctx.session.add(
+                Table(
+                    table_id=table_id,
+                    source_id=source.source_id,
+                    table_name=extracted.duckdb_table,
+                    layer="raw",
+                    duckdb_path=extracted.duckdb_table,
+                    row_count=extracted.row_count,
+                )
             )
-
-            # Discover tables if not specified
-            if not tables_filter:
-                rows = ctx.duckdb_conn.execute(
-                    f"SELECT table_name FROM information_schema.tables "
-                    f"WHERE table_schema = 'main' AND table_catalog = '{attach_alias}'"
-                ).fetchall()
-                tables_filter = [r[0] for r in rows]
-
-            for table_name in tables_filter:
-                prefixed = f"{source_name}__{table_name}"
-                try:
-                    ctx.duckdb_conn.execute(
-                        f'CREATE TABLE "{prefixed}" AS '
-                        f'SELECT * FROM "{attach_alias}"."{table_name}"'
-                    )
-
-                    # Get row count and column info
-                    row_count_result = ctx.duckdb_conn.execute(
-                        f'SELECT count(*) FROM "{prefixed}"'
-                    ).fetchone()
-                    row_count = row_count_result[0] if row_count_result else 0
-
-                    col_info = ctx.duckdb_conn.execute(
-                        f"SELECT column_name, data_type FROM information_schema.columns "
-                        f"WHERE table_name = '{prefixed}'"
-                    ).fetchall()
-
-                    # Create Table + Column records
-                    from uuid import uuid4
-
-                    table_id = str(uuid4())
-                    table_record = Table(
+            for pos, (col_name, col_type) in enumerate(extracted.columns):
+                ctx.session.add(
+                    Column(
                         table_id=table_id,
-                        source_id=source.source_id,
-                        table_name=prefixed,
-                        layer="raw",
-                        duckdb_path=prefixed,
-                        row_count=row_count,
+                        column_name=col_name,
+                        column_position=pos,
+                        raw_type=col_type,
                     )
-                    ctx.session.add(table_record)
-
-                    for pos, (col_name, col_type) in enumerate(col_info):
-                        col_record = Column(
-                            table_id=table_id,
-                            column_name=col_name,
-                            column_position=pos,
-                            raw_type=col_type,
-                        )
-                        ctx.session.add(col_record)
-
-                    table_ids.append(table_id)
-                    total_rows += row_count
-
-                except Exception as e:
-                    warnings.append(f"Failed to import {table_name}: {e}")
-
-            # Detach after import
-            ctx.duckdb_conn.execute(f'DETACH "{attach_alias}"')
-
-        except Exception as e:
-            return PhaseResult.failed(f"Failed to connect to database source '{source_name}': {e}")
+                )
+            table_ids.append(table_id)
+            total_rows += extracted.row_count
 
         if not table_ids:
-            return PhaseResult.failed(f"No tables loaded from database source '{source_name}'")
+            return PhaseResult.failed(
+                f"No tables materialized from database source '{source_name}'."
+            )
 
         return PhaseResult.success(
             outputs={"raw_tables": table_ids},
             records_processed=total_rows,
             records_created=len(table_ids),
-            warnings=warnings,
+            warnings=payload.warnings,
             summary=f"{len(table_ids)} tables, {total_rows:,} rows",
         )

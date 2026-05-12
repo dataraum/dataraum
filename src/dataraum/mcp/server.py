@@ -879,7 +879,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                 ),
                 inputSchema={
                     "type": "object",
-                    "required": ["name"],
+                    "required": ["name", "path"],
                     "properties": {
                         "name": {
                             "type": "string",
@@ -889,24 +889,18 @@ def create_server(output_dir: Path | None = None) -> Server:
                         "path": {
                             "type": "string",
                             "description": (
-                                "File or directory path. Mutually exclusive with 'backend'. "
+                                "Path to a data file, directory, or recipe yaml. "
+                                "Files: .csv, .tsv, .parquet, .json, .jsonl. "
+                                "Recipes (.yaml/.yml) declare a database backend "
+                                "(mssql today; other backends arrive in a follow-up "
+                                "release) and named SELECT queries; credentials are "
+                                "resolved from DATARAUM_{NAME}_URL in the "
+                                "environment. Recipes can be referenced by a bare "
+                                "name (e.g. 'erp') or filename — DataRaum searches "
+                                "~/.dataraum/recipes/ as a fallback. "
                                 "In Docker, data is mounted at /sources — try /sources "
                                 "or /sources/<filename> if the user hasn't specified a path."
                             ),
-                        },
-                        "backend": {
-                            "type": "string",
-                            "enum": ["postgres", "mysql", "sqlite"],
-                            "description": "Database backend. Mutually exclusive with 'path'.",
-                        },
-                        "tables": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Optional table filter for database sources.",
-                        },
-                        "credential_ref": {
-                            "type": "string",
-                            "description": "Credential lookup key. Defaults to source name.",
                         },
                     },
                 },
@@ -1526,9 +1520,7 @@ def _restore_archived_session(
                     "updated_at": s.updated_at,
                     "status": s.status,
                     "backend": s.backend,
-                    "credential_ref": s.credential_ref,
                     "discovered_schema": s.discovered_schema,
-                    "last_validated": s.last_validated,
                     "archived_at": s.archived_at,
                 }
                 for s in archive_sources
@@ -2467,9 +2459,7 @@ def _begin_new_session(
                 "updated_at": s.updated_at,
                 "status": s.status,
                 "backend": s.backend,
-                "credential_ref": s.credential_ref,
                 "discovered_schema": s.discovered_schema,
-                "last_validated": s.last_validated,
                 "archived_at": s.archived_at,
             }
             for s in workspace_sources
@@ -3403,58 +3393,65 @@ def _add_source(
 ) -> dict[str, Any]:
     """Register a new data source in the workspace registry.
 
-    Writes a Source record to the workspace DB. For backend (database) sources,
-    a transient in-memory DuckDB is opened just for backend validation —
-    the workspace itself has no persistent DuckDB.
+    Dispatch by file extension after resolving the path (bare names
+    resolve against ~/.dataraum/recipes/):
+
+    - `.yaml` / `.yml` → recipe loader (parses + persists the recipe;
+      no database connection at registration time — credentials and
+      connectivity are checked lazily at pipeline-import time)
+    - `.csv` / `.tsv` / `.parquet` / `.json` / `.jsonl` → file loader
+      (reads a column preview via a transient in-memory DuckDB)
+    - directory → directory file loader (scans for supported files)
 
     Args:
         session: SQLAlchemy session from the workspace manager.
-        arguments: Tool arguments (name, path or backend, etc.).
+        arguments: Tool arguments — `name` and `path`.
     """
-    import duckdb
     from sqlalchemy import select
 
     from dataraum.core.credentials import CredentialChain
-    from dataraum.sources.manager import SourceManager
+    from dataraum.sources.manager import (
+        RECIPE_EXTENSIONS,
+        SourceManager,
+        resolve_source_path,
+    )
     from dataraum.storage import Source
 
     name = arguments["name"]
     path = arguments.get("path")
-    backend = arguments.get("backend")
+    if not path:
+        return {
+            "error": (
+                "Provide 'path' — a file path, directory, or a recipe yaml. "
+                "Recipe paths are also looked up under ~/.dataraum/recipes/ "
+                "by name (e.g. path='erp' resolves to ~/.dataraum/recipes/erp.yaml)."
+            )
+        }
 
-    if not path and not backend:
-        return {"error": "Provide either 'path' (for files) or 'backend' (for databases)."}
-    if path and backend:
-        return {"error": "Provide 'path' or 'backend', not both."}
+    root = _resolve_root_dir()
+    resolved = resolve_source_path(path, root)
+    if resolved is None:
+        suffix = Path(path).suffix.lower()
+        # Direct paths get a "not found" error; recipe-shaped names also
+        # surface the recipes/ candidates that were tried.
+        if not suffix or suffix in RECIPE_EXTENSIONS:
+            return {
+                "error": (
+                    f"Source path not found: {path}. Looked for the path as-given, "
+                    f"and under {root}/recipes/ (with .yaml/.yml suffixes when none was given)."
+                )
+            }
+        return {"error": f"Source path not found: {path}"}
 
     credential_chain = CredentialChain()
-    transient_duckdb: duckdb.DuckDBPyConnection | None = None
+    src_mgr = SourceManager(session=session, credential_chain=credential_chain)
 
-    try:
-        if backend:
-            # Backend validation needs a DuckDB connection (ATTACH). Open a
-            # transient in-memory one — workspace has no persistent DuckDB.
-            transient_duckdb = duckdb.connect(":memory:")
-            src_mgr = SourceManager(
-                session=session,
-                credential_chain=credential_chain,
-                duckdb_conn=transient_duckdb,
-            )
-            tables_arg = arguments.get("tables")
-            credential_ref = arguments.get("credential_ref")
-            result = src_mgr.add_database_source(
-                name, backend, tables=tables_arg, credential_ref=credential_ref
-            )
-        else:
-            src_mgr = SourceManager(
-                session=session,
-                credential_chain=credential_chain,
-            )
-            assert path is not None  # guarded by validation above
-            result = src_mgr.add_file_source(name, path)
-    finally:
-        if transient_duckdb is not None:
-            transient_duckdb.close()
+    resolved_str = str(resolved.path)
+    suffix = resolved.path.suffix.lower()
+    if suffix in RECIPE_EXTENSIONS:
+        result = src_mgr.add_recipe_source(name, resolved_str)
+    else:
+        result = src_mgr.add_file_source(name, resolved_str)
 
     if not result.success:
         return {"error": str(result.error)}
@@ -3469,17 +3466,17 @@ def _add_source(
     }
     if info.path:
         output["source"]["path"] = info.path
+    if info.backend:
+        output["source"]["backend"] = info.backend
+    if info.recipe_tables:
+        output["source"]["recipe_tables"] = info.recipe_tables
     if info.columns:
         output["source"]["preview"] = {
             "columns": info.columns,
             "row_count_estimate": info.row_count_estimate,
         }
-    if info.credential_source:
-        output["source"]["credential_source"] = info.credential_source
     if info.discovered_schema:
         output["source"]["schema_discovered"] = info.discovered_schema
-    if info.credential_instructions:
-        output["credential_instructions"] = info.credential_instructions
 
     # Include total source count for multi-source flow
     all_sources = (

@@ -244,10 +244,14 @@ class TestFlowEnforcement:
         from dataraum.mcp.server import create_server
 
         server = create_server(output_dir=tmp_path)
-        result = await _call(server, "add_source", {"name": "test"})
-        # add_source fails validation (no path/backend), not flow enforcement
+        # Pass a path that won't resolve; the handler must reach its own
+        # path-validation error rather than the flow-enforcement guard.
+        result = await _call(
+            server, "add_source", {"name": "test", "path": "/nonexistent/data.csv"}
+        )
         assert "error" in result
         assert "begin_session" not in result["error"]
+        assert "not found" in result["error"].lower()
 
 
 class TestRecordToolStep:

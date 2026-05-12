@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.core.credentials import CredentialChain
-from dataraum.core.models import Result
-from dataraum.sources.backends import BackendValidationResult, TablePreview
 from dataraum.sources.manager import SourceManager
 from dataraum.storage.models import Source
+
+VALID_RECIPE = """\
+backend: mssql
+tables:
+  invoices:
+    sql: |
+      SELECT invoice_id, total_amount FROM dbo.Invoices
+  customers:
+    sql: SELECT customer_id, name FROM dbo.Customers
+"""
 
 
 @pytest.fixture
@@ -174,97 +181,86 @@ class TestAddFileSource:
         assert str(MAX_FILES_PER_SOURCE) in str(result.error)
 
 
-class TestAddDatabaseSource:
-    def test_needs_credentials(self, session: Session, credential_chain: CredentialChain) -> None:
-        manager = SourceManager(session=session, credential_chain=credential_chain)
-        result = manager.add_database_source("accounting", "postgres")
+class TestAddRecipeSource:
+    def test_registers_recipe(self, manager: SourceManager, tmp_path: Path) -> None:
+        recipe = tmp_path / "erp.yaml"
+        recipe.write_text(VALID_RECIPE)
 
-        assert result.success
+        result = manager.add_recipe_source("erp", str(recipe))
+
+        assert result.success, result.error
         info = result.unwrap()
-        assert info.status == "needs_credentials"
-        assert info.credential_instructions is not None
-        assert "postgres://" in info.credential_instructions["url_template"]
+        assert info.source_type == "db_recipe"
+        assert info.status == "configured"
+        assert info.backend == "mssql"
+        assert info.recipe_tables == ["invoices", "customers"]
+        assert info.path is not None
 
-    def test_unsupported_backend(self, manager: SourceManager) -> None:
-        result = manager.add_database_source("src_ub", "clickhouse")
+    def test_persists_recipe_in_connection_config(
+        self, manager: SourceManager, session: Session, tmp_path: Path
+    ) -> None:
+        recipe = tmp_path / "erp.yaml"
+        recipe.write_text(VALID_RECIPE)
+        manager.add_recipe_source("erp", str(recipe))
+
+        source = session.execute(select(Source).where(Source.name == "erp")).scalar_one()
+        assert source.source_type == "db_recipe"
+        assert source.backend == "mssql"
+        assert source.connection_config is not None
+        cfg = source.connection_config
+        assert cfg["backend"] == "mssql"
+        assert cfg["recipe_path"].endswith("erp.yaml")
+        assert len(cfg["recipe_hash"]) == 64  # sha256 hex
+        assert {t["name"] for t in cfg["tables"]} == {"invoices", "customers"}
+        assert all("sql" in t for t in cfg["tables"])
+
+    def test_no_credentials_persisted(
+        self, manager: SourceManager, session: Session, tmp_path: Path
+    ) -> None:
+        recipe = tmp_path / "erp.yaml"
+        recipe.write_text(VALID_RECIPE)
+        manager.add_recipe_source("erp", str(recipe))
+
+        source = session.execute(select(Source).where(Source.name == "erp")).scalar_one()
+        cfg_str = str(source.connection_config)
+        # No URL, password, user, host, etc. anywhere in the persisted config.
+        for forbidden in ("password", "user@", "://", "mssql://", "://localhost"):
+            assert forbidden not in cfg_str.lower(), f"Found '{forbidden}' in {cfg_str}"
+
+    def test_invalid_recipe_fails_loud(self, manager: SourceManager, tmp_path: Path) -> None:
+        recipe = tmp_path / "bad.yaml"
+        recipe.write_text("backend: oracle\ntables:\n  t:\n    sql: SELECT 1\n")
+        result = manager.add_recipe_source("badrecipe", str(recipe))
         assert not result.success
-        assert "Unsupported backend" in (result.error or "")
+        assert "oracle" in (result.error or "").lower()
 
-    def test_invalid_name(self, manager: SourceManager) -> None:
-        result = manager.add_database_source("BAD NAME", "postgres")
+    def test_recipe_with_credentials_rejected(self, manager: SourceManager, tmp_path: Path) -> None:
+        recipe = tmp_path / "leaky.yaml"
+        recipe.write_text(
+            "backend: mssql\n"
+            "connection:\n"
+            "  host: localhost\n"
+            "  password: hunter2\n"
+            "tables:\n  t:\n    sql: SELECT 1\n"
+        )
+        result = manager.add_recipe_source("leaky", str(recipe))
         assert not result.success
+        assert "secret-free" in (result.error or "").lower()
 
-    def test_validated_with_credentials(
-        self, session: Session, credential_chain: CredentialChain, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("DATARAUM_MYDB_URL", "postgres://u:p@host/db")
+    def test_duplicate_name_rejected(self, manager: SourceManager, tmp_path: Path) -> None:
+        recipe = tmp_path / "erp.yaml"
+        recipe.write_text(VALID_RECIPE)
+        manager.add_recipe_source("dup_src", str(recipe))
 
-        mock_duckdb = MagicMock()
-        tables = [
-            TablePreview(name="orders", columns=["id", "amount"]),
-            TablePreview(name="customers", columns=["id", "name"]),
-        ]
-        validation_result = Result.ok(BackendValidationResult(tables=tables))
-
-        manager = SourceManager(
-            session=session, credential_chain=credential_chain, duckdb_conn=mock_duckdb
-        )
-
-        with patch("dataraum.sources.manager.validate_backend", return_value=validation_result):
-            result = manager.add_database_source("mydb", "postgres")
-
-        assert result.success
-        info = result.unwrap()
-        assert info.status == "validated"
-        assert info.credential_source == "env"
-        assert info.discovered_schema is not None
-        assert len(info.discovered_schema["tables"]) == 2
-
-    def test_table_filter(
-        self, session: Session, credential_chain: CredentialChain, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("DATARAUM_FILTERED_URL", "postgres://u:p@host/db")
-        mock_duckdb = MagicMock()
-        tables = [
-            TablePreview(name="orders", columns=["id"]),
-            TablePreview(name="customers", columns=["id"]),
-            TablePreview(name="logs", columns=["ts"]),
-        ]
-        validation_result = Result.ok(BackendValidationResult(tables=tables))
-
-        manager = SourceManager(
-            session=session, credential_chain=credential_chain, duckdb_conn=mock_duckdb
-        )
-
-        with patch("dataraum.sources.manager.validate_backend", return_value=validation_result):
-            result = manager.add_database_source("filtered", "postgres", tables=["orders"])
-
-        info = result.unwrap()
-        assert info.discovered_schema is not None
-        assert len(info.discovered_schema["tables"]) == 1
-        assert info.discovered_schema["tables_excluded"] == 2
-
-    def test_no_duckdb_conn(
-        self, session: Session, credential_chain: CredentialChain, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("DATARAUM_NODB_URL", "postgres://u:p@host/db")
-        manager = SourceManager(
-            session=session, credential_chain=credential_chain, duckdb_conn=None
-        )
-
-        result = manager.add_database_source("nodb", "postgres")
+        result = manager.add_recipe_source("dup_src", str(recipe))
         assert not result.success
-        assert "DuckDB connection required" in (result.error or "")
+        assert "already exists" in (result.error or "")
 
-    def test_needs_credentials_persists(
-        self, session: Session, credential_chain: CredentialChain
-    ) -> None:
-        manager = SourceManager(session=session, credential_chain=credential_chain)
-        manager.add_database_source("pending_src", "mysql")
-
-        source = session.execute(select(Source).where(Source.name == "pending_src")).scalar_one()
-        assert source.status == "needs_credentials"
-        assert source.backend == "mysql"
+    def test_invalid_name(self, manager: SourceManager, tmp_path: Path) -> None:
+        recipe = tmp_path / "erp.yaml"
+        recipe.write_text(VALID_RECIPE)
+        result = manager.add_recipe_source("BAD NAME", str(recipe))
+        assert not result.success
 
 
 class TestListSources:
@@ -291,7 +287,12 @@ class TestListSources:
         csv = tmp_path / "data.csv"
         csv.write_text("a\n1\n")
         manager.add_file_source("configured_src", str(csv))
-        manager.add_database_source("pending_src", "postgres")
+        # Manually mark one as a different status to confirm the filter.
+        archived_source = Source(
+            name="archived_src", source_type="csv", status="archived_pending", archived_at=None
+        )
+        session.add(archived_source)
+        session.flush()
 
         configured = manager.list_sources(status_filter="configured")
         assert len(configured) == 1
@@ -344,10 +345,14 @@ class TestRemoveSource:
         assert not result.success
         assert "not found" in (result.error or "").lower()
 
-    def test_credential_hint(self, session: Session, credential_chain: CredentialChain) -> None:
-        manager = SourceManager(session=session, credential_chain=credential_chain)
-        manager.add_database_source("mydb_ch", "postgres")
+    def test_recipe_remove_includes_credentials_hint(
+        self, manager: SourceManager, tmp_path: Path
+    ) -> None:
+        recipe = tmp_path / "erp.yaml"
+        recipe.write_text(VALID_RECIPE)
+        manager.add_recipe_source("erp_ch", str(recipe))
 
-        result = manager.remove_source("mydb_ch")
+        result = manager.remove_source("erp_ch")
         assert result.success
         assert "credentials" in result.unwrap().lower()
+        assert "DATARAUM_ERP_CH_URL" in result.unwrap()

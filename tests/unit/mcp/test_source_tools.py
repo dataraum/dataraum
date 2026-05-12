@@ -8,25 +8,30 @@ from sqlalchemy.orm import Session
 
 from dataraum.mcp.server import create_server
 
+VALID_RECIPE = """\
+backend: mssql
+tables:
+  invoices:
+    sql: SELECT invoice_id FROM dbo.Invoices
+"""
+
 
 class TestToolRegistration:
     def test_handler_functions_importable(self) -> None:
-        """Verify the tool handler functions exist and are callable."""
         from dataraum.mcp.server import _add_source
 
         assert callable(_add_source)
 
     def test_server_creates_successfully(self) -> None:
-        """Server creates without error with tools registered."""
         server = create_server(output_dir=Path("/tmp/test_output"))
         assert server is not None
 
 
 class TestAddSourceTool:
-    """add_source writes to the workspace registry. Backend sources use a
-    transient in-memory DuckDB internally; no cursor is passed in."""
+    """add_source dispatches by file extension: .yaml/.yml → recipe loader;
+    .csv/.tsv/.parquet/.json/.jsonl → file loader; directory → directory."""
 
-    def test_add_file_source(self, session: Session, tmp_path: Path) -> None:
+    def test_add_csv_file(self, session: Session, tmp_path: Path) -> None:
         from dataraum.mcp.server import _add_source
 
         csv = tmp_path / "data.csv"
@@ -37,24 +42,33 @@ class TestAddSourceTool:
         assert isinstance(result, dict)
         assert result["source"]["name"] == "test_src"
         assert result["source"]["status"] == "configured"
+        assert result["source"]["type"] == "csv"
 
-    def test_add_source_no_path_or_backend(self, session: Session) -> None:
+    def test_add_recipe_yaml(self, session: Session, tmp_path: Path) -> None:
+        from dataraum.mcp.server import _add_source
+
+        recipe = tmp_path / "erp.yaml"
+        recipe.write_text(VALID_RECIPE)
+
+        result = _add_source(session, {"name": "erp", "path": str(recipe)})
+
+        assert isinstance(result, dict)
+        assert result["source"]["name"] == "erp"
+        assert result["source"]["status"] == "configured"
+        assert result["source"]["type"] == "db_recipe"
+        assert result["source"]["backend"] == "mssql"
+        assert result["source"]["recipe_tables"] == ["invoices"]
+
+    def test_add_source_missing_path(self, session: Session) -> None:
         from dataraum.mcp.server import _add_source
 
         result = _add_source(session, {"name": "bad"})
         assert "error" in result
 
-    def test_add_source_both_path_and_backend(self, session: Session) -> None:
+    def test_add_source_unknown_extension(self, session: Session, tmp_path: Path) -> None:
         from dataraum.mcp.server import _add_source
 
-        result = _add_source(session, {"name": "bad", "path": "/x", "backend": "postgres"})
+        weird = tmp_path / "data.xlsx"
+        weird.write_text("garbage")
+        result = _add_source(session, {"name": "weird", "path": str(weird)})
         assert "error" in result
-
-    def test_add_db_source_needs_credentials(self, session: Session) -> None:
-        from dataraum.mcp.server import _add_source
-
-        result = _add_source(session, {"name": "mydb", "backend": "postgres"})
-
-        assert isinstance(result, dict)
-        assert result["source"]["status"] == "needs_credentials"
-        assert "credential_instructions" in result

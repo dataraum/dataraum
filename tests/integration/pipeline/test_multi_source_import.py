@@ -475,29 +475,28 @@ class TestParquetSource:
         assert col_types["value"] != "VARCHAR"  # Should be DOUBLE/FLOAT
 
 
-class TestSQLiteSource:
-    """SQLite database source loads via DuckDB ATTACH."""
+class TestRecipeSource:
+    """Recipe-driven database source materializes named SELECTs via extract_backend."""
 
-    def test_sqlite_source_loaded(
+    def test_recipe_source_loaded(
         self,
         session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
         sqlite_source: Path,
     ):
-        """SQLite database tables imported with prefixed names."""
-        # DuckDB needs the sqlite extension loaded
-        duckdb_conn.execute("INSTALL sqlite; LOAD sqlite;")
-
+        """Recipe queries materialize as raw tables with the source-name prefix."""
         phase = ImportPhase()
         source_id = str(uuid4())
 
         registered = [
             {
                 "name": "warehouse",
-                "source_type": "sqlite",
+                "source_type": "db_recipe",
                 "backend": "sqlite",
-                "credential_ref": "warehouse",
-                "tables": ["customers", "regions"],
+                "tables": [
+                    {"name": "customers", "sql": "SELECT id, name, email, active FROM customers"},
+                    {"name": "regions", "sql": "SELECT region_id, region_name FROM regions"},
+                ],
             },
         ]
 
@@ -519,7 +518,6 @@ class TestSQLiteSource:
         assert result.status == PhaseStatus.COMPLETED, f"Failed: {result.error}"
         assert len(result.outputs["raw_tables"]) == 2
 
-        # Verify prefixed table names
         tables = (
             session.execute(select(Table).where(Table.source_id == source_id, Table.layer == "raw"))
             .scalars()
@@ -528,7 +526,6 @@ class TestSQLiteSource:
         table_names = {t.table_name for t in tables}
         assert table_names == {"warehouse__customers", "warehouse__regions"}
 
-        # Verify data accessible in DuckDB
         rows = duckdb_conn.execute('SELECT count(*) FROM "warehouse__customers"').fetchone()
         assert rows is not None
         assert rows[0] == 3
@@ -537,7 +534,6 @@ class TestSQLiteSource:
         assert rows is not None
         assert rows[0] == 2
 
-        # Verify Column records created
         for table in tables:
             cols = (
                 session.execute(select(Column).where(Column.table_id == table.table_id))
@@ -546,25 +542,24 @@ class TestSQLiteSource:
             )
             assert len(cols) > 0
 
-    def test_sqlite_table_filter(
+    def test_recipe_subset_via_where_clause(
         self,
         session: Session,
         duckdb_conn: duckdb.DuckDBPyConnection,
         sqlite_source: Path,
     ):
-        """Only specified tables are imported when filter is set."""
-        duckdb_conn.execute("INSTALL sqlite; LOAD sqlite;")
-
+        """Recipe SQL is run verbatim, so subsetting happens via the user's WHERE clause."""
         phase = ImportPhase()
         source_id = str(uuid4())
 
         registered = [
             {
                 "name": "warehouse",
-                "source_type": "sqlite",
+                "source_type": "db_recipe",
                 "backend": "sqlite",
-                "credential_ref": "warehouse",
-                "tables": ["customers"],  # Only customers, not regions
+                "tables": [
+                    {"name": "customers", "sql": "SELECT * FROM customers WHERE active = 1"},
+                ],
             },
         ]
 
@@ -585,7 +580,6 @@ class TestSQLiteSource:
 
         assert result.status == PhaseStatus.COMPLETED
         assert len(result.outputs["raw_tables"]) == 1
-
         tables = (
             session.execute(select(Table).where(Table.source_id == source_id, Table.layer == "raw"))
             .scalars()
@@ -650,9 +644,7 @@ class TestSourceCombinations:
         parquet_source: Path,
         sqlite_source: Path,
     ):
-        """CSV + Parquet + SQLite all in one import — the crown jewel test."""
-        duckdb_conn.execute("INSTALL sqlite; LOAD sqlite;")
-
+        """CSV + Parquet + recipe-driven SQLite all in one import."""
         orders_csv, catalog_csv = two_csv_sources
         phase = ImportPhase()
         source_id = str(uuid4())
@@ -663,10 +655,12 @@ class TestSourceCombinations:
             {"name": "analytics", "source_type": "parquet", "path": str(parquet_source)},
             {
                 "name": "warehouse",
-                "source_type": "sqlite",
+                "source_type": "db_recipe",
                 "backend": "sqlite",
-                "credential_ref": "warehouse",
-                "tables": ["customers", "regions"],
+                "tables": [
+                    {"name": "customers", "sql": "SELECT * FROM customers"},
+                    {"name": "regions", "sql": "SELECT * FROM regions"},
+                ],
             },
         ]
 
@@ -687,7 +681,7 @@ class TestSourceCombinations:
 
         assert result.status == PhaseStatus.COMPLETED, f"Failed: {result.error}"
 
-        # 2 CSV + 1 Parquet + 2 SQLite tables = 5 total
+        # 2 CSV + 1 Parquet + 2 recipe-driven SQLite tables = 5 total
         assert len(result.outputs["raw_tables"]) == 5
 
         tables = (
@@ -704,25 +698,20 @@ class TestSourceCombinations:
             "warehouse__regions",
         }
 
-        # All tables share the same source_id
         source_ids = {t.source_id for t in tables}
         assert source_ids == {source_id}
 
-        # All tables have columns
         for table in tables:
             col_count = session.execute(
                 select(func.count(Column.column_id)).where(Column.table_id == table.table_id)
             ).scalar_one()
             assert col_count > 0, f"Table {table.table_name} has no columns"
 
-        # Verify total column count:
-        # orders(3) + catalog(3) + metrics(3) + customers(4) + regions(2) = 15
         total_cols = session.execute(
             select(func.count(Column.column_id)).join(Table).where(Table.source_id == source_id)
         ).scalar_one()
         assert total_cols == 15
 
-        # All 5 DuckDB tables queryable
         for name in table_names:
             count = duckdb_conn.execute(f'SELECT count(*) FROM "{name}"').fetchone()
             assert count is not None

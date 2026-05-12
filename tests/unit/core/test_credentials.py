@@ -136,22 +136,6 @@ class TestCredentialChain:
         chain = CredentialChain(credentials_dir=tmp_path)
         assert chain.resolve("missing") is None
 
-    def test_instructions_for_postgres(self, tmp_path: Path) -> None:
-        chain = CredentialChain(credentials_dir=tmp_path)
-        instructions = chain.instructions_for("accounting", "postgres")
-
-        assert instructions["ref"] == "accounting"
-        assert "postgres://" in instructions["url_template"]
-        assert "accounting" in instructions["file_template"]
-        assert instructions["env_alternative"] == "DATARAUM_ACCOUNTING_URL"
-        assert str(tmp_path) in instructions["file_path"]
-
-    def test_instructions_for_unknown_backend(self, tmp_path: Path) -> None:
-        chain = CredentialChain(credentials_dir=tmp_path)
-        instructions = chain.instructions_for("src", "clickhouse")
-
-        assert "clickhouse://" in instructions["url_template"]
-
     def test_credentials_file_property(self, tmp_path: Path) -> None:
         chain = CredentialChain(credentials_dir=tmp_path)
         assert chain.credentials_file == tmp_path / "credentials.yaml"

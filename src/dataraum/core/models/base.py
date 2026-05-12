@@ -159,8 +159,7 @@ class SourceConfig(BaseModel):
     tables: list[str] | None = None
 
     # Source management (onboarding)
-    backend: str | None = None  # DuckDB backend: 'postgres', 'mysql', 'sqlite'
-    credential_ref: str | None = None  # Key for credential chain lookup (defaults to name)
+    backend: str | None = None  # DuckDB backend: 'mssql', 'postgres', 'mysql', 'sqlite'
 
     # Options
     sample_size: int | None = None

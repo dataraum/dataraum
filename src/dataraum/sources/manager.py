@@ -1,7 +1,18 @@
 """Source lifecycle management.
 
 Shared by MCP tools and (future) web UI. Handles source registration,
-validation, listing, and soft-deletion.
+listing, and soft-deletion.
+
+Two source kinds:
+
+- **File sources** — CSV/TSV, Parquet, JSON/JSONL, or a directory of
+  them. Registered via `add_file_source`.
+- **Recipe sources** — yaml declaring a backend (mssql, postgres, mysql,
+  sqlite) plus named SELECT queries. Credentials are resolved at
+  pipeline-import time via `CredentialChain` keyed by source name.
+  Registered via `add_recipe_source`.
+
+The MCP tool layer dispatches based on file extension.
 """
 
 from __future__ import annotations
@@ -19,11 +30,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.core.credentials import CredentialChain
 from dataraum.core.models import Result
-from dataraum.sources.backends import (
-    SUPPORTED_BACKENDS,
-    TablePreview,
-    validate_backend,
-)
+from dataraum.sources.db_recipe import Recipe, parse_recipe
 from dataraum.storage.models import Source
 
 _log = logging.getLogger(__name__)
@@ -34,7 +41,7 @@ _NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,48}$")
 # Max files per directory source. Prevents accidental data lake ingestion.
 MAX_FILES_PER_SOURCE = 20
 
-# Supported file extensions → source type.
+# File extensions for the file-source path.
 _EXTENSION_MAP: dict[str, str] = {
     ".csv": "csv",
     ".tsv": "csv",
@@ -42,6 +49,12 @@ _EXTENSION_MAP: dict[str, str] = {
     ".json": "json",
     ".jsonl": "json",
 }
+
+# Recipe yaml extensions for the database-source path.
+RECIPE_EXTENSIONS: frozenset[str] = frozenset({".yaml", ".yml"})
+
+# DuckDB-attachable database backends. Mirrored from sources.backends.
+SUPPORTED_BACKENDS: frozenset[str] = frozenset({"mssql", "postgres", "mysql", "sqlite"})
 
 
 @dataclass
@@ -56,12 +69,11 @@ class SourceInfo:
     columns: list[str] = field(default_factory=list)
     row_count_estimate: int | None = None
     discovered_schema: dict[str, Any] | None = None
-    credential_source: str | None = None
-    credential_instructions: dict[str, Any] | None = None
+    recipe_tables: list[str] = field(default_factory=list)
 
 
 class SourceManager:
-    """Manage data source lifecycle: add, list, remove, validate."""
+    """Manage data source lifecycle: add, list, remove."""
 
     def __init__(
         self,
@@ -74,44 +86,32 @@ class SourceManager:
         self._duckdb_conn = duckdb_conn
 
     def add_file_source(self, name: str, path: str) -> Result[SourceInfo]:
-        """Register a local file source (CSV, Parquet, etc.).
+        """Register a local file source (CSV/TSV/Parquet/JSON/JSONL) or directory.
 
-        Args:
-            name: Unique source name.
-            path: File path (relative or absolute).
-
-        Returns:
-            Result with source info or error.
+        Recipe yaml paths must use `add_recipe_source` instead.
         """
-        if not _NAME_PATTERN.match(name):
-            return Result.fail(
-                f"Invalid source name '{name}'. Must match: lowercase, start with letter, 2-49 chars, only a-z/0-9/_."
-            )
+        validation = self._validate_new_name(name)
+        if validation is not None:
+            return validation
 
-        existing = self._get_source(name)
-        if existing is not None:
-            return Result.fail(f"Source '{name}' already exists.")
-
-        # Validate path exists
         file_path = Path(path)
         if not file_path.exists():
             return Result.fail(f"Path not found: {path}")
 
-        # Directory source: scan for supported files
         if file_path.is_dir():
             return self._add_directory_source(name, file_path)
 
-        # Determine source type from extension
         suffix = file_path.suffix.lower()
-        source_type = _EXTENSION_MAP.get(suffix)
+        if suffix in RECIPE_EXTENSIONS:
+            return Result.fail(f"Path '{path}' is a recipe yaml — call add_recipe_source instead.")
 
+        source_type = _EXTENSION_MAP.get(suffix)
         if source_type is None:
             supported = ", ".join(sorted(_EXTENSION_MAP.keys()))
             return Result.fail(
                 f"Unsupported file format: '{suffix}'. Supported extensions: {supported}"
             )
 
-        # Get column preview via DuckDB
         columns: list[str] = []
         row_count: int | None = None
         try:
@@ -123,7 +123,6 @@ class SourceManager:
         except Exception:
             _log.debug("Preview failed for %s", path, exc_info=True)
 
-        # Create Source record
         source = Source(
             name=name,
             source_type=source_type,
@@ -144,17 +143,51 @@ class SourceManager:
             )
         )
 
-    def _add_directory_source(self, name: str, directory: Path) -> Result[SourceInfo]:
-        """Register a directory source by scanning for supported files.
+    def add_recipe_source(self, name: str, recipe_path: str) -> Result[SourceInfo]:
+        """Register a database source from a recipe yaml.
 
-        Args:
-            name: Unique source name.
-            directory: Path to directory.
-
-        Returns:
-            Result with source info including file count and format breakdown.
+        Parses and validates the recipe at registration time. Does not
+        touch the database — credentials and connectivity are checked
+        lazily at pipeline-import time. This keeps `add_source` fast
+        and avoids "register fails because env not loaded yet" friction.
         """
-        # Scan for supported files
+        validation = self._validate_new_name(name)
+        if validation is not None:
+            return validation
+
+        parsed = parse_recipe(recipe_path)
+        if not parsed.success or parsed.value is None:
+            return Result.fail(parsed.error or "Recipe parse failed.")
+        recipe: Recipe = parsed.value
+
+        source = Source(
+            name=name,
+            source_type="db_recipe",
+            backend=recipe.backend,
+            connection_config={
+                "recipe_path": str(recipe.source_path.resolve()),
+                "backend": recipe.backend,
+                "recipe_hash": recipe.recipe_hash,
+                "tables": [{"name": t.name, "sql": t.sql} for t in recipe.tables],
+            },
+            status="configured",
+        )
+        self._session.add(source)
+        self._session.flush()
+
+        return Result.ok(
+            SourceInfo(
+                name=name,
+                source_type="db_recipe",
+                status="configured",
+                path=str(recipe.source_path),
+                backend=recipe.backend,
+                recipe_tables=[t.name for t in recipe.tables],
+            )
+        )
+
+    def _add_directory_source(self, name: str, directory: Path) -> Result[SourceInfo]:
+        """Register a directory source by scanning for supported files."""
         format_counts: dict[str, int] = {}
         total_files = 0
         for child in sorted(directory.iterdir()):
@@ -170,17 +203,14 @@ class SourceManager:
             return Result.fail(
                 f"No supported data files found in '{directory}'. Supported extensions: {supported}"
             )
-
         if total_files > MAX_FILES_PER_SOURCE:
             return Result.fail(
                 f"Directory contains {total_files} data files (max {MAX_FILES_PER_SOURCE}). "
                 f"Split into multiple sources or reduce the number of files."
             )
 
-        # Determine dominant format for source_type
         source_type = max(format_counts, key=lambda k: format_counts[k])
 
-        # Preview columns from first file of dominant format
         columns: list[str] = []
         row_count: int | None = None
         for child in sorted(directory.iterdir()):
@@ -204,7 +234,6 @@ class SourceManager:
         self._session.add(source)
         self._session.flush()
 
-        # Build format breakdown string for discovery info
         breakdown = ", ".join(f"{count} {fmt}" for fmt, count in sorted(format_counts.items()))
 
         return Result.ok(
@@ -223,133 +252,8 @@ class SourceManager:
             )
         )
 
-    def add_database_source(
-        self,
-        name: str,
-        backend: str,
-        tables: list[str] | None = None,
-        credential_ref: str | None = None,
-    ) -> Result[SourceInfo]:
-        """Register a database source.
-
-        Resolves connection URL from CredentialChain. If found, validates
-        via DuckDB ATTACH and discovers tables. If not found, returns
-        setup instructions.
-
-        Args:
-            name: Unique source name.
-            backend: DuckDB backend type (postgres, mysql, sqlite).
-            tables: Optional table filter.
-            credential_ref: Key for credential chain (defaults to name).
-
-        Returns:
-            Result with source info (may include credential_instructions).
-        """
-        if not _NAME_PATTERN.match(name):
-            return Result.fail(
-                f"Invalid source name '{name}'. Must match: lowercase, start with letter, 2-49 chars, only a-z/0-9/_."
-            )
-
-        if backend not in SUPPORTED_BACKENDS:
-            return Result.fail(
-                f"Unsupported backend: {backend}. Supported: {', '.join(sorted(SUPPORTED_BACKENDS))}"
-            )
-
-        existing = self._get_source(name)
-        if existing is not None:
-            return Result.fail(f"Source '{name}' already exists.")
-
-        ref = credential_ref or name
-        credential = self._credential_chain.resolve(ref)
-
-        if credential is None:
-            # No credentials — return instructions
-            instructions = self._credential_chain.instructions_for(ref, backend)
-
-            # Still create the source record with needs_credentials status
-            source = Source(
-                name=name,
-                source_type=backend,
-                status="needs_credentials",
-                backend=backend,
-                credential_ref=ref,
-            )
-            self._session.add(source)
-            self._session.flush()
-
-            return Result.ok(
-                SourceInfo(
-                    name=name,
-                    source_type=backend,
-                    status="needs_credentials",
-                    backend=backend,
-                    credential_instructions=instructions,
-                )
-            )
-
-        # Credentials found — validate connection
-        if self._duckdb_conn is None:
-            return Result.fail("DuckDB connection required for database source validation.")
-
-        validation = validate_backend(backend, credential.url, self._duckdb_conn)
-        if not validation.success or validation.value is None:
-            # Create source with error status
-            source = Source(
-                name=name,
-                source_type=backend,
-                status="error",
-                backend=backend,
-                credential_ref=ref,
-            )
-            self._session.add(source)
-            self._session.flush()
-
-            return Result.fail(f"Connection validation failed: {validation.error}")
-
-        result = validation.value
-
-        # Apply table filter if provided
-        discovered_tables = result.tables
-        if tables:
-            table_set = set(tables)
-            discovered_tables = [t for t in discovered_tables if t.name in table_set]
-
-        # Build discovered schema dict
-        schema_dict = _tables_to_schema_dict(discovered_tables, result.tables)
-
-        source = Source(
-            name=name,
-            source_type=backend,
-            status="validated",
-            backend=backend,
-            credential_ref=ref,
-            connection_config={"tables": [t.name for t in discovered_tables]},
-            discovered_schema=schema_dict,
-            last_validated=datetime.now(UTC),
-        )
-        self._session.add(source)
-        self._session.flush()
-
-        return Result.ok(
-            SourceInfo(
-                name=name,
-                source_type=backend,
-                status="validated",
-                backend=backend,
-                discovered_schema=schema_dict,
-                credential_source=credential.source,
-            )
-        )
-
     def list_sources(self, status_filter: str | None = None) -> list[SourceInfo]:
-        """List all non-archived sources.
-
-        Args:
-            status_filter: Optional filter by status.
-
-        Returns:
-            List of source info objects.
-        """
+        """List all non-archived sources."""
         query = select(Source).where(Source.archived_at.is_(None))
         if status_filter:
             query = query.where(Source.status == status_filter)
@@ -362,23 +266,17 @@ class SourceManager:
                 name=s.name,
                 source_type=s.source_type,
                 status=s.status or "unknown",
-                path=s.connection_config.get("path") if s.connection_config else None,
+                path=(s.connection_config or {}).get("path")
+                or (s.connection_config or {}).get("recipe_path"),
                 backend=s.backend,
                 discovered_schema=s.discovered_schema,
+                recipe_tables=_recipe_table_names(s),
             )
             for s in sources
         ]
 
     def remove_source(self, name: str, purge: bool = False) -> Result[str]:
-        """Soft-delete a source by setting archived_at.
-
-        Args:
-            name: Source name to archive.
-            purge: If True, hard-delete the source record.
-
-        Returns:
-            Result with confirmation message.
-        """
+        """Soft-delete a source by setting archived_at."""
         source = self._get_source(name)
         if source is None:
             return Result.fail(f"Source '{name}' not found.")
@@ -391,17 +289,36 @@ class SourceManager:
         self._session.flush()
 
         cred_hint = ""
-        if source.credential_ref:
+        if source.source_type == "db_recipe":
             cred_hint = (
-                f" You may also want to remove the '{source.credential_ref}' entry "
-                f"from {self._credential_chain.credentials_file}."
+                f" Credentials in DATARAUM_{name.upper()}_URL (env or "
+                f"{self._credential_chain.credentials_file}) are not removed by this call."
             )
 
         return Result.ok(f"Source '{name}' {'deleted' if purge else 'archived'}.{cred_hint}")
 
+    def _validate_new_name(self, name: str) -> Result[SourceInfo] | None:
+        """Return a failure Result if the name is invalid or already used; else None."""
+        if not _NAME_PATTERN.match(name):
+            return Result.fail(
+                f"Invalid source name '{name}'. Must match: lowercase, start with letter, "
+                "2-49 chars, only a-z/0-9/_."
+            )
+        if self._get_source(name) is not None:
+            return Result.fail(f"Source '{name}' already exists.")
+        return None
+
     def _get_source(self, name: str) -> Source | None:
         """Look up a source by name (including archived)."""
         return self._session.execute(select(Source).where(Source.name == name)).scalar_one_or_none()
+
+
+def _recipe_table_names(source: Source) -> list[str]:
+    """Extract recipe table names from a Source's connection_config."""
+    if source.source_type != "db_recipe":
+        return []
+    cfg = source.connection_config or {}
+    return [t["name"] for t in cfg.get("tables", []) if isinstance(t, dict) and "name" in t]
 
 
 def _read_file_preview(conn: duckdb.DuckDBPyConnection, path: Path) -> tuple[list[str], int | None]:
@@ -428,12 +345,12 @@ def _read_file_preview(conn: duckdb.DuckDBPyConnection, path: Path) -> tuple[lis
         except Exception:
             return columns, None
 
-    elif suffix == ".parquet":
+    if suffix == ".parquet":
         result = conn.execute(f"SELECT * FROM read_parquet('{safe}') LIMIT 0")
         columns = [desc[0] for desc in result.description]
         return columns, None
 
-    elif suffix in (".json", ".jsonl"):
+    if suffix in (".json", ".jsonl"):
         result = conn.execute(f"SELECT * FROM read_json_auto('{safe}') LIMIT 0")
         columns = [desc[0] for desc in result.description]
         try:
@@ -443,20 +360,3 @@ def _read_file_preview(conn: duckdb.DuckDBPyConnection, path: Path) -> tuple[lis
             return columns, None
 
     return [], None
-
-
-def _tables_to_schema_dict(
-    included: list[TablePreview], all_tables: list[TablePreview]
-) -> dict[str, Any]:
-    """Build a schema dict from table previews."""
-    return {
-        "tables": [
-            {
-                "name": t.name,
-                "columns": t.columns,
-                "row_count_estimate": t.row_count_estimate,
-            }
-            for t in included
-        ],
-        "tables_excluded": len(all_tables) - len(included),
-    }

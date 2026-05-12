@@ -133,21 +133,60 @@ class PipelineTestHarness:
     ) -> PhaseResult:
         """Convenience method to run the import phase.
 
+        Pre-seeds a Source row (mimicking what ``begin_session`` /
+        ``setup_pipeline`` write) and populates ``ctx.config`` with the
+        single-source identity keys the import phase requires.
+
         Args:
-            source_path: Path to CSV file or directory
-            source_name: Optional name for the source
-            junk_columns: Columns to drop after import
+            source_path: Path to CSV file, directory, or recipe yaml.
+            source_name: Optional name for the source (derived from path stem if omitted).
+            junk_columns: Columns to drop after import.
 
         Returns:
-            PhaseResult from import phase
+            PhaseResult from import phase.
         """
-        config = {
-            "source_path": str(source_path),
+        import re
+
+        from dataraum.storage import Source
+
+        path = Path(source_path)
+        raw_name = source_name or path.stem.lower()
+        clean_name = re.sub(r"[^a-z0-9_]", "_", raw_name).strip("_") or "source"
+        # Infer source_type from the path's extension (CSV-default for unknowns / dirs).
+        suffix = path.suffix.lower()
+        if suffix in {".parquet", ".pq"}:
+            source_type = "parquet"
+        elif suffix in {".json", ".jsonl"}:
+            source_type = "json"
+        elif suffix in {".yaml", ".yml"}:
+            source_type = "db_recipe"
+        else:
+            source_type = "csv"
+
+        # Seed the Source row idempotently — the test harness shares one session
+        # across phases, so multiple run_import calls with the same source must
+        # not collide.
+        with self.session_factory() as session:
+            existing = session.get(Source, self.source_id)
+            if existing is None:
+                session.add(
+                    Source(
+                        source_id=self.source_id,
+                        name=clean_name,
+                        source_type=source_type,
+                        connection_config={"path": str(path)},
+                        status="configured",
+                    )
+                )
+                session.commit()
+
+        config: dict[str, Any] = {
+            "source_name": clean_name,
+            "source_type": source_type,
+            "source_connection_config": {"path": str(path)},
+            "source_path": str(path),
             "junk_columns": junk_columns or [],
         }
-        if source_name:
-            config["source_name"] = source_name
-
         return self.run_phase("import", config=config)
 
     def get_duckdb_tables(self) -> list[str]:

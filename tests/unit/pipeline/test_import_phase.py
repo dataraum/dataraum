@@ -1,10 +1,15 @@
-"""Tests for the import phase and per-source fingerprint.
+"""Unit tests for the import phase and per-source fingerprint.
 
-Phase 2 of DAT-290 collapsed multi-source semantics into single-source-per-
-session. This file still carries TestColumnLimit + TestLoadRegisteredSources
-from before; Phase 3 will rewrite or delete them when the import phase is
-itself rewritten. The fingerprint tests below cover the new
-``_compute_source_fingerprint`` (per single source).
+DAT-290 collapsed multi-source semantics into single-source-per-session.
+This module covers:
+
+- TestColumnLimit: enforcement of the max-columns guard (orthogonal to
+  source model).
+- TestSourceFingerprint: ``_compute_source_fingerprint`` for a single
+  source — the same hash used by ``begin_session`` to key the per-source
+  session directory and by ``setup_pipeline`` to stamp the PipelineRun.
+- TestImportDispatch: ``_run`` dispatches on the bound source's type
+  without orchestrating across multiple sources.
 """
 
 from __future__ import annotations
@@ -12,7 +17,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from dataraum.pipeline.base import PhaseContext, PhaseResult, PhaseStatus
+from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.import_phase import ImportPhase
 from dataraum.pipeline.setup import _compute_source_fingerprint
 
@@ -86,7 +91,7 @@ class TestColumnLimit:
         assert result is None
 
     def test_run_fails_when_no_source(self):
-        """_run fails when neither source_path nor registered_sources provided."""
+        """_run fails when ctx.config is missing source_name / source_type."""
         phase = ImportPhase()
         ctx = PhaseContext(
             session=MagicMock(),
@@ -98,7 +103,8 @@ class TestColumnLimit:
         result = phase._run(ctx)
 
         assert result.status == PhaseStatus.FAILED
-        assert "No source_path or registered_sources" in (result.error or "")
+        assert "source_name" in (result.error or "")
+        assert "source_type" in (result.error or "")
 
 
 class TestSourceFingerprint:
@@ -140,66 +146,77 @@ class TestSourceFingerprint:
         assert len(fp) == 16
 
 
-class TestLoadRegisteredSources:
-    """Tests for multi-source dispatch logic in _run."""
+class TestImportDispatch:
+    """Tests for ``_run``'s dispatch on single-source configuration.
 
-    def test_delegates_to_load_from_path_when_source_path(self):
-        """When source_path is in config, uses legacy path."""
-        phase = ImportPhase()
+    Per DAT-290 the import phase consumes a single source's identity from
+    ``ctx.config``. The orchestration over multiple registered sources is
+    gone — see git log for the old ``_load_registered_sources`` tests.
+    """
 
-        ctx = PhaseContext(
+    def _ctx(self, config: dict[str, Any]) -> PhaseContext:
+        return PhaseContext(
             session=MagicMock(),
             duckdb_conn=MagicMock(),
             source_id="test-source",
-            config={"source_path": "/nonexistent/path.csv"},
+            config=config,
         )
 
-        result = phase._run(ctx)
-
-        assert result.status == PhaseStatus.FAILED
-        assert "Source path not found" in (result.error or "")
-
-    def test_prefers_registered_sources_when_no_path(self):
-        """When source_path missing but registered_sources present, uses multi-source."""
+    def test_run_fails_when_source_row_missing(self) -> None:
+        """_run reports a missing Source row clearly rather than crashing."""
         phase = ImportPhase()
-
-        # Mock _load_registered_sources to avoid SQLAlchemy mapper issues
-        mock_result = PhaseResult.failed("No tables were loaded from any registered source")
-        with patch.object(phase, "_load_registered_sources", return_value=mock_result):
-            ctx = PhaseContext(
-                session=MagicMock(),
-                duckdb_conn=MagicMock(),
-                source_id="test-source",
-                config={
-                    "registered_sources": [
-                        {"name": "weird", "source_type": "unknown"},
-                    ],
-                },
-            )
-
-            result = phase._run(ctx)
-
-        assert result.status == PhaseStatus.FAILED
-        assert "No tables were loaded" in (result.error or "")
-
-    def test_source_path_takes_precedence(self):
-        """When both source_path and registered_sources, source_path wins."""
-        phase = ImportPhase()
-
+        # session.get(Source, ...) returns None — simulate by configuring the mock
+        session = MagicMock()
+        session.get.return_value = None
         ctx = PhaseContext(
-            session=MagicMock(),
+            session=session,
             duckdb_conn=MagicMock(),
             source_id="test-source",
             config={
-                "source_path": "/nonexistent/path.csv",
-                "registered_sources": [
-                    {"name": "a", "source_type": "csv", "path": "/a.csv"},
-                ],
+                "source_name": "missing",
+                "source_type": "csv",
+                "source_connection_config": {"path": "/whatever.csv"},
             },
         )
-
         result = phase._run(ctx)
-
-        # Should use legacy path (source_path) and fail on missing file
         assert result.status == PhaseStatus.FAILED
-        assert "Source path not found" in (result.error or "")
+        assert "not found in the session DB" in (result.error or "")
+
+    def test_run_fails_when_file_path_missing_from_config(self) -> None:
+        """File-source dispatch needs a path in source_connection_config (or source_path)."""
+        phase = ImportPhase()
+        session = MagicMock()
+        session.get.return_value = MagicMock()  # any non-None
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=MagicMock(),
+            source_id="test-source",
+            config={
+                "source_name": "noplace",
+                "source_type": "csv",
+                "source_connection_config": {},
+            },
+        )
+        result = phase._run(ctx)
+        assert result.status == PhaseStatus.FAILED
+        assert "no path" in (result.error or "").lower()
+
+    def test_run_fails_for_db_recipe_without_backend(self) -> None:
+        """db_recipe sources must declare a backend."""
+        phase = ImportPhase()
+        session = MagicMock()
+        session.get.return_value = MagicMock()
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=MagicMock(),
+            source_id="test-source",
+            config={
+                "source_name": "broken_recipe",
+                "source_type": "db_recipe",
+                "source_connection_config": {"tables": [{"name": "t", "sql": "SELECT 1"}]},
+                "source_backend": None,
+            },
+        )
+        result = phase._run(ctx)
+        assert result.status == PhaseStatus.FAILED
+        assert "backend" in (result.error or "").lower()

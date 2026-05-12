@@ -1,9 +1,15 @@
-"""Tests for import phase."""
+"""Tests for import phase.
+
+Per DAT-290, the import phase runs against a single source whose Source
+row is already in the session DB. These tests pre-create the Source row
+and populate ``ctx.config`` with the keys that ``setup_pipeline`` would
+otherwise supply.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import pytest
@@ -16,6 +22,53 @@ from dataraum.storage import Column, Source, Table
 
 if TYPE_CHECKING:
     import duckdb
+
+
+def _seed_source(
+    session: Session,
+    source_id: str,
+    name: str,
+    path: Path,
+    source_type: str = "csv",
+) -> None:
+    """Insert a Source row mimicking what begin_session / setup_pipeline writes."""
+    session.add(
+        Source(
+            source_id=source_id,
+            name=name,
+            source_type=source_type,
+            connection_config={"path": str(path)},
+            status="configured",
+        )
+    )
+    session.flush()
+
+
+def _file_ctx(
+    session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    source_id: str,
+    name: str,
+    path: Path,
+    source_type: str = "csv",
+    extra: dict[str, Any] | None = None,
+) -> PhaseContext:
+    """Build a PhaseContext for a file-source pipeline run (Source row pre-seeded)."""
+    _seed_source(session, source_id, name, path, source_type)
+    config: dict[str, Any] = {
+        "source_name": name,
+        "source_type": source_type,
+        "source_connection_config": {"path": str(path)},
+        "source_path": str(path),
+    }
+    if extra:
+        config.update(extra)
+    return PhaseContext(
+        session=session,
+        duckdb_conn=duckdb_conn,
+        source_id=source_id,
+        config=config,
+    )
 
 
 @pytest.fixture
@@ -59,13 +112,7 @@ class TestImportPhase:
         """Test importing a single CSV file."""
         phase = ImportPhase()
         source_id = str(uuid4())
-
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=duckdb_conn,
-            source_id=source_id,
-            config={"source_path": str(csv_file)},
-        )
+        ctx = _file_ctx(session, duckdb_conn, source_id, "test_data", csv_file)
 
         result = phase.run(ctx)
 
@@ -75,7 +122,7 @@ class TestImportPhase:
         assert result.records_processed == 3  # 3 rows
         assert result.records_created == 1  # 1 table
 
-        # Verify Source was created
+        # Source row was pre-seeded by the helper
         source = session.get(Source, source_id)
         assert source is not None
         assert source.source_type == "csv"
@@ -105,13 +152,7 @@ class TestImportPhase:
         """Test importing multiple CSV files from a directory."""
         phase = ImportPhase()
         source_id = str(uuid4())
-
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=duckdb_conn,
-            source_id=source_id,
-            config={"source_path": str(csv_directory)},
-        )
+        ctx = _file_ctx(session, duckdb_conn, source_id, "test_dir", csv_directory)
 
         result = phase.run(ctx)
 
@@ -126,10 +167,9 @@ class TestImportPhase:
         tables = result_tables.scalars().all()
         assert len(tables) == 2
 
-    def test_import_missing_path(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection):
-        """Test error when source_path is not provided."""
+    def test_import_missing_config(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection):
+        """Empty config: import phase reports the missing identity fields."""
         phase = ImportPhase()
-
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
@@ -140,19 +180,28 @@ class TestImportPhase:
         result = phase.run(ctx)
 
         assert result.status == PhaseStatus.FAILED
-        assert "source_path" in (result.error or "").lower()
+        err = (result.error or "").lower()
+        assert "source_name" in err
+        assert "source_type" in err
 
     def test_import_nonexistent_path(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
     ):
-        """Test error when path doesn't exist."""
+        """Test error when path doesn't exist (Source row exists, file does not)."""
         phase = ImportPhase()
-
+        source_id = str(uuid4())
+        ghost_path = Path("/nonexistent/path.csv")
+        _seed_source(session, source_id, "ghost", ghost_path)
         ctx = PhaseContext(
             session=session,
             duckdb_conn=duckdb_conn,
-            source_id=str(uuid4()),
-            config={"source_path": "/nonexistent/path.csv"},
+            source_id=source_id,
+            config={
+                "source_name": "ghost",
+                "source_type": "csv",
+                "source_connection_config": {"path": str(ghost_path)},
+                "source_path": str(ghost_path),
+            },
         )
 
         result = phase.run(ctx)
@@ -250,15 +299,13 @@ class TestImportPhase:
 
         phase = ImportPhase()
         source_id = str(uuid4())
-
-        ctx = PhaseContext(
-            session=session,
-            duckdb_conn=duckdb_conn,
-            source_id=source_id,
-            config={
-                "source_path": str(csv_path),
-                "junk_columns": ["Unnamed: 0"],
-            },
+        ctx = _file_ctx(
+            session,
+            duckdb_conn,
+            source_id,
+            "with_junk",
+            csv_path,
+            extra={"junk_columns": ["Unnamed: 0"]},
         )
 
         result = phase.run(ctx)

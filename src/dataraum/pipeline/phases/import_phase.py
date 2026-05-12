@@ -1,9 +1,16 @@
-"""Import phase - loads data from sources into raw tables.
+"""Import phase - loads data for the session's bound source into raw tables.
 
 This is the first phase in the pipeline. It:
-1. Creates or retrieves the Source record
-2. Loads data into DuckDB as raw tables (VARCHAR for CSV, native types for Parquet)
-3. Creates Table and Column records in SQLAlchemy
+
+1. Resolves the Source row already written by ``begin_session`` (MCP) or
+   ``setup_pipeline._resolve_source_spec`` (CLI).
+2. Dispatches by ``source_type``: db_recipe → extract_backend; otherwise →
+   file loader (CSV/Parquet/JSON, or a directory of those).
+3. Creates raw Table + Column records, table names prefixed with
+   ``{source_name}__`` to keep them recognizable in DuckDB.
+
+Per DAT-290 there is exactly one source per pipeline run — no multi-source
+fan-out, no synthetic ``multi_source`` row.
 """
 
 from __future__ import annotations
@@ -32,16 +39,18 @@ _JSON_EXTENSIONS = {".json", ".jsonl"}
 
 @analysis_phase
 class ImportPhase(BasePhase):
-    """Import phase - loads raw data from sources.
+    """Import phase — loads raw data for the bound source.
 
-    Configuration (in ctx.config):
-        source_path: Path to CSV file or directory
-        source_name: Name for the source (optional, defaults to path stem)
-        file_pattern: Glob pattern for directory loading (default: "*.csv")
-        junk_columns: List of column names to drop after loading
+    Configuration (in ctx.config, populated by ``setup_pipeline``):
+        source_name: Registered source name.
+        source_type: csv, parquet, json, file, or db_recipe.
+        source_connection_config: dict — file path, or recipe queries+backend.
+        source_backend: For db_recipe sources only (mssql today).
+        source_path: Optional CLI hint (the path the user typed).
+        junk_columns: List of column names to drop after loading.
 
     Outputs:
-        raw_tables: List of table_ids for the loaded raw tables
+        raw_tables: List of table_ids for the loaded raw tables.
     """
 
     @property
@@ -68,25 +77,58 @@ class ImportPhase(BasePhase):
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Load data from source.
+        """Load data for the single source bound to this pipeline run.
 
-        Args:
-            ctx: Phase context with config containing source_path
+        ``setup_pipeline`` populates ``ctx.config`` with the registered
+        source's identity and connection config. The Source row already
+        exists in the session DB (written by ``begin_session`` in MCP mode,
+        or by ``setup_pipeline._resolve_source_spec`` in CLI mode). This
+        phase just materializes raw tables and Column records.
 
-        Returns:
-            PhaseResult with raw_tables output
+        Per DAT-290, there is exactly one source — no fan-out, no synthetic
+        multi_source row, no swallowing of per-source failures.
         """
-        source_path = ctx.config.get("source_path")
-        registered_sources = ctx.config.get("registered_sources")
+        config = ctx.config
+        source_name = config.get("source_name")
+        source_type = config.get("source_type")
+        source_connection_config = config.get("source_connection_config") or {}
+        source_backend = config.get("source_backend")
+        explicit_path = config.get("source_path")  # set in CLI mode only
 
-        if not source_path and not registered_sources:
-            return PhaseResult.failed("No source_path or registered_sources provided in config")
+        if not source_name or not source_type:
+            return PhaseResult.failed(
+                "Pipeline config is missing source_name or source_type. "
+                "setup_pipeline must populate them from the registered Source row."
+            )
 
-        if registered_sources and not source_path:
-            result = self._load_registered_sources(ctx, registered_sources)
+        source = ctx.session.get(Source, ctx.source_id)
+        if source is None:
+            return PhaseResult.failed(
+                f"Source row {ctx.source_id} ('{source_name}') not found in the "
+                "session DB. begin_session or setup_pipeline was expected to "
+                "create it before import runs."
+            )
+
+        # Dispatch by source_type.
+        if source_type == "db_recipe":
+            if not source_backend:
+                return PhaseResult.failed(
+                    f"db_recipe source '{source_name}' is missing a backend declaration."
+                )
+            result = self._load_database_source(
+                ctx, source, source_name, source_connection_config, source_backend
+            )
         else:
-            assert isinstance(source_path, str)
-            result = self._load_from_path(ctx, source_path)
+            path_str = explicit_path or source_connection_config.get("path")
+            if not path_str:
+                return PhaseResult.failed(
+                    f"Source '{source_name}' (type={source_type}) has no path "
+                    "in its connection_config."
+                )
+            path = Path(path_str)
+            if not path.exists():
+                return PhaseResult.failed(f"Source path not found: {path}")
+            result = self._load_file_source(ctx, source, source_name, path, source_type)
 
         if result.status != PhaseStatus.COMPLETED:
             return result
@@ -97,82 +139,6 @@ class ImportPhase(BasePhase):
             return PhaseResult.failed(limit_error)
 
         return result
-
-    def _load_from_path(self, ctx: PhaseContext, source_path: str) -> PhaseResult:
-        """Load data from a file path (single-source mode).
-
-        Delegates to _load_file_source which handles all formats,
-        file caps, and mixed directories. Tables are prefixed with
-        source_name__ (consistent with multi-source mode).
-        """
-        path = Path(source_path)
-        if not path.exists():
-            return PhaseResult.failed(f"Source path not found: {path}")
-
-        import re
-
-        raw_name = ctx.config.get("source_name", path.stem.lower())
-        source_name = re.sub(r"[^a-z0-9_]", "_", raw_name).strip("_")
-        source = self._get_or_create_source(ctx, source_name, path)
-        source_type = self._detect_source_type(path, ctx.config)
-
-        return self._load_file_source(ctx, source, source_name, path, source_type)
-
-    def _detect_source_type(self, path: Path, config: dict[str, Any]) -> str:
-        """Detect source type from file extension or directory contents.
-
-        Args:
-            path: Path to file or directory
-            config: Phase configuration
-
-        Returns:
-            Source type string: "csv" or "parquet"
-        """
-        if path.is_file():
-            if path.suffix.lower() in _PARQUET_EXTENSIONS:
-                return "parquet"
-            if path.suffix.lower() in _JSON_EXTENSIONS:
-                return "json"
-            return "csv"
-
-        # Directory: check file_pattern config, then scan for files
-        file_pattern = config.get("file_pattern", "")
-        if "parquet" in file_pattern or ".pq" in file_pattern:
-            return "parquet"
-        if "json" in file_pattern:
-            return "json"
-
-        # Check what files exist in the directory
-        parquet_files = list(path.glob("*.parquet")) + list(path.glob("*.pq"))
-        json_files = list(path.glob("*.json")) + list(path.glob("*.jsonl"))
-        csv_files = list(path.glob("*.csv"))
-
-        if parquet_files and not csv_files and not json_files:
-            return "parquet"
-        if json_files and not csv_files and not parquet_files:
-            return "json"
-
-        return "csv"
-
-    def _get_or_create_source(self, ctx: PhaseContext, source_name: str, path: Path) -> Source:
-        """Get existing source or create a new one."""
-        # Check for existing source with this ID
-        source = ctx.session.get(Source, ctx.source_id)
-
-        if source is None:
-            source_type = self._detect_source_type(path, ctx.config)
-            if path.is_dir():
-                source_type = f"{source_type}_directory"
-
-            source = Source(
-                source_id=ctx.source_id,
-                name=source_name,
-                source_type=source_type,
-                connection_config={"path": str(path)},
-            )
-            ctx.session.add(source)
-
-        return source
 
     def _check_column_limit(self, ctx: PhaseContext) -> str | None:
         """Check if total column count exceeds the configured limit.
@@ -195,70 +161,6 @@ class ImportPhase(BasePhase):
                 f"Reduce tables or increase limits.max_columns in pipeline.yaml."
             )
         return None
-
-    def _load_registered_sources(
-        self,
-        ctx: PhaseContext,
-        registered_sources: list[dict[str, Any]],
-    ) -> PhaseResult:
-        """Load tables from all registered sources.
-
-        Each source's tables are prefixed with the source name to avoid collisions:
-        {source_name}__{table_name}.
-
-        Args:
-            ctx: Phase context
-            registered_sources: List of source dicts with name, source_type, path, backend
-
-        Returns:
-            PhaseResult with all loaded table IDs
-        """
-        warnings: list[str] = []
-        table_ids: list[str] = []
-        total_rows = 0
-
-        # Get or create the pipeline source record
-        source = ctx.session.get(Source, ctx.source_id)
-        if source is None:
-            source = Source(
-                source_id=ctx.source_id,
-                name="multi_source",
-                source_type="multi_source",
-                connection_config={"sources": [s["name"] for s in registered_sources]},
-            )
-            ctx.session.add(source)
-
-        for src in registered_sources:
-            src_name = src["name"]
-            src_type = src["source_type"]
-            src_path = src.get("path")
-
-            if src_type in ("csv", "parquet", "json", "file") and src_path:
-                result = self._load_file_source(ctx, source, src_name, Path(src_path), src_type)
-            elif src.get("backend"):
-                result = self._load_database_source(ctx, source, src_name, src)
-            else:
-                warnings.append(f"Skipping source '{src_name}': unsupported type '{src_type}'")
-                continue
-
-            if result.status != PhaseStatus.COMPLETED:
-                warnings.append(f"Failed to load source '{src_name}': {result.error}")
-                continue
-
-            if result.outputs:
-                table_ids.extend(result.outputs.get("raw_tables", []))
-            total_rows += result.records_processed
-
-        if not table_ids:
-            return PhaseResult.failed("No tables were loaded from any registered source")
-
-        return PhaseResult.success(
-            outputs={"raw_tables": table_ids},
-            records_processed=total_rows,
-            records_created=len(table_ids),
-            warnings=warnings,
-            summary=f"{len(table_ids)} tables, {total_rows:,} rows",
-        )
 
     def _load_file_source(
         self,
@@ -440,14 +342,15 @@ class ImportPhase(BasePhase):
         ctx: PhaseContext,
         source: Source,
         source_name: str,
-        src: dict[str, Any],
+        connection_config: dict[str, Any],
+        backend: str,
     ) -> PhaseResult:
         """Materialize a recipe-driven database source.
 
-        Resolves credentials via `CredentialChain` keyed by source name
-        (`DATARAUM_{NAME}_URL`), then delegates to `extract_backend` to
-        ATTACH READ_ONLY and run each named SELECT into raw_{name}.
-        Per DAT-274: any failure surfaces as PhaseResult.failed with
+        Resolves credentials via ``CredentialChain`` keyed by source name
+        (``DATARAUM_{NAME}_URL``), then delegates to ``extract_backend`` to
+        ATTACH READ_ONLY and run each named SELECT into ``raw_{name}``.
+        Per DAT-274: any failure surfaces as ``PhaseResult.failed`` with
         the offending step quoted.
         """
         from uuid import uuid4
@@ -456,13 +359,7 @@ class ImportPhase(BasePhase):
         from dataraum.sources.backends import extract_backend
         from dataraum.sources.db_recipe import RecipeTable
 
-        backend = src.get("backend")
-        if not backend:
-            return PhaseResult.failed(
-                f"Database source '{source_name}' is missing a backend declaration."
-            )
-
-        raw_queries = src.get("tables") or []
+        raw_queries = connection_config.get("tables") or []
         if not raw_queries:
             return PhaseResult.failed(
                 f"Database source '{source_name}' has no recipe queries to materialize."

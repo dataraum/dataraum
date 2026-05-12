@@ -160,7 +160,7 @@ Then:
 ```python
 # Via MCP tool from Claude — bare name resolves against the recipes home
 add_source(path="aw", name="aw")
-begin_session(...)
+begin_session(source="aw", intent="...")  # session is bound to this one source
 measure  # runs the pipeline — extracts via the recipe and analyzes
 ```
 

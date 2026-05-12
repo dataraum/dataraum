@@ -12,7 +12,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           CONSUMERS                                         │
 │                                                                             │
-│   Claude Code ──── MCP Server (10 tools)                                    │
+│   Claude Code ──── MCP Server (12 tools)                                    │
 │   Claude Desktop ─┘                       Session + Operation Model         │
 │   Python ──────── Context API                                               │
 │   Terminal ────── CLI (run + dev)                                            │
@@ -98,7 +98,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 
 | Layer | Technology | Purpose |
 |-------|------------|---------|
-| **AI Interface** | MCP Server | 10 tools for AI agents (Claude Code, Claude Desktop) |
+| **AI Interface** | MCP Server | 12 tools for AI agents (Claude Code, Claude Desktop) |
 | **CLI** | Typer + Rich | `run` command + `dev` subgroup for terminal use |
 | **Python API** | `Context` class | Programmatic access for notebooks and scripts |
 | **Pipeline** | ThreadPoolExecutor | Parallel phase execution (free-threaded Python 3.14) |
@@ -122,7 +122,7 @@ AI doesn't discover metadata at runtime via tools. It receives a pre-assembled c
 
 ### Session-Based Tool Surface
 
-10 MCP tools organized around investigation sessions: `add_source` → `begin_session` → `look` / `measure` / `why` / `teach` / `query` / `run_sql` / `search_snippets` → `end_session`. Sources are registered first, then the session seals them. The session carries the contract (entropy threshold profile) so the agent doesn't need to pass it on every call.
+12 MCP tools organized around investigation sessions: `add_source` / `list_sources` → `begin_session` (or `resume_session`) → `look` / `measure` / `why` / `teach` / `query` / `run_sql` / `search_snippets` → `end_session`. Sources are registered into a workspace registry; each session binds to exactly one named source and seals it for the session's lifetime. The session carries the contract (entropy threshold profile) so the agent doesn't need to pass it on every call.
 
 ### The Understanding Layer (Operation Model)
 
@@ -212,7 +212,7 @@ src/dataraum/
 │   ├── main.py            # CLI entry point
 │   └── commands/          # run, dev (subgroup)
 └── mcp/                   # MCP server
-    ├── server.py          # 10 tool definitions + session instructions
+    ├── server.py          # 12 tool definitions + session instructions
     ├── teach.py           # teach dispatch (9 types) + YAML overlay writer
     ├── formatters.py      # LLM-optimized markdown output
     ├── sections.py        # Response section builders
@@ -245,14 +245,16 @@ Entropy detectors run as post-steps after each phase, building up scores increme
 
 ## Interfaces
 
-### MCP Server (10 tools)
+### MCP Server (12 tools)
 
 Primary interface for AI agents. Tools return markdown formatted for LLM consumption. The server emits session instructions on connect describing when to use each tool.
 
 | Tool | Purpose |
 |------|---------|
-| `begin_session` | Start an investigation session with a contract; triggers pipeline on first run |
-| `add_source` | Register a data source |
+| `add_source` | Register a data source (file, directory, or MSSQL recipe yaml) |
+| `list_sources` | List sources registered in the workspace |
+| `begin_session` | Start an investigation session bound to one registered source; triggers pipeline on first measure |
+| `resume_session` | List archived sessions; restore one and make it active again |
 | `look` | Explore schema, relationships, semantic metadata, readiness |
 | `measure` | Entropy scores + readiness; reruns a target phase on demand |
 | `why` | Evidence synthesis — explains elevated entropy, proposes teaches |

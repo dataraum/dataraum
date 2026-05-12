@@ -192,13 +192,14 @@ See the plugin repo's README for installation and configuration instructions. Th
 
 ## Available Tools
 
-11 tools organized around a session-based investigation workflow. The server also emits **session instructions** on connect — the host client shows them to the agent as guidance for when to use each tool.
+12 tools organized around a session-based investigation workflow. The server also emits **session instructions** on connect — the host client shows them to the agent as guidance for when to use each tool.
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `add_source` | `name`, `path` | Register a data source (CSV, Parquet, JSON, recipe yaml, or directory). Errors on duplicate name. |
 | `list_sources` | — | List sources registered in the workspace (name, type, status, path/backend, recipe tables). |
 | `begin_session` | `source`, `intent`, `contract?` | Start an investigation session bound to one registered source. Triggers the pipeline on first `measure`; resumes if data exists. |
+| `resume_session` | `session_id?`, `intent?` | List archived sessions (no args) or restore one by id. Pipeline data, snippets, and teach overlays are preserved. |
 | `look` | `target?`, `sample?` | Explore structure, relationships, semantic metadata, and readiness. Target: omit for dataset, `table`, or `table.col`. |
 | `measure` | `target?`, `target_phase?` | Entropy scores + readiness. Also polls/triggers pipeline; `target_phase` reruns a specific phase. |
 | `why` | `target` | Evidence-synthesis agent — explains elevated entropy and proposes `teach` actions. |

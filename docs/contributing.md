@@ -175,7 +175,7 @@ src/dataraum/
 ├── llm/               # LLM provider abstraction
 ├── core/              # Config, connections, utilities
 ├── cli/               # Typer CLI (run + dev)
-└── mcp/               # MCP server (10 tools)
+└── mcp/               # MCP server (12 tools)
 ```
 
 See [Architecture](architecture.md) for detailed module descriptions.

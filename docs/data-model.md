@@ -44,16 +44,16 @@ These three tables form the foundation. Everything else references them.
 ```sql
 sources (
     source_id   VARCHAR PRIMARY KEY,
-    name        VARCHAR NOT NULL,      -- e.g. "zone1", "multi_source"
-    source_type VARCHAR NOT NULL,      -- "file", "multi_source"
-    status      VARCHAR,               -- "registered", "analyzed"
+    name        VARCHAR NOT NULL,      -- e.g. "accounting", "aw"
+    source_type VARCHAR NOT NULL,      -- "csv", "parquet", "json", "db_recipe"
+    status      VARCHAR,               -- "configured", "validated"
     archived_at DATETIME               -- soft delete
 );
 
 tables (
     table_id    VARCHAR PRIMARY KEY,
-    source_id   VARCHAR NOT NULL,      -- FK → sources
-    table_name  VARCHAR NOT NULL,      -- e.g. "zone1__invoices"
+    source_id   VARCHAR NOT NULL,      -- FK → sources (the actual source, not a synthetic one)
+    table_name  VARCHAR NOT NULL,      -- e.g. "accounting__invoices"
     layer       VARCHAR NOT NULL,      -- "raw", "typed", "quarantine"
     row_count   INTEGER,
     duckdb_path VARCHAR                -- path in DuckDB

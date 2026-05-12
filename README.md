@@ -45,8 +45,10 @@ The server runs an 18-phase analysis pipeline and makes these tools available:
 
 | Tool | Description |
 |------|-------------|
-| `begin_session` | Start an investigation session with a contract |
-| `add_source` | Register a data source (CSV, Parquet, JSON, or directory) |
+| `add_source` | Register a data source (CSV, Parquet, JSON, directory, or MSSQL recipe yaml) |
+| `list_sources` | List sources registered in the workspace |
+| `begin_session` | Start an investigation session bound to one registered source |
+| `resume_session` | List archived sessions; restore one and make it active again |
 | `look` | Explore data structure, relationships, and semantic metadata |
 | `measure` | Measure entropy scores, readiness, and data quality |
 | `why` | Explain elevated entropy and propose teach suggestions |
@@ -60,13 +62,17 @@ The server runs an 18-phase analysis pipeline and makes these tools available:
 
 ```
 add_source(name="accounting", path="/path/to/data")
-  → begin_session(intent="explore data quality", contract="exploratory_analysis")
+  → begin_session(source="accounting",
+                  intent="explore data quality",
+                  contract="exploratory_analysis")
   → look()                    # Understand the data
   → measure()                 # Check quality scores and readiness
   → query("total revenue?")   # Ask questions
   → run_sql(sql="...", export_format="csv", export_name="report")
   → end_session(outcome="delivered")
 ```
+
+Each session is bound to **one** registered source. Register multiple sources in the workspace and pick one by name at session start.
 
 ## Quick Start — CLI
 

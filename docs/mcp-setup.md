@@ -79,6 +79,51 @@ If you need to customize, edit `.mcp.json`:
 
 ---
 
+## HTTP Transport (remote, experimental)
+
+The default transport is **stdio** — the host launches `dataraum-mcp` as a subprocess and talks to it over its standard input and output. This is the right choice for everything documented above.
+
+If you need the server to run on a different machine — or in a long-running container that several invocations of the `claude` CLI can attach to — start it with the **streamable HTTP** transport. The server speaks the MCP wire protocol over a single `POST /mcp` endpoint and enforces a static `Authorization: Bearer <token>` on every request except `/health`.
+
+> **Experimental:** verified end-to-end against the `claude` CLI only. Claude Desktop and Claude.ai web are deferred until the control-plane / OAuth work lands; for now use stdio with those hosts.
+
+### Start the server
+
+```bash
+# Required: a strong random secret. The server refuses to start without it.
+export DATARAUM_MCP_TOKEN=$(uuidgen)
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+dataraum-mcp --transport http --host 127.0.0.1 --port 8765
+```
+
+Endpoints:
+
+| Path | Auth | Purpose |
+|------|------|---------|
+| `POST /mcp` | `Authorization: Bearer $DATARAUM_MCP_TOKEN` | MCP wire protocol (streamable HTTP) |
+| `GET /health` | none | Liveness probe — returns `{"status": "ok", "version": "..."}` |
+
+If `DATARAUM_MCP_TOKEN` is unset the process exits with code 2 and a clear stderr message. There is no "run without auth" mode.
+
+### Connect the `claude` CLI
+
+```bash
+claude mcp add --transport http dataraum http://127.0.0.1:8765/mcp \
+  --header "Authorization: Bearer $DATARAUM_MCP_TOKEN"
+
+claude
+# > /mcp        — should list the DataRaum tools
+```
+
+### Limitations (current)
+
+- **No TLS in-process.** The server binds plain HTTP. For anything beyond `127.0.0.1` terminate TLS at a reverse proxy (Caddy, nginx, Cloudflare Tunnel) and forward to the bind port. A bundled Caddy recipe ships in v0.2.3 alongside the container image.
+- **No automatic token rotation.** Stop the server, mint a fresh secret, restart, and update each `claude mcp add` entry.
+- **Single canonical URL.** The MCP endpoint is `/mcp` (no trailing slash). Clients that follow 307 redirects will tolerate `/mcp/`; some don't, so prefer the canonical form.
+
+---
+
 ## Docker
 
 Use the Docker image when you don't want to manage a Python installation. The MCP server uses stdio transport — Docker keeps stdin open with `-i`, which is all it needs.
@@ -260,6 +305,7 @@ See [Entropy](entropy.md) for details on each contract.
 |----------|----------|-------------|
 | `DATARAUM_HOME` | No | Root directory for workspaces (default: `~/.dataraum/`). |
 | `ANTHROPIC_API_KEY` | Yes | API key for LLM-powered analysis (semantic, quality rules, etc.) |
+| `DATARAUM_MCP_TOKEN` | HTTP only | Bearer secret required by `--transport http`. The server refuses to start if unset. |
 | `PYTHON_GIL` | Recommended | Set to `0` to enable free-threading for better performance (Python 3.14) |
 
 ---

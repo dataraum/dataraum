@@ -4,6 +4,19 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-13: DAT-273 — Post-DAT-266 audit (dead symbols + db column + re-exports)
+
+### dataraum-eval
+- **Changed**: `src/dataraum/graphs/{models.py, __init__.py, induction.py, agent.py}`, `src/dataraum/entropy/db_models.py`, `src/dataraum/query/__init__.py`, `tests/integration/graphs/test_agent.py`
+- **Affects**: nothing the eval harness consumes — pure code hygiene. No MCP tool, detector, pipeline phase, response shape, or behavior changes.
+- **Calibrate**: nothing.
+- **Notes**:
+  - `entropy_objects.expires_at` column deleted. SQLAlchemy `create_all` is idempotent; existing workspaces keep the orphan column harmlessly. No wipe needed.
+  - Deleted symbols (any eval-side reference would already be broken — none expected): `dataraum.graphs.StepValidation`, `dataraum.graphs.MetricScope`, `TransformationGraph.{scope, slice_dimension}`, `GeneratedCode.{graph_version, schema_mapping_id}`.
+  - `dataraum.query.QueryAgent` no longer re-exported at package level — import via `dataraum.query.agent.QueryAgent`. Same for `QueryAnalysisOutput`, `QueryExecutionRecord`, `SQLSnippetRecord`, `SnippetGraph`, `SnippetLibrary`, `SnippetMatch`, `SnippetUsageRecord` — use the deeper `dataraum.query.{models, db_models, snippet_library, snippet_models}` paths. `QueryResult` + `answer_question` remain available from `dataraum.query`.
+  - `induction.py` LLM tool schema no longer asks the model for a `validation` array — only affects metric induction prompt output.
+- **Status**: pending
+
 ## 2026-05-12: DAT-290 — Single source per session, multi_source pattern retired
 
 ### dataraum-eval

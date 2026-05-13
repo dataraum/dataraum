@@ -6,7 +6,6 @@ pipeline_testdata/
 examples/*
 !examples/*.ipynb
 prototypes/
-plans/
 data_sources/
 .mcpregistry_*
 

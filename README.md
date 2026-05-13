@@ -25,6 +25,8 @@ pip install dataraum
 uv pip install dataraum
 ```
 
+> **PyPI workaround.** The v0.2.x wheel doesn't currently ship the `config/` directory ([DAT-292](https://real-dataraum.atlassian.net/browse/DAT-292)). After `pip install`, also `export DATARAUM_CONFIG_PATH=/path/to/dataraum-checkout/config`, or run from source: `git clone https://github.com/dataraum/dataraum && cd dataraum && uv sync && uv run dataraum-mcp`.
+
 Add to your Claude Desktop config (`claude_desktop_config.json`):
 
 ```json

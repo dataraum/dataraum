@@ -1,0 +1,231 @@
+# Reference compose stack for the dataraum platform.
+#
+# Design-stage artifact. Image tags are placeholders; nothing here builds yet.
+# Shape mirrors the four Confluence design docs (Control Plane, Data Plane,
+# Observability, Web UI).
+#
+# Topology:
+#   caddy ── front door, TLS, routing
+#     ├─ frontend            (nginx + Vite build)
+#     └─ control-plane       (Python / Starlette / gRPC client)
+#          ├─ postgres       (metadata + audit events)
+#          └─ executor x N   (per-session DuckDB runtime; scaled pool)
+#                ↳ ducklake  (parquet + catalog, shared volume)
+#
+#   otel-collector ── receives OTLP from control-plane + executor
+#     └─ prometheus / tempo / loki ── local LGTM(P) stack
+#          └─ grafana ── single pane
+#
+# Scale executors: docker compose up --scale executor=10
+# Default sizing assumes a host with >= 64 GB RAM for 10 executors @ 4 GB.
+
+x-otel-env: &otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_TRACES_SAMPLER: parentbased_always_on
+  OTEL_LOGS_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: otlp
+
+services:
+
+  # --- Front door --------------------------------------------------------
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - frontend
+      - control-plane
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # --- Frontend ----------------------------------------------------------
+
+  frontend:
+    image: dataraum/frontend:latest   # placeholder: nginx + Vite SPA build
+    restart: unless-stopped
+    expose:
+      - "80"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.25'
+
+  # --- Control plane -----------------------------------------------------
+
+  control-plane:
+    image: dataraum/control-plane:latest   # placeholder
+    restart: unless-stopped
+    expose:
+      - "8000"   # HTTP (/api, /events, /mcp)
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: dataraum-control-plane
+      DATARAUM_METADATA_URL: postgresql+psycopg://dataraum:${POSTGRES_PASSWORD}@postgres:5432/dataraum
+      DATARAUM_EXECUTOR_DISCOVERY: dns://executor:50051
+      DATARAUM_MCP_TOKEN: ${DATARAUM_MCP_TOKEN}
+      DATARAUM_AUTH_PROVIDER: bearer   # v1 single-user (DAT-291)
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1'
+
+  # --- Executor pool -----------------------------------------------------
+  # Scale: `docker compose up --scale executor=10`
+  # Each replica registers with the control plane on startup.
+
+  executor:
+    image: dataraum/executor:latest   # placeholder
+    restart: unless-stopped
+    expose:
+      - "50051"  # gRPC
+      - "8080"   # health
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: dataraum-executor
+      DATARAUM_CONTROL_PLANE_URL: http://control-plane:8000
+      DATARAUM_DUCKLAKE_PATH: /ducklake
+    volumes:
+      - ducklake-data:/ducklake
+      - sources:/sources:ro
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2'
+        reservations:
+          memory: 2G
+          cpus: '1'
+
+  # --- Metadata store ----------------------------------------------------
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dataraum
+      POSTGRES_USER: dataraum
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dataraum"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2'
+
+  # --- Observability: OTel Collector + LGTM stack ------------------------
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    expose:
+      - "4317"   # OTLP gRPC
+      - "4318"   # OTLP HTTP
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    expose:
+      - "9090"
+
+  tempo:
+    image: grafana/tempo:latest
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    expose:
+      - "3200"
+
+  loki:
+    image: grafana/loki:latest
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./loki.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    expose:
+      - "3100"
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/all.yaml:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"   # exposed for dev; production: behind Caddy
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+
+# --- Volumes -------------------------------------------------------------
+
+volumes:
+  caddy-data:
+  caddy-config:
+  postgres-data:
+  ducklake-data:   # parquet + catalog files; later: object storage
+  sources:         # bind-mount in deployment overlay if reading host files
+  prom-data:
+  tempo-data:
+  loki-data:
+  grafana-data:
+
+# --- Networks ------------------------------------------------------------
+# Default network only. Caddy is the only externally reachable service.

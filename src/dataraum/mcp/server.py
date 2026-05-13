@@ -28,6 +28,7 @@ from mcp.server import Server
 from mcp.server.experimental.request_context import Experimental
 from mcp.server.experimental.task_context import ServerTaskContext
 from mcp.server.stdio import stdio_server
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import CallToolResult, CreateTaskResult, TextContent, Tool, ToolExecution
 
 from dataraum import __version__
@@ -3554,19 +3555,91 @@ async def run_server() -> None:
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
+class _StreamableHTTPASGIApp:
+    """ASGI wrapper around StreamableHTTPSessionManager.handle_request.
+
+    Route(path, endpoint=asgi_app) avoids the /mcp → /mcp/ 307 redirect that
+    Mount(path, ...) introduces — many MCP clients won't follow 307 on POST.
+    """
+
+    def __init__(self, session_manager: StreamableHTTPSessionManager) -> None:
+        self._sm = session_manager
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        await self._sm.handle_request(scope, receive, send)
+
+
+async def run_http_server(host: str, port: int) -> None:
+    """Run the MCP server over streamable HTTP transport.
+
+    DAT-291 Phase 2: transport only. Phase 3 adds bearer auth + /health.
+    Phase 4 adds Dockerfile + docs + Caddy recipe.
+    """
+    import contextlib
+    from collections.abc import AsyncIterator
+
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+
+    server = create_server()
+    session_manager = StreamableHTTPSessionManager(app=server)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_: Starlette) -> AsyncIterator[None]:
+        async with session_manager.run():
+            _log.info("MCP streamable-http listening on http://%s:%d/mcp", host, port)
+            yield
+
+    app = Starlette(
+        debug=False,
+        routes=[Route("/mcp", endpoint=_StreamableHTTPASGIApp(session_manager))],
+        lifespan=lifespan,
+    )
+    config = uvicorn.Config(app, host=host, port=port, log_level="info")
+    await uvicorn.Server(config).serve()
+
+
 def main() -> None:
     """Entry point for dataraum-mcp command."""
+    import argparse
     import asyncio
 
     from dataraum.core.logging import enable_file_logging
 
-    # MCP uses stdio for the protocol — stderr is invisible to the host.
-    # Enable file logging so structlog output and crash tracebacks are recoverable.
+    parser = argparse.ArgumentParser(
+        prog="dataraum-mcp",
+        description="DataRaum MCP server. Default transport is stdio.",
+    )
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "http"),
+        default="stdio",
+        help="Transport for the MCP protocol. Default: stdio.",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="HTTP bind host. Default: 127.0.0.1. (Ignored for stdio transport.)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="HTTP bind port. Default: 8765. (Ignored for stdio transport.)",
+    )
+    args = parser.parse_args()
+
+    # File logging captures structlog output and crash tracebacks even when
+    # stdio swallows stderr; harmless on HTTP transport.
     log_dir = _resolve_root_dir() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     enable_file_logging(log_dir / "mcp-server.log")
 
-    asyncio.run(run_server())
+    if args.transport == "stdio":
+        asyncio.run(run_server())
+    else:
+        asyncio.run(run_http_server(args.host, args.port))
 
 
 if __name__ == "__main__":

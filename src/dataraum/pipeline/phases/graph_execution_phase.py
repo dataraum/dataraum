@@ -7,10 +7,17 @@ agent. Results are stored as SQL snippets for reuse by query/search_snippets.
 Metrics with unresolvable direct field mappings are still attempted — the
 graph agent LLM infers from enriched views and dataset context.
 When no metric YAMLs exist, the phase completes with zero records.
+
+Per-metric LLM calls are independent — dispatched concurrently via
+asyncio.to_thread + gather when the phase context exposes a ConnectionManager
+(so we can give each parallel call its own SQLAlchemy session + DuckDB
+cursor). Falls back to a serial loop in unit tests where the manager isn't
+wired (shared session is fine without concurrency).
 """
 
 from __future__ import annotations
 
+import asyncio
 from types import ModuleType
 from typing import TYPE_CHECKING
 
@@ -24,8 +31,22 @@ from dataraum.storage import Table
 
 _log = get_logger(__name__)
 
+# Cap concurrent metric LLM calls. Sonnet 4.6 tier-3+ workspaces handle
+# 4000 RPM comfortably; 5 concurrent leaves headroom for other LLM phases.
+# Bump if profiling shows we're underutilizing capacity.
+_MAX_CONCURRENT_METRICS = 5
+
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
+
+    from dataraum.core.connections import ConnectionManager
+    from dataraum.core.models.base import Result
+    from dataraum.graphs.agent import ExecutionContext as _ExecutionContext
+    from dataraum.graphs.agent import GraphAgent
+    from dataraum.graphs.models import GraphExecution, TransformationGraph
+
+    MetricPrep = tuple[str, TransformationGraph, str | None, str | None]
+    MetricResult = tuple[str, Result[GraphExecution], str | None]
 
 
 @analysis_phase
@@ -179,25 +200,23 @@ class GraphExecutionPhase(BasePhase):
             prompt_renderer=renderer,
         )
 
-        # Execute metrics sequentially
-        executed = 0
-        failed = 0
-
         # Resolve inspiration snippets for promotion path
         from dataraum.query.snippet_library import SnippetLibrary
 
         snippet_library = SnippetLibrary(ctx.session)
 
+        # ---- Prep (sequential, cheap reads on main session) ----
+        # Build a list of (graph_id, graph, hint_sql, inspiration_id) tuples.
+        # Logs advisory warnings for missing direct mappings and resolves
+        # inspiration snippet SQL up front so the parallel calls don't need
+        # to touch the main session.
+        prep: list[MetricPrep] = []
         for graph_id, graph in metrics.items():
-            # Collect required standard_fields from extract steps
             required_fields = [
                 step.source.standard_field
                 for step in graph.steps.values()
                 if step.source and step.source.standard_field
             ]
-
-            # Advisory check — log missing direct mappings but let the LLM
-            # infer from enriched views and dataset context (as it did pre-DAT-183).
             if required_fields:
                 _, missing = can_execute_metric(field_mappings, required_fields)
                 if missing:
@@ -207,7 +226,6 @@ class GraphExecutionPhase(BasePhase):
                         missing=missing,
                     )
 
-            # Resolve inspiration snippet SQL for promotion path
             hint_sql: str | None = None
             inspiration_id = graph.metadata.inspiration_snippet_id
             if inspiration_id:
@@ -220,8 +238,18 @@ class GraphExecutionPhase(BasePhase):
                         snippet_id=inspiration_id,
                     )
 
-            # Execute — LLM will infer missing field mappings
-            result = agent.execute(ctx.session, graph, exec_ctx, inspiration_sql=hint_sql)
+            prep.append((graph_id, graph, hint_sql, inspiration_id))
+
+        # ---- Execute (parallel when manager wired, serial fallback otherwise) ----
+        if ctx.manager is not None:
+            results = _execute_metrics_parallel(prep, ctx.manager, agent, ctx.source_id, table_ids)
+        else:
+            results = _execute_metrics_serial(prep, ctx.session, exec_ctx, agent)
+
+        # ---- Post (sequential, snippet promotion on main session) ----
+        executed = 0
+        failed = 0
+        for graph_id, result, inspiration_id in results:
             if result.success:
                 executed += 1
                 _log.info("metric_executed", graph_id=graph_id)
@@ -270,3 +298,85 @@ class GraphExecutionPhase(BasePhase):
             records_created=executed,
             summary=summary,
         )
+
+
+# ---------------------------------------------------------------------------
+# Per-metric dispatch
+# ---------------------------------------------------------------------------
+
+
+def _execute_metrics_serial(
+    prep: list[MetricPrep],
+    session: Session,
+    exec_ctx: _ExecutionContext,
+    agent: GraphAgent,
+) -> list[MetricResult]:
+    """Fallback path: shared session + cursor, sequential dispatch.
+
+    Used in unit tests where PhaseContext.manager is None.
+    """
+    out: list[MetricResult] = []
+    for graph_id, graph, hint_sql, inspiration_id in prep:
+        result = agent.execute(session, graph, exec_ctx, inspiration_sql=hint_sql)
+        out.append((graph_id, result, inspiration_id))
+    return out
+
+
+def _execute_metrics_parallel(
+    prep: list[MetricPrep],
+    manager: ConnectionManager,
+    agent: GraphAgent,
+    source_id: str,
+    table_ids: list[str],
+) -> list[MetricResult]:
+    """Concurrent path: per-call session + cursor, gathered via asyncio.
+
+    Each metric runs `agent.execute` on a thread with its own SQLAlchemy
+    session (auto-commit via session_scope) and its own DuckDB cursor.
+    A semaphore caps in-flight LLM calls to _MAX_CONCURRENT_METRICS.
+    """
+
+    async def _run_all() -> list[MetricResult]:
+        sem = asyncio.Semaphore(_MAX_CONCURRENT_METRICS)
+
+        async def _run_one(
+            graph_id: str,
+            graph: TransformationGraph,
+            hint_sql: str | None,
+            inspiration_id: str | None,
+        ) -> MetricResult:
+            async with sem:
+                result = await asyncio.to_thread(
+                    _execute_isolated, graph, hint_sql, manager, agent, source_id, table_ids
+                )
+            return graph_id, result, inspiration_id
+
+        return await asyncio.gather(*(_run_one(gid, g, hsql, iid) for gid, g, hsql, iid in prep))
+
+    return asyncio.run(_run_all())
+
+
+def _execute_isolated(
+    graph: TransformationGraph,
+    hint_sql: str | None,
+    manager: ConnectionManager,
+    agent: GraphAgent,
+    source_id: str,
+    table_ids: list[str],
+) -> Result[GraphExecution]:
+    """Run one metric with an isolated session + cursor pair.
+
+    Wraps the call in manager.session_scope() so writes commit on success
+    and roll back on exception. The DuckDB cursor is independent — the
+    underlying connection is shared with other cursors safely.
+    """
+    from dataraum.graphs.agent import ExecutionContext
+
+    with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
+        exec_ctx = ExecutionContext.with_rich_context(
+            session=session,
+            duckdb_conn=cursor,
+            table_ids=table_ids,
+            schema_mapping_id=source_id,
+        )
+        return agent.execute(session, graph, exec_ctx, inspiration_sql=hint_sql)

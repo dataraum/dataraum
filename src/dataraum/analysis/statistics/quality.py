@@ -390,7 +390,7 @@ def assess_statistical_quality(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
-    max_workers: int = 4,
+    max_workers: int = 8,
     exclude_outlier_columns: set[str] | None = None,
 ) -> Result[list[StatisticalQualityResult]]:
     """Assess statistical quality for all numeric columns in a table.

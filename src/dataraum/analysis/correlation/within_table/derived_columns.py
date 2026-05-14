@@ -111,7 +111,7 @@ def detect_derived_columns(
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
     min_match_rate: float = 0.80,
-    max_workers: int = 4,
+    max_workers: int = 8,
 ) -> Result[list[DerivedColumn]]:
     """Detect columns that are arithmetic derivations of other columns.
 
@@ -279,7 +279,7 @@ def detect_enriched_derived_columns(
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
     min_match_rate: float = 0.80,
-    max_workers: int = 4,
+    max_workers: int = 8,
 ) -> Result[list[DerivedColumn]]:
     """Detect derived columns on an enriched view (fact + dimension columns).
 

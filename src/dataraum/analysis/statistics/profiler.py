@@ -269,7 +269,7 @@ def profile_statistics(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
-    max_workers: int = 4,
+    max_workers: int = 8,
     config: dict[str, Any] | None = None,
 ) -> Result[StatisticsProfileResult]:
     """Profile typed data to compute all row-based statistics.

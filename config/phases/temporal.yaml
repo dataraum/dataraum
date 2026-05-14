@@ -115,8 +115,10 @@ quality_issues:
 
 # Sampling and parallelism
 processing:
-  # Maximum parallel workers for column profiling
-  max_workers: 4
+  # Maximum parallel workers for column profiling. CPU-bound — under
+  # PYTHON_GIL=0 (3.14t) threads parallelize; under GIL they serialize
+  # but the cap is harmless.
+  max_workers: 8
   # Time series sampling (Bernoulli)
   sample_percent: 20.0
   min_sample_rows: 1000

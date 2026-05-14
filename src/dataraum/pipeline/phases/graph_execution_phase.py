@@ -33,9 +33,10 @@ from dataraum.storage import Table
 _log = get_logger(__name__)
 
 # Cap concurrent metric LLM calls. Sonnet 4.6 tier-3+ workspaces handle
-# 4000 RPM comfortably; 5 concurrent leaves headroom for other LLM phases.
-# Bump if profiling shows we're underutilizing capacity.
-_MAX_CONCURRENT_METRICS = 5
+# 4000 RPM (~67 RPS) comfortably; with ~30-60s LLM latencies, 10 concurrent
+# is ~10 RPS at peak — well under the limit. Smoke at cap=5 showed 12
+# metrics fit in 3 waves (~157s); cap=10 should collapse to ~1.2 waves.
+_MAX_CONCURRENT_METRICS = 10
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session

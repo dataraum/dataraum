@@ -616,7 +616,7 @@ def find_join_columns(
     columns2: list[str],
     min_score: float = 0.3,
     min_confidence: float = MIN_CONFIDENCE_THRESHOLD,
-    max_workers: int = 4,
+    max_workers: int = 8,
     column_types1: dict[str, str | None] | None = None,
     column_types2: dict[str, str | None] | None = None,
 ) -> list[dict[str, Any]]:

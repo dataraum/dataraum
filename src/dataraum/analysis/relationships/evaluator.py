@@ -403,7 +403,7 @@ def evaluate_candidates(
     candidates: list[RelationshipCandidate],
     table_paths: dict[str, str],
     duckdb_conn: duckdb.DuckDBPyConnection,
-    max_workers: int = 4,
+    max_workers: int = 8,
 ) -> list[RelationshipCandidate]:
     """Evaluate all relationship candidates with quality metrics.
 

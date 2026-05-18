@@ -33,8 +33,20 @@ def cursor() -> duckdb.DuckDBPyConnection:
 
 @pytest.fixture
 def session() -> Generator[Session]:
-    """In-memory SQLite session with all tables created."""
-    engine = create_engine("sqlite:///:memory:", echo=False)
+    """In-memory SQLite session with all tables created.
+
+    Uses ``StaticPool`` + explicit ``engine.dispose()`` so the underlying
+    sqlite3 connection is closed deterministically — Python 3.12+ raises
+    ``ResourceWarning`` if GC catches an open connection.
+    """
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        echo=False,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
 
     @event.listens_for(engine, "connect")
     def set_sqlite_pragma(dbapi_conn, connection_record):
@@ -44,8 +56,11 @@ def session() -> Generator[Session]:
 
     init_database(engine)
     factory = sessionmaker(bind=engine)
-    with factory() as s:
-        yield s
+    try:
+        with factory() as s:
+            yield s
+    finally:
+        engine.dispose()
 
 
 def _insert_source_and_table(

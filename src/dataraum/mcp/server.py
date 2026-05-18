@@ -1317,6 +1317,22 @@ def create_server(output_dir: Path | None = None) -> Server:
 
         return _json_text_content(result)
 
+    def _close() -> None:
+        """Dispose cached ConnectionManagers (workspace + session).
+
+        Called by tests on teardown and by long-lived runners (HTTP MCP
+        daemon, future). Idempotent. Without this, the cached
+        psycopg pools survive until GC catches them, which Python 3.12+
+        flags as ``ResourceWarning: <psycopg.Connection> was deleted while
+        still open``.
+        """
+        nonlocal _workspace_manager
+        _close_session_manager()
+        if _workspace_manager is not None:
+            _workspace_manager.close()
+            _workspace_manager = None
+
+    server.close = _close  # type: ignore[attr-defined]
     return server
 
 

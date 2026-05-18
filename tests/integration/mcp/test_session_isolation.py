@@ -26,12 +26,13 @@ not raw ``sqlite3.connect``.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select, text
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum.investigation.db_models import InvestigationSession
 from dataraum.mcp.db_models import ActiveSession, ArchivedSession
@@ -57,14 +58,21 @@ def _make_csv(tmp_path: Path, name: str, rows: str = "a,b\n1,2\n") -> Path:
     return csv
 
 
-def _ws_engine(pg_url: str) -> Engine:
-    """A read-side engine bound to the same testcontainer the MCP server uses."""
-    return create_engine(pg_url, future=True)
+@contextmanager
+def _ws_session(pg_url: str) -> Iterator[Session]:
+    """Read-side SQLAlchemy session bound to the testcontainer Postgres.
 
-
-def _ws_session(pg_url: str):
-    factory = sessionmaker(bind=_ws_engine(pg_url), expire_on_commit=False)
-    return factory()
+    Owns the engine for the duration of the ``with`` block and disposes it
+    on exit — otherwise the pooled psycopg connections leak (Python 3.12+
+    raises ``ResourceWarning`` when GC catches an open psycopg connection).
+    """
+    engine = create_engine(pg_url, future=True)
+    try:
+        factory = sessionmaker(bind=engine, expire_on_commit=False)
+        with factory() as sess:
+            yield sess
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture

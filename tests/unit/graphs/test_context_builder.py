@@ -22,8 +22,19 @@ def _id() -> str:
 
 @pytest.fixture
 def session():
-    """In-memory SQLite session with all tables created."""
-    engine = create_engine("sqlite:///:memory:", echo=False)
+    """In-memory SQLite session with all tables created.
+
+    ``StaticPool`` + explicit dispose keeps Python 3.12+ ``ResourceWarning``
+    quiet by closing the sqlite3 connection deterministically.
+    """
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        echo=False,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
 
     @event.listens_for(engine, "connect")
     def set_sqlite_pragma(dbapi_conn, connection_record):
@@ -33,8 +44,11 @@ def session():
 
     init_database(engine)
     factory = sessionmaker(bind=engine)
-    with factory() as s:
-        yield s
+    try:
+        with factory() as s:
+            yield s
+    finally:
+        engine.dispose()
 
 
 def _insert_source_table_column(session: Session) -> tuple[str, str, str]:

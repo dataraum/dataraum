@@ -9,12 +9,46 @@ import pytest
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 from testcontainers.postgres import PostgresContainer
 
 from dataraum.storage import init_database
 
 _TEST_SESSION_ID = "00000000-0000-0000-0000-000000000001"
 _TEST_SOURCE_ID = "00000000-0000-0000-0000-000000000002"
+
+
+@pytest.fixture(autouse=True)
+def _close_mcp_servers_after_test(monkeypatch: pytest.MonkeyPatch):
+    """Auto-close any MCP server created during a test.
+
+    Tests construct servers inline via ``create_server(output_dir=...)``
+    which caches workspace + session ``ConnectionManager`` instances. The
+    cached psycopg pools never get disposed by the test itself, so they
+    leak until GC catches them — Python 3.12+ raises
+    ``ResourceWarning: <psycopg.Connection> was deleted while still open``.
+
+    This fixture monkeypatches ``create_server`` to track every returned
+    ``Server`` and calls ``server.close()`` on teardown. Tests do not need
+    to opt in.
+    """
+    from dataraum.mcp import server as server_mod
+
+    created: list = []
+    original = server_mod.create_server
+
+    def tracked(*args, **kwargs):
+        s = original(*args, **kwargs)
+        created.append(s)
+        return s
+
+    monkeypatch.setattr(server_mod, "create_server", tracked)
+    yield
+    for s in created:
+        try:
+            s.close()  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
 
 @event.listens_for(Session, "before_flush")
@@ -41,12 +75,18 @@ def _autofill_session_id_globally(sess, _flush_ctx, _instances):
 def engine() -> Engine:
     """Create an in-memory SQLite engine for testing.
 
-    Creates a fresh database for each test function.
+    Uses ``StaticPool`` so the engine owns exactly one SQLite connection
+    that ``dispose()`` closes deterministically — Python 3.12+ raises
+    ``ResourceWarning`` if a ``sqlite3.Connection`` is GC'd while still
+    open, and ``QueuePool`` for ``:memory:`` SQLite tends to leave raw
+    connections around for the GC to find.
     """
     test_engine = create_engine(
         "sqlite:///:memory:",
         echo=False,
         future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
 
     # Enable foreign keys for SQLite

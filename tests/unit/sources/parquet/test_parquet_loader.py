@@ -18,8 +18,20 @@ from dataraum.storage import init_database
 
 @pytest.fixture
 def test_session():
-    """Create an in-memory SQLite session for testing."""
-    engine = create_engine("sqlite:///:memory:", echo=False)
+    """Create an in-memory SQLite session for testing.
+
+    ``StaticPool`` keeps a single connection that ``dispose()`` closes
+    deterministically — silences Python 3.12+ ``ResourceWarning`` on
+    GC'd sqlite3 connections.
+    """
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        echo=False,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
 
     @event.listens_for(engine, "connect")
     def set_sqlite_pragma(dbapi_conn, connection_record):
@@ -31,10 +43,11 @@ def test_session():
 
     factory = sessionmaker(bind=engine, expire_on_commit=False)
 
-    with factory() as session:
-        yield session
-
-    engine.dispose()
+    try:
+        with factory() as session:
+            yield session
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture

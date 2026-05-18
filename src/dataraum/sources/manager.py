@@ -9,13 +9,13 @@ Two source kinds:
   them. Registered via `add_file_source`.
 - **Recipe sources** — yaml declaring a backend (mssql, postgres, mysql,
   sqlite) plus named SELECT queries. Lives under
-  `{DATARAUM_HOME}/recipes/` by convention. Credentials are resolved
-  at pipeline-import time via `CredentialChain` keyed by source name.
-  Registered via `add_recipe_source`.
+  :data:`dataraum.core.paths.SOURCES_DIR`. Credentials are resolved at
+  pipeline-import time via `CredentialChain` keyed by source name
+  (`DATARAUM_{NAME}_URL` env var). Registered via `add_recipe_source`.
 
-The MCP tool layer calls `resolve_source_path()` to find the file
-(falling back to `{DATARAUM_HOME}/recipes/`) and then dispatches based
-on the resolved extension.
+The MCP tool layer calls `resolve_source_path()` to find the file —
+direct path first, then bare-name lookup in `SOURCES_DIR` — and then
+dispatches based on the resolved extension.
 """
 
 from __future__ import annotations
@@ -65,12 +65,10 @@ class ResolvedSourcePath:
     """The resolved absolute path."""
 
     fell_back_to_recipes: bool
-    """True if the resolution used the `{root}/recipes/` fallback."""
+    """True if the resolution used the bare-name lookup in `root`."""
 
 
-def resolve_source_path(
-    user_path: str, root: Path, recipes_subdir: str = "recipes"
-) -> ResolvedSourcePath | None:
+def resolve_source_path(user_path: str, root: Path) -> ResolvedSourcePath | None:
     """Resolve a user-provided source path.
 
     Order of attempts:
@@ -78,7 +76,7 @@ def resolve_source_path(
     1. The path as-given (after `~` expansion). If it exists, use it
        — handles absolute paths and existing relative paths.
     2. If the path is recipe-shaped (no extension, or `.yaml`/`.yml`),
-       look under `{root}/{recipes_subdir}/`:
+       look directly under `root`:
 
        - The exact filename if a `.yaml`/`.yml` extension was provided.
        - With `.yaml` appended if no extension.
@@ -89,8 +87,8 @@ def resolve_source_path(
 
     Args:
         user_path: The path the practitioner passed to add_source.
-        root: The DataRaum home directory (e.g. `~/.dataraum`).
-        recipes_subdir: Subdirectory of `root` to search.
+        root: The container source directory (e.g.
+            :data:`dataraum.core.paths.SOURCES_DIR`).
 
     Returns:
         ResolvedSourcePath if found, else None.
@@ -99,17 +97,16 @@ def resolve_source_path(
     if direct.exists():
         return ResolvedSourcePath(path=direct.resolve(), fell_back_to_recipes=False)
 
-    # Only recipe-shaped names get the recipes/ fallback.
+    # Only recipe-shaped names get the bare-name fallback.
     suffix = direct.suffix.lower()
     if suffix and suffix not in (".yaml", ".yml"):
         return None
 
     name = direct.name
-    recipes_dir = root / recipes_subdir
     if suffix in (".yaml", ".yml"):
-        candidates = [recipes_dir / name]
+        candidates = [root / name]
     else:
-        candidates = [recipes_dir / f"{name}.yaml", recipes_dir / f"{name}.yml"]
+        candidates = [root / f"{name}.yaml", root / f"{name}.yml"]
 
     for c in candidates:
         if c.exists():
@@ -350,10 +347,7 @@ class SourceManager:
 
         cred_hint = ""
         if source.source_type == "db_recipe":
-            cred_hint = (
-                f" Credentials in DATARAUM_{name.upper()}_URL (env or "
-                f"{self._credential_chain.credentials_file}) are not removed by this call."
-            )
+            cred_hint = f" Credentials in DATARAUM_{name.upper()}_URL are not removed by this call."
 
         return Result.ok(f"Source '{name}' {'deleted' if purge else 'archived'}.{cred_hint}")
 

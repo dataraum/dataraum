@@ -384,8 +384,8 @@ class ImportPhase(BasePhase):
         if credential is None:
             return PhaseResult.failed(
                 f"No credentials found for database source '{source_name}'. "
-                f"Set DATARAUM_{source_name.upper()}_URL in .env or add an entry to "
-                f"{chain.credentials_file}."
+                f"Set DATARAUM_{source_name.upper()}_URL in the environment "
+                "(via .env or the docker-compose environment)."
             )
 
         prefix = f"{source_name}__"

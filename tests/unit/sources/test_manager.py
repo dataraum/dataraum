@@ -24,8 +24,8 @@ tables:
 
 
 @pytest.fixture
-def credential_chain(tmp_path: Path) -> CredentialChain:
-    return CredentialChain(credentials_dir=tmp_path)
+def credential_chain() -> CredentialChain:
+    return CredentialChain()
 
 
 @pytest.fixture

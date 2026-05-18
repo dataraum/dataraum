@@ -20,13 +20,17 @@ RUN uv sync --no-dev --frozen --no-install-project
 
 # Now copy the project itself and re-sync to install the package
 COPY src/ src/
-COPY config/ config/
+COPY config/ /opt/dataraum/config/
 RUN uv sync --no-dev --frozen
+
+# Engine config root — load verticals/ontologies/prompts/llm configs from the
+# baked-in /opt/dataraum/config/ rather than auto-detecting via package layout.
+ENV DATARAUM_CONFIG_PATH=/opt/dataraum/config
 
 # Non-root runtime user; own the data dirs so named volumes initialize correctly.
 RUN groupadd -r dataraum && useradd -r -g dataraum -u 1001 dataraum && \
     mkdir -p /var/lib/dataraum/lake /var/lib/dataraum/sources && \
-    chown -R dataraum:dataraum /app /var/lib/dataraum
+    chown -R dataraum:dataraum /app /opt/dataraum /var/lib/dataraum
 
 USER dataraum
 

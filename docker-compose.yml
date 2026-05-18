@@ -40,9 +40,11 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
       DUCKLAKE_DATA_PATH: /var/lib/dataraum/lake
+      DATARAUM_CONFIG_PATH: /opt/dataraum/config
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - dataraum_lake:/var/lib/dataraum/lake
+      - ${HOST_SOURCES_DIR:-./sources}:/var/lib/dataraum/sources:ro
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:

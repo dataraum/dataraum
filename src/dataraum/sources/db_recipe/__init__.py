@@ -2,8 +2,8 @@
 
 A recipe is a secret-free yaml file that declares which backend to use
 and what SELECT queries to materialize as raw DuckDB tables. Credentials
-are resolved at extraction time via the existing CredentialChain
-(`DATARAUM_{NAME}_URL` env var, or `~/.dataraum/credentials.yaml`).
+are resolved at extraction time via the existing CredentialChain — the
+``DATARAUM_{NAME}_URL`` env var.
 """
 
 from __future__ import annotations

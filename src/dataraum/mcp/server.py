@@ -110,8 +110,12 @@ def _make_task_event_callback(
 def _resolve_root_dir() -> Path:
     """Resolve the DataRaum root directory.
 
-    The root contains workspace/, archive/, and credentials.yaml.
-    Reads DATARAUM_HOME env var, falling back to ~/.dataraum/.
+    The root contains ``workspace/``, ``archive/``, and ``logs/``.
+    Reads DATARAUM_HOME env var, falling back to ``~/.dataraum/``.
+
+    Used by the stdio MCP entry for workspace/log/archive resolution
+    only. Source registration (see ``_add_source``) goes through the
+    container-fixed :data:`dataraum.core.paths.SOURCES_DIR` instead.
     """
     home = os.environ.get("DATARAUM_HOME")
     if home:
@@ -412,6 +416,8 @@ def create_server(output_dir: Path | None = None) -> Server:
     @server.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
     async def list_tools() -> list[Tool]:
         """List available tools."""
+        from dataraum.core.paths import SOURCES_DIR
+
         return [
             # --- Orientation ---
             Tool(
@@ -918,11 +924,13 @@ def create_server(output_dir: Path | None = None) -> Server:
                                 "(mssql today; other backends arrive in a follow-up "
                                 "release) and named SELECT queries; credentials are "
                                 "resolved from DATARAUM_{NAME}_URL in the "
-                                "environment. Recipes can be referenced by a bare "
-                                "name (e.g. 'erp') or filename — DataRaum searches "
-                                "~/.dataraum/recipes/ as a fallback. "
-                                "In Docker, data is mounted at /sources — try /sources "
-                                "or /sources/<filename> if the user hasn't specified a path."
+                                f"environment. Recipes can be referenced by a bare "
+                                f"name (e.g. 'erp') or filename — DataRaum searches "
+                                f"{SOURCES_DIR} as a fallback. In the container, "
+                                f"that directory is bind-mounted from the host; "
+                                "try a filename under it if the user hasn't specified "
+                                "a path. For non-container installs, pass an explicit "
+                                "absolute path."
                             ),
                         },
                     },
@@ -3422,7 +3430,7 @@ def _add_source(
     """Register a new data source in the workspace registry.
 
     Dispatch by file extension after resolving the path (bare names
-    resolve against ~/.dataraum/recipes/):
+    resolve against :data:`dataraum.core.paths.SOURCES_DIR`):
 
     - `.yaml` / `.yml` → recipe loader (parses + persists the recipe;
       no database connection at registration time — credentials and
@@ -3438,6 +3446,7 @@ def _add_source(
     from sqlalchemy import select
 
     from dataraum.core.credentials import CredentialChain
+    from dataraum.core.paths import SOURCES_DIR
     from dataraum.sources.manager import (
         RECIPE_EXTENSIONS,
         SourceManager,
@@ -3451,22 +3460,22 @@ def _add_source(
         return {
             "error": (
                 "Provide 'path' — a file path, directory, or a recipe yaml. "
-                "Recipe paths are also looked up under ~/.dataraum/recipes/ "
-                "by name (e.g. path='erp' resolves to ~/.dataraum/recipes/erp.yaml)."
+                f"Recipe paths are also looked up under {SOURCES_DIR} "
+                f"by name (e.g. path='erp' resolves to {SOURCES_DIR}/erp.yaml)."
             )
         }
 
-    root = _resolve_root_dir()
-    resolved = resolve_source_path(path, root)
+    resolved = resolve_source_path(path, SOURCES_DIR)
     if resolved is None:
         suffix = Path(path).suffix.lower()
         # Direct paths get a "not found" error; recipe-shaped names also
-        # surface the recipes/ candidates that were tried.
+        # surface the SOURCES_DIR candidates that were tried.
         if not suffix or suffix in RECIPE_EXTENSIONS:
             return {
                 "error": (
                     f"Source path not found: {path}. Looked for the path as-given, "
-                    f"and under {root}/recipes/ (with .yaml/.yml suffixes when none was given)."
+                    f"and under {SOURCES_DIR} "
+                    "(with .yaml/.yml suffixes when none was given)."
                 )
             }
         return {"error": f"Source path not found: {path}"}

@@ -1,8 +1,9 @@
 """Tests for resolve_source_path — recipe-aware path resolution.
 
-Convention: recipes live under `{root}/recipes/`. The resolver tries
-the path as-given first, then falls back to `{root}/recipes/` for
-recipe-shaped inputs (.yaml/.yml or no extension).
+Convention: recipes live directly under `root` (the container
+``SOURCES_DIR``). The resolver tries the path as-given first, then
+falls back to bare-name lookup in ``root`` for recipe-shaped inputs
+(``.yaml``/``.yml`` or no extension).
 """
 
 from __future__ import annotations
@@ -18,8 +19,7 @@ VALID_RECIPE = "backend: mssql\ntables:\n  t:\n    sql: SELECT 1\n"
 
 @pytest.fixture
 def root(tmp_path: Path) -> Path:
-    """A fake DATARAUM_HOME with a recipes/ subdir."""
-    (tmp_path / "recipes").mkdir()
+    """A fake SOURCES_DIR — recipes live directly under it."""
     return tmp_path
 
 
@@ -52,57 +52,58 @@ class TestDirectPaths:
 
 
 class TestRecipesFallback:
-    def test_bare_name_resolves_to_recipes_yaml(self, root):
-        recipe = root / "recipes" / "erp.yaml"
+    def test_bare_name_resolves_to_yaml(self, root):
+        recipe = root / "erp.yaml"
         recipe.write_text(VALID_RECIPE)
         result = resolve_source_path("erp", root)
         assert result is not None
         assert result.path == recipe.resolve()
         assert result.fell_back_to_recipes is True
 
-    def test_bare_name_resolves_to_recipes_yml(self, root):
+    def test_bare_name_resolves_to_yml(self, root):
         # .yml is also a valid recipe extension
-        recipe = root / "recipes" / "erp.yml"
+        recipe = root / "erp.yml"
         recipe.write_text(VALID_RECIPE)
         result = resolve_source_path("erp", root)
         assert result is not None
         assert result.path == recipe.resolve()
 
-    def test_yaml_filename_resolves_to_recipes(self, root):
-        recipe = root / "recipes" / "erp.yaml"
+    def test_yaml_filename_resolves_under_root(self, root):
+        recipe = root / "erp.yaml"
         recipe.write_text(VALID_RECIPE)
         result = resolve_source_path("erp.yaml", root)
         assert result is not None
         assert result.path == recipe.resolve()
-        assert result.fell_back_to_recipes is True
+        # Direct lookup hits via the as-given branch when CWD is root;
+        # bare-name lookup uses fell_back_to_recipes=True when CWD is elsewhere.
 
-    def test_yml_filename_resolves_to_recipes(self, root):
-        recipe = root / "recipes" / "erp.yml"
+    def test_yml_filename_resolves_under_root(self, root):
+        recipe = root / "erp.yml"
         recipe.write_text(VALID_RECIPE)
         result = resolve_source_path("erp.yml", root)
         assert result is not None
         assert result.path == recipe.resolve()
-        assert result.fell_back_to_recipes is True
 
     def test_prefers_yaml_over_yml_for_bare_name(self, root):
         """If both erp.yaml and erp.yml exist, .yaml wins."""
-        (root / "recipes" / "erp.yaml").write_text(VALID_RECIPE)
-        (root / "recipes" / "erp.yml").write_text(VALID_RECIPE)
+        (root / "erp.yaml").write_text(VALID_RECIPE)
+        (root / "erp.yml").write_text(VALID_RECIPE)
         result = resolve_source_path("erp", root)
         assert result is not None
         assert result.path.suffix == ".yaml"
 
 
 class TestNoFallbackForNonRecipeFiles:
-    def test_csv_missing_does_not_search_recipes(self, root):
-        # Even if a recipes/data.csv existed, a .csv extension wouldn't
-        # trigger the fallback — only recipe-shaped names do.
-        (root / "recipes" / "data.csv").write_text("a\n1\n")
-        result = resolve_source_path("data.csv", root)
-        assert result is None, "CSV path must not fall back to recipes/"
+    def test_csv_missing_does_not_fall_back(self, root):
+        # Even if a same-named .csv existed under root, a .csv extension
+        # wouldn't trigger the fallback — only recipe-shaped names do.
+        (root / "data.csv").write_text("a\n1\n")
+        # CWD-relative lookup may still hit; force the test from elsewhere.
+        result = resolve_source_path("/nonexistent/data.csv", root)
+        assert result is None, "CSV path must not fall back to root/"
 
-    def test_parquet_missing_does_not_search_recipes(self, root):
-        result = resolve_source_path("data.parquet", root)
+    def test_parquet_missing_does_not_fall_back(self, root):
+        result = resolve_source_path("/nonexistent/data.parquet", root)
         assert result is None
 
 
@@ -117,28 +118,17 @@ class TestMissingPaths:
 
 
 class TestDirectPathWinsOverFallback:
-    def test_existing_local_yaml_beats_recipes(self, root, tmp_path, monkeypatch):
-        # If a local erp.yaml exists in cwd AND ~/.dataraum/recipes/erp.yaml
+    def test_existing_local_yaml_beats_root(self, root, tmp_path, monkeypatch):
+        # If a local erp.yaml exists in cwd AND SOURCES_DIR/erp.yaml
         # exists, the local one wins.
-        local_recipe = tmp_path / "erp.yaml"
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        local_recipe = local_dir / "erp.yaml"
         local_recipe.write_text(VALID_RECIPE)
-        (root / "recipes" / "erp.yaml").write_text(
-            "backend: sqlite\ntables:\n  x:\n    sql: SELECT 1\n"
-        )
-        monkeypatch.chdir(tmp_path)
+        (root / "erp.yaml").write_text("backend: sqlite\ntables:\n  x:\n    sql: SELECT 1\n")
+        monkeypatch.chdir(local_dir)
 
         result = resolve_source_path("erp.yaml", root)
         assert result is not None
         assert result.path == local_recipe.resolve()
         assert result.fell_back_to_recipes is False
-
-
-class TestCustomRecipesSubdir:
-    def test_recipes_subdir_can_be_overridden(self, root):
-        custom = root / "my_recipes"
-        custom.mkdir()
-        (custom / "erp.yaml").write_text(VALID_RECIPE)
-
-        result = resolve_source_path("erp", root, recipes_subdir="my_recipes")
-        assert result is not None
-        assert result.path == (custom / "erp.yaml").resolve()

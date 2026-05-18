@@ -124,19 +124,18 @@ class TestListSourcesTool:
             assert "credential_ref" not in entry
 
 
-class TestRecipesHomeFallback:
-    """add_source resolves bare names against {DATARAUM_HOME}/recipes/."""
+class TestSourcesDirFallback:
+    """add_source resolves bare names against SOURCES_DIR."""
 
-    def test_bare_name_resolves_to_recipes_home(
+    def test_bare_name_resolves_to_sources_dir(
         self, session: Session, tmp_path: Path, monkeypatch
     ) -> None:
+        import dataraum.core.paths as paths_mod
         from dataraum.mcp.server import _add_source
 
-        # Point DATARAUM_HOME at a fake home with a recipes/ subdir
-        recipes_dir = tmp_path / "recipes"
-        recipes_dir.mkdir()
-        (recipes_dir / "warehouse.yaml").write_text(VALID_RECIPE)
-        monkeypatch.setenv("DATARAUM_HOME", str(tmp_path))
+        # Point SOURCES_DIR at a fake directory holding the recipe yaml directly
+        (tmp_path / "warehouse.yaml").write_text(VALID_RECIPE)
+        monkeypatch.setattr(paths_mod, "SOURCES_DIR", tmp_path)
 
         result = _add_source(session, {"name": "warehouse", "path": "warehouse"})
 
@@ -145,28 +144,27 @@ class TestRecipesHomeFallback:
         assert result["source"]["type"] == "db_recipe"
         assert result["source"]["backend"] == "mssql"
 
-    def test_filename_resolves_to_recipes_home(
+    def test_filename_resolves_to_sources_dir(
         self, session: Session, tmp_path: Path, monkeypatch
     ) -> None:
+        import dataraum.core.paths as paths_mod
         from dataraum.mcp.server import _add_source
 
-        recipes_dir = tmp_path / "recipes"
-        recipes_dir.mkdir()
-        (recipes_dir / "warehouse.yaml").write_text(VALID_RECIPE)
-        monkeypatch.setenv("DATARAUM_HOME", str(tmp_path))
+        (tmp_path / "warehouse.yaml").write_text(VALID_RECIPE)
+        monkeypatch.setattr(paths_mod, "SOURCES_DIR", tmp_path)
 
         result = _add_source(session, {"name": "warehouse", "path": "warehouse.yaml"})
         assert "error" not in result, result.get("error")
         assert result["source"]["type"] == "db_recipe"
 
-    def test_missing_recipe_error_mentions_recipes_dir(
+    def test_missing_recipe_error_mentions_sources_dir(
         self, session: Session, tmp_path: Path, monkeypatch
     ) -> None:
+        import dataraum.core.paths as paths_mod
         from dataraum.mcp.server import _add_source
 
-        (tmp_path / "recipes").mkdir()
-        monkeypatch.setenv("DATARAUM_HOME", str(tmp_path))
+        monkeypatch.setattr(paths_mod, "SOURCES_DIR", tmp_path)
 
         result = _add_source(session, {"name": "ghost", "path": "ghost"})
         assert "error" in result
-        assert "recipes/" in result["error"]
+        assert str(tmp_path) in result["error"]

@@ -1,29 +1,23 @@
-"""Credential resolution chain for data source connections.
+"""Credential resolution for database source connections.
 
-Resolves connection URLs by source name through an ordered chain of providers.
-First match wins. Secrets are never serialized to MCP responses or logged.
+Resolves connection URLs by source name from the
+``DATARAUM_{SOURCE_NAME}_URL`` environment variable. Secrets are never
+serialized to MCP responses or logged.
 
 Resolution order:
-1. Environment variable: DATARAUM_{SOURCE_NAME}_URL
-2. Credentials file: ~/.dataraum/credentials.yaml → sources.{name}
-3. Not found → return None (caller fails loud)
+
+1. Environment variable: ``DATARAUM_{SOURCE_NAME}_URL``
+2. Not found → return ``None`` (caller fails loud)
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import stat
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol
 
-import yaml
-
 _log = logging.getLogger(__name__)
-
-_CREDENTIALS_FILE = "credentials.yaml"
-_DESIRED_FILE_MODE = 0o600
 
 
 class CredentialProvider(Protocol):
@@ -39,11 +33,11 @@ class ResolvedCredential:
     """A resolved connection URL. Never serialized to MCP responses."""
 
     url: str
-    source: str  # "env" | "credentials_file"
+    source: str  # "env"
 
 
 class EnvProvider:
-    """Resolve connection URL from DATARAUM_{SOURCE_NAME}_URL environment variable."""
+    """Resolve connection URL from ``DATARAUM_{SOURCE_NAME}_URL`` environment variable."""
 
     def resolve(self, source_name: str) -> ResolvedCredential | None:
         env_key = f"DATARAUM_{source_name.upper()}_URL"
@@ -53,81 +47,16 @@ class EnvProvider:
         return None
 
 
-class FileProvider:
-    """Resolve connection URL from a YAML credentials file.
-
-    File format:
-        sources:
-          accounting: "postgres://reader:secret@localhost:5432/accounting"
-          erp: "mysql://user:pass@erp.internal/production"
-    """
-
-    def __init__(self, path: Path) -> None:
-        self._path = path
-
-    @property
-    def path(self) -> Path:
-        return self._path
-
-    def resolve(self, source_name: str) -> ResolvedCredential | None:
-        if not self._path.exists():
-            return None
-
-        self._check_permissions()
-
-        with open(self._path) as f:
-            config = yaml.safe_load(f)
-
-        if not isinstance(config, dict):
-            return None
-
-        sources = config.get("sources", {})
-        if not isinstance(sources, dict):
-            return None
-
-        url = sources.get(source_name)
-        if url and isinstance(url, str):
-            return ResolvedCredential(url=url, source="credentials_file")
-        return None
-
-    def _check_permissions(self) -> None:
-        """Warn if credentials file has overly permissive permissions."""
-        try:
-            file_stat = self._path.stat()
-            mode = stat.S_IMODE(file_stat.st_mode)
-            if mode & (stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH | stat.S_IWOTH):
-                _log.warning(
-                    "Credentials file %s has permissions %o. "
-                    "Recommended: %o (owner-only read/write).",
-                    self._path,
-                    mode,
-                    _DESIRED_FILE_MODE,
-                )
-        except OSError:
-            pass
-
-
 class CredentialChain:
     """Resolve connection URLs through an ordered chain of providers.
 
-    Environment variables override the credentials file, allowing
-    per-session overrides without editing persistent config.
+    Currently env-only. The chain shape is retained so additional providers
+    (e.g. a future secrets-manager backend) can be added without touching
+    callers.
     """
 
-    def __init__(self, credentials_dir: Path | None = None) -> None:
-        self._credentials_dir = credentials_dir or Path.home() / ".dataraum"
-        self._providers: list[CredentialProvider] = [
-            EnvProvider(),
-            FileProvider(self._credentials_dir / _CREDENTIALS_FILE),
-        ]
-
-    @property
-    def credentials_dir(self) -> Path:
-        return self._credentials_dir
-
-    @property
-    def credentials_file(self) -> Path:
-        return self._credentials_dir / _CREDENTIALS_FILE
+    def __init__(self) -> None:
+        self._providers: list[CredentialProvider] = [EnvProvider()]
 
     def resolve(self, source_name: str) -> ResolvedCredential | None:
         """Walk the provider chain. Return first match or None."""

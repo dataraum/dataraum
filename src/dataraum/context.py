@@ -258,6 +258,11 @@ class Context:
             if not source:
                 raise ValueError("No sources found in database")
 
+            sid = self.manager.session_id
+            if not sid:
+                raise ValueError(
+                    "Context.query requires manager.session_id — open via active session."
+                )
             with self.manager.duckdb_cursor() as cursor:
                 result = answer_question(
                     question=question,
@@ -265,6 +270,7 @@ class Context:
                     duckdb_conn=cursor,
                     source_id=source.source_id,
                     contract=contract,
+                    session_id=sid,
                 )
 
             if not result.success or not result.value:

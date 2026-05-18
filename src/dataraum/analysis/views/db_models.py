@@ -34,6 +34,9 @@ class EnrichedView(Base):
     __tablename__ = "enriched_views"
 
     view_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
 
     # The fact table this view is based on
     fact_table_id: Mapped[str] = mapped_column(
@@ -80,6 +83,9 @@ class SlicingView(Base):
     __tablename__ = "slicing_views"
 
     view_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
 
     # The fact table this view is based on
     fact_table_id: Mapped[str] = mapped_column(

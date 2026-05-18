@@ -25,6 +25,8 @@ logger = get_logger(__name__)
 def build_slice_profiles(
     session: Session,
     source_id: str,
+    *,
+    session_id: str,
 ) -> int:
     """Build ColumnSliceProfile records from per-slice statistical profiles.
 
@@ -189,6 +191,7 @@ def build_slice_profiles(
 
                 session.add(
                     ColumnSliceProfile(
+                        session_id=session_id,
                         source_column_id=eff_col.column_id,
                         slice_column_id=slice_def.column_id,
                         source_table_name=effective_table.table_name,

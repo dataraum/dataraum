@@ -26,8 +26,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from dataraum.core import config as core_config
 import dataraum.core.paths as paths_mod
+from dataraum.core import config as core_config
+from dataraum.core.paths import SOURCES_DIR
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 

@@ -36,6 +36,7 @@ def run_sql(
     column_mappings: dict[str, str] | None = None,
     limit: int = DEFAULT_ROW_LIMIT,
     repair_fn: RepairFn | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute SQL and return results as a structured dict.
 
@@ -151,6 +152,10 @@ def run_sql(
         else:
             # Save novel steps as snippets
             assert session_source is not None  # set inside the same guard
+            if session_id is None:
+                raise ValueError(
+                    "run_sql with session+source_id requires session_id for snippet saving."
+                )
             snippet_summary = _save_snippets(
                 session,
                 source_id,
@@ -158,6 +163,7 @@ def run_sql(
                 raw_steps or [],
                 snippet_matches,
                 session_source,
+                session_id=session_id,
             )
 
     if is_error:
@@ -277,6 +283,8 @@ def _save_snippets(
     raw_steps: list[dict[str, Any]],
     snippet_matches: dict[str, tuple[str, str]],
     session_source: str,
+    *,
+    session_id: str,
 ) -> dict[str, Any]:
     """Save novel steps as snippets and return summary.
 
@@ -285,7 +293,7 @@ def _save_snippets(
     """
     from dataraum.query.snippet_library import SnippetLibrary
 
-    library = SnippetLibrary(session)
+    library = SnippetLibrary(session, session_id=session_id)
     reused = len(snippet_matches)
     saved = 0
 

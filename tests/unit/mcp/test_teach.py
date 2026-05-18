@@ -20,6 +20,7 @@ from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.mcp.teach import handle_teach
 from dataraum.pipeline.fixes.models import DataFix
 from dataraum.storage import Column, Source, Table
+from tests.conftest import baseline_session_id
 
 
 def _id() -> str:
@@ -126,6 +127,7 @@ class TestTeachConcept:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         assert result["status"] == "applied"
@@ -152,6 +154,7 @@ class TestTeachConcept:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
         # Teach again with updated indicators
         handle_teach(
@@ -161,6 +164,7 @@ class TestTeachConcept:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         ontology = yaml.safe_load(
@@ -186,6 +190,7 @@ class TestTeachConcept:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         ontology = yaml.safe_load(ontology_path.read_text())
@@ -213,6 +218,7 @@ class TestTeachValidation:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         assert result["status"] == "applied"
@@ -242,6 +248,7 @@ class TestTeachValidation:
                 session=session,
                 vertical="_adhoc",
                 config_root=config_root,
+                session_id=baseline_session_id(),
             )
 
         spec = yaml.safe_load(
@@ -269,6 +276,7 @@ class TestTeachCycle:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         assert result["status"] == "applied"
@@ -294,6 +302,7 @@ class TestTeachCycle:
                 session=session,
                 vertical="_adhoc",
                 config_root=config_root,
+                session_id=baseline_session_id(),
             )
 
         cycles = yaml.safe_load((config_root / "verticals" / "_adhoc" / "cycles.yaml").read_text())
@@ -318,6 +327,7 @@ class TestTeachTypePattern:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         assert result["status"] == "applied"
@@ -344,6 +354,7 @@ class TestTeachTypePattern:
                 session=session,
                 vertical="_adhoc",
                 config_root=config_root,
+                session_id=baseline_session_id(),
             )
 
         typing_config = yaml.safe_load((config_root / "phases" / "typing.yaml").read_text())
@@ -363,6 +374,7 @@ class TestTeachNullValue:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         assert result["status"] == "applied"
@@ -384,6 +396,7 @@ class TestTeachNullValue:
                 session=session,
                 vertical="_adhoc",
                 config_root=config_root,
+                session_id=baseline_session_id(),
             )
 
         null_config = yaml.safe_load((config_root / "null_values.yaml").read_text())
@@ -406,6 +419,7 @@ class TestTeachNullValue:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         null_config = yaml.safe_load((config_root / "null_values.yaml").read_text())
@@ -442,6 +456,7 @@ class TestTeachConceptProperty:
             session=session,
             vertical="_adhoc",
             target="orders.amount",
+            session_id=baseline_session_id(),
         )
 
         assert result["status"] == "applied"
@@ -473,6 +488,7 @@ class TestTeachConceptProperty:
             session=session,
             vertical="_adhoc",
             target="orders.amount",
+            session_id=baseline_session_id(),
         )
 
         fixes = session.query(DataFix).filter_by(source_id=source_id).all()
@@ -491,6 +507,7 @@ class TestTeachConceptProperty:
             session=session,
             vertical="_adhoc",
             target="orders.amount",
+            session_id=baseline_session_id(),
         )
 
         assert "error" in result
@@ -533,6 +550,7 @@ class TestTeachRelationship:
             source_id=source_id,
             session=session,
             vertical="_adhoc",
+            session_id=baseline_session_id(),
         )
 
         assert result["status"] == "applied"
@@ -560,6 +578,7 @@ class TestTeachRelationship:
             source_id=source_id,
             session=session,
             vertical="_adhoc",
+            session_id=baseline_session_id(),
         )
 
         assert result["status"] == "applied"
@@ -585,10 +604,20 @@ class TestTeachRelationship:
             "cardinality": "one-to-many",
         }
         handle_teach(
-            "relationship", params, source_id=source_id, session=session, vertical="_adhoc"
+            "relationship",
+            params,
+            source_id=source_id,
+            session=session,
+            vertical="_adhoc",
+            session_id=baseline_session_id(),
         )
         result = handle_teach(
-            "relationship", params, source_id=source_id, session=session, vertical="_adhoc"
+            "relationship",
+            params,
+            source_id=source_id,
+            session=session,
+            vertical="_adhoc",
+            session_id=baseline_session_id(),
         )
 
         assert result["status"] == "applied"
@@ -608,6 +637,7 @@ class TestTeachRelationship:
             source_id=source_id,
             session=session,
             vertical="_adhoc",
+            session_id=baseline_session_id(),
         )
 
         assert "error" in result
@@ -628,6 +658,7 @@ class TestTeachExplanation:
             session=session,
             vertical="_adhoc",
             target="orders.amount",
+            session_id=baseline_session_id(),
         )
 
         assert result["status"] == "applied"
@@ -650,6 +681,7 @@ class TestTeachExplanation:
             session=session,
             vertical="_adhoc",
             target="orders",
+            session_id=baseline_session_id(),
         )
 
         assert result["status"] == "applied"
@@ -666,7 +698,12 @@ class TestTeachExplanation:
 class TestTeachErrors:
     def test_rejects_unknown_type(self, session: Session) -> None:
         result = handle_teach(
-            "nonexistent", {}, source_id="fake", session=session, vertical="_adhoc"
+            "nonexistent",
+            {},
+            source_id="fake",
+            session=session,
+            vertical="_adhoc",
+            session_id=baseline_session_id(),
         )
         assert "error" in result
         assert "Unknown teach type" in result["error"]
@@ -678,6 +715,7 @@ class TestTeachErrors:
             source_id="fake",
             session=session,
             vertical="_adhoc",
+            session_id=baseline_session_id(),
         )
         assert "error" in result
         assert "Invalid params" in result["error"]
@@ -691,6 +729,7 @@ class TestTeachErrors:
             session=session,
             vertical="_adhoc",
             target=None,
+            session_id=baseline_session_id(),
         )
         assert "error" in result
         assert "requires a target" in result["error"]
@@ -704,6 +743,7 @@ class TestTeachErrors:
             session=session,
             vertical="_adhoc",
             config_root=None,
+            session_id=baseline_session_id(),
         )
         assert "error" in result
 
@@ -725,6 +765,7 @@ class TestConfigTeachDataFix:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         fixes = session.query(DataFix).filter_by(source_id=source_id).all()

@@ -17,6 +17,7 @@ from dataraum.core.models.base import (
     Result,
     SemanticRole,
 )
+from tests.conftest import baseline_session_id
 
 
 def test_enrich_semantic_stores_annotations(session):
@@ -107,6 +108,7 @@ def test_enrich_semantic_stores_annotations(session):
         agent=agent,
         table_ids=[table.table_id],
         ontology="general",
+        session_id=baseline_session_id(),
     )
 
     # Verify result
@@ -200,6 +202,7 @@ def test_enrich_semantic_handles_missing_columns(session):
         agent=agent,
         table_ids=[table.table_id],
         ontology="general",
+        session_id=baseline_session_id(),
     )
 
     # Should succeed but skip the non-existent column
@@ -286,6 +289,7 @@ def test_enrich_semantic_stores_relationships(session):
         agent=agent,
         table_ids=[customers_table.table_id, orders_table.table_id],
         ontology="general",
+        session_id=baseline_session_id(),
     )
 
     assert result.success

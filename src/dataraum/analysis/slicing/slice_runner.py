@@ -262,6 +262,8 @@ def run_statistics_on_slice(
     slice_info: SliceTableInfo,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
+    *,
+    session_id: str,
 ) -> Result[Any]:
     """Run statistical profiling on a slice table.
 
@@ -303,6 +305,7 @@ def run_statistics_on_slice(
                 table_id=slice_info.slice_table_id,
                 duckdb_conn=duckdb_conn,
                 session=session,
+                session_id=session_id,
             )
         return result
     finally:
@@ -313,6 +316,8 @@ def run_quality_on_slice(
     slice_info: SliceTableInfo,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
+    *,
+    session_id: str,
 ) -> Result[Any]:
     """Run statistical quality assessment on a slice table.
 
@@ -328,6 +333,7 @@ def run_quality_on_slice(
         table_id=slice_info.slice_table_id,
         duckdb_conn=duckdb_conn,
         session=session,
+        session_id=session_id,
     )
     return result
 
@@ -338,6 +344,8 @@ def run_analysis_on_slices(
     slice_infos: list[SliceTableInfo],
     run_statistics: bool = True,
     run_quality: bool = True,
+    *,
+    session_id: str,
 ) -> SliceAnalysisResult:
     """Run analysis phases on slice tables.
 
@@ -360,7 +368,9 @@ def run_analysis_on_slices(
     # Run statistics on each slice
     if run_statistics:
         for slice_info in slice_infos:
-            result = run_statistics_on_slice(slice_info, duckdb_conn, session)
+            result = run_statistics_on_slice(
+                slice_info, duckdb_conn, session, session_id=session_id
+            )
             if result.success:
                 stats_count += 1
             else:
@@ -369,7 +379,7 @@ def run_analysis_on_slices(
     # Run quality on each slice
     if run_quality:
         for slice_info in slice_infos:
-            result = run_quality_on_slice(slice_info, duckdb_conn, session)
+            result = run_quality_on_slice(slice_info, duckdb_conn, session, session_id=session_id)
             if result.success:
                 quality_count += 1
             else:

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.temporal_slice_analysis_phase import TemporalSliceAnalysisPhase
 from dataraum.storage import Column, Source, Table
+from tests.conftest import baseline_session_id
 
 if TYPE_CHECKING:
     import duckdb
@@ -30,6 +31,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
+            session_id=baseline_session_id(),
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -48,6 +50,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
+            session_id=baseline_session_id(),
         )
 
         result = phase.run(ctx)
@@ -86,6 +89,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
+            session_id=baseline_session_id(),
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -146,6 +150,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
+            session_id=baseline_session_id(),
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -233,6 +238,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
+            session_id=baseline_session_id(),
         )
 
         skip_reason = phase.should_skip(ctx)
@@ -419,6 +425,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
+            session_id=baseline_session_id(),
         )
 
         result = phase.run(ctx)
@@ -468,6 +475,7 @@ class TestTemporalSliceAnalysisPhase:
             duckdb_conn=duckdb_conn,
             source_id=source_id,
             config={},
+            session_id=baseline_session_id(),
         )
 
         result = phase.run(ctx)

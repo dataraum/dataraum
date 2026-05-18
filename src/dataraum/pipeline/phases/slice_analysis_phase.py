@@ -174,6 +174,7 @@ class SliceAnalysisPhase(BasePhase):
             slice_infos=slice_infos,
             run_statistics=True,
             run_quality=True,
+            session_id=ctx.require_session_id(),
         )
 
         errors.extend(analysis_result.errors)

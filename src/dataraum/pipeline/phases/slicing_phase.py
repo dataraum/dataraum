@@ -204,8 +204,10 @@ class SlicingPhase(BasePhase):
         slicing = self._propagate_enriched_dimensions(slicing, context_data, agent)
 
         # Store slice definitions
+        sid = ctx.require_session_id()
         for rec in slicing.recommendations:
             slice_def = SliceDefinition(
+                session_id=sid,
                 table_id=rec.table_id,
                 column_id=rec.column_id,
                 column_name=rec.column_name,

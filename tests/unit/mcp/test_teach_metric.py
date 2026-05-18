@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from dataraum.mcp.teach import handle_teach
 from dataraum.pipeline.fixes.models import DataFix
 from dataraum.storage import Column, Source, Table
+from tests.conftest import baseline_session_id
 
 
 def _id() -> str:
@@ -99,6 +100,7 @@ class TestTeachMetric:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         assert result["status"] == "applied"
@@ -144,6 +146,7 @@ class TestTeachMetric:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         params["description"] = "v2"
@@ -154,6 +157,7 @@ class TestTeachMetric:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         metric_path = (
@@ -186,6 +190,7 @@ class TestTeachMetric:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         fixes = session.query(DataFix).filter_by(source_id=source_id).all()
@@ -238,6 +243,7 @@ class TestTeachMetric:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         assert result["status"] == "applied"
@@ -273,6 +279,7 @@ class TestTeachMetric:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         assert result["status"] == "applied"
@@ -307,6 +314,7 @@ class TestTeachMetric:
             session=session,
             vertical="_adhoc",
             config_root=config_root,
+            session_id=baseline_session_id(),
         )
 
         metric_path = (

@@ -17,6 +17,7 @@ from dataraum.pipeline.db_models import PhaseLog, PipelineRun
 from dataraum.pipeline.events import EventType
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.scheduler import PipelineScheduler
+from tests.conftest import baseline_session_id
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -80,6 +81,7 @@ def _make_run(session: Session, source_id: str = "src-1") -> str:
     run_id = str(uuid4())
     run = PipelineRun(
         run_id=run_id,
+        session_id=baseline_session_id(),
         source_id=source_id,
         status="running",
         started_at=datetime.now(UTC),
@@ -124,6 +126,7 @@ class TestEmptyPipeline:
             run_id=run_id,
             session=session,
             duckdb_conn=duckdb_conn,
+            session_id=baseline_session_id(),
         )
         events, result = _drive(scheduler.run())
 
@@ -148,6 +151,7 @@ class TestSinglePhase:
             run_id=run_id,
             session=session,
             duckdb_conn=duckdb_conn,
+            session_id=baseline_session_id(),
         )
         events, result = _drive(scheduler.run())
 
@@ -175,6 +179,7 @@ class TestSinglePhase:
             run_id=run_id,
             session=session,
             duckdb_conn=duckdb_conn,
+            session_id=baseline_session_id(),
         )
         events, result = _drive(scheduler.run())
 
@@ -202,6 +207,7 @@ class TestSinglePhase:
             run_id=run_id,
             session=session,
             duckdb_conn=duckdb_conn,
+            session_id=baseline_session_id(),
         )
         events, result = _drive(scheduler.run())
 
@@ -231,6 +237,7 @@ class TestDependencyOrdering:
             run_id=run_id,
             session=session,
             duckdb_conn=duckdb_conn,
+            session_id=baseline_session_id(),
         )
         events, result = _drive(scheduler.run())
 
@@ -253,6 +260,7 @@ class TestDependencyOrdering:
             run_id=run_id,
             session=session,
             duckdb_conn=duckdb_conn,
+            session_id=baseline_session_id(),
         )
         events, result = _drive(scheduler.run())
 
@@ -271,6 +279,7 @@ class TestDependencyOrdering:
             run_id=run_id,
             session=session,
             duckdb_conn=duckdb_conn,
+            session_id=baseline_session_id(),
         )
         events, result = _drive(scheduler.run())
 
@@ -294,6 +303,7 @@ class TestPhaseLog:
             run_id=run_id,
             session=session,
             duckdb_conn=duckdb_conn,
+            session_id=baseline_session_id(),
         )
         _drive(scheduler.run())
 
@@ -360,8 +370,8 @@ class TestPhaseLogWithFactory:
             duckdb_conn=duckdb_conn,
             session_factory=session_scope,
             manager=self._make_manager_stub(duckdb_conn),
+            session_id=baseline_session_id(),
         )
-
         events, result = _drive(scheduler.run())
 
         assert "A" in result.phases_skipped
@@ -387,6 +397,7 @@ class TestPipelineResult:
             run_id=run_id,
             session=session,
             duckdb_conn=duckdb_conn,
+            session_id=baseline_session_id(),
         )
         events, result = _drive(scheduler.run())
 
@@ -410,6 +421,7 @@ class TestDependencyValidation:
                 run_id=run_id,
                 session=session,
                 duckdb_conn=duckdb_conn,
+                session_id=baseline_session_id(),
             )
 
 
@@ -451,6 +463,7 @@ class TestDiamondDependency:
             run_id=run_id,
             session=session,
             duckdb_conn=duckdb_conn,
+            session_id=baseline_session_id(),
         )
         events, result = _drive(scheduler.run())
 
@@ -515,8 +528,8 @@ class TestParallelExecution:
             duckdb_conn=duckdb_conn,
             session_factory=session_scope,
             manager=self._make_manager_stub(duckdb_conn),
+            session_id=baseline_session_id(),
         )
-
         events, result = _drive(scheduler.run())
 
         assert result.success is True
@@ -542,6 +555,7 @@ class TestParallelExecution:
             session=session,
             duckdb_conn=duckdb_conn,
             # No session_factory -> sequential
+            session_id=baseline_session_id(),
         )
 
         events, result = _drive(scheduler.run())
@@ -584,8 +598,8 @@ class TestParallelExecution:
             duckdb_conn=duckdb_conn,
             session_factory=session_scope,
             manager=self._make_manager_stub(duckdb_conn),
+            session_id=baseline_session_id(),
         )
-
         events, result = _drive(scheduler.run())
 
         assert result.success is False
@@ -624,8 +638,8 @@ class TestParallelExecution:
             duckdb_conn=duckdb_conn,
             session_factory=session_scope,
             manager=self._make_manager_stub(duckdb_conn),
+            session_id=baseline_session_id(),
         )
-
         events, result = _drive(scheduler.run())
 
         # Both phases run successfully -- each was the only phase in its wave
@@ -672,6 +686,7 @@ class TestAnalysisCoverageValidation:
                 run_id=run_id,
                 session=session,
                 duckdb_conn=duckdb_conn,
+                session_id=baseline_session_id(),
             )
 
         mock_logger.warning.assert_called_once()
@@ -715,6 +730,7 @@ class TestAnalysisCoverageValidation:
                 run_id=run_id,
                 session=session,
                 duckdb_conn=duckdb_conn,
+                session_id=baseline_session_id(),
             )
 
         mock_logger.warning.assert_not_called()

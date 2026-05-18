@@ -37,6 +37,9 @@ class DerivedColumn(Base):
     __tablename__ = "derived_columns"
 
     derived_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
     table_id: Mapped[str] = mapped_column(
         ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
     )

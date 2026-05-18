@@ -21,6 +21,7 @@ from dataraum.entropy.contracts import ConfidenceLevel
 from dataraum.graphs.context import ColumnContext, GraphExecutionContext, TableContext
 from dataraum.query.agent import QueryAgent
 from dataraum.query.models import QueryAnalysisOutput
+from tests.conftest import baseline_session_id
 
 
 @pytest.fixture
@@ -504,7 +505,7 @@ class TestQueryAgentSnippets:
         """Test that _discover_snippets returns all snippets in full injection mode."""
         from dataraum.query.snippet_library import SnippetLibrary
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) AS revenue FROM typed_orders",
@@ -548,7 +549,7 @@ class TestQueryAgentSnippets:
         from dataraum.query.snippet_library import SnippetLibrary
         from dataraum.query.snippet_models import SnippetUsageRecord
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         snippet = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) FROM typed_orders",
@@ -588,6 +589,7 @@ class TestQueryAgentSnippets:
             execution_id="exec-001",
             analysis_output=analysis,
             snippet_id_index=snippet_id_index,
+            session_id=baseline_session_id(),
         )
         session.flush()
 
@@ -623,6 +625,7 @@ class TestQueryAgentSnippets:
             execution_id="exec-002",
             analysis_output=analysis,
             snippet_id_index={},
+            session_id=baseline_session_id(),
         )
         session.flush()
 
@@ -658,6 +661,7 @@ class TestQueryAgentSnippets:
             execution_id="exec-003",
             analysis_output=analysis,
             schema_mapping_id="source_123",
+            session_id=baseline_session_id(),
         )
         session.flush()
 
@@ -701,6 +705,7 @@ class TestQueryAgentSnippets:
             execution_id="exec-004",
             analysis_output=analysis,
             schema_mapping_id="source_123",
+            session_id=baseline_session_id(),
         )
         session.flush()
 
@@ -712,7 +717,7 @@ class TestQueryAgentSnippets:
         """Test that _discover_snippets returns snippets grouped by source graph."""
         from dataraum.query.snippet_library import SnippetLibrary
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(ar) AS value FROM typed_orders",
@@ -768,6 +773,7 @@ class TestQueryAgentSnippets:
             execution_id="exec-first",
             analysis_output=analysis,
             snippet_id_index={},
+            session_id=baseline_session_id(),
         )
         session.flush()
 
@@ -786,7 +792,7 @@ class TestResolveSnippetReferences:
         from dataraum.query.models import QueryAnalysisOutput, SQLStepOutput
         from dataraum.query.snippet_library import SnippetLibrary
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         snippet = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) AS value FROM typed_orders",
@@ -836,7 +842,7 @@ class TestResolveSnippetReferences:
         from dataraum.query.models import QueryAnalysisOutput, SQLStepOutput
         from dataraum.query.snippet_library import SnippetLibrary
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         snippet = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) AS value FROM typed_orders",
@@ -942,7 +948,7 @@ class TestResolveSnippetReferences:
         from dataraum.query.models import QueryAnalysisOutput, SQLStepOutput
         from dataraum.query.snippet_library import SnippetLibrary
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         snippet_rev = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) FROM typed_orders",
@@ -1024,7 +1030,7 @@ class TestResolveSnippetReferences:
 
 
 class TestDeterministicUsageTracking:
-    """Tests for deterministic _track_snippet_usage()."""
+    """Tests for deterministic _track_snippet_usage(session_id=baseline_session_id())."""
 
     def test_adapted_step_tracked(self, mock_agent, session: Session):
         """Step with snippet_id but different SQL tracked as adapted."""
@@ -1034,7 +1040,7 @@ class TestDeterministicUsageTracking:
         from dataraum.query.snippet_library import SnippetLibrary
         from dataraum.query.snippet_models import SnippetUsageRecord
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         snippet = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) FROM typed_orders",
@@ -1073,6 +1079,7 @@ class TestDeterministicUsageTracking:
             execution_id="exec-adapt",
             analysis_output=analysis,
             snippet_id_index=snippet_id_index,
+            session_id=baseline_session_id(),
         )
         session.flush()
 
@@ -1089,7 +1096,7 @@ class TestDeterministicUsageTracking:
         from dataraum.query.snippet_library import SnippetLibrary
         from dataraum.query.snippet_models import SnippetUsageRecord
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         snippet = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) FROM typed_orders",
@@ -1128,6 +1135,7 @@ class TestDeterministicUsageTracking:
             execution_id="exec-unused",
             analysis_output=analysis,
             snippet_id_index=snippet_id_index,
+            session_id=baseline_session_id(),
         )
         session.flush()
 
@@ -1149,7 +1157,7 @@ class TestDeterministicUsageTracking:
         from dataraum.query.snippet_library import SnippetLibrary
         from dataraum.query.snippet_models import SnippetUsageRecord
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         s1 = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) FROM typed_orders",
@@ -1216,6 +1224,7 @@ class TestDeterministicUsageTracking:
             execution_id="exec-mixed",
             analysis_output=analysis,
             snippet_id_index=snippet_id_index,
+            session_id=baseline_session_id(),
         )
         session.flush()
 
@@ -1264,6 +1273,7 @@ class TestSaveNovelSnippetsWithSnippetId:
             execution_id="exec-save",
             analysis_output=analysis,
             schema_mapping_id="source_123",
+            session_id=baseline_session_id(),
         )
         session.flush()
 
@@ -1301,6 +1311,7 @@ class TestSaveNovelSnippetsWithSnippetId:
             execution_id="exec-adapt-save",
             analysis_output=analysis,
             schema_mapping_id="source_123",
+            session_id=baseline_session_id(),
         )
         session.flush()
 

@@ -59,6 +59,9 @@ class Relationship(Base):
     relationship_id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid4())
     )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
 
     # Source side
     from_table_id: Mapped[str] = mapped_column(

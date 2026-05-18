@@ -392,6 +392,8 @@ def assess_statistical_quality(
     session: Session,
     max_workers: int = 8,
     exclude_outlier_columns: set[str] | None = None,
+    *,
+    session_id: str,
 ) -> Result[list[StatisticalQualityResult]]:
     """Assess statistical quality for all numeric columns in a table.
 
@@ -514,6 +516,7 @@ def assess_statistical_quality(
                     # Persist using hybrid storage (sequential - SQLite writes)
                     db_metric = DBStatisticalQualityMetrics(
                         metric_id=str(uuid4()),
+                        session_id=session_id,
                         column_id=column_id,
                         computed_at=computed_at,
                         benford_compliant=benford_analysis.is_compliant

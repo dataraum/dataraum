@@ -20,8 +20,16 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
-from sqlalchemy.dialects.sqlite import JSON
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dataraum.storage import Base
@@ -51,6 +59,9 @@ class SQLSnippetRecord(Base):
     )
 
     snippet_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
 
     # Discriminator: extract | constant | formula | query
     snippet_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
@@ -112,6 +123,9 @@ class SnippetUsageRecord(Base):
     __tablename__ = "snippet_usage"
 
     usage_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
 
     # --- Execution link ---
     execution_id: Mapped[str] = mapped_column(String, nullable=False, index=True)

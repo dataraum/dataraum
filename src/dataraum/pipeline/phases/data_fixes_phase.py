@@ -75,6 +75,7 @@ class DataFixesPhase(BasePhase):
                 apply_fix_document(
                     doc,
                     session=ctx.session,
+                    session_id=ctx.require_session_id(),
                 )
                 fix.status = "applied"
                 fix.applied_at = datetime.now(UTC)

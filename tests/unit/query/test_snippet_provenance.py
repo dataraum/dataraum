@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from dataraum.query.snippet_library import SnippetLibrary
 from dataraum.query.snippet_models import SQLSnippetRecord
+from tests.conftest import baseline_session_id
 
 SOURCE_ID = "test_source"
 
@@ -46,7 +47,7 @@ class TestSnippetProvenance:
 
     def test_save_snippet_with_provenance(self, session: Session) -> None:
         """Provenance dict roundtrips through save_snippet."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         provenance = {
             "field_resolution": "inferred",
             "was_repaired": False,
@@ -73,7 +74,7 @@ class TestSnippetProvenance:
 
     def test_save_snippet_without_provenance(self, session: Session) -> None:
         """Provenance is None when not provided."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         record = library.save_snippet(
             snippet_type="extract",
             sql="SELECT SUM(amount) FROM t",
@@ -90,7 +91,7 @@ class TestSnippetProvenance:
         provenance = {"field_resolution": "direct", "was_repaired": False}
         _add_snippet(session, SOURCE_ID, provenance=provenance)
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         match = library.find_by_key(
             snippet_type="extract",
             schema_mapping_id=SOURCE_ID,
@@ -108,7 +109,7 @@ class TestSnippetProvenance:
         record.failure_count = 1
         session.flush()
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         new_provenance = {"field_resolution": "direct", "was_repaired": True}
         updated = library.save_snippet(
             snippet_type="extract",
@@ -150,7 +151,7 @@ class TestVocabularyHarmonization:
         session.add(record)
         session.flush()
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         vocab = library.get_search_vocabulary(schema_mapping_id=SOURCE_ID)
 
         assert "revenue" in vocab["standard_fields"]
@@ -185,7 +186,7 @@ class TestVocabularyHarmonization:
         session.add(record)
         session.flush()
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         vocab = library.get_search_vocabulary(schema_mapping_id=SOURCE_ID)
 
         # One-off step_id from query agent should not pollute vocabulary

@@ -40,6 +40,9 @@ class SemanticAnnotation(Base):
     annotation_id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid4())
     )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
     column_id: Mapped[str] = mapped_column(
         ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
     )
@@ -90,6 +93,9 @@ class TableEntity(Base):
 
     __tablename__ = "table_entities"
     entity_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
     table_id: Mapped[str] = mapped_column(
         ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
     )

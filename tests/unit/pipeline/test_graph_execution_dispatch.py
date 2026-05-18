@@ -28,6 +28,7 @@ import pytest
 
 from dataraum.core.models.base import Result
 from dataraum.pipeline.phases import graph_execution_phase as gep
+from tests.conftest import baseline_session_id
 
 
 @dataclass
@@ -64,7 +65,9 @@ class TestExecuteMetricsSerial:
             ("g2", _graph("g2"), None, None),
         ]
 
-        out = gep._execute_metrics_serial(prep, session, exec_ctx, agent)
+        out = gep._execute_metrics_serial(
+            prep, session, exec_ctx, agent, session_id=baseline_session_id()
+        )
 
         assert [graph_id for graph_id, _, _ in out] == ["g0", "g1", "g2"]
         assert [r.value for _, r, _ in out] == ["r0", "r1", "r2"]
@@ -86,6 +89,7 @@ class TestExecuteMetricsSerial:
             MagicMock(),
             MagicMock(),
             agent,
+            session_id=baseline_session_id(),
         )
         assert out[0][1].success is True
         assert out[1][1].success is False
@@ -113,6 +117,8 @@ class _ConcurrencyTrackingAgent:
         graph: _StubGraph,
         context: Any,
         inspiration_sql: str | None = None,
+        *,
+        session_id: str = "",
     ) -> Result[str]:
         with self._lock:
             self.in_flight += 1
@@ -155,7 +161,9 @@ class TestExecuteMetricsParallel:
         manager = _stub_manager()
         prep = [(f"g{i}", _graph(f"g{i}"), None, None) for i in range(7)]
 
-        out = gep._execute_metrics_parallel(prep, manager, agent, "src-1", ["t1"])
+        out = gep._execute_metrics_parallel(
+            prep, manager, agent, "src-1", ["t1"], session_id=baseline_session_id()
+        )
 
         assert sorted(gid for gid, _, _ in out) == [f"g{i}" for i in range(7)]
         assert all(r.success for _, r, _ in out)
@@ -173,7 +181,9 @@ class TestExecuteMetricsParallel:
         manager = _stub_manager()
         prep = [(f"g{i}", _graph(f"g{i}"), None, None) for i in range(8)]
 
-        gep._execute_metrics_parallel(prep, manager, agent, "src", ["t"])
+        gep._execute_metrics_parallel(
+            prep, manager, agent, "src", ["t"], session_id=baseline_session_id()
+        )
 
         # With cap=2 and 8 metrics, peak must not exceed 2
         assert agent.peak_in_flight <= 2, f"Peak in-flight {agent.peak_in_flight} exceeded cap of 2"
@@ -193,7 +203,9 @@ class TestExecuteMetricsParallel:
             ("g2", _graph("g2"), None, "insp-2"),
         ]
 
-        out = gep._execute_metrics_parallel(prep, manager, agent, "src", ["t"])
+        out = gep._execute_metrics_parallel(
+            prep, manager, agent, "src", ["t"], session_id=baseline_session_id()
+        )
 
         by_id = {gid: (r, iid) for gid, r, iid in out}
         assert by_id["g0"][1] is None
@@ -205,7 +217,9 @@ class TestExecuteMetricsParallel:
             "dataraum.graphs.agent.ExecutionContext.with_rich_context",
             classmethod(lambda cls, **kw: MagicMock()),
         )
-        out = gep._execute_metrics_parallel([], _stub_manager(), MagicMock(), "src", [])
+        out = gep._execute_metrics_parallel(
+            [], _stub_manager(), MagicMock(), "src", [], session_id=baseline_session_id()
+        )
         assert out == []
 
     def test_exception_in_one_worker_does_not_abort_siblings(
@@ -230,6 +244,8 @@ class TestExecuteMetricsParallel:
                 graph: _StubGraph,
                 context: Any,
                 inspiration_sql: str | None = None,
+                *,
+                session_id: str = "",
             ) -> Result[str]:
                 if graph.graph_id == "bad":
                     raise RuntimeError("simulated infra failure")
@@ -242,7 +258,9 @@ class TestExecuteMetricsParallel:
             ("g2", _graph("g2"), None, None),
         ]
 
-        out = gep._execute_metrics_parallel(prep, manager, _FlakyAgent(), "src", ["t"])
+        out = gep._execute_metrics_parallel(
+            prep, manager, _FlakyAgent(), "src", ["t"], session_id=baseline_session_id()
+        )
 
         by_id = {gid: (r, iid) for gid, r, iid in out}
         # All three results are present
@@ -292,8 +310,12 @@ class TestExecuteIsolated:
         agent.execute.return_value = Result.ok("done")
 
         # Each call should open a fresh pair
-        gep._execute_isolated(_graph("g0"), None, manager, agent, "src", ["t"])
-        gep._execute_isolated(_graph("g1"), None, manager, agent, "src", ["t"])
+        gep._execute_isolated(
+            _graph("g0"), None, manager, agent, "src", ["t"], baseline_session_id()
+        )
+        gep._execute_isolated(
+            _graph("g1"), None, manager, agent, "src", ["t"], baseline_session_id()
+        )
 
         assert len(opened_sessions) == 2
         assert len(opened_cursors) == 2
@@ -331,5 +353,7 @@ def test_asyncio_run_does_not_deadlock_with_nested_calls(
     manager = _stub_manager()
     prep = [(f"g{i}", _graph(f"g{i}"), None, None) for i in range(3)]
 
-    out = gep._execute_metrics_parallel(prep, manager, agent, "src", ["t"])
+    out = gep._execute_metrics_parallel(
+        prep, manager, agent, "src", ["t"], session_id=baseline_session_id()
+    )
     assert len(out) == 3

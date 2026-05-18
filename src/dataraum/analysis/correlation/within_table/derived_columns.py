@@ -112,6 +112,8 @@ def detect_derived_columns(
     session: Session,
     min_match_rate: float = 0.80,
     max_workers: int = 8,
+    *,
+    session_id: str,
 ) -> Result[list[DerivedColumn]]:
     """Detect columns that are arithmetic derivations of other columns.
 
@@ -254,6 +256,7 @@ def detect_derived_columns(
         for derived in derived_columns:
             db_derived = DBDerivedColumn(
                 derived_id=derived.derived_id,
+                session_id=session_id,
                 table_id=derived.table_id,
                 derived_column_id=derived.derived_column_id,
                 source_column_ids=derived.source_column_ids,
@@ -280,6 +283,8 @@ def detect_enriched_derived_columns(
     session: Session,
     min_match_rate: float = 0.80,
     max_workers: int = 8,
+    *,
+    session_id: str,
 ) -> Result[list[DerivedColumn]]:
     """Detect derived columns on an enriched view (fact + dimension columns).
 
@@ -432,6 +437,7 @@ def detect_enriched_derived_columns(
         for derived in derived_columns:
             db_derived = DBDerivedColumn(
                 derived_id=derived.derived_id,
+                session_id=session_id,
                 table_id=derived.table_id,
                 derived_column_id=derived.derived_column_id,
                 source_column_ids=derived.source_column_ids,

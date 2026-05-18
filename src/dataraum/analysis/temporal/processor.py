@@ -191,6 +191,7 @@ def profile_temporal(
     session: Session,
     *,
     config: dict[str, Any] | None = None,
+    session_id: str,
 ) -> Result[TemporalProfileResult]:
     """Profile temporal columns in a table.
 
@@ -285,6 +286,7 @@ def profile_temporal(
                     # Create DB object (sequential - SQLite writes)
                     db_profile = TemporalColumnProfile(
                         profile_id=profile.metric_id,
+                        session_id=session_id,
                         column_id=profile.column_id,
                         profiled_at=profiled_at,
                         min_timestamp=profile.min_timestamp,

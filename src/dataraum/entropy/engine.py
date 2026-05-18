@@ -30,6 +30,8 @@ def run_detector_post_step(
     source_id: str,
     detector_id: str,
     duckdb_conn: Any = None,
+    *,
+    session_id: str,
 ) -> int:
     """Run a single detector as a phase post-step.
 
@@ -96,6 +98,7 @@ def run_detector_post_step(
                     all_records.append(
                         _make_record(
                             source_id=source_id,
+                            session_id=session_id,
                             entropy_obj=obj,
                             table_id=table.table_id,
                             column_id=col.column_id,
@@ -116,6 +119,7 @@ def run_detector_post_step(
                 all_records.append(
                     _make_record(
                         source_id=source_id,
+                        session_id=session_id,
                         entropy_obj=obj,
                         table_id=_resolve_table_id_from_target(
                             obj.target, table_id_by_name, table.table_id
@@ -149,6 +153,7 @@ def run_detector_post_step(
                 all_records.append(
                     _make_record(
                         source_id=source_id,
+                        session_id=session_id,
                         entropy_obj=obj,
                         table_id=ev.fact_table_id,
                         column_id=_extract_column_id(obj),
@@ -237,9 +242,12 @@ def _make_record(
     entropy_obj: EntropyObject,
     table_id: str | None,
     column_id: str | None,
+    *,
+    session_id: str,
 ) -> EntropyObjectRecord:
     """Create an EntropyObjectRecord from an EntropyObject."""
     return EntropyObjectRecord(
+        session_id=session_id,
         source_id=source_id,
         table_id=table_id,
         column_id=column_id,

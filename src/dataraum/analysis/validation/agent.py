@@ -71,6 +71,7 @@ class ValidationAgent(LLMFeature):
         persist: bool = True,
         *,
         vertical: str,
+        session_id: str,
     ) -> Result[ValidationRunResult]:
         """Run validation checks across multiple tables.
 
@@ -162,7 +163,7 @@ class ValidationAgent(LLMFeature):
 
         # Persist results to database
         if persist:
-            self._persist_results(session, run_result)
+            self._persist_results(session, run_result, session_id=session_id)
 
         return Result.ok(run_result)
 
@@ -685,6 +686,8 @@ class ValidationAgent(LLMFeature):
         self,
         session: Session,
         run_result: ValidationRunResult,
+        *,
+        session_id: str,
     ) -> None:
         """Persist validation results to the database.
 
@@ -698,6 +701,7 @@ class ValidationAgent(LLMFeature):
             result_data = result.model_dump(mode="json")
             result_record = ValidationResultRecord(
                 result_id=str(uuid4()),
+                session_id=session_id,
                 validation_id=result.validation_id,
                 table_ids=result.table_ids,
                 status=result.status.value,

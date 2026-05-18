@@ -70,7 +70,7 @@ class MetadataInterpreter:
     and applies field_updates via setattr.
     """
 
-    def apply(self, doc: FixDocument, session: Session) -> None:
+    def apply(self, doc: FixDocument, session: Session, *, session_id: str) -> None:
         """Apply a metadata fix to an ORM model.
 
         For markers (no ``model`` in payload), the DataFix record itself
@@ -112,7 +112,9 @@ class MetadataInterpreter:
             # For Relationship, create a new record if none exists
             factory = _MODEL_FACTORIES.get(model_name)
             if factory:
-                instance = factory(session, doc.table_name, doc.column_name, hints)
+                instance = factory(
+                    session, doc.table_name, doc.column_name, hints, session_id=session_id
+                )
                 if instance is None:
                     raise ValueError(
                         f"Cannot create {model_name}: columns not found for "
@@ -277,7 +279,12 @@ _MODEL_RESOLVERS: dict[str, Any] = {
 
 
 def _create_relationship(
-    session: Session, table_name: str, column_name: str | None, hints: dict[str, Any]
+    session: Session,
+    table_name: str,
+    column_name: str | None,
+    hints: dict[str, Any],
+    *,
+    session_id: str,
 ) -> Any:
     """Create a new Relationship when the resolver finds no existing one.
 
@@ -313,6 +320,7 @@ def _create_relationship(
     # relationship_type and cardinality come via field_updates (applied
     # by the setattr loop after creation), not hints.
     return Relationship(
+        session_id=session_id,
         from_table_id=from_table_obj.table_id,
         from_column_id=from_col.column_id,
         to_table_id=to_table_obj.table_id,
@@ -352,6 +360,7 @@ def apply_fix_document(
     *,
     config_root: Path | None = None,
     session: Session | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Apply a fix document using the appropriate interpreter.
 
@@ -373,7 +382,9 @@ def apply_fix_document(
     elif doc.target == "metadata":
         if session is None:
             raise ValueError("session required for metadata fixes")
-        MetadataInterpreter().apply(doc, session)
+        if session_id is None:
+            raise ValueError("session_id required for metadata fixes")
+        MetadataInterpreter().apply(doc, session, session_id=session_id)
 
     else:
         raise ValueError(f"Unknown fix target: {doc.target!r}")
@@ -385,6 +396,7 @@ def apply_and_persist(
     *,
     session: Session,
     config_root: Path | None = None,
+    session_id: str,
 ) -> list[DataFix]:
     """Apply a list of fix documents and persist them to the DB.
 
@@ -404,7 +416,7 @@ def apply_and_persist(
     records: list[DataFix] = []
 
     for doc in sorted_docs:
-        record = DataFix.from_document(source_id, doc)
+        record = DataFix.from_document(source_id, doc, session_id=session_id)
         session.add(record)
 
         try:
@@ -412,6 +424,7 @@ def apply_and_persist(
                 doc,
                 config_root=config_root,
                 session=session,
+                session_id=session_id,
             )
             record.status = "applied"
             record.applied_at = datetime.now(UTC)

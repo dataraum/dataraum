@@ -146,7 +146,7 @@ class TestEndSessionFullFlow:
     async def test_end_session_archives_and_allows_new(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Full flow: begin → end → session dir archived → workspace.db preserved."""
+        """Full flow: begin → end → session dir archived → workspace ActiveSession cleared."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
 
         from dataraum.mcp.server import create_server
@@ -157,33 +157,36 @@ class TestEndSessionFullFlow:
         csv = tmp_path / "data.csv"
         csv.write_text("a,b\n1,2\n")
 
-        # Setup: add source (writes to workspace.db) and begin session
-        # (creates sessions/{fp}/metadata.db,data.duckdb + sets ActiveSession pointer)
+        # Setup: add source (writes to workspace Postgres) and begin session
+        # (creates sessions/{fp}/data.duckdb + sets ActiveSession pointer)
         await self._call(server, "add_source", {"name": "src", "path": str(csv)})
         r1 = await self._call(server, "begin_session", {"source": "src", "intent": "first"})
         assert "error" not in r1
 
-        # Workspace registry exists; sessions/{fp}/ exists; archive does not
-        assert (tmp_path / "workspace.db").exists()
+        # sessions/{fp}/ exists with the per-session DuckDB; archive does not.
+        # No SQLite .db files should ever appear at the root post-DAT-321.
+        assert not (tmp_path / "workspace.db").exists()
         sessions_dir = tmp_path / "sessions"
         assert sessions_dir.exists()
         session_dirs_before = list(sessions_dir.iterdir())
         assert len(session_dirs_before) == 1  # one fingerprint
-        assert (session_dirs_before[0] / "metadata.db").exists()
+        assert (session_dirs_before[0] / "data.duckdb").exists()
+        assert not (session_dirs_before[0] / "metadata.db").exists()
 
         # End the session
         r2 = await self._call(server, "end_session", {"outcome": "delivered", "summary": "done"})
         assert r2["status"] == "ended"
         assert r2["outcome"] == "delivered"
 
-        # Session dir gone, archive populated, workspace.db preserved
+        # Session dir moved, archive populated with the DuckDB file.
         assert not session_dirs_before[0].exists()
         archive_base = tmp_path / "archive"
         assert archive_base.exists()
         archived = list(archive_base.iterdir())
         assert len(archived) == 1
-        assert (archived[0] / "metadata.db").exists()
-        assert (tmp_path / "workspace.db").exists()  # registry preserved
+        assert (archived[0] / "data.duckdb").exists()
+        assert not (archived[0] / "metadata.db").exists()
+        assert not (tmp_path / "workspace.db").exists()  # never a file
 
     @pytest.mark.asyncio
     async def test_end_session_resets_config_root_override(

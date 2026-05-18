@@ -14,6 +14,7 @@ from dataraum.analysis.typing import infer_type_candidates, resolve_types
 from dataraum.core.models import SourceConfig
 from dataraum.sources.csv import CSVLoader
 from dataraum.storage import Table
+from tests.conftest import baseline_session_id
 
 
 def _get_typed_table_id(typed_table_name: str, session) -> str | None:
@@ -51,17 +52,27 @@ def profiled_result(simple_csv, duckdb_conn, session):
     raw_table = session.get(Table, staged_table.table_id)
     assert raw_table is not None
 
-    infer_result = infer_type_candidates(raw_table, duckdb_conn, session)
+    infer_result = infer_type_candidates(
+        raw_table, duckdb_conn, session, session_id=baseline_session_id()
+    )
     assert infer_result.success
 
-    resolve_result = resolve_types(staged_table.table_id, duckdb_conn, session, min_confidence=0.85)
+    resolve_result = resolve_types(
+        staged_table.table_id,
+        duckdb_conn,
+        session,
+        min_confidence=0.85,
+        session_id=baseline_session_id(),
+    )
     assert resolve_result.success
     resolution = resolve_result.unwrap()
 
     typed_table_id = _get_typed_table_id(resolution.typed_table_name, session)
     assert typed_table_id is not None
 
-    stats_result = profile_statistics(typed_table_id, duckdb_conn, session)
+    stats_result = profile_statistics(
+        typed_table_id, duckdb_conn, session, session_id=baseline_session_id()
+    )
     assert stats_result.success
     return stats_result.unwrap()
 
@@ -118,7 +129,9 @@ class TestStatisticsProfiler:
 
         raw_table = load_result.unwrap().tables[0]
 
-        stats_result = profile_statistics(raw_table.table_id, duckdb_conn, session)
+        stats_result = profile_statistics(
+            raw_table.table_id, duckdb_conn, session, session_id=baseline_session_id()
+        )
 
         assert not stats_result.success
         assert "typed" in stats_result.error.lower()

@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import duckdb
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -29,6 +29,7 @@ from dataraum.pipeline.phases.temporal_phase import TemporalPhase
 from dataraum.pipeline.phases.typing_phase import TypingPhase
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.storage import init_database
+from tests.conftest import baseline_session_id
 
 # Paths to test data
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -100,6 +101,7 @@ class PipelineTestHarness:
                 source_id=self.source_id,
                 table_ids=table_ids or [],
                 config=config or {},
+                session_id=baseline_session_id(),
             )
 
             # Check skip condition
@@ -118,7 +120,11 @@ class PipelineTestHarness:
                 with self.session_factory() as detector_session:
                     for detector_id in detector_ids:
                         run_detector_post_step(
-                            detector_session, self.source_id, detector_id, self.duckdb_conn
+                            detector_session,
+                            self.source_id,
+                            detector_id,
+                            self.duckdb_conn,
+                            session_id=baseline_session_id(),
                         )
                     detector_session.commit()
 
@@ -227,21 +233,48 @@ def _build_phase_dict(*phase_instances: Phase) -> dict[str, Phase]:
 
 
 @pytest.fixture
-def integration_engine() -> Engine:
-    """Create an in-memory SQLite engine for integration tests."""
-    engine = create_engine(
-        "sqlite:///:memory:",
-        echo=False,
-        future=True,
-    )
+def integration_engine(pg_url_clean: str) -> Engine:
+    """Create a Postgres engine on the session-scoped testcontainer.
 
-    @event.listens_for(engine, "connect")
-    def set_sqlite_pragma(dbapi_conn, connection_record):
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    Integration tests target the real Postgres dialect post-DAT-321 so that
+    SQLite-permissive quirks (case insensitivity, JSON-vs-JSONB, looser
+    transaction semantics) can't mask real bugs. Per-test isolation comes
+    from ``pg_url_clean`` (TRUNCATE CASCADE over every Base table).
 
+    Seeds a baseline ``Source`` + ``InvestigationSession`` so the global
+    ``before_flush`` autofill hook in ``tests/conftest.py`` has a valid
+    FK target for any per-session row a test constructs without explicit
+    ``session_id=``. Production code always sets it explicitly.
+    """
+    from datetime import UTC, datetime
+
+    from dataraum.investigation.db_models import InvestigationSession
+    from dataraum.storage import Source
+
+    engine = create_engine(pg_url_clean, echo=False, future=True)
     init_database(engine)
+
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as sess:
+        sess.add(
+            Source(
+                source_id="00000000-0000-0000-0000-000000000002",
+                name="test_baseline",
+                source_type="csv",
+            )
+        )
+        sess.flush()
+        sess.add(
+            InvestigationSession(
+                session_id=baseline_session_id(),
+                source_id="00000000-0000-0000-0000-000000000002",
+                intent="integration baseline",
+                status="active",
+                started_at=datetime.now(UTC),
+            )
+        )
+        sess.commit()
+
     yield engine
     engine.dispose()
 

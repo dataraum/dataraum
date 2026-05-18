@@ -36,6 +36,7 @@ def answer_question(
     table_ids: list[str] | None = None,
     ephemeral: bool = False,
     display_limit: int = 10_000,
+    session_id: str,
 ) -> Result[QueryResult]:
     """Answer a natural language question about the data.
 
@@ -124,4 +125,5 @@ def answer_question(
         source_id=source_id,
         ephemeral=ephemeral,
         display_limit=display_limit,
+        session_id=session_id,
     )

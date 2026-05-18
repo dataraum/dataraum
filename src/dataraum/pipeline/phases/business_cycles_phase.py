@@ -168,6 +168,7 @@ class BusinessCyclesPhase(BasePhase):
             table_ids=table_ids,
             source_id=ctx.source_id,
             vertical=vertical,
+            session_id=ctx.require_session_id(),
         )
 
         if not analysis_result.success:

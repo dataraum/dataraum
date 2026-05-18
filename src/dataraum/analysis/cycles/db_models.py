@@ -36,6 +36,9 @@ class DetectedBusinessCycle(Base):
     __table_args__ = (Index("idx_detected_cycles_source", "source_id"),)
 
     cycle_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
     source_id: Mapped[str] = mapped_column(
         ForeignKey("sources.source_id", ondelete="CASCADE"), nullable=False
     )

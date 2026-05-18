@@ -38,6 +38,9 @@ class TemporalColumnProfile(Base):
     __tablename__ = "temporal_column_profiles"
 
     profile_id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
     column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
     profiled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 

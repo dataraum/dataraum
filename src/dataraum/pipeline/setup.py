@@ -60,6 +60,7 @@ def setup_pipeline(
     force_phase: bool = False,
     contract: str | None = None,
     vertical: str | None = None,
+    session_id: str | None = None,
 ) -> PipelineSetup:
     """Initialize the pipeline for a single source.
 
@@ -94,8 +95,16 @@ def setup_pipeline(
     # 1. Initialize storage
     output_dir.mkdir(parents=True, exist_ok=True)
     conn_config = ConnectionConfig.for_directory(output_dir)
-    manager = ConnectionManager(conn_config)
+    manager = ConnectionManager(conn_config, session_id=session_id)
     manager.initialize()
+
+    if session_id is None:
+        raise RuntimeError(
+            "setup_pipeline requires session_id post-DAT-321; per-session writes "
+            "(PipelineRun, PhaseLog, EntropyObjectRecord, ...) all carry an FK to "
+            "investigation_sessions.session_id. CLI flows must pass an active "
+            "InvestigationSession id (or the CLI itself is going away — see L6)."
+        )
 
     # 2. Per-source config: copy global config to output_dir on first run
     _ensure_source_config(output_dir)
@@ -169,6 +178,7 @@ def setup_pipeline(
     run_id = str(uuid4())
     run_record = PipelineRun(
         run_id=run_id,
+        session_id=session_id,
         source_id=source_id,
         status="running",
         config={
@@ -205,6 +215,7 @@ def setup_pipeline(
         runtime_config=runtime_config,
         session_factory=manager.session_scope,
         manager=manager,
+        session_id=session_id,
     )
 
     return PipelineSetup(

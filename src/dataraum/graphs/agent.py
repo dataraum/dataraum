@@ -157,6 +157,8 @@ class GraphAgent(LLMFeature):
         parameters: dict[str, Any] | None = None,
         force_regenerate: bool = False,
         inspiration_sql: str | None = None,
+        *,
+        session_id: str,
     ) -> Result[GraphExecution]:
         """Execute a graph by generating and running SQL.
 
@@ -222,6 +224,7 @@ class GraphAgent(LLMFeature):
                         execution_id=generated_code.code_id,
                         cached_snippets=cached_snippets,
                         generated_steps=generated_code.steps,
+                        session_id=session_id,
                     )
             else:
                 # Generate SQL using LLM (with cached snippet hints)
@@ -243,6 +246,7 @@ class GraphAgent(LLMFeature):
                     execution_id=generated_code.code_id,
                     cached_snippets=cached_snippets or {},
                     generated_steps=generated_code.steps,
+                    session_id=session_id,
                 )
 
             if generated_code is None:
@@ -261,7 +265,7 @@ class GraphAgent(LLMFeature):
                 failed_ids = [
                     s["snippet_id"] for s in cached_snippets.values() if s.get("snippet_id")
                 ]
-                SnippetLibrary(session).record_failure(failed_ids)
+                SnippetLibrary(session, session_id=session_id).record_failure(failed_ids)
             return Result.fail(exec_result.error or "SQL execution failed")
 
         execution = exec_result.value
@@ -274,6 +278,7 @@ class GraphAgent(LLMFeature):
             generated_code=generated_code,
             schema_mapping_id=schema_mapping_id,
             step_results=execution.step_results,
+            session_id=session_id,
         )
 
         return Result.ok(execution)
@@ -841,12 +846,14 @@ class GraphAgent(LLMFeature):
         execution_id: str,
         cached_snippets: dict[str, dict[str, Any]],
         generated_steps: list[dict[str, str]],
+        *,
+        session_id: str,
     ) -> None:
         """Track how cached snippets were used in graph execution."""
         from dataraum.query.snippet_library import SnippetLibrary
         from dataraum.query.snippet_utils import determine_usage_type
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=session_id)
         used_snippet_ids: set[str] = set()
 
         for gen_step in generated_steps:
@@ -900,6 +907,8 @@ class GraphAgent(LLMFeature):
         generated_code: GeneratedCode,
         schema_mapping_id: str,
         step_results: list[StepResult] | None = None,
+        *,
+        session_id: str,
     ) -> None:
         """Save generated SQL steps as snippets for cross-graph reuse.
 
@@ -917,7 +926,7 @@ class GraphAgent(LLMFeature):
         from dataraum.query.snippet_library import SnippetLibrary
         from dataraum.query.snippet_utils import normalize_expression
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=session_id)
 
         source = f"graph:{graph.graph_id}"
 

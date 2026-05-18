@@ -41,6 +41,9 @@ class SliceDefinition(Base):
     )
 
     slice_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
     table_id: Mapped[str] = mapped_column(
         ForeignKey("tables.table_id", ondelete="CASCADE"), nullable=False
     )
@@ -92,6 +95,9 @@ class ColumnSliceProfile(Base):
     )
 
     profile_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
 
     # Reference to source column (in the original typed table)
     source_column_id: Mapped[str] = mapped_column(

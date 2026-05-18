@@ -516,6 +516,7 @@ def handle_teach(
     vertical: str,
     config_root: Path | None = None,
     target: str | None = None,
+    session_id: str,
 ) -> dict[str, Any]:
     """Dispatch a teach request to the appropriate handler.
 
@@ -566,6 +567,7 @@ def handle_teach(
             [doc],
             session=session,
             config_root=config_root,
+            session_id=session_id,
         )
     except Exception as e:
         logger.error("teach_apply_failed", teach_type=teach_type, error=str(e))

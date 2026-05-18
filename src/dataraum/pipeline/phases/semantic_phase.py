@@ -296,6 +296,7 @@ class SemanticPhase(BasePhase):
             duckdb_conn=ctx.duckdb_conn,
             column_annotations=column_annotations,
             required_standard_fields=required_standard_fields,
+            session_id=ctx.require_session_id(),
         )
 
         if not enrich_result.success:

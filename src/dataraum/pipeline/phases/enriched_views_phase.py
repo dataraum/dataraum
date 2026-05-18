@@ -307,6 +307,7 @@ class EnrichedViewsPhase(BasePhase):
             else:
                 # Create new view record
                 view_record = EnrichedView(
+                    session_id=ctx.require_session_id(),
                     fact_table_id=fact_table.table_id,
                     view_name=view_name,
                     view_sql=view_sql,
@@ -415,6 +416,7 @@ class EnrichedViewsPhase(BasePhase):
                     is_unique = profile.distinct_count == non_null if non_null > 0 else False
                     db_profile = StatisticalProfile(
                         profile_id=str(uuid4()),
+                        session_id=ctx.require_session_id(),
                         column_id=col.column_id,
                         profiled_at=profiled_at,
                         layer="enriched",

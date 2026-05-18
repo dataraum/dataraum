@@ -1,9 +1,9 @@
-"""Thread-safe connection management for SQLAlchemy + DuckDB.
+"""Connection management for SQLAlchemy + DuckDB.
 
-This module provides concurrent-ready connection management:
-- SQLAlchemy sync sessions (thread-safe with ThreadPoolExecutor)
-- DuckDB cursors for reads and writes
-- WAL mode for SQLite to enable concurrent reads with writes
+Single-engine model post-DAT-321: every SQLAlchemy session bound to one
+workspace Postgres database (workspace tables + per-session tables, the
+latter scoped via ``session_id`` FK). Per-session DuckDB stays per-session;
+L4 swaps that for DuckLake.
 
 Usage:
     from dataraum.core.connections import ConnectionManager, ConnectionConfig
@@ -12,11 +12,9 @@ Usage:
     manager = ConnectionManager(config)
     manager.initialize()
 
-    # Get a session (thread-safe)
     with manager.session_scope() as session:
         # Use session...
 
-    # DuckDB operations (via cursor)
     with manager.duckdb_cursor() as cursor:
         result = cursor.execute("SELECT * FROM table").fetchdf()
 
@@ -25,6 +23,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -33,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -43,30 +42,45 @@ from dataraum.storage import Base
 logger = get_logger(__name__)
 
 
+_DATABASE_URL_MISSING_MSG = (
+    "DATABASE_URL is not set. The workspace SQLAlchemy engine targets Postgres; "
+    "the container substrate (L1) provides this on the control-plane service "
+    "(see docker-compose.yml). For local dev outside the container, export "
+    "DATABASE_URL=postgresql+psycopg://<user>:<pass>@<host>:<port>/<db>."
+)
+
+
+def _resolve_database_url() -> str:
+    """Read DATABASE_URL or fail loud with an actionable message."""
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise RuntimeError(_DATABASE_URL_MISSING_MSG)
+    return url
+
+
 @dataclass
 class ConnectionConfig:
-    """Connection configuration for SQLAlchemy and DuckDB.
+    """Connection configuration for SQLAlchemy (Postgres) + DuckDB.
 
     Attributes:
-        sqlite_path: Path to SQLite database file
-        duckdb_path: Path to DuckDB database file. None for SQLite-only
-            configurations (e.g. the MCP server's workspace registry).
-        pool_size: SQLAlchemy connection pool size
-        max_overflow: Maximum overflow connections beyond pool_size
-        pool_timeout: Seconds to wait for a connection from pool
-        sqlite_timeout: SQLite busy timeout in seconds
-        duckdb_memory_limit: DuckDB memory limit (e.g., "2GB")
-        echo_sql: Whether to echo SQL statements (for debugging)
+        database_url: SQLAlchemy URL for the workspace Postgres engine
+            (``postgresql+psycopg://...``).
+        duckdb_path: Path to per-session DuckDB file. ``None`` for the
+            workspace registry (no per-session data).
+        pool_size: SQLAlchemy connection pool size.
+        max_overflow: Maximum overflow connections beyond pool_size.
+        pool_timeout: Seconds to wait for a connection from pool.
+        duckdb_memory_limit: DuckDB memory limit (e.g., "2GB").
+        echo_sql: Whether to echo SQL statements (for debugging).
     """
 
-    sqlite_path: Path
+    database_url: str
     duckdb_path: Path | None = None
 
     # SQLAlchemy pool settings
     pool_size: int = 5
     max_overflow: int = 10
     pool_timeout: float = 30.0
-    sqlite_timeout: float = 120.0
 
     # DuckDB settings
     duckdb_memory_limit: str = "2GB"
@@ -75,41 +89,45 @@ class ConnectionConfig:
     echo_sql: bool = False
 
     @classmethod
-    def for_directory(cls, output_dir: Path, **kwargs: Any) -> ConnectionConfig:
-        """Create config for a pipeline output directory (SQLite + DuckDB).
+    def for_workspace(cls, **kwargs: Any) -> ConnectionConfig:
+        """Workspace registry config: Postgres-only, no DuckDB.
 
-        Used by CLI, Python SDK, and the MCP server's per-session managers.
-        Both SQLite metadata and DuckDB data files live in `output_dir`.
+        Reads ``DATABASE_URL`` from the environment. Raises if unset.
+        """
+        return cls(database_url=_resolve_database_url(), duckdb_path=None, **kwargs)
+
+    @classmethod
+    def for_directory(cls, output_dir: Path, **kwargs: Any) -> ConnectionConfig:
+        """Per-session config: workspace Postgres + per-session DuckDB.
+
+        SQLAlchemy targets the same workspace Postgres engine as
+        ``for_workspace()``; the per-session DuckDB file lives at
+        ``output_dir/data.duckdb`` (L4 swaps this for DuckLake).
         """
         return cls(
-            sqlite_path=output_dir / "metadata.db",
+            database_url=_resolve_database_url(),
             duckdb_path=output_dir / "data.duckdb",
             **kwargs,
         )
 
-    @classmethod
-    def for_workspace(cls, root: Path, **kwargs: Any) -> ConnectionConfig:
-        """Create config for the MCP server's workspace registry (SQLite only).
-
-        The workspace holds source registrations and the active-session
-        pointer. It has no DuckDB — analytical data lives in per-session
-        directories created on `begin_session`.
-        """
-        return cls(sqlite_path=root / "workspace.db", duckdb_path=None, **kwargs)
-
 
 @dataclass
 class ConnectionManager:
-    """Thread-safe connection management for SQLAlchemy + DuckDB.
+    """Thread-safe connection management for SQLAlchemy (Postgres) + DuckDB.
 
     Provides:
-    - SQLAlchemy sync session factory (thread-safe)
-    - DuckDB access via cursors (concurrent-safe)
+    - SQLAlchemy sync session factory bound to the workspace Postgres engine
+    - DuckDB access via cursors (per-session, optional)
     - Proper cleanup on close
 
+    The ``session_id`` field is populated by callers that open a per-session
+    manager (e.g. ``mcp/server.py::_get_session_manager``). Recorders read
+    it when constructing per-session rows so writes carry the FK scoping
+    required by the post-L2 schema.
+
     Thread Safety:
-    - SQLAlchemy sessions: One session per thread via session_scope()
-    - DuckDB: Use cursor() which is thread-safe
+    - SQLAlchemy sessions: One session per thread via ``session_scope()``
+    - DuckDB: Use ``duckdb_cursor()`` which returns an independent cursor
 
     Usage:
         manager = ConnectionManager(config)
@@ -125,6 +143,7 @@ class ConnectionManager:
     """
 
     config: ConnectionConfig
+    session_id: str | None = None
     _engine: Engine | None = field(default=None, init=False, repr=False)
     _session_factory: sessionmaker[Session] | None = field(default=None, init=False, repr=False)
     _duckdb_conn: duckdb.DuckDBPyConnection | None = field(default=None, init=False, repr=False)
@@ -134,11 +153,11 @@ class ConnectionManager:
     def initialize(self) -> None:
         """Initialize connection pools and databases.
 
-        Creates SQLAlchemy engine with connection pool and DuckDB connection.
-        Safe to call multiple times (idempotent).
+        Creates the SQLAlchemy engine + pool and the optional DuckDB
+        connection. Safe to call multiple times (idempotent).
 
         Raises:
-            RuntimeError: If initialization fails
+            RuntimeError: If initialization fails.
         """
         with self._init_lock:
             if self._initialized:
@@ -153,47 +172,23 @@ class ConnectionManager:
                 raise RuntimeError(f"Failed to initialize connections: {e}") from e
 
     def _init_sqlalchemy(self) -> None:
-        """Initialize SQLAlchemy sync engine with connection pool."""
-        # Handle in-memory vs file-based SQLite
-        if self.config.sqlite_path == Path(":memory:"):
-            db_url = "sqlite:///:memory:"
-        else:
-            self.config.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-            db_url = f"sqlite:///{self.config.sqlite_path}"
-
+        """Initialize the workspace Postgres SQLAlchemy engine."""
         self._engine = create_engine(
-            db_url,
+            self.config.database_url,
             echo=self.config.echo_sql,
             pool_size=self.config.pool_size,
             max_overflow=self.config.max_overflow,
             pool_timeout=self.config.pool_timeout,
             pool_pre_ping=True,
-            # Explicitly allow cross-thread usage (SQLAlchemy default for file DBs)
-            connect_args={"check_same_thread": False},
         )
 
-        # Configure SQLite pragmas on each connection
-        @event.listens_for(self._engine, "connect")
-        def configure_sqlite(dbapi_conn: Any, connection_record: Any) -> None:
-            cursor = dbapi_conn.cursor()
-            # Enable foreign keys
-            cursor.execute("PRAGMA foreign_keys=ON")
-            # Use WAL mode for better concurrency (readers don't block writers)
-            cursor.execute("PRAGMA journal_mode=WAL")
-            # Set busy timeout (milliseconds)
-            cursor.execute(f"PRAGMA busy_timeout={int(self.config.sqlite_timeout * 1000)}")
-            # Synchronous mode - NORMAL is good balance of safety/speed
-            cursor.execute("PRAGMA synchronous=NORMAL")
-            cursor.close()
-
-        # Import all models to register them with SQLAlchemy
+        # Register all models before create_all so every per-session table
+        # materializes alongside the workspace tables.
         self._import_all_models()
 
-        # Create tables
         Base.metadata.create_all(self._engine)
 
-        # Create session factory
-        # autoflush=False prevents mid-query writes; we flush at commit time with a lock
+        # autoflush=False keeps writes batched; commit happens at scope close.
         self._session_factory = sessionmaker(
             self._engine,
             expire_on_commit=False,
@@ -201,10 +196,11 @@ class ConnectionManager:
         )
 
     def _init_duckdb(self) -> None:
-        """Initialize DuckDB connection for data, if configured.
+        """Initialize the per-session DuckDB connection, if configured.
 
-        SQLite-only configurations (e.g. workspace registry) skip this entirely;
-        `duckdb_cursor()` will raise on attempted use.
+        Workspace-only configurations skip this entirely; ``duckdb_cursor()``
+        will raise on attempted use. L4 swaps the file-backed DuckDB for
+        DuckLake but leaves this hook intact.
         """
         if self.config.duckdb_path is None:
             return
@@ -214,7 +210,6 @@ class ConnectionManager:
             self.config.duckdb_path.parent.mkdir(parents=True, exist_ok=True)
             self._duckdb_conn = duckdb.connect(str(self.config.duckdb_path))
 
-        # Configure DuckDB
         self._duckdb_conn.execute(f"SET memory_limit='{self.config.duckdb_memory_limit}'")
 
     def _import_all_models(self) -> None:
@@ -234,7 +229,6 @@ class ConnectionManager:
         import_all_phase_models()
 
     def _ensure_initialized(self) -> None:
-        """Raise if not initialized."""
         if not self._initialized:
             raise RuntimeError(
                 "ConnectionManager not initialized. Call manager.initialize() first."
@@ -245,17 +239,12 @@ class ConnectionManager:
         """Get a session with automatic cleanup.
 
         Thread-safe: each call creates a new session from the QueuePool.
-        SQLite WAL mode + PRAGMA busy_timeout handle write contention at
-        the C level — no Python-level mutex or retry needed here.
-
-        Session is created with autoflush=False. All writes are batched and
-        committed atomically at the end.
 
         Yields:
-            Session from the connection pool
+            Session from the connection pool.
 
         Raises:
-            RuntimeError: If manager not initialized
+            RuntimeError: If manager not initialized.
 
         Example:
             with manager.session_scope() as session:
@@ -277,14 +266,10 @@ class ConnectionManager:
     def get_session(self) -> Session:
         """Get a new session from the pool.
 
-        The caller is responsible for committing/closing the session.
-        Prefer session_scope() for automatic cleanup.
-
-        Returns:
-            New Session from pool
+        Caller is responsible for committing/closing. Prefer ``session_scope()``.
 
         Raises:
-            RuntimeError: If manager not initialized
+            RuntimeError: If manager not initialized.
         """
         self._ensure_initialized()
         assert self._session_factory is not None
@@ -292,20 +277,14 @@ class ConnectionManager:
 
     @contextmanager
     def duckdb_cursor(self) -> Generator[duckdb.DuckDBPyConnection]:
-        """Get an independent DuckDB cursor on the shared connection.
+        """Get an independent DuckDB cursor on the shared per-session connection.
 
-        Each call returns a fresh cursor via `connection.cursor()`. Cursors
+        Each call returns a fresh cursor via ``connection.cursor()``. Cursors
         have independent statement state and are safe to use from separate
-        threads. Concurrent writes through multiple cursors are serialized
-        by DuckDB internally (DuckDB ≥ 0.10). The underlying connection
-        itself is shared — do not pass the cursor across threads, but each
-        thread holding its own cursor is supported.
-
-        Yields:
-            Independent DuckDB cursor on the shared connection.
+        threads; the underlying connection is shared.
 
         Raises:
-            RuntimeError: If manager not initialized.
+            RuntimeError: If manager not initialized or no DuckDB configured.
 
         Example:
             with manager.duckdb_cursor() as cursor:
@@ -314,9 +293,9 @@ class ConnectionManager:
         self._ensure_initialized()
         if self._duckdb_conn is None:
             raise RuntimeError(
-                "DuckDB cursor requested on a SQLite-only ConnectionManager. "
+                "DuckDB cursor requested on a workspace-only ConnectionManager. "
                 "Workspace managers (ConnectionConfig.for_workspace) have no "
-                "DuckDB; route data operations through a session manager."
+                "DuckDB; route data operations through a per-session manager."
             )
 
         cursor = self._duckdb_conn.cursor()
@@ -329,11 +308,8 @@ class ConnectionManager:
     def engine(self) -> Engine:
         """Get the SQLAlchemy engine.
 
-        Returns:
-            The Engine instance
-
         Raises:
-            RuntimeError: If manager not initialized
+            RuntimeError: If manager not initialized.
         """
         self._ensure_initialized()
         assert self._engine is not None
@@ -362,20 +338,16 @@ class ConnectionManager:
         self._initialized = False
 
     def get_stats(self) -> dict[str, Any]:
-        """Get connection pool statistics.
-
-        Returns:
-            Dict with pool status information
-        """
+        """Get connection pool statistics."""
         self._ensure_initialized()
         assert self._engine is not None
 
         pool: Any = self._engine.pool
         return {
-            "sqlite_pool_size": pool.size() if hasattr(pool, "size") else None,
-            "sqlite_checked_out": pool.checkedout() if hasattr(pool, "checkedout") else None,
-            "sqlite_overflow": pool.overflow() if hasattr(pool, "overflow") else None,
-            "sqlite_checked_in": pool.checkedin() if hasattr(pool, "checkedin") else None,
+            "pool_size": pool.size() if hasattr(pool, "size") else None,
+            "pool_checked_out": pool.checkedout() if hasattr(pool, "checkedout") else None,
+            "pool_overflow": pool.overflow() if hasattr(pool, "overflow") else None,
+            "pool_checked_in": pool.checkedin() if hasattr(pool, "checkedin") else None,
             "duckdb_connected": self._duckdb_conn is not None,
         }
 
@@ -390,15 +362,15 @@ def get_connection_manager(
 ) -> ConnectionManager:
     """Get or create a default ConnectionManager.
 
-    For simple scripts that don't need multiple managers.
-    Creates a singleton manager on first call.
+    For simple scripts that don't need multiple managers. Creates a
+    singleton manager on first call.
 
     Args:
-        output_dir: Output directory (used if config not provided)
-        config: Full configuration (takes precedence over output_dir)
+        output_dir: Output directory for per-session DuckDB (if config not provided).
+        config: Full configuration (takes precedence over output_dir).
 
     Returns:
-        Initialized ConnectionManager
+        Initialized ConnectionManager.
     """
     global _default_manager
 
@@ -424,23 +396,17 @@ def close_default_manager() -> None:
 
 
 def get_manager_for_directory(output_dir: Path) -> ConnectionManager:
-    """Create and initialize a ConnectionManager for a pipeline output directory.
+    """Create and initialize a ConnectionManager for a per-session directory.
 
-    Framework-agnostic: raises FileNotFoundError instead of using CLI-specific
-    error handling (typer.Exit, etc.).
+    Framework-agnostic: raises ``RuntimeError`` if ``DATABASE_URL`` is unset.
 
     Args:
-        output_dir: Directory containing pipeline databases (metadata.db, data.duckdb)
+        output_dir: Directory containing the per-session DuckDB file.
 
     Returns:
         Initialized ConnectionManager. Caller is responsible for closing it.
-
-    Raises:
-        FileNotFoundError: If no metadata database exists at the expected path
     """
     config = ConnectionConfig.for_directory(output_dir)
-    if not config.sqlite_path.exists():
-        raise FileNotFoundError(f"No metadata database at {config.sqlite_path}")
     manager = ConnectionManager(config)
     manager.initialize()
     return manager

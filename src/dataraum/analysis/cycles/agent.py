@@ -63,6 +63,7 @@ class BusinessCycleAgent(LLMFeature):
         *,
         source_id: str,
         vertical: str,
+        session_id: str,
     ) -> Result[BusinessCycleAnalysis]:
         """Analyze tables for business cycles.
 
@@ -149,7 +150,7 @@ class BusinessCycleAgent(LLMFeature):
             )
 
             # 5. Persist to database
-            self._persist_results(session, analysis, source_id=source_id)
+            self._persist_results(session, analysis, source_id=source_id, session_id=session_id)
 
             return Result.ok(analysis)
 
@@ -314,6 +315,7 @@ class BusinessCycleAgent(LLMFeature):
         analysis: BusinessCycleAnalysis,
         *,
         source_id: str,
+        session_id: str,
     ) -> None:
         """Persist analysis results to database.
 
@@ -325,6 +327,7 @@ class BusinessCycleAgent(LLMFeature):
         for cycle in analysis.cycles:
             db_cycle = DetectedBusinessCycle(
                 cycle_id=cycle.cycle_id,
+                session_id=session_id,
                 source_id=source_id,
                 cycle_name=cycle.cycle_name,
                 cycle_type=cycle.cycle_type,

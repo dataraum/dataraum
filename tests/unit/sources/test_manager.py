@@ -265,7 +265,10 @@ class TestAddRecipeSource:
 
 class TestListSources:
     def test_list_empty(self, manager: SourceManager) -> None:
-        assert manager.list_sources() == []
+        # Conftest seeds a baseline Source as the InvestigationSession FK
+        # target; filter it out to assert the workspace-as-registered view.
+        sources = [s for s in manager.list_sources() if s.name != "test_baseline"]
+        assert sources == []
 
     def test_list_registered(self, manager: SourceManager, tmp_path: Path) -> None:
         csv = tmp_path / "data.csv"
@@ -273,7 +276,7 @@ class TestListSources:
         manager.add_file_source("src_la", str(csv))
         manager.add_file_source("src_lb", str(csv))
 
-        sources = manager.list_sources()
+        sources = [s for s in manager.list_sources() if s.name != "test_baseline"]
         assert len(sources) == 2
         names = [s.name for s in sources]
         assert "src_la" in names
@@ -307,7 +310,7 @@ class TestListSources:
         manager.add_file_source("to_remove", str(csv))
         manager.remove_source("to_remove")
 
-        sources = manager.list_sources()
+        sources = [s for s in manager.list_sources() if s.name != "test_baseline"]
         assert len(sources) == 1
         assert sources[0].name == "active"
 

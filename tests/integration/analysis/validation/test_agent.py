@@ -11,6 +11,7 @@ from dataraum.analysis.validation.models import (
     ValidationStatus,
 )
 from dataraum.core.models.base import Result
+from tests.conftest import baseline_session_id
 
 
 @pytest.fixture
@@ -396,6 +397,7 @@ class TestValidationAgentRunValidations:
             duckdb_conn=duckdb_conn,
             table_ids=["nonexistent-id"],
             vertical="finance",
+            session_id=baseline_session_id(),
         )
 
         assert not result.success
@@ -416,6 +418,7 @@ class TestValidationAgentRunValidations:
                 duckdb_conn=duckdb_conn,
                 table_ids=[table.table_id],
                 vertical="finance",
+                session_id=baseline_session_id(),
             )
 
         assert result.success

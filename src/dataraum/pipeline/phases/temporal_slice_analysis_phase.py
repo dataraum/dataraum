@@ -294,6 +294,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
                             slice_table_name=si.slice_table_name,
                             time_column=time_column,
                             session=ctx.session,
+                            session_id=ctx.require_session_id(),
                         )
                         if persist_result.success and persist_result.value is not None:
                             total_drift_summaries += persist_result.value
@@ -311,6 +312,7 @@ class TemporalSliceAnalysisPhase(BasePhase):
                         persist_count = persist_period_results(
                             result=period_result.value,
                             session=ctx.session,
+                            session_id=ctx.require_session_id(),
                         )
                         if persist_count.success and persist_count.value is not None:
                             total_period_analyses += persist_count.value
@@ -325,7 +327,9 @@ class TemporalSliceAnalysisPhase(BasePhase):
         # Build ColumnSliceProfile records for dimensional_entropy detector
         from dataraum.analysis.slicing.profiling import build_slice_profiles
 
-        slice_profiles_count = build_slice_profiles(ctx.session, ctx.source_id)
+        slice_profiles_count = build_slice_profiles(
+            ctx.session, ctx.source_id, session_id=ctx.require_session_id()
+        )
 
         outputs: dict[str, object] = {
             "drift_summaries": total_drift_summaries,

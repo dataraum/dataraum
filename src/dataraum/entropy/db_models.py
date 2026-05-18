@@ -30,6 +30,9 @@ class EntropyObjectRecord(Base):
     __tablename__ = "entropy_objects"
 
     object_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
 
     # Identity - what is being measured
     layer: Mapped[str] = mapped_column(

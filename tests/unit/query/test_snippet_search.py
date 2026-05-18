@@ -5,6 +5,7 @@ without LLM calls.
 """
 
 from dataraum.query.snippet_library import SnippetLibrary
+from tests.conftest import baseline_session_id
 
 
 def _create_dso_graph(library: SnippetLibrary, schema: str = "s1") -> None:
@@ -64,7 +65,7 @@ class TestSnippetSearchByConcept:
 
     def test_single_concept_returns_graph(self, session):
         """Searching by 'accounts_receivable' returns DSO graph."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         _create_dso_graph(library)
         session.flush()
 
@@ -79,7 +80,7 @@ class TestSnippetSearchByConcept:
 
     def test_shared_concept_returns_multiple_graphs(self, session):
         """Same standard_field in different key combos returns multiple graphs."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         # Two graphs with 'revenue' but different key combos (no upsert collision)
         library.save_snippet(
@@ -119,7 +120,7 @@ class TestSnippetSearchByGraphId:
 
     def test_direct_graph_id_lookup(self, session):
         """Searching by graph_id 'dso' returns the full DSO graph."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         _create_dso_graph(library)
         session.flush()
 
@@ -134,7 +135,7 @@ class TestSnippetSearchByGraphId:
 
     def test_multiple_graph_ids(self, session):
         """Searching multiple graph_ids returns all matching graphs."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         # Two independent graphs with non-overlapping keys
         library.save_snippet(
@@ -172,7 +173,7 @@ class TestSnippetSearchCombined:
 
     def test_concept_plus_graph_id_union(self, session):
         """Concept + graph_id returns union of matches."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         # Two independent graphs
         library.save_snippet(
@@ -214,7 +215,7 @@ class TestSnippetSearchEdgeCases:
 
     def test_empty_search_returns_empty(self, session):
         """No keys provided returns empty list."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         _create_dso_graph(library)
         session.flush()
 
@@ -223,7 +224,7 @@ class TestSnippetSearchEdgeCases:
 
     def test_invalid_keys_return_empty(self, session):
         """Non-existent keys return empty list."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         _create_dso_graph(library)
         session.flush()
 
@@ -236,7 +237,7 @@ class TestSnippetSearchEdgeCases:
 
     def test_wrong_schema_returns_empty(self, session):
         """Correct keys but wrong schema returns empty."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         _create_dso_graph(library, schema="s1")
         session.flush()
 
@@ -248,7 +249,7 @@ class TestSnippetSearchEdgeCases:
 
     def test_nonexistent_graph_id_returns_empty(self, session):
         """Graph ID that doesn't exist in DB returns empty."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         _create_dso_graph(library)
         session.flush()
 
@@ -264,7 +265,7 @@ class TestSearchResultFormat:
 
     def test_graph_structure(self, session):
         """Each returned graph has source, graph_id, source_type, and snippets."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         _create_dso_graph(library)
         session.flush()
 
@@ -285,7 +286,7 @@ class TestSearchResultFormat:
 
     def test_snippet_fields_present(self, session):
         """Each snippet in a graph has required fields."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         _create_dso_graph(library)
         session.flush()
 

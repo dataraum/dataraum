@@ -18,6 +18,7 @@ from dataraum.entropy.contracts import ConfidenceLevel
 from dataraum.graphs.field_mapping import ColumnCandidate, FieldMappings
 from dataraum.query.agent import QueryAgent
 from dataraum.query.models import QueryResult
+from tests.conftest import baseline_session_id
 
 from .conftest import PipelineTestHarness
 
@@ -114,6 +115,7 @@ class TestQueryAgentEndToEnd:
                 question="How many transactions are there?",
                 table_ids=analyzed_table_ids,
                 ephemeral=True,
+                session_id=baseline_session_id(),
             )
 
         assert result.success, f"Query failed: {result.error}"
@@ -146,6 +148,7 @@ class TestQueryAgentEndToEnd:
                 question="What is the total transaction amount?",
                 table_ids=analyzed_table_ids,
                 ephemeral=True,
+                session_id=baseline_session_id(),
             )
 
         assert result.success
@@ -174,6 +177,7 @@ class TestQueryAgentEndToEnd:
                 question="How many customers?",
                 table_ids=analyzed_table_ids,
                 ephemeral=True,
+                session_id=baseline_session_id(),
             )
 
         assert result.success
@@ -205,6 +209,7 @@ class TestContractIntegration:
                 question="How many transactions?",
                 table_ids=analyzed_table_ids,
                 ephemeral=True,
+                session_id=baseline_session_id(),
             )
 
         assert result.success
@@ -233,6 +238,7 @@ class TestContractIntegration:
                 table_ids=analyzed_table_ids,
                 contract="operational_analytics",  # Correct contract name
                 ephemeral=True,
+                session_id=baseline_session_id(),
             )
 
         assert result.success
@@ -257,6 +263,7 @@ class TestContractIntegration:
                 table_ids=analyzed_table_ids,
                 contract="regulatory_reporting",
                 ephemeral=True,
+                session_id=baseline_session_id(),
             )
 
         assert result.success  # Returns Result.ok even for blocked queries
@@ -294,6 +301,7 @@ class TestContractIntegration:
                 table_ids=analyzed_table_ids,
                 auto_contract=True,
                 ephemeral=True,
+                session_id=baseline_session_id(),
             )
 
         assert result.success
@@ -319,6 +327,7 @@ class TestContractIntegration:
                 table_ids=analyzed_table_ids,
                 contract="nonexistent_contract",
                 ephemeral=True,
+                session_id=baseline_session_id(),
             )
 
         assert not result.success
@@ -348,6 +357,7 @@ class TestQueryResultMetadata:
                 question="Test",
                 table_ids=analyzed_table_ids,
                 ephemeral=True,
+                session_id=baseline_session_id(),
             )
 
         assert result.success
@@ -374,6 +384,7 @@ class TestQueryResultMetadata:
                 question="What is the meaning of data?",
                 table_ids=analyzed_table_ids,
                 ephemeral=True,
+                session_id=baseline_session_id(),
             )
 
         assert result.success
@@ -399,6 +410,7 @@ class TestQueryResultMetadata:
                 question="Show transaction stats",
                 table_ids=analyzed_table_ids,
                 ephemeral=True,
+                session_id=baseline_session_id(),
             )
 
         assert result.success

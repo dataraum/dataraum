@@ -12,6 +12,7 @@ from dataraum.analysis.temporal import (
     profile_temporal,
 )
 from dataraum.storage import Column, Source, Table
+from tests.conftest import baseline_session_id
 
 # Use shared fixtures from conftest.py: session, duckdb_conn
 
@@ -67,6 +68,7 @@ def test_profile_temporal_daily_granularity(session: Session, duckdb_conn):
         table_id="table1",
         duckdb_conn=duckdb_conn,
         session=session,
+        session_id=baseline_session_id(),
     )
 
     # Verify result
@@ -131,6 +133,7 @@ def test_profile_temporal_weekly_granularity(session: Session, duckdb_conn):
         table_id="table1",
         duckdb_conn=duckdb_conn,
         session=session,
+        session_id=baseline_session_id(),
     )
 
     # Verify result
@@ -187,6 +190,7 @@ def test_profile_temporal_with_gaps(session: Session, duckdb_conn):
         table_id="table1",
         duckdb_conn=duckdb_conn,
         session=session,
+        session_id=baseline_session_id(),
     )
 
     # Verify result
@@ -248,6 +252,7 @@ def test_profile_temporal_no_temporal_columns(session: Session, duckdb_conn):
         table_id="table1",
         duckdb_conn=duckdb_conn,
         session=session,
+        session_id=baseline_session_id(),
     )
 
     # Should succeed but return no profiles
@@ -321,6 +326,7 @@ def test_profile_temporal_multiple_columns(session: Session, duckdb_conn):
         table_id="table1",
         duckdb_conn=duckdb_conn,
         session=session,
+        session_id=baseline_session_id(),
     )
 
     # Verify result - should create profiles for all 3 temporal columns
@@ -377,6 +383,7 @@ def test_profile_temporal_stores_metrics(session: Session, duckdb_conn):
         table_id="table1",
         duckdb_conn=duckdb_conn,
         session=session,
+        session_id=baseline_session_id(),
     )
 
     assert result.success is True
@@ -442,6 +449,7 @@ def test_profile_temporal_monthly_granularity(session: Session, duckdb_conn):
         table_id="table1",
         duckdb_conn=duckdb_conn,
         session=session,
+        session_id=baseline_session_id(),
     )
 
     # Verify result

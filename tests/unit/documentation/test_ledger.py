@@ -7,6 +7,7 @@ from dataraum.documentation.ledger import (
     log_fix,
 )
 from dataraum.storage.models import Source
+from tests.conftest import baseline_session_id
 
 
 def _create_source(session: Session, source_id: str = "src-1") -> str:
@@ -32,6 +33,7 @@ class TestLogFix:
             column_name="amount",
             user_input="The amount is always in EUR",
             interpretation="Column transactions.amount uses EUR as fixed currency unit.",
+            session_id=baseline_session_id(),
         )
 
         assert entry.fix_id is not None
@@ -53,6 +55,7 @@ class TestLogFix:
             column_name="amount",
             user_input="Amount is in USD",
             interpretation="USD currency.",
+            session_id=baseline_session_id(),
         )
         old_id = old.fix_id
 
@@ -64,6 +67,7 @@ class TestLogFix:
             column_name="amount",
             user_input="Actually it's EUR",
             interpretation="EUR currency.",
+            session_id=baseline_session_id(),
         )
 
         session.flush()
@@ -86,6 +90,7 @@ class TestLogFix:
             column_name="amount",
             user_input="EUR",
             interpretation="EUR",
+            session_id=baseline_session_id(),
         )
 
         fix_b = log_fix(
@@ -96,6 +101,7 @@ class TestLogFix:
             column_name="price",
             user_input="USD",
             interpretation="USD",
+            session_id=baseline_session_id(),
         )
 
         session.refresh(fix_a)
@@ -113,6 +119,7 @@ class TestLogFix:
             column_name=None,
             user_input="One row per transaction",
             interpretation="Table grain is one row per transaction.",
+            session_id=baseline_session_id(),
         )
 
         assert entry.column_name is None
@@ -131,6 +138,7 @@ class TestGetActiveFixes:
             column_name="c",
             user_input="old",
             interpretation="old",
+            session_id=baseline_session_id(),
         )
         log_fix(
             session=session,
@@ -140,6 +148,7 @@ class TestGetActiveFixes:
             column_name="c",
             user_input="new",
             interpretation="new",
+            session_id=baseline_session_id(),
         )
 
         active = get_active_fixes(session, source_id)

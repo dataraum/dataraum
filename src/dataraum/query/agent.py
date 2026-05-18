@@ -96,6 +96,7 @@ class QueryAgent(LLMFeature):
         source_id: str | None = None,
         ephemeral: bool = False,
         display_limit: int = 10_000,
+        session_id: str,
     ) -> Result[QueryResult]:
         """Analyze a natural language question and generate SQL.
 
@@ -298,6 +299,7 @@ class QueryAgent(LLMFeature):
                 execution_id=execution_id,
                 analysis_output=analysis_output,
                 snippet_id_index=snippet_id_index,
+                session_id=session_id,
             )
 
         # Save novel snippets for future reuse (skip if ephemeral or failed)
@@ -307,6 +309,7 @@ class QueryAgent(LLMFeature):
                 execution_id=execution_id,
                 analysis_output=analysis_output,
                 schema_mapping_id=source_id,
+                session_id=session_id,
             )
 
         # Record execution
@@ -322,6 +325,7 @@ class QueryAgent(LLMFeature):
                 error_message=exec_error,
                 confidence_level=confidence_level,
                 contract=contract,
+                session_id=session_id,
             )
 
         # Build risk assessment (combined contract + LLM data)
@@ -540,6 +544,8 @@ class QueryAgent(LLMFeature):
         execution_id: str,
         analysis_output: QueryAnalysisOutput,
         snippet_id_index: dict[str, dict[str, Any]],
+        *,
+        session_id: str,
     ) -> None:
         """Record snippet usage deterministically based on snippet_id.
 
@@ -551,7 +557,7 @@ class QueryAgent(LLMFeature):
         """
         from dataraum.query.snippet_library import SnippetLibrary
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=session_id)
         referenced_snippet_ids: set[str] = set()
 
         for step in analysis_output.steps:
@@ -656,6 +662,8 @@ class QueryAgent(LLMFeature):
         execution_id: str,
         analysis_output: QueryAnalysisOutput,
         schema_mapping_id: str,
+        *,
+        session_id: str,
     ) -> None:
         """Save novel query steps as snippets for future reuse.
 
@@ -671,7 +679,7 @@ class QueryAgent(LLMFeature):
         """
         from dataraum.query.snippet_library import SnippetLibrary
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=session_id)
 
         saved_count = 0
         for step in analysis_output.steps:
@@ -1118,6 +1126,8 @@ class QueryAgent(LLMFeature):
         confidence_level: ConfidenceLevel,
         contract: str | None,
         entropy_action: str | None = None,
+        *,
+        session_id: str,
     ) -> None:
         """Record a query execution for audit trail.
 
@@ -1138,6 +1148,7 @@ class QueryAgent(LLMFeature):
 
         record = QueryExecutionRecord(
             execution_id=execution_id,
+            session_id=session_id,
             source_id=source_id,
             question=question,
             sql_executed=sql,

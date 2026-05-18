@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, Date, DateTime, Float, Integer, String
+from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.storage.base import Base
@@ -21,6 +21,9 @@ class ColumnDriftSummary(Base):
     __tablename__ = "column_drift_summaries"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
 
     slice_table_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     column_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
@@ -60,6 +63,9 @@ class TemporalSliceAnalysis(Base):
     __tablename__ = "temporal_slice_analyses"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
 
     slice_table_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     time_column: Mapped[str] = mapped_column(String(255), nullable=False)

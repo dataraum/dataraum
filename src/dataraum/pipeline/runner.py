@@ -59,6 +59,7 @@ class RunConfig:
     event_callback: EventCallback | None = None
     contract: str | None = None  # Target contract name
     vertical: str | None = None  # Domain vertical (e.g. 'finance')
+    session_id: str | None = None  # InvestigationSession.session_id; required for MCP runs
 
 
 @dataclass
@@ -140,6 +141,7 @@ def run(config: RunConfig) -> Result[RunResult]:
             force_phase=config.force_phase,
             contract=config.contract,
             vertical=config.vertical,
+            session_id=config.session_id,
         )
         source_id = setup.source_id
         session = setup.session

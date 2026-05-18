@@ -52,6 +52,8 @@ def infer_type_candidates(
     table: Table,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
+    *,
+    session_id: str,
 ) -> Result[list[TypeCandidateModel]]:
     """Infer type candidates for all VARCHAR columns in a table.
 
@@ -119,6 +121,7 @@ def infer_type_candidates(
             for candidate in candidates:
                 db_candidate = DBTypeCandidate(
                     candidate_id=str(uuid4()),
+                    session_id=session_id,
                     column_id=column.column_id,
                     detected_at=datetime.now(UTC),
                     data_type=candidate.data_type.value,

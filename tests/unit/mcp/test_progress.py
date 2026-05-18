@@ -10,6 +10,7 @@ import pytest
 
 from dataraum.mcp.server import _make_task_event_callback, _run_pipeline
 from dataraum.pipeline.events import EventType, PipelineEvent
+from tests.conftest import baseline_session_id
 
 
 class TestMakeTaskEventCallback:
@@ -139,7 +140,7 @@ class TestRunPipeline:
         mock_result.error = "Setup failed"
 
         with patch("dataraum.pipeline.runner.run", return_value=mock_result):
-            result = _run_pipeline(output_dir=tmp_path)
+            result = _run_pipeline(output_dir=tmp_path, session_id=baseline_session_id())
 
         assert result["pipeline_status"] == "failed"
         assert result["error"] == "Setup failed"
@@ -170,7 +171,7 @@ class TestRunPipeline:
         mock_result.error = None
 
         with patch("dataraum.pipeline.runner.run", return_value=mock_result):
-            result = _run_pipeline(output_dir=tmp_path)
+            result = _run_pipeline(output_dir=tmp_path, session_id=baseline_session_id())
 
         assert result["pipeline_status"] == "failed"
         assert result["phases_completed"] == ["import"]
@@ -197,7 +198,7 @@ class TestRunPipeline:
         mock_result.value = run_result
 
         with patch("dataraum.pipeline.runner.run", return_value=mock_result):
-            result = _run_pipeline(output_dir=tmp_path)
+            result = _run_pipeline(output_dir=tmp_path, session_id=baseline_session_id())
 
         assert result["pipeline_status"] == "failed"
         assert result["phases_failed"] == [
@@ -227,7 +228,7 @@ class TestRunPipeline:
         mock_result.value = run_result
 
         with patch("dataraum.pipeline.runner.run", return_value=mock_result):
-            result = _run_pipeline(output_dir=tmp_path)
+            result = _run_pipeline(output_dir=tmp_path, session_id=baseline_session_id())
 
         assert result["pipeline_status"] == "complete"
         assert result["phases_completed"] == ["import", "typing"]
@@ -245,7 +246,7 @@ class TestRunPipeline:
         )
 
         with patch("dataraum.pipeline.runner.run", return_value=mock_result) as mock_run:
-            _run_pipeline(output_dir=tmp_path)
+            _run_pipeline(output_dir=tmp_path, session_id=baseline_session_id())
 
         run_config = mock_run.call_args[0][0]
         assert run_config.source_path is None
@@ -263,7 +264,7 @@ class TestRunPipeline:
         cb = MagicMock()
 
         with patch("dataraum.pipeline.runner.run", return_value=mock_result) as mock_run:
-            _run_pipeline(output_dir=tmp_path, event_callback=cb)
+            _run_pipeline(output_dir=tmp_path, session_id=baseline_session_id(), event_callback=cb)
 
         run_config = mock_run.call_args[0][0]
         assert run_config.event_callback is cb
@@ -279,7 +280,11 @@ class TestRunPipeline:
         )
 
         with patch("dataraum.pipeline.runner.run", return_value=mock_result) as mock_run:
-            _run_pipeline(output_dir=tmp_path, contract="executive_dashboard")
+            _run_pipeline(
+                output_dir=tmp_path,
+                session_id=baseline_session_id(),
+                contract="executive_dashboard",
+            )
 
         run_config = mock_run.call_args[0][0]
         assert run_config.contract == "executive_dashboard"

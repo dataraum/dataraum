@@ -65,6 +65,7 @@ class PipelineScheduler:
         runtime_config: dict[str, Any] | None = None,
         session_factory: Callable[[], Any] | None = None,
         manager: Any | None = None,
+        session_id: str | None = None,
     ) -> None:
         # Validate that all declared dependencies reference known phases
         for name, phase in phases.items():
@@ -82,13 +83,36 @@ class PipelineScheduler:
         self._runtime_config = runtime_config or {}
         self.session_factory = session_factory
         self.manager = manager
+        # Explicit override wins; otherwise read from manager.
+        self._session_id_override = session_id
         # Internal state
         self._state: dict[str, PhaseStatus] = dict.fromkeys(phases, PhaseStatus.PENDING)
         self._step = 0
 
         # Validate analysis coverage: warn if detectors require analyses
-        # that no phase produces
+        # that no phase produces.
         self._validate_analysis_coverage()
+
+    def _require_session_id(self) -> str:
+        """Return the active session_id; fail loud if not bound.
+
+        Per-session ORM writes (PhaseLog and downstream rows) carry an FK
+        to investigation_sessions.session_id, populated post-DAT-321.
+
+        Resolution order: explicit ``session_id`` arg → ``manager.session_id``.
+        Tests that exercise the scheduler without a ConnectionManager pass
+        ``session_id`` directly.
+        """
+        sid = self._session_id_override
+        if not sid and self.manager:
+            sid = self.manager.session_id
+        if not sid:
+            raise RuntimeError(
+                "PipelineScheduler session_id is unset — every per-session "
+                "write needs an active InvestigationSession. Pass session_id "
+                "directly or via manager.session_id (set by setup_pipeline)."
+            )
+        return sid
 
     # ------------------------------------------------------------------
     # Public API
@@ -179,6 +203,7 @@ class PipelineScheduler:
                     config=config,
                     session_factory=self.session_factory,
                     manager=self.manager,
+                    session_id=self._session_id_override or self.manager.session_id,
                 )
                 result = phase.run(ctx)
         else:
@@ -323,6 +348,7 @@ class PipelineScheduler:
                     config=config,
                     session_factory=self.session_factory,
                     manager=self.manager,
+                    session_id=self._session_id_override or self.manager.session_id,
                 )
                 return phase.should_skip(ctx)
 
@@ -334,6 +360,8 @@ class PipelineScheduler:
             config=config,
             session_factory=self.session_factory,
             manager=self.manager,
+            session_id=self._session_id_override
+            or (self.manager.session_id if self.manager else None),
         )
         return phase.should_skip(ctx)
 
@@ -350,6 +378,8 @@ class PipelineScheduler:
             config=config,
             session_factory=self.session_factory,
             manager=self.manager,
+            session_id=self._session_id_override
+            or (self.manager.session_id if self.manager else None),
         )
 
     def _write_phase_log(
@@ -370,6 +400,7 @@ class PipelineScheduler:
         now = datetime.now(UTC)
         log = PhaseLog(
             run_id=self.run_id,
+            session_id=self._require_session_id(),
             source_id=self.source_id,
             phase_name=phase_name,
             status=status,
@@ -428,6 +459,7 @@ class PipelineScheduler:
         if not phase.detectors:
             return
 
+        sid = self._require_session_id()
         if self.session_factory and self.manager:
             with (
                 self.session_factory() as detector_session,
@@ -435,8 +467,18 @@ class PipelineScheduler:
             ):
                 for detector_id in phase.detectors:
                     run_detector_post_step(
-                        detector_session, self.source_id, detector_id, detector_cursor
+                        detector_session,
+                        self.source_id,
+                        detector_id,
+                        detector_cursor,
+                        session_id=sid,
                     )
         else:
             for detector_id in phase.detectors:
-                run_detector_post_step(self.session, self.source_id, detector_id, self.duckdb_conn)
+                run_detector_post_step(
+                    self.session,
+                    self.source_id,
+                    detector_id,
+                    self.duckdb_conn,
+                    session_id=sid,
+                )

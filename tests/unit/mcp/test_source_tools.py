@@ -94,7 +94,13 @@ class TestListSourcesTool:
     def test_empty_workspace(self, session: Session) -> None:
         from dataraum.mcp.server import _list_sources
 
+        # The conftest `session` fixture seeds a baseline Source as the
+        # InvestigationSession FK target. Filter it out for "empty workspace".
         result = _list_sources(session)
+        result = {
+            "sources": [s for s in result["sources"] if s["name"] != "test_baseline"],
+            "count": result["count"] - 1 if result["count"] else 0,
+        }
         assert result == {"sources": [], "count": 0}
 
     def test_lists_file_and_recipe_sources(self, session: Session, tmp_path: Path) -> None:
@@ -109,6 +115,8 @@ class TestListSourcesTool:
         _add_source(session, {"name": "erp", "path": str(recipe)})
 
         result = _list_sources(session)
+        result["sources"] = [s for s in result["sources"] if s["name"] != "test_baseline"]
+        result["count"] = len(result["sources"])
 
         assert result["count"] == 2
         by_name = {s["name"]: s for s in result["sources"]}

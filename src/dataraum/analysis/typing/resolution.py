@@ -219,6 +219,8 @@ def resolve_types(
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
     min_confidence: float,
+    *,
+    session_id: str,
 ) -> Result[TypeResolutionResult]:
     """Resolve types for a raw table using DuckDB SQL.
 
@@ -280,6 +282,7 @@ def resolve_types(
             raw_col = raw_col_by_id[spec.column_id]
             type_decision = TypeDecision(
                 decision_id=str(uuid4()),
+                session_id=session_id,
                 column=raw_col,
                 decided_type=spec.data_type.value,
                 decision_source=spec.decision_source,
@@ -422,6 +425,7 @@ def resolve_types(
             session.add(
                 TypeDecision(
                     decision_id=str(uuid4()),
+                    session_id=session_id,
                     column_id=target_col_id,
                     decided_type=td.decided_type,
                     decision_source=td.decision_source,
@@ -436,6 +440,7 @@ def resolve_types(
             session.add(
                 TypeCandidate(
                     candidate_id=str(uuid4()),
+                    session_id=session_id,
                     column_id=target_col_id,
                     detected_at=tc.detected_at,
                     data_type=tc.data_type,

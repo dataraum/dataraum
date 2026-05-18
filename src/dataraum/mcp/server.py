@@ -123,64 +123,48 @@ def _resolve_root_dir() -> Path:
     return Path("~/.dataraum").expanduser()
 
 
-def _read_archive_summary(archive_dir: Path, session_id: str, fingerprint: str) -> Any | None:
-    """Read the just-archived session DB and build an ArchivedSession row.
+def _read_archive_summary(workspace_session: Any, session_id: str, fingerprint: str) -> Any | None:
+    """Build an ArchivedSession row from the workspace Postgres state.
 
-    Uses sqlite3 directly so we don't spin up a full ConnectionManager (which
-    would also open DuckDB) for a one-shot read. Returns None if the metadata
-    is unreadable — the caller treats that as a non-fatal indexing miss.
+    Post-DAT-321 every InvestigationSession lives in workspace Postgres, so
+    indexing an archive is a SQLAlchemy SELECT instead of a sqlite3 read
+    against a per-session metadata.db (which no longer exists). Returns
+    None if the session has no matching investigation row or no live source
+    — the caller treats that as a non-fatal indexing miss.
     """
-    import sqlite3
+    from sqlalchemy import select
 
+    from dataraum.investigation.db_models import InvestigationSession
     from dataraum.mcp.db_models import ArchivedSession
+    from dataraum.storage import Source
 
-    metadata_db = archive_dir / "metadata.db"
-    if not metadata_db.exists():
-        return None
-    try:
-        with sqlite3.connect(str(metadata_db)) as conn:
-            inv_row = conn.execute(
-                "SELECT intent, contract, vertical, status, outcome_summary, "
-                "started_at, ended_at, step_count "
-                "FROM investigation_sessions WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            if inv_row is None:
-                return None
-            source_rows = conn.execute(
-                "SELECT name FROM sources WHERE archived_at IS NULL ORDER BY created_at LIMIT 1"
-            ).fetchall()
-    except sqlite3.OperationalError:
-        _log.warning("Could not read archive metadata at %s", metadata_db, exc_info=True)
+    inv = workspace_session.execute(
+        select(InvestigationSession).where(InvestigationSession.session_id == session_id)
+    ).scalar_one_or_none()
+    if inv is None:
+        _log.warning("No InvestigationSession row to index for session_id=%s", session_id)
         return None
 
-    if not source_rows:
-        _log.warning("Archive %s has no source row to index", metadata_db)
+    source = workspace_session.execute(
+        select(Source).where(Source.archived_at.is_(None)).order_by(Source.created_at).limit(1)
+    ).scalar_one_or_none()
+    if source is None:
+        _log.warning("No live Source row to index against for session_id=%s", session_id)
         return None
 
-    intent, contract, vertical, status, outcome_summary, started_at, ended_at, step_count = inv_row
     return ArchivedSession(
         session_id=session_id,
         fingerprint=fingerprint,
-        intent=intent,
-        contract=contract or "exploratory_analysis",
-        vertical=vertical,
-        outcome=status,
-        summary=outcome_summary,
-        source_name=source_rows[0][0],
-        started_at=_parse_sqlite_datetime(started_at),
-        ended_at=_parse_sqlite_datetime(ended_at) or datetime.now(UTC),
-        step_count=step_count or 0,
+        intent=inv.intent,
+        contract=inv.contract or "exploratory_analysis",
+        vertical=inv.vertical,
+        outcome=inv.status,
+        summary=inv.outcome_summary,
+        source_name=source.name,
+        started_at=inv.started_at,
+        ended_at=inv.ended_at or datetime.now(UTC),
+        step_count=inv.step_count or 0,
     )
-
-
-def _parse_sqlite_datetime(value: Any) -> datetime | None:
-    """Convert sqlite3's text/None datetime back to a Python datetime."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value
-    return datetime.fromisoformat(str(value))
 
 
 def create_server(output_dir: Path | None = None) -> Server:
@@ -189,9 +173,10 @@ def create_server(output_dir: Path | None = None) -> Server:
     Args:
         output_dir: Explicit base directory (for tests). If not provided,
             resolves via DATARAUM_HOME (default ~/.dataraum/). The workspace
-            registry lives at root/workspace.db, per-session data at
-            root/sessions/{fingerprint}/, archived sessions at
-            root/archive/{session_id}/.
+            registry now lives in Postgres (DATABASE_URL); the host root
+            still anchors per-session DuckDB at root/sessions/{fingerprint}/
+            and archived DuckDB files at root/archive/{session_id}/ until
+            L4 swaps DuckDB for DuckLake.
     """
     if output_dir is None:
         root_dir = _resolve_root_dir()
@@ -200,10 +185,12 @@ def create_server(output_dir: Path | None = None) -> Server:
         root_dir = output_dir
 
     # Two managers, both lazy:
-    # - workspace: SQLite-only registry (sources + ActiveSession pointer).
-    #   Always available; resolves the chicken-and-egg of "which session is active".
-    # - session: opened against sessions/{fingerprint}/ when an active session
-    #   exists. Cached by fingerprint and reopened only on transition.
+    # - workspace: Postgres-backed SQLAlchemy registry (sources +
+    #   ActiveSession pointer + InvestigationSession). Always available;
+    #   resolves the chicken-and-egg of "which session is active".
+    # - session: same workspace Postgres engine for SQLAlchemy + a
+    #   per-fingerprint DuckDB cursor for analytical data. Cached by
+    #   fingerprint and reopened only on transition.
     _workspace_manager: ConnectionManager | None = None
     _session_manager: ConnectionManager | None = None
     _active_fingerprint: str | None = None
@@ -215,8 +202,7 @@ def create_server(output_dir: Path | None = None) -> Server:
             from dataraum.core.connections import ConnectionConfig
             from dataraum.core.connections import ConnectionManager as CM
 
-            config = ConnectionConfig.for_workspace(root_dir)
-            config.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+            config = ConnectionConfig.for_workspace()
             _workspace_manager = CM(config)
             _workspace_manager.initialize()
         return _workspace_manager
@@ -239,11 +225,24 @@ def create_server(output_dir: Path | None = None) -> Server:
                 return None
             return (pointer.session_id, pointer.fingerprint)
 
-    def _get_session_manager(fingerprint: str) -> ConnectionManager:
-        """Open or reuse the session manager for the given fingerprint."""
+    def _get_session_manager(fingerprint: str, session_id: str | None = None) -> ConnectionManager:
+        """Open or reuse the session manager for the given fingerprint.
+
+        ``session_id`` is the active ``InvestigationSession.session_id`` and
+        is bound onto the manager so per-session writes (PhaseLog,
+        EntropyObjectRecord, snippet rows, ...) carry the FK scoping
+        required post-DAT-321. Pass ``None`` from bootstrap paths that
+        create the InvestigationSession after opening (begin_session,
+        _restore_archived_session) and set ``manager.session_id`` once
+        the new id is in hand. The manager is cached by fingerprint; the
+        session_id is refreshed on every call so a fingerprint reused
+        across sessions (e.g. after resume_session) sees the new id.
+        """
         nonlocal _session_manager, _active_fingerprint
 
         if _session_manager is not None and _active_fingerprint == fingerprint:
+            if session_id is not None:
+                _session_manager.session_id = session_id
             return _session_manager
 
         # Different fingerprint than cached — close stale manager and open new
@@ -256,7 +255,7 @@ def create_server(output_dir: Path | None = None) -> Server:
         session_dir = root_dir / "sessions" / fingerprint
         session_dir.mkdir(parents=True, exist_ok=True)
         config = ConnectionConfig.for_directory(session_dir)
-        _session_manager = CM(config)
+        _session_manager = CM(config, session_id=session_id)
         _session_manager.initialize()
         _active_fingerprint = fingerprint
         return _session_manager
@@ -321,12 +320,12 @@ def create_server(output_dir: Path | None = None) -> Server:
             )
             warning = f"Session ended but archival failed. {session_dir} may need manual cleanup."
 
-        # Index the archived session in workspace.db so resume_session can find
-        # it without scanning every metadata.db. Done before clearing the
-        # pointer so both writes share the workspace transaction lifecycle.
+        # Index the archived session in workspace Postgres so resume_session
+        # can find it cheaply. Done before clearing the pointer so both
+        # writes share the workspace transaction lifecycle.
         with _get_workspace_manager().session_scope() as ws_session:
             if archived_ok:
-                summary = _read_archive_summary(archive_dir, session_id, fingerprint)
+                summary = _read_archive_summary(ws_session, session_id, fingerprint)
                 if summary is not None:
                     ws_session.add(summary)
             ws_session.execute(delete(ActiveSession))
@@ -961,7 +960,7 @@ def create_server(output_dir: Path | None = None) -> Server:
 
         if active is not None:
             active_session_id, active_session_fp = active
-            session_mgr = _get_session_manager(active_session_fp)
+            session_mgr = _get_session_manager(active_session_fp, active_session_id)
             with session_mgr.session_scope() as session:
                 inv = session.execute(
                     select(InvestigationSession)
@@ -1052,10 +1051,12 @@ def create_server(output_dir: Path | None = None) -> Server:
                 session_dir = _session_dir_for(active_session_fp)
                 if measure_experimental and measure_experimental.is_task:
                     loop = asyncio.get_running_loop()
-                    # Capture contract/vertical/fingerprint as locals
+                    # Capture contract/vertical/fingerprint/session_id as locals
                     _contract = active_contract
                     _vertical = active_vertical
                     _fp = active_session_fp
+                    _sid = active_session_id
+                    assert _sid is not None  # guarded by active is not None
 
                     async def _measure_work(task: ServerTaskContext) -> CallToolResult:
                         try:
@@ -1063,12 +1064,13 @@ def create_server(output_dir: Path | None = None) -> Server:
                             await asyncio.to_thread(
                                 _run_pipeline,
                                 session_dir,
+                                _sid,
                                 callback,
                                 _contract,
                                 _vertical,
                                 measure_phase,
                             )
-                            with _get_session_manager(_fp).session_scope() as post_session:
+                            with _get_session_manager(_fp, _sid).session_scope() as post_session:
                                 measure_result = _measure(post_session, target=measure_target)
                             return CallToolResult(
                                 content=[
@@ -1095,9 +1097,14 @@ def create_server(output_dir: Path | None = None) -> Server:
                     )
                 else:
                     # No task API: fire-and-forget
+                    assert active_session_id is not None  # guarded by active is not None
                     bg = asyncio.create_task(
                         _run_pipeline_background(
-                            session_dir, active_contract, active_vertical, measure_phase
+                            session_dir,
+                            active_session_id,
+                            active_contract,
+                            active_vertical,
+                            measure_phase,
                         )
                     )
                     _background_tasks.add(bg)
@@ -1183,6 +1190,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                     arguments["question"],
                     active_contract,
                     display_limit=arguments.get("limit", 10000),
+                    session_id=active_session_id,  # type: ignore[arg-type]  # guarded above
                 )
                 # Export via DuckDB COPY — full data, no Python materialization.
                 # Temp views from execute_sql_steps survive on this cursor.
@@ -1207,6 +1215,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                     sql=arguments.get("sql"),
                     column_mappings=arguments.get("column_mappings"),
                     limit=arguments.get("limit", 100),
+                    session_id=active_session_id,
                 )
                 # Export via DuckDB COPY — full data, no Python materialization
                 export_fmt = arguments.get("export_format")
@@ -1254,6 +1263,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                                 )
                                 teach_params[key] = resolved
 
+                    assert active_session_id is not None  # guarded by flow enforcement
                     result = handle_teach(
                         teach_type=arguments["type"],
                         params=teach_params,
@@ -1262,6 +1272,7 @@ def create_server(output_dir: Path | None = None) -> Server:
                         vertical=active_vertical or "_adhoc",
                         config_root=teach_config_root,
                         target=teach_target,
+                        session_id=active_session_id,
                     )
         elif name == "search_snippets":
             assert session_mgr is not None
@@ -1306,6 +1317,22 @@ def create_server(output_dir: Path | None = None) -> Server:
 
         return _json_text_content(result)
 
+    def _close() -> None:
+        """Dispose cached ConnectionManagers (workspace + session).
+
+        Called by tests on teardown and by long-lived runners (HTTP MCP
+        daemon, future). Idempotent. Without this, the cached
+        psycopg pools survive until GC catches them, which Python 3.12+
+        flags as ``ResourceWarning: <psycopg.Connection> was deleted while
+        still open``.
+        """
+        nonlocal _workspace_manager
+        _close_session_manager()
+        if _workspace_manager is not None:
+            _workspace_manager.close()
+            _workspace_manager = None
+
+    server.close = _close  # type: ignore[attr-defined]
     return server
 
 
@@ -1439,7 +1466,7 @@ def _list_archived_sessions(workspace_mgr: ConnectionManager) -> list[dict[str, 
 
 def _restore_archived_session(
     workspace_mgr: ConnectionManager,
-    open_session_manager: Callable[[str], ConnectionManager],
+    open_session_manager: Callable[..., ConnectionManager],
     close_session_manager: Callable[[], None],
     archive_root: Path,
     sessions_root: Path,
@@ -1584,6 +1611,11 @@ def _restore_archived_session(
             )
             new_session_id = inv.session_id
 
+            # Bind session_id to the manager immediately. Any per-session FK
+            # write that fires before the next tool invocation (which would
+            # re-open via _get_session_manager(fp, sid)) needs this set.
+            session_mgr.session_id = new_session_id
+
             has_data = (
                 session.execute(
                     select(EntropyObjectRecord.object_id)
@@ -1593,11 +1625,13 @@ def _restore_archived_session(
                 is not None
             )
 
-        # Sync workspace: replace Sources, set pointer, consume index row.
+        # Sync workspace: set the active pointer and consume the index row.
+        # Sources are no longer copied — workspace and per-session SQLAlchemy
+        # share one Postgres DB post-DAT-321, so the originals are already
+        # the canonical rows and re-inserting them would (a) be redundant and
+        # (b) require destroying the FK-referenced rows on InvestigationSession
+        # we just created.
         with workspace_mgr.session_scope() as ws_session:
-            ws_session.execute(delete(Source))
-            for snapshot in source_snapshots:
-                ws_session.add(Source(**snapshot))
             ws_session.execute(delete(ActiveSession))
             ws_session.add(ActiveSession(id=1, session_id=new_session_id, fingerprint=fingerprint))
             ws_session.execute(
@@ -1740,6 +1774,7 @@ def _get_phase_labels() -> dict[str, str]:
 
 def _run_pipeline(
     output_dir: Path,
+    session_id: str,
     event_callback: EventCallback | None = None,
     contract: str | None = None,
     vertical: str | None = None,
@@ -1752,6 +1787,8 @@ def _run_pipeline(
 
     Args:
         output_dir: Pipeline output directory (the session_dir).
+        session_id: Active InvestigationSession id (FK target for every
+            per-session row written by the pipeline).
         event_callback: Optional callback for pipeline events.
         contract: Active contract name from the session.
         vertical: Domain vertical (e.g. 'finance'). None → '_adhoc'.
@@ -1770,6 +1807,7 @@ def _run_pipeline(
         vertical=vertical,
         target_phase=target_phase,
         force_phase=target_phase is not None,
+        session_id=session_id,
     )
 
     result = run(config)
@@ -1809,6 +1847,7 @@ def _run_pipeline(
 
 async def _run_pipeline_background(
     output_dir: Path,
+    session_id: str,
     contract: str | None = None,
     vertical: str | None = None,
     target_phase: str | None = None,
@@ -1819,7 +1858,9 @@ async def _run_pipeline_background(
     This function restores it in its finally block — even on failure.
     """
     try:
-        await asyncio.to_thread(_run_pipeline, output_dir, None, contract, vertical, target_phase)
+        await asyncio.to_thread(
+            _run_pipeline, output_dir, session_id, None, contract, vertical, target_phase
+        )
     except Exception:
         _log.exception("Background pipeline failed for %s", output_dir)
     finally:
@@ -1832,6 +1873,8 @@ def _query(
     question: str,
     contract_name: str | None = None,
     display_limit: int = 10_000,
+    *,
+    session_id: str,
 ) -> tuple[dict[str, Any], Any]:
     """Execute a natural language query.
 
@@ -1860,6 +1903,7 @@ def _query(
         source_id=source.source_id,
         contract=contract_name,
         display_limit=display_limit,
+        session_id=session_id,
     )
 
     if not result.success or not result.value:
@@ -2268,6 +2312,8 @@ def _run_sql(
     sql: str | None = None,
     column_mappings: dict[str, str] | None = None,
     limit: int = 100,
+    *,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute SQL directly against analyzed data.
 
@@ -2312,6 +2358,7 @@ def _run_sql(
         column_mappings=column_mappings,
         limit=limit,
         repair_fn=repair_fn,
+        session_id=session_id,
     )
 
 
@@ -2419,7 +2466,7 @@ def _check_prerequisites() -> str | None:
 
 def _begin_new_session(
     workspace_mgr: ConnectionManager,
-    open_session_manager: Callable[[str], ConnectionManager],
+    open_session_manager: Callable[..., ConnectionManager],
     source: str,
     intent: str,
     contract: str | None = None,
@@ -2521,10 +2568,9 @@ def _begin_new_session(
     session_mgr = open_session_manager(fingerprint)
 
     with session_mgr.session_scope() as session:
-        # Copy the Source record into session DB if not already present
-        existing_ids = set(session.execute(select(Source.source_id)).scalars().all())
-        if source_snapshot["source_id"] not in existing_ids:
-            session.add(Source(**source_snapshot))
+        # Source-copy into the per-session DB is gone post-DAT-321: workspace
+        # and per-session SQLAlchemy share one Postgres database, so the
+        # Source row registered via add_source is already visible here.
 
         # Mark any orphan "active" InvestigationSession rows as abandoned.
         # Handles retries where a prior begin_session wrote to the session DB
@@ -2558,6 +2604,11 @@ def _begin_new_session(
         )
 
         new_session_id = inv.session_id
+
+    # Bind session_id to the manager immediately. Any per-session FK write
+    # that fires before the next tool invocation (which would re-open via
+    # _get_session_manager(fp, sid)) needs this set.
+    session_mgr.session_id = new_session_id
 
     # --- Set ActiveSession pointer in workspace (last, after session DB is ready) ---
     from sqlalchemy import delete

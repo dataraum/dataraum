@@ -4,6 +4,7 @@ import pytest
 
 from dataraum.query.snippet_library import SnippetGraph, SnippetLibrary
 from dataraum.query.snippet_models import SQLSnippetRecord
+from tests.conftest import baseline_session_id
 
 
 class TestSnippetLibraryFindById:
@@ -11,7 +12,7 @@ class TestSnippetLibraryFindById:
 
     def test_find_existing_snippet(self, session):
         """Find a snippet by its primary key."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         record = library.save_snippet(
             snippet_type="extract",
@@ -30,7 +31,7 @@ class TestSnippetLibraryFindById:
 
     def test_find_nonexistent_returns_none(self, session):
         """Unknown snippet_id returns None."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         found = library.find_by_id("nonexistent-id")
         assert found is None
@@ -41,7 +42,7 @@ class TestSnippetLibraryFindByKey:
 
     def test_find_extract_snippet(self, session):
         """Find an extract snippet by exact key."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         # Save a snippet
         library.save_snippet(
@@ -73,7 +74,7 @@ class TestSnippetLibraryFindByKey:
 
     def test_find_no_match(self, session):
         """No snippet for this key."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         match = library.find_by_key(
             snippet_type="extract",
@@ -84,7 +85,7 @@ class TestSnippetLibraryFindByKey:
 
     def test_find_different_schema(self, session):
         """Same field but different schema doesn't match."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="extract",
@@ -109,7 +110,7 @@ class TestSnippetLibraryFindByKey:
 
     def test_find_constant_snippet(self, session):
         """Find a constant snippet including parameter value."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="constant",
@@ -143,7 +144,7 @@ class TestSnippetLibraryFindByKey:
 
     def test_null_fields_match_correctly(self, session):
         """Null fields in key must match null (not anything)."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         # Snippet with no statement
         library.save_snippet(
@@ -183,7 +184,7 @@ class TestSnippetLibrarySave:
 
     def test_save_new_snippet(self, session):
         """Save creates a new record."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         record = library.save_snippet(
             snippet_type="extract",
@@ -202,7 +203,7 @@ class TestSnippetLibrarySave:
 
     def test_save_keeps_first_writer(self, session):
         """Save with same key keeps original (first writer wins)."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         # First save
         record1 = library.save_snippet(
@@ -237,7 +238,7 @@ class TestSnippetLibrarySave:
 
     def test_save_formula_snippet(self, session):
         """Save a formula snippet with normalized expression."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         record = library.save_snippet(
             snippet_type="formula",
@@ -255,7 +256,7 @@ class TestSnippetLibrarySave:
 
     def test_save_with_column_mappings(self, session):
         """Column mappings are persisted."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         record = library.save_snippet(
             snippet_type="extract",
@@ -279,7 +280,7 @@ class TestSnippetLibraryFindByExpression:
         """Find a formula by normalized expression."""
         from dataraum.query.snippet_utils import normalize_expression
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         # Normalize the expression the same way find_by_expression will
         expr = "(accounts_receivable / revenue) * days_in_period"
@@ -307,7 +308,7 @@ class TestSnippetLibraryFindByExpression:
 
     def test_find_formula_no_match(self, session):
         """No formula for a different expression."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="formula",
@@ -333,7 +334,7 @@ class TestSnippetLibraryRecordUsage:
 
     def test_record_exact_reuse(self, session):
         """Record an exact reuse and update snippet stats."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         snippet = library.save_snippet(
             snippet_type="extract",
@@ -367,7 +368,7 @@ class TestSnippetLibraryRecordUsage:
 
     def test_record_newly_generated(self, session):
         """Record a newly generated step (no snippet)."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         usage = library.record_usage(
             execution_id="exec_002",
@@ -382,7 +383,7 @@ class TestSnippetLibraryRecordUsage:
 
     def test_record_provided_not_used(self, session):
         """Record when snippet was provided but LLM ignored it."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         snippet = library.save_snippet(
             snippet_type="extract",
@@ -414,7 +415,7 @@ class TestSnippetLibraryStats:
 
     def test_empty_stats(self, session):
         """Stats with no data."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         stats = library.get_stats()
 
         assert stats["total_snippets"] == 0
@@ -422,7 +423,7 @@ class TestSnippetLibraryStats:
 
     def test_basic_stats(self, session):
         """Stats with some snippets and usages."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         # Create snippets
         s1 = library.save_snippet(
@@ -481,7 +482,7 @@ class TestSnippetLibraryStats:
 
     def test_stats_filtered_by_schema(self, session):
         """Stats can be filtered by schema_mapping_id."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="extract",
@@ -513,7 +514,7 @@ class TestSnippetLibraryInvalidation:
 
     def test_invalidate_for_schema(self, session):
         """Invalidating a schema marks all its snippets as unvalidated."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="extract",
@@ -552,7 +553,7 @@ class TestSnippetLibraryFindAllForSchema:
 
     def test_find_all(self, session):
         """Find all snippets for a schema."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="extract",
@@ -586,7 +587,7 @@ class TestSnippetLibraryFindAllForSchema:
 
     def test_find_all_with_type_filter(self, session):
         """Filter by snippet type."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="extract",
@@ -617,7 +618,7 @@ class TestSnippetGraphs:
 
     def test_find_all_graphs(self, session):
         """All snippets grouped by source."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="extract",
@@ -661,7 +662,7 @@ class TestSnippetGraphs:
 
     def test_find_all_graphs_multiple_sources(self, session):
         """Separate graphs for different sources."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="extract",
@@ -689,12 +690,12 @@ class TestSnippetGraphs:
 
     def test_find_all_graphs_empty(self, session):
         """No snippets returns empty."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         assert library.find_all_graphs("nonexistent") == []
 
     def test_get_search_vocabulary(self, session):
         """Extract vocabulary from snippet index."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="extract",
@@ -739,7 +740,7 @@ class TestSnippetGraphs:
 
     def test_find_graphs_by_keys_standard_field(self, session):
         """Search by standard_field returns correct graphs."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="extract",
@@ -772,7 +773,7 @@ class TestSnippetGraphs:
 
     def test_find_graphs_by_keys_statement(self, session):
         """Search by statement returns correct graphs."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="extract",
@@ -804,7 +805,7 @@ class TestSnippetGraphs:
 
     def test_find_graphs_by_keys_graph_id(self, session):
         """Search by graph_id returns correct graph."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="extract",
@@ -843,7 +844,7 @@ class TestSnippetGraphs:
 
     def test_find_graphs_by_keys_multi_category(self, session):
         """Search by concept + statement returns union of matches."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="extract",
@@ -878,7 +879,7 @@ class TestSnippetGraphs:
 
     def test_find_graphs_by_keys_expands_full_graph(self, session):
         """One matching snippet expands to full graph."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="extract",
@@ -917,7 +918,7 @@ class TestSnippetGraphs:
 
     def test_find_graphs_by_keys_no_match(self, session):
         """No matching keys returns empty."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         library.save_snippet(
             snippet_type="extract",
@@ -937,7 +938,7 @@ class TestSnippetGraphs:
 
     def test_find_graphs_by_keys_limit(self, session):
         """Respects limit parameter."""
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
 
         # Create 3 separate graphs
         for name in ["alpha", "beta", "gamma"]:

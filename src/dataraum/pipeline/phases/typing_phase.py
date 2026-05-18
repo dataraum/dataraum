@@ -268,6 +268,7 @@ class TypingPhase(BasePhase):
                 table=table,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
+                session_id=ctx.require_session_id(),
             )
 
             if not inference_result.success:
@@ -289,6 +290,7 @@ class TypingPhase(BasePhase):
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
                 min_confidence=min_confidence,
+                session_id=ctx.require_session_id(),
             )
 
             if not resolution_result.success:

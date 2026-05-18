@@ -270,11 +270,16 @@ def analyze_trend(
                 )
             )
 
-        # Linear regression
+        # Linear regression. scipy returns NaN on degenerate inputs
+        # (e.g. constant y, zero-variance column). NaN would propagate
+        # into the JSONB ``profile_data`` column on Postgres, which
+        # (correctly) rejects non-standard JSON tokens — so coerce
+        # here to JSON-safe defaults that match the "no detectable
+        # trend" semantics.
         result = stats.linregress(x_clean, y_clean)
-        slope = result.slope
-        rvalue = result.rvalue
-        stderr = result.stderr
+        slope = 0.0 if np.isnan(result.slope) else float(result.slope)
+        rvalue = 0.0 if np.isnan(result.rvalue) else float(result.rvalue)
+        stderr = 0.0 if np.isnan(result.stderr) else float(result.stderr)
 
         # Trend strength is R²
         trend_strength = rvalue**2

@@ -3,10 +3,26 @@
 from __future__ import annotations
 
 import json
-import sqlite3
+import os
 from pathlib import Path
 
 import pytest
+from sqlalchemy import create_engine, text
+
+
+def _workspace_query(sql: str, params: tuple | dict | None = None) -> list[tuple]:
+    """Run a raw SQL query against the workspace Postgres and return rows.
+
+    Convenience for tests that previously poked sqlite3 at workspace.db /
+    per-session metadata.db. Post-DAT-321 all SQLAlchemy state lives in
+    workspace Postgres (DATABASE_URL).
+    """
+    engine = create_engine(os.environ["DATABASE_URL"], future=True)
+    try:
+        with engine.connect() as conn:
+            return list(conn.execute(text(sql), params or {}).fetchall())
+    finally:
+        engine.dispose()
 
 
 async def _call(server, name: str, arguments: dict | None = None):
@@ -37,7 +53,7 @@ def server_with_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 class TestArchivedSessionWritten:
-    """end_session writes a row to archived_sessions in workspace.db."""
+    """end_session writes a row to archived_sessions in the workspace Postgres."""
 
     @pytest.mark.asyncio
     async def test_end_session_writes_archive_index(self, server_with_key, tmp_path: Path) -> None:
@@ -51,11 +67,10 @@ class TestArchivedSessionWritten:
         assert "error" not in r1
         await _call(server_with_key, "end_session", {"outcome": "delivered", "summary": "done"})
 
-        with sqlite3.connect(str(tmp_path / "workspace.db")) as conn:
-            rows = conn.execute(
-                "SELECT session_id, fingerprint, intent, contract, outcome, "
-                "summary, source_name FROM archived_sessions"
-            ).fetchall()
+        rows = _workspace_query(
+            "SELECT session_id, fingerprint, intent, contract, outcome, "
+            "summary, source_name FROM archived_sessions"
+        )
 
         assert len(rows) == 1
         session_id, fingerprint, intent, contract, outcome, summary, source_name = rows[0]
@@ -189,23 +204,21 @@ class TestResumeSessionRestore:
         assert "_session_id" not in result
         assert "_fingerprint" not in result
 
-        # Filesystem invariants
+        # Filesystem invariants: per-session DuckDB restored, no metadata.db file
         assert not (tmp_path / "archive" / archive_id).exists()
         assert (tmp_path / "sessions" / original_fp).exists()
-        assert (tmp_path / "sessions" / original_fp / "metadata.db").exists()
+        assert (tmp_path / "sessions" / original_fp / "data.duckdb").exists()
+        assert not (tmp_path / "sessions" / original_fp / "metadata.db").exists()
 
-        # Workspace state: ActiveSession set, ArchivedSession row consumed
-        with sqlite3.connect(str(tmp_path / "workspace.db")) as conn:
-            assert (
-                conn.execute(
-                    "SELECT COUNT(*) FROM archived_sessions WHERE session_id = ?",
-                    (archive_id,),
-                ).fetchone()[0]
-                == 0
-            )
-            active = conn.execute("SELECT fingerprint FROM active_session").fetchone()
-            assert active is not None
-            assert active[0] == original_fp
+        # Workspace Postgres state: ActiveSession set, ArchivedSession row consumed
+        archived_rows = _workspace_query(
+            "SELECT COUNT(*) FROM archived_sessions WHERE session_id = :sid",
+            {"sid": archive_id},
+        )
+        assert archived_rows[0][0] == 0
+        active_rows = _workspace_query("SELECT fingerprint FROM active_session")
+        assert len(active_rows) == 1
+        assert active_rows[0][0] == original_fp
 
     @pytest.mark.asyncio
     async def test_restore_preserves_contract_without_re_specification(
@@ -241,16 +254,13 @@ class TestResumeSessionRestore:
         result = await _call(server_with_key, "resume_session", {"session_id": archive_id})
         assert "error" not in result
         # The active InvestigationSession's intent should be prefixed.
-        # We verify via re-listing — the new session is active so listing is empty,
-        # but begin_session response includes the intent for the resumed session
-        # only when called via _orient_to_active_session. Instead: assert by
-        # opening the session DB directly.
+        # The per-session session_dir still exists for the restored DuckDB;
+        # InvestigationSession rows live in workspace Postgres.
         session_dirs = list((tmp_path / "sessions").iterdir())
         assert len(session_dirs) == 1
-        with sqlite3.connect(str(session_dirs[0] / "metadata.db")) as conn:
-            rows = conn.execute(
-                "SELECT intent, status FROM investigation_sessions ORDER BY started_at"
-            ).fetchall()
+        rows = _workspace_query(
+            "SELECT intent, status FROM investigation_sessions ORDER BY started_at"
+        )
         # First row: original (status set by end_session), second row: resumed (active)
         assert len(rows) == 2
         assert rows[0] == ("look at Q1", "abandoned")
@@ -273,11 +283,11 @@ class TestResumeSessionRestore:
         )
 
         session_dirs = list((tmp_path / "sessions").iterdir())
-        with sqlite3.connect(str(session_dirs[0] / "metadata.db")) as conn:
-            row = conn.execute(
-                "SELECT intent FROM investigation_sessions WHERE status = 'active' LIMIT 1"
-            ).fetchone()
-        assert row[0] == "Q2 follow-up"
+        assert len(session_dirs) == 1
+        rows = _workspace_query(
+            "SELECT intent FROM investigation_sessions WHERE status = 'active' LIMIT 1"
+        )
+        assert rows[0][0] == "Q2 follow-up"
 
 
 class TestResumeSessionGuards:

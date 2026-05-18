@@ -22,6 +22,7 @@ from dataraum.analysis.temporal_slicing.models import (
     TemporalSliceConfig,
     VolumeAnomalyResult,
 )
+from tests.conftest import baseline_session_id
 
 # ---------------------------------------------------------------------------
 # _compute_period_metrics tests
@@ -595,7 +596,7 @@ class TestPersistPeriodResults:
             ],
         )
 
-        persist_result = persist_period_results(result, session)
+        persist_result = persist_period_results(result, session, session_id=baseline_session_id())
 
         assert persist_result.success
         assert persist_result.value == 2
@@ -647,7 +648,7 @@ class TestPersistPeriodResults:
             ],
         )
 
-        persist_result = persist_period_results(result, session)
+        persist_result = persist_period_results(result, session, session_id=baseline_session_id())
 
         assert persist_result.success
         record = session.add.call_args_list[0][0][0]

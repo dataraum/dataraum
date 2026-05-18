@@ -36,6 +36,8 @@ def analyze_correlations(
     table_id: str,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
+    *,
+    session_id: str,
 ) -> Result[CorrelationAnalysisResult]:
     """Run correlation analysis on a table.
 
@@ -57,7 +59,7 @@ def analyze_correlations(
         if not table:
             return Result.fail(f"Table not found: {table_id}")
 
-        derived_result = detect_derived_columns(table, duckdb_conn, session)
+        derived_result = detect_derived_columns(table, duckdb_conn, session, session_id=session_id)
         derived_columns = derived_result.unwrap() if derived_result.success else []
 
         # Summary stats
@@ -91,6 +93,8 @@ def analyze_enriched_correlations(
     fact_table: Table,
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
+    *,
+    session_id: str,
 ) -> Result[CorrelationAnalysisResult]:
     """Run correlation analysis on an enriched view (fact + dimension columns).
 
@@ -110,7 +114,7 @@ def analyze_enriched_correlations(
 
     try:
         derived_result = detect_enriched_derived_columns(
-            enriched_view, fact_table, duckdb_conn, session
+            enriched_view, fact_table, duckdb_conn, session, session_id=session_id
         )
         derived_columns = derived_result.unwrap() if derived_result.success else []
 

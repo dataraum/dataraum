@@ -27,6 +27,9 @@ class FixLedgerEntry(Base):
     __tablename__ = "fix_ledger"
 
     fix_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.source_id"), nullable=False)
 
     # What action this resolves

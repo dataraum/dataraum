@@ -15,6 +15,7 @@ from dataraum.mcp.formatters import format_run_sql_result
 from dataraum.mcp.sql_executor import _build_column_quality, _snippet_key_for_step, run_sql
 from dataraum.query.execution import SQLStep, StepExecutionResult
 from dataraum.storage import init_database
+from tests.conftest import baseline_session_id
 
 
 def _id() -> str:
@@ -32,8 +33,20 @@ def cursor() -> duckdb.DuckDBPyConnection:
 
 @pytest.fixture
 def session() -> Generator[Session]:
-    """In-memory SQLite session with all tables created."""
-    engine = create_engine("sqlite:///:memory:", echo=False)
+    """In-memory SQLite session with all tables created.
+
+    Uses ``StaticPool`` + explicit ``engine.dispose()`` so the underlying
+    sqlite3 connection is closed deterministically — Python 3.12+ raises
+    ``ResourceWarning`` if GC catches an open connection.
+    """
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        echo=False,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
 
     @event.listens_for(engine, "connect")
     def set_sqlite_pragma(dbapi_conn, connection_record):
@@ -43,8 +56,11 @@ def session() -> Generator[Session]:
 
     init_database(engine)
     factory = sessionmaker(bind=engine)
-    with factory() as s:
-        yield s
+    try:
+        with factory() as s:
+            yield s
+    finally:
+        engine.dispose()
 
 
 def _insert_source_and_table(
@@ -413,7 +429,7 @@ def _make_snippet(
     """Helper: insert a snippet record and return its ID."""
     from dataraum.query.snippet_library import SnippetLibrary
 
-    library = SnippetLibrary(session)
+    library = SnippetLibrary(session, session_id=baseline_session_id())
     record = library.save_snippet(
         snippet_type="query",
         sql=sql_text,
@@ -449,6 +465,7 @@ class TestSnippetReuseDetected:
             source_id=source_id,
             table_ids=[table_id],
             sql=sql_text,
+            session_id=baseline_session_id(),
         )
         assert "error" not in result
         step_info = result["steps_executed"][0]
@@ -468,6 +485,7 @@ class TestSnippetReuseDetected:
             source_id=source_id,
             table_ids=[table_id],
             steps=[{"step_id": "my_step", "sql": "SELECT 42 AS x"}],
+            session_id=baseline_session_id(),
         )
         assert "error" not in result
         step_info = result["steps_executed"][0]
@@ -489,6 +507,7 @@ class TestSnippetSavedAfterSuccess:
             source_id=source_id,
             table_ids=[table_id],
             sql=sql_text,
+            session_id=baseline_session_id(),
         )
         assert "error" not in result
         assert result["snippet_summary"]["saved"] == 1
@@ -496,7 +515,7 @@ class TestSnippetSavedAfterSuccess:
 
         # Verify snippet was saved with content-hash key
         expected_key = f"query_{_hashlib.sha256(sql_text.encode()).hexdigest()[:12]}"
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         match = library.find_by_key(
             snippet_type="query",
             schema_mapping_id=source_id,
@@ -521,11 +540,12 @@ class TestSnippetNotSavedOnFailure:
             source_id=source_id,
             table_ids=[table_id],
             sql=bad_sql,
+            session_id=baseline_session_id(),
         )
         assert "error" in result
 
         key = f"query_{_hashlib.sha256(bad_sql.encode()).hexdigest()[:12]}"
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         match = library.find_by_key(
             snippet_type="query",
             schema_mapping_id=source_id,
@@ -552,6 +572,7 @@ class TestSnippetSummaryAccurate:
             source_id=source_id,
             table_ids=[table_id],
             steps=steps,
+            session_id=baseline_session_id(),
         )
         assert "error" not in result
         summary = result["snippet_summary"]
@@ -571,6 +592,7 @@ class TestSnippetIntegrationWithRawSql:
             source_id=source_id,
             table_ids=[table_id],
             sql="SELECT 99 AS val",
+            session_id=baseline_session_id(),
         )
         assert "error" not in result
         assert result["snippet_summary"]["saved"] == 1
@@ -589,6 +611,7 @@ class TestSnippetIntegrationWithRawSql:
             source_id=source_id,
             table_ids=[table_id],
             sql="SELECT 1 AS a",
+            session_id=baseline_session_id(),
         )
         r2 = run_sql(
             cursor,
@@ -596,6 +619,7 @@ class TestSnippetIntegrationWithRawSql:
             source_id=source_id,
             table_ids=[table_id],
             sql="SELECT 2 AS b",
+            session_id=baseline_session_id(),
         )
         assert r1["snippet_summary"]["saved"] == 1
         assert r2["snippet_summary"]["saved"] == 1
@@ -646,11 +670,12 @@ class TestCteDecomposition:
             source_id=source_id,
             table_ids=[table_id],
             sql=sql,
+            session_id=baseline_session_id(),
         )
         assert "error" not in result
         assert result["snippet_summary"]["saved"] == 2
 
-        library = SnippetLibrary(session)
+        library = SnippetLibrary(session, session_id=baseline_session_id())
         rev = library.find_by_key(
             snippet_type="query", schema_mapping_id=source_id, standard_field="revenue"
         )

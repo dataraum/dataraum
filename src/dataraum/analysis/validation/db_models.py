@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.storage import Base
@@ -23,6 +23,9 @@ class ValidationResultRecord(Base):
     __tablename__ = "validation_results"
 
     result_id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
     validation_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     table_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 

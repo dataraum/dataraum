@@ -469,6 +469,8 @@ def persist_drift_results(
     slice_table_name: str,
     time_column: str,
     session: Session,
+    *,
+    session_id: str,
 ) -> Result[int]:
     """Persist drift analysis results to database.
 
@@ -489,6 +491,7 @@ def persist_drift_results(
                 evidence_json = result.drift_evidence.model_dump()
 
             record = ColumnDriftSummary(
+                session_id=session_id,
                 slice_table_name=slice_table_name,
                 column_name=result.column_name,
                 time_column=time_column,
@@ -767,6 +770,8 @@ def analyze_period_metrics(
 def persist_period_results(
     result: PeriodAnalysisResult,
     session: Session,
+    *,
+    session_id: str,
 ) -> Result[int]:
     """Persist period analysis results to database.
 
@@ -803,6 +808,7 @@ def persist_period_results(
                 )
 
             record = TemporalSliceAnalysis(
+                session_id=session_id,
                 slice_table_name=result.slice_table_name,
                 time_column=result.time_column,
                 period_label=m.period_label,

@@ -9,8 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text
-from sqlalchemy.dialects.sqlite import JSON
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from dataraum.storage import Base
@@ -32,6 +31,9 @@ class ColumnEligibilityRecord(Base):
 
     eligibility_id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
     )
     column_id: Mapped[str] = mapped_column(String(36), nullable=False)  # Preserved for audit, no FK
     table_id: Mapped[str] = mapped_column(

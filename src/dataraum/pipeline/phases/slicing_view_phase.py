@@ -244,6 +244,7 @@ class SlicingViewPhase(BasePhase):
 
             # Store SlicingView record
             slicing_view = SlicingView(
+                session_id=ctx.require_session_id(),
                 fact_table_id=fact_table_id,
                 view_name=view_name,
                 view_sql=view_sql,

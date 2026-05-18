@@ -153,6 +153,7 @@ class ColumnEligibilityPhase(BasePhase):
 
             record = ColumnEligibilityRecord(
                 eligibility_id=str(uuid4()),
+                session_id=ctx.require_session_id(),
                 column_id=column.column_id,
                 table_id=table.table_id,
                 source_id=ctx.source_id,

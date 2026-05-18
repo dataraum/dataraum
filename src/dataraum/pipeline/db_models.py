@@ -9,8 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import DateTime, Float, ForeignKey, String
-from sqlalchemy.dialects.sqlite import JSON
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from dataraum.storage.base import Base
@@ -25,6 +24,9 @@ class PipelineRun(Base):
     __tablename__ = "pipeline_runs"
 
     run_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
     source_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
 
     # Run configuration
@@ -51,6 +53,9 @@ class PhaseLog(Base):
     __tablename__ = "phase_logs"
 
     log_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
     run_id: Mapped[str] = mapped_column(
         ForeignKey("pipeline_runs.run_id", ondelete="CASCADE"), nullable=False, index=True
     )

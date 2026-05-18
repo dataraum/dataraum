@@ -204,7 +204,7 @@ class GraphExecutionPhase(BasePhase):
         # Resolve inspiration snippets for promotion path
         from dataraum.query.snippet_library import SnippetLibrary
 
-        snippet_library = SnippetLibrary(ctx.session)
+        snippet_library = SnippetLibrary(ctx.session, session_id=ctx.require_session_id())
 
         # ---- Prep (sequential, cheap reads on main session) ----
         # Build a list of (graph_id, graph, hint_sql, inspiration_id) tuples.
@@ -242,10 +242,13 @@ class GraphExecutionPhase(BasePhase):
             prep.append((graph_id, graph, hint_sql, inspiration_id))
 
         # ---- Execute (parallel when manager wired, serial fallback otherwise) ----
+        sid = ctx.require_session_id()
         if ctx.manager is not None:
-            results = _execute_metrics_parallel(prep, ctx.manager, agent, ctx.source_id, table_ids)
+            results = _execute_metrics_parallel(
+                prep, ctx.manager, agent, ctx.source_id, table_ids, session_id=sid
+            )
         else:
-            results = _execute_metrics_serial(prep, ctx.session, exec_ctx, agent)
+            results = _execute_metrics_serial(prep, ctx.session, exec_ctx, agent, session_id=sid)
 
         # ---- Post (sequential, snippet promotion on main session) ----
         executed = 0
@@ -311,6 +314,8 @@ def _execute_metrics_serial(
     session: Session,
     exec_ctx: _ExecutionContext,
     agent: GraphAgent,
+    *,
+    session_id: str,
 ) -> list[MetricResult]:
     """Fallback path: shared session + cursor, sequential dispatch.
 
@@ -318,7 +323,9 @@ def _execute_metrics_serial(
     """
     out: list[MetricResult] = []
     for graph_id, graph, hint_sql, inspiration_id in prep:
-        result = agent.execute(session, graph, exec_ctx, inspiration_sql=hint_sql)
+        result = agent.execute(
+            session, graph, exec_ctx, inspiration_sql=hint_sql, session_id=session_id
+        )
         out.append((graph_id, result, inspiration_id))
     return out
 
@@ -329,6 +336,8 @@ def _execute_metrics_parallel(
     agent: GraphAgent,
     source_id: str,
     table_ids: list[str],
+    *,
+    session_id: str,
 ) -> list[MetricResult]:
     """Concurrent path: per-call session + cursor, gathered via asyncio.
 
@@ -354,7 +363,14 @@ def _execute_metrics_parallel(
                 # ExecutionContext.with_rich_context raises, etc.).
                 try:
                     result = await asyncio.to_thread(
-                        _execute_isolated, graph, hint_sql, manager, agent, source_id, table_ids
+                        _execute_isolated,
+                        graph,
+                        hint_sql,
+                        manager,
+                        agent,
+                        source_id,
+                        table_ids,
+                        session_id,
                     )
                 except Exception as exc:
                     result = Result.fail(f"Unexpected error executing {graph_id}: {exc}")
@@ -372,6 +388,7 @@ def _execute_isolated(
     agent: GraphAgent,
     source_id: str,
     table_ids: list[str],
+    session_id: str,
 ) -> Result[GraphExecution]:
     """Run one metric with an isolated session + cursor pair.
 
@@ -388,4 +405,6 @@ def _execute_isolated(
             table_ids=table_ids,
             schema_mapping_id=source_id,
         )
-        return agent.execute(session, graph, exec_ctx, inspiration_sql=hint_sql)
+        return agent.execute(
+            session, graph, exec_ctx, inspiration_sql=hint_sql, session_id=session_id
+        )

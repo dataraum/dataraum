@@ -167,6 +167,7 @@ class ValidationPhase(BasePhase):
             category=category,
             persist=True,
             vertical=vertical,
+            session_id=ctx.require_session_id(),
         )
 
         if not validation_result.success:

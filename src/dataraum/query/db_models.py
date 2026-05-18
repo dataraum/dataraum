@@ -27,6 +27,11 @@ class QueryExecutionRecord(Base):
         String, primary_key=True, default=lambda: str(uuid4())
     )
 
+    # Session context (per-session row scoping post-DAT-321)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
+    )
+
     # Source context
     source_id: Mapped[str] = mapped_column(
         ForeignKey("sources.source_id", ondelete="CASCADE"),

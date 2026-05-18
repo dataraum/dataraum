@@ -17,7 +17,7 @@ Usage:
         duckdb_conn=conn,
         table_ids=table_ids,
     )
-    result = agent.execute(session, graph, context)
+    result = agent.execute(session, graph, context, session_id=session_id)
 """
 
 from .agent import ExecutionContext, GeneratedCode, GraphAgent

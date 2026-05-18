@@ -160,6 +160,7 @@ class StatisticalQualityPhase(BasePhase):
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
                 exclude_outlier_columns=exclude_outlier_columns,
+                session_id=ctx.require_session_id(),
             )
 
             if not quality_result.success:

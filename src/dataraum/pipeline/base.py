@@ -50,6 +50,21 @@ class PhaseContext:
     # Connection manager for vector DB access (optional)
     manager: ConnectionManager | None = None
 
+    # InvestigationSession id for per-session row FK population.
+    # Populated by the scheduler from manager.session_id; tests pass directly.
+    session_id: str | None = None
+
+    def require_session_id(self) -> str:
+        """Return ``session_id`` or raise — phases that persist must call this."""
+        if self.session_id:
+            return self.session_id
+        if self.manager and self.manager.session_id:
+            return self.manager.session_id
+        raise RuntimeError(
+            "PhaseContext.session_id is unset — phases persisting per-session rows "
+            "post-DAT-321 require session_id. Scheduler/test fixture must populate it."
+        )
+
 
 @dataclass
 class PhaseResult:

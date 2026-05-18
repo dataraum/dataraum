@@ -1,0 +1,55 @@
+# DataRaum platform substrate — L1 (DAT-320).
+#
+# Two services: postgres (platform + DuckLake catalog DBs) and control-plane
+# (FastAPI /health placeholder; real subsystems wired in by L2+).
+# DuckLake uses local-FS object store via the dataraum_lake named volume —
+# rustfs / S3 deferred to post-spine.
+#
+# First run:
+#   cp .env.example .env
+#   docker compose up -d --wait
+#   curl http://127.0.0.1:8000/health   # → {"status":"ok"}
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres-init/:/docker-entrypoint-initdb.d/:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  control-plane:
+    build:
+      context: .
+      dockerfile: docker/control-plane.Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/dataraum_lake_catalog
+      DUCKLAKE_DATA_PATH: /var/lib/dataraum/lake
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - dataraum_lake:/var/lib/dataraum/lake
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
+  dataraum_lake:

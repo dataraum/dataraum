@@ -77,6 +77,7 @@ dev = [
     "pytest-testmon>=2.2.0",
     "zensical>=0.0.24",
     "vulture>=2.15",
+    "testcontainers[postgres]>=4.14",
 ]
 [build-system]
 requires = ["hatchling"]

@@ -27,7 +27,7 @@ import pytest
 import yaml
 
 from dataraum.core import config as core_config
-from dataraum.core.paths import CONFIG_DIR, SOURCES_DIR
+import dataraum.core.paths as paths_mod
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -46,11 +46,11 @@ def test_sources_dir_matches_docker_compose_bind_mount() -> None:
 
 def test_config_dir_matches_dockerfile_copy_target() -> None:
     dockerfile = (_REPO_ROOT / "docker" / "control-plane.Dockerfile").read_text()
-    assert f"COPY config/ {CONFIG_DIR}/" in dockerfile, (
-        f"control-plane.Dockerfile must COPY config/ into {CONFIG_DIR}/"
+    assert f"COPY config/ {paths_mod.CONFIG_DIR}/" in dockerfile, (
+        f"control-plane.Dockerfile must COPY config/ into {paths_mod.CONFIG_DIR}/"
     )
-    assert f"ENV DATARAUM_CONFIG_PATH={CONFIG_DIR}" in dockerfile, (
-        f"control-plane.Dockerfile must set DATARAUM_CONFIG_PATH={CONFIG_DIR}"
+    assert f"ENV DATARAUM_CONFIG_PATH={paths_mod.CONFIG_DIR}" in dockerfile, (
+        f"control-plane.Dockerfile must set DATARAUM_CONFIG_PATH={paths_mod.CONFIG_DIR}"
     )
 
 
@@ -84,7 +84,6 @@ def test_add_source_picks_up_recipe_from_sources_dir(
 ) -> None:
     """End-to-end through _add_source: yaml in SOURCES_DIR resolves
     via bare-name lookup, no DATARAUM_HOME needed."""
-    import dataraum.core.paths as paths_mod
     from dataraum.mcp.server import _add_source
 
     recipe = "backend: mssql\ntables:\n  t:\n    sql: SELECT 1\n"

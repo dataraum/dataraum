@@ -161,7 +161,7 @@ def run(
                     if 1 <= idx <= len(contract_names):
                         contract = contract_names[idx - 1]
                         console.print(f"  Using contract: [bold]{contract}[/bold]")
-            except (KeyboardInterrupt, EOFError):
+            except KeyboardInterrupt, EOFError:
                 pass
 
     # Default to aggregation_safe if no contract selected

@@ -24,4 +24,4 @@ def test_pg_url_resolves_to_live_postgres(pg_url: str) -> None:
 
 def test_pg_url_clean_runs_without_error(pg_url_clean: str) -> None:
     """pg_url_clean truncates an empty schema as a no-op without error."""
-    assert pg_url_clean == pg_url_clean  # idempotent — just exercises the fixture
+    assert pg_url_clean.startswith("postgresql+psycopg://")

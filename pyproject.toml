@@ -3,7 +3,7 @@ name = "dataraum"
 version = "0.2.2"
 description = "Rich metadata context engine for AI-driven data analytics"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = { text = "Apache-2.0" }
 authors = [
     { name = "DataRaum", email = "hello@dataraum.com" }
@@ -14,8 +14,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Database",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -23,11 +21,15 @@ classifiers = [
 
 dependencies = [
     # Data processing
-    "duckdb>=1.5.0",
+    "duckdb==1.5.2",
     "pint>=0.23",
     "pandas>=3.0.0",
-    # Database (SQLAlchemy + SQLite backend)
-    "sqlalchemy>=2.0.0",
+    # Database (SQLAlchemy + Postgres backend)
+    "sqlalchemy[asyncio]==2.0.49",
+    "psycopg[binary]==3.3.4",
+    # Platform HTTP surface
+    "fastapi==0.136.1",
+    "uvicorn[standard]==0.47.0",
     # Pydantic
     "pydantic>=2.0.0",
     # MCP
@@ -102,7 +104,7 @@ filterwarnings = [
 ]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py314"
 line-length = 100
 extend-exclude = [
     "prototypes/",
@@ -148,7 +150,7 @@ convention = "google"
 known-first-party = ["dataraum"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 strict = true
 warn_return_any = true
 warn_unused_ignores = false  # Allow unused ignores during migration

@@ -1,0 +1,44 @@
+name: compose-smoke
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+
+jobs:
+    compose-smoke:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@v6
+
+            - name: Seed .env from .env.example
+              run: cp .env.example .env
+
+            - name: Build and start the stack
+              run: docker compose up -d --wait
+
+            - name: Check /health
+              run: |
+                  curl --fail --silent --show-error http://127.0.0.1:8000/health
+                  echo
+
+            - name: Verify both Postgres databases exist
+              run: |
+                  set -euo pipefail
+                  dbs=$(docker compose exec -T postgres \
+                      psql -U dataraum -d dataraum -tAc \
+                      "SELECT datname FROM pg_database WHERE datname IN ('dataraum','dataraum_lake_catalog') ORDER BY datname")
+                  echo "Found databases:"
+                  echo "$dbs"
+                  test "$(echo "$dbs" | tr '\n' ',')" = "dataraum,dataraum_lake_catalog,"
+
+            - name: Verify dataraum_lake volume is mounted and writable
+              run: |
+                  docker compose exec -T control-plane sh -c \
+                      'touch /var/lib/dataraum/lake/.smoke && rm /var/lib/dataraum/lake/.smoke'
+
+            - name: Dump compose logs on failure
+              if: failure()
+              run: docker compose logs --no-color

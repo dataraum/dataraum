@@ -76,6 +76,10 @@ def test_all_tables_present_on_postgres(pg_engine) -> None:
 # ---------------------------------------------------------------------------
 
 
+# NOTE: `investigation_steps` is intentionally absent — its ``session_id`` FK
+# pre-dates DAT-321 (lives on the InvestigationStep model since DAT-184) and
+# was not introduced by this lane. The 26 tables below are the ones that
+# acquired ``session_id`` as part of this port.
 PER_SESSION_TABLES = {
     # name -> (FK target column expected)
     "pipeline_runs": ("investigation_sessions", "session_id"),
@@ -424,3 +428,55 @@ def test_connection_config_fails_loud_without_database_url(monkeypatch, tmp_path
     monkeypatch.delenv("DATABASE_URL", raising=False)
     with pytest.raises(RuntimeError, match="DATABASE_URL"):
         ConnectionConfig.for_directory(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# 7. Each per-session table has an index on session_id
+# ---------------------------------------------------------------------------
+
+
+def test_session_id_indexed_on_per_session_tables(pg_engine) -> None:
+    """``index=True`` on session_id translates to a real Postgres index.
+
+    Per-session queries (PhaseLog filtered by session_id, snippet lookups,
+    etc.) are the hot path post-DAT-321. The ORM declares ``index=True`` on
+    every session_id column; this verifies it actually lands as a btree.
+    """
+    inspector = inspect(pg_engine)
+    for table_name in PER_SESSION_TABLES:
+        indexes = inspector.get_indexes(table_name)
+        has_sid_index = any("session_id" in idx.get("column_names", []) for idx in indexes)
+        assert has_sid_index, (
+            f"{table_name}: no index covering session_id "
+            f"(found indexes: {[i['name'] for i in indexes]})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 8. No file-based .db artifact appears on disk during a session lifecycle
+# ---------------------------------------------------------------------------
+
+
+def test_no_sqlite_db_files_after_session_initialize(monkeypatch, pg_url, tmp_path) -> None:
+    """Setting up a session manager must not leave .db / .sqlite files behind.
+
+    Pre-DAT-321 the workspace was a file-backed SQLite database; DAT-321
+    moves it into Postgres. If any leftover SQLite path is still wired,
+    initialize() would create a file and this guard would catch it.
+    """
+    from dataraum.core.connections import ConnectionConfig, ConnectionManager
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    cfg = ConnectionConfig.for_directory(tmp_path)
+    manager = ConnectionManager(cfg, session_id="00000000-0000-0000-0000-0000000000bb")
+    try:
+        manager.initialize()
+        with manager.session_scope() as s:
+            s.execute(text("SELECT 1")).scalar()
+    finally:
+        manager.close()
+
+    leftovers = []
+    for ext in (".db", ".sqlite", ".sqlite3"):
+        leftovers.extend(Path(tmp_path).rglob(f"*{ext}"))
+    assert not leftovers, f"SQLite artifact(s) left on disk under {tmp_path}: {leftovers}"

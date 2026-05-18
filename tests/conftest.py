@@ -28,8 +28,10 @@ def _autofill_session_id_globally(sess, _flush_ctx, _instances):
     Excludes ``InvestigationSession`` itself — its ``session_id`` is the PK,
     not a FK, so autofilling would collide with the baseline row.
     """
+    from dataraum.investigation.db_models import InvestigationSession
+
     for obj in sess.new:
-        if type(obj).__name__ == "InvestigationSession":
+        if isinstance(obj, InvestigationSession):
             continue
         if hasattr(obj, "session_id") and getattr(obj, "session_id", None) is None:
             obj.session_id = _TEST_SESSION_ID

@@ -1595,6 +1595,11 @@ def _restore_archived_session(
             )
             new_session_id = inv.session_id
 
+            # Bind session_id to the manager immediately. Any per-session FK
+            # write that fires before the next tool invocation (which would
+            # re-open via _get_session_manager(fp, sid)) needs this set.
+            session_mgr.session_id = new_session_id
+
             has_data = (
                 session.execute(
                     select(EntropyObjectRecord.object_id)
@@ -2583,6 +2588,11 @@ def _begin_new_session(
         )
 
         new_session_id = inv.session_id
+
+    # Bind session_id to the manager immediately. Any per-session FK write
+    # that fires before the next tool invocation (which would re-open via
+    # _get_session_manager(fp, sid)) needs this set.
+    session_mgr.session_id = new_session_id
 
     # --- Set ActiveSession pointer in workspace (last, after session DB is ready) ---
     from sqlalchemy import delete

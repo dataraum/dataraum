@@ -265,7 +265,7 @@ class GraphAgent(LLMFeature):
                 failed_ids = [
                     s["snippet_id"] for s in cached_snippets.values() if s.get("snippet_id")
                 ]
-                SnippetLibrary(session).record_failure(failed_ids)
+                SnippetLibrary(session, session_id=session_id).record_failure(failed_ids)
             return Result.fail(exec_result.error or "SQL execution failed")
 
         execution = exec_result.value

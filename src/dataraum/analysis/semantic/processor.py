@@ -144,6 +144,8 @@ def enrich_semantic(
     duckdb_conn: duckdb.DuckDBPyConnection | None = None,
     column_annotations: ColumnAnnotationOutput | None = None,
     required_standard_fields: list[str] | None = None,
+    *,
+    session_id: str,
 ) -> Result[SemanticEnrichmentResult]:
     """Run semantic enrichment on tables.
 
@@ -201,6 +203,7 @@ def enrich_semantic(
 
         # Create or update semantic annotation
         db_annotation = AnnotationModel(
+            session_id=session_id,
             column_id=column_id,
             semantic_role=annotation.semantic_role.value,
             entity_type=annotation.entity_type,
@@ -222,6 +225,7 @@ def enrich_semantic(
             continue
 
         db_entity = EntityModel(
+            session_id=session_id,
             table_id=table_id,
             detected_entity_type=entity.entity_type,
             description=entity.description,
@@ -289,6 +293,7 @@ def enrich_semantic(
 
         db_rel = RelationshipModel(
             relationship_id=rel.relationship_id,
+            session_id=session_id,
             from_table_id=from_table_id,
             from_column_id=from_col_id,
             to_table_id=to_table_id,

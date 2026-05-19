@@ -18,6 +18,7 @@ Note: Correlation analysis is handled separately by analysis/correlation module.
 
 from __future__ import annotations
 
+import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -43,6 +44,21 @@ from dataraum.core.models.base import ColumnRef, Result
 from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
+
+
+def _finite_or_none(x: Any) -> float | None:
+    """Coerce to float, returning None for NaN, +/-inf, or None.
+
+    DuckDB's SKEWNESS / KURTOSIS aggregates return NaN on zero-variance
+    columns, and Postgres JSON rejects NaN/Infinity tokens. Strip them at
+    the boundary so the JSON-encoded profile payload is always valid.
+    """
+    if x is None:
+        return None
+    f = float(x)
+    if not math.isfinite(f):
+        return None
+    return f
 
 
 def _profile_column_stats_parallel(
@@ -133,29 +149,17 @@ def _profile_column_stats_parallel(
                             max_value=float(numeric_row[1]),
                             mean=mean_val,
                             stddev=stddev_val,
-                            skewness=(
-                                float(numeric_row[4]) if numeric_row[4] is not None else None
-                            ),
-                            kurtosis=(
-                                float(numeric_row[5]) if numeric_row[5] is not None else None
-                            ),
-                            cv=cv_val,
-                            mad=mad_val,
-                            robust_cv=robust_cv_val,
+                            skewness=_finite_or_none(numeric_row[4]),
+                            kurtosis=_finite_or_none(numeric_row[5]),
+                            cv=_finite_or_none(cv_val),
+                            mad=_finite_or_none(mad_val),
+                            robust_cv=_finite_or_none(robust_cv_val),
                             percentiles={
-                                "p01": (
-                                    float(numeric_row[6]) if numeric_row[6] is not None else None
-                                ),
-                                "p25": (
-                                    float(numeric_row[7]) if numeric_row[7] is not None else None
-                                ),
-                                "p50": p50_val,
-                                "p75": (
-                                    float(numeric_row[9]) if numeric_row[9] is not None else None
-                                ),
-                                "p99": (
-                                    float(numeric_row[10]) if numeric_row[10] is not None else None
-                                ),
+                                "p01": _finite_or_none(numeric_row[6]),
+                                "p25": _finite_or_none(numeric_row[7]),
+                                "p50": _finite_or_none(p50_val),
+                                "p75": _finite_or_none(numeric_row[9]),
+                                "p99": _finite_or_none(numeric_row[10]),
                             },
                         )
                 except Exception as e:

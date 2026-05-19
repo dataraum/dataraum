@@ -280,14 +280,12 @@ class ImportPhase(BasePhase):
         prefixed_name = f"{source_name}__{staged_table.table_name}"
         duckdb_name = staged_table.raw_table_name
 
-        # Find the Table record from session.new (unflushed pending objects).
-        # We avoid flush() here because SQLite doesn't handle concurrent flushes
-        # well in the free-threaded setup.
-        table_record: Table | None = None
-        for obj in ctx.session.new:
-            if isinstance(obj, Table) and obj.table_id == staged_table.table_id:
-                table_record = obj
-                break
+        # Find the Table record. Loaders add the row to the session but don't
+        # flush. We need a handle for the collision check below; the actual
+        # rename of name + duckdb_path is done via a bulk UPDATE statement
+        # after the rename succeeds (see below) so it works whether the row
+        # is still pending or has been flushed by a prior cycle.
+        table_record: Table | None = ctx.session.get(Table, staged_table.table_id)
 
         # Check for table name collision (e.g., Orders.csv and orders.csv both → same name)
         # Check both flushed records (SELECT) and pending objects (session.new)
@@ -324,10 +322,22 @@ class ImportPhase(BasePhase):
                 "duckdb_rename_failed", table=duckdb_name, target=prefixed_name, error=str(e)
             )
 
-        # Update the Table record in-memory (committed when session scope exits)
-        if table_record:
-            table_record.table_name = prefixed_name
-            table_record.duckdb_path = prefixed_name
+        # Persist the new table_name + duckdb_path. The loader adds the Table
+        # row to the session but does not flush, so a bulk UPDATE here would
+        # match zero rows in the DB. Flush first so the INSERT lands, then
+        # update via the ORM identity map — the attribute writes are picked
+        # up by SQLAlchemy's instrumentation and emitted on the next flush
+        # (or commit at session_scope exit).
+        ctx.session.flush()
+        if table_record is None:
+            table_record = ctx.session.get(Table, staged_table.table_id)
+        if table_record is None:
+            raise RuntimeError(
+                f"Loader did not register Table row for {staged_table.table_id} — "
+                "cannot persist the source-prefixed name."
+            )
+        table_record.table_name = prefixed_name
+        table_record.duckdb_path = prefixed_name
 
         return PhaseResult.success(
             outputs={"raw_tables": [str(staged_table.table_id)]},

@@ -114,6 +114,7 @@ def setup_pipeline(
         manager=manager,
         source_path=source_path,
         source_name=source_name,
+        session_id=session_id,
     )
 
     # 4. Per-source fingerprint, captured in the PipelineRun for traceability.
@@ -241,18 +242,21 @@ def _resolve_source_spec(
     manager: ConnectionManager,
     source_path: Path | None,
     source_name: str | None,
+    session_id: str | None = None,
 ) -> _SourceSpec:
     """Resolve the single source for this pipeline run.
 
     - CLI mode (``source_path`` given): derive name from path stem, get-or-create
       a Source row, persist if newly created.
-    - MCP mode (``source_path`` is None): read the (one) Source row that
-      ``begin_session`` wrote into the session DB.
+    - MCP mode (``source_path`` is None): look up the source the active
+      ``InvestigationSession`` is bound to (via its FK). Pre-DAT-321 a session
+      had its own DB so we could trust "the one non-archived Source"; post-321
+      every session shares the workspace Postgres, so we must filter by
+      ``InvestigationSession.source_id``.
 
     Raises:
-        RuntimeError: in MCP mode, if the session DB has zero or multiple
-            non-archived Source rows. Both are configuration bugs upstream —
-            ``begin_session`` is responsible for the one-source invariant.
+        RuntimeError: in MCP mode when the session_id is missing or the bound
+            source can't be found.
     """
     import re
 
@@ -295,21 +299,34 @@ def _resolve_source_spec(
                 backend=new_source.backend,
             )
 
-    # MCP mode — single Source row already populated by begin_session.
+    # MCP mode — follow the InvestigationSession → Source FK.
+    if session_id is None:
+        raise RuntimeError(
+            "_resolve_source_spec: MCP mode requires session_id (post-DAT-321 the "
+            "workspace holds sources for every session, so we cannot guess)."
+        )
+    from dataraum.investigation.db_models import InvestigationSession
+
     with manager.session_scope() as session:
-        active = list(session.execute(select(Source).where(Source.archived_at.is_(None))).scalars())
-        if not active:
+        inv = session.execute(
+            select(InvestigationSession).where(InvestigationSession.session_id == session_id)
+        ).scalar_one_or_none()
+        if inv is None:
             raise RuntimeError(
-                "No source available in the session DB. begin_session was expected "
-                "to copy one Source row from the workspace registry."
+                f"InvestigationSession {session_id} not found — begin_session must "
+                "have written this row before the pipeline runs."
             )
-        if len(active) > 1:
-            names = [s.name for s in active]
+        s = session.execute(
+            select(Source).where(
+                Source.source_id == inv.source_id,
+                Source.archived_at.is_(None),
+            )
+        ).scalar_one_or_none()
+        if s is None:
             raise RuntimeError(
-                f"Session DB has multiple sources ({names}). DAT-290 guarantees one "
-                "source per session — this state is a bug in begin_session."
+                f"Active session {session_id} is bound to source {inv.source_id} but "
+                "that source is missing or archived."
             )
-        s = active[0]
         return _SourceSpec(
             source_id=s.source_id,
             name=s.name,

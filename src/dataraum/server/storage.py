@@ -260,7 +260,8 @@ def health_probe() -> dict[str, str]:
             f"SELECT 1 FROM duckdb_schemas() WHERE database_name = '{LAKE_CATALOG_ALIAS}' LIMIT 1"
         )
     except Exception as e:
-        return {"status": "unreachable", "error": str(e)}
+        logger.warning("ducklake_health_probe_failed", error=str(e))
+        return {"status": "unreachable"}
     return {"status": "ok"}
 
 

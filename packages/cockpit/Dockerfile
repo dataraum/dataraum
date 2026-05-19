@@ -2,10 +2,11 @@
 #
 # Multi-stage:
 #   1. deps   — install pnpm deps (cached when package.json/lock unchanged)
-#   2. build  — build the SSR bundle (uses the committed src/api/types.ts;
+#   2. build  — vite build → Nitro emits a self-binding bundle at
+#               .output/server/index.mjs (uses the committed src/api/types.ts;
 #               regenerate it with `pnpm codegen` before docker build if the
 #               engine's openapi.yaml changed)
-#   3. runner — minimal node image serving dist/server/server.js
+#   3. runner — minimal node image serving .output/server/index.mjs
 #
 # Build args:
 #   VITE_ENGINE_API_URL — baked into the client bundle for cross-origin
@@ -49,14 +50,13 @@ ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0
 
-# TanStack Start's prod server reads dist/ + node_modules at runtime.
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/package.json ./
+# Nitro produces a self-contained server bundle at .output/server/index.mjs
+# — runtime needs nothing else from the build stage.
+COPY --from=build /app/.output ./.output
 
 EXPOSE 3000
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -qO- --spider http://localhost:3000/ || exit 1
 
-CMD ["node", "dist/server/server.js"]
+CMD ["node", ".output/server/index.mjs"]

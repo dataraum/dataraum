@@ -37,10 +37,16 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # DATABASE_URL is consumed by SQLAlchemy (workspace + sessions); the
+      # +psycopg dialect prefix is required — we ship psycopg v3, not psycopg2,
+      # and the bare postgresql:// scheme falls back to the missing psycopg2
+      # driver. DUCKLAKE_CATALOG_URL is consumed by DuckDB's postgres
+      # extension (libpq), which accepts the bare postgresql:// scheme.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
       DUCKLAKE_DATA_PATH: /var/lib/dataraum/lake
       DATARAUM_CONFIG_PATH: /opt/dataraum/config
+      DATARAUM_MCP_TOKEN: ${DATARAUM_MCP_TOKEN}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - dataraum_lake:/var/lib/dataraum/lake

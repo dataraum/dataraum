@@ -4,28 +4,20 @@ from __future__ import annotations
 
 import sys
 from io import StringIO
-from unittest.mock import MagicMock
-
-from rich.console import Console
-from rich.text import Text
 
 from dataraum.core.logging import (
     _fmt_value,
     _passthrough_renderer,
     _ProxyLogger,
     _ProxyLoggerFactory,
-    deactivate_console,
 )
 
 
 class TestProxyLogger:
-    def test_msg_to_stderr_when_no_console(self, monkeypatch: object) -> None:
-        """Output goes to stderr when no console is active."""
-        import dataraum.core.logging as log_mod
-
+    def test_msg_writes_to_stderr(self, monkeypatch: object) -> None:
+        """Output goes to stderr."""
         buf = StringIO()
         monkeypatch.setattr(sys, "stderr", buf)  # type: ignore[attr-defined]
-        monkeypatch.setattr(log_mod, "_active_console", None)  # type: ignore[attr-defined]
 
         proxy = _ProxyLogger()
         proxy.msg(event="phase.done", level="info", phase="typing", status="completed")
@@ -35,92 +27,10 @@ class TestProxyLogger:
         assert "typing" in output
         assert "status: completed" in output
 
-    def test_msg_to_console_when_active(self, monkeypatch: object) -> None:
-        """console.print() called with Rich Text and highlight=False."""
-        import dataraum.core.logging as log_mod
-
-        mock_console = MagicMock(spec=Console)
-        monkeypatch.setattr(log_mod, "_active_console", mock_console)  # type: ignore[attr-defined]
-
-        proxy = _ProxyLogger()
-        proxy.msg(event="phase.done", level="info", phase="typing")
-
-        mock_console.print.assert_called_once()
-        args, kwargs = mock_console.print.call_args
-        assert isinstance(args[0], Text)
-        assert kwargs.get("highlight") is False
-
-    def test_phase_first_then_event(self, monkeypatch: object) -> None:
-        """Phase appears before event in Rich output."""
-        import dataraum.core.logging as log_mod
-
-        mock_console = MagicMock(spec=Console)
-        monkeypatch.setattr(log_mod, "_active_console", mock_console)  # type: ignore[attr-defined]
-
-        proxy = _ProxyLogger()
-        proxy.msg(event="phase.done", level="info", phase="typing")
-
-        text_obj: Text = mock_console.print.call_args[0][0]
-        plain = text_obj.plain
-        assert plain.index("typing") < plain.index("phase.done")
-
-    def test_kv_pairs_in_parentheses(self, monkeypatch: object) -> None:
-        """Key-value pairs appear in (k: v, k: v) format."""
-        import dataraum.core.logging as log_mod
-
-        mock_console = MagicMock(spec=Console)
-        monkeypatch.setattr(log_mod, "_active_console", mock_console)  # type: ignore[attr-defined]
-
-        proxy = _ProxyLogger()
-        proxy.msg(event="phase.done", level="info", phase="typing", rows=1000)
-
-        text_obj: Text = mock_console.print.call_args[0][0]
-        plain = text_obj.plain
-        assert "(rows: 1000)" in plain
-
-    def test_no_timestamp_in_output(self, monkeypatch: object) -> None:
-        """Timestamp is dropped from output."""
-        import dataraum.core.logging as log_mod
-
-        mock_console = MagicMock(spec=Console)
-        monkeypatch.setattr(log_mod, "_active_console", mock_console)  # type: ignore[attr-defined]
-
-        proxy = _ProxyLogger()
-        proxy.msg(
-            event="phase.done",
-            level="info",
-            timestamp="2026-03-04T20:10:29Z",
-            phase="typing",
-        )
-
-        text_obj: Text = mock_console.print.call_args[0][0]
-        assert "2026" not in text_obj.plain
-
-    def test_deactivate_restores_stderr(self, monkeypatch: object) -> None:
-        """After deactivation, output goes back to stderr."""
-        import dataraum.core.logging as log_mod
-
-        mock_console = MagicMock(spec=Console)
-        monkeypatch.setattr(log_mod, "_active_console", mock_console)  # type: ignore[attr-defined]
-
-        deactivate_console()
-
-        buf = StringIO()
-        monkeypatch.setattr(sys, "stderr", buf)  # type: ignore[attr-defined]
-
-        proxy = _ProxyLogger()
-        proxy.msg(event="back_to_stderr", level="info")
-
-        assert "back_to_stderr" in buf.getvalue()
-        mock_console.print.assert_not_called()
-
     def test_stderr_hides_info_level(self, monkeypatch: object) -> None:
         """Info level is not shown in stderr output (only warning/error)."""
-        import dataraum.core.logging as log_mod
-
         buf = StringIO()
         monkeypatch.setattr(sys, "stderr", buf)  # type: ignore[attr-defined]
-        monkeypatch.setattr(log_mod, "_active_console", None)  # type: ignore[attr-defined]
 
         proxy = _ProxyLogger()
         proxy.msg(event="phase.done", level="info", phase="typing")
@@ -129,11 +39,8 @@ class TestProxyLogger:
 
     def test_stderr_shows_warning_level(self, monkeypatch: object) -> None:
         """Warning level IS shown in stderr output."""
-        import dataraum.core.logging as log_mod
-
         buf = StringIO()
         monkeypatch.setattr(sys, "stderr", buf)  # type: ignore[attr-defined]
-        monkeypatch.setattr(log_mod, "_active_console", None)  # type: ignore[attr-defined]
 
         proxy = _ProxyLogger()
         proxy.msg(event="slow_query", level="warning", phase="typing")

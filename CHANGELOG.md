@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed (BREAKING)
+- **stdio MCP transport gone (DAT-325)**. The `dataraum-mcp` script entry, the `--transport stdio` mode, the `run_server()` runner, and the standalone Starlette HTTP runner (`_build_http_app`, `run_http_server`) are all deleted. The control plane is now a single FastAPI app (`dataraum.server.app:app`) that mounts `/mcp/` as a streamable-HTTP MCP sub-app behind bearer auth. Run via `uvicorn dataraum.server.app:app` or `docker compose up`. The `docker/control-plane.Dockerfile` already used uvicorn, so the container deploy is unchanged. **Migration:** clients that talked to `dataraum-mcp` over stdio must switch to HTTP: register the server with `claude mcp add --transport http dataraum http://host:8000/mcp/ --header "Authorization: Bearer $DATARAUM_MCP_TOKEN"`. `DATARAUM_MCP_TOKEN` is now required at startup (lifespan raises if unset).
+- **`dataraum` CLI gone (DAT-325)**. The `dataraum run` and `dataraum dev` commands have been non-functional since DAT-321 made `setup_pipeline` require a `session_id` the CLI never provided. Removed: `src/dataraum/cli/` tree, `tests/unit/cli/` tree, `docs/cli.md`, `dataraum` script entry, `typer` dep. The MCP `measure` tool is the supported way to run the pipeline.
+- **`rich` rendering path in `core/logging.py` (DAT-325)**. The Rich console renderer was only ever activated by the deleted CLI's interactive run progress display. With the CLI gone, the path was dead-but-reachable: removed `_RichConsole`/`_RichText` imports, `LogBuffer`, `activate_console`/`deactivate_console`, `_build_text`, and the `rich>=13.0.0` dep. `_ProxyLogger.msg` now always routes through stderr (and optionally a file). Library consumers and JSON-renderer mode are unchanged.
+
+### Changed
+- **`/health` is now the substrate probe** (DuckLake catalog + workspace Postgres). The DAT-291 version-only `/health` shape is gone — the unified app's `/health` already returned the richer substrate result. Container orchestrators using `/health` for readiness see `{"status":"ok"|"degraded","ducklake":...,"postgres":...}`.
+- **`mcp/__init__.py` public surface**: drops `run_server` re-export. Only `create_server` remains for in-process callers that build their own transport.
+
+### Added
+- **`DATARAUM_MCP_TOKEN` is mandatory at startup**. The FastAPI lifespan raises if unset, so misconfigured deploys fail fast with a clear error instead of accepting unauthenticated requests. `docker-compose.yml` and `.env.example` now reference it.
+
 ## [0.2.2] - 2026-05-14
 
 ### Added

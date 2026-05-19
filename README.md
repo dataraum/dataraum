@@ -13,35 +13,36 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 
 The core insight: AI agents don't need tools to discover metadata at runtime. They need **rich, pre-computed context** delivered in a format optimized for LLM consumption.
 
-## Quick Start — MCP Server
+## Quick Start
 
-The most common way to use DataRaum is as an MCP server inside Claude Desktop (or any MCP-compatible client).
+DataRaum runs as a containerized control plane that speaks the streamable HTTP MCP transport. Bring it up with `docker compose`, point an MCP client (Claude Code, Claude Desktop) at `http://localhost:8000/mcp/`, and investigate.
 
 ```bash
-# Install
-pip install dataraum
+git clone https://github.com/dataraum/dataraum
+cd dataraum
 
-# Or with uv
-uv pip install dataraum
+# Generate a bearer secret + set the LLM key
+cp .env.example .env
+echo "DATARAUM_MCP_TOKEN=$(uuidgen)" >> .env
+echo "ANTHROPIC_API_KEY=sk-ant-..." >> .env
+
+# Bring up Postgres + control plane
+docker compose up -d --wait
+
+# Verify
+curl -fsS http://localhost:8000/health
+# → {"status":"ok",...}
+
+# Register the MCP server with Claude Code
+claude mcp add --transport http dataraum http://localhost:8000/mcp/ \
+  --header "Authorization: Bearer $DATARAUM_MCP_TOKEN"
 ```
 
-> **PyPI workaround.** The v0.2.x wheel doesn't currently ship the `config/` directory ([DAT-292](https://real-dataraum.atlassian.net/browse/DAT-292)). After `pip install`, also `export DATARAUM_CONFIG_PATH=/path/to/dataraum-checkout/config`, or run from source: `git clone https://github.com/dataraum/dataraum && cd dataraum && uv sync && uv run dataraum-mcp`.
-
-Add to your Claude Desktop config (`claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "dataraum": {
-      "command": "dataraum-mcp"
-    }
-  }
-}
-```
-
-Then in Claude Desktop:
+Then in Claude Code:
 
 > Add the CSV files in /path/to/my/data and measure data quality
+
+See [MCP Setup](docs/mcp-setup.md) for full bring-up, host integration, and troubleshooting.
 
 The server runs an 18-phase analysis pipeline and makes these tools available:
 
@@ -63,7 +64,7 @@ The server runs an 18-phase analysis pipeline and makes these tools available:
 ### Typical Workflow
 
 ```
-add_source(name="accounting", path="/path/to/data")
+add_source(name="accounting", path="/var/lib/dataraum/sources/accounting")
   → begin_session(source="accounting",
                   intent="explore data quality",
                   contract="exploratory_analysis")
@@ -75,18 +76,6 @@ add_source(name="accounting", path="/path/to/data")
 ```
 
 Each session is bound to **one** registered source. Register multiple sources in the workspace and pick one by name at session start.
-
-## Quick Start — CLI
-
-```bash
-# Run analysis pipeline (writes metadata.db + data.duckdb to ./pipeline_output)
-dataraum run /path/to/data
-
-# Inspect what was produced
-dataraum dev context ./pipeline_output
-```
-
-See [CLI Reference](docs/cli.md) for all options.
 
 ## What It Produces
 
@@ -102,11 +91,7 @@ DataRaum analyzes your data and generates:
 
 ## LLM Configuration
 
-Semantic analysis requires an Anthropic API key:
-
-```bash
-export ANTHROPIC_API_KEY="sk-..."
-```
+Semantic analysis requires an Anthropic API key. Set `ANTHROPIC_API_KEY` in your `.env` before `docker compose up`. The container reads it from the compose env.
 
 Configure the LLM provider in `config/llm/config.yaml`. See [Configuration](docs/configuration.md) for details.
 
@@ -128,6 +113,14 @@ uv run mypy src/
 # Lint
 uv run ruff check src/
 uv run ruff format --check src/
+
+# Run the control plane locally (without docker)
+export DATARAUM_MCP_TOKEN=$(uuidgen)
+export DUCKLAKE_CATALOG_URL=postgresql://...
+export DUCKLAKE_DATA_PATH=/var/lib/dataraum/lake
+export DATABASE_URL=postgresql://...
+export ANTHROPIC_API_KEY=sk-ant-...
+uv run uvicorn dataraum.server.app:app --host 0.0.0.0 --port 8000
 ```
 
 ## Documentation
@@ -136,8 +129,7 @@ uv run ruff format --check src/
 - [Pipeline](docs/pipeline.md) — 18-phase pipeline reference
 - [Entropy](docs/entropy.md) — uncertainty quantification system
 - [Data Model](docs/data-model.md) — metadata schema
-- [CLI Reference](docs/cli.md) — command-line interface
-- [MCP Setup](docs/mcp-setup.md) — MCP server configuration
+- [MCP Setup](docs/mcp-setup.md) — control plane bring-up + MCP client wiring
 - [Configuration](docs/configuration.md) — config directory reference
 - [Contributing](docs/contributing.md) — development setup and patterns
 

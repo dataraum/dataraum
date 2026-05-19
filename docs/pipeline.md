@@ -6,26 +6,24 @@ When a vertical is not yet configured for a dataset, the pipeline runs a **cold-
 
 ## Running the Pipeline
 
-```bash
-# Full pipeline on a directory of CSV files
-dataraum run /path/to/data
+The pipeline runs as a side effect of the MCP `measure` tool. There is no
+standalone CLI — bring up the control plane and drive it via an MCP client
+(Claude Code, Claude Desktop, or any client that speaks streamable HTTP MCP).
 
-# Single file with custom output directory
-dataraum run /path/to/file.csv --output ./my_output
-
-# Run up to a specific phase (includes dependencies)
-dataraum run /path/to/data --phase statistics
-
-# Run with a target contract
-dataraum run /path/to/data --contract aggregation_safe
 ```
-
-Via MCP (Claude Code, Claude Desktop):
-```
+# Conversational entry (Claude Code):
 > Add the CSV files in /path/to/data and analyze them
+
+# Or the tool sequence directly:
+add_source(path="/path/to/data")
+begin_session(source="data")
+measure(contract="aggregation_safe")      # triggers the pipeline (3–7 min)
 ```
 
-Via Python:
+See [mcp-setup](mcp-setup.md) for the control-plane bring-up and client
+wiring.
+
+Via Python (programmatic, in-process):
 ```python
 from dataraum import Context
 
@@ -130,13 +128,8 @@ The pipeline writes to the output directory (default: `./pipeline_output`):
 
 ## Rerunning Phases
 
-Phases are idempotent. Rerunning the pipeline skips already-completed phases unless source data has changed.
+Phases are idempotent. Calling `measure` again skips already-completed phases unless source data has changed.
 
-```bash
-# Force re-run of a specific phase
-dataraum run /path/to/data --phase statistics --force
-```
-
-Via MCP, `measure(target_phase="semantic")` reruns a targeted phase and cascades to its dependents. This is the normal path after a `teach` call: teach adds to the vertical overlay, then the caller reruns the affected phase.
+`measure(target_phase="semantic")` reruns a targeted phase and cascades to its dependents. This is the normal path after a `teach` call: teach adds to the vertical overlay, then the caller reruns the affected phase.
 
 To start completely fresh, delete the output directory and re-run.

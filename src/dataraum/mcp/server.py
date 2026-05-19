@@ -7,11 +7,9 @@ Output directory is resolved from DATARAUM_HOME env var (default ~/.dataraum/) o
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import logging
 import os
-import sys
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,8 +27,6 @@ if TYPE_CHECKING:
 from mcp.server import Server
 from mcp.server.experimental.request_context import Experimental
 from mcp.server.experimental.task_context import ServerTaskContext
-from mcp.server.stdio import stdio_server
-from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import CallToolResult, CreateTaskResult, TextContent, Tool, ToolExecution
 
 from dataraum import __version__
@@ -113,8 +109,8 @@ def _resolve_root_dir() -> Path:
     The root contains ``workspace/``, ``archive/``, and ``logs/``.
     Reads DATARAUM_HOME env var, falling back to ``~/.dataraum/``.
 
-    Used by the stdio MCP entry for workspace/log/archive resolution
-    only. Source registration (see ``_add_source``) goes through the
+    Used by MCP tool handlers for workspace/log/archive resolution.
+    Source registration (see ``_add_source``) goes through the
     container-fixed :data:`dataraum.core.paths.SOURCES_DIR` instead.
     """
     home = os.environ.get("DATARAUM_HOME")
@@ -3615,176 +3611,3 @@ def _list_sources(session: SASession) -> dict[str, Any]:
         "sources": sources,
         "count": len(sources),
     }
-
-
-async def run_server() -> None:
-    """Run the MCP server using stdio transport."""
-    server = create_server()
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
-
-
-_TOKEN_ENV_VAR = "DATARAUM_MCP_TOKEN"
-
-
-class _StreamableHTTPASGIApp:
-    """ASGI wrapper around StreamableHTTPSessionManager.handle_request.
-
-    Route(path, endpoint=asgi_app) avoids the /mcp → /mcp/ 307 redirect that
-    Mount(path, ...) introduces — many MCP clients won't follow 307 on POST.
-    """
-
-    def __init__(self, session_manager: StreamableHTTPSessionManager) -> None:
-        self._sm = session_manager
-
-    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        await self._sm.handle_request(scope, receive, send)
-
-
-class BearerAuthMiddleware:
-    """Pure-ASGI middleware enforcing `Authorization: Bearer <token>`.
-
-    /health bypasses auth so liveness probes don't need the secret. Token
-    comparison uses hmac.compare_digest. Pure ASGI (not BaseHTTPMiddleware)
-    to keep SSE streams from /mcp free of backpressure pitfalls.
-    """
-
-    def __init__(self, app: Any, *, token: str) -> None:
-        self._app = app
-        self._token = token
-
-    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        from starlette.responses import JSONResponse
-
-        if scope["type"] != "http" or scope.get("path") == "/health":
-            await self._app(scope, receive, send)
-            return
-
-        auth_header = ""
-        for raw_name, raw_value in scope.get("headers", []):
-            if raw_name == b"authorization":
-                auth_header = raw_value.decode("latin-1")
-                break
-        scheme, _, presented = auth_header.partition(" ")
-        if (
-            scheme.lower() != "bearer"
-            or not presented
-            or not hmac.compare_digest(presented, self._token)
-        ):
-            _log.warning("401 %s — bad or missing bearer", scope.get("path", ""))
-            response = JSONResponse({"error": "unauthorized"}, status_code=401)
-            await response(scope, receive, send)
-            return
-
-        await self._app(scope, receive, send)
-
-
-async def _health(_: Any) -> Any:
-    """GET /health — unauthenticated liveness probe."""
-    from starlette.responses import JSONResponse
-
-    return JSONResponse({"status": "ok", "version": __version__})
-
-
-def _build_http_app(token: str) -> Any:
-    """Build the Starlette ASGI app for the streamable-http MCP transport.
-
-    Separated from run_http_server so routing + middleware can be unit-tested
-    without binding a uvicorn server.
-    """
-    import contextlib
-    from collections.abc import AsyncIterator
-
-    from starlette.applications import Starlette
-    from starlette.middleware import Middleware
-    from starlette.routing import Route
-
-    server = create_server()
-    session_manager = StreamableHTTPSessionManager(app=server)
-
-    @contextlib.asynccontextmanager
-    async def lifespan(_app: Starlette) -> AsyncIterator[None]:
-        async with session_manager.run():
-            yield
-
-    return Starlette(
-        debug=False,
-        routes=[
-            Route("/health", _health, methods=["GET"]),
-            Route("/mcp", endpoint=_StreamableHTTPASGIApp(session_manager)),
-        ],
-        middleware=[Middleware(BearerAuthMiddleware, token=token)],
-        lifespan=lifespan,
-    )
-
-
-async def run_http_server(host: str, port: int, token: str) -> None:
-    """Run the MCP server over streamable HTTP transport with bearer auth."""
-    import uvicorn
-
-    app = _build_http_app(token)
-    _log.info("MCP streamable-http listening on http://%s:%d/mcp", host, port)
-    _log.info("auth: Authorization: Bearer <%s>", _TOKEN_ENV_VAR)
-    config = uvicorn.Config(app, host=host, port=port, log_level="info")
-    await uvicorn.Server(config).serve()
-
-
-def main() -> None:
-    """Entry point for dataraum-mcp command."""
-    import argparse
-    import asyncio
-
-    parser = argparse.ArgumentParser(
-        prog="dataraum-mcp",
-        description="DataRaum MCP server. Default transport is stdio.",
-    )
-    parser.add_argument(
-        "--transport",
-        choices=("stdio", "http"),
-        default="stdio",
-        help="Transport for the MCP protocol. Default: stdio.",
-    )
-    parser.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help="HTTP bind host. Default: 127.0.0.1. (Ignored for stdio transport.)",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8765,
-        help="HTTP bind port. Default: 8765. (Ignored for stdio transport.)",
-    )
-    args = parser.parse_args()
-
-    # Validate HTTP auth config before touching the filesystem — this lets
-    # `dataraum-mcp --transport http` fail fast with a clean error and no
-    # half-initialized state when DATARAUM_MCP_TOKEN is unset.
-    token: str | None = None
-    if args.transport == "http":
-        token = os.environ.get(_TOKEN_ENV_VAR)
-        if not token:
-            sys.stderr.write(
-                f"{_TOKEN_ENV_VAR} is unset. The HTTP transport refuses to start "
-                f"without a bearer token.\n"
-                f"Set a strong random secret, e.g. `export {_TOKEN_ENV_VAR}=$(uuidgen)`.\n"
-            )
-            raise SystemExit(2)
-
-    # File logging captures structlog output and crash tracebacks even when
-    # stdio swallows stderr; harmless on HTTP transport.
-    from dataraum.core.logging import enable_file_logging
-
-    log_dir = _resolve_root_dir() / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    enable_file_logging(log_dir / "mcp-server.log")
-
-    if args.transport == "stdio":
-        asyncio.run(run_server())
-    else:
-        assert token is not None  # guaranteed by the refuse-to-start check above
-        asyncio.run(run_http_server(args.host, args.port, token))
-
-
-if __name__ == "__main__":
-    main()

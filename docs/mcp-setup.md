@@ -2,67 +2,83 @@
 
 How to connect DataRaum to Claude Code, Claude Desktop, and Claude for Work.
 
+DataRaum runs as a containerized control plane that speaks the **streamable HTTP** MCP transport. There is no stdio mode, no `pip install`, no `dataraum-mcp` CLI — the canonical and only entry point is `uvicorn dataraum.server.app:app` inside the published container, behind a bearer-gated `POST /mcp/` endpoint.
+
 ## Prerequisites
 
-Install via pip or Docker:
+- **Docker** + **docker compose**
+- **Anthropic API key** for the LLM-powered phases (semantic analysis, quality rules)
+- A directory of data files (CSV, Parquet, JSON, or DB recipe yaml) to investigate
+
+## Bring up the control plane
+
+Clone or download the repo (the published `docker-compose.yml` wires the substrate):
 
 ```bash
-# Option A: pip / uv
-pip install dataraum
+git clone https://github.com/dataraum/dataraum
+cd dataraum
 
-# Option B: Docker (no Python required)
-docker pull ghcr.io/dataraum/dataraum
+# Generate a strong bearer secret + populate .env
+cp .env.example .env
+echo "DATARAUM_MCP_TOKEN=$(uuidgen)" >> .env
+echo "ANTHROPIC_API_KEY=sk-ant-..." >> .env
+# Optional: point HOST_SOURCES_DIR at your data directory (default: ./sources)
+
+# Bring up Postgres + control plane
+docker compose up -d --wait
+
+# Verify
+curl -fsS http://localhost:8000/health
+# → {"status":"ok","ducklake":{"status":"ok",...},"postgres":{"status":"ok"}}
 ```
 
-> **PyPI workaround.** The v0.2.x wheel doesn't currently ship the `config/` directory ([DAT-292](https://real-dataraum.atlassian.net/browse/DAT-292)). After `pip install`, also `export DATARAUM_CONFIG_PATH=/path/to/dataraum-checkout/config`, or run from a source checkout (`git clone … && uv sync && uv run dataraum-mcp`). The Docker image (Option B) is unaffected.
+The control plane listens on `127.0.0.1:8000` by default. For LAN/internet exposure, terminate TLS at a reverse proxy (Caddy, nginx, Cloudflare Tunnel) and forward to the bind port.
 
-> **Python version note:** if you're invoking via `uvx` and have a free-threaded interpreter (`3.14t`) on your system, pin to a non-free-threaded one — e.g. `uvx --python 3.13 --from dataraum dataraum-mcp`. C-extension dependencies (`duckdb`, `pgmpy`) don't yet ship free-threaded wheels and will build from sdist.
+## Endpoints
 
-Set your Anthropic API key (required for semantic analysis):
+| Path | Auth | Purpose |
+|------|------|---------|
+| `POST /mcp/` | `Authorization: Bearer $DATARAUM_MCP_TOKEN` | MCP wire protocol (streamable HTTP) |
+| `GET /health` | none | Liveness probe — DuckLake catalog + workspace Postgres |
+
+If `DATARAUM_MCP_TOKEN` is unset the container's lifespan raises at startup and the process exits non-zero with a clear error. There is no "run without auth" mode.
+
+## Sanity-check the MCP endpoint
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
+curl -X POST http://localhost:8000/mcp/ \
+  -H "Authorization: Bearer $DATARAUM_MCP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
 ```
 
-Verify the MCP server starts:
-
-```bash
-# pip install
-dataraum-mcp
-# Should hang waiting for stdio input — Ctrl+C to stop
-
-# Docker
-docker run -i --rm -e ANTHROPIC_API_KEY ghcr.io/dataraum/dataraum
-```
+You should get an `initialize` response with the server's `tools` capability and a session id in the response headers.
 
 ---
 
 ## Claude Code
 
-**Zero config** — the `.mcp.json` at the project root is auto-discovered.
+Register the MCP server with the `claude` CLI:
 
 ```bash
-# Just open Claude Code in the project directory
-claude
+claude mcp add --transport http dataraum http://127.0.0.1:8000/mcp/ \
+  --header "Authorization: Bearer $DATARAUM_MCP_TOKEN"
 
-# Verify the server is registered
-/mcp
+claude
+# > /mcp        — should list the DataRaum tools
 ```
 
-If you need to customize, edit `.mcp.json`:
+For a project-pinned config, add `.mcp.json` to the project root:
 
 ```json
 {
   "mcpServers": {
     "dataraum": {
-      "command": "uv",
-      "args": [
-        "run", "--project", "/absolute/path/to/dataraum", "dataraum-mcp"
-      ],
-      "env": {
-        "DATARAUM_HOME": "/absolute/path/to/workspace",
-        "PYTHON_GIL": "0",
-        "ANTHROPIC_API_KEY": "sk-ant-..."
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp/",
+      "headers": {
+        "Authorization": "Bearer $DATARAUM_MCP_TOKEN"
       }
     }
   }
@@ -79,123 +95,15 @@ If you need to customize, edit `.mcp.json`:
 > How many rows are in each table?
 ```
 
----
-
-## HTTP Transport (remote, experimental)
-
-The default transport is **stdio** — the host launches `dataraum-mcp` as a subprocess and talks to it over its standard input and output. This is the right choice for everything documented above.
-
-If you need the server to run on a different machine — or in a long-running container that several invocations of the `claude` CLI can attach to — start it with the **streamable HTTP** transport. The server speaks the MCP wire protocol over a single `POST /mcp` endpoint and enforces a static `Authorization: Bearer <token>` on every request except `/health`.
-
-> **Experimental:** verified end-to-end against the `claude` CLI only. Claude Desktop and Claude.ai web are deferred until the control-plane / OAuth work lands; for now use stdio with those hosts.
-
-### Start the server
-
-```bash
-# Required: a strong random secret. The server refuses to start without it.
-export DATARAUM_MCP_TOKEN=$(uuidgen)
-export ANTHROPIC_API_KEY="sk-ant-..."
-
-dataraum-mcp --transport http --host 127.0.0.1 --port 8765
-```
-
-Endpoints:
-
-| Path | Auth | Purpose |
-|------|------|---------|
-| `POST /mcp` | `Authorization: Bearer $DATARAUM_MCP_TOKEN` | MCP wire protocol (streamable HTTP) |
-| `GET /health` | none | Liveness probe — returns `{"status": "ok", "version": "..."}` |
-
-If `DATARAUM_MCP_TOKEN` is unset the process exits with code 2 and a clear stderr message. There is no "run without auth" mode.
-
-### Connect the `claude` CLI
-
-```bash
-claude mcp add --transport http dataraum http://127.0.0.1:8765/mcp \
-  --header "Authorization: Bearer $DATARAUM_MCP_TOKEN"
-
-claude
-# > /mcp        — should list the DataRaum tools
-```
-
-### Limitations (current)
-
-- **No TLS in-process.** The server binds plain HTTP. For anything beyond `127.0.0.1` terminate TLS at a reverse proxy (Caddy, nginx, Cloudflare Tunnel) and forward to the bind port. A bundled Caddy recipe ships in v0.2.3 alongside the container image.
-- **No automatic token rotation.** Stop the server, mint a fresh secret, restart, and update each `claude mcp add` entry.
-- **Single canonical URL.** The MCP endpoint is `/mcp` (no trailing slash). Clients that follow 307 redirects will tolerate `/mcp/`; some don't, so prefer the canonical form.
-
----
-
-## Docker
-
-Use the Docker image when you don't want to manage a Python installation. The MCP server uses stdio transport — Docker keeps stdin open with `-i`, which is all it needs.
-
-### Volumes
-
-| Mount | Container path | Purpose |
-|-------|---------------|---------|
-| Your data | `/sources` (read-only) | CSV, Parquet, JSON files for analysis |
-| Workspace | `/workspace` | Sessions, database, exports — persists across runs |
-
-Both mounts are optional. Without them everything works but is ephemeral (lost when the container stops).
-
-### Claude Desktop config
-
-```json
-{
-  "mcpServers": {
-    "dataraum": {
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-v", "/path/to/your/data:/sources:ro",
-        "-v", "dataraum-workspace:/workspace",
-        "-e", "ANTHROPIC_API_KEY=sk-ant-...",
-        "ghcr.io/dataraum/dataraum:latest"
-      ]
-    }
-  }
-}
-```
-
-### Claude Code config
-
-Add to `.mcp.json` in your project:
-
-```json
-{
-  "mcpServers": {
-    "dataraum": {
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-v", "./data:/sources:ro",
-        "-v", "dataraum-workspace:/workspace",
-        "-e", "ANTHROPIC_API_KEY",
-        "ghcr.io/dataraum/dataraum:latest"
-      ]
-    }
-  }
-}
-```
-
-Then tell Claude: "Add the data in /sources and analyze it."
-
-### Standalone
-
-```bash
-docker run -i --rm \
-  -v ./my-csvs:/sources:ro \
-  -v dataraum-workspace:/workspace \
-  -e ANTHROPIC_API_KEY \
-  ghcr.io/dataraum/dataraum
-```
+Note: data referenced in conversation is bind-mounted into the container via the compose stack's `HOST_SOURCES_DIR`, then registered with `add_source` using its **in-container** path (under `/var/lib/dataraum/sources`).
 
 ---
 
 ## Claude Desktop
 
-Add the server to your Claude Desktop config file:
+> **Experimental:** verified end-to-end against the `claude` CLI. Claude Desktop's MCP client support for arbitrary HTTP servers (with bearer headers) is still rolling out. Use the `claude` CLI workflow above for current production work; revisit Desktop after the control-plane / OAuth work lands.
+
+When Desktop's HTTP MCP support is stable, the config will follow the same shape as the `.mcp.json` block above, placed in:
 
 | OS | Config path |
 |----|------------|
@@ -203,37 +111,13 @@ Add the server to your Claude Desktop config file:
 | Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
 | Linux | `~/.config/Claude/claude_desktop_config.json` |
 
-Add this to the file (create it if it doesn't exist):
-
-```json
-{
-  "mcpServers": {
-    "dataraum": {
-      "command": "uv",
-      "args": [
-        "run", "--project", "/absolute/path/to/dataraum", "dataraum-mcp"
-      ],
-      "env": {
-        "DATARAUM_HOME": "/absolute/path/to/workspace",
-        "PYTHON_GIL": "0",
-        "ANTHROPIC_API_KEY": "sk-ant-..."
-      }
-    }
-  }
-}
-```
-
-**Important:** Claude Desktop doesn't inherit your shell's working directory, so use absolute paths for both `--project` and `DATARAUM_HOME`.
-
-Restart Claude Desktop after editing. The hammer icon in the text input should show 12 DataRaum tools.
-
 ---
 
 ## Claude for Work (via Plugin)
 
 The DataRaum plugin lives in a separate repository: [`dataraum/dataraum-plugin`](https://github.com/dataraum/dataraum-plugin).
 
-See the plugin repo's README for installation and configuration instructions. The plugin provides skills that map to the MCP tools and is designed for workspace-wide deployment.
+See the plugin repo's README for installation and configuration. The plugin provides skills that map to the MCP tools and is designed for workspace-wide deployment.
 
 ---
 
@@ -259,7 +143,7 @@ See the plugin repo's README for installation and configuration instructions. Th
 ### Typical workflow
 
 ```
-add_source(name="accounting", path="/path/to/data")
+add_source(name="accounting", path="/var/lib/dataraum/sources/accounting")
   → begin_session(source="accounting",
                   intent="explore data quality",
                   contract="exploratory_analysis")
@@ -289,7 +173,7 @@ Each session is bound to **one** source. To investigate a different source, end 
 
 `concept`, `concept_property`, `validation`, `cycle`, `metric`, `type_pattern`, `null_value`, `relationship`, `explanation`.
 
-Config teaches (concept, metric, cycle, validation, relationship, type_pattern, null_value) update the vertical YAML overlay under `DATARAUM_HOME/workspace/<session>/vertical/` and rerun the affected phase. Metadata teaches (concept_property, explanation) apply immediately.
+Config teaches (concept, metric, cycle, validation, relationship, type_pattern, null_value) update the vertical YAML overlay under the per-session workspace and rerun the affected phase. Metadata teaches (concept_property, explanation) apply immediately.
 
 ### Contracts
 
@@ -305,21 +189,27 @@ See [Entropy](entropy.md) for details on each contract.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `DATARAUM_HOME` | No | Root directory for workspaces (default: `~/.dataraum/`). |
-| `ANTHROPIC_API_KEY` | Yes | API key for LLM-powered analysis (semantic, quality rules, etc.) |
-| `DATARAUM_MCP_TOKEN` | HTTP only | Bearer secret required by `--transport http`. The server refuses to start if unset. |
-| `PYTHON_GIL` | Recommended | Set to `0` to enable free-threading for better performance (Python 3.14) |
+| `DATARAUM_MCP_TOKEN` | **Yes** | Bearer secret for `POST /mcp/`. The control plane refuses to start if unset. |
+| `DUCKLAKE_CATALOG_URL` | Yes (compose sets) | Postgres URL for the DuckLake catalog DB. |
+| `DUCKLAKE_DATA_PATH` | Yes (compose sets) | Filesystem path for the DuckLake data files (a named docker volume in compose). |
+| `DATABASE_URL` | Yes (compose sets) | Postgres URL for the workspace (sources, sessions, snippets). |
+| `ANTHROPIC_API_KEY` | Yes | API key for LLM-powered analysis (semantic, quality rules, etc.). |
+| `HOST_SOURCES_DIR` | Optional | Host path bind-mounted at `/var/lib/dataraum/sources` in the container. Default: `./sources`. |
+
+The `docker-compose.yml` wires every required env from `.env`. For non-container deployments, export them yourself before `uvicorn dataraum.server.app:app`.
 
 ---
 
 ## Troubleshooting
 
-**"No analyzed data found"** — Use `add_source` to register data, then `begin_session` to trigger the pipeline. Or run from CLI: `dataraum run /path/to/data`.
+**`401 unauthorized` from `/mcp/`** — Check that the `Authorization: Bearer $DATARAUM_MCP_TOKEN` header is present and the token matches the value baked into the container's env. The middleware reads `DATARAUM_MCP_TOKEN` at request time, so restarting the container after `.env` changes is required.
 
-**Server not showing up in Claude Code** — Run `/mcp` to check status. Make sure you're in the project root where `.mcp.json` lives.
+**Container won't start, exits with "DATARAUM_MCP_TOKEN is unset"** — Set it in `.env` (or the deploy environment) and re-up the stack. The lifespan refuses to boot without it.
 
-**Server not showing up in Claude Desktop** — Check the config path is correct for your OS. Restart Claude Desktop. Check logs at `~/Library/Logs/Claude/` (macOS).
+**Container starts but `/health` returns `degraded`** — One of the substrate components is unreachable. The body of `/health` names which one (`ducklake` or `postgres`); check the container logs and Postgres health.
 
-**Tools return errors** — Check that `ANTHROPIC_API_KEY` is set. Verify data was added via `add_source` and a session was started via `begin_session`.
+**Server not showing up in Claude Code** — Run `/mcp` to check status. Verify the URL has a trailing slash (`/mcp/`) and the `Authorization` header is set.
 
-**MCP server crashes or hangs** — MCP uses stdio, so stderr is swallowed by the host. Check the file log at `$DATARAUM_HOME/logs/mcp-server.log` for full tracebacks.
+**Tools return errors** — Check that `ANTHROPIC_API_KEY` is set in the container's env. Verify data was added via `add_source` (using the in-container path under `/var/lib/dataraum/sources`) and a session was started via `begin_session`.
+
+**Logs** — `docker compose logs control-plane -f` streams structlog output. The `/health` endpoint can confirm process liveness without needing logs.

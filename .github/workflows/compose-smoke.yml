@@ -17,7 +17,13 @@ jobs:
             - uses: actions/checkout@v6
 
             - name: Seed .env from .env.example
-              run: cp .env.example .env
+              # .env.example ships DATARAUM_MCP_TOKEN= empty so a fresh clone
+              # fails loud locally with the "refuses to start" error until the
+              # operator picks a real secret. CI seeds a throwaway value so
+              # the lifespan boots and /health + /mcp/ can be probed.
+              run: |
+                  cp .env.example .env
+                  printf 'DATARAUM_MCP_TOKEN=%s\n' "$(uuidgen)" >> .env
 
             - name: Build and start the stack
               run: docker compose up -d --wait
@@ -26,6 +32,36 @@ jobs:
               run: |
                   curl --fail --silent --show-error http://127.0.0.1:8000/health
                   echo
+
+            - name: Check /mcp/ bearer enforcement
+              run: |
+                  set -euo pipefail
+                  # No header → 401
+                  status=$(curl -s -o /dev/null -w '%{http_code}' \
+                      -X POST http://127.0.0.1:8000/mcp/ \
+                      -H 'Content-Type: application/json' \
+                      -H 'Accept: application/json, text/event-stream' \
+                      -d '{"jsonrpc":"2.0","id":1,"method":"ping"}')
+                  if [ "$status" != "401" ]; then
+                      echo "expected 401 without bearer, got $status" >&2
+                      exit 1
+                  fi
+                  # Correct bearer → not 401 (the wire-protocol shape is
+                  # asserted by the lane unit tests + smoke; here we only
+                  # gate on the middleware).
+                  # shellcheck disable=SC1091
+                  . ./.env
+                  status=$(curl -s -o /dev/null -w '%{http_code}' \
+                      -X POST http://127.0.0.1:8000/mcp/ \
+                      -H "Authorization: Bearer $DATARAUM_MCP_TOKEN" \
+                      -H 'Content-Type: application/json' \
+                      -H 'Accept: application/json, text/event-stream' \
+                      -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"compose-smoke","version":"0"}}}')
+                  if [ "$status" = "401" ]; then
+                      echo "valid bearer was rejected — middleware misconfigured" >&2
+                      exit 1
+                  fi
+                  echo "/mcp/ bearer gate OK (401 without, $status with)"
 
             - name: Verify both Postgres databases exist
               run: |

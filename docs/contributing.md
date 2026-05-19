@@ -174,8 +174,8 @@ src/dataraum/
 ├── storage/           # SQLAlchemy base, migrations
 ├── llm/               # LLM provider abstraction
 ├── core/              # Config, connections, utilities
-├── cli/               # Typer CLI (run + dev)
-└── mcp/               # MCP server (12 tools)
+├── server/            # FastAPI control plane (/health + /mcp/ mount, bearer auth)
+└── mcp/               # MCP tool implementations (12 tools)
 ```
 
 See [Architecture](architecture.md) for detailed module descriptions.

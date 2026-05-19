@@ -4,6 +4,19 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-19: DAT-325 — L6 Cutover (HTTP MCP is the only entrypoint; CLI + stdio + rich gone)
+
+### dataraum-eval
+- **Changed**: `pyproject.toml` (dropped `dataraum-mcp` script entry, dropped `typer` + `rich` deps), `src/dataraum/server/app.py` (mounts `/mcp/` Starlette sub-app behind bearer middleware; chained lifespans; `DATARAUM_MCP_TOKEN` refuse-to-start), `src/dataraum/mcp/server.py` (deleted `main()`, `run_server()`, `run_http_server()`, `_build_http_app()`, `_health()`, `_StreamableHTTPASGIApp`, `BearerAuthMiddleware`, `_TOKEN_ENV_VAR`, plus `hmac`/`stdio_server`/`StreamableHTTPSessionManager`/`sys` imports), `src/dataraum/mcp/__init__.py` (`run_server` re-export dropped), `src/dataraum/cli/` (entire tree deleted), `tests/unit/cli/` (deleted), `docs/cli.md` (deleted), `src/dataraum/core/logging.py` (Rich rendering path stripped — `LogBuffer`, `activate_console`/`deactivate_console`, `_build_text`, `_active_console`/`_active_log_buffer` globals gone; `_ProxyLogger.msg` always routes through stderr).
+- **Affects**: **the calibration harness in dataraum-eval that currently shells out to `dataraum-mcp` over stdio is broken.** The script entry no longer exists; stdio is unreachable; the only transport is HTTP at `POST /mcp/` behind `Authorization: Bearer $DATARAUM_MCP_TOKEN`. **Per user (2026-05-19): do not block on this — eval gets adapted after L7.**
+- **Adaptation path (post-L7)**:
+  - **Option A (preferred):** spin up the control plane via `docker compose up -d --wait` (or `uvicorn dataraum.server.app:app` in-process for hermetic runs); set `DATARAUM_MCP_TOKEN` in the harness's env; talk to it over HTTP MCP (`mcp.client.streamable_http.streamablehttp_client(url, headers={"Authorization": f"Bearer {token}"})`). Most realistic — matches what shipping clients (Claude Code via `claude mcp add --transport http`) do.
+  - **Option B (in-process, no transport):** import `from dataraum.mcp.server import create_server` and drive the MCP `Server` instance directly. Bypasses HTTP entirely; useful for unit-style calibration that doesn't need transport in the loop.
+  - **Do NOT** try to reanimate stdio. The runner functions are gone; the import paths the eval harness used (`dataraum.mcp.run_server`, `dataraum.mcp.server.main`) raise `ImportError`.
+- **No detector change. No tool surface change. No response shape change.** Same 12 MCP tools, same arguments, same outputs — only the transport that delivers them changed.
+- **Env vars affecting eval**: `DATARAUM_MCP_TOKEN` (required) is the only addition. The DAT-323 set (`DUCKLAKE_CATALOG_URL`, `DUCKLAKE_DATA_PATH`, `DATABASE_URL`, `DUCKLAKE_PG_POOL_MAX`, `DUCKLAKE_SKIP_INSTALL`) still applies — see the DAT-323 handoff entry below.
+- **Status**: pending — gated on L7 (DAT-326) merging first so eval has a stable integration smoke story to anchor against.
+
 ## 2026-05-19: DAT-323 — L4 DuckLake substrate (per-session DuckDB files → DuckLake)
 
 ### dataraum-eval

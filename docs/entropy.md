@@ -106,9 +106,10 @@ with Context("./pipeline_output") as ctx:
     print(result["violations"])        # List of threshold breaches
 ```
 
-Via CLI (contract evaluated during pipeline run):
-```bash
-dataraum run /path/to/data --contract aggregation_safe
+Via MCP (contract evaluated during the pipeline triggered by `measure`):
+```
+begin_session(source="my_data", contract="aggregation_safe")
+measure()
 ```
 
 ## Readiness

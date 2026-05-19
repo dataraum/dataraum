@@ -80,11 +80,9 @@ Files to review (in order):
 5. `docs/entropy.md` — detector list, scores, thresholds
 6. `docs/mcp-setup.md` — tool descriptions, contract names, session flow
 7. `docs/architecture.md` — module diagram, tool count, data flow
-8. `docs/cli.md` — every documented command must still exist (`dataraum --help`,
-   `dataraum dev --help`)
-9. `docs/configuration.md` — env vars, paths, contracts
-10. `docs/data-model.md` — tables, schema fields
-11. `docs/contributing.md` — module tree, dev commands
+8. `docs/configuration.md` — env vars, paths, contracts
+9. `docs/data-model.md` — tables, schema fields
+10. `docs/contributing.md` — module tree, dev commands
 
 For each: ask "what would surprise a new user who reads this against today's
 behavior?" — that's what to fix.

@@ -399,8 +399,8 @@ src/dataraum/
 ├── storage/        # SQLAlchemy models, migrations
 ├── llm/            # LLM providers and prompts
 ├── core/           # Config, connections, utilities
-├── cli/            # Typer CLI (run, dev) — MCP server is primary interface
-└── mcp/            # MCP server (6 tools: look, measure, begin_session, query, run_sql, add_source)
+├── server/         # FastAPI control plane (app, DuckLake bootstrap, /mcp/ mount, bearer auth)
+└── mcp/            # MCP tool implementations + tool registry (create_server)
 ```
 
 SQLAlchemy DB models are co-located with business logic in `db_models.py` files within each module.
@@ -418,18 +418,20 @@ Source (CSV/Parquet/JSON) → [staging] VARCHAR → raw_{table}
 
 ### Quick Reference Commands
 ```bash
-# Run pipeline
-dataraum run /path/to/data --output ./output
+# Bring up the platform substrate (Postgres + control plane container)
+docker compose up -d --wait
 
-# Developer tools
-dataraum dev phases
-dataraum dev context ./output
+# Or run the control plane directly (DATARAUM_MCP_TOKEN + DUCKLAKE_* env required)
+uvicorn dataraum.server.app:app --host 0.0.0.0 --port 8000
 
-# Start MCP server
-dataraum-mcp
+# Health probe (substrate + DuckLake + Postgres)
+curl -fsS http://localhost:8000/health
 
-# Run migration
-python -m dataraum.storage.migrations up
+# MCP endpoint (bearer required; SSE/POST per the streamable-HTTP spec)
+curl -X POST http://localhost:8000/mcp/ \
+  -H "Authorization: Bearer $DATARAUM_MCP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"ping"}'
 ```
 
 ### Code Patterns

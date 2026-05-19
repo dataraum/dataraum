@@ -330,14 +330,12 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
-    { name = "rich" },
     { name = "ruptures" },
     { name = "scipy" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "sqlglot" },
     { name = "statsmodels" },
     { name = "structlog" },
-    { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -373,14 +371,12 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
-    { name = "rich", specifier = ">=13.0.0" },
     { name = "ruptures", specifier = ">=1.1.0" },
     { name = "scipy", specifier = ">=1.11.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.49" },
     { name = "sqlglot", specifier = ">=26.0.0" },
     { name = "statsmodels", specifier = ">=0.14.0" },
     { name = "structlog", specifier = ">=24.1.0" },
-    { name = "typer", specifier = ">=0.9.0" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.47.0" },
 ]
 

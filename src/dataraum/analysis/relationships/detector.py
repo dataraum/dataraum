@@ -33,6 +33,7 @@ def detect_relationships(
     table_ids: list[str],
     duckdb_conn: duckdb.DuckDBPyConnection,
     session: Session,
+    session_id: str,
     min_confidence: float = 0.3,
     sample_percent: float = 10.0,
     evaluate: bool = True,
@@ -46,6 +47,8 @@ def detect_relationships(
         table_ids: List of table IDs to analyze
         duckdb_conn: DuckDB connection
         session: SQLAlchemy async session
+        session_id: Active investigation session id — required for the
+            ``relationships.session_id`` NOT NULL constraint (DAT-321).
         min_confidence: Minimum join_confidence threshold (default 0.3)
         sample_percent: Percentage of rows to sample for uniqueness calculation
         evaluate: Whether to evaluate candidates with quality metrics (default True)
@@ -105,7 +108,7 @@ def detect_relationships(
             candidates = evaluate_candidates(candidates, table_paths, duckdb_conn)
 
         # Store candidates in database
-        _store_candidates(session, table_ids, candidates)
+        _store_candidates(session, session_id, table_ids, candidates)
 
         # Count high confidence candidates
         high_conf_count = sum(
@@ -129,6 +132,7 @@ def detect_relationships(
 
 def _store_candidates(
     session: Session,
+    session_id: str,
     table_ids: list[str],
     candidates: list[RelationshipCandidate],
 ) -> None:
@@ -185,6 +189,7 @@ def _store_candidates(
 
             db_rel = RelationshipDB(
                 relationship_id=str(uuid4()),
+                session_id=session_id,
                 from_table_id=table1_id,
                 from_column_id=col1_id,
                 to_table_id=table2_id,

@@ -1333,21 +1333,39 @@ def create_server(output_dir: Path | None = None) -> Server:
 
 
 def _get_pipeline_source(session: Any) -> Any | None:
-    """Return the session's bound source.
+    """Return the source bound to the currently-active investigation session.
 
-    Per DAT-290 each session is bound to a single source, copied from the
-    workspace registry by ``begin_session`` into the session DB. This helper
-    is a thin lookup convenience used by tools (look, query, measure,
-    resume_session, ...) that need the Source row attached to ``ctx.source_id``
-    or to the active investigation. Returns None if no non-archived Source
-    exists (unexpected state — surfaces as a tool-level error in callers).
+    Per DAT-290 each InvestigationSession is bound to a single source.
+    Post-DAT-321 all sources live in the shared workspace Postgres (no
+    per-session DB), so this helper must follow the active session pointer
+    instead of guessing the first Source by created_at — that heuristic
+    silently returned the wrong source when multiple were registered.
+
+    Returns None when no session is active, the active pointer references a
+    missing investigation, or the bound source has been archived. Callers
+    surface that as a tool-level "no active source" error.
     """
     from sqlalchemy import select
 
+    from dataraum.investigation.db_models import InvestigationSession
+    from dataraum.mcp.db_models import ActiveSession
     from dataraum.storage import Source
 
+    pointer = session.execute(select(ActiveSession)).scalar_one_or_none()
+    if pointer is None:
+        return None
+
+    inv = session.execute(
+        select(InvestigationSession).where(InvestigationSession.session_id == pointer.session_id)
+    ).scalar_one_or_none()
+    if inv is None:
+        return None
+
     return session.execute(
-        select(Source).where(Source.archived_at.is_(None)).order_by(Source.created_at).limit(1)
+        select(Source).where(
+            Source.source_id == inv.source_id,
+            Source.archived_at.is_(None),
+        )
     ).scalar_one_or_none()
 
 
@@ -3332,14 +3350,46 @@ def _measure(
             "hint": "No entropy data. Pipeline will be triggered.",
         }
 
-    # Build points from column_details + table_details
+    # Build points from column_details + table_details + view_details.
+    # detector_id is the canonical registry id (not always the last dimension
+    # segment — e.g. "value.distribution.benford_compliance" → "benford").
+    detector_id_by_dim: dict[str, str] = {
+        d.dimension_path: d.detector_id for d in registry.get_all_detectors()
+    }
     points: list[dict[str, Any]] = []
     for dim_path, targets in measurement.column_details.items():
+        det_id = detector_id_by_dim.get(dim_path, dim_path.rsplit(".", 1)[-1])
         for tgt, score in targets.items():
-            points.append({"target": tgt, "dimension": dim_path, "score": round(score, 4)})
+            points.append(
+                {
+                    "target": tgt,
+                    "dimension": dim_path,
+                    "detector_id": det_id,
+                    "score": round(score, 4),
+                }
+            )
     for dim_path, targets in measurement.table_details.items():
+        det_id = detector_id_by_dim.get(dim_path, dim_path.rsplit(".", 1)[-1])
         for tgt, score in targets.items():
-            points.append({"target": tgt, "dimension": dim_path, "score": round(score, 4)})
+            points.append(
+                {
+                    "target": tgt,
+                    "dimension": dim_path,
+                    "detector_id": det_id,
+                    "score": round(score, 4),
+                }
+            )
+    for dim_path, targets in measurement.view_details.items():
+        det_id = detector_id_by_dim.get(dim_path, dim_path.rsplit(".", 1)[-1])
+        for tgt, score in targets.items():
+            points.append(
+                {
+                    "target": tgt,
+                    "dimension": dim_path,
+                    "detector_id": det_id,
+                    "score": round(score, 4),
+                }
+            )
 
     scores = _aggregate_layer_scores(measurement.scores)
 

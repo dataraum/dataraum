@@ -43,3 +43,7 @@ build/
 /site
 .DS_Store
 *.log
+
+# Playwright MCP session artifacts
+.playwright-mcp/
+/*.png

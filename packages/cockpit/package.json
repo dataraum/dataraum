@@ -17,6 +17,7 @@
     "codegen": "openapi-typescript ../api/openapi.yaml -o src/api/types.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.96.0",
     "@mantine/core": "^9.2.1",
     "@mantine/hooks": "^9.2.1",
     "@tailwindcss/vite": "^4.1.18",

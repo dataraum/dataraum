@@ -57,6 +57,9 @@ function RootDocument({ children }: { children: React.ReactNode }) {
             <Link to="/sources" activeProps={{ style: { fontWeight: 600 } }}>
               Sources
             </Link>
+            <Link to="/chat" activeProps={{ style: { fontWeight: 600 } }}>
+              Chat
+            </Link>
           </Group>
           {children}
         </MantineProvider>

@@ -335,8 +335,12 @@ class ConnectionManager:
         if self._duckdb_conn is not None:
             try:
                 self._duckdb_conn.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Failed to close existing DuckDB connection while rebinding session_id=%s: %s",
+                    session_id,
+                    exc,
+                )
             self._duckdb_conn = None
         self._init_duckdb()
 

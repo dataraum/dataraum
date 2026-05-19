@@ -55,7 +55,6 @@ dependencies = [
 
 [project.scripts]
 dataraum = "dataraum.cli:app"
-dataraum-mcp = "dataraum.mcp.server:main"
 
 [project.urls]
 Homepage = "https://github.com/dataraum/dataraum"

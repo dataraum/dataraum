@@ -55,6 +55,7 @@ the lake schema name.
 _PG_POOL_MAX_DEFAULT = 64
 _PG_POOL_MAX_ENV = "DUCKLAKE_PG_POOL_MAX"
 _SKIP_INSTALL_ENV = "DUCKLAKE_SKIP_INSTALL"
+_EXTENSION_DIR_ENV = "DUCKDB_EXTENSION_DIRECTORY"
 
 # NOTE on flushes: DuckLake buffers writes in memory until ``CHECKPOINT``.
 # ``INSERT`` against a ``lake.*`` table does not appear under ``DATA_PATH``
@@ -122,6 +123,12 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
             chained for inspection.
 
     Environment overrides:
+        DUCKDB_EXTENSION_DIRECTORY: Path where DuckDB looks up cached
+            extensions. The container image pre-installs extensions at
+            ``/opt/dataraum/duckdb-extensions`` (Dockerfile); this env var
+            keeps the runtime ``LOAD`` aligned with that path so it does
+            not fall back to ``$HOME/.duckdb/`` (which the system user has
+            no access to).
         DUCKLAKE_PG_POOL_MAX: Postgres extension pool ceiling (default 64).
             DuckDB's default is 8, which exhausts under multi-session churn.
         DUCKLAKE_SKIP_INSTALL: Set to ``1`` to skip the network ``INSTALL
@@ -142,9 +149,14 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
             f"(DATA_PATH '{safe_data_path}')"
         )
         pool_max = int(os.environ.get(_PG_POOL_MAX_ENV, _PG_POOL_MAX_DEFAULT))
+        ext_dir = os.environ.get(_EXTENSION_DIR_ENV)
 
         try:
             conn = duckdb.connect(LAKE_DB_NAME)
+            if ext_dir:
+                # Must precede INSTALL/LOAD so DuckDB looks up the extension
+                # at the image-baked path rather than ``$HOME/.duckdb/``.
+                conn.execute(f"SET extension_directory = '{_escape_sql_literal(ext_dir)}'")
             if not os.environ.get(_SKIP_INSTALL_ENV):
                 conn.execute("INSTALL ducklake")
             conn.execute("LOAD ducklake")

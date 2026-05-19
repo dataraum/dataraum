@@ -28,7 +28,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from sqlalchemy import create_engine, text
@@ -201,15 +201,19 @@ def _postgres_probe() -> dict[str, str]:
 
 
 @app.get("/health")
-def health() -> dict[str, object]:
+def health() -> Response:
     """Substrate + DuckLake catalog + workspace Postgres health.
 
-    Returns ``status: ok`` overall only when both Postgres and DuckLake are
-    reachable. Container orchestrators use this for readiness.
+    Returns 200 with ``status: ok`` when both substrate components are
+    reachable; 503 with ``status: degraded`` otherwise so k8s/ECS readiness
+    probes that only inspect the status code route traffic away from the
+    container instead of seeing a healthy 200 with a degraded body.
     """
     ducklake = health_probe()
     postgres = _postgres_probe()
-    overall = (
-        "ok" if ducklake.get("status") == "ok" and postgres.get("status") == "ok" else "degraded"
+    healthy = ducklake.get("status") == "ok" and postgres.get("status") == "ok"
+    overall = "ok" if healthy else "degraded"
+    return JSONResponse(
+        {"status": overall, "ducklake": ducklake, "postgres": postgres},
+        status_code=200 if healthy else 503,
     )
-    return {"status": overall, "ducklake": ducklake, "postgres": postgres}

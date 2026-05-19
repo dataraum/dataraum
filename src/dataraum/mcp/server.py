@@ -109,8 +109,8 @@ def _resolve_root_dir() -> Path:
     The root contains ``workspace/``, ``archive/``, and ``logs/``.
     Reads DATARAUM_HOME env var, falling back to ``~/.dataraum/``.
 
-    Used by the stdio MCP entry for workspace/log/archive resolution
-    only. Source registration (see ``_add_source``) goes through the
+    Used by MCP tool handlers for workspace/log/archive resolution.
+    Source registration (see ``_add_source``) goes through the
     container-fixed :data:`dataraum.core.paths.SOURCES_DIR` instead.
     """
     home = os.environ.get("DATARAUM_HOME")

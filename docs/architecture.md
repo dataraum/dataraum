@@ -12,10 +12,9 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           CONSUMERS                                         │
 │                                                                             │
-│   Claude Code ──── MCP Server (12 tools)                                    │
+│   Claude Code ──── HTTP MCP (12 tools at /mcp/)                             │
 │   Claude Desktop ─┘                       Session + Operation Model         │
 │   Python ──────── Context API                                               │
-│   Terminal ────── CLI (run + dev)                                            │
 └─────────────────────────────────────────────────────────────────────────────┘
                                        ↑
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -98,8 +97,8 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 
 | Layer | Technology | Purpose |
 |-------|------------|---------|
-| **AI Interface** | MCP Server | 12 tools for AI agents (Claude Code, Claude Desktop) |
-| **CLI** | Typer + Rich | `run` command + `dev` subgroup for terminal use |
+| **AI Interface** | HTTP MCP at `/mcp/` | 12 tools for AI agents (Claude Code, Claude Desktop) over streamable-HTTP |
+| **Control Plane** | FastAPI + uvicorn | Single ASGI process — `/health` substrate probe + `/mcp/` MCP transport |
 | **Python API** | `Context` class | Programmatic access for notebooks and scripts |
 | **Pipeline** | ThreadPoolExecutor | Parallel phase execution (free-threaded Python 3.14) |
 | **Metadata Store** | SQLAlchemy + SQLite | Structured metadata persistence |
@@ -208,9 +207,7 @@ src/dataraum/
 ├── storage/               # SQLAlchemy base, migrations
 ├── llm/                   # LLM provider abstraction, prompt management
 ├── core/                  # Config, connections, utilities, models, file logging
-├── cli/                   # Typer CLI
-│   ├── main.py            # CLI entry point
-│   └── commands/          # run, dev (subgroup)
+├── server/                # FastAPI control plane (app, DuckLake bootstrap, /mcp/ mount)
 └── mcp/                   # MCP server
     ├── server.py          # 12 tool definitions + session instructions
     ├── teach.py           # teach dispatch (9 types) + YAML overlay writer
@@ -238,7 +235,7 @@ Source (CSV/Parquet/JSON)
     ↓
 [business_cycles, validation] Domain-specific analysis
     ↓
-Context document → MCP / CLI / Python API → AI consumer
+Context document → MCP / Python API → AI consumer
 ```
 
 Entropy detectors run as post-steps after each phase, building up scores incrementally. The `measure` MCP tool evaluates these scores against contract thresholds at any point.

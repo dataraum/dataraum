@@ -3,7 +3,8 @@
 Covers:
 - bearer middleware: /health bypass, /mcp/ gated, scheme + token comparison
 - lifespan refusal when DATARAUM_MCP_TOKEN is unset
-- /mcp/ mount: 503 before lifespan opens the session manager; 200 after
+- /health returns 503 when substrate is degraded
+- /mcp/ mount: 503 from the ASGI app when the session manager isn't ready
 
 The MCP wire protocol (initialize, call_tool) is exercised by the lane smoke
 against a real ASGI client. Here we assert mount + auth + lifespan only.
@@ -183,6 +184,94 @@ class TestBearerAuthMiddlewareIsolated:
 
 
 # -------------------------- lifespan refuse-to-start ------------------------- #
+
+
+class TestHealthDegraded:
+    """Substrate-down readiness behavior: 503, not 200-with-status-field."""
+
+    def test_health_503_when_ducklake_unreachable(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        stub_create_server: None,
+        stub_substrate: None,
+    ) -> None:
+        monkeypatch.setenv("DATARAUM_MCP_TOKEN", TOKEN)
+        monkeypatch.setattr(
+            "dataraum.server.app.health_probe",
+            lambda: {"status": "unreachable"},
+        )
+        from dataraum.server.app import app as control_plane
+
+        with TestClient(control_plane) as client:
+            response = client.get("/health")
+        assert response.status_code == 503
+        body = response.json()
+        assert body["status"] == "degraded"
+        assert body["ducklake"]["status"] == "unreachable"
+
+    def test_health_503_when_postgres_unreachable(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        stub_create_server: None,
+        stub_substrate: None,
+    ) -> None:
+        monkeypatch.setenv("DATARAUM_MCP_TOKEN", TOKEN)
+        monkeypatch.setattr(
+            "dataraum.server.app._postgres_probe",
+            lambda: {"status": "unreachable"},
+        )
+        from dataraum.server.app import app as control_plane
+
+        with TestClient(control_plane) as client:
+            response = client.get("/health")
+        assert response.status_code == 503
+        body = response.json()
+        assert body["status"] == "degraded"
+        assert body["postgres"]["status"] == "unreachable"
+
+
+class TestMcpNotReady:
+    """The ASGI wrapper returns 503 before the lifespan opens the session manager.
+
+    Exercises `_StreamableHTTPASGIApp.__call__` directly with `session_manager
+    = None`. The live server reaches this state only at shutdown; the unit
+    test guards the defensive branch.
+    """
+
+    async def test_returns_503_when_session_manager_none(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("DATARAUM_MCP_TOKEN", TOKEN)
+        from dataraum.server.app import _StreamableHTTPASGIApp
+
+        asgi = _StreamableHTTPASGIApp()
+        assert asgi.session_manager is None  # pre-condition
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/",
+            "headers": [],
+            "query_string": b"",
+        }
+
+        async def receive() -> dict[str, object]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        captured: list[dict[str, object]] = []
+
+        async def send(message: dict[str, object]) -> None:
+            captured.append(message)
+
+        await asgi(scope, receive, send)
+
+        start = next(m for m in captured if m["type"] == "http.response.start")
+        assert start["status"] == 503
+        body = next(m for m in captured if m["type"] == "http.response.body")
+        import json
+
+        assert json.loads(body["body"]) == {"error": "mcp_not_ready"}  # type: ignore[arg-type]
 
 
 class TestLifespanRefuseToStart:

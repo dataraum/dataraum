@@ -399,8 +399,8 @@ src/dataraum/
 ├── storage/        # SQLAlchemy models, migrations
 ├── llm/            # LLM providers and prompts
 ├── core/           # Config, connections, utilities
-├── cli/            # Typer CLI (run, dev) — MCP server is primary interface
-└── mcp/            # MCP server (6 tools: look, measure, begin_session, query, run_sql, add_source)
+├── server/         # FastAPI control plane (app, DuckLake bootstrap, /mcp/ mount, bearer auth)
+└── mcp/            # MCP tool implementations + tool registry (create_server)
 ```
 
 SQLAlchemy DB models are co-located with business logic in `db_models.py` files within each module.

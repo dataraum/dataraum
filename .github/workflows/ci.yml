@@ -9,6 +9,9 @@ on:
 jobs:
     test:
         runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: packages/engine
         strategy:
             fail-fast: false
             matrix:
@@ -55,7 +58,7 @@ jobs:
               uses: actions/upload-artifact@v7
               with:
                   name: coverage-report-${{ matrix.python-version }}
-                  path: coverage.xml
+                  path: packages/engine/coverage.xml
 
     # Single status for branch protection (matrix jobs report as "check (3.x)")
     check:
@@ -72,6 +75,9 @@ jobs:
 
     docs:
         runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: packages/engine
         if: >-
             github.event_name == 'pull_request' ||
             (github.event_name == 'push' && github.ref == 'refs/heads/main')

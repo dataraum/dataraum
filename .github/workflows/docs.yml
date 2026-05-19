@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - "docs/**"
-      - "zensical.toml"
+      - "packages/engine/docs/**"
+      - "packages/engine/zensical.toml"
   workflow_dispatch:
 
 permissions:
@@ -23,6 +23,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/engine
     steps:
       - uses: actions/configure-pages@v6
       - uses: actions/checkout@v6
@@ -33,6 +36,6 @@ jobs:
       - run: zensical build --clean
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: site
+          path: packages/engine/site
       - uses: actions/deploy-pages@v5
         id: deployment

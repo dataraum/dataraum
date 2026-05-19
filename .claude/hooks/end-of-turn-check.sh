@@ -5,9 +5,9 @@
 
 set -e
 
-cd "$CLAUDE_PROJECT_DIR/"
+cd "$CLAUDE_PROJECT_DIR/packages/engine"
 
-echo "Running quality checks..."
+echo "Running quality checks (packages/engine)..."
 
 # Run ruff linter
 echo "Checking: ruff..."

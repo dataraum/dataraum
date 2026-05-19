@@ -78,8 +78,7 @@ Files to review (in order):
 4. `docs/pipeline.md` — phase list and per-phase descriptions if phases were
    added/removed/renamed
 5. `docs/entropy.md` — detector list, scores, thresholds
-6. `docs/mcp-setup.md` — tool descriptions, contract names, session flow
-7. `docs/architecture.md` — module diagram, tool count, data flow
+6. `docs/architecture.md` — module diagram, tool count, data flow
 8. `docs/configuration.md` — env vars, paths, contracts
 9. `docs/data-model.md` — tables, schema fields
 10. `docs/contributing.md` — module tree, dev commands

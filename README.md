@@ -1,138 +1,68 @@
-# DataRaum Context Engine
+# DataRaum
 
-[![PyPI version](https://img.shields.io/pypi/v/dataraum)](https://pypi.org/project/dataraum/)
-[![Python](https://img.shields.io/pypi/pyversions/dataraum)](https://pypi.org/project/dataraum/)
 [![License](https://img.shields.io/github/license/dataraum/dataraum)](LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/dataraum/dataraum/ci.yml?branch=main)](https://github.com/dataraum/dataraum/actions)
-
-<!-- mcp-name: io.github.dataraum/dataraum -->
 
 A rich metadata context engine for AI-driven data analytics.
 
 Traditional semantic layers tell BI tools "what things are called." DataRaum tells AI "what the data means, how it behaves, how it relates, and what you can compute from it."
 
-The core insight: AI agents don't need tools to discover metadata at runtime. They need **rich, pre-computed context** delivered in a format optimized for LLM consumption.
+## Monorepo layout
 
-## Quick Start
+```
+packages/
+├── engine/     # Python — pipeline, detectors, FastAPI REST shell
+├── api/        # OpenAPI contract — openapi.yaml generated from engine
+├── cockpit/    # TypeScript — TanStack Start web UI
+└── infra/      # docker-compose orchestration
+```
 
-DataRaum runs as a containerized control plane that speaks the streamable HTTP MCP transport. Bring it up with `docker compose`, point an MCP client (Claude Code, Claude Desktop) at `http://localhost:8000/mcp/`, and investigate.
+Each package has its own README. Start there if you're working in a specific package.
+
+## Status — transitioning to v1
+
+DataRaum is mid-pivot. v0.2.x exposed a 12-tool MCP server over HTTP. **That transport is gone.** v1 is REST + cockpit:
+
+- **engine** — Python pipeline + thin FastAPI REST shell exposing the engine primitives over HTTP
+- **cockpit** — TanStack Start app that will host the chat surface and renders the agentic widgets
+- **api** — OpenAPI contract generated from the engine, consumed by the cockpit via codegen
+
+Today the substrate boots and you can poke `/health` and `/api/sources`. Other routes get extracted from the legacy MCP module as the cockpit needs them. **No end-user surface yet** — if you need v0.2.x MCP behavior, pin `dataraum==0.2.2`.
+
+## Quick start
 
 ```bash
-git clone https://github.com/dataraum/dataraum
-cd dataraum
+# Set the LLM key
+cp packages/infra/.env.example packages/infra/.env
+echo "ANTHROPIC_API_KEY=sk-ant-..." >> packages/infra/.env
 
-# Generate a bearer secret + set the LLM key
-cp .env.example .env
-echo "DATARAUM_MCP_TOKEN=$(uuidgen)" >> .env
-echo "ANTHROPIC_API_KEY=sk-ant-..." >> .env
+# Bring up Postgres + control plane + cockpit
+docker compose -f packages/infra/docker-compose.yml up -d --wait
 
-# Bring up Postgres + control plane
-docker compose up -d --wait
-
-# Verify
+# Verify the substrate
 curl -fsS http://localhost:8000/health
-# → {"status":"ok",...}
 
-# Register the MCP server with Claude Code
-claude mcp add --transport http dataraum http://localhost:8000/mcp/ \
-  --header "Authorization: Bearer $DATARAUM_MCP_TOKEN"
+# Open the cockpit
+open http://localhost:3000
 ```
 
-Then in Claude Code:
+For UI iteration, run the cockpit dev server outside docker for hot reload — see `packages/cockpit/README.md`.
 
-> Add the CSV files in /path/to/my/data and measure data quality
+## Develop
 
-See [MCP Setup](docs/mcp-setup.md) for full bring-up, host integration, and troubleshooting.
-
-The server runs an 18-phase analysis pipeline and makes these tools available:
-
-| Tool | Description |
-|------|-------------|
-| `add_source` | Register a data source (CSV, Parquet, JSON, directory, or MSSQL recipe yaml) |
-| `list_sources` | List sources registered in the workspace |
-| `begin_session` | Start an investigation session bound to one registered source |
-| `resume_session` | List archived sessions; restore one and make it active again |
-| `look` | Explore data structure, relationships, and semantic metadata |
-| `measure` | Measure entropy scores, readiness, and data quality |
-| `why` | Explain elevated entropy and propose teach suggestions |
-| `teach` | Extend the operation model — sole write tool (concepts, metrics, validations, ...) |
-| `query` | Natural language query against the data |
-| `run_sql` | Execute SQL directly with export support |
-| `search_snippets` | Discover reusable SQL patterns from prior queries and graph execution |
-| `end_session` | Archive workspace and end the session |
-
-### Typical Workflow
-
-```
-add_source(name="accounting", path="/var/lib/dataraum/sources/accounting")
-  → begin_session(source="accounting",
-                  intent="explore data quality",
-                  contract="exploratory_analysis")
-  → look()                    # Understand the data
-  → measure()                 # Check quality scores and readiness
-  → query("total revenue?")   # Ask questions
-  → run_sql(sql="...", export_format="csv", export_name="report")
-  → end_session(outcome="delivered")
-```
-
-Each session is bound to **one** registered source. Register multiple sources in the workspace and pick one by name at session start.
-
-## What It Produces
-
-DataRaum analyzes your data and generates:
-
-- **Statistical metadata** — distributions, cardinality, null rates, patterns
-- **Semantic metadata** — column roles, entity types, business terms (LLM-powered)
-- **Topological metadata** — relationships, join paths, hierarchies
-- **Temporal metadata** — granularity, gaps, seasonality, trends
-- **Quality metadata** — rules, scores, anomalies
-- **Entropy scores** — uncertainty quantification across all dimensions
-- **Ontological context** — domain-specific interpretation (financial, marketing, etc.)
-
-## LLM Configuration
-
-Semantic analysis requires an Anthropic API key. Set `ANTHROPIC_API_KEY` in your `.env` before `docker compose up`. The container reads it from the compose env.
-
-Configure the LLM provider in `config/llm/config.yaml`. See [Configuration](docs/configuration.md) for details.
-
-## Development
-
-```bash
-git clone https://github.com/dataraum/dataraum
-cd dataraum
-
-# Install with dev dependencies (using uv)
-uv sync --group dev
-
-# Run tests
-uv run pytest --testmon tests/unit -q
-
-# Type check
-uv run mypy src/
-
-# Lint
-uv run ruff check src/
-uv run ruff format --check src/
-
-# Run the control plane locally (without docker)
-export DATARAUM_MCP_TOKEN=$(uuidgen)
-export DUCKLAKE_CATALOG_URL=postgresql://...
-export DUCKLAKE_DATA_PATH=/var/lib/dataraum/lake
-export DATABASE_URL=postgresql://...
-export ANTHROPIC_API_KEY=sk-ant-...
-uv run uvicorn dataraum.server.app:app --host 0.0.0.0 --port 8000
-```
+- **Engine (Python):** `cd packages/engine && uv sync --group dev && uv run pytest --testmon tests/unit -q`. See `packages/engine/README.md` and `packages/engine/CLAUDE.md`.
+- **Cockpit (TypeScript):** `cd packages/cockpit && pnpm install && pnpm dev`. See `packages/cockpit/README.md` and `packages/cockpit/CLAUDE.md`.
+- **Regenerate the OpenAPI contract:** `(cd packages/engine && uv run python scripts/export_openapi.py) > packages/api/openapi.yaml`, then `(cd packages/cockpit && pnpm codegen)` to refresh the typed client.
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — system design and pipeline overview
-- [Pipeline](docs/pipeline.md) — 18-phase pipeline reference
-- [Entropy](docs/entropy.md) — uncertainty quantification system
-- [Data Model](docs/data-model.md) — metadata schema
-- [MCP Setup](docs/mcp-setup.md) — control plane bring-up + MCP client wiring
-- [Configuration](docs/configuration.md) — config directory reference
-- [Contributing](docs/contributing.md) — development setup and patterns
+User-facing docs live in `packages/engine/docs/` and are published via Zensical.
+
+- [Architecture](packages/engine/docs/architecture.md)
+- [Pipeline](packages/engine/docs/pipeline.md)
+- [Entropy](packages/engine/docs/entropy.md)
+- [Data Model](packages/engine/docs/data-model.md)
+- [Configuration](packages/engine/docs/configuration.md)
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

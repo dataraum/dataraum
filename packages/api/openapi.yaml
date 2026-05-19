@@ -1,0 +1,97 @@
+openapi: 3.1.0
+info:
+  title: DataRaum Control Plane
+  version: 0.2.2
+paths:
+  /api/sources:
+    get:
+      tags:
+      - engine
+      summary: List sources registered in the workspace
+      description: 'Return all non-archived sources in the workspace registry.
+
+
+        The shape mirrors the MCP ``list_sources`` tool''s public fields. Empty
+
+        list when no sources are registered.'
+      operationId: list_sources_api_sources_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/Source'
+                type: array
+                title: Response List Sources Api Sources Get
+  /health:
+    get:
+      summary: Health
+      description: 'Substrate + DuckLake catalog + workspace Postgres health.
+
+
+        Returns 200 with ``status: ok`` when both substrate components are
+
+        reachable; 503 with ``status: degraded`` otherwise so k8s/ECS readiness
+
+        probes that only inspect the status code route traffic away from the
+
+        container instead of seeing a healthy 200 with a degraded body.'
+      operationId: health_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+components:
+  schemas:
+    Source:
+      properties:
+        name:
+          type: string
+          title: Name
+          description: Source name (unique within the workspace).
+        type:
+          type: string
+          title: Type
+          description: 'Source type discriminator: ''csv'', ''parquet'', ''json'',
+            ''jsonl'', ''directory'', ''db_recipe''.'
+        status:
+          type: string
+          title: Status
+          description: Lifecycle status (e.g. 'configured').
+        path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Path
+          description: Filesystem path for file/directory sources; recipe path for
+            db_recipe sources.
+        backend:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Backend
+          description: Backend identifier for db_recipe sources (e.g. 'mssql'). Absent
+            for file sources.
+        recipe_tables:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Recipe Tables
+          description: Named SELECT queries declared in a db_recipe yaml. Absent for
+            file sources.
+      type: object
+      required:
+      - name
+      - type
+      - status
+      title: Source
+      description: "A data source registered in the workspace.\n\nMirrors the field\
+        \ set the MCP ``list_sources`` tool returned \u2014 same\npublic shape, just\
+        \ an HTTP envelope. Sensitive fields (credentials,\nconnection strings) are\
+        \ never surfaced."

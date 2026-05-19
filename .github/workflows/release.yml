@@ -8,6 +8,9 @@ jobs:
     preflight:
         name: Preflight (version match + server.json validate)
         runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: packages/engine
         steps:
             - uses: actions/checkout@v6
 
@@ -41,6 +44,9 @@ jobs:
         needs: preflight
         runs-on: ubuntu-latest
         environment: pypi
+        defaults:
+            run:
+                working-directory: packages/engine
         permissions:
             id-token: write
             contents: read
@@ -60,11 +66,16 @@ jobs:
 
             - name: Publish to PyPI
               uses: pypa/gh-action-pypi-publish@release/v1
+              with:
+                  packages-dir: packages/engine/dist
 
     mcp-registry:
         name: Publish to MCP Registry
         needs: pypi
         runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: packages/engine
         permissions:
             id-token: write
             contents: read
@@ -105,7 +116,8 @@ jobs:
             - name: Build and push
               uses: docker/build-push-action@v7
               with:
-                  context: .
+                  context: packages/engine
+                  file: packages/engine/docker/control-plane.Dockerfile
                   push: true
                   tags: |
                       ghcr.io/dataraum/dataraum:${{ steps.version.outputs.version }}

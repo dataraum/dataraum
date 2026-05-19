@@ -44,7 +44,6 @@ dependencies = [
     # Utilities
     "structlog>=24.1.0",
     "python-dotenv>=1.0.0",
-    "typer>=0.9.0",
     "rich>=13.0.0",
     "networkx>=3.6",
     "pgmpy>=1.1.0",
@@ -52,9 +51,6 @@ dependencies = [
     # SQL parsing
     "sqlglot>=26.0.0",
 ]
-
-[project.scripts]
-dataraum = "dataraum.cli:app"
 
 [project.urls]
 Homepage = "https://github.com/dataraum/dataraum"
@@ -172,7 +168,6 @@ module = [
     "ruptures.*",
     "networkx.*",
     "pgmpy.*",
-    "typer.*",
     "sqlglot.*",
 ]
 ignore_missing_imports = true
@@ -200,7 +195,6 @@ exclude = ["prototypes/"]
 source = ["src/dataraum"]
 branch = true
 omit = [
-    "src/dataraum/cli/*",        # CLI/TUI hard to unit-test
     "src/dataraum/mcp/*",        # MCP server tested via integration
 ]
 

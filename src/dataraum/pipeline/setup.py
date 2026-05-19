@@ -64,14 +64,10 @@ def setup_pipeline(
 ) -> PipelineSetup:
     """Initialize the pipeline for a single source.
 
-    Two callers:
-
-    - **CLI** (``dataraum run /path/to/data``) passes ``source_path``. setup
-      derives the source name from the path stem and registers (or reuses)
-      a Source row in the output DB.
-    - **MCP** (``measure`` after ``begin_session(source=...)``) leaves
-      ``source_path`` as None. setup reads the one Source row that
-      ``begin_session`` already wrote into the session DB.
+    Driven by MCP ``measure`` after ``begin_session(source=...)``. setup reads
+    the one Source row that ``begin_session`` already wrote into the session
+    DB; ``source_path`` is optional and lets a direct caller bypass the
+    registered-source lookup by passing a path the loader derives a name from.
 
     Either way, the result is one Source. Multi-source semantics, the
     synthetic ``multi_source`` row, fingerprint-of-set, and the

@@ -61,208 +61,218 @@ def _profile_column_stats_parallel(
     DuckDB cursors are thread-safe for read operations.
     Returns ColumnProfile directly for the main thread to persist.
     """
-    cursor = duckdb_conn.cursor()
-    try:
-        # Basic counts
-        count_query = f"""
-            SELECT
-                COUNT(*) as total_count,
-                COUNT("{column_name}") as non_null_count,
-                COUNT(DISTINCT "{column_name}") as distinct_count
-            FROM "{table_duckdb_path}"
-        """
+    with duckdb_conn.cursor() as cursor:
+        try:
+            # Basic counts
+            count_query = f"""
+                SELECT
+                    COUNT(*) as total_count,
+                    COUNT("{column_name}") as non_null_count,
+                    COUNT(DISTINCT "{column_name}") as distinct_count
+                FROM "{table_duckdb_path}"
+            """
 
-        counts = cursor.execute(count_query).fetchone()
-        total_count = counts[0] if counts and len(counts) > 0 else 0
-        non_null_count = counts[1] if counts and len(counts) > 1 else 0
-        distinct_count = counts[2] if counts and len(counts) > 2 else 0
-        null_count = total_count - non_null_count
+            counts = cursor.execute(count_query).fetchone()
+            total_count = counts[0] if counts and len(counts) > 0 else 0
+            non_null_count = counts[1] if counts and len(counts) > 1 else 0
+            distinct_count = counts[2] if counts and len(counts) > 2 else 0
+            null_count = total_count - non_null_count
 
-        null_ratio = null_count / total_count if total_count > 0 else 0.0
-        cardinality_ratio = distinct_count / non_null_count if non_null_count > 0 else 0.0
+            null_ratio = null_count / total_count if total_count > 0 else 0.0
+            cardinality_ratio = distinct_count / non_null_count if non_null_count > 0 else 0.0
 
-        # Numeric stats
-        numeric_stats = None
-        if resolved_type in ["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]:
+            # Numeric stats
+            numeric_stats = None
+            if resolved_type in ["INTEGER", "BIGINT", "DOUBLE", "DECIMAL"]:
+                try:
+                    numeric_query = f"""
+                        SELECT
+                            MIN("{column_name}") as min_val,
+                            MAX("{column_name}") as max_val,
+                            AVG("{column_name}"::DOUBLE) as mean_val,
+                            STDDEV("{column_name}"::DOUBLE) as stddev_val,
+                            SKEWNESS("{column_name}"::DOUBLE) as skewness_val,
+                            KURTOSIS("{column_name}"::DOUBLE) as kurtosis_val,
+                            PERCENTILE_CONT(0.01) WITHIN GROUP (ORDER BY "{column_name}") as p01,
+                            PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY "{column_name}") as p25,
+                            PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY "{column_name}") as p50,
+                            PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY "{column_name}") as p75,
+                            PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY "{column_name}") as p99
+                        FROM "{table_duckdb_path}"
+                        WHERE "{column_name}" IS NOT NULL
+                    """
+                    numeric_row = cursor.execute(numeric_query).fetchone()
+
+                    if numeric_row and numeric_row[0] is not None:
+                        mean_val = float(numeric_row[2]) if numeric_row[2] is not None else 0.0
+                        stddev_val = float(numeric_row[3]) if numeric_row[3] is not None else 0.0
+                        cv_val = stddev_val / abs(mean_val) if mean_val != 0 else None
+
+                        p50_val = float(numeric_row[8]) if numeric_row[8] is not None else None
+
+                        # Compute MAD (Median Absolute Deviation) and robust_cv
+                        mad_val: float | None = None
+                        robust_cv_val: float | None = None
+                        if p50_val is not None:
+                            try:
+                                mad_query = f"""
+                                    SELECT MEDIAN(ABS("{column_name}"::DOUBLE - {p50_val}))
+                                    FROM "{table_duckdb_path}"
+                                    WHERE "{column_name}" IS NOT NULL
+                                """
+                                mad_row = cursor.execute(mad_query).fetchone()
+                                if mad_row and mad_row[0] is not None:
+                                    mad_val = float(mad_row[0])
+                                    if abs(p50_val) > 0:
+                                        robust_cv_val = mad_val / abs(p50_val)
+                            except Exception:
+                                pass  # MAD is supplementary; don't fail profiling
+
+                        numeric_stats = NumericStats(
+                            min_value=float(numeric_row[0]),
+                            max_value=float(numeric_row[1]),
+                            mean=mean_val,
+                            stddev=stddev_val,
+                            skewness=(
+                                float(numeric_row[4]) if numeric_row[4] is not None else None
+                            ),
+                            kurtosis=(
+                                float(numeric_row[5]) if numeric_row[5] is not None else None
+                            ),
+                            cv=cv_val,
+                            mad=mad_val,
+                            robust_cv=robust_cv_val,
+                            percentiles={
+                                "p01": (
+                                    float(numeric_row[6]) if numeric_row[6] is not None else None
+                                ),
+                                "p25": (
+                                    float(numeric_row[7]) if numeric_row[7] is not None else None
+                                ),
+                                "p50": p50_val,
+                                "p75": (
+                                    float(numeric_row[9]) if numeric_row[9] is not None else None
+                                ),
+                                "p99": (
+                                    float(numeric_row[10]) if numeric_row[10] is not None else None
+                                ),
+                            },
+                        )
+                except Exception as e:
+                    logger.debug("numeric_stats_failed", column=column_name, error=str(e))
+
+            # String stats
+            string_stats = None
+            if resolved_type == "VARCHAR":
+                try:
+                    string_query = f"""
+                        SELECT
+                            MIN(LENGTH("{column_name}")) as min_len,
+                            MAX(LENGTH("{column_name}")) as max_len,
+                            AVG(LENGTH("{column_name}")) as avg_len
+                        FROM "{table_duckdb_path}"
+                        WHERE "{column_name}" IS NOT NULL
+                    """
+                    string_row = cursor.execute(string_query).fetchone()
+
+                    if string_row and string_row[0] is not None:
+                        string_stats = StringStats(
+                            min_length=int(string_row[0]),
+                            max_length=int(string_row[1]),
+                            avg_length=float(string_row[2]),
+                        )
+                except Exception as e:
+                    logger.debug("string_stats_failed", column=column_name, error=str(e))
+
+            # Top values
+            top_values = []
             try:
-                numeric_query = f"""
+                top_values_query = f"""
                     SELECT
-                        MIN("{column_name}") as min_val,
-                        MAX("{column_name}") as max_val,
-                        AVG("{column_name}"::DOUBLE) as mean_val,
-                        STDDEV("{column_name}"::DOUBLE) as stddev_val,
-                        SKEWNESS("{column_name}"::DOUBLE) as skewness_val,
-                        KURTOSIS("{column_name}"::DOUBLE) as kurtosis_val,
-                        PERCENTILE_CONT(0.01) WITHIN GROUP (ORDER BY "{column_name}") as p01,
-                        PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY "{column_name}") as p25,
-                        PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY "{column_name}") as p50,
-                        PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY "{column_name}") as p75,
-                        PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY "{column_name}") as p99
+                        "{column_name}" as value,
+                        COUNT(*) as count,
+                        (COUNT(*) * 100.0 / {total_count}) as percentage
                     FROM "{table_duckdb_path}"
                     WHERE "{column_name}" IS NOT NULL
+                    GROUP BY "{column_name}"
+                    ORDER BY count DESC
+                    LIMIT {top_k}
                 """
-                numeric_row = cursor.execute(numeric_query).fetchone()
+                top_values_rows = cursor.execute(top_values_query).fetchall()
 
-                if numeric_row and numeric_row[0] is not None:
-                    mean_val = float(numeric_row[2]) if numeric_row[2] is not None else 0.0
-                    stddev_val = float(numeric_row[3]) if numeric_row[3] is not None else 0.0
-                    cv_val = stddev_val / abs(mean_val) if mean_val != 0 else None
+                for value, count, percentage in top_values_rows:
+                    top_values.append(
+                        ValueCount(value=value, count=int(count), percentage=float(percentage))
+                    )
+            except Exception as e:
+                logger.debug("top_values_failed", column=column_name, error=str(e))
 
-                    p50_val = float(numeric_row[8]) if numeric_row[8] is not None else None
+            # Histogram
+            histogram = []
+            if numeric_stats is not None:
+                try:
+                    num_bins = 20
+                    min_val = numeric_stats.min_value
+                    max_val = numeric_stats.max_value
 
-                    # Compute MAD (Median Absolute Deviation) and robust_cv
-                    mad_val: float | None = None
-                    robust_cv_val: float | None = None
-                    if p50_val is not None:
-                        try:
-                            mad_query = f"""
-                                SELECT MEDIAN(ABS("{column_name}"::DOUBLE - {p50_val}))
+                    if min_val != max_val and non_null_count > 0:
+                        range_width = max_val - min_val
+                        bucket_width = range_width / num_bins
+
+                        # DuckDB doesn't have WIDTH_BUCKET, use FLOOR-based bucketing
+                        # bucket_num = FLOOR((value - min) / bucket_width) + 1
+                        # Clamp to [1, num_bins] to handle edge cases
+                        histogram_query = f"""
+                            WITH bucketed AS (
+                                SELECT
+                                    LEAST({num_bins}, GREATEST(1,
+                                        FLOOR(("{column_name}"::DOUBLE - {min_val}) / {bucket_width}) + 1
+                                    ))::INTEGER as bucket_num
                                 FROM "{table_duckdb_path}"
                                 WHERE "{column_name}" IS NOT NULL
-                            """
-                            mad_row = cursor.execute(mad_query).fetchone()
-                            if mad_row and mad_row[0] is not None:
-                                mad_val = float(mad_row[0])
-                                if abs(p50_val) > 0:
-                                    robust_cv_val = mad_val / abs(p50_val)
-                        except Exception:
-                            pass  # MAD is supplementary; don't fail profiling
-
-                    numeric_stats = NumericStats(
-                        min_value=float(numeric_row[0]),
-                        max_value=float(numeric_row[1]),
-                        mean=mean_val,
-                        stddev=stddev_val,
-                        skewness=(float(numeric_row[4]) if numeric_row[4] is not None else None),
-                        kurtosis=(float(numeric_row[5]) if numeric_row[5] is not None else None),
-                        cv=cv_val,
-                        mad=mad_val,
-                        robust_cv=robust_cv_val,
-                        percentiles={
-                            "p01": (float(numeric_row[6]) if numeric_row[6] is not None else None),
-                            "p25": (float(numeric_row[7]) if numeric_row[7] is not None else None),
-                            "p50": p50_val,
-                            "p75": (float(numeric_row[9]) if numeric_row[9] is not None else None),
-                            "p99": (
-                                float(numeric_row[10]) if numeric_row[10] is not None else None
-                            ),
-                        },
-                    )
-            except Exception as e:
-                logger.debug("numeric_stats_failed", column=column_name, error=str(e))
-
-        # String stats
-        string_stats = None
-        if resolved_type == "VARCHAR":
-            try:
-                string_query = f"""
-                    SELECT
-                        MIN(LENGTH("{column_name}")) as min_len,
-                        MAX(LENGTH("{column_name}")) as max_len,
-                        AVG(LENGTH("{column_name}")) as avg_len
-                    FROM "{table_duckdb_path}"
-                    WHERE "{column_name}" IS NOT NULL
-                """
-                string_row = cursor.execute(string_query).fetchone()
-
-                if string_row and string_row[0] is not None:
-                    string_stats = StringStats(
-                        min_length=int(string_row[0]),
-                        max_length=int(string_row[1]),
-                        avg_length=float(string_row[2]),
-                    )
-            except Exception as e:
-                logger.debug("string_stats_failed", column=column_name, error=str(e))
-
-        # Top values
-        top_values = []
-        try:
-            top_values_query = f"""
-                SELECT
-                    "{column_name}" as value,
-                    COUNT(*) as count,
-                    (COUNT(*) * 100.0 / {total_count}) as percentage
-                FROM "{table_duckdb_path}"
-                WHERE "{column_name}" IS NOT NULL
-                GROUP BY "{column_name}"
-                ORDER BY count DESC
-                LIMIT {top_k}
-            """
-            top_values_rows = cursor.execute(top_values_query).fetchall()
-
-            for value, count, percentage in top_values_rows:
-                top_values.append(
-                    ValueCount(value=value, count=int(count), percentage=float(percentage))
-                )
-        except Exception as e:
-            logger.debug("top_values_failed", column=column_name, error=str(e))
-
-        # Histogram
-        histogram = []
-        if numeric_stats is not None:
-            try:
-                num_bins = 20
-                min_val = numeric_stats.min_value
-                max_val = numeric_stats.max_value
-
-                if min_val != max_val and non_null_count > 0:
-                    range_width = max_val - min_val
-                    bucket_width = range_width / num_bins
-
-                    # DuckDB doesn't have WIDTH_BUCKET, use FLOOR-based bucketing
-                    # bucket_num = FLOOR((value - min) / bucket_width) + 1
-                    # Clamp to [1, num_bins] to handle edge cases
-                    histogram_query = f"""
-                        WITH bucketed AS (
-                            SELECT
-                                LEAST({num_bins}, GREATEST(1,
-                                    FLOOR(("{column_name}"::DOUBLE - {min_val}) / {bucket_width}) + 1
-                                ))::INTEGER as bucket_num
-                            FROM "{table_duckdb_path}"
-                            WHERE "{column_name}" IS NOT NULL
-                        )
-                        SELECT
-                            bucket_num,
-                            COUNT(*) as count
-                        FROM bucketed
-                        GROUP BY bucket_num
-                        ORDER BY bucket_num
-                    """
-
-                    histogram_rows = cursor.execute(histogram_query).fetchall()
-
-                    for bucket_num, count in histogram_rows:
-                        bucket_min = min_val + (bucket_num - 1) * bucket_width
-                        bucket_max = min_val + bucket_num * bucket_width
-                        histogram.append(
-                            HistogramBucket(
-                                bucket_min=float(bucket_min),
-                                bucket_max=float(bucket_max),
-                                count=int(count),
                             )
-                        )
-            except Exception as e:
-                logger.debug("histogram_failed", column=column_name, error=str(e))
+                            SELECT
+                                bucket_num,
+                                COUNT(*) as count
+                            FROM bucketed
+                            GROUP BY bucket_num
+                            ORDER BY bucket_num
+                        """
 
-        return ColumnProfile(
-            column_id=column_id,
-            column_ref=ColumnRef(table_name=table_name, column_name=column_name),
-            profiled_at=profiled_at,
-            total_count=total_count,
-            null_count=null_count,
-            distinct_count=distinct_count,
-            null_ratio=null_ratio,
-            cardinality_ratio=cardinality_ratio,
-            numeric_stats=numeric_stats,
-            string_stats=string_stats,
-            histogram=histogram if histogram else None,
-            top_values=top_values,
-        )
-    except Exception as e:
-        logger.warning("column_profile_failed", column=column_name, table=table_name, error=str(e))
-        return None
-    finally:
-        cursor.close()
+                        histogram_rows = cursor.execute(histogram_query).fetchall()
+
+                        for bucket_num, count in histogram_rows:
+                            bucket_min = min_val + (bucket_num - 1) * bucket_width
+                            bucket_max = min_val + bucket_num * bucket_width
+                            histogram.append(
+                                HistogramBucket(
+                                    bucket_min=float(bucket_min),
+                                    bucket_max=float(bucket_max),
+                                    count=int(count),
+                                )
+                            )
+                except Exception as e:
+                    logger.debug("histogram_failed", column=column_name, error=str(e))
+
+            return ColumnProfile(
+                column_id=column_id,
+                column_ref=ColumnRef(table_name=table_name, column_name=column_name),
+                profiled_at=profiled_at,
+                total_count=total_count,
+                null_count=null_count,
+                distinct_count=distinct_count,
+                null_ratio=null_ratio,
+                cardinality_ratio=cardinality_ratio,
+                numeric_stats=numeric_stats,
+                string_stats=string_stats,
+                histogram=histogram if histogram else None,
+                top_values=top_values,
+            )
+        except Exception as e:
+            logger.warning(
+                "column_profile_failed", column=column_name, table=table_name, error=str(e)
+            )
+            return None
 
 
 def profile_statistics(

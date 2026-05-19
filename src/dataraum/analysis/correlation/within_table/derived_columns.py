@@ -47,8 +47,7 @@ def _check_derived_triple(
     Runs in a worker thread using a cursor from the shared DuckDB connection.
     DuckDB cursors are thread-safe for read operations.
     """
-    cursor = duckdb_conn.cursor()
-    try:
+    with duckdb_conn.cursor() as cursor:
         query = f"""
             WITH derivation_check AS (
                 SELECT
@@ -102,8 +101,6 @@ def _check_derived_triple(
             mismatch_examples=None,
             computed_at=datetime.now(UTC),
         )
-    finally:
-        cursor.close()
 
 
 def detect_derived_columns(

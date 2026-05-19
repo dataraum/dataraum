@@ -305,11 +305,8 @@ def _evaluate_relationship_candidate_parallel(
     Runs in its own thread using a cursor from the shared DuckDB connection.
     DuckDB cursors are thread-safe for read operations.
     """
-    cursor = duckdb_conn.cursor()
-    try:
+    with duckdb_conn.cursor() as cursor:
         return evaluate_relationship_candidate(candidate, table1_path, table2_path, cursor)
-    finally:
-        cursor.close()
 
 
 def compute_ri_metrics(

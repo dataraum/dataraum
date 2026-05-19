@@ -357,33 +357,31 @@ def _assess_column_quality_parallel(
     table = TableProxy(table_name, table_duckdb_path)
     column = ColumnProxy(column_id, column_name, column_resolved_type)
 
-    cursor = duckdb_conn.cursor()
-    try:
-        # Run Benford's Law test (always — independent of outlier exclusion)
-        benford_result = check_benford_law(table, column, cursor)  # type: ignore[arg-type]
-        benford_analysis = benford_result.value if benford_result.success else None
+    with duckdb_conn.cursor() as cursor:
+        try:
+            # Run Benford's Law test (always — independent of outlier exclusion)
+            benford_result = check_benford_law(table, column, cursor)  # type: ignore[arg-type]
+            benford_analysis = benford_result.value if benford_result.success else None
 
-        outlier_detection: OutlierDetection | None = None
-        if not skip_outliers:
-            # Run IQR outlier detection
-            iqr_result = detect_outliers_iqr(table, column, cursor)  # type: ignore[arg-type]
-            outlier_detection = iqr_result.value if iqr_result.success else None
+            outlier_detection: OutlierDetection | None = None
+            if not skip_outliers:
+                # Run IQR outlier detection
+                iqr_result = detect_outliers_iqr(table, column, cursor)  # type: ignore[arg-type]
+                outlier_detection = iqr_result.value if iqr_result.success else None
 
-            # Run Modified Z-Score outlier detection and merge into OutlierDetection
-            zscore_data = detect_outliers_zscore(table, column, cursor)  # type: ignore[arg-type]
-            if zscore_data and outlier_detection:
-                zscore_count, zscore_ratio, zscore_samples = zscore_data
-                outlier_detection.zscore_outlier_count = zscore_count
-                outlier_detection.zscore_outlier_ratio = zscore_ratio
-                if zscore_samples:
-                    outlier_detection.outlier_samples.extend(zscore_samples)
+                # Run Modified Z-Score outlier detection and merge into OutlierDetection
+                zscore_data = detect_outliers_zscore(table, column, cursor)  # type: ignore[arg-type]
+                if zscore_data and outlier_detection:
+                    zscore_count, zscore_ratio, zscore_samples = zscore_data
+                    outlier_detection.zscore_outlier_count = zscore_count
+                    outlier_detection.zscore_outlier_ratio = zscore_ratio
+                    if zscore_samples:
+                        outlier_detection.outlier_samples.extend(zscore_samples)
 
-        return (column_id, column_name, benford_analysis, outlier_detection)
-    except Exception as e:
-        logger.warning("column_quality_assessment_failed", column=column_name, error=str(e))
-        return None
-    finally:
-        cursor.close()
+            return (column_id, column_name, benford_analysis, outlier_detection)
+        except Exception as e:
+            logger.warning("column_quality_assessment_failed", column=column_name, error=str(e))
+            return None
 
 
 def assess_statistical_quality(

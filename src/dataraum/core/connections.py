@@ -1,24 +1,35 @@
 """Connection management for SQLAlchemy + DuckDB.
 
-Single-engine model post-DAT-321: every SQLAlchemy session bound to one
+Single-engine SQLAlchemy model post-DAT-321: every session bound to one
 workspace Postgres database (workspace tables + per-session tables, the
-latter scoped via ``session_id`` FK). Per-session DuckDB stays per-session;
-L4 swaps that for DuckLake.
+latter scoped via ``session_id`` FK).
+
+DuckDB-side post-DAT-323: per-session managers obtain a fresh DuckDB
+connection from the process-wide DuckLake anchor
+(:mod:`dataraum.server.storage`). The anchor must be bootstrapped before any
+per-session manager initializes (FastAPI startup, or the ``lake_anchor``
+test fixture). Each manager's connection has its own ``USE``/search_path
+state but shares the DuckLake catalog (schemas, tables) with every other
+connection to the same named in-memory database.
+
+Per-session schema naming: ``lake.session_<session_id_clean>`` where
+``session_id_clean`` is the manager's ``session_id`` with dashes replaced
+by underscores (DuckDB schema names cannot contain dashes unquoted).
 
 Usage:
     from dataraum.core.connections import ConnectionManager, ConnectionConfig
 
     config = ConnectionConfig.for_directory(Path("./output"))
-    manager = ConnectionManager(config)
-    manager.initialize()
+    manager = ConnectionManager(config, session_id="abc-123")
+    manager.initialize()  # CREATE SCHEMA + USE lake.session_abc_123
 
     with manager.session_scope() as session:
         # Use session...
 
     with manager.duckdb_cursor() as cursor:
-        result = cursor.execute("SELECT * FROM table").fetchdf()
+        result = cursor.execute("SELECT * FROM raw_orders").fetchdf()
 
-    manager.close()
+    manager.close()  # closes this manager's DuckDB conn; anchor persists
 """
 
 from __future__ import annotations
@@ -58,6 +69,97 @@ def _resolve_database_url() -> str:
     return url
 
 
+def _session_id_to_schema(session_id: str) -> str:
+    """Convert a UUID-shaped session_id to a DuckDB-safe schema suffix.
+
+    DuckDB unquoted identifiers can't contain dashes, and quoting every USE
+    target is fragile. UUIDs are hex+dashes; replacing dashes with
+    underscores keeps the value reversible and the SQL readable.
+    """
+    return "session_" + session_id.replace("-", "_")
+
+
+class _LakeScopedConnection:
+    """Wrapper that scopes every derived cursor to ``lake.session_<id>``.
+
+    DuckDB Python's ``connection.cursor()`` opens a fresh handle whose
+    connection state (``USE``/search_path) is the default — it does NOT
+    inherit the parent connection's state (verified against DuckDB 1.5.2).
+    The same applies to ``cursor.cursor()`` (cursor-of-cursor): the
+    derived cursor lands in ``memory.main``. Without this wrapper, every
+    cursor opened by pipeline phases or analysis modules would resolve
+    unqualified table names against the wrong schema.
+
+    The wrapper:
+
+    * delegates ``execute``, ``close``, ``commit``, etc. via ``__getattr__``
+      to the underlying connection (which has its own ``USE`` set in
+      :meth:`ConnectionManager._init_duckdb` — so direct
+      ``conn.execute(sql)`` resolves against the lake schema);
+    * intercepts ``cursor()`` to issue ``USE lake.<schema>`` on the new
+      cursor AND wraps the result so cursor-of-cursor chains also stay
+      scoped;
+    * supports ``with`` (``__enter__`` / ``__exit__``) so callers can use
+      the canonical ``with conn.cursor() as sub:`` pattern — dunder
+      methods bypass ``__getattr__``, so they must be explicit.
+
+    Implementing this with composition rather than subclassing because
+    ``duckdb.DuckDBPyConnection`` is a C extension type and not safely
+    subclassable.
+
+    A note on flushes: DuckLake buffers writes in memory until ``CHECKPOINT``
+    runs. ``INSERT`` statements via this wrapper land in the lake's catalog
+    but parquet files don't appear under ``DATA_PATH`` until checkpoint.
+    Pipeline code paths that need files-on-disk semantics (export,
+    hand-off) must call ``cursor.execute('CHECKPOINT')`` explicitly.
+    """
+
+    # Class-level annotations so mypy can resolve ``self._conn.cursor()``
+    # without falling back to ``Any``. ``object.__setattr__`` in __init__
+    # populates ``__dict__`` so attribute lookup finds the values before
+    # ``__getattr__`` fires (which would otherwise recurse).
+    _conn: duckdb.DuckDBPyConnection
+    _qualified_schema: str
+
+    def __init__(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        qualified_schema: str,
+    ) -> None:
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_qualified_schema", qualified_schema)
+
+    def cursor(self) -> _LakeScopedConnection:
+        """Open a derived cursor and ``USE`` the session schema on it.
+
+        Returns another wrapper so cursor-of-cursor chains (analysis modules
+        opening a sub-cursor from a phase cursor) stay scoped to the same
+        lake schema.
+        """
+        c = self._conn.cursor()
+        c.execute(f"USE {self._qualified_schema}")
+        return _LakeScopedConnection(c, self._qualified_schema)
+
+    def __enter__(self) -> _LakeScopedConnection:
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        # Close the underlying handle on context-manager exit. The wrapper
+        # itself owns the lifecycle of the raw cursor returned by ``cursor()``;
+        # ``ConnectionManager.close()`` owns the top-level per-session conn.
+        try:
+            self._conn.close()
+        except Exception:
+            logger.debug("Ignoring error while closing DuckDB scoped cursor", exc_info=True)
+
+    def __getattr__(self, name: str) -> Any:
+        # Falls through for everything except ``cursor`` and the two stored
+        # attributes — duckdb.DuckDBPyConnection methods (execute, close,
+        # commit, rollback, fetchdf, fetchall, register, sql, ...) all reach
+        # the underlying connection.
+        return getattr(self._conn, name)
+
+
 @dataclass
 class ConnectionConfig:
     """Connection configuration for SQLAlchemy (Postgres) + DuckDB.
@@ -65,24 +167,26 @@ class ConnectionConfig:
     Attributes:
         database_url: SQLAlchemy URL for the workspace Postgres engine
             (``postgresql+psycopg://...``).
-        duckdb_path: Path to per-session DuckDB file. ``None`` for the
-            workspace registry (no per-session data).
         pool_size: SQLAlchemy connection pool size.
         max_overflow: Maximum overflow connections beyond pool_size.
         pool_timeout: Seconds to wait for a connection from pool.
-        duckdb_memory_limit: DuckDB memory limit (e.g., "2GB").
+        duckdb_memory_limit: DuckDB memory limit (e.g., "2GB"), applied to
+            each per-session DuckDB connection.
         echo_sql: Whether to echo SQL statements (for debugging).
+
+    Post-DAT-323: ``ConnectionConfig`` no longer carries a DuckDB path.
+    Workspace-vs-session is driven entirely by ``ConnectionManager.session_id``;
+    ``for_workspace()`` and ``for_directory()`` produce equivalent configs.
     """
 
     database_url: str
-    duckdb_path: Path | None = None
 
     # SQLAlchemy pool settings
     pool_size: int = 5
     max_overflow: int = 10
     pool_timeout: float = 30.0
 
-    # DuckDB settings
+    # DuckDB settings (applied per-session connection)
     duckdb_memory_limit: str = "2GB"
 
     # Debug
@@ -90,25 +194,30 @@ class ConnectionConfig:
 
     @classmethod
     def for_workspace(cls, **kwargs: Any) -> ConnectionConfig:
-        """Workspace registry config: Postgres-only, no DuckDB.
+        """Workspace registry config: Postgres-only.
 
         Reads ``DATABASE_URL`` from the environment. Raises if unset.
+
+        Equivalent to :meth:`for_directory` post-DAT-323 — kept as the
+        caller-affordance for "I am not opening a session".
         """
-        return cls(database_url=_resolve_database_url(), duckdb_path=None, **kwargs)
+        return cls(database_url=_resolve_database_url(), **kwargs)
 
     @classmethod
     def for_directory(cls, output_dir: Path, **kwargs: Any) -> ConnectionConfig:
-        """Per-session config: workspace Postgres + per-session DuckDB.
+        """Per-session config: workspace Postgres + DuckLake-backed DuckDB.
 
-        SQLAlchemy targets the same workspace Postgres engine as
-        ``for_workspace()``; the per-session DuckDB file lives at
-        ``output_dir/data.duckdb`` (L4 swaps this for DuckLake).
+        SQLAlchemy targets the workspace Postgres engine; the per-session
+        DuckDB connection is obtained from the DuckLake anchor at
+        :meth:`ConnectionManager.initialize` time, scoped to
+        ``lake.session_<id>`` based on the manager's ``session_id``.
+
+        ``output_dir`` is retained for caller signature compatibility but
+        no longer drives any DuckDB-side state — the file-backed
+        ``data.duckdb`` is gone (L4).
         """
-        return cls(
-            database_url=_resolve_database_url(),
-            duckdb_path=output_dir / "data.duckdb",
-            **kwargs,
-        )
+        del output_dir  # kept for signature; lake schema is driven by session_id
+        return cls(database_url=_resolve_database_url(), **kwargs)
 
 
 @dataclass
@@ -146,7 +255,12 @@ class ConnectionManager:
     session_id: str | None = None
     _engine: Engine | None = field(default=None, init=False, repr=False)
     _session_factory: sessionmaker[Session] | None = field(default=None, init=False, repr=False)
-    _duckdb_conn: duckdb.DuckDBPyConnection | None = field(default=None, init=False, repr=False)
+    # Per-session managers store a ``_LakeScopedConnection`` here so that
+    # cursors derived from it carry the lake schema's ``USE`` state. Direct
+    # ``execute`` calls fall through to the underlying DuckDB connection,
+    # which itself was initialized with ``USE``. Workspace managers leave
+    # this as ``None``.
+    _duckdb_conn: Any = field(default=None, init=False, repr=False)
     _init_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _initialized: bool = field(default=False, init=False, repr=False)
 
@@ -195,22 +309,73 @@ class ConnectionManager:
             autoflush=False,
         )
 
-    def _init_duckdb(self) -> None:
-        """Initialize the per-session DuckDB connection, if configured.
+    def bind_session_id(self, session_id: str) -> None:
+        """Assign or update ``session_id`` and (re-)open DuckDB accordingly.
 
-        Workspace-only configurations skip this entirely; ``duckdb_cursor()``
-        will raise on attempted use. L4 swaps the file-backed DuckDB for
-        DuckLake but leaves this hook intact.
+        Manager construction in flows like ``begin_session`` is chicken-and-egg:
+        a SQLAlchemy session is required to allocate the new
+        ``InvestigationSession.session_id``, but the manager that owns that
+        session has to be opened first — so it is initially opened with
+        ``session_id=None`` (workspace shape). Once the id is in hand, callers
+        bind it here; this opens (or replaces) the per-session DuckDB
+        connection scoped to ``lake.session_<id>``.
+
+        Idempotent when the id is unchanged; closes and reopens the DuckDB
+        connection when a different id is bound (e.g. cache hit on the
+        per-fingerprint session manager after the active session changes).
         """
-        if self.config.duckdb_path is None:
+        if self.session_id == session_id and self._duckdb_conn is not None:
             return
-        if self.config.duckdb_path == Path(":memory:"):
-            self._duckdb_conn = duckdb.connect(":memory:")
-        else:
-            self.config.duckdb_path.parent.mkdir(parents=True, exist_ok=True)
-            self._duckdb_conn = duckdb.connect(str(self.config.duckdb_path))
+        self.session_id = session_id
+        if not self._initialized:
+            # The DuckDB hook runs as part of initialize(); nothing to do until
+            # the manager is actually initialized.
+            return
+        # Replace any prior per-session connection (the old USE scope is gone).
+        if self._duckdb_conn is not None:
+            try:
+                self._duckdb_conn.close()
+            except Exception as exc:
+                logger.warning(
+                    "Failed to close existing DuckDB connection while rebinding session_id=%s: %s",
+                    session_id,
+                    exc,
+                )
+            self._duckdb_conn = None
+        self._init_duckdb()
 
-        self._duckdb_conn.execute(f"SET memory_limit='{self.config.duckdb_memory_limit}'")
+    def _init_duckdb(self) -> None:
+        """Open a per-session DuckDB connection on the shared DuckLake anchor.
+
+        Workspace managers (``session_id is None``) skip this entirely;
+        ``duckdb_cursor()`` will raise on attempted use.
+
+        For per-session managers, opens a fresh connection to the named
+        in-memory database that holds the DuckLake ATTACH, then creates and
+        ``USE``s the session's schema. The ``USE`` is connection-local —
+        cursors derived from this connection inherit it, but other sessions
+        (each with their own connection) do not.
+        """
+        if self.session_id is None:
+            return
+
+        # Lazy import: avoids pulling the FastAPI/DuckLake bootstrap surface
+        # into module-load for workspace-only configurations.
+        from dataraum.server.storage import LAKE_CATALOG_ALIAS, connect_session
+
+        raw_conn = connect_session()
+        raw_conn.execute(f"SET memory_limit='{self.config.duckdb_memory_limit}'")
+
+        schema_name = _session_id_to_schema(self.session_id)
+        # Quote defensively — keeps the SQL valid if a future session_id format
+        # introduces characters that need escaping.
+        qualified = f'{LAKE_CATALOG_ALIAS}."{schema_name}"'
+        raw_conn.execute(f"CREATE SCHEMA IF NOT EXISTS {qualified}")
+        raw_conn.execute(f"USE {qualified}")
+
+        # Wrap so derived cursors carry the same ``USE`` state — see
+        # _LakeScopedConnection's docstring for the DuckDB API motivation.
+        self._duckdb_conn = _LakeScopedConnection(raw_conn, qualified)
 
     def _import_all_models(self) -> None:
         """Import all DB model modules to register them with SQLAlchemy."""
@@ -277,24 +442,26 @@ class ConnectionManager:
 
     @contextmanager
     def duckdb_cursor(self) -> Generator[duckdb.DuckDBPyConnection]:
-        """Get an independent DuckDB cursor on the shared per-session connection.
+        """Get a cursor on this manager's per-session DuckDB connection.
 
-        Each call returns a fresh cursor via ``connection.cursor()``. Cursors
-        have independent statement state and are safe to use from separate
-        threads; the underlying connection is shared.
+        Each call returns ``connection.cursor()``. Cursors share connection
+        state (including the session's ``USE lake.session_<id>``) and
+        statement state serializes per DuckDB's Python client; for parallel
+        work across managers, open separate per-session managers.
 
         Raises:
-            RuntimeError: If manager not initialized or no DuckDB configured.
+            RuntimeError: If manager not initialized or it is workspace-only
+                (no ``session_id`` set).
 
         Example:
             with manager.duckdb_cursor() as cursor:
-                df = cursor.execute("SELECT * FROM table").fetchdf()
+                df = cursor.execute("SELECT * FROM raw_orders").fetchdf()
         """
         self._ensure_initialized()
         if self._duckdb_conn is None:
             raise RuntimeError(
                 "DuckDB cursor requested on a workspace-only ConnectionManager. "
-                "Workspace managers (ConnectionConfig.for_workspace) have no "
+                "Workspace managers (constructed without session_id) have no "
                 "DuckDB; route data operations through a per-session manager."
             )
 
@@ -354,6 +521,7 @@ class ConnectionManager:
 
 # Convenience function for simple scripts
 _default_manager: ConnectionManager | None = None
+_default_manager_lock = threading.Lock()
 
 
 def get_connection_manager(
@@ -363,7 +531,8 @@ def get_connection_manager(
     """Get or create a default ConnectionManager.
 
     For simple scripts that don't need multiple managers. Creates a
-    singleton manager on first call.
+    singleton manager on first call. Thread-safe; concurrent callers
+    serialize on ``_default_manager_lock`` so only one manager is created.
 
     Args:
         output_dir: Output directory for per-session DuckDB (if config not provided).
@@ -374,25 +543,27 @@ def get_connection_manager(
     """
     global _default_manager
 
-    if _default_manager is None:
-        if config is None:
-            if output_dir is None:
-                output_dir = Path("./pipeline_output")
-            config = ConnectionConfig.for_directory(output_dir)
+    with _default_manager_lock:
+        if _default_manager is None:
+            if config is None:
+                if output_dir is None:
+                    output_dir = Path("./pipeline_output")
+                config = ConnectionConfig.for_directory(output_dir)
 
-        _default_manager = ConnectionManager(config)
-        _default_manager.initialize()
+            _default_manager = ConnectionManager(config)
+            _default_manager.initialize()
 
-    return _default_manager
+        return _default_manager
 
 
 def close_default_manager() -> None:
     """Close the default ConnectionManager if it exists."""
     global _default_manager
 
-    if _default_manager is not None:
-        _default_manager.close()
-        _default_manager = None
+    with _default_manager_lock:
+        if _default_manager is not None:
+            _default_manager.close()
+            _default_manager = None
 
 
 def get_manager_for_directory(output_dir: Path) -> ConnectionManager:

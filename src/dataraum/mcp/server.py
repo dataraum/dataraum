@@ -242,7 +242,7 @@ def create_server(output_dir: Path | None = None) -> Server:
 
         if _session_manager is not None and _active_fingerprint == fingerprint:
             if session_id is not None:
-                _session_manager.session_id = session_id
+                _session_manager.bind_session_id(session_id)
             return _session_manager
 
         # Different fingerprint than cached — close stale manager and open new
@@ -1614,7 +1614,7 @@ def _restore_archived_session(
             # Bind session_id to the manager immediately. Any per-session FK
             # write that fires before the next tool invocation (which would
             # re-open via _get_session_manager(fp, sid)) needs this set.
-            session_mgr.session_id = new_session_id
+            session_mgr.bind_session_id(new_session_id)
 
             has_data = (
                 session.execute(
@@ -2608,7 +2608,7 @@ def _begin_new_session(
     # Bind session_id to the manager immediately. Any per-session FK write
     # that fires before the next tool invocation (which would re-open via
     # _get_session_manager(fp, sid)) needs this set.
-    session_mgr.session_id = new_session_id
+    session_mgr.bind_session_id(new_session_id)
 
     # --- Set ActiveSession pointer in workspace (last, after session DB is ready) ---
     from sqlalchemy import delete

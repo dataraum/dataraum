@@ -50,7 +50,10 @@ def _close_mcp_servers_after_test(monkeypatch: pytest.MonkeyPatch):
         try:
             s.close()  # type: ignore[attr-defined]
         except Exception as exc:
-            warnings.warn(f"Failed to close MCP server during test teardown: {s!r} ({exc!r})")
+            warnings.warn(
+                f"Failed to close MCP server during test teardown: {s!r} ({exc!r})",
+                stacklevel=2,
+            )
 
 
 @event.listens_for(Session, "before_flush")
@@ -189,6 +192,98 @@ def pg_url(pg_container: PostgresContainer) -> str:
     container substrate uses `postgresql+psycopg://`).
     """
     return pg_container.get_connection_url(driver="psycopg")
+
+
+@pytest.fixture(scope="session")
+def lake_catalog_url(pg_container: PostgresContainer) -> str:
+    """Create + return a Postgres URL for the DuckLake catalog database.
+
+    Sibling DB on the same testcontainer used for the workspace; mirrors the
+    L1 docker-compose shape (one Postgres, two logical DBs).
+    """
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+
+    catalog_db = "dataraum_lake_catalog_test"
+    base_url = pg_container.get_connection_url(driver=None)
+
+    # urlparse-friendly: testcontainers returns postgresql:// for driver=None
+    from urllib.parse import urlparse
+
+    p = urlparse(base_url)
+    conninfo = make_conninfo(
+        host=p.hostname or "localhost",
+        port=p.port or 5432,
+        user=p.username or "",
+        password=p.password or "",
+        dbname="postgres",
+    )
+    with psycopg.connect(conninfo, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"DROP DATABASE IF EXISTS {catalog_db}")
+            cur.execute(f"CREATE DATABASE {catalog_db}")
+
+    return f"postgresql://{p.username}:{p.password}@{p.hostname}:{p.port}/{catalog_db}"
+
+
+@pytest.fixture(scope="session")
+def lake_data_path(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """Canonical DATA_PATH for the DuckLake catalog used across this pytest run.
+
+    DuckLake persists the DATA_PATH inside its catalog, so every ATTACH to the
+    same catalog must point at the *same* directory. Tests that tear the
+    anchor down and re-ATTACH need this canonical path to restore.
+    """
+    return str(tmp_path_factory.mktemp("ducklake_data"))
+
+
+@pytest.fixture(scope="session")
+def lake_anchor(lake_catalog_url: str, lake_data_path: str):
+    """Bootstrap the DuckLake anchor once for the whole pytest invocation.
+
+    Pairs the session-scoped lake catalog DB with a session-scoped tmp DATA_PATH.
+    Per-session schemas are cleaned by the function-scoped ``lake_clean`` fixture.
+    """
+    from dataraum.server.storage import bootstrap_lake, teardown_lake
+
+    bootstrap_lake(lake_catalog_url, lake_data_path)
+    yield
+    teardown_lake()
+
+
+@pytest.fixture
+def no_anchor(lake_anchor, lake_catalog_url: str, lake_data_path: str):
+    """Tear down the session anchor for one test; restore it after.
+
+    Use this for "before bootstrap" tests so other session-scoped consumers of
+    ``lake_anchor`` keep working. The restore reuses the canonical
+    ``lake_data_path`` because DuckLake's catalog rejects a new DATA_PATH.
+    """
+    from dataraum.server.storage import bootstrap_lake, teardown_lake
+
+    teardown_lake()
+    yield
+    bootstrap_lake(lake_catalog_url, lake_data_path)
+
+
+@pytest.fixture
+def lake_clean(lake_anchor):
+    """Drop per-session and archived schemas from the lake before each test.
+
+    Pairs with ``pg_url_clean`` so test isolation is symmetric across the
+    Postgres workspace and the DuckLake catalog.
+    """
+    from dataraum.server.storage import LAKE_CATALOG_ALIAS, get_anchor
+
+    anchor = get_anchor()
+    schemas = anchor.execute(
+        "SELECT schema_name FROM duckdb_schemas() "
+        f"WHERE database_name = '{LAKE_CATALOG_ALIAS}' "
+        "AND (schema_name LIKE 'session_%' OR schema_name LIKE 'archive_%')"
+    ).fetchall()
+    for (name,) in schemas:
+        anchor.execute(f'DROP SCHEMA IF EXISTS {LAKE_CATALOG_ALIAS}."{name}" CASCADE')
+    yield
 
 
 @pytest.fixture

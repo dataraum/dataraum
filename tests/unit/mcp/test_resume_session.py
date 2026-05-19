@@ -204,10 +204,12 @@ class TestResumeSessionRestore:
         assert "_session_id" not in result
         assert "_fingerprint" not in result
 
-        # Filesystem invariants: per-session DuckDB restored, no metadata.db file
+        # Filesystem invariants: session dir restored (config copy preserved);
+        # no per-session DuckDB file — the session's lake schema lives in
+        # DuckLake and is rebound via ConnectionManager.bind_session_id(sid).
         assert not (tmp_path / "archive" / archive_id).exists()
         assert (tmp_path / "sessions" / original_fp).exists()
-        assert (tmp_path / "sessions" / original_fp / "data.duckdb").exists()
+        assert not (tmp_path / "sessions" / original_fp / "data.duckdb").exists()
         assert not (tmp_path / "sessions" / original_fp / "metadata.db").exists()
 
         # Workspace Postgres state: ActiveSession set, ArchivedSession row consumed

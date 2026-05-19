@@ -52,6 +52,10 @@ class JsonLoader(LoaderBase):
 
         try:
             safe_path = str(path).replace("'", "''")
+            # Throwaway in-memory connection: schema sniffing must NOT write to
+            # the session's DuckLake schema. The session manager's connection
+            # is ``USE``d on ``lake.session_<id>``; using it here would risk
+            # leaving stub tables in the lake. Keep ephemeral. (DAT-323)
             conn = duckdb.connect(":memory:")
             try:
                 sample_df = conn.execute(f"""

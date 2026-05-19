@@ -163,14 +163,15 @@ class TestEndSessionFullFlow:
         r1 = await self._call(server, "begin_session", {"source": "src", "intent": "first"})
         assert "error" not in r1
 
-        # sessions/{fp}/ exists with the per-session DuckDB; archive does not.
+        # sessions/{fp}/ exists (config copy lives here post-DAT-323; no data.duckdb
+        # — the session's lake schema lives in DuckLake, not on the filesystem).
         # No SQLite .db files should ever appear at the root post-DAT-321.
         assert not (tmp_path / "workspace.db").exists()
         sessions_dir = tmp_path / "sessions"
         assert sessions_dir.exists()
         session_dirs_before = list(sessions_dir.iterdir())
         assert len(session_dirs_before) == 1  # one fingerprint
-        assert (session_dirs_before[0] / "data.duckdb").exists()
+        assert not (session_dirs_before[0] / "data.duckdb").exists()  # post-DAT-323
         assert not (session_dirs_before[0] / "metadata.db").exists()
 
         # End the session
@@ -178,13 +179,14 @@ class TestEndSessionFullFlow:
         assert r2["status"] == "ended"
         assert r2["outcome"] == "delivered"
 
-        # Session dir moved, archive populated with the DuckDB file.
+        # Session dir moved → archive (config copy preserved; lake schema stays in
+        # place — see DAT-323 design Option A).
         assert not session_dirs_before[0].exists()
         archive_base = tmp_path / "archive"
         assert archive_base.exists()
         archived = list(archive_base.iterdir())
         assert len(archived) == 1
-        assert (archived[0] / "data.duckdb").exists()
+        assert not (archived[0] / "data.duckdb").exists()  # post-DAT-323
         assert not (archived[0] / "metadata.db").exists()
         assert not (tmp_path / "workspace.db").exists()  # never a file
 

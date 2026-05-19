@@ -73,116 +73,116 @@ def _profile_temporal_column_parallel(
     DuckDB cursors are thread-safe for read operations.
     Returns TemporalAnalysisResult directly for the main thread to persist.
     """
-    cursor = duckdb_conn.cursor()
-    try:
-        # Load time series
-        proc_cfg = config["processing"]
-        ts_result = _load_time_series(
-            cursor,
-            table_duckdb_path,
-            column_name,
-            sample_percent=proc_cfg["sample_percent"],
-            min_rows=proc_cfg["min_sample_rows"],
-        )
-        if not ts_result.success:
+    with duckdb_conn.cursor() as cursor:
+        try:
+            # Load time series
+            proc_cfg = config["processing"]
+            ts_result = _load_time_series(
+                cursor,
+                table_duckdb_path,
+                column_name,
+                sample_percent=proc_cfg["sample_percent"],
+                min_rows=proc_cfg["min_sample_rows"],
+            )
+            if not ts_result.success:
+                return None
+
+            time_series = ts_result.unwrap()
+
+            # Basic temporal info
+            min_timestamp = time_series.index.min().to_pydatetime()
+            max_timestamp = time_series.index.max().to_pydatetime()
+            span_days = (max_timestamp - min_timestamp).total_seconds() / 86400
+
+            # Infer granularity
+            interval: pd.Series = time_series.index.to_series().diff()
+            median_interval = interval.median()
+
+            if isinstance(median_interval, (int, float)):
+                interval_seconds = float(median_interval)
+            else:
+                interval_seconds = median_interval.total_seconds()
+
+            granularity, confidence = infer_granularity(interval_seconds, config=config)
+
+            metric_id = str(uuid4())
+
+            # Run pattern analyses
+            seasonality_result = analyze_seasonality(time_series, config=config)
+            seasonality = seasonality_result.value if seasonality_result.success else None
+
+            trend_result = analyze_trend(time_series, config=config)
+            trend = trend_result.value if trend_result.success else None
+
+            changes_result = detect_change_points(time_series, config=config)
+            change_points = changes_result.unwrap() if changes_result.success else []
+
+            frequency_result = analyze_update_frequency(time_series, config=config)
+            update_frequency = frequency_result.value if frequency_result.success else None
+
+            fiscal_result = detect_fiscal_calendar(time_series, config=config)
+            fiscal_calendar = fiscal_result.value if fiscal_result.success else None
+
+            stability_result = analyze_distribution_stability(time_series, config=config)
+            distribution_stability = stability_result.value if stability_result.success else None
+
+            # Run basic temporal analysis for completeness
+            basic_result = analyze_basic_temporal(
+                cursor, table_duckdb_path, column_name, config=config
+            )
+            completeness = (
+                basic_result.value.get("completeness")
+                if basic_result.success and basic_result.value
+                else None
+            )
+
+            # Detect quality issues
+            issues = _detect_quality_issues(
+                completeness=completeness,
+                update_frequency=update_frequency,
+                change_points=change_points,
+                distribution_stability=distribution_stability,
+                profiled_at=profiled_at,
+                config=config,
+            )
+
+            # Build result
+            column_ref = ColumnRef(
+                source_id=source_id,
+                table_name=table_name,
+                column_name=column_name,
+            )
+
+            return TemporalAnalysisResult(
+                metric_id=metric_id,
+                column_id=column_id,
+                column_ref=column_ref,
+                column_name=column_name,
+                table_name=table_name,
+                computed_at=profiled_at,
+                min_timestamp=min_timestamp,
+                max_timestamp=max_timestamp,
+                span_days=span_days,
+                detected_granularity=granularity,
+                granularity_confidence=confidence,
+                completeness=completeness,
+                seasonality=seasonality,
+                trend=trend,
+                change_points=change_points,
+                update_frequency=update_frequency,
+                fiscal_calendar=fiscal_calendar,
+                distribution_stability=distribution_stability,
+                quality_issues=issues,
+                has_issues=len(issues) > 0,
+            )
+        except Exception as e:
+            logger.warning(
+                "temporal_column_profiling_failed",
+                column_name=column_name,
+                table_name=table_name,
+                error=str(e),
+            )
             return None
-
-        time_series = ts_result.unwrap()
-
-        # Basic temporal info
-        min_timestamp = time_series.index.min().to_pydatetime()
-        max_timestamp = time_series.index.max().to_pydatetime()
-        span_days = (max_timestamp - min_timestamp).total_seconds() / 86400
-
-        # Infer granularity
-        interval: pd.Series = time_series.index.to_series().diff()
-        median_interval = interval.median()
-
-        if isinstance(median_interval, (int, float)):
-            interval_seconds = float(median_interval)
-        else:
-            interval_seconds = median_interval.total_seconds()
-
-        granularity, confidence = infer_granularity(interval_seconds, config=config)
-
-        metric_id = str(uuid4())
-
-        # Run pattern analyses
-        seasonality_result = analyze_seasonality(time_series, config=config)
-        seasonality = seasonality_result.value if seasonality_result.success else None
-
-        trend_result = analyze_trend(time_series, config=config)
-        trend = trend_result.value if trend_result.success else None
-
-        changes_result = detect_change_points(time_series, config=config)
-        change_points = changes_result.unwrap() if changes_result.success else []
-
-        frequency_result = analyze_update_frequency(time_series, config=config)
-        update_frequency = frequency_result.value if frequency_result.success else None
-
-        fiscal_result = detect_fiscal_calendar(time_series, config=config)
-        fiscal_calendar = fiscal_result.value if fiscal_result.success else None
-
-        stability_result = analyze_distribution_stability(time_series, config=config)
-        distribution_stability = stability_result.value if stability_result.success else None
-
-        # Run basic temporal analysis for completeness
-        basic_result = analyze_basic_temporal(cursor, table_duckdb_path, column_name, config=config)
-        completeness = (
-            basic_result.value.get("completeness")
-            if basic_result.success and basic_result.value
-            else None
-        )
-
-        # Detect quality issues
-        issues = _detect_quality_issues(
-            completeness=completeness,
-            update_frequency=update_frequency,
-            change_points=change_points,
-            distribution_stability=distribution_stability,
-            profiled_at=profiled_at,
-            config=config,
-        )
-
-        # Build result
-        column_ref = ColumnRef(
-            source_id=source_id,
-            table_name=table_name,
-            column_name=column_name,
-        )
-
-        return TemporalAnalysisResult(
-            metric_id=metric_id,
-            column_id=column_id,
-            column_ref=column_ref,
-            column_name=column_name,
-            table_name=table_name,
-            computed_at=profiled_at,
-            min_timestamp=min_timestamp,
-            max_timestamp=max_timestamp,
-            span_days=span_days,
-            detected_granularity=granularity,
-            granularity_confidence=confidence,
-            completeness=completeness,
-            seasonality=seasonality,
-            trend=trend,
-            change_points=change_points,
-            update_frequency=update_frequency,
-            fiscal_calendar=fiscal_calendar,
-            distribution_stability=distribution_stability,
-            quality_issues=issues,
-            has_issues=len(issues) > 0,
-        )
-    except Exception as e:
-        logger.warning(
-            "temporal_column_profiling_failed",
-            column_name=column_name,
-            table_name=table_name,
-            error=str(e),
-        )
-        return None
-    finally:
-        cursor.close()
 
 
 def profile_temporal(

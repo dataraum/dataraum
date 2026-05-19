@@ -23,3 +23,16 @@ def _set_database_url(monkeypatch: pytest.MonkeyPatch, pg_url_clean: str) -> Non
     every Base-registered table before each test for isolation.
     """
     monkeypatch.setenv("DATABASE_URL", pg_url_clean)
+
+
+@pytest.fixture(autouse=True)
+def _bootstrap_lake_for_mcp(lake_anchor, lake_clean) -> None:
+    """Ensure the DuckLake anchor is up + session schemas are clean for MCP tests.
+
+    Post-DAT-323, ``ConnectionManager._init_duckdb`` calls
+    ``server.storage.connect_session()`` which requires the anchor. Every MCP
+    flow that opens a per-session manager (begin_session, look, run_sql, …)
+    needs it bootstrapped. ``lake_clean`` drops per-session/archive schemas
+    between tests so per-test state stays hermetic.
+    """
+    return None

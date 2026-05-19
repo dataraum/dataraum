@@ -306,57 +306,55 @@ def _compute_exact_jaccard(
     Used for small datasets (<10K distinct values).
     Returns confidence=1.0 since this is exact.
     """
-    cursor = conn.cursor()
-    try:
-        # For temporal types, cast to TIMESTAMP for cross-type comparison
-        col1_expr = _get_cast_expression(col1, stats1.resolved_type)
-        col2_expr = _get_cast_expression(col2, stats2.resolved_type)
+    with conn.cursor() as cursor:
+        try:
+            # For temporal types, cast to TIMESTAMP for cross-type comparison
+            col1_expr = _get_cast_expression(col1, stats1.resolved_type)
+            col2_expr = _get_cast_expression(col2, stats2.resolved_type)
 
-        result = cursor.execute(f"""
-            WITH
-            vals1 AS (SELECT DISTINCT {col1_expr} AS v FROM {table1_path} WHERE "{col1}" IS NOT NULL),
-            vals2 AS (SELECT DISTINCT {col2_expr} AS v FROM {table2_path} WHERE "{col2}" IS NOT NULL)
-            SELECT COUNT(*) FROM vals1 WHERE v IN (SELECT v FROM vals2)
-        """).fetchone()
+            result = cursor.execute(f"""
+                WITH
+                vals1 AS (SELECT DISTINCT {col1_expr} AS v FROM {table1_path} WHERE "{col1}" IS NOT NULL),
+                vals2 AS (SELECT DISTINCT {col2_expr} AS v FROM {table2_path} WHERE "{col2}" IS NOT NULL)
+                SELECT COUNT(*) FROM vals1 WHERE v IN (SELECT v FROM vals2)
+            """).fetchone()
 
-        if result is None:
+            if result is None:
+                return JoinScoreResult(col1, col2, 0.0, "unknown", 0.0, JoinAlgorithm.EXACT)
+
+            intersection = result[0]
+            count1 = stats1.distinct_count
+            count2 = stats2.distinct_count
+
+            if count1 == 0 or count2 == 0:
+                return JoinScoreResult(col1, col2, 0.0, "unknown", 0.0, JoinAlgorithm.EXACT)
+
+            union = count1 + count2 - intersection
+            jaccard = intersection / union if union > 0 else 0.0
+
+            # Check containment (full inclusion of one set in another).
+            # Only meaningful when the smaller set has enough distinct values —
+            # low-cardinality columns (e.g., 2-3 values) trivially contain each other.
+            min_distinct = min(count1, count2)
+            if min_distinct > 10 and (intersection == count1 or intersection == count2):
+                containment = 1.0
+            else:
+                containment = 0.0
+            score = max(jaccard, containment)
+
+            cardinality = _determine_cardinality(stats1, stats2)
+
+            return JoinScoreResult(
+                column1=col1,
+                column2=col2,
+                score=score,
+                cardinality=cardinality,
+                confidence=1.0,  # Exact computation
+                algorithm=JoinAlgorithm.EXACT,
+            )
+
+        except Exception:
             return JoinScoreResult(col1, col2, 0.0, "unknown", 0.0, JoinAlgorithm.EXACT)
-
-        intersection = result[0]
-        count1 = stats1.distinct_count
-        count2 = stats2.distinct_count
-
-        if count1 == 0 or count2 == 0:
-            return JoinScoreResult(col1, col2, 0.0, "unknown", 0.0, JoinAlgorithm.EXACT)
-
-        union = count1 + count2 - intersection
-        jaccard = intersection / union if union > 0 else 0.0
-
-        # Check containment (full inclusion of one set in another).
-        # Only meaningful when the smaller set has enough distinct values —
-        # low-cardinality columns (e.g., 2-3 values) trivially contain each other.
-        min_distinct = min(count1, count2)
-        if min_distinct > 10 and (intersection == count1 or intersection == count2):
-            containment = 1.0
-        else:
-            containment = 0.0
-        score = max(jaccard, containment)
-
-        cardinality = _determine_cardinality(stats1, stats2)
-
-        return JoinScoreResult(
-            column1=col1,
-            column2=col2,
-            score=score,
-            cardinality=cardinality,
-            confidence=1.0,  # Exact computation
-            algorithm=JoinAlgorithm.EXACT,
-        )
-
-    except Exception:
-        return JoinScoreResult(col1, col2, 0.0, "unknown", 0.0, JoinAlgorithm.EXACT)
-    finally:
-        cursor.close()
 
 
 def _compute_sampled_jaccard(
@@ -382,109 +380,107 @@ def _compute_sampled_jaccard(
     Returns:
         JoinScoreResult with estimated Jaccard and statistical confidence
     """
-    cursor = conn.cursor()
-    try:
-        n1, n2 = stats1.distinct_count, stats2.distinct_count
+    with conn.cursor() as cursor:
+        try:
+            n1, n2 = stats1.distinct_count, stats2.distinct_count
 
-        # Calculate sample sizes - ensure minimum samples for statistical validity
-        m1 = max(min_samples, int(n1 * sample_rate))
-        m2 = max(min_samples, int(n2 * sample_rate))
+            # Calculate sample sizes - ensure minimum samples for statistical validity
+            m1 = max(min_samples, int(n1 * sample_rate))
+            m2 = max(min_samples, int(n2 * sample_rate))
 
-        # Cap at actual distinct counts
-        m1 = min(m1, n1)
-        m2 = min(m2, n2)
+            # Cap at actual distinct counts
+            m1 = min(m1, n1)
+            m2 = min(m2, n2)
 
-        # Use RESERVOIR sampling for uniform random sampling
-        # RESERVOIR is the only method that supports fixed row counts and
-        # provides truly uniform random samples (DuckDB docs)
-        # Note: We sample distinct values directly using a subquery
-        # For temporal types, cast to TIMESTAMP for cross-type comparison
-        col1_expr = _get_cast_expression(col1, stats1.resolved_type)
-        col2_expr = _get_cast_expression(col2, stats2.resolved_type)
+            # Use RESERVOIR sampling for uniform random sampling
+            # RESERVOIR is the only method that supports fixed row counts and
+            # provides truly uniform random samples (DuckDB docs)
+            # Note: We sample distinct values directly using a subquery
+            # For temporal types, cast to TIMESTAMP for cross-type comparison
+            col1_expr = _get_cast_expression(col1, stats1.resolved_type)
+            col2_expr = _get_cast_expression(col2, stats2.resolved_type)
 
-        result = cursor.execute(f"""
-            WITH
-            sampled1 AS (
-                SELECT v FROM (
-                    SELECT DISTINCT {col1_expr} AS v
-                    FROM {table1_path}
-                    WHERE "{col1}" IS NOT NULL
-                ) USING SAMPLE reservoir({m1} ROWS)
-            ),
-            sampled2 AS (
-                SELECT v FROM (
-                    SELECT DISTINCT {col2_expr} AS v
-                    FROM {table2_path}
-                    WHERE "{col2}" IS NOT NULL
-                ) USING SAMPLE reservoir({m2} ROWS)
-            ),
-            actual_counts AS (
-                SELECT
-                    (SELECT COUNT(*) FROM sampled1) AS m1_actual,
-                    (SELECT COUNT(*) FROM sampled2) AS m2_actual,
-                    (SELECT COUNT(*) FROM sampled1 WHERE v IN (SELECT v FROM sampled2)) AS x
+            result = cursor.execute(f"""
+                WITH
+                sampled1 AS (
+                    SELECT v FROM (
+                        SELECT DISTINCT {col1_expr} AS v
+                        FROM {table1_path}
+                        WHERE "{col1}" IS NOT NULL
+                    ) USING SAMPLE reservoir({m1} ROWS)
+                ),
+                sampled2 AS (
+                    SELECT v FROM (
+                        SELECT DISTINCT {col2_expr} AS v
+                        FROM {table2_path}
+                        WHERE "{col2}" IS NOT NULL
+                    ) USING SAMPLE reservoir({m2} ROWS)
+                ),
+                actual_counts AS (
+                    SELECT
+                        (SELECT COUNT(*) FROM sampled1) AS m1_actual,
+                        (SELECT COUNT(*) FROM sampled2) AS m2_actual,
+                        (SELECT COUNT(*) FROM sampled1 WHERE v IN (SELECT v FROM sampled2)) AS x
+                )
+                SELECT m1_actual, m2_actual, x FROM actual_counts
+            """).fetchone()
+
+            if result is None:
+                return JoinScoreResult(col1, col2, 0.0, "unknown", 0.0, JoinAlgorithm.SAMPLED)
+
+            m1_actual, m2_actual, x = result
+
+            if m1_actual == 0 or m2_actual == 0:
+                return JoinScoreResult(col1, col2, 0.0, "unknown", 0.0, JoinAlgorithm.SAMPLED)
+
+            # Unbiased intersection estimate: I_hat = x * N1 * N2 / (M1 * M2)
+            # From arXiv:2507.10019v3
+            intersection_estimate = x * n1 * n2 / (m1_actual * m2_actual)
+
+            # Jaccard estimate
+            union_estimate = n1 + n2 - intersection_estimate
+            jaccard_estimate = intersection_estimate / union_estimate if union_estimate > 0 else 0.0
+
+            # Check for full containment (one set fully contained in another).
+            # Only meaningful when the smaller set has enough distinct values —
+            # low-cardinality columns trivially contain each other.
+            min_distinct = min(n1, n2)
+            if min_distinct > 10:
+                containment1 = intersection_estimate / n1 if n1 > 0 else 0.0
+                containment2 = intersection_estimate / n2 if n2 > 0 else 0.0
+                containment = 1.0 if (containment1 >= 0.95 or containment2 >= 0.95) else 0.0
+            else:
+                containment = 0.0
+
+            score = max(jaccard_estimate, containment)
+
+            # Clamp to valid range (sampling can produce values slightly outside [0,1])
+            score = max(0.0, min(1.0, score))
+
+            # Calculate statistical confidence
+            # Fractional standard error is O(1/sqrt(x))
+            # Confidence = 1 - SE (rough approximation)
+            if x > 0:
+                fractional_se = 1.0 / math.sqrt(x)
+                confidence = max(0.0, min(1.0, 1.0 - fractional_se))
+            else:
+                # No observed overlap - low confidence
+                confidence = 0.1
+
+            cardinality = _determine_cardinality(stats1, stats2)
+
+            return JoinScoreResult(
+                column1=col1,
+                column2=col2,
+                score=score,
+                cardinality=cardinality,
+                confidence=confidence,
+                algorithm=JoinAlgorithm.SAMPLED,
             )
-            SELECT m1_actual, m2_actual, x FROM actual_counts
-        """).fetchone()
 
-        if result is None:
+        except Exception as e:
+            logger.debug(f"Sampled Jaccard failed for {col1}-{col2}: {e}")
             return JoinScoreResult(col1, col2, 0.0, "unknown", 0.0, JoinAlgorithm.SAMPLED)
-
-        m1_actual, m2_actual, x = result
-
-        if m1_actual == 0 or m2_actual == 0:
-            return JoinScoreResult(col1, col2, 0.0, "unknown", 0.0, JoinAlgorithm.SAMPLED)
-
-        # Unbiased intersection estimate: I_hat = x * N1 * N2 / (M1 * M2)
-        # From arXiv:2507.10019v3
-        intersection_estimate = x * n1 * n2 / (m1_actual * m2_actual)
-
-        # Jaccard estimate
-        union_estimate = n1 + n2 - intersection_estimate
-        jaccard_estimate = intersection_estimate / union_estimate if union_estimate > 0 else 0.0
-
-        # Check for full containment (one set fully contained in another).
-        # Only meaningful when the smaller set has enough distinct values —
-        # low-cardinality columns trivially contain each other.
-        min_distinct = min(n1, n2)
-        if min_distinct > 10:
-            containment1 = intersection_estimate / n1 if n1 > 0 else 0.0
-            containment2 = intersection_estimate / n2 if n2 > 0 else 0.0
-            containment = 1.0 if (containment1 >= 0.95 or containment2 >= 0.95) else 0.0
-        else:
-            containment = 0.0
-
-        score = max(jaccard_estimate, containment)
-
-        # Clamp to valid range (sampling can produce values slightly outside [0,1])
-        score = max(0.0, min(1.0, score))
-
-        # Calculate statistical confidence
-        # Fractional standard error is O(1/sqrt(x))
-        # Confidence = 1 - SE (rough approximation)
-        if x > 0:
-            fractional_se = 1.0 / math.sqrt(x)
-            confidence = max(0.0, min(1.0, 1.0 - fractional_se))
-        else:
-            # No observed overlap - low confidence
-            confidence = 0.1
-
-        cardinality = _determine_cardinality(stats1, stats2)
-
-        return JoinScoreResult(
-            column1=col1,
-            column2=col2,
-            score=score,
-            cardinality=cardinality,
-            confidence=confidence,
-            algorithm=JoinAlgorithm.SAMPLED,
-        )
-
-    except Exception as e:
-        logger.debug(f"Sampled Jaccard failed for {col1}-{col2}: {e}")
-        return JoinScoreResult(col1, col2, 0.0, "unknown", 0.0, JoinAlgorithm.SAMPLED)
-    finally:
-        cursor.close()
 
 
 def _compute_minhash_jaccard(
@@ -511,75 +507,73 @@ def _compute_minhash_jaccard(
     Returns:
         JoinScoreResult with MinHash-estimated Jaccard and confidence
     """
-    cursor = conn.cursor()
-    try:
-        # For temporal types, cast to TIMESTAMP first so DATE and TIMESTAMP
-        # have consistent string representations for hashing
-        col1_expr = _get_cast_expression(col1, stats1.resolved_type)
-        col2_expr = _get_cast_expression(col2, stats2.resolved_type)
+    with conn.cursor() as cursor:
+        try:
+            # For temporal types, cast to TIMESTAMP first so DATE and TIMESTAMP
+            # have consistent string representations for hashing
+            col1_expr = _get_cast_expression(col1, stats1.resolved_type)
+            col2_expr = _get_cast_expression(col2, stats2.resolved_type)
 
-        # Generate MinHash signatures using DuckDB's hash function
-        # We use different seeds by appending different suffixes
-        hash_selects1 = []
-        hash_selects2 = []
+            # Generate MinHash signatures using DuckDB's hash function
+            # We use different seeds by appending different suffixes
+            hash_selects1 = []
+            hash_selects2 = []
 
-        for i in range(num_hashes):
-            seed = f"_mh_seed_{i}"
-            hash_selects1.append(f"MIN(hash(CAST({col1_expr} AS VARCHAR) || '{seed}')) AS h{i}")
-            hash_selects2.append(f"MIN(hash(CAST({col2_expr} AS VARCHAR) || '{seed}')) AS h{i}")
+            for i in range(num_hashes):
+                seed = f"_mh_seed_{i}"
+                hash_selects1.append(f"MIN(hash(CAST({col1_expr} AS VARCHAR) || '{seed}')) AS h{i}")
+                hash_selects2.append(f"MIN(hash(CAST({col2_expr} AS VARCHAR) || '{seed}')) AS h{i}")
 
-        # Execute queries for both tables
-        sig1_query = f"""
-            SELECT {", ".join(hash_selects1)}
-            FROM {table1_path}
-            WHERE "{col1}" IS NOT NULL
-        """
-        sig2_query = f"""
-            SELECT {", ".join(hash_selects2)}
-            FROM {table2_path}
-            WHERE "{col2}" IS NOT NULL
-        """
+            # Execute queries for both tables
+            sig1_query = f"""
+                SELECT {", ".join(hash_selects1)}
+                FROM {table1_path}
+                WHERE "{col1}" IS NOT NULL
+            """
+            sig2_query = f"""
+                SELECT {", ".join(hash_selects2)}
+                FROM {table2_path}
+                WHERE "{col2}" IS NOT NULL
+            """
 
-        sig1 = cursor.execute(sig1_query).fetchone()
-        sig2 = cursor.execute(sig2_query).fetchone()
+            sig1 = cursor.execute(sig1_query).fetchone()
+            sig2 = cursor.execute(sig2_query).fetchone()
 
-        if sig1 is None or sig2 is None:
+            if sig1 is None or sig2 is None:
+                return JoinScoreResult(col1, col2, 0.0, "unknown", 0.0, JoinAlgorithm.MINHASH)
+
+            # Count matching signature positions (estimate of Jaccard)
+            matches = sum(1 for h1, h2 in zip(sig1, sig2, strict=True) if h1 == h2)
+            jaccard_estimate = matches / num_hashes
+
+            # MinHash only estimates Jaccard, not containment
+            # For containment, we'd need a different approach
+            score = jaccard_estimate
+
+            # Statistical confidence for MinHash
+            # SE = sqrt(J * (1-J) / k) for true Jaccard J
+            # Use our estimate as proxy
+            if 0 < jaccard_estimate < 1:
+                se = math.sqrt(jaccard_estimate * (1 - jaccard_estimate) / num_hashes)
+            else:
+                se = 1.0 / math.sqrt(num_hashes)
+
+            confidence = max(0.0, min(1.0, 1.0 - se))
+
+            cardinality = _determine_cardinality(stats1, stats2)
+
+            return JoinScoreResult(
+                column1=col1,
+                column2=col2,
+                score=score,
+                cardinality=cardinality,
+                confidence=confidence,
+                algorithm=JoinAlgorithm.MINHASH,
+            )
+
+        except Exception as e:
+            logger.debug(f"MinHash failed for {col1}-{col2}: {e}")
             return JoinScoreResult(col1, col2, 0.0, "unknown", 0.0, JoinAlgorithm.MINHASH)
-
-        # Count matching signature positions (estimate of Jaccard)
-        matches = sum(1 for h1, h2 in zip(sig1, sig2, strict=True) if h1 == h2)
-        jaccard_estimate = matches / num_hashes
-
-        # MinHash only estimates Jaccard, not containment
-        # For containment, we'd need a different approach
-        score = jaccard_estimate
-
-        # Statistical confidence for MinHash
-        # SE = sqrt(J * (1-J) / k) for true Jaccard J
-        # Use our estimate as proxy
-        if 0 < jaccard_estimate < 1:
-            se = math.sqrt(jaccard_estimate * (1 - jaccard_estimate) / num_hashes)
-        else:
-            se = 1.0 / math.sqrt(num_hashes)
-
-        confidence = max(0.0, min(1.0, 1.0 - se))
-
-        cardinality = _determine_cardinality(stats1, stats2)
-
-        return JoinScoreResult(
-            column1=col1,
-            column2=col2,
-            score=score,
-            cardinality=cardinality,
-            confidence=confidence,
-            algorithm=JoinAlgorithm.MINHASH,
-        )
-
-    except Exception as e:
-        logger.debug(f"MinHash failed for {col1}-{col2}: {e}")
-        return JoinScoreResult(col1, col2, 0.0, "unknown", 0.0, JoinAlgorithm.MINHASH)
-    finally:
-        cursor.close()
 
 
 def _compute_join_score_adaptive(

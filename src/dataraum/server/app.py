@@ -66,8 +66,8 @@ def _postgres_probe() -> dict[str, str]:
                 conn.execute(text("SELECT 1"))
         finally:
             engine.dispose()
-    except Exception as e:
-        return {"status": "unreachable", "error": str(e)}
+    except Exception:
+        return {"status": "unreachable"}
     return {"status": "ok"}
 
 

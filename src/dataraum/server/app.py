@@ -35,10 +35,12 @@ from sqlalchemy import create_engine, text
 from starlette.applications import Starlette
 from starlette.routing import Route
 
+from dataraum.core.logging import get_logger
 from dataraum.mcp.server import create_server
 from dataraum.server.storage import bootstrap_lake, health_probe, teardown_lake
 
 _TOKEN_ENV_VAR = "DATARAUM_MCP_TOKEN"
+logger = get_logger(__name__)
 
 
 class _StreamableHTTPASGIApp:
@@ -195,7 +197,11 @@ def _postgres_probe() -> dict[str, str]:
                 conn.execute(text("SELECT 1"))
         finally:
             engine.dispose()
-    except Exception:
+    except Exception as e:
+        # Log the cause but don't expose it in the response body (CodeQL info-
+        # exposure pattern). Misconfigured URL schemes (e.g. `postgresql://`
+        # instead of `postgresql+psycopg://`) show up here as ModuleNotFoundError.
+        logger.warning("postgres_health_probe_failed", error=str(e))
         return {"status": "unreachable"}
     return {"status": "ok"}
 

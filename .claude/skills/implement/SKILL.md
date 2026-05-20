@@ -97,11 +97,11 @@ Only proceed to handoff after both reviewers approve (or after discussing unreso
 
 After implementation is complete (honestly complete, reviewers satisfied):
 
-1. **If this work touched MCP tool surface, detectors, or pipeline phases**, update `.claude/handoff.md` with entries for EACH affected area:
+1. **If this work touched engine detectors, pipeline phases, or response shapes that eval calibrates against**, update `.claude/handoff.md` with entries for EACH affected area:
 
    **For dataraum-eval:**
    - What changed (files, modules, behaviors)
-   - Which MCP tools are affected
+   - Which engine routes or pipeline phases are affected
    - Which calibration tests or strategies to run
    - Any new response fields, changed formats, or threshold changes
 
@@ -110,7 +110,7 @@ After implementation is complete (honestly complete, reviewers satisfied):
    - New ground truth values that should be generated
    - Keep it directional — testdata has its own design concerns
 
-   **Skip the handoff entirely if this is platform-shell work** — control plane, executor wiring, frontend, observability, REST/SSE adapters, contract artifacts. The engine is unchanged, so eval/testdata are unaffected. For platform work, follow the "Parallel platform work" runbook below instead.
+   **Skip the handoff entirely** for anything outside `packages/engine/src/dataraum/{analysis,entropy,pipeline,graphs}/` — that includes `packages/cockpit/` (UI/widgets), `packages/api/` (OpenAPI contract), `packages/infra/` (docker-compose), and engine-side platform shell (FastAPI route handlers in `src/dataraum/api/`, server bootstrap, transport plumbing). Eval doesn't consume those surfaces. For parallel platform work, follow the "Parallel platform work" runbook in CLAUDE.md instead.
 
 2. Summarize to the user:
    - What was done
@@ -118,7 +118,7 @@ After implementation is complete (honestly complete, reviewers satisfied):
    - What needs acceptance testing
    - Reviewer verdicts
 
-3. If MCP tool changes: remind user to restart session and run `/smoke` before handoff
+3. If the engine REST surface or the cockpit changed: run `/smoke` to drive the cockpit in a browser before handoff. If you only touched engine Python, also rebuild the container (`docker compose -f packages/infra/docker-compose.yml up -d --build control-plane`).
 
 ## Rules
 

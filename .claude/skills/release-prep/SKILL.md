@@ -20,6 +20,12 @@ matches reality. That's this skill's job.
 
 **Run this BEFORE creating the release commit and tag.**
 
+## Scope
+
+This skill is scoped to **`packages/engine`** — the Python engine + FastAPI shell, which is the only package with a semver release process today. The cockpit and api packages currently ship via docker image (no per-package tag); revisit this skill when that changes.
+
+All commands and paths below are **relative to `packages/engine/`**. Run them from that directory, or prefix with `(cd packages/engine && ...)`.
+
 ## Input
 
 `$ARGUMENTS` is the target version, e.g. `0.2.2`. If empty, read the version

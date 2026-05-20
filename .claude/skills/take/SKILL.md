@@ -26,9 +26,11 @@ This skill exists so the user can launch N lanes in parallel via the Agent tool 
 
 The full enforcement rules live in `CLAUDE.md → "Parallel platform work runbook"`. This skill executes that runbook. If you find this skill and the runbook diverging, the runbook wins — open a PR to align them.
 
+**When to use `/take` today:** reserved for genuinely parallel platform lanes. The v1 plan (post-spine cockpit + engine REST) ships PR-per-step on a shared branch — single stream, no contract-lock gate, just use `/refine` + `/implement` directly. Reach for `/take` when a future wave decomposes into 2+ independently-mergeable tasks that touch separate code areas.
+
 ## Input
 
-$ARGUMENTS is a Jira task identifier (a child of a DAT-294 phase). Refuse to start if the ticket is not under DAT-294 or one of its phase sub-epics.
+$ARGUMENTS is a Jira task identifier under DAT-294 (a direct child or a child of a sub-epic). Refuse to start if the ticket is not under DAT-294.
 
 ## Step 1: Pre-check (lane can open)
 
@@ -38,7 +40,9 @@ Before touching any code:
 2. **Check for existing worktree** at `../dataraum-context.worktrees/{task-id}/`. If branch matches `feat/{task-id}-{slug}` → resume it. If branch is something else → STOP and ask. **Note:** worktrees live SIBLING to the main repo (not inside `.worktrees/`) so the orchestrator's `$CLAUDE_PROJECT_DIR` doesn't sweep them and each agent's `$CLAUDE_PROJECT_DIR` is the worktree path itself.
 3. **Check for existing PR** via `gh pr list --search "{task-id} in:title"`. If open → the lane is already in flight. STOP and ask.
 4. **Check the status board** `.claude/platform-status.md`. STOP if another active lane claims this task or a contract this task touches.
-5. **Verify the contract is locked.** The task ticket must reference a contract artifact (path + sha) on the Platform Contracts page. The artifact must be merged on `main`. **If not locked, STOP** — open a contract-lock issue instead. Do not start implementation against an unlocked contract; that is the single biggest cause of parallel-merge chaos.
+5. **Verify the contract is locked, if the task names one.** If the task ticket references a contract artifact (path + sha — e.g., a row on the Platform Contracts page, an `openapi.yaml` sha, a proto file sha), the artifact must be merged on `main`. **If named but not locked, STOP** — open a contract-lock issue instead. Do not start implementation against an unlocked contract; that is the single biggest cause of parallel-merge chaos.
+
+   Note: most of the original Platform Contracts inventory (Mcp-Session-Id, CP↔executor gRPC, TanStack AI wire format, OpenAPI for `/api/*`) was superseded or deferred by the v1 plan. Contract #5 (config storage shape) stays locked for future multi-user work. If the task names no contract, this step is a no-op.
 
 If anything is wrong, STOP and report. Don't "make it work."
 

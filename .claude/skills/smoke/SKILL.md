@@ -1,13 +1,17 @@
 ---
 name: smoke
-description: Quick MCP smoke test — call the tools you just built and see how they feel as a practitioner
+description: Quick UX smoke test — drive the cockpit (or a REST route) you just built and see how it feels as a practitioner
 allowed-tools:
-  - mcp__dataraum__look
-  - mcp__dataraum__measure
-  - mcp__dataraum__query
-  - mcp__dataraum__run_sql
-  - mcp__dataraum__begin_session
-  - mcp__dataraum__add_source
+  - mcp__playwright__browser_navigate
+  - mcp__playwright__browser_click
+  - mcp__playwright__browser_type
+  - mcp__playwright__browser_fill_form
+  - mcp__playwright__browser_press_key
+  - mcp__playwright__browser_snapshot
+  - mcp__playwright__browser_take_screenshot
+  - mcp__playwright__browser_wait_for
+  - mcp__playwright__browser_console_messages
+  - mcp__playwright__browser_network_requests
   - Read
   - Bash
   - AskUserQuestion
@@ -15,86 +19,107 @@ allowed-tools:
 
 # Smoke: $ARGUMENTS
 
-You just implemented or changed MCP tools. Now USE them. Not to verify correctness (that's eval's job) — to feel what the UX is like.
+You just implemented or changed a cockpit surface, an engine REST route, or both. Now USE it. Not to verify correctness (that's eval's job) — to feel what the UX is like.
 
-**IMPORTANT:** If you changed MCP server code in this session, the user must restart the session first. The MCP server runs as a subprocess — it loaded the old code. Remind them if they haven't restarted.
+**IMPORTANT:**
+- If you changed **engine Python code**, the engine container loaded the old code — rebuild + restart it before smoke: `docker compose -f packages/infra/docker-compose.yml up -d --build control-plane`.
+- If you only changed **cockpit code** and `pnpm dev` is running, Vite hot-reloads — no restart needed.
+- If you changed the **OpenAPI contract**, regenerate types before smoke: `(cd packages/engine && uv run python scripts/export_openapi.py) > packages/api/openapi.yaml && (cd packages/cockpit && pnpm codegen)`.
 
 ## Input
 
 $ARGUMENTS is one of:
-- A tool name to focus on (e.g., "look", "measure")
-- A brief scenario to play through (e.g., "check data quality then query revenue")
-- Empty — exercise all available tools
+- A route or page to focus on (e.g., `/sources`, `/chat`)
+- A scenario to play through (e.g., "ask the agent to list sources, check the streaming feels right")
+- A REST route to exercise headless (e.g., `GET /api/sources`)
+- Empty — exercise whatever just changed
 
 ## What this is
 
 A quick, informal test drive. Like kicking the tires after a change. You're not checking ground truth or running calibration. You're checking:
 
-- Does the tool respond at all?
+- Does the surface respond at all?
 - Does the output make sense to a human?
-- Is the response format useful or confusing?
-- Are there obvious gaps (missing fields, unhelpful messages, errors)?
-- Would you, as a practitioner, know what to do next based on this output?
+- Is the layout/copy useful or confusing?
+- Are there obvious gaps (missing fields, unhelpful messages, errors, empty states with no guidance)?
+- Would you, as a practitioner, know what to do next based on what's on screen?
 
 ## How to do it
 
-### 1. Orient
+### 1. Bring up the stack
 
-Start with `begin_session` if available — that's how a real session starts.
+```bash
+docker compose -f packages/infra/docker-compose.yml up -d --wait
+curl -fsS http://localhost:8000/health
+```
 
-Then `look` at the data. Read the output as if you've never seen this dataset before. Does it tell you enough to start working?
+For UI iteration: also run `pnpm dev` in `packages/cockpit/` (hot-reload). For pure REST smoke: skip the cockpit, hit the engine directly.
 
-### 2. Exercise the changed tools
+### 2. Drive the cockpit via Playwright MCP
 
-Call each tool that was modified. Don't overthink the inputs — use them naturally, as a practitioner would.
+```
+browser_navigate to http://localhost:3000/<route>
+browser_snapshot      # accessibility tree of the page
+browser_take_screenshot save: docs of what landed (optional)
+```
 
-For each call, note:
-- **Response**: did it work? What came back?
-- **Clarity**: would a practitioner understand this without reading source code?
-- **Usefulness**: does this output help you decide what to do next?
-- **Surprises**: anything unexpected, missing, or confusing?
+For the chat surface:
+```
+browser_navigate to http://localhost:3000/chat
+browser_type into the textarea: "<your test intent>"
+browser_click the Send button
+browser_wait_for text that should appear in the assistant turn (or a tool-result chip)
+browser_network_requests  # confirm /api/chat returned SSE, tool calls hit the right routes
+browser_console_messages  # check for client-side errors
+```
+
+For each interaction note:
+- **Response**: did it work? What rendered?
+- **Clarity**: would a practitioner understand this without reading source?
+- **Usefulness**: does this help decide what to do next?
+- **Surprises**: anything unexpected, missing, or confusing? Errors in the console? Failed network requests?
 
 ### 3. Try a mini workflow
 
-String 2-3 tool calls together as a practitioner would:
-- look → measure → "I see high entropy on column X" → query about that column
-- Or: look → "what's the revenue?" → query → "does this make sense given the data quality?" → measure
+String 2-3 interactions together as a practitioner would. For the current cockpit slice:
+- Navigate to `/sources` → check sources render → switch to `/chat` → ask "list my sources" → confirm the agent calls `list_sources` and renders the result
 
-This tests the *flow*, not just individual tools.
+This tests the *flow* between page + chat + tools, not just one surface.
 
 ### 4. Try to break it (gently)
 
-- Call a tool with edge-case inputs (empty string, unknown column, weird query)
-- Ask a question the data can't answer — does it fail gracefully?
-- Skip a step (e.g., query without looking first) — is the experience still coherent?
+- Click a button before its data has loaded — does the empty state make sense?
+- Type a question the engine can't answer — does the agent fail gracefully?
+- Reload mid-stream — does the page recover?
+- Open the network panel: is anything 404-ing? Any unhandled 500s?
 
 ### 5. Share impressions
 
 Tell the user what you found. Not a formal report — just honest impressions:
 
-- "The look output is clear, I immediately understood the data shape"
-- "measure returns scores but I don't know what 0.73 means — needs context"
-- "query works but doesn't mention that the column it aggregated has quality issues"
-- "begin_session errors with: [actual error message]"
+- "The sources table renders, but the empty state says 'lands in a later step' which is stale copy"
+- "Chat streams text fine, but tool-call chips show the raw JSON result — needs a friendlier shape"
+- "Network panel shows `/api/sources` returning a 503 when the engine container hasn't finished warmup"
+- "Console has a React strict-mode warning about double-stream state updates"
 
-Be specific. Quote actual output. Name actual fields. This is feedback, not a verdict.
+Be specific. Quote actual text on screen. Reference actual route paths and network requests. This is feedback, not a verdict.
 
 ## Next step
 
 After smoke testing:
-1. Fix any obvious issues found during the smoke test (restart session again if you change server code)
-2. Commit the implementation
-3. Update `.claude/handoff.md` with what needs eval attention (and testdata hints if applicable)
-4. Tell the user: "Ready for acceptance. Run `/accept handoff` in the eval repo after updating the vendor submodule."
+1. Fix any obvious issues found (UI copy rot, missing error states, broken empty states). Rebuild engine container if you touched Python.
+2. Commit the implementation.
+3. For engine surface or detector changes: update `.claude/handoff.md` so eval picks up what changed.
+4. For cockpit-only or REST-only work: no handoff needed — eval doesn't consume the cockpit.
 
-If smoke testing reveals deeper problems (not just UX polish but fundamental issues): go back to `/implement` or even `/refine`. Don't patch over structural problems.
+If smoke testing reveals deeper problems (not just UX polish but fundamental issues like wrong widget shape, contract mismatch, missing route): go back to `/implement` or even `/refine`. Don't patch over structural problems.
 
 ## Rules
 
 - This is NOT acceptance testing — don't assert against ground truth
 - This is NOT a unit test — don't test internal behavior
 - This IS a UX check — would a human find this useful?
-- If a tool errors: note the error, try to understand why, move on
-- If the MCP server isn't responding: remind user to restart the session
+- If the cockpit errors: capture the console message + a screenshot, then move on
+- If the engine isn't responding: check `docker compose ps` + `docker compose logs control-plane`; don't fight it for more than 2 minutes
 - Spend 5-10 minutes, not 30. Quick impressions are the point.
 - Be honest. "This feels clunky" is useful feedback. "Looks great!" is not.

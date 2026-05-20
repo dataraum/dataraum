@@ -42,7 +42,15 @@ The Vite dev server proxies `/api/*` to the engine on `:8000`, so the browser is
 
 ## Playwright MCP — driving the UI from this session
 
-`.mcp.json` at workspace root registers `@playwright/mcp` so the agent in this session gets browser tools (navigate / click / fill / snapshot / screenshot). The cockpit dev server must be running on `:3000` for these tools to do anything useful.
+Playwright is registered per-project in `~/.claude.json` under `projects['<repo path>'].mcpServers.playwright` (stdio, `npx @playwright/mcp@latest`) — not in a repo-local `.mcp.json`. The agent in this session gets browser tools (navigate / click / fill / snapshot / screenshot) automatically; nothing to install per-checkout. The cockpit dev server must be running on `:3000` for these tools to do anything useful.
+
+Verify the registration:
+
+```bash
+python3 -c "import json; d=json.load(open('$HOME/.claude.json')); print(list(d['projects']['$PWD/../../'.rstrip('/')]['mcpServers'].keys()))"
+```
+
+(or just look for the `playwright` key under your repo path in `~/.claude.json`).
 
 **Workflow when iterating on UI:**
 

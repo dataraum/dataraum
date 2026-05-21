@@ -770,7 +770,7 @@ class DimensionalEntropyDetector(EntropyDetector):
                                       AND "{col_b.column_name}" != 0 THEN 1 ELSE 0 END) AS both_nonzero,
                             SUM(CASE WHEN "{col_a.column_name}" = 0
                                       AND "{col_b.column_name}" = 0 THEN 1 ELSE 0 END) AS both_zero
-                        FROM "typed_{context.table_name}"
+                        FROM lake.typed."{context.table_name}"
                         WHERE "{col_a.column_name}" IS NOT NULL
                           AND "{col_b.column_name}" IS NOT NULL
                     """

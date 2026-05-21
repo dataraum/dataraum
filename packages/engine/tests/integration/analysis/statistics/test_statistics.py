@@ -18,8 +18,15 @@ from tests.conftest import baseline_session_id
 
 
 def _get_typed_table_id(typed_table_name: str, session) -> str | None:
-    """Get the table ID for a typed table by DuckDB path."""
-    stmt = select(Table).where(Table.duckdb_path == typed_table_name)
+    """Get the table ID for a typed table by DuckDB path.
+
+    Post-DAT-341 raw/typed/quarantine share the same bare ``duckdb_path``;
+    filter by ``layer == "typed"`` to disambiguate.
+    """
+    stmt = select(Table).where(
+        Table.duckdb_path == typed_table_name,
+        Table.layer == "typed",
+    )
     result = session.execute(stmt)
     table = result.scalar_one_or_none()
     return table.table_id if table else None

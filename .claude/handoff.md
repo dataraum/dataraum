@@ -4,6 +4,48 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-21: DAT-341 — workspace-typed substrate (slice 1 E1)
+
+Substrate change: typed tables move from `lake.session_<id>` (per-session,
+ephemeral) to `lake.{raw,typed,quarantine}.<source>__<table>`
+(workspace-stable). `Table.workspace_id` and `EntropyObjectRecord.workspace_id`
+FKs added (NOT NULL). `EntropyObjectRecord.session_id` stays NOT NULL but
+is no longer the load-bearing scope.
+
+### dataraum-eval
+
+- **What changed (and what didn't)**: substrate-only refactor. Detector
+  logic is unchanged; data reaching detectors is identical. The schema
+  rename (`lake.session_<id>.typed_<x>` → `lake.typed."<x>"`) is the only
+  surface-level shift, and it shows up in detector evidence strings as
+  `<name>` instead of `typed_<name>` — cosmetic, not score-affecting.
+- **Expected calibration outcome**: identical recall to pre-DAT-341.
+  Eval's known-injection tests are deterministic; any drop in recall
+  is a **bug** (a missed read site where some detector or analysis
+  module still does `FROM "typed_<name>"` and now resolves to an empty
+  schema slot), not "drift" or "expected variation". Investigate the
+  failing detector's SQL — grep for hardcoded `typed_*` / `raw_*`
+  prefixes that the substrate migration missed.
+- **Calibrate**: run the full calibration suite as soon as the API
+  surface lands (`dataraum-eval` calls into the engine via REST —
+  blocked on DAT-344 / E4). Per the CLAUDE.md "calibration is the
+  definition of done" rule, recall must not regress.
+- **Notes**: workspace.db schema gained a `workspace_id` FK on `tables`
+  and `entropy_objects`. Existing eval state on disk needs
+  `rm -rf ${DATARAUM_HOME}` before the first calibration run.
+- **Status**: pending (blocked on DAT-344)
+
+### dataraum-testdata (hints)
+
+- No new injection types required for this migration. The substrate change
+  is structural and detector-agnostic.
+- One directional hint: now that raw/typed/quarantine share a bare table
+  name across layers, an injection that produces noisy raw data + clean
+  typed data (e.g. "values DO TRY_CAST to numeric but the original
+  strings have suspicious whitespace patterns") becomes easier to test —
+  raw and typed are siblings in the catalog rather than schema-mates.
+  Optional, not blocking.
+
 ## 2026-05-19: Open vendor bugs surfaced by eval tools-test port (NOT in PR #118)
 
 While porting `calibration/tools/test_tool_chain.py` and friends to drive the

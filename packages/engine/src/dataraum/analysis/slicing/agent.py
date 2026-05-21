@@ -194,10 +194,12 @@ class SlicingAgent(LLMFeature):
                 top_values = col_info.get("top_values", [])
                 distinct_values = [v.get("value", "") for v in top_values]
 
-            # Use enriched view if available, otherwise fall back to typed table
-            # Enriched views include dimension columns from joined tables
+            # Use enriched view if available, otherwise read the typed table by
+            # its bare duckdb_path (connection USEs ``lake.typed`` so unqualified
+            # resolves). ``duckdb_path`` is always set by the loader/typing
+            # phases — KeyError here means upstream invariant was broken.
             enriched_view = table_info.get("enriched_duckdb_path")
-            duckdb_table = enriched_view or table_info.get("duckdb_path", f"typed_{table_name}")
+            duckdb_table = enriched_view or table_info["duckdb_path"]
             sql_template = self._build_sql_template(
                 duckdb_table, column_name, distinct_values, source_table_name=table_name
             )

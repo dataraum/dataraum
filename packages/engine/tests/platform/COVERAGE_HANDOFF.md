@@ -47,3 +47,28 @@ test pyramid.
 `tests/platform/smoke_dat_324.py` is **kept** — it covers the
 `SOURCES_DIR` / `CONFIG_DIR` / `DATARAUM_CONFIG_PATH` container-path wiring +
 grep audit, none of which is per-session-schema.
+
+## Known-broken surface after DAT-341 (E1) lands
+
+The workspace-typed substrate retires per-session DuckLake schemas. The MCP
+session-lifecycle handlers still reference the old shape and will fail at
+runtime until slice 2's session work re-fits them on top of the workspace
+substrate ([DAT-356](https://real-dataraum.atlassian.net/browse/DAT-356)):
+
+- `begin_session` — opens a new per-session manager and expects to create
+  a per-session schema; post-DAT-341 the manager USEs `lake.typed` instead
+  and the per-session schema concept is gone. Sessions are still recorded
+  in the workspace Postgres `investigation_sessions` table, but the
+  DuckLake side is workspace-stable rather than per-session.
+- `end_session` — historically marked the session and (per design) did
+  not rename the schema, so the Postgres state still works in isolation.
+  The MCP-level archival flow that copies state across sessions does not.
+- `resume_session` — same coupling as `begin_session`.
+- `list_archived_sessions` — reads workspace Postgres and continues to
+  work for listing, but the schemas it points to no longer exist on the
+  DuckLake side.
+
+These handlers are not exercised by the post-DAT-340 test suite (the MCP
+test scaffolding was retired in E0). Production deployments running
+slice 2's REST session API will rewire them; until then, calling them
+returns errors or surfaces stale state.

@@ -129,11 +129,15 @@ def quarantine_and_drop_columns(
 
     Args:
         conn: DuckDB connection
-        typed_table: Name of the typed table (e.g., "typed_orders")
+        typed_table: Bare name of the typed table (e.g., ``"source__orders"``
+            — the ``<source>__<table>`` form stored on ``Table.duckdb_path``
+            post-DAT-341).
         columns_data: List of (Column, reason) tuples to drop
     """
-    base_name = typed_table.replace("typed_", "")
-    quarantine_table = f"quarantine_columns_{base_name}"
+    # ``typed_table`` is already the bare name post-DAT-341 (no ``typed_``
+    # prefix to strip). The companion quarantine-helper table uses the same
+    # base so layer-aware cleanup locates it.
+    quarantine_table = f"quarantine_columns_{typed_table}"
 
     # Create quarantine table if not exists
     conn.execute(f"""

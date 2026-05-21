@@ -16,6 +16,7 @@ from dataraum.storage import init_database
 
 _TEST_SESSION_ID = "00000000-0000-0000-0000-000000000001"
 _TEST_SOURCE_ID = "00000000-0000-0000-0000-000000000002"
+_TEST_WORKSPACE_ID = "00000000-0000-0000-0000-000000000003"
 
 
 @pytest.fixture(autouse=True)
@@ -57,23 +58,26 @@ def _close_mcp_servers_after_test(monkeypatch: pytest.MonkeyPatch):
 
 
 @event.listens_for(Session, "before_flush")
-def _autofill_session_id_globally(sess, _flush_ctx, _instances):
-    """Auto-fill per-session FK on any pending row that left it None.
+def _autofill_fks_globally(sess, _flush_ctx, _instances):
+    """Auto-fill workspace/session FKs on any pending row that left them None.
 
-    Pure test convenience — production code always sets ``session_id`` via the
-    hybrid plumbing introduced in DAT-321. This hook keeps test fixtures that
-    construct DB rows directly from having to know about the new FK.
+    Pure test convenience — production code always sets ``session_id`` (DAT-321
+    plumbing) and ``workspace_id`` (DAT-341 plumbing). This hook keeps test
+    fixtures that construct DB rows directly from having to know about either FK.
 
-    Excludes ``InvestigationSession`` itself — its ``session_id`` is the PK,
-    not a FK, so autofilling would collide with the baseline row.
+    Excludes ``InvestigationSession`` and ``Workspace`` themselves — their ``*_id``
+    columns are PKs, not FKs, so autofilling would collide with the baseline rows.
     """
     from dataraum.investigation.db_models import InvestigationSession
+    from dataraum.storage import Workspace
 
     for obj in sess.new:
-        if isinstance(obj, InvestigationSession):
+        if isinstance(obj, (InvestigationSession, Workspace)):
             continue
         if hasattr(obj, "session_id") and getattr(obj, "session_id", None) is None:
             obj.session_id = _TEST_SESSION_ID
+        if hasattr(obj, "workspace_id") and getattr(obj, "workspace_id", None) is None:
+            obj.workspace_id = _TEST_WORKSPACE_ID
 
 
 @pytest.fixture(scope="function")
@@ -118,13 +122,21 @@ def session(engine: Engine) -> Session:
     from datetime import UTC, datetime
 
     from dataraum.investigation.db_models import InvestigationSession
-    from dataraum.storage import Source
+    from dataraum.storage import Source, Workspace
 
     factory = sessionmaker(
         bind=engine,
         expire_on_commit=False,
     )
     with factory() as sess:
+        sess.add(
+            Workspace(
+                workspace_id=_TEST_WORKSPACE_ID,
+                name="test_baseline",
+                config_dir="/tmp/test-baseline-workspace/config",
+            )
+        )
+        sess.flush()
         sess.add(Source(source_id=_TEST_SOURCE_ID, name="test_baseline", source_type="csv"))
         sess.flush()
         sess.add(
@@ -148,6 +160,17 @@ def baseline_session_id() -> str:
     one of those rows should set ``session_id=baseline_session_id()``.
     """
     return _TEST_SESSION_ID
+
+
+def baseline_workspace_id() -> str:
+    """Return the baseline Workspace id seeded by the ``session`` fixture.
+
+    Per-workspace DB models post-DAT-341 (``Table``, ``EntropyObjectRecord``)
+    carry a NOT NULL FK to ``workspaces.workspace_id``. The ``before_flush``
+    hook auto-fills it on bare constructions; tests that need the value
+    explicitly call ``baseline_workspace_id()``.
+    """
+    return _TEST_WORKSPACE_ID
 
 
 @pytest.fixture
@@ -268,14 +291,29 @@ def no_anchor(lake_anchor, lake_catalog_url: str, lake_data_path: str):
 
 @pytest.fixture
 def lake_clean(lake_anchor):
-    """Drop per-session and archived schemas from the lake before each test.
+    """Drop per-test residue from the lake before each test.
 
-    Pairs with ``pg_url_clean`` so test isolation is symmetric across the
-    Postgres workspace and the DuckLake catalog.
+    Post-DAT-341 the workspace-stable layer schemas (``raw`` / ``typed`` /
+    ``quarantine``) survive across tests, so per-test isolation needs to
+    drop the tables INSIDE those schemas rather than dropping the schemas
+    themselves. Reserved ``session_*`` / ``archive_*`` schemas (slice 2)
+    are still dropped wholesale.
     """
-    from dataraum.server.storage import LAKE_CATALOG_ALIAS, get_anchor
+    from dataraum.server.storage import LAKE_CATALOG_ALIAS, LAKE_LAYER_SCHEMAS, get_anchor
 
     anchor = get_anchor()
+
+    # Drop per-test tables in workspace-stable layer schemas.
+    for layer_schema in LAKE_LAYER_SCHEMAS:
+        tables = anchor.execute(
+            "SELECT table_name FROM duckdb_tables() "
+            f"WHERE database_name = '{LAKE_CATALOG_ALIAS}' "
+            f"AND schema_name = '{layer_schema}'"
+        ).fetchall()
+        for (name,) in tables:
+            anchor.execute(f'DROP TABLE IF EXISTS {LAKE_CATALOG_ALIAS}."{layer_schema}"."{name}"')
+
+    # Reserved session_* / archive_* namespaces (slice 2): drop wholesale.
     schemas = anchor.execute(
         "SELECT schema_name FROM duckdb_schemas() "
         f"WHERE database_name = '{LAKE_CATALOG_ALIAS}' "

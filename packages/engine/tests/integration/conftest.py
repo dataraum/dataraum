@@ -6,6 +6,7 @@ real or fixture data, including agent validation fixtures.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -195,9 +196,30 @@ class PipelineTestHarness:
         }
         return self.run_phase("import", config=config)
 
-    def get_duckdb_tables(self) -> list[str]:
-        """Get list of tables in DuckDB."""
-        result = self.duckdb_conn.execute("SHOW TABLES").fetchall()
+    def get_duckdb_tables(self, layer: str | None = None) -> list[str]:
+        """Get list of tables across workspace layer schemas.
+
+        Post-DAT-341 tables live in ``lake.raw`` / ``lake.typed`` /
+        ``lake.quarantine`` rather than the connection's USE'd schema.
+        ``SHOW TABLES`` only sees the current schema, so we query
+        ``duckdb_tables()`` directly.
+
+        Args:
+            layer: If provided, restrict to a single layer schema (e.g.
+                ``"raw"``). Otherwise return tables across all layer schemas.
+        """
+        from dataraum.server.storage import LAKE_CATALOG_ALIAS, LAKE_LAYER_SCHEMAS
+
+        if layer is not None:
+            schemas = [layer]
+        else:
+            schemas = list(LAKE_LAYER_SCHEMAS)
+        placeholders = ",".join(repr(s) for s in schemas)
+        result = self.duckdb_conn.execute(
+            "SELECT table_name FROM duckdb_tables() "
+            f"WHERE database_name = '{LAKE_CATALOG_ALIAS}' "
+            f"AND schema_name IN ({placeholders})"
+        ).fetchall()
         return [row[0] for row in result]
 
     def query_duckdb(self, sql: str) -> list[tuple[Any, ...]]:
@@ -249,13 +271,23 @@ def integration_engine(pg_url_clean: str) -> Engine:
     from datetime import UTC, datetime
 
     from dataraum.investigation.db_models import InvestigationSession
-    from dataraum.storage import Source
+    from dataraum.storage import Source, Workspace
+
+    from tests.conftest import _TEST_WORKSPACE_ID
 
     engine = create_engine(pg_url_clean, echo=False, future=True)
     init_database(engine)
 
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     with factory() as sess:
+        sess.add(
+            Workspace(
+                workspace_id=_TEST_WORKSPACE_ID,
+                name="integration_baseline",
+                config_dir="/tmp/integration-test-workspace/config",
+            )
+        )
+        sess.flush()
         sess.add(
             Source(
                 source_id="00000000-0000-0000-0000-000000000002",
@@ -280,11 +312,46 @@ def integration_engine(pg_url_clean: str) -> Engine:
 
 
 @pytest.fixture
-def integration_duckdb() -> duckdb.DuckDBPyConnection:
-    """Create an in-memory DuckDB connection for integration tests."""
-    conn = duckdb.connect(":memory:")
-    yield conn
-    conn.close()
+def integration_duckdb(lake_anchor, lake_clean):
+    """Open a DuckLake-anchored DuckDB connection scoped to ``lake.typed``.
+
+    Post-DAT-341 the loaders write to ``lake.raw.<source>__<table>`` via FQN,
+    so a plain ``:memory:`` DuckDB no longer suffices — the ``lake`` catalog
+    must be ATTACHed. The session-scoped ``lake_anchor`` does the bootstrap
+    once; ``lake_clean`` drops per-test residue from the three layer schemas.
+
+    Mirrors :class:`ConnectionManager._init_duckdb`: USE ``lake.typed`` on
+    the raw connection AND wrap with ``_LakeScopedConnection`` so derived
+    cursors (which DuckDB does NOT auto-inherit USE on, per the API
+    documented in core/connections.py) re-apply the USE statement. Without
+    the wrapper, analysis modules that open cursors find their unqualified
+    SELECTs resolving against ``memory.main`` instead of the typed schema.
+    """
+    from dataraum.core.connections import _LakeScopedConnection
+    from dataraum.server.storage import LAKE_CATALOG_ALIAS, connect_session
+
+    qualified = f"{LAKE_CATALOG_ALIAS}.typed"
+    raw_conn = connect_session()
+    raw_conn.execute(f"USE {qualified}")
+    wrapped = _LakeScopedConnection(raw_conn, qualified)
+    yield wrapped
+    try:
+        raw_conn.close()
+    except Exception as exc:
+        warnings.warn(f"Failed to close integration DuckDB connection cleanly: {exc}")
+
+
+@pytest.fixture
+def duckdb_conn(integration_duckdb) -> duckdb.DuckDBPyConnection:
+    """Override the root ``duckdb_conn`` (``:memory:``) for integration tests.
+
+    Many integration tests under ``tests/integration/`` request the root
+    fixture ``duckdb_conn`` (defined as plain ``:memory:`` in
+    ``tests/conftest.py``). Post-DAT-341 they need the DuckLake-anchored
+    connection scoped to ``lake.typed`` — this override forwards them to
+    ``integration_duckdb`` without churning every test signature.
+    """
+    return integration_duckdb
 
 
 @pytest.fixture

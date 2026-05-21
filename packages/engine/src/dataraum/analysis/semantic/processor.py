@@ -55,8 +55,8 @@ def _resolve_cardinality(
 
     # 2. Compute from actual data
     if duckdb_conn is not None:
-        from_table_path = f"typed_{rel.from_table}"
-        to_table_path = f"typed_{rel.to_table}"
+        from_table_path = f'lake.typed."{rel.from_table}"'
+        to_table_path = f'lake.typed."{rel.to_table}"'
         actual = compute_actual_cardinality(
             from_table_path,
             to_table_path,
@@ -261,8 +261,8 @@ def enrich_semantic(
             evidence.update(candidate_metrics[candidate_key])
         elif duckdb_conn is not None:
             # Compute RI metrics for LLM-discovered relationships not in candidates
-            from_table_path = f"typed_{rel.from_table}"
-            to_table_path = f"typed_{rel.to_table}"
+            from_table_path = f'lake.typed."{rel.from_table}"'
+            to_table_path = f'lake.typed."{rel.to_table}"'
             try:
                 ri_metrics = compute_ri_metrics(
                     from_table=from_table_path,

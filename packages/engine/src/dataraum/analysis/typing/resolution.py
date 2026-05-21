@@ -171,11 +171,16 @@ def _select_best_candidates(
 
 
 def _generate_typed_table_sql(
-    raw_table: str,
-    typed_table: str,
+    raw_target: str,
+    typed_target: str,
     specs: list[ColumnTypeSpec],
 ) -> str:
-    """Generate CREATE TABLE with TRY_CAST per column."""
+    """Generate CREATE TABLE with TRY_CAST per column.
+
+    ``raw_target`` and ``typed_target`` are fully-qualified DuckDB names
+    (e.g. ``lake.raw."csv__orders"`` / ``lake.typed."csv__orders"``) —
+    callers compose the schema prefix; this helper does not wrap in quotes.
+    """
     selects = []
     for spec in specs:
         col = f'"{spec.column_name}"'
@@ -189,16 +194,19 @@ def _generate_typed_table_sql(
             selects.append(f"TRY_CAST({col} AS {target}) AS {col}")
 
     return (
-        f'CREATE OR REPLACE TABLE "{typed_table}" AS SELECT {", ".join(selects)} FROM "{raw_table}"'
+        f"CREATE OR REPLACE TABLE {typed_target} AS SELECT {', '.join(selects)} FROM {raw_target}"
     )
 
 
 def _generate_quarantine_sql(
-    raw_table: str,
-    quarantine_table: str,
+    raw_target: str,
+    quarantine_target: str,
     specs: list[ColumnTypeSpec],
 ) -> str:
-    """Generate quarantine table for rows where any cast fails."""
+    """Generate quarantine table for rows where any cast fails.
+
+    ``raw_target`` and ``quarantine_target`` are fully-qualified DuckDB names.
+    """
     checks = []
     for spec in specs:
         col = f'"{spec.column_name}"'
@@ -211,7 +219,10 @@ def _generate_quarantine_sql(
             checks.append(f"(TRY_CAST({col} AS {target}) IS NULL AND {col} IS NOT NULL)")
 
     where = " OR ".join(checks) if checks else "FALSE"
-    return f'CREATE OR REPLACE TABLE "{quarantine_table}" AS SELECT *, CURRENT_TIMESTAMP AS _quarantined_at FROM "{raw_table}" WHERE {where}'
+    return (
+        f"CREATE OR REPLACE TABLE {quarantine_target} AS "
+        f"SELECT *, CURRENT_TIMESTAMP AS _quarantined_at FROM {raw_target} WHERE {where}"
+    )
 
 
 def resolve_types(
@@ -258,10 +269,16 @@ def resolve_types(
     if not table.duckdb_path:
         return Result.fail(f"Table has no DuckDB path: {table_id}")
 
-    raw_table = table.duckdb_path
-    base_name = raw_table.removeprefix("raw_")
-    typed_table = f"typed_{base_name}"
-    quarantine_table = f"quarantine_{base_name}"
+    # Post-DAT-341: Table.duckdb_path stores the bare ``<source>__<table>``
+    # name; raw/typed/quarantine all share the same bare value, the schema
+    # discriminates. Compose FQN targets for cross-layer writes.
+    from dataraum.core.duckdb_naming import schema_for_layer
+    from dataraum.server.storage import LAKE_CATALOG_ALIAS
+
+    bare = table.duckdb_path
+    raw_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
+    typed_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("typed")}."{bare}"'
+    quarantine_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("quarantine")}."{bare}"'
 
     # Select best candidates
     specs = _select_best_candidates(
@@ -293,40 +310,47 @@ def resolve_types(
 
     # Generate and execute SQL
     try:
-        typed_sql = _generate_typed_table_sql(raw_table, typed_table, specs)
+        typed_sql = _generate_typed_table_sql(raw_target, typed_target, specs)
         duckdb_conn.execute(typed_sql)
 
-        quarantine_sql = _generate_quarantine_sql(raw_table, quarantine_table, specs)
+        quarantine_sql = _generate_quarantine_sql(raw_target, quarantine_target, specs)
         duckdb_conn.execute(quarantine_sql)
     except Exception as e:
         logger.error("type_resolution_sql_error", table=table.table_name, error=str(e))
         return Result.fail(f"SQL execution failed: {e}")
 
     # Get row counts
-    total_result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{raw_table}"').fetchone()
+    total_result = duckdb_conn.execute(f"SELECT COUNT(*) FROM {raw_target}").fetchone()
     total_rows = total_result[0] if total_result else 0
-    typed_result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{typed_table}"').fetchone()
+    typed_result = duckdb_conn.execute(f"SELECT COUNT(*) FROM {typed_target}").fetchone()
     typed_rows = typed_result[0] if typed_result else 0
-    quarantine_result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{quarantine_table}"').fetchone()
+    quarantine_result = duckdb_conn.execute(f"SELECT COUNT(*) FROM {quarantine_target}").fetchone()
     quarantine_rows = quarantine_result[0] if quarantine_result else 0
 
     # Create metadata records for typed and quarantine tables
+    from dataraum.server.workspace import get_active_workspace_id
+
+    workspace_id = get_active_workspace_id(session)
+    # Post-DAT-341: all three layer records share the same bare ``duckdb_path``;
+    # ``layer`` discriminates which schema they live in.
     typed_table_record = Table(
         table_id=str(uuid4()),
+        workspace_id=workspace_id,
         source_id=table.source_id,
         table_name=table.table_name,
         layer="typed",
-        duckdb_path=typed_table,
+        duckdb_path=bare,
         row_count=typed_rows,
     )
     session.add(typed_table_record)
 
     quarantine_table_record = Table(
         table_id=str(uuid4()),
+        workspace_id=workspace_id,
         source_id=table.source_id,
         table_name=table.table_name,
         layer="quarantine",
-        duckdb_path=quarantine_table,
+        duckdb_path=bare,
         row_count=quarantine_rows,
     )
     session.add(quarantine_table_record)
@@ -387,7 +411,7 @@ def resolve_types(
             cast_expr = f"TRY_CAST({col} AS {target})"
 
         success_result = duckdb_conn.execute(
-            f'SELECT COUNT(*) FROM "{raw_table}" WHERE {cast_expr} IS NOT NULL OR {col} IS NULL'
+            f"SELECT COUNT(*) FROM {raw_target} WHERE {cast_expr} IS NOT NULL OR {col} IS NULL"
         ).fetchone()
         success = success_result[0] if success_result else 0
         failures = total_rows - success
@@ -468,8 +492,8 @@ def resolve_types(
     return Result.ok(
         TypeResolutionResult(
             typed_table_id=typed_table_record.table_id,
-            typed_table_name=typed_table,
-            quarantine_table_name=quarantine_table,
+            typed_table_name=bare,
+            quarantine_table_name=bare,
             total_rows=total_rows,
             typed_rows=typed_rows,
             quarantined_rows=quarantine_rows,

@@ -82,10 +82,18 @@ class Table(Base):
     )
 
     table_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("workspaces.workspace_id"), nullable=False, index=True
+    )
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.source_id"), nullable=False)
     table_name: Mapped[str] = mapped_column(String, nullable=False)
     layer: Mapped[str] = mapped_column(String, nullable=False)  # 'raw', 'typed', 'quarantine'
-    duckdb_path: Mapped[str | None] = mapped_column(String)  # Path to DuckDB table/parquet
+    # Unqualified DuckDB table name (e.g., ``csv_source__orders``). Schema is
+    # derived from ``layer`` via ``dataraum.core.duckdb_naming.schema_for_layer``;
+    # cross-layer SQL composes the full ``"schema.table"`` form via
+    # ``qualified_table(layer, source.name, table_name)``. The catalog alias
+    # (``lake`` in slice 1) is NOT stored here — it's resolved at query time.
+    duckdb_path: Mapped[str | None] = mapped_column(String)
     row_count: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)

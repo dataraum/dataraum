@@ -49,29 +49,42 @@ def get_slice_table_names(source_id: str, session: Session) -> list[str]:
     return list(session.execute(stmt).scalars().all())
 
 
-def _collect_duckdb_paths(source_id: str, layers: list[str], session: Session) -> list[str]:
-    """Collect DuckDB table names for the given layers before metadata is deleted."""
-    stmt = select(Table.duckdb_path).where(
+def _collect_duckdb_paths(
+    source_id: str, layers: list[str], session: Session
+) -> list[tuple[str, str]]:
+    """Collect ``(layer, duckdb_path)`` pairs for the given layers.
+
+    Post-DAT-341 the schema is derived from the layer via
+    :func:`dataraum.core.duckdb_naming.schema_for_layer`; the drop needs
+    the layer alongside the bare path to construct the right FQN.
+    """
+    stmt = select(Table.layer, Table.duckdb_path).where(
         Table.source_id == source_id,
         Table.layer.in_(layers),
         Table.duckdb_path.is_not(None),
     )
-    return [p for p in session.execute(stmt).scalars().all() if p is not None]
+    return [(layer, path) for layer, path in session.execute(stmt).all() if path is not None]
 
 
 def _drop_duckdb_tables(
-    duckdb_conn: duckdb.DuckDBPyConnection, paths: list[str], layers: list[str]
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    paths: list[tuple[str, str]],
+    layers: list[str],
 ) -> None:
-    """Drop DuckDB tables/views that were collected before metadata cleanup."""
+    """Drop DuckDB tables/views via FQN composed from (layer, bare_path)."""
+    from dataraum.core.duckdb_naming import schema_for_layer
+    from dataraum.server.storage import LAKE_CATALOG_ALIAS
+
     # Enriched, slicing_view, and slice layers create VIEWs, other layers create TABLEs
     view_layers = {"enriched", "slicing_view", "slice"}
     has_views = bool(view_layers & set(layers))
-    for path in paths:
+    for layer, path in paths:
         kind = "VIEW" if has_views else "TABLE"
+        fqn = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer(layer)}."{path}"'
         try:
-            duckdb_conn.execute(f'DROP {kind} IF EXISTS "{path}"')
+            duckdb_conn.execute(f"DROP {kind} IF EXISTS {fqn}")
         except duckdb.Error:
-            logger.debug(f"Could not drop DuckDB {kind} {path}")
+            logger.debug(f"Could not drop DuckDB {kind} {fqn}")
 
 
 def cleanup_phase_cascade(

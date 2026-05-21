@@ -238,7 +238,14 @@ class ImportPhase(BasePhase):
         null_config: Any,
         junk_columns: list[str],
     ) -> PhaseResult:
-        """Load a single file, prefixing the table name with source_name__."""
+        """Load a single file. Loaders write directly into ``lake.raw.<source>__<table>``.
+
+        Post-DAT-341 the loader composes the source-prefixed identifier and
+        writes the DuckDB table into ``lake.raw.*`` via fully-qualified
+        ``CREATE TABLE``. There is no rename / cross-schema move step here —
+        if the loader's CREATE TABLE collides with a pre-existing row, the
+        DuckDB error surfaces directly through ``Result.fail``.
+        """
         suffix = file_path.suffix.lower()
 
         if suffix in _PARQUET_EXTENSIONS:
@@ -246,6 +253,7 @@ class ImportPhase(BasePhase):
             result = pq_loader._load_single_file(
                 file_path=file_path,
                 source_id=source.source_id,
+                source_name=source_name,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
             )
@@ -254,6 +262,7 @@ class ImportPhase(BasePhase):
             result = json_loader._load_single_file(
                 file_path=file_path,
                 source_id=source.source_id,
+                source_name=source_name,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
             )
@@ -262,6 +271,7 @@ class ImportPhase(BasePhase):
             result = csv_loader._load_single_file(
                 file_path=file_path,
                 source_id=source.source_id,
+                source_name=source_name,
                 duckdb_conn=ctx.duckdb_conn,
                 session=ctx.session,
                 null_config=null_config,
@@ -272,72 +282,6 @@ class ImportPhase(BasePhase):
             return PhaseResult.failed(result.error or f"Failed to load {file_path}")
 
         staged_table = result.unwrap()
-
-        # Rename the table in DuckDB and update SQLAlchemy Table record.
-        # The loader creates the DuckDB table as raw_table_name (e.g. "raw_orders")
-        # and the SQLAlchemy Table record as table_name (e.g. "orders").
-        # We rename both to the prefixed form.
-        prefixed_name = f"{source_name}__{staged_table.table_name}"
-        duckdb_name = staged_table.raw_table_name
-
-        # Find the Table record. Loaders add the row to the session but don't
-        # flush. We need a handle for the collision check below; the actual
-        # rename of name + duckdb_path is done via a bulk UPDATE statement
-        # after the rename succeeds (see below) so it works whether the row
-        # is still pending or has been flushed by a prior cycle.
-        table_record: Table | None = ctx.session.get(Table, staged_table.table_id)
-
-        # Check for table name collision (e.g., Orders.csv and orders.csv both → same name)
-        # Check both flushed records (SELECT) and pending objects (session.new)
-        existing_table = ctx.session.execute(
-            select(Table).where(
-                Table.source_id == source.source_id,
-                Table.table_name == prefixed_name,
-            )
-        ).scalar_one_or_none()
-        if existing_table is None:
-            for obj in ctx.session.new:
-                if (
-                    isinstance(obj, Table)
-                    and obj.source_id == source.source_id
-                    and obj.table_name == prefixed_name
-                ):
-                    existing_table = obj
-                    break
-        if existing_table:
-            # Drop the just-created DuckDB table to avoid orphans
-            try:
-                ctx.duckdb_conn.execute(f'DROP TABLE IF EXISTS "{duckdb_name}"')
-            except Exception:
-                pass
-            return PhaseResult.failed(
-                f"Table name collision: '{file_path.name}' produces table name "
-                f"'{prefixed_name}' which already exists from a previous file"
-            )
-
-        try:
-            ctx.duckdb_conn.execute(f'ALTER TABLE "{duckdb_name}" RENAME TO "{prefixed_name}"')
-        except Exception as e:
-            logger.warning(
-                "duckdb_rename_failed", table=duckdb_name, target=prefixed_name, error=str(e)
-            )
-
-        # Persist the new table_name + duckdb_path. The loader adds the Table
-        # row to the session but does not flush, so a bulk UPDATE here would
-        # match zero rows in the DB. Flush first so the INSERT lands, then
-        # update via the ORM identity map — the attribute writes are picked
-        # up by SQLAlchemy's instrumentation and emitted on the next flush
-        # (or commit at session_scope exit).
-        ctx.session.flush()
-        if table_record is None:
-            table_record = ctx.session.get(Table, staged_table.table_id)
-        if table_record is None:
-            raise RuntimeError(
-                f"Loader did not register Table row for {staged_table.table_id} — "
-                "cannot persist the source-prefixed name."
-            )
-        table_record.table_name = prefixed_name
-        table_record.duckdb_path = prefixed_name
 
         return PhaseResult.success(
             outputs={"raw_tables": [str(staged_table.table_id)]},
@@ -412,6 +356,9 @@ class ImportPhase(BasePhase):
             )
         payload = result.value
 
+        from dataraum.server.workspace import get_active_workspace_id
+
+        workspace_id = get_active_workspace_id(ctx.session)
         table_ids: list[str] = []
         total_rows = 0
         for extracted in payload.tables:
@@ -419,6 +366,7 @@ class ImportPhase(BasePhase):
             ctx.session.add(
                 Table(
                     table_id=table_id,
+                    workspace_id=workspace_id,
                     source_id=source.source_id,
                     table_name=extracted.duckdb_table,
                     layer="raw",

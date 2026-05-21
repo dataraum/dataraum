@@ -30,7 +30,7 @@ system_prompt: |
      - Do NOT parse snippet SQL to understand what it does — use the metadata fields
      - If snippets cover what you need: compose your query from those steps (set snippet_id)
      - If no snippets match: use enriched views (enriched_*) for reporting-level queries,
-       or raw/typed tables for row-level investigation
+       or the typed source tables (use names verbatim from <schema_info>) for row-level investigation
      - Explicitly flag when no single table/view covers the join you need
 
   4. WRITE — Generate the SQL as standalone steps:
@@ -201,10 +201,10 @@ user_prompt: |
   steps:
     - step_id: "monthly_revenue"
       snippet_id: "abc-123"
-      sql: "SELECT DATE_TRUNC('month', \"Date\") as period_month, SUM(\"Amount\") as revenue FROM typed_sales GROUP BY 1"
+      sql: "SELECT DATE_TRUNC('month', \"Date\") as period_month, SUM(\"Amount\") as revenue FROM sales GROUP BY 1"
       description: "Monthly revenue from sales"
     - step_id: "monthly_costs"
-      sql: "SELECT DATE_TRUNC('month', \"Date\") as period_month, SUM(\"Cost\") as cost FROM typed_expenses GROUP BY 1"
+      sql: "SELECT DATE_TRUNC('month', \"Date\") as period_month, SUM(\"Cost\") as cost FROM expenses GROUP BY 1"
       description: "Monthly costs from expenses"
 
   final_sql: "SELECT r.period_month, r.revenue, c.cost, r.revenue - c.cost as profit FROM monthly_revenue r JOIN monthly_costs c ON r.period_month = c.period_month ORDER BY r.period_month"

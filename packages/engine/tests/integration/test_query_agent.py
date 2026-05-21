@@ -41,7 +41,7 @@ def _inject_field_mappings():
                     ColumnCandidate(
                         column_id="fake",
                         column_name="Amount",
-                        table_name="typed_small_finance__transactions",
+                        table_name="small_finance__transactions",
                         confidence=0.9,
                     )
                 ],
@@ -104,7 +104,7 @@ class TestQueryAgentEndToEnd:
         """Query agent should execute a count query and return results."""
         _mock_llm_tool_response(
             query_agent,
-            sql="SELECT COUNT(*) AS total_transactions FROM typed_small_finance__transactions",
+            sql="SELECT COUNT(*) AS total_transactions FROM small_finance__transactions",
             summary="Count total number of transactions.",
         )
 
@@ -137,7 +137,7 @@ class TestQueryAgentEndToEnd:
         """Query agent should execute an aggregation query."""
         _mock_llm_tool_response(
             query_agent,
-            sql='SELECT SUM("Amount") AS total_amount FROM typed_small_finance__transactions',
+            sql='SELECT SUM("Amount") AS total_amount FROM small_finance__transactions',
             summary="Calculate total transaction amount.",
         )
 
@@ -166,7 +166,7 @@ class TestQueryAgentEndToEnd:
         """Query result should include a formatted answer string."""
         _mock_llm_tool_response(
             query_agent,
-            sql="SELECT COUNT(*) AS count FROM typed_customers",
+            sql="SELECT COUNT(*) AS count FROM customers",
             summary="Count customers.",
         )
 
@@ -198,7 +198,7 @@ class TestContractIntegration:
         """Default contract should be exploratory_analysis."""
         _mock_llm_tool_response(
             query_agent,
-            sql="SELECT COUNT(*) AS c FROM typed_small_finance__transactions",
+            sql="SELECT COUNT(*) AS c FROM small_finance__transactions",
             summary="Count transactions.",
         )
 
@@ -226,7 +226,7 @@ class TestContractIntegration:
         """Specifying a contract should trigger evaluation."""
         _mock_llm_tool_response(
             query_agent,
-            sql="SELECT COUNT(*) AS c FROM typed_small_finance__transactions",
+            sql="SELECT COUNT(*) AS c FROM small_finance__transactions",
             summary="Count transactions.",
         )
 
@@ -289,7 +289,7 @@ class TestContractIntegration:
         """
         _mock_llm_tool_response(
             query_agent,
-            sql="SELECT COUNT(*) AS c FROM typed_small_finance__transactions",
+            sql="SELECT COUNT(*) AS c FROM small_finance__transactions",
             summary="Count transactions.",
         )
 
@@ -399,7 +399,7 @@ class TestQueryResultMetadata:
         """Query result should include column names from result set."""
         _mock_llm_tool_response(
             query_agent,
-            sql='SELECT COUNT(*) AS total, MIN("Amount") AS min_amount FROM typed_small_finance__transactions',
+            sql='SELECT COUNT(*) AS total, MIN("Amount") AS min_amount FROM small_finance__transactions',
             summary="Transaction stats.",
         )
 

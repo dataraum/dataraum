@@ -85,6 +85,8 @@ After the final phase passes verification, invoke BOTH review agents. Do not ski
 1. **Senior code reviewer** — launch the `senior-code-reviewer` agent. Give it the list of changed files and a summary of what was implemented. Wait for its verdict.
 2. **Spec compliance reviewer** — launch the `spec-compliance-reviewer` agent. Give it the plan/spec and the list of changed files. Wait for its verdict.
 
+**Reviewer cd policy (no need to repeat in each prompt — it lives in the agent definitions):** both reviewers have a "no cd" rule baked in (`.claude/agents/{senior-code-reviewer,spec-compliance-reviewer}.md`). They use absolute paths for `Read`, run `git` from anywhere in the repo, and use `uv --directory <abs>` to scope `uv` to a subpackage. Don't redundantly re-instruct them in every prompt — just give them the review task. If you observe a reviewer running `cd` despite the rule, that's a bug in the agent definition — fix it there, not by patching the prompt.
+
 If either returns NEEDS WORK or BLOCKED:
 - Read the findings carefully
 - Fix what's fixable in this session

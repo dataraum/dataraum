@@ -49,8 +49,11 @@ def run_detector_post_step(
         Number of records created.
     """
     from dataraum.entropy.detectors.base import get_default_registry
+    from dataraum.server.workspace import get_active_workspace_id
     from dataraum.storage import Column as ColumnModel
     from dataraum.storage import Table
+
+    workspace_id = get_active_workspace_id(session)
 
     registry = get_default_registry()
     detector = registry.detectors.get(detector_id)
@@ -99,6 +102,7 @@ def run_detector_post_step(
                         _make_record(
                             source_id=source_id,
                             session_id=session_id,
+                            workspace_id=workspace_id,
                             entropy_obj=obj,
                             table_id=table.table_id,
                             column_id=col.column_id,
@@ -120,6 +124,7 @@ def run_detector_post_step(
                     _make_record(
                         source_id=source_id,
                         session_id=session_id,
+                        workspace_id=workspace_id,
                         entropy_obj=obj,
                         table_id=_resolve_table_id_from_target(
                             obj.target, table_id_by_name, table.table_id
@@ -154,6 +159,7 @@ def run_detector_post_step(
                     _make_record(
                         source_id=source_id,
                         session_id=session_id,
+                        workspace_id=workspace_id,
                         entropy_obj=obj,
                         table_id=ev.fact_table_id,
                         column_id=_extract_column_id(obj),
@@ -244,9 +250,11 @@ def _make_record(
     column_id: str | None,
     *,
     session_id: str,
+    workspace_id: str,
 ) -> EntropyObjectRecord:
     """Create an EntropyObjectRecord from an EntropyObject."""
     return EntropyObjectRecord(
+        workspace_id=workspace_id,
         session_id=session_id,
         source_id=source_id,
         table_id=table_id,

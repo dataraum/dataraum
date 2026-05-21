@@ -560,13 +560,16 @@ def handle_teach(
     except (ValueError, KeyError) as e:
         return {"error": str(e)}
 
-    # Apply and persist
+    # Apply and persist. Post-DAT-341: apply_and_persist resolves config_root
+    # from the active workspace's config_dir itself — callers pass workspace_id.
+    from dataraum.server.workspace import get_active_workspace_id
+
     try:
         records = apply_and_persist(
             source_id,
             [doc],
             session=session,
-            config_root=config_root,
+            workspace_id=get_active_workspace_id(session),
             session_id=session_id,
         )
     except Exception as e:

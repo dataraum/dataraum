@@ -343,11 +343,13 @@ class SlicingPhase(BasePhase):
                 if not target_col_id:
                     continue
 
-                # Build SQL using target table's enriched view
+                # Build SQL using target table's enriched view if present;
+                # otherwise read from the typed table by its bare duckdb_path
+                # (connection USEs ``lake.typed`` so unqualified resolves).
+                # ``duckdb_path`` is always set by the loader/typing phases —
+                # KeyError here means upstream invariant was broken.
                 enriched_view = tdata.get("enriched_duckdb_path")
-                duckdb_table = enriched_view or tdata.get(
-                    "duckdb_path", f"typed_{target_table_name}"
-                )
+                duckdb_table = enriched_view or tdata["duckdb_path"]
 
                 safe_source = agent._sanitize_for_table_name(target_table_name)
                 sql_template = agent._build_sql_template(

@@ -60,10 +60,11 @@ class CSVLoader(LoaderBase):
         try:
             # Use DuckDB to read CSV header and sample
             safe_path = str(path).replace("'", "''")
-            # Throwaway in-memory connection: schema sniffing must NOT write to
-            # the session's DuckLake schema. The session manager's connection
-            # is ``USE``d on ``lake.session_<id>``; using it here would risk
-            # leaving stub tables in the lake. Keep ephemeral. (DAT-323)
+            # Throwaway in-memory connection: schema sniffing must NOT touch
+            # the workspace lake. The shared session manager's connection is
+            # ``USE``d on ``lake.typed`` (post-DAT-341); a sniff CREATE TABLE
+            # there would pollute the workspace-stable typed schema with stub
+            # tables. Keep this ephemeral and unrelated to the lake.
             conn = duckdb.connect(":memory:")
 
             # Read first few rows to get schema
@@ -134,6 +135,7 @@ class CSVLoader(LoaderBase):
             file_result = self._load_single_file(
                 file_path=path,
                 source_id=source_id,
+                source_name=source_config.name,
                 duckdb_conn=duckdb_conn,
                 session=session,
                 null_config=null_config,
@@ -173,6 +175,7 @@ class CSVLoader(LoaderBase):
         self,
         file_path: Path,
         source_id: str,
+        source_name: str,
         duckdb_conn: duckdb.DuckDBPyConnection,
         session: Session,
         null_config: NullValueConfig,
@@ -185,6 +188,8 @@ class CSVLoader(LoaderBase):
         Args:
             file_path: Path to the CSV file
             source_id: ID of the parent source
+            source_name: Logical name of the parent source (used to compose
+                the source-prefixed table identifier in ``lake.raw``).
             duckdb_conn: DuckDB connection
             session: SQLAlchemy session
             null_config: Null value configuration
@@ -193,6 +198,9 @@ class CSVLoader(LoaderBase):
         Returns:
             Result containing StagedTable
         """
+        from dataraum.core.duckdb_naming import schema_for_layer, table_name_for_source
+        from dataraum.server.storage import LAKE_CATALOG_ALIAS
+
         try:
             # Get schema
             temp_config = SourceConfig(
@@ -208,9 +216,11 @@ class CSVLoader(LoaderBase):
             if not columns:
                 return Result.fail("No columns found in CSV")
 
-            # Sanitize table name
-            table_name = self._sanitize_table_name(file_path.stem)
-            raw_table_name = f"raw_{table_name}"
+            # Compose the source-prefixed name. The catalog alias is resolved
+            # here so the loader can write directly into ``lake.raw.*``.
+            file_table_name = self._sanitize_table_name(file_path.stem)
+            bare = table_name_for_source(source_name, file_table_name)
+            raw_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
 
             # Track which columns are junk for later filtering (match on original name)
             junk_set = set(junk_columns) if junk_columns else set()
@@ -243,7 +253,7 @@ class CSVLoader(LoaderBase):
 
             # Create the raw table with normalized column names
             sql = f"""
-                CREATE TABLE "{raw_table_name}" AS
+                CREATE TABLE {raw_target} AS
                 SELECT {", ".join(select_exprs)}
                 FROM read_csv(
                     '{safe_path}',
@@ -257,19 +267,20 @@ class CSVLoader(LoaderBase):
             duckdb_conn.execute(sql)
 
             # Get row count
-            row_count_result = duckdb_conn.execute(
-                f'SELECT COUNT(*) FROM "{raw_table_name}"'
-            ).fetchone()
+            row_count_result = duckdb_conn.execute(f"SELECT COUNT(*) FROM {raw_target}").fetchone()
             row_count = row_count_result[0] if row_count_result else 0
 
             # Create Table record
+            from dataraum.server.workspace import get_active_workspace_id
+
             table_id = str(uuid4())
             table = Table(
                 table_id=table_id,
+                workspace_id=get_active_workspace_id(session),
                 source_id=source_id,
-                table_name=table_name,
+                table_name=bare,
                 layer="raw",
-                duckdb_path=raw_table_name,
+                duckdb_path=bare,
                 row_count=row_count,
             )
             session.add(table)
@@ -294,8 +305,8 @@ class CSVLoader(LoaderBase):
             return Result.ok(
                 StagedTable(
                     table_id=table_id,
-                    table_name=table_name,
-                    raw_table_name=raw_table_name,
+                    table_name=bare,
+                    raw_table_name=bare,
                     row_count=row_count,
                     column_count=actual_column_count,
                 )

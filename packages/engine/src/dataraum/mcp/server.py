@@ -2222,9 +2222,16 @@ def _fetch_schema_tables(session: SASession, table_ids: list[str]) -> list[dict[
             .scalars()
             .all()
         )
+        # ``duckdb_path`` is always populated by the loader / typing path
+        # post-DAT-341; the SQLAlchemy column is still ``str | None`` for
+        # historical reasons, so assert here rather than fall back silently.
+        assert tbl.duckdb_path is not None, (
+            f"Table {tbl.table_id} has no duckdb_path — upstream loader/typing "
+            "invariant broken"
+        )
         schema_tables.append(
             {
-                "name": tbl.duckdb_path or f"typed_{tbl.table_name}",
+                "name": tbl.duckdb_path,
                 "columns": [
                     {"name": c.column_name, "data_type": c.resolved_type or c.raw_type}
                     for c in cols
@@ -3210,7 +3217,7 @@ def _look_column(
 def _look_sample(cursor: Any, table_name: str, n: int) -> dict[str, Any]:
     """Return sample rows from a typed table."""
     try:
-        result = cursor.execute(f'SELECT * FROM "typed_{table_name}" LIMIT {int(n)}')
+        result = cursor.execute(f'SELECT * FROM lake.typed."{table_name}" LIMIT {int(n)}')
         columns = [desc[0] for desc in result.description]
         rows = result.fetchall()
         return {

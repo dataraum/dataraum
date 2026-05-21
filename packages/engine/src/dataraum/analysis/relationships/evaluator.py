@@ -324,9 +324,11 @@ def compute_ri_metrics(
     relationships that weren't in the original candidate set.
 
     Args:
-        from_table: DuckDB path to source table (e.g., "typed_orders")
+        from_table: Fully-qualified DuckDB path to source table
+            (e.g., ``lake.typed."source__orders"`` post-DAT-341).
         from_column: Column name in source table
-        to_table: DuckDB path to target table (e.g., "typed_customers")
+        to_table: Fully-qualified DuckDB path to target table
+            (e.g., ``lake.typed."source__customers"`` post-DAT-341).
         to_column: Column name in target table
         duckdb_conn: DuckDB connection
         cardinality: Optional cardinality to verify (e.g., "one-to-many")

@@ -14,26 +14,26 @@ is no longer the load-bearing scope.
 
 ### dataraum-eval
 
-- **Affects**: every detector that reads typed tables; the pipeline runs end
-  to end against the new substrate (no detector code changes), but
-  observations may shift because:
-  - Table identifiers in DuckDB are now `<source>__<table>` (no `typed_`
-    prefix). Detector evidence strings that previously surfaced
-    `typed_<name>` will now surface `<name>` directly.
-  - The connection USEs `lake.typed`; unqualified reads of typed tables
-    work as before. Detectors that hardcoded `typed_*` or `raw_*` prefixes
-    in their SQL were repaired in the substrate migration (see
-    `pipeline/phases/typing_phase.py`, `analysis/typing/{inference,resolution}.py`).
-- **Calibrate**: run the full calibration suite. Per the
-  CLAUDE.md "calibration is the definition of done" rule, detector recall
-  on injected entropy fixtures must not regress. If a detector drops
-  injections it caught before, it's a real bug in the substrate migration
-  (raw read path most likely — search the detector's SQL for unqualified
-  table references that now resolve against `lake.typed`).
+- **What changed (and what didn't)**: substrate-only refactor. Detector
+  logic is unchanged; data reaching detectors is identical. The schema
+  rename (`lake.session_<id>.typed_<x>` → `lake.typed."<x>"`) is the only
+  surface-level shift, and it shows up in detector evidence strings as
+  `<name>` instead of `typed_<name>` — cosmetic, not score-affecting.
+- **Expected calibration outcome**: identical recall to pre-DAT-341.
+  Eval's known-injection tests are deterministic; any drop in recall
+  is a **bug** (a missed read site where some detector or analysis
+  module still does `FROM "typed_<name>"` and now resolves to an empty
+  schema slot), not "drift" or "expected variation". Investigate the
+  failing detector's SQL — grep for hardcoded `typed_*` / `raw_*`
+  prefixes that the substrate migration missed.
+- **Calibrate**: run the full calibration suite as soon as the API
+  surface lands (`dataraum-eval` calls into the engine via REST —
+  blocked on DAT-344 / E4). Per the CLAUDE.md "calibration is the
+  definition of done" rule, recall must not regress.
 - **Notes**: workspace.db schema gained a `workspace_id` FK on `tables`
   and `entropy_objects`. Existing eval state on disk needs
   `rm -rf ${DATARAUM_HOME}` before the first calibration run.
-- **Status**: pending
+- **Status**: pending (blocked on DAT-344)
 
 ### dataraum-testdata (hints)
 

@@ -498,4 +498,4 @@ The `data.duckdb` database stores the actual data (not metadata):
 | `enriched_{view}` | `enriched_zone1__invoices` | Fact + dimension joined views |
 | `slice_{table}_{col}` | Various | Slice analysis tables |
 
-Query DuckDB data via the `run_sql` MCP tool or `ctx.query()` in Python.
+Query DuckDB data via the `run_sql` MCP tool.

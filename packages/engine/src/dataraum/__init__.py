@@ -1,23 +1,13 @@
 """DataRaum Context Engine.
 
-A rich metadata context engine for AI-driven data analytics.
-
-Example:
-    from dataraum import Context
-
-    ctx = Context("./pipeline_output")
-    ctx.tables                                   # List tables
-    ctx.entropy.summary()                        # Entropy scores
-    ctx.contracts.evaluate("aggregation_safe")   # Contract compliance
-    ctx.actions()                                # Resolution actions
-    ctx.sources.list()                           # Registered sources
-    result = ctx.query("What is the total revenue?")
+A rich metadata context engine for AI-driven data analytics. The engine is
+driven via the MCP tools in `dataraum.mcp` and the FastAPI surface in
+`dataraum.server` / `dataraum.api`; there is no public in-process Python API.
 """
 
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
-from dataraum.context import Context
 from dataraum.core.models.base import Result
 
 try:
@@ -26,7 +16,6 @@ except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
 __all__ = [
-    "Context",
     "Result",
     "__version__",
 ]

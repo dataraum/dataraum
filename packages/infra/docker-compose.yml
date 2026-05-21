@@ -50,6 +50,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - dataraum_lake:/var/lib/dataraum/lake
+      - dataraum_workspace:/var/lib/dataraum/workspace
       - ${HOST_SOURCES_DIR:-../engine/sources}:/var/lib/dataraum/sources:ro
     ports:
       - "127.0.0.1:8000:8000"
@@ -78,3 +79,7 @@ services:
 volumes:
   postgres_data:
   dataraum_lake:
+  # Workspace state — the writable config overlay populated by
+  # bootstrap_workspace (DAT-358). Edits land here and survive
+  # container restart / rebuild.
+  dataraum_workspace:

@@ -4,30 +4,34 @@ Single-engine SQLAlchemy model post-DAT-321: every session bound to one
 workspace Postgres database (workspace tables + per-session tables, the
 latter scoped via ``session_id`` FK).
 
-DuckDB-side post-DAT-323: per-session managers obtain a fresh DuckDB
-connection from the process-wide DuckLake anchor
-(:mod:`dataraum.server.storage`). The anchor must be bootstrapped before any
-per-session manager initializes (FastAPI startup, or the ``lake_anchor``
-test fixture). Each manager's connection has its own ``USE``/search_path
-state but shares the DuckLake catalog (schemas, tables) with every other
-connection to the same named in-memory database.
+DuckDB-side post-DAT-341: managers obtain a fresh DuckDB connection from
+the process-wide DuckLake anchor (:mod:`dataraum.server.storage`). The
+anchor must be bootstrapped before any manager initializes (FastAPI
+startup, or the ``lake_anchor`` test fixture). Each manager's connection
+has its own ``USE``/search_path state but shares the DuckLake catalog
+(schemas, tables) with every other connection to the same named in-memory
+database.
 
-Per-session schema naming: ``lake.session_<session_id_clean>`` where
-``session_id_clean`` is the manager's ``session_id`` with dashes replaced
-by underscores (DuckDB schema names cannot contain dashes unquoted).
+Schema layout (post-DAT-341, workspace-stable): three layer schemas
+``lake.raw`` / ``lake.typed`` / ``lake.quarantine`` are created at
+:func:`dataraum.server.storage.bootstrap_lake` time. The manager's
+connection is ``USE``d on ``lake.typed`` — analysis modules that read
+typed tables unqualified resolve there; loaders + typing path use FQN
+``lake.{layer}."<source>__<table>"`` for cross-layer writes.
 
 Usage:
     from dataraum.core.connections import ConnectionManager, ConnectionConfig
 
     config = ConnectionConfig.for_directory(Path("./output"))
     manager = ConnectionManager(config, session_id="abc-123")
-    manager.initialize()  # CREATE SCHEMA + USE lake.session_abc_123
+    manager.initialize()  # opens DuckDB connection + USEs lake.typed
 
     with manager.session_scope() as session:
         # Use session...
 
     with manager.duckdb_cursor() as cursor:
-        result = cursor.execute("SELECT * FROM raw_orders").fetchdf()
+        # Unqualified reads resolve against lake.typed:
+        result = cursor.execute('SELECT * FROM "src__orders"').fetchdf()
 
     manager.close()  # closes this manager's DuckDB conn; anchor persists
 """
@@ -202,10 +206,12 @@ class ConnectionConfig:
     def for_directory(cls, output_dir: Path, **kwargs: Any) -> ConnectionConfig:
         """Per-session config: workspace Postgres + DuckLake-backed DuckDB.
 
-        SQLAlchemy targets the workspace Postgres engine; the per-session
-        DuckDB connection is obtained from the DuckLake anchor at
-        :meth:`ConnectionManager.initialize` time, scoped to
-        ``lake.session_<id>`` based on the manager's ``session_id``.
+        SQLAlchemy targets the workspace Postgres engine; the DuckDB
+        connection is obtained from the DuckLake anchor at
+        :meth:`ConnectionManager.initialize` time and ``USE``d on
+        ``lake.typed`` — the workspace-stable typed schema (post-DAT-341).
+        The manager's ``session_id`` is no longer the load-bearing scope
+        for DuckDB; it stays for row provenance on per-session tables.
 
         ``output_dir`` is retained for caller signature compatibility but
         no longer drives any DuckDB-side state — the file-backed
@@ -424,12 +430,14 @@ class ConnectionManager:
 
     @contextmanager
     def duckdb_cursor(self) -> Generator[duckdb.DuckDBPyConnection]:
-        """Get a cursor on this manager's per-session DuckDB connection.
+        """Get a cursor on this manager's DuckDB connection.
 
-        Each call returns ``connection.cursor()``. Cursors share connection
-        state (including the session's ``USE lake.session_<id>``) and
-        statement state serializes per DuckDB's Python client; for parallel
-        work across managers, open separate per-session managers.
+        Each call returns a wrapped ``connection.cursor()`` that
+        re-issues ``USE lake.typed`` on every derived cursor (DuckDB's
+        Python API does NOT inherit USE on cursor()). See
+        :class:`_LakeScopedConnection` for the API motivation. Statement
+        state serializes per DuckDB's Python client; for parallel work
+        across managers, open separate per-session managers.
 
         Raises:
             RuntimeError: If manager not initialized or it is workspace-only

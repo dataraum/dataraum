@@ -102,9 +102,7 @@ def bootstrap_workspace(session_factory: SessionFactory) -> Workspace:
         return ws
 
 
-def _pick_or_create_workspace(
-    session_factory: SessionFactory, home_dir: Path
-) -> tuple[str, Path]:
+def _pick_or_create_workspace(session_factory: SessionFactory, home_dir: Path) -> tuple[str, Path]:
     """Return ``(workspace_id, config_dir)`` for the active workspace.
 
     Picks the lowest-``created_at`` existing row (deterministic) or

@@ -357,5 +357,3 @@ def _compute_source_fingerprint(source: dict[str, Any]) -> str:
         json.dumps(source.get("connection_config", {}) or {}, sort_keys=True),
     )
     return hashlib.sha256(json.dumps(normalized).encode()).hexdigest()[:16]
-
-

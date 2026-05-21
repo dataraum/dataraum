@@ -104,9 +104,7 @@ class TestCSVLoader:
         result = loader.load(config, duckdb_conn, session)
         assert result.success
 
-        schema = duckdb_conn.execute(
-            'DESCRIBE lake.raw."customers__customers"'
-        ).fetchall()
+        schema = duckdb_conn.execute('DESCRIBE lake.raw."customers__customers"').fetchall()
 
         # DESCRIBE returns (column_name, column_type, null, key, default, extra)
         for row in schema:

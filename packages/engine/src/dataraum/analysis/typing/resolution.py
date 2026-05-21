@@ -194,8 +194,7 @@ def _generate_typed_table_sql(
             selects.append(f"TRY_CAST({col} AS {target}) AS {col}")
 
     return (
-        f"CREATE OR REPLACE TABLE {typed_target} AS "
-        f"SELECT {', '.join(selects)} FROM {raw_target}"
+        f"CREATE OR REPLACE TABLE {typed_target} AS SELECT {', '.join(selects)} FROM {raw_target}"
     )
 
 
@@ -325,9 +324,7 @@ def resolve_types(
     total_rows = total_result[0] if total_result else 0
     typed_result = duckdb_conn.execute(f"SELECT COUNT(*) FROM {typed_target}").fetchone()
     typed_rows = typed_result[0] if typed_result else 0
-    quarantine_result = duckdb_conn.execute(
-        f"SELECT COUNT(*) FROM {quarantine_target}"
-    ).fetchone()
+    quarantine_result = duckdb_conn.execute(f"SELECT COUNT(*) FROM {quarantine_target}").fetchone()
     quarantine_rows = quarantine_result[0] if quarantine_result else 0
 
     # Create metadata records for typed and quarantine tables
@@ -414,8 +411,7 @@ def resolve_types(
             cast_expr = f"TRY_CAST({col} AS {target})"
 
         success_result = duckdb_conn.execute(
-            f"SELECT COUNT(*) FROM {raw_target} "
-            f"WHERE {cast_expr} IS NOT NULL OR {col} IS NULL"
+            f"SELECT COUNT(*) FROM {raw_target} WHERE {cast_expr} IS NOT NULL OR {col} IS NULL"
         ).fetchone()
         success = success_result[0] if success_result else 0
         failures = total_rows - success

@@ -225,12 +225,10 @@ class TestTypingPhaseSmoke:
 
         for base_name in ["customers", "vendors", "products", "transactions", "payment_methods"]:
             prefixed = f"small_finance__{base_name}"
-            raw_count = harness.query_duckdb(
-                f'SELECT COUNT(*) FROM lake.raw."{prefixed}"'
-            )[0][0]
-            typed_count = harness.query_duckdb(
-                f'SELECT COUNT(*) FROM lake.typed."{prefixed}"'
-            )[0][0]
+            raw_count = harness.query_duckdb(f'SELECT COUNT(*) FROM lake.raw."{prefixed}"')[0][0]
+            typed_count = harness.query_duckdb(f'SELECT COUNT(*) FROM lake.typed."{prefixed}"')[0][
+                0
+            ]
             quarantine_count = harness.query_duckdb(
                 f'SELECT COUNT(*) FROM lake.quarantine."{prefixed}"'
             )[0][0]

@@ -311,9 +311,7 @@ def lake_clean(lake_anchor):
             f"AND schema_name = '{layer_schema}'"
         ).fetchall()
         for (name,) in tables:
-            anchor.execute(
-                f'DROP TABLE IF EXISTS {LAKE_CATALOG_ALIAS}."{layer_schema}"."{name}"'
-            )
+            anchor.execute(f'DROP TABLE IF EXISTS {LAKE_CATALOG_ALIAS}."{layer_schema}"."{name}"')
 
     # Reserved session_* / archive_* namespaces (slice 2): drop wholesale.
     schemas = anchor.execute(

@@ -150,9 +150,7 @@ class TestParquetLoader:
         assert not result.success
         assert "path" in result.error.lower()
 
-    def test_load_single_file(
-        self, test_session, sample_parquet, lake_anchor, lake_clean
-    ):
+    def test_load_single_file(self, test_session, sample_parquet, lake_anchor, lake_clean):
         """Test loading a single Parquet file."""
         from dataraum.server.storage import connect_session
 
@@ -190,9 +188,7 @@ class TestParquetLoader:
         finally:
             conn.close()
 
-    def test_load_preserves_types(
-        self, test_session, sample_parquet, lake_anchor, lake_clean
-    ):
+    def test_load_preserves_types(self, test_session, sample_parquet, lake_anchor, lake_clean):
         """Verify Parquet types are preserved (not all VARCHAR like CSV)."""
         from dataraum.server.storage import connect_session
 
@@ -208,9 +204,7 @@ class TestParquetLoader:
             result = loader.load(config, conn, test_session)
             assert result.success
 
-            schema = conn.execute(
-                'DESCRIBE lake.raw."typed_test__sample"'
-            ).fetchall()
+            schema = conn.execute('DESCRIBE lake.raw."typed_test__sample"').fetchall()
             # DESCRIBE returns (column_name, column_type, null, key, default, extra)
             type_map = {row[0]: row[1] for row in schema}
             assert type_map["id"] == "BIGINT"
@@ -221,9 +215,7 @@ class TestParquetLoader:
         finally:
             conn.close()
 
-    def test_load_normalizes_column_names(
-        self, test_session, tmp_path, lake_anchor, lake_clean
-    ):
+    def test_load_normalizes_column_names(self, test_session, tmp_path, lake_anchor, lake_clean):
         """Test that column names with spaces/special chars are normalized."""
         from dataraum.server.storage import connect_session
 
@@ -250,9 +242,7 @@ class TestParquetLoader:
             result = loader.load(config, conn, test_session)
             assert result.success
 
-            schema = conn.execute(
-                'DESCRIBE lake.raw."special_cols__special_cols"'
-            ).fetchall()
+            schema = conn.execute('DESCRIBE lake.raw."special_cols__special_cols"').fetchall()
             col_names = [row[0] for row in schema]
             assert col_names == ["customer_id", "first_name", "totalamount"]
         finally:
@@ -314,9 +304,7 @@ class TestParquetLoader:
 
             # Check Column records
             columns = (
-                test_session.execute(
-                    select(Column).where(Column.table_id == table.table_id)
-                )
+                test_session.execute(select(Column).where(Column.table_id == table.table_id))
                 .scalars()
                 .all()
             )

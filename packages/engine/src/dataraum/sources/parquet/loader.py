@@ -226,9 +226,7 @@ class ParquetLoader(LoaderBase):
             duckdb_conn.execute(sql)
 
             # Get row count
-            row_count_result = duckdb_conn.execute(
-                f"SELECT COUNT(*) FROM {raw_target}"
-            ).fetchone()
+            row_count_result = duckdb_conn.execute(f"SELECT COUNT(*) FROM {raw_target}").fetchone()
             row_count = row_count_result[0] if row_count_result else 0
 
             # Create Table record

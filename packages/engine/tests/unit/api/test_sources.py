@@ -36,7 +36,7 @@ class _SourceInfoStub:
 
 @pytest.fixture
 def stub_substrate(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Stub DuckLake + Postgres substrate so the lifespan doesn't touch real infra."""
+    """Stub DuckLake + Postgres + workspace bootstrap so the lifespan doesn't touch real infra."""
     monkeypatch.setattr("dataraum.server.app.bootstrap_lake", lambda *a, **kw: None)
     monkeypatch.setattr("dataraum.server.app.teardown_lake", lambda: None)
     monkeypatch.setattr(
@@ -46,6 +46,17 @@ def stub_substrate(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(
         "dataraum.server.app._postgres_probe",
         lambda: {"status": "ok"},
+    )
+    class _StubMgr:
+        session_scope = staticmethod(lambda: None)
+
+    monkeypatch.setattr(
+        "dataraum.server.app._get_workspace_manager",
+        lambda: _StubMgr(),
+    )
+    monkeypatch.setattr(
+        "dataraum.server.app.bootstrap_workspace",
+        lambda *a, **kw: None,
     )
     monkeypatch.setenv("DUCKLAKE_CATALOG_URL", "postgresql://stub@stub/stub")
     monkeypatch.setenv("DUCKLAKE_DATA_PATH", "/tmp/stub-lake")

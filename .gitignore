@@ -15,7 +15,6 @@ data_sources/
 .claire/agent-memory/
 .claude/worktrees/
 .worktrees/
-.claude/.worktree-anchor
 
 # Python
 __pycache__/

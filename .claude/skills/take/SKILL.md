@@ -51,9 +51,6 @@ If anything is wrong, STOP and report. Don't "make it work."
 ```bash
 git fetch origin main
 git worktree add .worktrees/{task-id} -b feat/{task-id}-{slug} origin/main
-
-# Anchor subagent bash to this worktree (see Step 4 for why):
-echo "$CLAUDE_PROJECT_DIR/.worktrees/{task-id}" > "$CLAUDE_PROJECT_DIR/.claude/.worktree-anchor"
 ```
 
 Then call `EnterWorktree` with the absolute path:
@@ -61,8 +58,6 @@ Then call `EnterWorktree` with the absolute path:
 ```
 EnterWorktree(path="$CLAUDE_PROJECT_DIR/.worktrees/{task-id}")
 ```
-
-The anchor file is **written before EnterWorktree** because the orchestrator's `$CLAUDE_PROJECT_DIR` at that point is still the main repo — which is exactly where subagents will look for it (the file is at the main repo's `.claude/.worktree-anchor`, gitignored). After EnterWorktree the orchestrator's `$CLAUDE_PROJECT_DIR` shifts to the worktree, but subagents spawned during this lane still resolve their `$CLAUDE_PROJECT_DIR` to the main repo, so they find the anchor and the hook fires.
 
 This switches the session's working directory AND `$CLAUDE_PROJECT_DIR` to the worktree. Every subsequent `Bash` / `Read` / `Edit` / spawned `Agent` call resolves paths relative to the worktree — no `cd` prefix on every command, no per-command permission prompt for paths outside the orchestrator's view.
 
@@ -92,17 +87,6 @@ The DO NOT change scope **must include**:
 - Any cross-cutting infrastructure not owned by this task
 
 `/implement` runs the senior-code-reviewer and spec-compliance-reviewer at the end. Both must approve before this skill proceeds.
-
-**Subagent bash is auto-anchored to the worktree via the `anchor-subagent-cwd.sh` PreToolUse hook.** The mechanism (one-time setup, already wired):
-
-- `/take` Step 2 writes the worktree's absolute path to `<main-repo>/.claude/.worktree-anchor` (gitignored) before calling EnterWorktree.
-- The `PreToolUse` hook on `Bash` (configured in `.claude/settings.json`) reads that file and, when the call carries an `agent_id` field (subagent), rewrites the bash command via `hookSpecificOutput.updatedInput.command` to prepend `cd <worktree-path> && `.
-- Orchestrator bash passes through unchanged (no `agent_id`).
-- Step 8's exit cleanup deletes the anchor file.
-
-This makes subagent bash deterministic across runs — no more cd-in-prompt directives, no more empty `git diff origin/main` results, no more "sometimes works." Reviewer prompts only need to give the agent the review task; the anchoring happens at the tool boundary.
-
-Background: see [Claude Code issue #12748](https://github.com/anthropics/claude-code/issues/12748) — adding a `cwd` parameter to the Agent tool is requested but not shipped. The hook is the equivalent capability built locally.
 
 ## Step 5: Lane smoke
 
@@ -170,12 +154,6 @@ ExitWorktree(action="keep")
 ```
 
 Returns the session to the orchestrator's main-repo cwd so the next lane / status-board update / `gh pr list` poll operates from the right place. `keep` preserves the worktree on disk (PR is still open against it).
-
-Then clear the subagent anchor so subsequent non-lane subagents (Explore, code reviewers run outside `/take`, etc.) are not silently redirected into the now-closed lane:
-
-```bash
-rm -f "$CLAUDE_PROJECT_DIR/.claude/.worktree-anchor"
-```
 
 Report concisely:
 

@@ -24,9 +24,12 @@ from typing import Any
 
 import yaml
 
-# Module-level override set by set_config_root(). Takes priority over
-# env var and auto-detection when not None.
+# Module-level state. ``_config_root_override`` is the test/override slot
+# that wins over everything. ``_active_workspace_config_dir`` is set by
+# ``dataraum.server.workspace.bootstrap_workspace`` at FastAPI startup and
+# points at the writable workspace overlay under DATARAUM_HOME.
 _config_root_override: Path | None = None
+_active_workspace_config_dir: Path | None = None
 
 
 @lru_cache
@@ -51,10 +54,21 @@ def _find_config_dir() -> Path:
 def _get_config_root() -> Path:
     """Get the config root directory.
 
-    Priority: set_config_root() override > DATARAUM_CONFIG_PATH env var > auto-detection.
+    Priority (highest first):
+        1. ``set_config_root()`` override (tests).
+        2. Active workspace ``config_dir`` set by
+           ``bootstrap_workspace`` at FastAPI startup. Production reads
+           land here once the server has booted.
+        3. ``DATARAUM_CONFIG_PATH`` env var. Points at the read-only
+           baked-in config inside the container; serves as both the
+           bootstrap copy source and a fallback before a workspace
+           exists (e.g. CLI tools, tests that haven't bootstrapped).
+        4. Auto-detection via package layout (dev/CLI fallback).
     """
     if _config_root_override is not None:
         return _config_root_override
+    if _active_workspace_config_dir is not None:
+        return _active_workspace_config_dir
     env_path = os.environ.get("DATARAUM_CONFIG_PATH")
     if env_path:
         return Path(env_path)
@@ -64,8 +78,9 @@ def _get_config_root() -> Path:
 def set_config_root(path: Path) -> None:
     """Override the config root for the current process.
 
-    Used by setup_pipeline() to switch to per-source config after copying
-    the global config to {output_dir}/config/.
+    Top-priority slot — wins over the active-workspace config_dir and the
+    env var. Primarily used by tests that want to point the loader at a
+    fixture config tree. Production code never calls this.
 
     Args:
         path: Absolute path to the config root directory.
@@ -81,6 +96,27 @@ def reset_config_root() -> None:
     """
     global _config_root_override  # noqa: PLW0603
     _config_root_override = None
+
+
+def set_active_workspace_config_dir(path: Path) -> None:
+    """Register the active workspace's writable config overlay.
+
+    Called once per process by ``bootstrap_workspace`` after the
+    workspace row is loaded/created and its ``config_dir`` is
+    populated. From that point on, ``_get_config_root()`` resolves to
+    this path (unless a higher-priority override is set).
+
+    Args:
+        path: Absolute path to ``${DATARAUM_HOME}/workspaces/<id>/config/``.
+    """
+    global _active_workspace_config_dir  # noqa: PLW0603
+    _active_workspace_config_dir = path
+
+
+def reset_active_workspace_for_tests() -> None:
+    """Clear the active workspace pointer. Tests only."""
+    global _active_workspace_config_dir  # noqa: PLW0603
+    _active_workspace_config_dir = None
 
 
 def get_config_file(relative_path: str) -> Path:

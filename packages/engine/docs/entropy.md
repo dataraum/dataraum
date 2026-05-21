@@ -96,17 +96,7 @@ Via MCP:
 > Evaluate the executive_dashboard contract
 ```
 
-Via Python:
-```python
-from dataraum import Context
-
-with Context("./pipeline_output") as ctx:
-    result = ctx.contracts.evaluate("aggregation_safe")
-    print(result["confidence_level"])  # "green", "yellow", "orange", "red"
-    print(result["violations"])        # List of threshold breaches
-```
-
-Via MCP (contract evaluated during the pipeline triggered by `measure`):
+The contract is evaluated during the pipeline triggered by `measure`:
 ```
 begin_session(source="my_data", contract="aggregation_safe")
 measure()
@@ -122,7 +112,7 @@ Per-column readiness is derived from the Bayesian entropy network:
 | **investigate** | Some dimensions have elevated uncertainty |
 | **blocked** | Critical uncertainty — do not use without remediation |
 
-Use `measure` (MCP) or `ctx.entropy.summary()` (Python) to see readiness at column, table, and dataset levels.
+Use the `measure` MCP tool to see readiness at column, table, and dataset levels.
 
 ## Viewing Entropy
 
@@ -130,19 +120,4 @@ Via MCP:
 ```
 > Show me the entropy scores
 > What's the readiness for the orders table?
-```
-
-Via Python:
-```python
-from dataraum import Context
-
-with Context("./pipeline_output") as ctx:
-    # Overall summary
-    summary = ctx.entropy.summary()
-
-    # Per-table detail
-    table_entropy = ctx.entropy.table("orders")
-
-    # Per-column detail with evidence
-    detail = ctx.entropy.details("orders", "amount")
 ```

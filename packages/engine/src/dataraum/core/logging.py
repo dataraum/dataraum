@@ -163,7 +163,6 @@ def configure_logging(
     log_level: str = "INFO",
     log_format: str = "console",
     show_timestamps: bool = True,
-    color: bool = True,
 ) -> None:
     """Configure structured logging for the application.
 
@@ -171,7 +170,6 @@ def configure_logging(
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
         log_format: Output format ("console" for development, "json" for production/cloud)
         show_timestamps: Whether to show timestamps in console mode
-        color: Whether to use colors in console mode
     """
     # Shared processors for all formats
     shared_processors: list[structlog.types.Processor] = [

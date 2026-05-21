@@ -24,14 +24,6 @@ The HTTP MCP transport that v0.2.x exposed is gone — engine logic is being
 extracted into a FastAPI REST surface at `src/dataraum/api/` for the v1
 cockpit. See the project README for current status.
 
-Via Python (programmatic, in-process):
-```python
-from dataraum import Context
-
-ctx = Context("./pipeline_output")
-ctx.run("/path/to/data")
-```
-
 ## Phase Overview
 
 | # | Phase | Purpose | LLM |

@@ -272,36 +272,6 @@ Run as `uvicorn dataraum.server.app:app` or via `docker compose up`. The
 HTTP MCP transport that v0.2.x exposed is gone; engine logic migrates into
 the FastAPI app at `src/dataraum/api/` as the cockpit needs each route.
 
-### Python API
-
-```python
-from dataraum import Context
-
-with Context("./pipeline_output") as ctx:
-    # Metadata
-    ctx.tables                              # Table names
-
-    # Entropy (returns wrapper with Jupyter _repr_html_)
-    ctx.entropy.summary()                   # Overall entropy
-    ctx.entropy.table("orders")             # Per-table
-    ctx.entropy.details("orders", "amount") # Per-column with evidence
-
-    # Contracts
-    ctx.contracts.list()                    # Available contracts
-    ctx.contracts.evaluate("aggregation_safe")
-
-    # Actions
-    ctx.actions(contract="executive_dashboard")
-
-    # Query (requires ANTHROPIC_API_KEY)
-    result = ctx.query("total revenue by month")
-    result.answer                           # Natural language answer
-    result.sql                              # Generated SQL
-
-    # Pipeline execution
-    ctx.run("/path/to/data.csv")            # Run pipeline from notebook
-```
-
 ## LLM Integration
 
 6 of 18 pipeline phases use LLM, plus interactive agents invoked via MCP.

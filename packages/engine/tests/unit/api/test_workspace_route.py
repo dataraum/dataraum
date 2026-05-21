@@ -9,7 +9,7 @@ end-to-end with no real Postgres or DuckLake.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4

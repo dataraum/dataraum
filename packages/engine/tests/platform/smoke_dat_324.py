@@ -31,13 +31,17 @@ from dataraum.core import config as core_config
 from dataraum.core.paths import SOURCES_DIR
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+# Sibling package in the monorepo — docker-compose moved out of the engine
+# package in the v1 restructure (PR #123). Engine-internal anchors
+# (Dockerfile, src/) still resolve relative to _REPO_ROOT.
+_INFRA_DIR = _REPO_ROOT.parent / "infra"
 
 
 # === (1) Path constants vs infra files ===
 
 
 def test_sources_dir_matches_docker_compose_bind_mount() -> None:
-    compose = (_REPO_ROOT / "docker-compose.yml").read_text()
+    compose = (_INFRA_DIR / "docker-compose.yml").read_text()
     # `${HOST_SOURCES_DIR:-./sources}:/var/lib/dataraum/sources:ro`
     assert re.search(
         r"\$\{HOST_SOURCES_DIR.*?\}:" + re.escape(str(SOURCES_DIR)) + r"(?::ro)?\b",
@@ -102,7 +106,16 @@ def test_add_source_picks_up_recipe_from_sources_dir(
 
 
 def test_no_home_dataraum_references_outside_mcp() -> None:
-    """`grep -rn '~/.dataraum\\|DATARAUM_HOME\\|...' src/ --exclude mcp/` returns zero."""
+    """`grep -rn '~/.dataraum\\|DATARAUM_HOME\\|...' src/` returns zero outside the allowlist.
+
+    Allowlist:
+        * ``src/dataraum/mcp/`` — legacy session manager, still uses
+          DATARAUM_HOME for session dirs.
+        * ``src/dataraum/server/workspace.py`` — bootstrap_workspace
+          (DAT-358) reads DATARAUM_HOME as the writable overlay root.
+        * ``src/dataraum/storage/workspace_models.py`` — model docstring
+          mentions DATARAUM_HOME for the same reason.
+    """
     cmd = [
         "grep",
         "-rn",
@@ -112,5 +125,18 @@ def test_no_home_dataraum_references_outside_mcp() -> None:
         "--include=*.py",
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    hits = [line for line in proc.stdout.splitlines() if line and "/src/dataraum/mcp/" not in line]
-    assert hits == [], "Expected zero hits in src/ outside mcp/, got:\n  " + "\n  ".join(hits)
+    allowed_prefixes = (
+        "/src/dataraum/mcp/",
+        "/src/dataraum/server/workspace.py",
+        "/src/dataraum/storage/workspace_models.py",
+        # Docstrings in core/config.py describe the workspace-overlay
+        # resolution priority (DAT-358) — documentation only, no FS
+        # access to ~/.dataraum.
+        "/src/dataraum/core/config.py",
+    )
+    hits = [
+        line
+        for line in proc.stdout.splitlines()
+        if line and not any(prefix in line for prefix in allowed_prefixes)
+    ]
+    assert hits == [], "Expected zero hits in src/ outside allowlist, got:\n  " + "\n  ".join(hits)

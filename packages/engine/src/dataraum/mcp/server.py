@@ -2226,8 +2226,7 @@ def _fetch_schema_tables(session: SASession, table_ids: list[str]) -> list[dict[
         # post-DAT-341; the SQLAlchemy column is still ``str | None`` for
         # historical reasons, so assert here rather than fall back silently.
         assert tbl.duckdb_path is not None, (
-            f"Table {tbl.table_id} has no duckdb_path — upstream loader/typing "
-            "invariant broken"
+            f"Table {tbl.table_id} has no duckdb_path — upstream loader/typing invariant broken"
         )
         schema_tables.append(
             {

@@ -31,6 +31,7 @@ def stub_substrate(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "dataraum.server.app._postgres_probe",
         lambda: {"status": "ok"},
     )
+
     # Workspace bootstrap normally pulls a workspace ConnectionManager
     # (which needs DATABASE_URL) and a config copy. Tests that don't
     # exercise it stub both: the manager getter returns a sentinel

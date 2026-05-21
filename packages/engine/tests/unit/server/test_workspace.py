@@ -204,10 +204,9 @@ def test_bootstrap_reuses_existing_workspace_and_does_not_overwrite(
     second = bootstrap_workspace(session_factory)
 
     assert second.workspace_id == first.workspace_id
-    assert (
-        teach_edit.read_text()
-        == "junk_columns:\n  - id\n# edited by teach\n"
-    ), "second boot overwrote teach edits"
+    assert teach_edit.read_text() == "junk_columns:\n  - id\n# edited by teach\n", (
+        "second boot overwrote teach edits"
+    )
 
 
 def test_bootstrap_picks_lowest_created_at_when_multiple_workspaces(

@@ -47,6 +47,7 @@ def stub_substrate(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "dataraum.server.app._postgres_probe",
         lambda: {"status": "ok"},
     )
+
     class _StubMgr:
         session_scope = staticmethod(lambda: None)
 

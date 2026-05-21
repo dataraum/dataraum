@@ -85,7 +85,7 @@ system_prompt: |
      or joining columns of different types (e.g., VARCHAR vs INTEGER).
   7. NULL handling: Use COALESCE(col, 0) for numeric aggregations that may include NULLs.
   8. Table references: ALWAYS use enriched views (enriched_*) when available in <data_schema>.
-     Do NOT query typed_* tables when enriched views exist — enriched views are pre-joined
+     Do NOT query typed tables directly when enriched views exist — enriched views are pre-joined
      supersets with dimension columns (e.g., enriched_trial_balance has
      chart_of_accounts__account_type). Use categorical dimensions for row-level filtering.
   </duckdb_dialect>

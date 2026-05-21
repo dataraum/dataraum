@@ -150,8 +150,12 @@ class TestParquetLoader:
         assert not result.success
         assert "path" in result.error.lower()
 
-    def test_load_single_file(self, test_duckdb, test_session, sample_parquet):
+    def test_load_single_file(
+        self, test_session, sample_parquet, lake_anchor, lake_clean
+    ):
         """Test loading a single Parquet file."""
+        from dataraum.server.storage import connect_session
+
         loader = ParquetLoader()
         config = SourceConfig(
             name="sample",
@@ -159,30 +163,39 @@ class TestParquetLoader:
             path=str(sample_parquet),
         )
 
-        result = loader.load(config, test_duckdb, test_session)
+        conn = connect_session()
+        try:
+            result = loader.load(config, conn, test_session)
 
-        assert result.success, f"Load failed: {result.error}"
+            assert result.success, f"Load failed: {result.error}"
 
-        staging_result = result.value
-        assert staging_result.source_id is not None
-        assert len(staging_result.tables) == 1
+            staging_result = result.value
+            assert staging_result.source_id is not None
+            assert len(staging_result.tables) == 1
 
-        table = staging_result.tables[0]
-        assert table.table_name == "sample"
-        assert table.raw_table_name == "raw_sample"
-        assert table.row_count == 3
-        assert table.column_count == 5
+            table = staging_result.tables[0]
+            # Post-DAT-341: bare name is ``<source>__<table>``
+            assert table.table_name == "sample__sample"
+            assert table.raw_table_name == "sample__sample"
+            assert table.row_count == 3
+            assert table.column_count == 5
 
-        # Verify table exists in DuckDB
-        tables = test_duckdb.execute("""
-            SELECT table_name FROM information_schema.tables
-            WHERE table_schema = 'main'
-        """).fetchall()
-        table_names = [t[0] for t in tables]
-        assert "raw_sample" in table_names
+            # Verify table exists in lake.raw
+            tables = conn.execute(
+                "SELECT table_name FROM duckdb_tables() "
+                "WHERE database_name = 'lake' AND schema_name = 'raw'"
+            ).fetchall()
+            table_names = [t[0] for t in tables]
+            assert "sample__sample" in table_names
+        finally:
+            conn.close()
 
-    def test_load_preserves_types(self, test_duckdb, test_session, sample_parquet):
+    def test_load_preserves_types(
+        self, test_session, sample_parquet, lake_anchor, lake_clean
+    ):
         """Verify Parquet types are preserved (not all VARCHAR like CSV)."""
+        from dataraum.server.storage import connect_session
+
         loader = ParquetLoader()
         config = SourceConfig(
             name="typed_test",
@@ -190,36 +203,40 @@ class TestParquetLoader:
             path=str(sample_parquet),
         )
 
-        result = loader.load(config, test_duckdb, test_session)
-        assert result.success
+        conn = connect_session()
+        try:
+            result = loader.load(config, conn, test_session)
+            assert result.success
 
-        # Table name comes from file stem (sample.parquet -> raw_sample)
-        schema = test_duckdb.execute("""
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_name = 'raw_sample'
-            ORDER BY ordinal_position
-        """).fetchall()
+            schema = conn.execute(
+                'DESCRIBE lake.raw."typed_test__sample"'
+            ).fetchall()
+            # DESCRIBE returns (column_name, column_type, null, key, default, extra)
+            type_map = {row[0]: row[1] for row in schema}
+            assert type_map["id"] == "BIGINT"
+            assert type_map["name"] == "VARCHAR"
+            assert type_map["amount"] == "DOUBLE"
+            assert type_map["active"] == "BOOLEAN"
+            assert type_map["created_at"] == "DATE"
+        finally:
+            conn.close()
 
-        type_map = dict(schema)
-        assert type_map["id"] == "BIGINT"
-        assert type_map["name"] == "VARCHAR"
-        assert type_map["amount"] == "DOUBLE"
-        assert type_map["active"] == "BOOLEAN"
-        assert type_map["created_at"] == "DATE"
-
-    def test_load_normalizes_column_names(self, test_duckdb, test_session, tmp_path):
+    def test_load_normalizes_column_names(
+        self, test_session, tmp_path, lake_anchor, lake_clean
+    ):
         """Test that column names with spaces/special chars are normalized."""
+        from dataraum.server.storage import connect_session
+
         path = tmp_path / "special_cols.parquet"
-        conn = duckdb.connect()
-        conn.execute(f"""
+        helper = duckdb.connect()
+        helper.execute(f"""
             COPY (
                 SELECT 1::BIGINT AS "Customer ID",
                        'Alice'::VARCHAR AS "First Name",
                        100.0::DOUBLE AS "total-amount"
             ) TO '{path}' (FORMAT PARQUET)
         """)
-        conn.close()
+        helper.close()
 
         loader = ParquetLoader()
         config = SourceConfig(
@@ -228,21 +245,23 @@ class TestParquetLoader:
             path=str(path),
         )
 
-        result = loader.load(config, test_duckdb, test_session)
-        assert result.success
+        conn = connect_session()
+        try:
+            result = loader.load(config, conn, test_session)
+            assert result.success
 
-        schema = test_duckdb.execute("""
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_name = 'raw_special_cols'
-            ORDER BY ordinal_position
-        """).fetchall()
+            schema = conn.execute(
+                'DESCRIBE lake.raw."special_cols__special_cols"'
+            ).fetchall()
+            col_names = [row[0] for row in schema]
+            assert col_names == ["customer_id", "first_name", "totalamount"]
+        finally:
+            conn.close()
 
-        col_names = [c[0] for c in schema]
-        assert col_names == ["customer_id", "first_name", "totalamount"]
-
-    def test_load_missing_file(self, test_duckdb, test_session):
+    def test_load_missing_file(self, test_session, lake_anchor, lake_clean):
         """Test loading a non-existent file."""
+        from dataraum.server.storage import connect_session
+
         loader = ParquetLoader()
         config = SourceConfig(
             name="missing",
@@ -250,12 +269,19 @@ class TestParquetLoader:
             path="nonexistent.parquet",
         )
 
-        result = loader.load(config, test_duckdb, test_session)
-        assert not result.success
-        assert "not found" in result.error.lower()
+        conn = connect_session()
+        try:
+            result = loader.load(config, conn, test_session)
+            assert not result.success
+            assert "not found" in result.error.lower()
+        finally:
+            conn.close()
 
-    def test_sqlalchemy_metadata_created(self, test_duckdb, test_session, sample_parquet):
+    def test_sqlalchemy_metadata_created(
+        self, test_session, sample_parquet, lake_anchor, lake_clean
+    ):
         """Test that SQLAlchemy Table and Column records are created."""
+        from dataraum.server.storage import connect_session
         from dataraum.storage import Column, Source, Table
 
         loader = ParquetLoader()
@@ -265,35 +291,41 @@ class TestParquetLoader:
             path=str(sample_parquet),
         )
 
-        result = loader.load(config, test_duckdb, test_session)
-        assert result.success
+        conn = connect_session()
+        try:
+            result = loader.load(config, conn, test_session)
+            assert result.success
 
-        # Check Source record
-        from sqlalchemy import select
+            # Check Source record
+            from sqlalchemy import select
 
-        source = test_session.execute(
-            select(Source).where(Source.name == "metadata_test")
-        ).scalar_one()
-        assert source.source_type == "parquet"
+            source = test_session.execute(
+                select(Source).where(Source.name == "metadata_test")
+            ).scalar_one()
+            assert source.source_type == "parquet"
 
-        # Check Table record
-        table = test_session.execute(
-            select(Table).where(Table.source_id == source.source_id)
-        ).scalar_one()
-        assert table.layer == "raw"
-        # Table name comes from file stem (sample.parquet -> sample)
-        assert table.table_name == "sample"
+            # Check Table record
+            table = test_session.execute(
+                select(Table).where(Table.source_id == source.source_id)
+            ).scalar_one()
+            assert table.layer == "raw"
+            # Post-DAT-341: table_name is ``<source>__<file_stem>``
+            assert table.table_name == "metadata_test__sample"
 
-        # Check Column records
-        columns = (
-            test_session.execute(select(Column).where(Column.table_id == table.table_id))
-            .scalars()
-            .all()
-        )
-        assert len(columns) == 5
+            # Check Column records
+            columns = (
+                test_session.execute(
+                    select(Column).where(Column.table_id == table.table_id)
+                )
+                .scalars()
+                .all()
+            )
+            assert len(columns) == 5
 
-        # Verify raw_type is set from Parquet (not all VARCHAR)
-        col_types = {c.column_name: c.raw_type for c in columns}
-        assert col_types["id"] == "BIGINT"
-        assert col_types["amount"] == "DOUBLE"
-        assert col_types["active"] == "BOOLEAN"
+            # Verify raw_type is set from Parquet (not all VARCHAR)
+            col_types = {c.column_name: c.raw_type for c in columns}
+            assert col_types["id"] == "BIGINT"
+            assert col_types["amount"] == "DOUBLE"
+            assert col_types["active"] == "BOOLEAN"
+        finally:
+            conn.close()

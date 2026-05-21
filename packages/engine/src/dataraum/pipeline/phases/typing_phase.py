@@ -151,17 +151,28 @@ class TypingPhase(BasePhase):
         Returns:
             Tuple of (typed_table_id, column type decisions)
         """
-        raw_table_name = table.duckdb_path or f"raw_{table.table_name}"
-        typed_table_name = f"typed_{table.table_name}"
+        # Post-DAT-341: Table.duckdb_path is the bare ``<source>__<table>`` form
+        # under the workspace-stable layer schemas. Strongly-typed copy reads
+        # from lake.raw and writes to lake.typed with the same bare name.
+        from dataraum.core.duckdb_naming import schema_for_layer
+        from dataraum.server.storage import LAKE_CATALOG_ALIAS
+
+        if not table.duckdb_path:
+            raise RuntimeError(
+                f"Raw table {table.table_id} has no duckdb_path — loader did not register it"
+            )
+        bare = table.duckdb_path
+        raw_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
+        typed_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("typed")}."{bare}"'
 
         # Create typed table as direct copy (types already correct)
         ctx.duckdb_conn.execute(
-            f'CREATE OR REPLACE TABLE "{typed_table_name}" AS SELECT * FROM "{raw_table_name}"'
+            f"CREATE OR REPLACE TABLE {typed_target} AS SELECT * FROM {raw_target}"
         )
 
         # Get row count
         row_count_result = ctx.duckdb_conn.execute(
-            f'SELECT COUNT(*) FROM "{typed_table_name}"'
+            f"SELECT COUNT(*) FROM {typed_target}"
         ).fetchone()
         row_count = row_count_result[0] if row_count_result else 0
 
@@ -175,7 +186,7 @@ class TypingPhase(BasePhase):
             source_id=table.source_id,
             table_name=table.table_name,
             layer="typed",
-            duckdb_path=typed_table_name,
+            duckdb_path=bare,
             row_count=row_count,
         )
         ctx.session.add(typed_table)

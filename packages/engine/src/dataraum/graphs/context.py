@@ -86,7 +86,7 @@ class TableContext:
 
     table_id: str
     table_name: str
-    duckdb_name: str | None = None  # Actual DuckDB table name (e.g., "typed_sales")
+    duckdb_name: str | None = None  # Actual DuckDB table name (e.g., "sales_csv__orders")
     row_count: int | None = None
     column_count: int = 0
 

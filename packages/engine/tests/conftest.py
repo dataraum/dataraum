@@ -291,14 +291,31 @@ def no_anchor(lake_anchor, lake_catalog_url: str, lake_data_path: str):
 
 @pytest.fixture
 def lake_clean(lake_anchor):
-    """Drop per-session and archived schemas from the lake before each test.
+    """Drop per-test residue from the lake before each test.
 
-    Pairs with ``pg_url_clean`` so test isolation is symmetric across the
-    Postgres workspace and the DuckLake catalog.
+    Post-DAT-341 the workspace-stable layer schemas (``raw`` / ``typed`` /
+    ``quarantine``) survive across tests, so per-test isolation needs to
+    drop the tables INSIDE those schemas rather than dropping the schemas
+    themselves. Reserved ``session_*`` / ``archive_*`` schemas (slice 2)
+    are still dropped wholesale.
     """
-    from dataraum.server.storage import LAKE_CATALOG_ALIAS, get_anchor
+    from dataraum.server.storage import LAKE_CATALOG_ALIAS, LAKE_LAYER_SCHEMAS, get_anchor
 
     anchor = get_anchor()
+
+    # Drop per-test tables in workspace-stable layer schemas.
+    for layer_schema in LAKE_LAYER_SCHEMAS:
+        tables = anchor.execute(
+            "SELECT table_name FROM duckdb_tables() "
+            f"WHERE database_name = '{LAKE_CATALOG_ALIAS}' "
+            f"AND schema_name = '{layer_schema}'"
+        ).fetchall()
+        for (name,) in tables:
+            anchor.execute(
+                f'DROP TABLE IF EXISTS {LAKE_CATALOG_ALIAS}."{layer_schema}"."{name}"'
+            )
+
+    # Reserved session_* / archive_* namespaces (slice 2): drop wholesale.
     schemas = anchor.execute(
         "SELECT schema_name FROM duckdb_schemas() "
         f"WHERE database_name = '{LAKE_CATALOG_ALIAS}' "

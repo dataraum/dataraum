@@ -291,8 +291,13 @@ def analyze_column_drift(
             grain=config.time_grain.value,
         )
 
-        # Get table metadata
-        stmt = select(Table).where(Table.duckdb_path == slice_table_name)
+        # Get table metadata. Post-DAT-341 raw/typed/quarantine share the same
+        # bare ``duckdb_path``; slice tables live in the typed schema, so
+        # constrain by layer to keep the lookup unique.
+        stmt = select(Table).where(
+            Table.duckdb_path == slice_table_name,
+            Table.layer == "slice",
+        )
         table = session.execute(stmt).scalar_one_or_none()
         if not table:
             return Result.fail(f"Table not found: {slice_table_name}")

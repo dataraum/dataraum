@@ -124,6 +124,7 @@ class ParquetLoader(LoaderBase):
             file_result = self._load_single_file(
                 file_path=path,
                 source_id=source_id,
+                source_name=source_config.name,
                 duckdb_conn=duckdb_conn,
                 session=session,
             )
@@ -162,6 +163,7 @@ class ParquetLoader(LoaderBase):
         self,
         file_path: Path,
         source_id: str,
+        source_name: str,
         duckdb_conn: duckdb.DuckDBPyConnection,
         session: Session,
     ) -> Result[StagedTable]:
@@ -173,12 +175,17 @@ class ParquetLoader(LoaderBase):
         Args:
             file_path: Path to the Parquet file
             source_id: ID of the parent source
+            source_name: Logical name of the parent source (used to compose
+                the source-prefixed table identifier in ``lake.raw``).
             duckdb_conn: DuckDB connection
             session: SQLAlchemy session
 
         Returns:
             Result containing StagedTable
         """
+        from dataraum.core.duckdb_naming import schema_for_layer, table_name_for_source
+        from dataraum.server.storage import LAKE_CATALOG_ALIAS
+
         try:
             # Read schema using DuckDB DESCRIBE
             schema = _describe_parquet(file_path, duckdb_conn)
@@ -197,9 +204,12 @@ class ParquetLoader(LoaderBase):
 
                 col_mapping.append((original, normalized, duckdb_type))
 
-            # Sanitize table name
-            table_name = self._sanitize_table_name(file_path.stem)
-            raw_table_name = f"raw_{table_name}"
+            # Compose the source-prefixed name. The catalog alias is resolved
+            # here so the loader can write directly into ``lake.raw.*`` —
+            # avoids a cross-schema move in import_phase.
+            file_table_name = self._sanitize_table_name(file_path.stem)
+            bare = table_name_for_source(source_name, file_table_name)
+            raw_target = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
 
             # Build SELECT with aliasing for normalized names
             select_exprs = [
@@ -209,7 +219,7 @@ class ParquetLoader(LoaderBase):
             # DuckDB reads Parquet natively — preserves types
             safe_path = str(file_path).replace("'", "''")
             sql = f"""
-                CREATE TABLE "{raw_table_name}" AS
+                CREATE TABLE {raw_target} AS
                 SELECT {", ".join(select_exprs)}
                 FROM read_parquet('{safe_path}')
             """
@@ -217,7 +227,7 @@ class ParquetLoader(LoaderBase):
 
             # Get row count
             row_count_result = duckdb_conn.execute(
-                f'SELECT COUNT(*) FROM "{raw_table_name}"'
+                f"SELECT COUNT(*) FROM {raw_target}"
             ).fetchone()
             row_count = row_count_result[0] if row_count_result else 0
 
@@ -229,9 +239,9 @@ class ParquetLoader(LoaderBase):
                 table_id=table_id,
                 workspace_id=get_active_workspace_id(session),
                 source_id=source_id,
-                table_name=table_name,
+                table_name=bare,
                 layer="raw",
-                duckdb_path=raw_table_name,
+                duckdb_path=bare,
                 row_count=row_count,
             )
             session.add(table)
@@ -253,8 +263,8 @@ class ParquetLoader(LoaderBase):
             return Result.ok(
                 StagedTable(
                     table_id=table_id,
-                    table_name=table_name,
-                    raw_table_name=raw_table_name,
+                    table_name=bare,
+                    raw_table_name=bare,
                     row_count=row_count,
                     column_count=len(col_mapping),
                 )

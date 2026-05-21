@@ -996,9 +996,11 @@ class QueryAgent(LLMFeature):
     ) -> dict[str, Any]:
         """Build schema information for prompt.
 
-        Note: Table names are prefixed with 'typed_' to match the actual
-        DuckDB table names. The context stores base names but DuckDB has
-        layer-prefixed tables (typed_*, raw_*, quarantine_*).
+        Post-DAT-341: table names are workspace-stable bare ``<source>__<table>``
+        identifiers. The connection USEs ``lake.typed``, so unqualified SELECTs
+        in generated SQL resolve to the typed schema automatically. Raw and
+        quarantine layers live in sibling schemas (``lake.raw`` / ``lake.quarantine``)
+        and are accessed via FQN when the agent needs them.
         """
         tables = []
         for table_ctx in execution_context.tables:

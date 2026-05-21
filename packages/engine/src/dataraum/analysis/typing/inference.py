@@ -176,11 +176,19 @@ def _infer_column_types(
         Result containing list of TypeCandidate objects
     """
     try:
-        table_name = table.duckdb_path
+        # Post-DAT-341: ``table.duckdb_path`` stores the bare ``<source>__<table>``
+        # name; raw tables live in the workspace ``lake.raw`` schema. Compose the
+        # FQN so reads work regardless of the connection's USE state.
+        from dataraum.core.duckdb_naming import schema_for_layer
+        from dataraum.server.storage import LAKE_CATALOG_ALIAS
+
+        bare = table.duckdb_path
         col_name = column.column_name
 
-        if not table_name or not col_name:
+        if not bare or not col_name:
             return Result.fail("No table or column name found")
+
+        table_name = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer("raw")}."{bare}"'
 
         # Sample values (exclude nulls)
         sample_size = typing_config.get("profile_sample_size", 100_000)

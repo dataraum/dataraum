@@ -110,7 +110,7 @@ class TestImportPhaseSmoke:
             ("small_finance__payment_methods", 10),
             ("small_finance__transactions", 500),
         ]:
-            result = harness.query_duckdb(f'SELECT COUNT(*) FROM "{table_name}"')
+            result = harness.query_duckdb(f'SELECT COUNT(*) FROM lake.raw."{table_name}"')
             actual_rows = result[0][0]
             assert actual_rows == expected_rows, (
                 f"{table_name}: expected {expected_rows}, got {actual_rows}"
@@ -129,7 +129,7 @@ class TestImportPhaseSmoke:
         )
 
         # Get columns for transactions table (which has Unnamed columns)
-        result = harness.query_duckdb('DESCRIBE "small_finance__transactions"')
+        result = harness.query_duckdb('DESCRIBE lake.raw."small_finance__transactions"')
         columns = [row[0] for row in result]
 
         # None of the junk columns should be present
@@ -173,18 +173,13 @@ class TestTypingPhaseSmoke:
         )
         harness.run_phase("typing")
 
-        tables = harness.get_duckdb_tables()
+        # Post-DAT-341: raw/typed/quarantine all share the same bare
+        # ``small_finance__<base>`` name; the layer schema discriminates.
+        raw_tables = harness.get_duckdb_tables(layer="raw")
+        typed_tables = harness.get_duckdb_tables(layer="typed")
+        quarantine_tables = harness.get_duckdb_tables(layer="quarantine")
 
-        # After typing: original tables + typed + quarantine (all prefixed with source name)
-        source_tables = [
-            t
-            for t in tables
-            if t.startswith("small_finance__") and not t.startswith(("typed_", "quarantine_"))
-        ]
-        typed_tables = [t for t in tables if t.startswith("typed_small_finance__")]
-        quarantine_tables = [t for t in tables if t.startswith("quarantine_small_finance__")]
-
-        assert len(source_tables) == 5
+        assert len(raw_tables) == 5
         assert len(typed_tables) == 5
         assert len(quarantine_tables) == 5
 
@@ -201,8 +196,9 @@ class TestTypingPhaseSmoke:
         )
         harness.run_phase("typing")
 
-        # Check transaction table types (typed tables get typed_ prefix from typing phase)
-        columns = harness.query_duckdb('DESCRIBE "typed_small_finance__transactions"')
+        # Post-DAT-341: typed tables live in lake.typed with the same bare
+        # ``<source>__<table>`` name as their raw counterparts.
+        columns = harness.query_duckdb('DESCRIBE lake.typed."small_finance__transactions"')
         col_types = {row[0]: row[1] for row in columns}
 
         # Transaction ID should be integer
@@ -229,10 +225,14 @@ class TestTypingPhaseSmoke:
 
         for base_name in ["customers", "vendors", "products", "transactions", "payment_methods"]:
             prefixed = f"small_finance__{base_name}"
-            raw_count = harness.query_duckdb(f'SELECT COUNT(*) FROM "{prefixed}"')[0][0]
-            typed_count = harness.query_duckdb(f'SELECT COUNT(*) FROM "typed_{prefixed}"')[0][0]
+            raw_count = harness.query_duckdb(
+                f'SELECT COUNT(*) FROM lake.raw."{prefixed}"'
+            )[0][0]
+            typed_count = harness.query_duckdb(
+                f'SELECT COUNT(*) FROM lake.typed."{prefixed}"'
+            )[0][0]
             quarantine_count = harness.query_duckdb(
-                f'SELECT COUNT(*) FROM "quarantine_{prefixed}"'
+                f'SELECT COUNT(*) FROM lake.quarantine."{prefixed}"'
             )[0][0]
 
             # Typed + quarantine should equal raw
@@ -256,7 +256,7 @@ class TestTypingPhaseSmoke:
         # All quarantine tables should be empty for clean data
         for base_name in ["customers", "vendors", "products", "transactions", "payment_methods"]:
             quarantine_count = harness.query_duckdb(
-                f'SELECT COUNT(*) FROM "quarantine_small_finance__{base_name}"'
+                f'SELECT COUNT(*) FROM lake.quarantine."small_finance__{base_name}"'
             )[0][0]
             assert quarantine_count == 0, f"Unexpected quarantine rows in {base_name}"
 

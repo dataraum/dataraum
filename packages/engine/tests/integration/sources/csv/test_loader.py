@@ -78,18 +78,19 @@ class TestCSVLoader:
         assert len(staging_result.tables) == 1
 
         table = staging_result.tables[0]
-        assert table.table_name == "payment_methods"
-        assert table.raw_table_name == "raw_payment_methods"
+        # Post-DAT-341: bare name is ``<source>__<table>``
+        assert table.table_name == "payment_methods__payment_methods"
+        assert table.raw_table_name == "payment_methods__payment_methods"
         assert table.row_count > 0
         assert table.column_count == 3
 
-        # Verify table exists in DuckDB
-        tables = duckdb_conn.execute("""
-            SELECT table_name FROM information_schema.tables
-            WHERE table_schema = 'main'
-        """).fetchall()
+        # Verify table exists in lake.raw
+        tables = duckdb_conn.execute(
+            "SELECT table_name FROM duckdb_tables() "
+            "WHERE database_name = 'lake' AND schema_name = 'raw'"
+        ).fetchall()
         table_names = [t[0] for t in tables]
-        assert "raw_payment_methods" in table_names
+        assert "payment_methods__payment_methods" in table_names
 
     def test_load_all_columns_varchar(self, duckdb_conn, session):
         """Verify all loaded columns are VARCHAR (VARCHAR-first approach)."""
@@ -103,14 +104,13 @@ class TestCSVLoader:
         result = loader.load(config, duckdb_conn, session)
         assert result.success
 
-        schema = duckdb_conn.execute("""
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_name = 'raw_customers'
-            ORDER BY ordinal_position
-        """).fetchall()
+        schema = duckdb_conn.execute(
+            'DESCRIBE lake.raw."customers__customers"'
+        ).fetchall()
 
-        for col_name, data_type in schema:
+        # DESCRIBE returns (column_name, column_type, null, key, default, extra)
+        for row in schema:
+            col_name, data_type = row[0], row[1]
             assert data_type == "VARCHAR", f"Column {col_name} is {data_type}, expected VARCHAR"
 
     def test_load_null_values_recognized(self, duckdb_conn, session):
@@ -126,11 +126,10 @@ class TestCSVLoader:
         assert result.success, f"Load failed: {result.error}"
 
         # Transactions has -- values in customer_name and vendor_name columns
-        null_count = duckdb_conn.execute("""
-            SELECT COUNT(*)
-            FROM raw_transactions
-            WHERE "customer_name" IS NULL
-        """).fetchone()[0]
+        null_count = duckdb_conn.execute(
+            'SELECT COUNT(*) FROM lake.raw."transactions__transactions" '
+            'WHERE "customer_name" IS NULL'
+        ).fetchone()[0]
 
         assert null_count > 0, "Expected some NULL values from -- conversion"
 

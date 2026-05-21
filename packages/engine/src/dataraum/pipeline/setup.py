@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,12 +16,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dataraum.core.config import (
-    _get_config_root,
-    load_phase_config,
-    load_pipeline_config,
-    set_config_root,
-)
+from dataraum.core.config import load_phase_config, load_pipeline_config
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.db_models import PipelineRun
@@ -102,11 +96,10 @@ def setup_pipeline(
             "InvestigationSession id (or the CLI itself is going away — see L6)."
         )
 
-    # 2. Per-source config: copy global config to output_dir on first run
-    _ensure_source_config(output_dir)
-
-    # 2b. Ensure _adhoc vertical scaffold exists (write target for induction + teach)
-    _ensure_adhoc_vertical(output_dir)
+    # 2. Config + _adhoc vertical scaffold live on the workspace overlay
+    # owned by bootstrap_workspace (DAT-358). load_phase_config /
+    # load_pipeline_config below resolve to the active workspace's
+    # config_dir; pipeline setup no longer copies or overrides it.
 
     # 3. Resolve the source spec — either from the registry (MCP) or by
     # registering the path on the fly (CLI). Both yield a `_SourceSpec`.
@@ -364,71 +357,3 @@ def _compute_source_fingerprint(source: dict[str, Any]) -> str:
         json.dumps(source.get("connection_config", {}) or {}, sort_keys=True),
     )
     return hashlib.sha256(json.dumps(normalized).encode()).hexdigest()[:16]
-
-
-def _ensure_source_config(output_dir: Path) -> None:
-    """Copy global config to output_dir/config/ on first run, then activate it.
-
-    On first run, copies the entire global config tree so that fix handlers
-    can write per-source config modifications. Subsequent runs reuse the
-    existing copy (preserving user's fixes).
-
-    Args:
-        output_dir: Pipeline output directory.
-    """
-    source_config = output_dir / "config"
-    if not source_config.exists():
-        global_config = _get_config_root()
-        shutil.copytree(global_config, source_config)
-        logger.debug(
-            "source_config_copied",
-            source=str(global_config),
-            destination=str(source_config),
-        )
-    else:
-        logger.debug("source_config_reused", path=str(source_config))
-
-    # Switch config root so all load_phase_config() etc. read from source copy
-    set_config_root(source_config)
-
-
-def _ensure_adhoc_vertical(output_dir: Path) -> None:
-    """Create the _adhoc vertical scaffold for cold-start sessions.
-
-    The _adhoc vertical is the write target for induction agents (which
-    generate ontology, cycles, validations on cold start) and for teach
-    (which refines them later). Created idempotently on every pipeline setup.
-
-    Structure mirrors config/verticals/{name}/:
-        ontology.yaml, cycles.yaml, validations/, metrics/
-
-    Args:
-        output_dir: Pipeline output directory.
-    """
-    import yaml
-
-    adhoc_dir = output_dir / "config" / "verticals" / "_adhoc"
-    if adhoc_dir.exists():
-        return
-
-    adhoc_dir.mkdir(parents=True)
-
-    # Empty ontology — induction agent populates this
-    ontology = {
-        "name": "_adhoc",
-        "version": "1.0.0",
-        "description": "Auto-generated",
-        "concepts": [],
-    }
-    with open(adhoc_dir / "ontology.yaml", "w") as f:
-        yaml.dump(ontology, f, default_flow_style=False, sort_keys=False)
-
-    # Empty cycles vocabulary
-    with open(adhoc_dir / "cycles.yaml", "w") as f:
-        yaml.dump({"cycle_types": {}}, f, default_flow_style=False, sort_keys=False)
-
-    # Empty directories for validations, metrics
-    (adhoc_dir / "validations").mkdir()
-    (adhoc_dir / "metrics").mkdir()
-
-    logger.debug("adhoc_vertical_created", path=str(adhoc_dir))

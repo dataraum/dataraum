@@ -288,17 +288,13 @@ def create_server(output_dir: Path | None = None) -> Server:
 
         from sqlalchemy import delete
 
-        from dataraum.core.config import reset_config_root
         from dataraum.mcp.db_models import ActiveSession
 
-        # Close session connections before moving files
+        # Close session connections before moving files. Pipeline setup
+        # no longer pushes a per-session config-root override (DAT-358 —
+        # workspace overlay is the single writable config root), so
+        # there's nothing else to reset before archiving.
         _close_session_manager()
-
-        # Clear the per-session config-root override that pipeline setup
-        # pushed via set_config_root(). Without this, a subsequent
-        # begin_session in the same process tries to read vertical config
-        # from the now-archived session path.
-        reset_config_root()
 
         session_dir = _session_dir_for(fingerprint)
         archive_dir = root_dir / "archive" / session_id
@@ -1228,14 +1224,15 @@ def create_server(output_dir: Path | None = None) -> Server:
                     )
         elif name == "teach":
             assert session_mgr is not None and active_session_fp is not None
+            from dataraum.core.config import _get_config_root
             from dataraum.mcp.teach import handle_teach
 
-            # Use session config copy (not global package config).
-            # setup_pipeline copies global config to session_dir/config/.
-            # If pipeline hasn't run yet, config_root is None and config
-            # teaches fail with a clear error.
-            session_config = _session_dir_for(active_session_fp) / "config"
-            teach_config_root = session_config if session_config.is_dir() else None
+            # Post-DAT-358: the active config root is the writable workspace
+            # overlay under ${DATARAUM_HOME}/workspaces/<id>/config/, set
+            # at FastAPI startup by bootstrap_workspace. Teach writes
+            # land there and survive container restart on the mounted
+            # volume.
+            teach_config_root = _get_config_root()
 
             with session_mgr.session_scope() as session:
                 source = _get_pipeline_source(session)

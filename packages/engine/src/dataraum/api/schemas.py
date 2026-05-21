@@ -2,7 +2,25 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
+
+
+class Workspace(BaseModel):
+    """The active workspace metadata.
+
+    Slice 1 has exactly one workspace per server. Table/source counts
+    land in DAT-344 once those models gain a ``workspace_id`` FK.
+    """
+
+    workspace_id: str = Field(..., description="UUID for the workspace.")
+    name: str = Field(..., description="Display name. Defaults to 'default'.")
+    config_dir: str = Field(
+        ...,
+        description="Absolute path to the writable config overlay on the mounted volume.",
+    )
+    created_at: datetime = Field(..., description="When the workspace row was created.")
 
 
 class Source(BaseModel):

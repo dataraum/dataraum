@@ -8,9 +8,40 @@ logic, no agent-shaped presentation. Tests live in
 
 from __future__ import annotations
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session as SASession
 
-from dataraum.api.schemas import Source
+from dataraum.api.schemas import Source, Workspace
+
+
+def get_workspace_service(session: SASession) -> Workspace:
+    """Return the active workspace metadata.
+
+    Picks the lowest-``created_at`` row — the same selector
+    ``bootstrap_workspace`` uses, so the route always sees the row the
+    server activated at startup. Slice 1 has exactly one row.
+
+    Raises:
+        RuntimeError: If no workspace exists. The FastAPI lifespan
+            calls ``bootstrap_workspace`` before serving traffic, so
+            this is an unreachable-in-prod safety net.
+    """
+    from dataraum.storage import Workspace as WorkspaceModel
+
+    row = session.execute(
+        select(WorkspaceModel).order_by(WorkspaceModel.created_at).limit(1)
+    ).scalar_one_or_none()
+    if row is None:
+        raise RuntimeError(
+            "No workspace found. bootstrap_workspace must run at server "
+            "startup before any /api/workspace request is served."
+        )
+    return Workspace(
+        workspace_id=row.workspace_id,
+        name=row.name,
+        config_dir=row.config_dir,
+        created_at=row.created_at,
+    )
 
 
 def list_sources_service(session: SASession) -> list[Source]:

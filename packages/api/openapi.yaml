@@ -3,6 +3,27 @@ info:
   title: DataRaum Control Plane
   version: 0.2.2
 paths:
+  /api/workspace:
+    get:
+      tags:
+      - engine
+      summary: Return the active workspace metadata
+      description: 'Return the active workspace metadata.
+
+
+        Slice 1 has exactly one workspace bootstrapped at server startup.
+
+        Table/source counts land in DAT-344 once those models gain a
+
+        ``workspace_id`` FK.'
+      operationId: get_workspace_api_workspace_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
   /api/sources:
     get:
       tags:
@@ -95,3 +116,36 @@ components:
         \ set the MCP ``list_sources`` tool returned \u2014 same\npublic shape, just\
         \ an HTTP envelope. Sensitive fields (credentials,\nconnection strings) are\
         \ never surfaced."
+    Workspace:
+      properties:
+        workspace_id:
+          type: string
+          title: Workspace Id
+          description: UUID for the workspace.
+        name:
+          type: string
+          title: Name
+          description: Display name. Defaults to 'default'.
+        config_dir:
+          type: string
+          title: Config Dir
+          description: Absolute path to the writable config overlay on the mounted
+            volume.
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+          description: When the workspace row was created.
+      type: object
+      required:
+      - workspace_id
+      - name
+      - config_dir
+      - created_at
+      title: Workspace
+      description: 'The active workspace metadata.
+
+
+        Slice 1 has exactly one workspace per server. Table/source counts
+
+        land in DAT-344 once those models gain a ``workspace_id`` FK.'

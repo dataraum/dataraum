@@ -47,9 +47,14 @@ services:
       DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
       DUCKLAKE_DATA_PATH: /var/lib/dataraum/lake
       DATARAUM_CONFIG_PATH: /opt/dataraum/config
+      # DATARAUM_HOME is the writable workspace state root (DAT-358).
+      # bootstrap_workspace fails loud if it's unset; the mounted volume
+      # (dataraum_workspace) gives it restart persistence.
+      DATARAUM_HOME: /var/lib/dataraum/workspace
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - dataraum_lake:/var/lib/dataraum/lake
+      - dataraum_workspace:/var/lib/dataraum/workspace
       - ${HOST_SOURCES_DIR:-../engine/sources}:/var/lib/dataraum/sources:ro
     ports:
       - "127.0.0.1:8000:8000"
@@ -78,3 +83,7 @@ services:
 volumes:
   postgres_data:
   dataraum_lake:
+  # Workspace state — the writable config overlay populated by
+  # bootstrap_workspace (DAT-358). Edits land here and survive
+  # container restart / rebuild.
+  dataraum_workspace:

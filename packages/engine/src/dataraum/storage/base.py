@@ -50,6 +50,7 @@ def init_database(engine: Engine) -> None:
     from dataraum.query import db_models as _query  # noqa: F401
     from dataraum.query import snippet_models as _snippets  # noqa: F401
     from dataraum.storage import models as _storage  # noqa: F401
+    from dataraum.storage import workspace_models as _workspace  # noqa: F401
 
     import_all_phase_models()
 
@@ -76,6 +77,7 @@ def reset_database(engine: Engine) -> None:
     from dataraum.query import db_models as _query  # noqa: F401
     from dataraum.query import snippet_models as _snippets  # noqa: F401
     from dataraum.storage import models as _storage  # noqa: F401
+    from dataraum.storage import workspace_models as _workspace  # noqa: F401
 
     import_all_phase_models()
 

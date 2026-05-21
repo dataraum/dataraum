@@ -191,44 +191,6 @@ class TestEndSessionFullFlow:
         assert not (tmp_path / "workspace.db").exists()  # never a file
 
     @pytest.mark.asyncio
-    async def test_end_session_resets_config_root_override(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """end_session must clear the per-session config-root override.
-
-        Regression: pipeline setup pushes a session-local config root via
-        set_config_root(). If end_session doesn't reset it, the next
-        begin_session in the same process tries to read vertical config
-        from the now-archived session path and dies with
-        "Config directory not found".
-        """
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
-
-        from dataraum.core.config import _get_config_root, set_config_root
-        from dataraum.mcp.server import create_server
-
-        server = create_server(output_dir=tmp_path)
-
-        csv = tmp_path / "data.csv"
-        csv.write_text("a,b\n1,2\n")
-
-        await self._call(server, "add_source", {"name": "src", "path": str(csv)})
-        await self._call(server, "begin_session", {"source": "src", "intent": "test"})
-
-        # Simulate what pipeline setup does — push a per-session config override.
-        # We do this directly instead of running the pipeline (too heavy for unit).
-        stale_session_config = tmp_path / "sessions" / "fakefp" / "config"
-        stale_session_config.mkdir(parents=True, exist_ok=True)
-        set_config_root(stale_session_config)
-        assert _get_config_root() == stale_session_config
-
-        await self._call(server, "end_session", {"outcome": "delivered", "summary": "ok"})
-
-        # After archive, the override is gone — the next begin_session must not
-        # see the archived path.
-        assert _get_config_root() != stale_session_config
-
-    @pytest.mark.asyncio
     async def test_end_session_without_outcome_rejected_by_schema(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

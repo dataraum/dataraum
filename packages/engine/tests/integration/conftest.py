@@ -6,6 +6,7 @@ real or fixture data, including agent validation fixtures.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -336,8 +337,8 @@ def integration_duckdb(lake_anchor, lake_clean):
     yield wrapped
     try:
         raw_conn.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        warnings.warn(f"Failed to close integration DuckDB connection cleanly: {exc}")
 
 
 @pytest.fixture

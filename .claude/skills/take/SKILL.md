@@ -37,7 +37,7 @@ $ARGUMENTS is a Jira task identifier under DAT-294 (a direct child or a child of
 Before touching any code:
 
 1. **Fetch the task ticket.** Confirm: parent is a DAT-294 phase, status is To Do or In Progress, every `is blocked by` dependency is Done. Surface the blocker list and STOP if any is not Done.
-2. **Check for existing worktree** at `../dataraum-context.worktrees/{task-id}/`. If branch matches `feat/{task-id}-{slug}` → resume it. If branch is something else → STOP and ask. **Note:** worktrees live SIBLING to the main repo (not inside `.worktrees/`) so the orchestrator's `$CLAUDE_PROJECT_DIR` doesn't sweep them and each agent's `$CLAUDE_PROJECT_DIR` is the worktree path itself.
+2. **Check for existing worktree** at `.worktrees/{task-id}/`. If branch matches `feat/{task-id}-{slug}` → resume it. If branch is something else → STOP and ask. **Note:** worktrees live INSIDE the main repo at `.worktrees/{task-id}/` (gitignored). This is load-bearing for the review gate — subagents spawned by `/implement` inherit the orchestrator's `$CLAUDE_PROJECT_DIR` and can only `Read` paths underneath it, so a sibling worktree at `../dataraum-context.worktrees/...` is invisible to them and the review gate fails silently.
 3. **Check for existing PR** via `gh pr list --search "{task-id} in:title"`. If open → the lane is already in flight. STOP and ask.
 4. **Check the status board** `.claude/platform-status.md`. STOP if another active lane claims this task or a contract this task touches.
 5. **Verify the contract is locked, if the task names one.** If the task ticket references a contract artifact (path + sha — e.g., a row on the Platform Contracts page, an `openapi.yaml` sha, a proto file sha), the artifact must be merged on `main`. **If named but not locked, STOP** — open a contract-lock issue instead. Do not start implementation against an unlocked contract; that is the single biggest cause of parallel-merge chaos.
@@ -50,24 +50,25 @@ If anything is wrong, STOP and report. Don't "make it work."
 
 ```bash
 git fetch origin main
-git worktree add ../dataraum-context.worktrees/{task-id} -b feat/{task-id}-{slug} origin/main
+git worktree add .worktrees/{task-id} -b feat/{task-id}-{slug} origin/main
 ```
 
 Then call `EnterWorktree` with the absolute path:
 
 ```
-EnterWorktree(path="/abs/path/to/../dataraum-context.worktrees/{task-id}")
+EnterWorktree(path="$CLAUDE_PROJECT_DIR/.worktrees/{task-id}")
 ```
 
 This switches the session's working directory AND `$CLAUDE_PROJECT_DIR` to the worktree. Every subsequent `Bash` / `Read` / `Edit` / spawned `Agent` call resolves paths relative to the worktree — no `cd` prefix on every command, no per-command permission prompt for paths outside the orchestrator's view.
 
-Worktrees live SIBLING to the main repo (`../dataraum-context.worktrees/{task-id}/`), not inside it. This is load-bearing:
+Worktrees live INSIDE the main repo at `.worktrees/{task-id}/` (gitignored), not as a sibling. Two reasons:
 
-- The orchestrator session's original `$CLAUDE_PROJECT_DIR` = main repo. Its hooks (`ruff format --check .`, etc.) recurse from `.`, which must NOT include the worktrees. Sibling placement gives this for free.
-- After `EnterWorktree`, the session's `$CLAUDE_PROJECT_DIR` = worktree. End-of-turn hooks then scope to this worktree only.
-- No `--exclude` flags, no `.gitignore` hacks. The filesystem layout + `EnterWorktree` do the right thing.
+- **Subagent file access.** Subagents spawned by `/implement` (senior-code-reviewer, spec-compliance-reviewer) inherit the orchestrator session's `$CLAUDE_PROJECT_DIR`, not the EnterWorktree-shifted one. A sibling at `../dataraum-context.worktrees/...` falls outside that root and the harness blocks `Read` against it — the review gate fails silently. Inside-project placement keeps the lane visible.
+- **End-of-turn hook scope.** The hook (`.claude/hooks/end-of-turn-check.sh`) `cd`s into `packages/engine/` before running ruff/mypy/pytest. `.worktrees/` is a sibling of `packages/`, so the hook never recurses into it — no cross-lane pollution. (Historical note: the prior skill version placed worktrees SIBLING to the main repo to dodge a hook that recursed from the project root; the current hook doesn't, so the dodge is no longer needed and now actively breaks the review gate.)
 
-Do NOT use `cd ../dataraum-context.worktrees/...` as a substitute — `Bash` resets cwd between commands and the prefix has to be re-applied every call, which triggers a permission prompt each time.
+Make sure `.worktrees/` is in `.gitignore`. If not, add it before the worktree opens.
+
+Do NOT use `cd .worktrees/...` as a substitute for `EnterWorktree` — `Bash` resets cwd between commands and the prefix has to be re-applied every call, which triggers a permission prompt each time.
 
 All subsequent steps run inside the worktree.
 
@@ -141,7 +142,7 @@ Edit `.claude/platform-status.md` (create if missing) with one row per active la
 ```markdown
 | Task | Worktree | Branch | PR | Contract | Status |
 |---|---|---|---|---|---|
-| {task-id} | ../dataraum-context.worktrees/{task-id} | feat/{task-id}-{slug} | #NN | {contract}@{sha} | smoke green, awaiting review |
+| {task-id} | .worktrees/{task-id} | feat/{task-id}-{slug} | #NN | {contract}@{sha} | smoke green, awaiting review |
 ```
 
 Remove the row when the PR merges. This board is the at-a-glance "all lanes in flight" view for the user.

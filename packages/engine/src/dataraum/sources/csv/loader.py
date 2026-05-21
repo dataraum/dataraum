@@ -263,9 +263,12 @@ class CSVLoader(LoaderBase):
             row_count = row_count_result[0] if row_count_result else 0
 
             # Create Table record
+            from dataraum.server.workspace import get_active_workspace_id
+
             table_id = str(uuid4())
             table = Table(
                 table_id=table_id,
+                workspace_id=get_active_workspace_id(session),
                 source_id=source_id,
                 table_name=table_name,
                 layer="raw",

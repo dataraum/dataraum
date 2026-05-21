@@ -311,8 +311,12 @@ def resolve_types(
     quarantine_rows = quarantine_result[0] if quarantine_result else 0
 
     # Create metadata records for typed and quarantine tables
+    from dataraum.server.workspace import get_active_workspace_id
+
+    workspace_id = get_active_workspace_id(session)
     typed_table_record = Table(
         table_id=str(uuid4()),
+        workspace_id=workspace_id,
         source_id=table.source_id,
         table_name=table.table_name,
         layer="typed",
@@ -323,6 +327,7 @@ def resolve_types(
 
     quarantine_table_record = Table(
         table_id=str(uuid4()),
+        workspace_id=workspace_id,
         source_id=table.source_id,
         table_name=table.table_name,
         layer="quarantine",

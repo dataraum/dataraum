@@ -166,9 +166,12 @@ class TypingPhase(BasePhase):
         row_count = row_count_result[0] if row_count_result else 0
 
         # Create typed Table record
+        from dataraum.server.workspace import get_active_workspace_id
+
         typed_table_id = str(uuid4())
         typed_table = Table(
             table_id=typed_table_id,
+            workspace_id=get_active_workspace_id(ctx.session),
             source_id=table.source_id,
             table_name=table.table_name,
             layer="typed",

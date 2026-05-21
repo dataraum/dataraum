@@ -249,13 +249,23 @@ def integration_engine(pg_url_clean: str) -> Engine:
     from datetime import UTC, datetime
 
     from dataraum.investigation.db_models import InvestigationSession
-    from dataraum.storage import Source
+    from dataraum.storage import Source, Workspace
+
+    from tests.conftest import _TEST_WORKSPACE_ID
 
     engine = create_engine(pg_url_clean, echo=False, future=True)
     init_database(engine)
 
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     with factory() as sess:
+        sess.add(
+            Workspace(
+                workspace_id=_TEST_WORKSPACE_ID,
+                name="integration_baseline",
+                config_dir="/tmp/integration-test-workspace/config",
+            )
+        )
+        sess.flush()
         sess.add(
             Source(
                 source_id="00000000-0000-0000-0000-000000000002",

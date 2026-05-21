@@ -41,6 +41,39 @@ logger = get_logger(__name__)
 SessionFactory = Callable[[], AbstractContextManager[SASession]]
 
 
+def get_active_workspace_id(session: SASession) -> str:
+    """Return the workspace_id of the currently-active workspace.
+
+    Slice 1 invariant: exactly one Workspace row exists per server.
+    Returns the lowest-``created_at`` row (deterministic), matching the
+    selection logic in :func:`_pick_or_create_workspace`. Used by production
+    construction sites (loaders, phases, fix interpreters) that need to
+    stamp ``workspace_id`` on newly-created ``Table`` / ``EntropyObjectRecord``
+    rows.
+
+    Args:
+        session: SQLAlchemy session bound to the workspace Postgres engine.
+
+    Returns:
+        The active workspace's id.
+
+    Raises:
+        RuntimeError: If no Workspace row exists. Bootstrap is expected to
+            have run at server startup; absence here means the lifespan
+            never ran or someone deleted the row mid-process.
+    """
+    row = session.execute(
+        select(Workspace.workspace_id).order_by(Workspace.created_at).limit(1)
+    ).scalar_one_or_none()
+    if row is None:
+        raise RuntimeError(
+            "No active workspace. bootstrap_workspace must run at server "
+            "startup before pipeline/loader code constructs Table or "
+            "EntropyObjectRecord rows."
+        )
+    return row
+
+
 def bootstrap_workspace(session_factory: SessionFactory) -> Workspace:
     """Pick or create the active workspace and activate its config overlay.
 

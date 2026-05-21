@@ -412,6 +412,9 @@ class ImportPhase(BasePhase):
             )
         payload = result.value
 
+        from dataraum.server.workspace import get_active_workspace_id
+
+        workspace_id = get_active_workspace_id(ctx.session)
         table_ids: list[str] = []
         total_rows = 0
         for extracted in payload.tables:
@@ -419,6 +422,7 @@ class ImportPhase(BasePhase):
             ctx.session.add(
                 Table(
                     table_id=table_id,
+                    workspace_id=workspace_id,
                     source_id=source.source_id,
                     table_name=extracted.duckdb_table,
                     layer="raw",

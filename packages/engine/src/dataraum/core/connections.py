@@ -69,18 +69,13 @@ def _resolve_database_url() -> str:
     return url
 
 
-def _session_id_to_schema(session_id: str) -> str:
-    """Convert a UUID-shaped session_id to a DuckDB-safe schema suffix.
-
-    DuckDB unquoted identifiers can't contain dashes, and quoting every USE
-    target is fragile. UUIDs are hex+dashes; replacing dashes with
-    underscores keeps the value reversible and the SQL readable.
-    """
-    return "session_" + session_id.replace("-", "_")
-
-
 class _LakeScopedConnection:
-    """Wrapper that scopes every derived cursor to ``lake.session_<id>``.
+    """Wrapper that scopes every derived cursor to a workspace-stable schema.
+
+    Post-DAT-341 the default scope is ``lake.typed`` — the layer most
+    consumers (analysis, query, look) read from. Loaders and the typing
+    phase issue explicit ``USE lake.<layer>`` or fully-qualified SQL when
+    they need to read/write ``raw`` / ``quarantine``.
 
     DuckDB Python's ``connection.cursor()`` opens a fresh handle whose
     connection state (``USE``/search_path) is the default — it does NOT
@@ -310,51 +305,42 @@ class ConnectionManager:
         )
 
     def bind_session_id(self, session_id: str) -> None:
-        """Assign or update ``session_id`` and (re-)open DuckDB accordingly.
+        """Assign ``session_id`` and open DuckDB on first transition from None.
 
-        Manager construction in flows like ``begin_session`` is chicken-and-egg:
-        a SQLAlchemy session is required to allocate the new
-        ``InvestigationSession.session_id``, but the manager that owns that
-        session has to be opened first — so it is initially opened with
-        ``session_id=None`` (workspace shape). Once the id is in hand, callers
-        bind it here; this opens (or replaces) the per-session DuckDB
-        connection scoped to ``lake.session_<id>``.
+        Post-DAT-341 the DuckDB connection's USE state is workspace-stable
+        (``lake.typed``) — it no longer depends on ``session_id``. The
+        chicken-and-egg dance from begin_session still applies (a SQLAlchemy
+        session is needed to allocate the new ``InvestigationSession.session_id``,
+        but the manager that owns that session has to be opened first), so
+        managers are still opened with ``session_id=None`` and bound later.
 
-        Idempotent when the id is unchanged; closes and reopens the DuckDB
-        connection when a different id is bound (e.g. cache hit on the
-        per-fingerprint session manager after the active session changes).
+        On first bind: opens the DuckDB connection (workspace-only managers
+        skip ``_init_duckdb`` until they get a session). Subsequent re-binds
+        with a different id are field-only — no DuckDB close-and-reopen since
+        the USE scope doesn't change with session_id anymore.
         """
         if self.session_id == session_id and self._duckdb_conn is not None:
             return
+        first_bind = self.session_id is None
         self.session_id = session_id
         if not self._initialized:
             # The DuckDB hook runs as part of initialize(); nothing to do until
             # the manager is actually initialized.
             return
-        # Replace any prior per-session connection (the old USE scope is gone).
-        if self._duckdb_conn is not None:
-            try:
-                self._duckdb_conn.close()
-            except Exception as exc:
-                logger.warning(
-                    "Failed to close existing DuckDB connection while rebinding session_id=%s: %s",
-                    session_id,
-                    exc,
-                )
-            self._duckdb_conn = None
-        self._init_duckdb()
+        if first_bind and self._duckdb_conn is None:
+            self._init_duckdb()
 
     def _init_duckdb(self) -> None:
-        """Open a per-session DuckDB connection on the shared DuckLake anchor.
+        """Open a DuckDB connection scoped to the workspace-stable ``typed`` schema.
 
-        Workspace managers (``session_id is None``) skip this entirely;
-        ``duckdb_cursor()`` will raise on attempted use.
+        Workspace managers that never bind a session (``session_id is None``)
+        skip this; ``duckdb_cursor()`` will raise on attempted use. Slice 1's
+        substrate is workspace-stable, so any manager with a bound session
+        gets the same USE scope: ``lake.typed``.
 
-        For per-session managers, opens a fresh connection to the named
-        in-memory database that holds the DuckLake ATTACH, then creates and
-        ``USE``s the session's schema. The ``USE`` is connection-local —
-        cursors derived from this connection inherit it, but other sessions
-        (each with their own connection) do not.
+        The three layer schemas (``raw``, ``typed``, ``quarantine``) are
+        created at :func:`dataraum.server.storage.bootstrap_lake` time, so
+        this method assumes they already exist — no ``CREATE SCHEMA`` here.
         """
         if self.session_id is None:
             return
@@ -366,11 +352,7 @@ class ConnectionManager:
         raw_conn = connect_session()
         raw_conn.execute(f"SET memory_limit='{self.config.duckdb_memory_limit}'")
 
-        schema_name = _session_id_to_schema(self.session_id)
-        # Quote defensively — keeps the SQL valid if a future session_id format
-        # introduces characters that need escaping.
-        qualified = f'{LAKE_CATALOG_ALIAS}."{schema_name}"'
-        raw_conn.execute(f"CREATE SCHEMA IF NOT EXISTS {qualified}")
+        qualified = f"{LAKE_CATALOG_ALIAS}.typed"
         raw_conn.execute(f"USE {qualified}")
 
         # Wrap so derived cursors carry the same ``USE`` state — see

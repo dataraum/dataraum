@@ -46,10 +46,32 @@ state (schemas, ATTACHed DBs, tables). The anchor keeps the database alive.
 LAKE_CATALOG_ALIAS = "lake"
 """Alias under which the DuckLake catalog is ATTACHed.
 
-Per-session schemas live as ``lake.session_<id>`` and are not renamed at
-end_session — DuckDB does not support ``ALTER SCHEMA RENAME``. Archived
-state lives in the workspace Postgres ``archived_sessions`` row, not in
-the lake schema name.
+Workspace-stable layer schemas (post-DAT-341):
+
+* ``lake.raw`` — VARCHAR-first staging tables (one row per source/table)
+* ``lake.typed`` — type-resolved tables (the default ``USE`` target)
+* ``lake.quarantine`` — failed type-cast rows
+
+These three schemas survive across all sessions for a given workspace and
+are created at :func:`bootstrap_lake` time.
+
+Reserved namespace (do not create dynamically as a workspace schema):
+
+* ``session_*`` — reserved for slice 2 (DAT-356) per-session overlay schemas
+* ``archive_*`` — reserved for slice 2 archived-session schemas
+
+Per-workspace catalog migration: ``LAKE_CATALOG_ALIAS`` is the single point
+where the alias is encoded. If slice 2+ moves to per-workspace ATTACH
+aliases (e.g. ``lake_<workspace_id>``), only the ATTACH and consumers that
+build FQNs from this constant need to change — the layer schemas themselves
+stay workspace-stable.
+"""
+
+LAKE_LAYER_SCHEMAS: tuple[str, ...] = ("raw", "typed", "quarantine")
+"""Workspace-stable layer schemas created at bootstrap.
+
+Kept in sync with :mod:`dataraum.core.duckdb_naming`'s ``_LAYER_SCHEMA``
+mapping; any new layer that earns its own schema must be added to both.
 """
 
 _PG_POOL_MAX_DEFAULT = 64
@@ -175,6 +197,12 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
                 "SELECT 1 FROM duckdb_schemas() "
                 f"WHERE database_name = '{LAKE_CATALOG_ALIAS}' LIMIT 1"
             )
+            # Materialize the workspace-stable layer schemas. Idempotent — every
+            # bootstrap re-asserts the same set, which lets the schemas survive
+            # process restarts and lets new layers added in future versions
+            # appear on next boot without a separate migration step.
+            for layer_schema in LAKE_LAYER_SCHEMAS:
+                conn.execute(f'CREATE SCHEMA IF NOT EXISTS {LAKE_CATALOG_ALIAS}."{layer_schema}"')
         except Exception as e:
             raise RuntimeError(
                 f"DuckLake bootstrap failed (catalog_url={catalog_url}, data_path={data_path}): {e}"
@@ -268,6 +296,7 @@ def health_probe() -> dict[str, str]:
 __all__ = [
     "LAKE_DB_NAME",
     "LAKE_CATALOG_ALIAS",
+    "LAKE_LAYER_SCHEMAS",
     "bootstrap_lake",
     "get_anchor",
     "connect_session",

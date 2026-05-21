@@ -18,7 +18,6 @@ import pytest
 from dataraum.core.connections import (
     ConnectionConfig,
     ConnectionManager,
-    _session_id_to_schema,
 )
 
 
@@ -88,46 +87,45 @@ class TestForWorkspace:
             manager.close()
 
 
-class TestSessionIdToSchema:
-    """``_session_id_to_schema`` converts a session_id to a DuckDB-safe suffix."""
+class TestWorkspaceTypedDuckLake:
+    """Per-session managers open a DuckDB connection scoped to ``lake.typed``.
 
-    def test_uuid_dashes_replaced(self):
-        assert (
-            _session_id_to_schema("a1b2c3d4-1111-2222-3333-aaaabbbbcccc")
-            == "session_a1b2c3d4_1111_2222_3333_aaaabbbbcccc"
-        )
+    Post-DAT-341 the substrate is workspace-stable — all session managers
+    USE the same workspace schemas (``raw`` / ``typed`` / ``quarantine``)
+    rather than per-session schemas keyed off ``session_id``. The
+    ``session_id`` field still exists for non-DuckDB row scoping; it just
+    no longer drives the DuckDB connection's USE state.
+    """
 
-    def test_no_dashes_pass_through(self):
-        assert _session_id_to_schema("simple") == "session_simple"
+    def test_bootstrap_creates_layer_schemas(self, lake_anchor, lake_clean) -> None:
+        """raw / typed / quarantine schemas exist after bootstrap_lake."""
+        from dataraum.server.storage import LAKE_CATALOG_ALIAS, LAKE_LAYER_SCHEMAS, get_anchor
 
+        anchor = get_anchor()
+        rows = anchor.execute(
+            "SELECT schema_name FROM duckdb_schemas() "
+            f"WHERE database_name = '{LAKE_CATALOG_ALIAS}' "
+            f"AND schema_name IN ({','.join(repr(s) for s in LAKE_LAYER_SCHEMAS)})"
+        ).fetchall()
+        assert sorted(r[0] for r in rows) == sorted(LAKE_LAYER_SCHEMAS)
 
-class TestPerSessionDuckLake:
-    """Per-session managers open a DuckLake-backed DuckDB on initialize()."""
-
-    def test_initialize_creates_and_uses_lake_schema(self, lake_anchor, lake_clean) -> None:
+    def test_initialize_uses_typed_schema(self, lake_anchor, lake_clean) -> None:
+        """The manager's cursor lands unqualified CREATE TABLEs in lake.typed."""
         from dataraum.server.storage import LAKE_CATALOG_ALIAS, get_anchor
 
-        sid = "11111111-2222-3333-4444-555555555555"
-        manager = ConnectionManager(ConnectionConfig.for_workspace(), session_id=sid)
+        manager = ConnectionManager(
+            ConnectionConfig.for_workspace(),
+            session_id="11111111-2222-3333-4444-555555555555",
+        )
         manager.initialize()
         try:
-            schema = _session_id_to_schema(sid)
-            anchor = get_anchor()
-            rows = anchor.execute(
-                "SELECT schema_name FROM duckdb_schemas() "
-                f"WHERE database_name = '{LAKE_CATALOG_ALIAS}' "
-                f"AND schema_name = '{schema}'"
-            ).fetchall()
-            assert rows == [(schema,)]
-
-            # The manager's cursor inherits USE → unqualified CREATE TABLE
-            # lands in the session schema.
             with manager.duckdb_cursor() as cursor:
                 cursor.execute("CREATE TABLE marker (x INT)")
+            anchor = get_anchor()
             tables = anchor.execute(
                 "SELECT table_name FROM duckdb_tables() "
                 f"WHERE database_name = '{LAKE_CATALOG_ALIAS}' "
-                f"AND schema_name = '{schema}'"
+                "AND schema_name = 'typed'"
             ).fetchall()
             assert ("marker",) in tables
         finally:
@@ -136,8 +134,10 @@ class TestPerSessionDuckLake:
     def test_close_does_not_close_the_anchor(self, lake_anchor, lake_clean) -> None:
         from dataraum.server.storage import get_anchor, health_probe
 
-        sid = "abcdabcd-0000-0000-0000-000000000001"
-        manager = ConnectionManager(ConnectionConfig.for_workspace(), session_id=sid)
+        manager = ConnectionManager(
+            ConnectionConfig.for_workspace(),
+            session_id="abcdabcd-0000-0000-0000-000000000001",
+        )
         manager.initialize()
         manager.close()
 
@@ -145,8 +145,15 @@ class TestPerSessionDuckLake:
         assert get_anchor() is not None
         assert health_probe() == {"status": "ok"}
 
-    def test_two_sessions_isolated_via_use(self, lake_anchor, lake_clean) -> None:
-        """Two per-session managers see only their own schema via unqualified DDL."""
+    def test_two_session_managers_share_typed_schema(self, lake_anchor, lake_clean) -> None:
+        """Two per-session managers both USE lake.typed and see each other's tables.
+
+        Post-DAT-341 there is no schema-level isolation between sessions —
+        the substrate is workspace-stable. Row-level scoping (``workspace_id``
+        on Table / EntropyObjectRecord) is the new isolation mechanism;
+        slice 2's session overlays will live under reserved ``session_*``
+        schemas, not in the ``typed`` schema itself.
+        """
         a = ConnectionManager(
             ConnectionConfig.for_workspace(),
             session_id="aaaaaaaa-0000-0000-0000-000000000001",
@@ -159,27 +166,16 @@ class TestPerSessionDuckLake:
         b.initialize()
         try:
             with a.duckdb_cursor() as ca:
-                ca.execute("CREATE TABLE only_a (x INT)")
+                ca.execute("CREATE TABLE shared_marker (x INT)")
+            # Manager B's unqualified SELECT resolves against lake.typed too —
+            # it sees what manager A just created.
             with b.duckdb_cursor() as cb:
-                cb.execute("CREATE TABLE only_b (x INT)")
-
-            # Querying unqualified should resolve to each session's schema.
-            with a.duckdb_cursor() as ca:
-                rows_a = ca.execute(
+                rows = cb.execute(
                     "SELECT table_name FROM duckdb_tables() "
                     "WHERE schema_name = current_schema() "
                     "AND database_name = 'lake'"
                 ).fetchall()
-            with b.duckdb_cursor() as cb:
-                rows_b = cb.execute(
-                    "SELECT table_name FROM duckdb_tables() "
-                    "WHERE schema_name = current_schema() "
-                    "AND database_name = 'lake'"
-                ).fetchall()
-            assert ("only_a",) in rows_a
-            assert ("only_b",) in rows_b
-            assert ("only_b",) not in rows_a
-            assert ("only_a",) not in rows_b
+            assert ("shared_marker",) in rows
         finally:
             a.close()
             b.close()

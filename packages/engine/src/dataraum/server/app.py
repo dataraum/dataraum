@@ -142,17 +142,17 @@ async def _not_implemented(verb: str) -> JSONResponse:
 
 
 async def measure(_request: Request) -> JSONResponse:
-    """measure SSE verb — stub until Phase 2 lands the pipeline-runner SSE."""
+    """Measure SSE verb — stub until Phase 2 lands the pipeline-runner SSE."""
     return await _not_implemented("measure")
 
 
 async def query(_request: Request) -> JSONResponse:
-    """query Arrow verb — stub until Phase 1 lands the read surface."""
+    """Query Arrow verb — stub until Phase 1 lands the read surface."""
     return await _not_implemented("query")
 
 
 async def probe(_request: Request) -> JSONResponse:
-    """probe read-only SQL verb — stub until Phase 2 lands add_source."""
+    """Probe read-only SQL verb — stub until Phase 2 lands add_source."""
     return await _not_implemented("probe")
 
 

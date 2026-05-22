@@ -12,9 +12,6 @@ dist-ssr
 __unconfig*
 todos.json
 
-# Drizzle Kit migration output
-drizzle/
-
 # Contracts cache — fetched openapi.yaml from dataraum-api by sync-contracts.
 # The pinned SHA in contracts.lock + the generated src/api/types.ts are the
 # committed artifacts; the cache itself is regenerated on every sync.

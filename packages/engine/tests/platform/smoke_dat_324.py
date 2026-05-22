@@ -112,9 +112,7 @@ def test_no_home_dataraum_references_outside_mcp() -> None:
         * ``src/dataraum/mcp/`` — legacy session manager, still uses
           DATARAUM_HOME for session dirs.
         * ``src/dataraum/server/workspace.py`` — bootstrap_workspace
-          (DAT-358) reads DATARAUM_HOME as the writable overlay root.
-        * ``src/dataraum/storage/workspace_models.py`` — model docstring
-          mentions DATARAUM_HOME for the same reason.
+          reads DATARAUM_HOME as the writable overlay root.
     """
     cmd = [
         "grep",
@@ -128,7 +126,6 @@ def test_no_home_dataraum_references_outside_mcp() -> None:
     allowed_prefixes = (
         "/src/dataraum/mcp/",
         "/src/dataraum/server/workspace.py",
-        "/src/dataraum/storage/workspace_models.py",
         # Docstrings in core/config.py describe the workspace-overlay
         # resolution priority (DAT-358) — documentation only, no FS
         # access to ~/.dataraum.

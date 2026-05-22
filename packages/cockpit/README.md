@@ -1,10 +1,10 @@
 # cockpit
 
-The DataRaum cockpit — TanStack Start app that hosts the chat surface and renders the agentic UI. One of four packages in the [dataraum](https://github.com/dataraum/dataraum) monorepo (`engine`, `api`, `cockpit`, `infra`).
+The DataRaum cockpit — TanStack Start app that hosts the chat surface and renders the agentic UI. One of three packages in the [dataraum](https://github.com/dataraum/dataraum) monorepo (`engine`, `cockpit`, `infra`).
 
 ## Status
 
-Sources list lands (v1 plan step 4); `/api/chat` lands in step 6. See [Cockpit + Engine REST: v1 plan](https://real-dataraum.atlassian.net/wiki/spaces/DD/pages/22872066).
+Read surfaces (sources, tables, snippets) land in Phase 1 of the [DAT-339 pivot](https://real-dataraum.atlassian.net/wiki/spaces/DD/pages/23363586) — wired via Drizzle direct against the engine's metadata schema. The chat surface (`/api/chat`) streams via the Anthropic SDK; tool wiring lands alongside the read surfaces in Phase 1+.
 
 ## Stack
 
@@ -13,7 +13,7 @@ Sources list lands (v1 plan step 4); `/api/chat` lands in step 6. See [Cockpit +
 - **Mantine v9** — component library
 - **Tailwind CSS v4** — utility + layout alongside Mantine
 - **Lucide React** — icons
-- **Drizzle ORM** + `postgres` — `cockpit_db` (own database in the shared Postgres instance; holds chat history + UI state)
+- **Drizzle ORM** + `postgres` — two clients: `cockpit_db` (own database, holds chat history + UI state) and the engine's `ws_<workspace_id>` metadata schema (introspected via `pnpm db:pull:metadata`)
 - **Biome** — lint + format (no ESLint, no Prettier)
 - **Vitest** — tests
 - **TypeScript** only, strict
@@ -23,55 +23,59 @@ The full ecosystem pick (TanStack AI, xyflow, ECharts, CodeMirror, sql-formatter
 ## Architecture
 
 ```
-Browser  ──── direct fetch / EventSource ────→  Python FastAPI (engine REST)
-   │
-   └─── /api/chat (SSE, AG-UI)  ────→  TanStack Start (this app)
-                                          ├── Anthropic streaming
-                                          ├── Tool registry (TS fns wrapping engine REST)
-                                          ├── AG-UI emitter (TanStack AI native)
-                                          └── cockpit_db (Drizzle → shared Postgres)
+Browser  ──── /api/chat (SSE) ────→  TanStack Start (this app)
+                                       ├── Anthropic streaming
+                                       ├── Tool registry (TS fns calling kernel verbs + metadata Drizzle)
+                                       └── cockpit_db (Drizzle → shared Postgres)
+
+TanStack Start ──── metadata reads ───────→  engine's ws_<id> schema  (Drizzle, src/db/metadata/)
+               ──── /measure SSE, /query Arrow, /probe SQL ───→  Starlette kernel (engine REST)
 ```
 
-The browser direct-fetches the Python engine REST for everything that isn't chat (sources, sessions, snippets, pipeline SSE). Only `/api/chat` goes through TanStack Start's server functions.
+The engine exposes three verbs (`/measure`, `/query`, `/probe`) plus `/health` over a Starlette shell. Metadata is consumed directly via Drizzle introspection — no OpenAPI, no codegen anymore (retired in the DAT-339 pivot).
 
 ## Sibling packages
 
-- `../engine` — Python engine + FastAPI shell at `src/dataraum/api/`
-- `../api` — OpenAPI contract (`openapi.yaml`, regenerated from engine)
+- `../engine` — Python engine + Starlette kernel shell at `src/dataraum/server/`
 - `../infra` — docker-compose orchestrating engine + cockpit + postgres
 
 ## Develop
 
 ```bash
 cp .env.example .env
-# fill in COCKPIT_DATABASE_URL pointing at cockpit_db
+# fill in COCKPIT_DATABASE_URL + METADATA_DATABASE_URL + DATARAUM_WORKSPACE_ID
 pnpm install
-pnpm codegen
 pnpm dev
 ```
 
 Dev server runs on http://localhost:3000.
 
+If the engine adds or changes SQLAlchemy models, refresh the metadata client:
+
+```bash
+DATARAUM_WORKSPACE_ID=<id> METADATA_DATABASE_URL=<url> pnpm db:pull:metadata
+```
+
 ## Scripts
 
 ```bash
-pnpm dev       # vite dev server
-pnpm build     # production build
-pnpm preview   # serve the production build locally
-pnpm test      # vitest
-pnpm check     # biome check (lint + format)
-pnpm lint      # biome lint
-pnpm format    # biome format
+pnpm dev                  # vite dev server
+pnpm build                # production build
+pnpm preview              # serve the production build locally
+pnpm test                 # vitest
+pnpm check                # biome check (lint + format)
+pnpm lint                 # biome lint
+pnpm format               # biome format
+pnpm db:pull:metadata     # introspect engine's ws_<id> schema → src/db/metadata/
+pnpm db:generate:cockpit  # cockpit_db migration SQL from src/db/cockpit/schema.ts
+pnpm db:push:cockpit      # push schema directly to cockpit_db
 ```
 
-## Drizzle (cockpit_db)
+## Drizzle layout
 
-```bash
-# Generate migrations from schema changes
-pnpm exec drizzle-kit generate
+Two clients in one package:
 
-# Push migrations to cockpit_db
-pnpm exec drizzle-kit push
-```
+- `src/db/cockpit/{schema,client}.ts` — hand-written cockpit_db (push/generate target)
+- `src/db/metadata/{schema,relations,client}.ts` — generated from the engine substrate by `pnpm db:pull:metadata`; the cockpit reads, never pushes
 
-`src/db/schema.ts` is the source of truth. Tables land here as they're needed — conversations + conversation_messages land in step 6.
+Cockpit_db tables land as they're needed (conversations + conversation_messages are the next addition).

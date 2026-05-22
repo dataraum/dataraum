@@ -129,7 +129,7 @@ function Chat() {
     <Stack p="xl" gap="md" style={{ maxWidth: 800 }}>
       <Title order={1}>Chat</Title>
       <Text c="dimmed">
-        First end-to-end agent turn. One tool: <Code>list_sources</Code>.
+        Single-pass text stream. Tools land in Phase 1 of the DAT-339 pivot.
       </Text>
 
       {error && (

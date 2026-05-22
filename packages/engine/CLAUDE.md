@@ -179,6 +179,10 @@ The line: bundle anything S-size and Light (see above). Keep Heavy items (behavi
 
 ### Contracts-first for DAT-294 platform work
 
+> **Superseded by the DAT-339 pivot.** The pre-pivot model (gRPC executors, OpenAPI for `/api/*`, generated TS types, locked Platform Contracts page) is no longer how DAT-294 ships. v1 is a 3-verb Starlette kernel + cockpit-owned hand-written TS data tools; there is no OpenAPI, no protos, no codegen.
+>
+> See `.claude/dat339-pivot-status.md` for the locked decisions + phase chain. The block below is kept for historical context only — do **not** treat it as a guideline.
+
 The DAT-294 platform splits the codebase into parallel work streams (control plane, executors, frontend, observability, chat BFF). Parallel work without locked contracts produces merge mush. The rule:
 
 - **No implementation work starts on a platform phase until its contract is locked** on the [Platform Contracts](https://real-dataraum.atlassian.net/wiki/spaces/DD/pages/18972674/Platform+Contracts) page.
@@ -428,7 +432,7 @@ Check [Jira](https://real-dataraum.atlassian.net/jira/software/projects/DAT/boar
 - **Ontologies as configuration** — Domain ontologies (financial_reporting, marketing, etc.) are YAML configs that map column patterns to business terms, define computable metrics, and guide semantic interpretation.
 - **Pipeline measures, doesn't interpret** — Pipeline runs detectors as post-steps. Interpretation (why, hypothesize) happens interactively via MCP tools. No gate phases.
 - **BBN readiness replaces LLM quality grades** — Per-column readiness (ready/investigate/blocked) via Bayesian network. `column_quality` detector retired (was circular with BBN).
-- **MCP code retained, transport retired** — `src/dataraum/mcp/server.py` still holds the 12-tool engine logic; the HTTP MCP mount is gone (v1 plan pivot). Engine logic migrates into FastAPI handlers at `src/dataraum/api/` as the v1 plan progresses. The cockpit (sibling package `../cockpit`) consumes these routes via the generated OpenAPI client.
+- **MCP code retained, transport retired** — `src/dataraum/mcp/server.py` still holds the 12-tool engine logic as reference for the cockpit takeover (see `[[mcp-dead-reference-only]]` memory). The HTTP MCP mount is gone. Engine logic migrates into the 3-verb Starlette kernel (`/measure`, `/query`, `/probe`) phase-by-phase per the DAT-339 pivot. The cockpit (sibling package `../cockpit`) reads metadata directly via Drizzle introspection and calls the kernel verbs for long-running operations — no OpenAPI / codegen anymore.
 - **Free-threading** — Python 3.14t with GIL disabled for true CPU parallelism in pipeline phases.
 
 ### Module Structure
@@ -445,9 +449,8 @@ src/dataraum/
 ├── storage/        # SQLAlchemy models, migrations
 ├── llm/            # LLM providers and prompts
 ├── core/           # Config, connections, utilities
-├── server/         # FastAPI control plane shell (/health, DuckLake bootstrap)
-├── api/            # Engine REST surface (lands in v1 plan step 3b)
-└── mcp/            # Legacy MCP tool implementations — kept for extraction; no transport mounted
+├── server/         # Starlette kernel shell (/health, /measure, /query, /probe; lifespan eagerly inits substrate)
+└── mcp/            # Reference-only MCP tool implementations — pre-pivot 12-tool surface, kept for cockpit takeover. No transport, no in-tree consumer.
 ```
 
 SQLAlchemy DB models are co-located with business logic in `db_models.py` files within each module.
@@ -479,9 +482,6 @@ curl -fsS http://localhost:8000/health
 
 # Cockpit (TanStack Start) — see packages/cockpit
 open http://localhost:3000
-
-# Regenerate the OpenAPI contract consumed by the cockpit
-uv run python scripts/export_openapi.py > ../api/openapi.yaml
 ```
 
 ### Code Patterns

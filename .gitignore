@@ -10,9 +10,8 @@ data_sources/
 .mcpregistry_*
 
 # AI assistants
-.claire/
 .claude/agent-memory/
-.claire/agent-memory/
+.claude/memory/
 .claude/worktrees/
 .worktrees/
 
@@ -26,10 +25,15 @@ __pycache__/
 dist/
 build/
 
+# Typescript
+.pnpm-store/
+packages/cockpit/.claude/agent-memory/
+
 # Environments
 .env
 .envrc
 .venv
+.venv-*
 
 # Testing
 .pytest_cache/

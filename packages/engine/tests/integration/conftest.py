@@ -6,6 +6,7 @@ real or fixture data, including agent validation fixtures.
 
 from __future__ import annotations
 
+import os
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -270,24 +271,37 @@ def integration_engine(pg_url_clean: str) -> Engine:
     """
     from datetime import UTC, datetime
 
-    from dataraum.investigation.db_models import InvestigationSession
-    from dataraum.storage import Source, Workspace
+    from sqlalchemy import event, text
 
-    from tests.conftest import _TEST_WORKSPACE_ID
+    from dataraum.investigation.db_models import InvestigationSession
+    from dataraum.server.workspace import schema_name_for
+    from dataraum.storage import Source
 
     engine = create_engine(pg_url_clean, echo=False, future=True)
+
+    # Mirror ConnectionManager._init_sqlalchemy schema-per-workspace
+    # bootstrap (post-DAT-339 Commit B). This fixture creates the engine
+    # directly rather than going through ConnectionManager, so we have to
+    # repeat the listener-then-create-schema dance here. The conftest
+    # module-level os.environ["DATARAUM_WORKSPACE_ID"]="test" guarantees
+    # the workspace_id is stable across the pytest invocation.
+    schema_name = schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"])
+
+    @event.listens_for(engine, "connect")
+    def _set_search_path(dbapi_conn, _conn_record):  # noqa: ANN001
+        cursor = dbapi_conn.cursor()
+        try:
+            cursor.execute(f'SET search_path TO "{schema_name}", public')
+        finally:
+            cursor.close()
+
+    with engine.begin() as conn:
+        conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"'))
+
     init_database(engine)
 
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     with factory() as sess:
-        sess.add(
-            Workspace(
-                workspace_id=_TEST_WORKSPACE_ID,
-                name="integration_baseline",
-                config_dir="/tmp/integration-test-workspace/config",
-            )
-        )
-        sess.flush()
         sess.add(
             Source(
                 source_id="00000000-0000-0000-0000-000000000002",

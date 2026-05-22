@@ -2,21 +2,41 @@
 
 from __future__ import annotations
 
+import importlib
+import os
 from collections.abc import Generator
 
-import duckdb
-import pytest
-from sqlalchemy import create_engine, event, text
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
-from testcontainers.postgres import PostgresContainer
+# Set the test workspace_id BEFORE any dataraum import. The connection layer
+# (post-DAT-339 Commit B) reads DATARAUM_WORKSPACE_ID at engine-create time
+# to derive the per-workspace Postgres schema; tests that touch Postgres
+# need a stable value. Unit tests using SQLite ignore it (the listener is
+# dialect-gated). Set unconditionally so a stray pytest invocation from a
+# shell where DATARAUM_WORKSPACE_ID is already exported doesn't pollute
+# the test schema.
+os.environ["DATARAUM_WORKSPACE_ID"] = "test"
 
-from dataraum.storage import init_database
+import duckdb  # noqa: E402
+import pytest  # noqa: E402
+from sqlalchemy import create_engine, event, text  # noqa: E402
+from sqlalchemy.engine import Engine  # noqa: E402
+from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+from testcontainers.postgres import PostgresContainer  # noqa: E402
+
+# Mirror what ``bootstrap_workspace()`` would do at FastAPI lifespan
+# startup: stamp the module-level active-workspace pointer so any
+# ConnectionManager.initialize() in a unit test resolves the workspace
+# schema without us also having to materialize DATARAUM_HOME + the
+# config overlay. Tests for ``bootstrap_workspace`` itself reset and
+# rebootstrap via the autouse ``_isolate_active_workspace`` fixture in
+# ``tests/unit/server/test_workspace.py``.
+_ws_mod = importlib.import_module("dataraum.server.workspace")  # noqa: E402
+from dataraum.storage import init_database  # noqa: E402
+
+_ws_mod._active_workspace_id = os.environ["DATARAUM_WORKSPACE_ID"]
 
 _TEST_SESSION_ID = "00000000-0000-0000-0000-000000000001"
 _TEST_SOURCE_ID = "00000000-0000-0000-0000-000000000002"
-_TEST_WORKSPACE_ID = "00000000-0000-0000-0000-000000000003"
 
 
 @pytest.fixture(autouse=True)
@@ -59,25 +79,22 @@ def _close_mcp_servers_after_test(monkeypatch: pytest.MonkeyPatch):
 
 @event.listens_for(Session, "before_flush")
 def _autofill_fks_globally(sess, _flush_ctx, _instances):
-    """Auto-fill workspace/session FKs on any pending row that left them None.
+    """Auto-fill the ``session_id`` FK on any pending row that left it None.
 
     Pure test convenience — production code always sets ``session_id`` (DAT-321
-    plumbing) and ``workspace_id`` (DAT-341 plumbing). This hook keeps test
-    fixtures that construct DB rows directly from having to know about either FK.
+    plumbing). This hook keeps test fixtures that construct DB rows directly
+    from having to know about the FK.
 
-    Excludes ``InvestigationSession`` and ``Workspace`` themselves — their ``*_id``
-    columns are PKs, not FKs, so autofilling would collide with the baseline rows.
+    Excludes ``InvestigationSession`` itself — its ``session_id`` is a PK,
+    not a FK, so autofilling would collide with the baseline row.
     """
     from dataraum.investigation.db_models import InvestigationSession
-    from dataraum.storage import Workspace
 
     for obj in sess.new:
-        if isinstance(obj, (InvestigationSession, Workspace)):
+        if isinstance(obj, InvestigationSession):
             continue
         if hasattr(obj, "session_id") and getattr(obj, "session_id", None) is None:
             obj.session_id = _TEST_SESSION_ID
-        if hasattr(obj, "workspace_id") and getattr(obj, "workspace_id", None) is None:
-            obj.workspace_id = _TEST_WORKSPACE_ID
 
 
 @pytest.fixture(scope="function")
@@ -122,21 +139,13 @@ def session(engine: Engine) -> Session:
     from datetime import UTC, datetime
 
     from dataraum.investigation.db_models import InvestigationSession
-    from dataraum.storage import Source, Workspace
+    from dataraum.storage import Source
 
     factory = sessionmaker(
         bind=engine,
         expire_on_commit=False,
     )
     with factory() as sess:
-        sess.add(
-            Workspace(
-                workspace_id=_TEST_WORKSPACE_ID,
-                name="test_baseline",
-                config_dir="/tmp/test-baseline-workspace/config",
-            )
-        )
-        sess.flush()
         sess.add(Source(source_id=_TEST_SOURCE_ID, name="test_baseline", source_type="csv"))
         sess.flush()
         sess.add(
@@ -160,17 +169,6 @@ def baseline_session_id() -> str:
     one of those rows should set ``session_id=baseline_session_id()``.
     """
     return _TEST_SESSION_ID
-
-
-def baseline_workspace_id() -> str:
-    """Return the baseline Workspace id seeded by the ``session`` fixture.
-
-    Per-workspace DB models post-DAT-341 (``Table``, ``EntropyObjectRecord``)
-    carry a NOT NULL FK to ``workspaces.workspace_id``. The ``before_flush``
-    hook auto-fills it on bare constructions; tests that need the value
-    explicitly call ``baseline_workspace_id()``.
-    """
-    return _TEST_WORKSPACE_ID
 
 
 @pytest.fixture
@@ -336,6 +334,7 @@ def pg_url_clean(pg_url: str) -> str:
     """
     from sqlalchemy import inspect
 
+    from dataraum.server.workspace import schema_name_for
     from dataraum.storage import Base
 
     # Filter by Postgres-side existence: TRUNCATE on a missing table is an
@@ -343,13 +342,19 @@ def pg_url_clean(pg_url: str) -> str:
     # no-ops. Once a test triggers initialize() the side-effect of
     # _import_all_models registers every model on Base.metadata for the
     # rest of the pytest invocation.
+    #
+    # Post-DAT-339 Commit B: tables live in the workspace schema, not
+    # ``public``. ``inspect(...).get_table_names`` needs the schema arg,
+    # and TRUNCATE must qualify by schema. First-test no-op survives:
+    # ``get_table_names`` on a missing schema returns an empty list.
+    schema_name = schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"])
     engine = create_engine(pg_url, future=True)
     try:
-        existing = set(inspect(engine).get_table_names())
+        existing = set(inspect(engine).get_table_names(schema=schema_name))
         if existing:
             targets = [t for t in Base.metadata.tables.values() if t.name in existing]
             if targets:
-                names = ", ".join(f'"{t.name}"' for t in targets)
+                names = ", ".join(f'"{schema_name}"."{t.name}"' for t in targets)
                 with engine.begin() as conn:
                     conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
     finally:

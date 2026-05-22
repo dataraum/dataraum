@@ -76,13 +76,19 @@ class TestForWorkspace:
 
     def test_active_session_table_created(self) -> None:
         """Workspace manager creates the active_session pointer table."""
+        import os
+
         from sqlalchemy import inspect
 
+        from dataraum.server.workspace import schema_name_for
+
+        schema_name = schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"])
         manager = ConnectionManager(ConnectionConfig.for_workspace())
         manager.initialize()
         try:
             inspector = inspect(manager.engine)
-            assert "active_session" in inspector.get_table_names()
+            # Post-DAT-339 Commit B: tables live under the workspace schema.
+            assert "active_session" in inspector.get_table_names(schema=schema_name)
         finally:
             manager.close()
 
@@ -209,3 +215,89 @@ class TestSessionId:
     def test_session_id_is_settable(self) -> None:
         manager = ConnectionManager(ConnectionConfig.for_workspace(), session_id="sess-abc")
         assert manager.session_id == "sess-abc"
+
+
+class TestSchemaPerWorkspace:
+    """Post-DAT-339 Commit B: every Postgres connection runs with
+    ``search_path`` set to the workspace's schema, and the schema is
+    created on first ``initialize()``.
+    """
+
+    def test_schema_exists_after_initialize(self) -> None:
+        """``initialize()`` issues ``CREATE SCHEMA IF NOT EXISTS ws_<id>``."""
+        import os
+
+        from sqlalchemy import inspect
+
+        from dataraum.server.workspace import schema_name_for
+
+        schema_name = schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"])
+        manager = ConnectionManager(ConnectionConfig.for_workspace())
+        manager.initialize()
+        try:
+            inspector = inspect(manager.engine)
+            assert schema_name in inspector.get_schema_names()
+        finally:
+            manager.close()
+
+    def test_search_path_set_on_every_session(self) -> None:
+        """Each session's ``SHOW search_path`` returns ``"ws_<id>", public``."""
+        import os
+
+        from sqlalchemy import text
+
+        from dataraum.server.workspace import schema_name_for
+
+        schema_name = schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"])
+        manager = ConnectionManager(ConnectionConfig.for_workspace())
+        manager.initialize()
+        try:
+            with manager.session_scope() as session:
+                first = session.execute(text("SHOW search_path")).scalar_one()
+            # Re-open a session to exercise the pool-reuse path: the
+            # connection returned to the pool keeps its search_path, so
+            # a second checkout still resolves the workspace schema.
+            with manager.session_scope() as session:
+                second = session.execute(text("SHOW search_path")).scalar_one()
+        finally:
+            manager.close()
+
+        # Postgres normalizes the quoted SET back to bare-identifier form
+        # in SHOW (``ws_test, public``) because the schema name is a valid
+        # unquoted identifier. Asserting the exact echo catches accidental
+        # schema-name drift between the listener and the helper.
+        expected = f"{schema_name}, public"
+        assert first == expected
+        assert second == expected
+
+    def test_tables_land_in_workspace_schema_not_public(self) -> None:
+        """``Base.metadata.create_all`` creates tables under ``ws_<id>``, not ``public``."""
+        import os
+
+        from sqlalchemy import inspect
+
+        from dataraum.server.workspace import schema_name_for
+
+        schema_name = schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"])
+        manager = ConnectionManager(ConnectionConfig.for_workspace())
+        manager.initialize()
+        try:
+            inspector = inspect(manager.engine)
+            ws_tables = set(inspector.get_table_names(schema=schema_name))
+            public_tables = set(inspector.get_table_names(schema="public"))
+            # An MCP-side table (``active_session``) should land in the
+            # workspace schema, not public.
+            assert "active_session" in ws_tables
+            assert "active_session" not in public_tables
+        finally:
+            manager.close()
+
+    def test_create_schema_is_idempotent(self) -> None:
+        """A second ``initialize()`` on a fresh manager does not fail on existing schema."""
+        first = ConnectionManager(ConnectionConfig.for_workspace())
+        first.initialize()
+        first.close()
+
+        second = ConnectionManager(ConnectionConfig.for_workspace())
+        second.initialize()  # would raise if CREATE SCHEMA wasn't IF NOT EXISTS
+        second.close()

@@ -112,7 +112,7 @@ After implementation is complete (honestly complete, reviewers satisfied):
    - New ground truth values that should be generated
    - Keep it directional — testdata has its own design concerns
 
-   **Skip the handoff entirely** for anything outside `packages/engine/src/dataraum/{analysis,entropy,pipeline,graphs}/` — that includes `packages/cockpit/` (UI/widgets), `packages/api/` (OpenAPI contract), `packages/infra/` (docker-compose), and engine-side platform shell (FastAPI route handlers in `src/dataraum/api/`, server bootstrap, transport plumbing). Eval doesn't consume those surfaces. For parallel platform work, follow the "Parallel platform work" runbook in CLAUDE.md instead.
+   **Skip the handoff entirely** for anything outside `packages/engine/src/dataraum/{analysis,entropy,pipeline,graphs}/` — that includes `packages/cockpit/` (UI/widgets), `packages/infra/` (docker-compose), and engine-side platform shell (Starlette kernel in `src/dataraum/server/`, server bootstrap, transport plumbing). Eval doesn't consume those surfaces. For parallel platform work, follow the "Parallel platform work" runbook in CLAUDE.md instead.
 
 2. Summarize to the user:
    - What was done

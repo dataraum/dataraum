@@ -1,16 +1,18 @@
-"""Platform FastAPI control plane shell.
+"""Platform Starlette control plane shell.
 
-Hosts ``/health`` (DuckLake catalog + workspace Postgres probes) and the
-engine REST surface at ``/api/*`` (lives in ``src/dataraum/api/``). The
-DuckLake anchor opens at startup; engine logic in ``src/dataraum/mcp/``
-migrates into ``src/dataraum/api/`` route-by-route per the v1 plan.
+Hosts ``/health`` (DuckLake catalog + workspace Postgres probes) and three
+not-yet-implemented kernel verbs (``/measure``, ``/query``, ``/probe``).
+Engine logic for those verbs migrates here phase-by-phase per the DAT-339
+pivot.
+
+Lifespan opens the DuckLake substrate, bootstraps the workspace config
+overlay, then eagerly initializes the workspace SQLAlchemy substrate so
+the ``ws_<id>`` schema + tables materialize before the first request.
+Pre-pivot the schema was created lazily on first DB hit, which made
+``/health`` race the substrate and surfaced ``DATABASE_URL``
+misconfigurations only at runtime.
 
 Run via ``uvicorn dataraum.server.app:app`` or ``docker compose up``.
-
-No MCP transport, no bearer middleware. The MCP server in
-``src/dataraum/mcp/server.py`` is no longer mounted — its engine logic is
-extracted into FastAPI route handlers as the v1 plan progresses, and the
-file itself retires once nothing imports it.
 """
 
 from __future__ import annotations
@@ -19,13 +21,15 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, text
+from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
-from dataraum.api import api_router
-from dataraum.api.deps import _get_workspace_manager
+from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.core.logging import get_logger
 from dataraum.server.storage import bootstrap_lake, health_probe, teardown_lake
 from dataraum.server.workspace import bootstrap_workspace
@@ -34,14 +38,20 @@ logger = get_logger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Open the DuckLake substrate at startup; tear it down on shutdown.
+async def lifespan(app: Starlette) -> AsyncIterator[None]:
+    """Open DuckLake + workspace + SQLAlchemy substrate at startup.
 
-    Refuses to start if either ``DUCKLAKE_CATALOG_URL`` or
-    ``DUCKLAKE_DATA_PATH`` is unset — the container substrate (L1+L4)
-    provides both. After the lake is open, bootstraps the active
-    Workspace (DAT-358) so subsequent config reads resolve to the
-    writable per-workspace overlay.
+    Refuses to start if any of ``DUCKLAKE_CATALOG_URL``,
+    ``DUCKLAKE_DATA_PATH``, ``DATARAUM_HOME``, ``DATARAUM_WORKSPACE_ID``,
+    or ``DATABASE_URL`` is unset — the container substrate provides all
+    five. The first two are validated here; the remaining three are
+    validated by ``bootstrap_workspace()`` and
+    ``ConnectionConfig.for_workspace()`` respectively.
+
+    After this lifespan runs, the ``ws_<workspace_id>`` Postgres schema
+    exists with all SQLAlchemy-registered tables, and a process-wide
+    :class:`ConnectionManager` lives on ``app.state.workspace_manager``
+    for downstream routes.
     """
     catalog_url = os.environ.get("DUCKLAKE_CATALOG_URL")
     data_path = os.environ.get("DUCKLAKE_DATA_PATH")
@@ -58,32 +68,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
 
     bootstrap_lake(catalog_url, data_path)
-    workspace_mgr = _get_workspace_manager()
-    bootstrap_workspace(workspace_mgr.session_scope)
     try:
-        yield
+        bootstrap_workspace()
+
+        # Eager substrate init: create the ws_<id> schema + all SQLAlchemy
+        # tables before any request can land. Pre-DAT-339-0c this was lazy
+        # on first DB hit, which raced /health and hid DATABASE_URL
+        # misconfigurations until the first /api/* call.
+        workspace_manager = ConnectionManager(ConnectionConfig.for_workspace())
+        try:
+            workspace_manager.initialize()
+            app.state.workspace_manager = workspace_manager
+            yield
+        finally:
+            # close() is documented as safe on partial init.
+            workspace_manager.close()
     finally:
+        # Always teardown the DuckLake catalog, even if workspace bootstrap
+        # or substrate init raised — otherwise a partial-init container
+        # leaks the open Postgres connection backing the catalog.
         teardown_lake()
-
-
-app = FastAPI(title="DataRaum Control Plane", version="0.2.2", lifespan=lifespan)
-
-# CORS for the cockpit dev server. Origins are localhost-only by design —
-# v1 is single-user and the cockpit runs on http://localhost:3000 (TanStack
-# Start default). 5173 covers Vite's default in case the cockpit is run
-# with a stock Vite config. Tighten / extend when the cockpit ships behind
-# a real domain.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Engine REST surface at /api/*. Routes are extracted from the MCP tool
-# handlers in src/dataraum/mcp/server.py — engine logic moves to
-# src/dataraum/api/services.py; the MCP-protocol envelope is dropped.
-app.include_router(api_router, prefix="/api")
 
 
 def _postgres_probe() -> dict[str, str]:
@@ -112,8 +116,7 @@ def _postgres_probe() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/health")
-def health() -> Response:
+async def health(_request: Request) -> JSONResponse:
     """Substrate + DuckLake catalog + workspace Postgres health.
 
     Returns 200 with ``status: ok`` when both substrate components are
@@ -129,3 +132,49 @@ def health() -> Response:
         {"status": overall, "ducklake": ducklake, "postgres": postgres},
         status_code=200 if healthy else 503,
     )
+
+
+async def _not_implemented(verb: str) -> JSONResponse:
+    return JSONResponse(
+        {"detail": f"{verb} is not implemented yet (DAT-339 pivot Phase 0c stub)."},
+        status_code=501,
+    )
+
+
+async def measure(_request: Request) -> JSONResponse:
+    """Measure SSE verb — stub until Phase 2 lands the pipeline-runner SSE."""
+    return await _not_implemented("measure")
+
+
+async def query(_request: Request) -> JSONResponse:
+    """Query Arrow verb — stub until Phase 1 lands the read surface."""
+    return await _not_implemented("query")
+
+
+async def probe(_request: Request) -> JSONResponse:
+    """Probe read-only SQL verb — stub until Phase 2 lands add_source."""
+    return await _not_implemented("probe")
+
+
+# CORS for the cockpit dev server. Origins are localhost-only by design —
+# v1 is single-user and the cockpit runs on http://localhost:3000 (TanStack
+# Start default). 5173 covers Vite's default in case the cockpit is run
+# with a stock Vite config.
+_cors = Middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app = Starlette(
+    debug=False,
+    routes=[
+        Route("/health", health, methods=["GET"]),
+        Route("/measure", measure, methods=["POST"]),
+        Route("/query", query, methods=["POST"]),
+        Route("/probe", probe, methods=["POST"]),
+    ],
+    middleware=[_cors],
+    lifespan=lifespan,
+)

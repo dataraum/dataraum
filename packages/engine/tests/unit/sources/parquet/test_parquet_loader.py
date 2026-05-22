@@ -43,24 +43,6 @@ def test_session():
 
     factory = sessionmaker(bind=engine, expire_on_commit=False)
 
-    # Seed a Workspace row so loader's get_active_workspace_id() resolves.
-    # The global before_flush hook in tests/conftest.py auto-fills the FK
-    # onto Table/EntropyObjectRecord rows; production code path here calls
-    # get_active_workspace_id() explicitly, so the row must exist.
-    from dataraum.storage import Workspace
-
-    from tests.conftest import _TEST_WORKSPACE_ID
-
-    with factory() as bootstrap:
-        bootstrap.add(
-            Workspace(
-                workspace_id=_TEST_WORKSPACE_ID,
-                name="parquet_test_baseline",
-                config_dir="/tmp/parquet-test-workspace/config",
-            )
-        )
-        bootstrap.commit()
-
     try:
         with factory() as session:
             yield session

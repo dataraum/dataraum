@@ -30,13 +30,9 @@ class EntropyObjectRecord(Base):
     __tablename__ = "entropy_objects"
 
     object_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    workspace_id: Mapped[str] = mapped_column(
-        ForeignKey("workspaces.workspace_id"), nullable=False, index=True
-    )
-    # session_id stays NOT NULL but is no longer the load-bearing scope post-DAT-341.
-    # entropy/engine.py + entropy/measurement.py filter by (source_id, detector_id);
-    # workspace_id replaces session_id as primary scope. Slice 2 may relax this to
-    # nullable when sessions return.
+    # Workspace scope is structural: this row lives in its workspace's Postgres
+    # schema. session_id stays NOT NULL but is no longer load-bearing post-DAT-341;
+    # entropy/engine.py + entropy/measurement.py filter by (source_id, detector_id).
     session_id: Mapped[str] = mapped_column(
         ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
     )
@@ -85,4 +81,3 @@ Index("idx_entropy_table", EntropyObjectRecord.table_id)
 Index("idx_entropy_column", EntropyObjectRecord.column_id)
 Index("idx_entropy_score", EntropyObjectRecord.score)
 Index("idx_entropy_source_detector", EntropyObjectRecord.source_id, EntropyObjectRecord.detector_id)
-Index("idx_entropy_workspace", EntropyObjectRecord.workspace_id)

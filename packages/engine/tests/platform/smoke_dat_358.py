@@ -76,9 +76,9 @@ def _isolate_active_workspace() -> Iterator[None]:
 
 
 @pytest.fixture
-def wired_app(
+def wired_app(  # type: ignore[no-untyped-def]
     monkeypatch: pytest.MonkeyPatch,
-    lake_anchor,  # type: ignore[no-untyped-def]
+    lake_anchor,
     baked_in_config: Path,
     datadraum_home: Path,
 ) -> Iterator[Starlette]:

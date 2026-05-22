@@ -28,6 +28,7 @@ build/
 # Typescript
 .pnpm-store/
 packages/cockpit/.claude/agent-memory/
+packages/engine/.claude/agent-memory/
 
 # Environments
 .env

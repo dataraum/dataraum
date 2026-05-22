@@ -270,7 +270,7 @@ class TestLifespanPartialInitTeardown:
         monkeypatch.setattr("dataraum.server.app.ConnectionManager", _FailingManager)
         monkeypatch.setattr(
             "dataraum.server.app.ConnectionConfig.for_workspace",
-            lambda: object(),
+            object,
         )
         monkeypatch.setenv("DUCKLAKE_CATALOG_URL", "postgresql://stub@stub/stub")
         monkeypatch.setenv("DUCKLAKE_DATA_PATH", "/tmp/stub-lake")

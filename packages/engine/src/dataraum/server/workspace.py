@@ -29,6 +29,7 @@ slice 1 doesn't query it.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,45 @@ logger = get_logger(__name__)
 
 
 _active_workspace_id: str | None = None
+
+
+_SCHEMA_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def schema_name_for(workspace_id: str) -> str:
+    """Return the Postgres schema name for a workspace_id.
+
+    Slice 1 format (locked by /refine 2026-05-22): ``ws_<uuid-with-underscores>``.
+    Dashes in the workspace_id are translated to underscores so the result
+    is a valid unquoted Postgres identifier.
+
+    Args:
+        workspace_id: The workspace identifier from ``DATARAUM_WORKSPACE_ID``.
+
+    Returns:
+        The schema name (e.g. ``ws_00000000_0000_0000_0000_0000000000aa``).
+
+    Raises:
+        ValueError: If the resulting schema name isn't a valid Postgres
+            identifier (would be too short, start with a digit, or contain
+            characters that aren't ``[A-Za-z0-9_]``). UUIDs and short ids
+            like ``test`` pass; arbitrary user input from a misconfigured
+            env var fails loudly here rather than via a confusing
+            SQLAlchemy error later.
+    """
+    candidate = "ws_" + workspace_id.replace("-", "_")
+    if len(candidate) > 63:  # Postgres identifier length limit.
+        raise ValueError(
+            f"workspace_id {workspace_id!r} produces schema name {candidate!r} "
+            f"({len(candidate)} chars); Postgres identifiers max out at 63."
+        )
+    if not _SCHEMA_NAME_PATTERN.match(candidate):
+        raise ValueError(
+            f"workspace_id {workspace_id!r} produces schema name {candidate!r}, "
+            "which is not a valid unquoted Postgres identifier. Use a UUID "
+            "or an identifier matching [A-Za-z_][A-Za-z0-9_-]*."
+        )
+    return candidate
 
 
 @dataclass(frozen=True)

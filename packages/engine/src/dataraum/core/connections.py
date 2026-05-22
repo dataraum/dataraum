@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -287,7 +287,15 @@ class ConnectionManager:
                 raise RuntimeError(f"Failed to initialize connections: {e}") from e
 
     def _init_sqlalchemy(self) -> None:
-        """Initialize the workspace Postgres SQLAlchemy engine."""
+        """Initialize the workspace Postgres SQLAlchemy engine.
+
+        Post-DAT-339 Commit B: every connection acquired from this engine
+        has ``search_path`` set to the workspace's schema (``ws_<id>``)
+        so all queries without an explicit schema qualifier resolve there.
+        The schema is created on first init via ``CREATE SCHEMA IF NOT
+        EXISTS``. SQLite-dialect engines (unit-test fallback) skip the
+        listener entirely — SQLite has no schema concept.
+        """
         self._engine = create_engine(
             self.config.database_url,
             echo=self.config.echo_sql,
@@ -300,6 +308,37 @@ class ConnectionManager:
         # Register all models before create_all so every per-session table
         # materializes alongside the workspace tables.
         self._import_all_models()
+
+        # Schema-per-workspace bootstrap. Lazy import keeps the module
+        # graph clean: connections.py is a low-level utility, and
+        # server/workspace.py owns the workspace_id concept.
+        if self._engine.dialect.name == "postgresql":
+            from dataraum.server.workspace import (
+                get_active_workspace_id,
+                schema_name_for,
+            )
+
+            workspace_id = get_active_workspace_id()
+            schema_name = schema_name_for(workspace_id)
+
+            # Register the per-connection search_path listener FIRST, then
+            # create the schema. ``connect`` fires once per new dbapi
+            # connection (not per pool checkout) — registering it before
+            # any connection is established means the first connection
+            # (used by ``CREATE SCHEMA`` below + create_all() after) gets
+            # search_path set, and pool reuses inherit that state. Postgres
+            # accepts ``SET search_path`` against a not-yet-existing schema
+            # (validation is lazy until an unqualified reference resolves).
+            @event.listens_for(self._engine, "connect")
+            def _set_search_path(dbapi_conn: Any, _conn_record: Any) -> None:
+                cursor = dbapi_conn.cursor()
+                try:
+                    cursor.execute(f'SET search_path TO "{schema_name}", public')
+                finally:
+                    cursor.close()
+
+            with self._engine.begin() as conn:
+                conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"'))
 
         Base.metadata.create_all(self._engine)
 

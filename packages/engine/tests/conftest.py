@@ -2,17 +2,37 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Generator
 
-import duckdb
-import pytest
-from sqlalchemy import create_engine, event, text
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
-from testcontainers.postgres import PostgresContainer
+# Set the test workspace_id BEFORE any dataraum import. The connection layer
+# (post-DAT-339 Commit B) reads DATARAUM_WORKSPACE_ID at engine-create time
+# to derive the per-workspace Postgres schema; tests that touch Postgres
+# need a stable value. Unit tests using SQLite ignore it (the listener is
+# dialect-gated). Set unconditionally so a stray pytest invocation from a
+# shell where DATARAUM_WORKSPACE_ID is already exported doesn't pollute
+# the test schema.
+os.environ["DATARAUM_WORKSPACE_ID"] = "test"
 
-from dataraum.storage import init_database
+import duckdb  # noqa: E402
+import pytest  # noqa: E402
+from sqlalchemy import create_engine, event, text  # noqa: E402
+from sqlalchemy.engine import Engine  # noqa: E402
+from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+from testcontainers.postgres import PostgresContainer  # noqa: E402
+
+# Mirror what ``bootstrap_workspace()`` would do at FastAPI lifespan
+# startup: stamp the module-level active-workspace pointer so any
+# ConnectionManager.initialize() in a unit test resolves the workspace
+# schema without us also having to materialize DATARAUM_HOME + the
+# config overlay. Tests for ``bootstrap_workspace`` itself reset and
+# rebootstrap via the autouse ``_isolate_active_workspace`` fixture in
+# ``tests/unit/server/test_workspace.py``.
+import dataraum.server.workspace as _ws_mod  # noqa: E402
+from dataraum.storage import init_database  # noqa: E402
+
+_ws_mod._active_workspace_id = os.environ["DATARAUM_WORKSPACE_ID"]
 
 _TEST_SESSION_ID = "00000000-0000-0000-0000-000000000001"
 _TEST_SOURCE_ID = "00000000-0000-0000-0000-000000000002"
@@ -313,6 +333,7 @@ def pg_url_clean(pg_url: str) -> str:
     """
     from sqlalchemy import inspect
 
+    from dataraum.server.workspace import schema_name_for
     from dataraum.storage import Base
 
     # Filter by Postgres-side existence: TRUNCATE on a missing table is an
@@ -320,13 +341,19 @@ def pg_url_clean(pg_url: str) -> str:
     # no-ops. Once a test triggers initialize() the side-effect of
     # _import_all_models registers every model on Base.metadata for the
     # rest of the pytest invocation.
+    #
+    # Post-DAT-339 Commit B: tables live in the workspace schema, not
+    # ``public``. ``inspect(...).get_table_names`` needs the schema arg,
+    # and TRUNCATE must qualify by schema. First-test no-op survives:
+    # ``get_table_names`` on a missing schema returns an empty list.
+    schema_name = schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"])
     engine = create_engine(pg_url, future=True)
     try:
-        existing = set(inspect(engine).get_table_names())
+        existing = set(inspect(engine).get_table_names(schema=schema_name))
         if existing:
             targets = [t for t in Base.metadata.tables.values() if t.name in existing]
             if targets:
-                names = ", ".join(f'"{t.name}"' for t in targets)
+                names = ", ".join(f'"{schema_name}"."{t.name}"' for t in targets)
                 with engine.begin() as conn:
                     conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
     finally:

@@ -29,6 +29,7 @@ from dataraum.server.workspace import (
     bootstrap_workspace,
     get_active_workspace_id,
     reset_active_workspace_id_for_tests,
+    schema_name_for,
 )
 
 
@@ -53,10 +54,25 @@ def home_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _isolate_active_workspace() -> Iterator[None]:
-    """Reset the module-level pointers between tests."""
-    yield
+    """Reset module-level pointers around each test, then restore.
+
+    Pre-reset so tests like ``test_get_active_workspace_id_raises_before_bootstrap``
+    see a clean None state. Restore on teardown rather than zero — matters
+    because ``tests/conftest.py`` stamps ``_active_workspace_id`` at import
+    time so every unit test that exercises a Postgres engine resolves a
+    workspace_id without running ``bootstrap_workspace`` itself. If this
+    fixture left the pointer at ``None`` after the module finished, any
+    later test module touching Postgres-dialect code would hit
+    ``RuntimeError: No active workspace``.
+    """
+    import dataraum.server.workspace as _ws
+
+    saved_pointer = _ws._active_workspace_id
     reset_active_workspace_for_tests()
     reset_active_workspace_id_for_tests()
+    yield
+    reset_active_workspace_for_tests()
+    _ws._active_workspace_id = saved_pointer
     reset_config_root()
 
 
@@ -207,6 +223,32 @@ def test_bootstrap_raises_when_workspace_id_unset(
 
     with pytest.raises(RuntimeError, match="DATARAUM_WORKSPACE_ID is not set"):
         bootstrap_workspace()
+
+
+class TestSchemaNameFor:
+    """``schema_name_for`` derives a Postgres schema from a workspace_id."""
+
+    def test_uuid_dashes_become_underscores(self) -> None:
+        assert (
+            schema_name_for("00000000-0000-0000-0000-0000000000aa")
+            == "ws_00000000_0000_0000_0000_0000000000aa"
+        )
+
+    def test_short_identifier_passes_through(self) -> None:
+        assert schema_name_for("test") == "ws_test"
+
+    def test_rejects_invalid_identifier_chars(self) -> None:
+        with pytest.raises(ValueError, match="not a valid"):
+            schema_name_for("bad name with spaces")
+
+    def test_rejects_overlong_identifier(self) -> None:
+        # 60-char workspace id → "ws_" + 60 = 63 chars (exactly the PG
+        # limit; allowed). 61 char id → 64 chars (over; rejected).
+        ok = "a" * 60
+        too_long = "a" * 61
+        assert schema_name_for(ok) == "ws_" + ok
+        with pytest.raises(ValueError, match="max out at 63"):
+            schema_name_for(too_long)
 
 
 def test_bootstrap_adhoc_scaffold_is_idempotent(

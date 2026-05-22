@@ -3,7 +3,7 @@
 Companion to `.claude/platform-status.md`. The pivot is multi-session work; this file persists locked decisions + the phase chain across compactions.
 
 Integration branch: `feat/dat-339-pivot`
-Active phase branch: `feat/dat-339-pivot-p0-substrate` (0a + 0b + 0c)
+Active phase branch: `feat/dat-339-pivot-p0-substrate` (0a + 0b + 0c + 0d)
 
 ## Decisions locked by /refine (2026-05-22)
 
@@ -43,13 +43,20 @@ Each phase is roughly one session. Tick when committed AND tests green.
   - **Dependency churn**: `fastapi==0.136.1` dropped; `starlette>=0.47.0` added explicit; `httpx>=0.27.0` added to dev group (starlette.testclient post-0.27 requires it). `uv lock` resolves 124 packages cleanly.
   - **Test rewrite**: `tests/unit/server/test_app.py` ported to Starlette `TestClient` + new `TestLifespanEagerInit` class (spies `ConnectionManager` to assert `.initialize()` called exactly once at startup + `.close()` exactly once at teardown + `app.state.workspace_manager` is populated). New `TestKernelStubs` parametrized over `/measure`, `/query`, `/probe`. All 10 test_app tests green; 1067 unit tests pass total (40 pre-existing testcontainers/docker-socket errors unrelated to this phase).
   - **Doc sweep**: root `CLAUDE.md` + `README.md` updated (3 packages not 4, FastAPI→Starlette, no OpenAPI/codegen, drizzle-kit pull as the metadata path); `Makefile` `codegen` target deleted; `packages/engine/CLAUDE.md` module-structure box updated + transport language refreshed; `packages/cockpit/CLAUDE.md` flags `src/api/` and `pnpm codegen` as legacy (Phase 0d cleanup).
-- [ ] **Phase 0d — Cockpit cleanup.** Delete `packages/cockpit/src/api/`. Remove `pnpm codegen` + `openapi-fetch` + `openapi-typescript` deps. Drop `list_sources` test tool from `chat.ts`. Clear test UI in routes/ to minimal placeholders.
+- [x] **Phase 0d — Cockpit cleanup.**
+  - **Deletions**: `packages/cockpit/src/api/{client,types}.ts` (whole directory). `openapi-fetch` + `openapi-typescript` deps removed from `package.json`. `codegen` script removed.  pnpm-lock.yaml regenerated (2 deps gone, 119 packages now).
+  - **`src/routes/sources.tsx`**: rewritten as a placeholder Mantine card ("Coming soon — Phase 1 wires this via Drizzle metadata client"). Keeps the `/sources` route alive so `__root.tsx` nav link still resolves.
+  - **`src/routes/api/chat.ts`**: dropped `list_sources` tool definition + `runTool` function. The agentic outer loop was kept-then-collapsed because with `tools: []` every body path broke, making `round++` unreachable (biome `noUnreachable` caught it). Replaced with a single-pass text streamer; SSE event shape (`text`, `done`, `error`) is unchanged so the cockpit chat UI doesn't churn. Phase 1+ reintroduces the agentic loop + tool_call_start/tool_result events when real TS tools land.
+  - **`src/routes/index.tsx`**: "step 4" stale copy refreshed to describe the Phase-1 read surfaces.
+  - **`packages/cockpit/CLAUDE.md`**: dropped the `src/api/` block from the layout diagram; removed the "LEGACY — retires in Phase 0d" annotations now that 0d has happened; cleaned the commands table.
+  - Verified: `pnpm exec tsc --noEmit` clean, `pnpm build` clean (output 654 kB router + 377 kB Anthropic SDK, identical to pre-0d), `biome check` clean on changed files (3 of 3 auto-fixed; chat.ts cleanup also resolved a `noUnreachable` finding).
 - [ ] **Phase 0e+0f — Tool registry scaffold + infra mount + CI swap.** Bundled. `src/tools/` directory with README documenting hand-written N:M policy. Mount `dataraum_lake` (writable) into cockpit service in `packages/infra/docker-compose.yml`. CI: drizzle-kit pull check post-migration.
 - [ ] **Phase 1 — Read surfaces.** TS Drizzle tools: list_sources, list_tables, look_table, search_snippets. Engine `query` Arrow verb. Widgets WorkspaceInventory + TableProfile (DAT-349 + DAT-350).
 - [ ] **Phase 2 — add_source.** TS upload to mounted lake volume, recipe authoring in TS, engine `probe` verb, engine `measure` SSE verb. `TypingPhase.table_filter` (DAT-342 logic). Widget AddSourceWizard (DAT-348).
 - [ ] **Phase 3 — why.** TS Drizzle + LLM synthesis in chat. Widget WhyPanel (DAT-351 without TeachProposal).
 - [ ] **Phase 4 — teach (proper).** Postgres `config_overlay` table. Engine config loader reads Postgres overlay. Delete filesystem overlay logic (DAT-358 retire). Delete `mcp/teach.py`. TS owns teach writes. Widget TeachProposal + MeasureProgress (DAT-351 completion + DAT-352).
 - [ ] **Phase 5 — Cleanup.** Verify `api/` empty + deleted (happened in 0c). `mcp/` directory **untouched** (carries to slice 2 for session-lifecycle reimplementation). Engine = pipeline + storage + analysis + kernel only.
+  - **Fix testcontainers/docker-socket test failures.** ~40 unit tests in `tests/unit/server/test_storage.py`, `tests/unit/sources/{json,parquet}/`, etc. currently error at collection because the docker-py client in `testcontainers[postgres]` can't reach the Docker socket (`DOCKER_HOST` env points at a stale macOS Docker Desktop path). Pre-existing env issue, surfaced in 0c smoke. Likely needs a session/host restart + `conftest.py` to either un-set `DOCKER_HOST` when wrong or skip testcontainers tests when the socket isn't reachable.
 
 ## Resume protocol
 

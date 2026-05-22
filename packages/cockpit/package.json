@@ -14,7 +14,6 @@
     "format": "biome format",
     "lint": "biome lint",
     "check": "biome check",
-    "codegen": "openapi-typescript ../api/openapi.yaml -o src/api/types.ts",
     "db:pull:metadata": "drizzle-kit pull --config drizzle.config.metadata.ts && node scripts/normalize-metadata-pull.mjs",
     "db:push:cockpit": "drizzle-kit push --config drizzle.config.cockpit.ts",
     "db:generate:cockpit": "drizzle-kit generate --config drizzle.config.cockpit.ts"
@@ -34,7 +33,6 @@
     "drizzle-orm": "1.0.0-rc.2-e38a2ba",
     "lucide-react": "^1.16.0",
     "nitro": "3.0.260429-beta",
-    "openapi-fetch": "^0.17.0",
     "postgres": "^3.4.9",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
@@ -49,7 +47,6 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
     "drizzle-kit": "1.0.0-rc.2-e38a2ba",
-    "openapi-typescript": "^7.13.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.13",
     "vitest": "^4.1.6"

@@ -30,6 +30,7 @@ build/
 .env
 .envrc
 .venv
+.venv-*
 
 # Testing
 .pytest_cache/

@@ -3,9 +3,10 @@
 # Multi-stage:
 #   1. deps   — install pnpm deps (cached when package.json/lock unchanged)
 #   2. build  — vite build → Nitro emits a self-binding bundle at
-#               .output/server/index.mjs (uses the committed src/api/types.ts;
-#               regenerate it with `pnpm codegen` before docker build if the
-#               engine's openapi.yaml changed)
+#               .output/server/index.mjs. The cockpit consumes engine
+#               metadata via Drizzle introspection (src/db/metadata/) and
+#               the engine kernel verbs over HTTP — no OpenAPI / codegen
+#               (retired in the DAT-339 pivot, Phase 0c).
 #   3. runner — minimal node image serving .output/server/index.mjs
 #
 # Build args:

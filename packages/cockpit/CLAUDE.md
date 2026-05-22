@@ -6,7 +6,6 @@ TanStack Start web UI for the DataRaum engine. One of three packages in the [dat
 
 ```
 src/
-├── api/                # LEGACY openapi-fetch client + types — retires in Phase 0d
 ├── db/                 # Two Drizzle clients in one package
 │   ├── cockpit/
 │   │   ├── schema.ts   # hand-written cockpit_db schema (placeholder until tables land)
@@ -40,9 +39,12 @@ docker compose -f packages/infra/docker-compose.yml up -d --wait control-plane p
 
 # Terminal 2 (here)
 pnpm install
-pnpm codegen
 pnpm dev
 # → http://localhost:3000 with hot reload
+
+# Optional: if the engine added/changed SQLAlchemy models, refresh the
+# Drizzle metadata client first:
+#   DATARAUM_WORKSPACE_ID=<id> METADATA_DATABASE_URL=<url> pnpm db:pull:metadata
 ```
 
 The Vite dev server proxies `/api/*` to the engine on `:8000`, so the browser is same-origin and CORS is moot during dev.
@@ -83,23 +85,20 @@ The full ecosystem (TanStack AI, xyflow, ECharts, CodeMirror, sql-formatter, mar
 
 ## Working with engine state
 
-The engine exposes a 3-verb Starlette kernel (`/measure`, `/query`, `/probe`) plus `/health`. There is no OpenAPI spec and no `pnpm codegen` anymore (retired in the DAT-339 pivot).
+The engine exposes a 3-verb Starlette kernel (`/measure`, `/query`, `/probe`) plus `/health`. There is no OpenAPI spec and no codegen anymore — both retired in the DAT-339 pivot (Phase 0c deleted `packages/api/`, 0d deleted `src/api/`).
 
 For metadata reads, the cockpit introspects the engine's `ws_<workspace_id>` Postgres schema directly via Drizzle: `pnpm db:pull:metadata` produces typed clients in `src/db/metadata/`. Re-run after the engine adds or changes SQLAlchemy models.
-
-`src/api/` and `pnpm codegen` are scheduled for removal in Phase 0d of the pivot — they're still present at the moment but no longer the canonical contract surface.
 
 ## Useful commands
 
 ```bash
-pnpm dev                # vite dev server
-pnpm build              # production build
-pnpm test               # vitest
-pnpm check              # biome check (lint + format)
-pnpm db:pull:metadata   # introspect ws_<workspace_id> from engine substrate → src/db/metadata/
+pnpm dev                  # vite dev server
+pnpm build                # production build
+pnpm test                 # vitest
+pnpm check                # biome check (lint + format)
+pnpm db:pull:metadata     # introspect ws_<workspace_id> from engine substrate → src/db/metadata/
 pnpm db:generate:cockpit  # cockpit_db migration SQL (from hand-written src/db/cockpit/schema.ts)
-pnpm db:push:cockpit    # push schema directly to cockpit_db
-pnpm codegen            # LEGACY — retires in Phase 0d of the DAT-339 pivot
+pnpm db:push:cockpit      # push schema directly to cockpit_db
 ```
 
 ## Conventions

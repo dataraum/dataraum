@@ -66,7 +66,6 @@ Each phase is roughly one session. Tick when committed AND tests green.
 - [ ] **Phase 3 — why.** TS Drizzle + LLM synthesis in chat. Widget WhyPanel (DAT-351 without TeachProposal).
 - [ ] **Phase 4 — teach (proper).** Postgres `config_overlay` table. Engine config loader reads Postgres overlay. Delete filesystem overlay logic (DAT-358 retire). Delete `mcp/teach.py`. TS owns teach writes. Widget TeachProposal + MeasureProgress (DAT-351 completion + DAT-352).
 - [ ] **Phase 5 — Cleanup.** Verify `api/` empty + deleted (happened in 0c). `mcp/` directory **untouched** (carries to slice 2 for session-lifecycle reimplementation). Engine = pipeline + storage + analysis + kernel only.
-  - **Fix testcontainers/docker-socket test failures.** ~40 unit tests in `tests/unit/server/test_storage.py`, `tests/unit/sources/{json,parquet}/`, etc. currently error at collection because the docker-py client in `testcontainers[postgres]` can't reach the Docker socket (`DOCKER_HOST` env points at a stale macOS Docker Desktop path). Pre-existing env issue, surfaced in 0c smoke. Likely needs a session/host restart + `conftest.py` to either un-set `DOCKER_HOST` when wrong or skip testcontainers tests when the socket isn't reachable.
 
 ## Resume protocol
 

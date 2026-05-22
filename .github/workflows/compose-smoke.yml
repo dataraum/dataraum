@@ -30,23 +30,74 @@ jobs:
                   curl --fail --silent --show-error http://127.0.0.1:8000/health
                   echo
 
-            - name: Verify both Postgres databases exist
+            - name: Verify all three Postgres databases exist
               run: |
                   set -euo pipefail
                   # shellcheck disable=SC1091
                   . ./.env
                   dbs=$(docker compose exec -T postgres \
                       psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
-                      "SELECT datname FROM pg_database WHERE datname IN ('$POSTGRES_DB','$DUCKLAKE_CATALOG_DB') ORDER BY datname")
+                      "SELECT datname FROM pg_database WHERE datname IN ('$POSTGRES_DB','$DUCKLAKE_CATALOG_DB','$COCKPIT_DB') ORDER BY datname")
                   echo "Found databases:"
                   echo "$dbs"
                   echo "$dbs" | grep -qx "$POSTGRES_DB"
                   echo "$dbs" | grep -qx "$DUCKLAKE_CATALOG_DB"
+                  echo "$dbs" | grep -qx "$COCKPIT_DB"
 
-            - name: Verify dataraum_lake volume is mounted and writable
+            - name: Verify dataraum_lake mounted writable on both containers
               run: |
+                  # Both control-plane and cockpit must mount the shared lake
+                  # volume: cockpit writes user-uploaded files there (Phase 2
+                  # add_source), engine reads them via DuckLake. Tests both
+                  # individually + the cross-container handoff.
                   docker compose exec -T control-plane sh -c \
-                      'touch /var/lib/dataraum/lake/.smoke && rm /var/lib/dataraum/lake/.smoke'
+                      'touch /var/lib/dataraum/lake/.cp_smoke && rm /var/lib/dataraum/lake/.cp_smoke'
+                  docker compose exec -T cockpit sh -c \
+                      'echo cockpit_wrote > /var/lib/dataraum/lake/.handoff'
+                  test "$(docker compose exec -T control-plane cat /var/lib/dataraum/lake/.handoff | tr -d '\r\n')" = "cockpit_wrote"
+                  docker compose exec -T cockpit rm /var/lib/dataraum/lake/.handoff
+
+            - name: Set up Node + pnpm (for drizzle-kit pull drift check)
+              uses: actions/setup-node@v6
+              with:
+                  node-version: "26"
+
+            - name: Install pnpm (version from packages/cockpit/package.json packageManager)
+              working-directory: packages/cockpit
+              run: npm install -g "$(node -p "require('./package.json').packageManager")"
+
+            - name: Install cockpit deps
+              working-directory: packages/cockpit
+              run: pnpm install --frozen-lockfile
+
+            - name: Drizzle metadata schema drift check
+              working-directory: packages/cockpit
+              run: |
+                  # Catches: engine added/changed SQLAlchemy models without
+                  # the cockpit refreshing src/db/metadata/. Eager
+                  # substrate-init in the Starlette lifespan guarantees the
+                  # ws_<id> schema is fully materialized by the time
+                  # control-plane is healthy, so a re-pull here is
+                  # deterministic.
+                  #
+                  # Source the same .env compose used so creds + workspace_id
+                  # stay in lockstep with .env.example. Avoids drift between
+                  # this step and the database-existence check above.
+                  set -a
+                  # shellcheck disable=SC1091
+                  . ../infra/.env
+                  set +a
+                  export METADATA_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:5432/${POSTGRES_DB}"
+                  pnpm db:pull:metadata
+                  drift_modified=$(git diff --name-only -- src/db/metadata/)
+                  drift_untracked=$(git ls-files --others --exclude-standard -- src/db/metadata/)
+                  if [ -n "$drift_modified" ] || [ -n "$drift_untracked" ]; then
+                      echo "::error::Drift detected: engine SQLAlchemy schema differs from committed src/db/metadata/. Run 'pnpm db:pull:metadata' locally and commit the result."
+                      [ -n "$drift_modified" ] && { echo "Modified:"; echo "$drift_modified"; }
+                      [ -n "$drift_untracked" ] && { echo "Untracked:"; echo "$drift_untracked"; }
+                      git diff -- src/db/metadata/ || true
+                      exit 1
+                  fi
 
             - name: Dump compose logs on failure
               if: failure()

@@ -3,7 +3,7 @@
 Companion to `.claude/platform-status.md`. The pivot is multi-session work; this file persists locked decisions + the phase chain across compactions.
 
 Integration branch: `feat/dat-339-pivot`
-Active phase branch: `feat/dat-339-pivot-p0-substrate` (0a + 0b + 0c + 0d)
+Active phase branch: `feat/dat-339-pivot-p0-substrate` (0a + 0b + 0c + 0d + 0e+0f)
 
 ## Decisions locked by /refine (2026-05-22)
 
@@ -50,7 +50,17 @@ Each phase is roughly one session. Tick when committed AND tests green.
   - **`src/routes/index.tsx`**: "step 4" stale copy refreshed to describe the Phase-1 read surfaces.
   - **`packages/cockpit/CLAUDE.md`**: dropped the `src/api/` block from the layout diagram; removed the "LEGACY — retires in Phase 0d" annotations now that 0d has happened; cleaned the commands table.
   - Verified: `pnpm exec tsc --noEmit` clean, `pnpm build` clean (output 654 kB router + 377 kB Anthropic SDK, identical to pre-0d), `biome check` clean on changed files (3 of 3 auto-fixed; chat.ts cleanup also resolved a `noUnreachable` finding).
-- [ ] **Phase 0e+0f — Tool registry scaffold + infra mount + CI swap.** Bundled. `src/tools/` directory with README documenting hand-written N:M policy. Mount `dataraum_lake` (writable) into cockpit service in `packages/infra/docker-compose.yml`. CI: drizzle-kit pull check post-migration.
+- [x] **Phase 0e+0f — Tool registry scaffold + infra mount + CI swap.**
+  - **`packages/cockpit/src/tools/README.md`**: scaffold doc explaining the hand-written N:M policy (one tool wraps N engine ops; N tools share M backends), Anthropic Tool schema convention, no auto-discovery (explicit registry file), `tools/registry.ts` lands in Phase 1 alongside the first batch (`list_sources`, `list_tables`, `look_table`, `search_snippets`). Empty dir otherwise — no real tools yet.
+  - **Docker-compose mounts**: cockpit service block gets `dataraum_lake:/var/lib/dataraum/lake` (same path as control-plane, for symmetry) + five env vars: `COCKPIT_DATABASE_URL` (cockpit_db), `METADATA_DATABASE_URL` (engine substrate, read-only via Drizzle), `DATARAUM_WORKSPACE_ID` (propagated from the control-plane), `DATARAUM_LAKE_PATH` (so TS upload code knows the directory), `ANTHROPIC_API_KEY` (forward-compat for Phase 1+ chat tooling, no-op when unset). Phase 2's `add_source` wizard writes user files into this volume from TS; engine reads them via DuckLake at the same path.
+  - **`cockpit_db` Postgres database created at first-boot**: `packages/engine/docker/postgres-init/init-databases.sh` now creates both `$DUCKLAKE_CATALOG_DB` and `$COCKPIT_DB`. Postgres env block + `.env.example` + `.env` document `COCKPIT_DB=cockpit_db`. Keeps the cockpit's env vars honest (`COCKPIT_DATABASE_URL` points at something real) even though slice 1 doesn't yet import the cockpit client (no tables until Phase 1+ adds the workspaces registry).
+  - **Cockpit Dockerfile fix**: `corepack` was unbundled from Node 25+, so `node:26-alpine` (set by user pre-0c) doesn't ship it. Swapped both stages' `corepack enable && corepack prepare pnpm@latest --activate` → `npm install -g pnpm@latest`. Surfaced when `--build` ran for the first time on this branch.
+  - **`pnpm db:pull:metadata` chain extended**: drizzle-kit pull emits non-biome-formatted output (single-line imports including unused symbols). Without biome in the chain, every CI re-pull would show "drift" purely from formatting churn. Added `biome check --write --unsafe src/db/metadata/` as the final step. Re-pull on an unchanged substrate now produces zero diff.
+  - **CI extension (`.github/workflows/compose-smoke.yml`)**:
+    - "Verify both Postgres databases exist" → "Verify all three" (adds `$COCKPIT_DB`).
+    - "Verify dataraum_lake mounted writable" now tests both containers individually + the cross-container handoff (cockpit writes a sentinel file, control-plane reads it).
+    - New step: install node 26 + pnpm, `pnpm install --frozen-lockfile`, run `pnpm db:pull:metadata` against the running engine, `git diff --exit-code -- src/db/metadata/`. Drift = engine SQLAlchemy changed without the cockpit refreshing → CI fails with `::error::Drift detected...` message pointing at the fix.
+  - Verified end-to-end locally: `docker compose down -v` + `up -d --build --wait` brings all three services healthy; all 3 databases present; lake mount writable + handoff works; `pnpm db:pull:metadata` against the live stack produces zero diff against the committed schema.
 - [ ] **Phase 1 — Read surfaces.** TS Drizzle tools: list_sources, list_tables, look_table, search_snippets. Engine `query` Arrow verb. Widgets WorkspaceInventory + TableProfile (DAT-349 + DAT-350).
 - [ ] **Phase 2 — add_source.** TS upload to mounted lake volume, recipe authoring in TS, engine `probe` verb, engine `measure` SSE verb. `TypingPhase.table_filter` (DAT-342 logic). Widget AddSourceWizard (DAT-348).
 - [ ] **Phase 3 — why.** TS Drizzle + LLM synthesis in chat. Widget WhyPanel (DAT-351 without TeachProposal).

@@ -23,7 +23,8 @@
 # ---------- 1. deps ----------
 FROM node:26-alpine AS deps
 WORKDIR /app
-RUN corepack enable && corepack prepare pnpm@latest --activate
+COPY package.json ./
+RUN npm install -g "$(node -p "require('./package.json').packageManager")"
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
@@ -31,7 +32,8 @@ RUN pnpm install --frozen-lockfile
 # ---------- 2. build ----------
 FROM node:26-alpine AS build
 WORKDIR /app
-RUN corepack enable && corepack prepare pnpm@latest --activate
+COPY package.json ./
+RUN npm install -g "$(node -p "require('./package.json').packageManager")"
 
 ARG VITE_ENGINE_API_URL=http://localhost:8000
 ENV VITE_ENGINE_API_URL=$VITE_ENGINE_API_URL

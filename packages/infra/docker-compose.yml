@@ -19,6 +19,12 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
       DUCKLAKE_CATALOG_DB: ${DUCKLAKE_CATALOG_DB}
+      # COCKPIT_DB is created at postgres first-boot by init-databases.sh
+      # alongside DUCKLAKE_CATALOG_DB. Holds the cockpit's own state
+      # (workspaces registry, chat history, ui_state) — separate database
+      # so the cockpit can `drizzle-kit push` without ever touching the
+      # engine's metadata schema.
+      COCKPIT_DB: ${COCKPIT_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ../engine/docker/postgres-init/:/docker-entrypoint-initdb.d/:ro
@@ -71,14 +77,6 @@ services:
       retries: 10
 
   cockpit:
-    # Runtime env to wire when the cockpit starts hitting Postgres (Phase 1+
-    # of the DAT-339 pivot):
-    #   COCKPIT_DATABASE_URL  — cockpit_db database in the shared Postgres
-    #   METADATA_DATABASE_URL — engine metadata DB (same URL the engine uses,
-    #                           sans the +psycopg dialect prefix)
-    #   DATARAUM_WORKSPACE_ID — propagated from the control-plane block above
-    # The cockpit's db/{cockpit,metadata}/client.ts files throw on import if
-    # these are unset, so they must land before the first DB-touching route.
     build:
       context: ../cockpit
       args:
@@ -86,6 +84,31 @@ services:
     depends_on:
       control-plane:
         condition: service_healthy
+    environment:
+      # cockpit_db — TanStack Start side of the substrate. Created at
+      # postgres first-boot by init-databases.sh. Holds workspaces
+      # registry + chat history + ui_state.
+      COCKPIT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${COCKPIT_DB}
+      # Engine metadata DB — same Postgres instance, different database.
+      # The cockpit reads (Drizzle introspected schema) but never writes
+      # here; the engine's SQLAlchemy models own the schema.
+      METADATA_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # Active workspace_id — same value the control-plane bootstraps.
+      # Drives `pnpm db:pull:metadata` schemaFilter + the metadata
+      # client's search_path resolution. Must match what the engine
+      # was bootstrapped with or drizzle pulls from the wrong schema.
+      DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
+      # Mounted shared lake volume — Phase 2's add_source wizard writes
+      # uploaded user files here from TS (Node fs); the engine reads
+      # them via DuckLake from the same path. Same volume mounted on
+      # both containers; same in-container path for symmetry.
+      DATARAUM_LAKE_PATH: /var/lib/dataraum/lake
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      # Writable — the cockpit writes uploaded files into the lake
+      # directory; the engine container reads them through the same
+      # volume mounted at the same path. See DATARAUM_LAKE_PATH above.
+      - dataraum_lake:/var/lib/dataraum/lake
     ports:
       - "127.0.0.1:3000:3000"
     healthcheck:

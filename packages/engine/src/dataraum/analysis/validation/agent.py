@@ -235,25 +235,26 @@ class ValidationAgent(LLMFeature):
     ) -> list[str]:
         """Derive which tables a validation SQL actually references.
 
-        Parses typed_* table names from the SQL and maps them back to
-        table_ids via the schema. Returns empty list (with warning) if
-        no tables can be resolved — never falls back to all_table_ids.
+        Matches the schema's known ``duckdb_path`` values against the SQL
+        with word-boundary anchors — works for bare (``FROM x__y``) and
+        quoted (``FROM "x__y"``) forms. Returns an empty list (with
+        warning) if no tables can be resolved — never falls back to
+        ``all_table_ids``.
         """
-        # Build duckdb_path → id map from schema (SQL references duckdb paths
-        # like typed_bank_transactions, not logical names like bank_transactions)
+        # Post-DAT-341: duckdb_path is the bare ``<source>__<table>`` form;
+        # tables resolve via the manager's ``USE lake.typed``.
         path_to_id: dict[str, str] = {}
         for t in schema.get("tables", []):
             duckdb_path = t.get("duckdb_path", t["table_name"])
             path_to_id[duckdb_path] = t.get("table_id", "")
 
-        # Find all typed_* table references in SQL
-        referenced_names = set(re.findall(r"\btyped_\w+", sql))
+        referenced_names = {
+            name for name in path_to_id if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", sql)
+        }
 
-        scoped_ids = []
-        for name in referenced_names:
-            tid = path_to_id.get(name)
-            if tid and tid in all_table_ids:
-                scoped_ids.append(tid)
+        scoped_ids = [
+            path_to_id[name] for name in referenced_names if path_to_id[name] in all_table_ids
+        ]
 
         if not scoped_ids and referenced_names:
             logger.warning(

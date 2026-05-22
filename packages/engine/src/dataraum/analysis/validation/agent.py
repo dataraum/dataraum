@@ -249,9 +249,7 @@ class ValidationAgent(LLMFeature):
             path_to_id[duckdb_path] = t.get("table_id", "")
 
         referenced_names = {
-            name
-            for name in path_to_id
-            if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", sql)
+            name for name in path_to_id if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", sql)
         }
 
         scoped_ids = [

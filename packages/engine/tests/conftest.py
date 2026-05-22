@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 from collections.abc import Generator
 
@@ -29,7 +30,7 @@ from testcontainers.postgres import PostgresContainer  # noqa: E402
 # config overlay. Tests for ``bootstrap_workspace`` itself reset and
 # rebootstrap via the autouse ``_isolate_active_workspace`` fixture in
 # ``tests/unit/server/test_workspace.py``.
-import dataraum.server.workspace as _ws_mod  # noqa: E402
+_ws_mod = importlib.import_module("dataraum.server.workspace")  # noqa: E402
 from dataraum.storage import init_database  # noqa: E402
 
 _ws_mod._active_workspace_id = os.environ["DATARAUM_WORKSPACE_ID"]

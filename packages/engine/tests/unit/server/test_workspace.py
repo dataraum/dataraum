@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
+import dataraum.server.workspace as _ws
 import pytest
 
 from dataraum.core.config import (
@@ -65,8 +66,6 @@ def _isolate_active_workspace() -> Iterator[None]:
     later test module touching Postgres-dialect code would hit
     ``RuntimeError: No active workspace``.
     """
-    import dataraum.server.workspace as _ws
-
     saved_pointer = _ws._active_workspace_id
     reset_active_workspace_for_tests()
     reset_active_workspace_id_for_tests()

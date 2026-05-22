@@ -1,4 +1,4 @@
-.PHONY: help up down logs dev-cockpit test-engine codegen build install
+.PHONY: help up down logs dev-cockpit test-engine build install
 
 help:
 	@echo "DataRaum monorepo — common workspace tasks"
@@ -8,7 +8,6 @@ help:
 	@echo "  make logs         Tail compose logs"
 	@echo "  make dev-cockpit  Run cockpit dev server with hot reload (outside docker)"
 	@echo "  make test-engine  Run engine unit tests (testmon-cached)"
-	@echo "  make codegen      Regenerate openapi.yaml + cockpit TS types"
 	@echo "  make build        Build all docker images"
 	@echo "  make install      Install engine + cockpit deps"
 
@@ -29,10 +28,6 @@ dev-cockpit:
 
 test-engine:
 	cd packages/engine && uv run pytest --testmon tests/unit -q
-
-codegen:
-	cd packages/engine && uv run python scripts/export_openapi.py > ../api/openapi.yaml
-	cd packages/cockpit && pnpm codegen
 
 install:
 	cd packages/engine && uv sync --group dev

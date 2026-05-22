@@ -28,7 +28,7 @@ dependencies = [
     "sqlalchemy[asyncio]==2.0.49",
     "psycopg[binary]==3.3.4",
     # Platform HTTP surface
-    "fastapi==0.136.1",
+    "starlette>=1.0.0",
     "uvicorn[standard]==0.47.0",
     # Pydantic
     "pydantic>=2.0.0",
@@ -72,6 +72,8 @@ dev = [
     "zensical>=0.0.24",
     "vulture>=2.15",
     "testcontainers[postgres]>=4.14",
+    # starlette.testclient requires httpx since starlette 0.27.
+    "httpx>=0.27.0",
 ]
 [build-system]
 requires = ["hatchling"]

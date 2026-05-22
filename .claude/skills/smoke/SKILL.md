@@ -19,19 +19,19 @@ allowed-tools:
 
 # Smoke: $ARGUMENTS
 
-You just implemented or changed a cockpit surface, an engine REST route, or both. Now USE it. Not to verify correctness (that's eval's job) — to feel what the UX is like.
+You just implemented or changed a cockpit surface, an engine kernel verb, or both. Now USE it. Not to verify correctness (that's eval's job) — to feel what the UX is like.
 
 **IMPORTANT:**
 - If you changed **engine Python code**, the engine container loaded the old code — rebuild + restart it before smoke: `docker compose -f packages/infra/docker-compose.yml up -d --build control-plane`.
 - If you only changed **cockpit code** and `pnpm dev` is running, Vite hot-reloads — no restart needed.
-- If you changed the **OpenAPI contract**, regenerate types before smoke: `(cd packages/engine && uv run python scripts/export_openapi.py) > packages/api/openapi.yaml && (cd packages/cockpit && pnpm codegen)`.
+- If the **engine added or changed SQLAlchemy models**, refresh the cockpit's Drizzle metadata client: `(cd packages/cockpit && DATARAUM_WORKSPACE_ID=<id> METADATA_DATABASE_URL=<url> pnpm db:pull:metadata)`.
 
 ## Input
 
 $ARGUMENTS is one of:
 - A route or page to focus on (e.g., `/sources`, `/chat`)
 - A scenario to play through (e.g., "ask the agent to list sources, check the streaming feels right")
-- A REST route to exercise headless (e.g., `GET /api/sources`)
+- A kernel verb to exercise headless (e.g., `POST /measure`)
 - Empty — exercise whatever just changed
 
 ## What this is

@@ -1,8 +1,10 @@
 """DataRaum Context Engine.
 
 A rich metadata context engine for AI-driven data analytics. The engine is
-driven via the MCP tools in `dataraum.mcp` and the FastAPI surface in
-`dataraum.server` / `dataraum.api`; there is no public in-process Python API.
+driven through the 3-verb Starlette kernel in `dataraum.server`
+(`/measure`, `/query`, `/probe`, plus `/health`); the legacy MCP tool
+implementations in `dataraum.mcp` are reference-only for the cockpit
+takeover. There is no public in-process Python API.
 """
 
 from importlib.metadata import PackageNotFoundError

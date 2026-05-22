@@ -1,6 +1,6 @@
 """Lane smoke for DAT-358 — Engine workspace foundation.
 
-Scope: verify the FastAPI lifespan bootstraps the active workspace from
+Scope: verify the Starlette lifespan bootstraps the active workspace from
 ``DATARAUM_WORKSPACE_ID``, materializes the overlay, and sets the
 active-workspace pointer.
 
@@ -9,7 +9,7 @@ than a Postgres row, and the cockpit no longer reads workspace metadata
 through ``/api/workspace`` — the route was deleted in A2 (pulled forward
 from Phase 0c). The remaining smoke contract:
 
-* FastAPI startup runs ``bootstrap_workspace`` against the resolved
+* Server startup runs ``bootstrap_workspace`` against the resolved
   ``${DATARAUM_HOME}/workspaces/<id>/config/`` and populates it on first
   boot by copying the read-only baked-in defaults.
 * The ``_adhoc`` vertical scaffold lands under the overlay (cold-start
@@ -30,7 +30,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
+from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from dataraum.core.config import reset_active_workspace_for_tests, reset_config_root
@@ -81,8 +81,8 @@ def wired_app(
     lake_anchor,  # type: ignore[no-untyped-def]
     baked_in_config: Path,
     datadraum_home: Path,
-) -> Iterator[FastAPI]:
-    """FastAPI app wired against tmp DATARAUM_HOME + a fixed workspace id.
+) -> Iterator[Starlette]:
+    """Control plane app wired against tmp DATARAUM_HOME + a fixed workspace id.
 
     Stubs the DuckLake bootstrap (the substrate is already open via
     ``lake_anchor``) and probes; workspace bootstrap runs for real against
@@ -114,7 +114,7 @@ def _expected_overlay(home: Path, workspace_id: str) -> Path:
 
 
 def test_bootstrap_runs_on_lifespan_and_activates_env_var_workspace(
-    wired_app: FastAPI,
+    wired_app: Starlette,
     datadraum_home: Path,
 ) -> None:
     """Cold start: TestClient triggers lifespan → bootstrap → pointer set."""
@@ -127,7 +127,7 @@ def test_bootstrap_runs_on_lifespan_and_activates_env_var_workspace(
 
 
 def test_bootstrap_copies_baked_in_config_on_first_boot(
-    wired_app: FastAPI,
+    wired_app: Starlette,
     baked_in_config: Path,
     datadraum_home: Path,
 ) -> None:
@@ -142,7 +142,7 @@ def test_bootstrap_copies_baked_in_config_on_first_boot(
 
 
 def test_adhoc_vertical_scaffold_exists_after_bootstrap(
-    wired_app: FastAPI,
+    wired_app: Starlette,
     datadraum_home: Path,
 ) -> None:
     """Induction write target lives on the workspace overlay, not per-session."""
@@ -159,13 +159,13 @@ def test_adhoc_vertical_scaffold_exists_after_bootstrap(
 
 
 def test_overlay_edits_survive_restart(
-    wired_app: FastAPI,
+    wired_app: Starlette,
     datadraum_home: Path,
 ) -> None:
     """Proxy for the ticket's container-restart smoke.
 
     First boot populates the overlay. We then edit a config file inside
-    the overlay (simulating a teach write), re-create the FastAPI app
+    the overlay (simulating a teach write), re-create the control plane app
     instance (simulating restart against the same DATARAUM_HOME mount),
     and confirm the edit persists — bootstrap must NOT re-copy on top
     of existing state.

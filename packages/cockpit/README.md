@@ -13,7 +13,7 @@ Read surfaces (sources, tables, snippets) land in Phase 1 of the [DAT-339 pivot]
 - **Mantine v9** — component library
 - **Tailwind CSS v4** — utility + layout alongside Mantine
 - **Lucide React** — icons
-- **Drizzle ORM** + `postgres` — two clients: `cockpit_db` (own database, holds chat history + UI state) and the engine's `ws_<workspace_id>` metadata schema (introspected via `pnpm db:pull:metadata`)
+- **Drizzle ORM** + `postgres` — two clients: `cockpit_db` (own database, holds chat history + UI state) and the engine's `ws_<workspace_id>` metadata schema (introspected via `bun run db:pull:metadata`)
 - **Biome** — lint + format (no ESLint, no Prettier)
 - **Vitest** — tests
 - **TypeScript** only, strict
@@ -44,8 +44,8 @@ The engine exposes three verbs (`/measure`, `/query`, `/probe`) plus `/health` o
 ```bash
 cp .env.example .env
 # fill in COCKPIT_DATABASE_URL + METADATA_DATABASE_URL + DATARAUM_WORKSPACE_ID
-pnpm install
-pnpm dev
+bun install
+bun run dev
 ```
 
 Dev server runs on http://localhost:3000.
@@ -53,22 +53,22 @@ Dev server runs on http://localhost:3000.
 If the engine adds or changes SQLAlchemy models, refresh the metadata client:
 
 ```bash
-DATARAUM_WORKSPACE_ID=<id> METADATA_DATABASE_URL=<url> pnpm db:pull:metadata
+DATARAUM_WORKSPACE_ID=<id> METADATA_DATABASE_URL=<url> bun run db:pull:metadata
 ```
 
 ## Scripts
 
 ```bash
-pnpm dev                  # vite dev server
-pnpm build                # production build
-pnpm preview              # serve the production build locally
-pnpm test                 # vitest
-pnpm check                # biome check (lint + format)
-pnpm lint                 # biome lint
-pnpm format               # biome format
-pnpm db:pull:metadata     # introspect engine's ws_<id> schema → src/db/metadata/
-pnpm db:generate:cockpit  # cockpit_db migration SQL from src/db/cockpit/schema.ts
-pnpm db:push:cockpit      # push schema directly to cockpit_db
+bun run dev               # vite dev server
+bun run build             # production build
+bun run preview           # serve the production build locally
+bun run test              # vitest
+bun run check             # biome check (lint + format)
+bun run lint              # biome lint
+bun run format            # biome format
+bun run db:pull:metadata  # introspect engine's ws_<id> schema → src/db/metadata/
+bun run db:generate:cockpit  # cockpit_db migration SQL from src/db/cockpit/schema.ts
+bun run db:push:cockpit   # push schema directly to cockpit_db
 ```
 
 ## Drizzle layout
@@ -76,6 +76,6 @@ pnpm db:push:cockpit      # push schema directly to cockpit_db
 Two clients in one package:
 
 - `src/db/cockpit/{schema,client}.ts` — hand-written cockpit_db (push/generate target)
-- `src/db/metadata/{schema,relations,client}.ts` — generated from the engine substrate by `pnpm db:pull:metadata`; the cockpit reads, never pushes
+- `src/db/metadata/{schema,relations,client}.ts` — generated from the engine substrate by `bun run db:pull:metadata`; the cockpit reads, never pushes
 
 Cockpit_db tables land as they're needed (conversations + conversation_messages are the next addition).

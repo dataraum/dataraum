@@ -48,8 +48,8 @@ For UI iteration, run the cockpit dev server outside docker for hot reload — s
 ## Develop
 
 - **Engine (Python):** `cd packages/engine && uv sync --group dev && uv run pytest --testmon tests/unit -q`. See `packages/engine/README.md` and `packages/engine/CLAUDE.md`.
-- **Cockpit (TypeScript):** `cd packages/cockpit && pnpm install && pnpm dev`. See `packages/cockpit/README.md` and `packages/cockpit/CLAUDE.md`.
-- **Pull the engine metadata schema (cockpit):** `cd packages/cockpit && DATARAUM_WORKSPACE_ID=<id> METADATA_DATABASE_URL=<url> pnpm db:pull:metadata`. Re-run after the engine adds/changes SQLAlchemy models.
+- **Cockpit (TypeScript):** `cd packages/cockpit && bun install && bun run dev`. See `packages/cockpit/README.md` and `packages/cockpit/CLAUDE.md`.
+- **Pull the engine metadata schema (cockpit):** `cd packages/cockpit && DATARAUM_WORKSPACE_ID=<id> METADATA_DATABASE_URL=<url> bun run db:pull:metadata`. Re-run after the engine adds/changes SQLAlchemy models.
 
 ## Documentation
 

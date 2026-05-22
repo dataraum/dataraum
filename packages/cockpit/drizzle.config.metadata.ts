@@ -6,7 +6,7 @@
 // the source of truth for these tables.
 //
 // Usage:
-//   pnpm exec drizzle-kit pull --config drizzle.config.metadata.ts
+//   bunx drizzle-kit pull --config drizzle.config.metadata.ts
 //
 // Env:
 //   METADATA_DATABASE_URL — postgres URL pointing at the engine's metadata DB

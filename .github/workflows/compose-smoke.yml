@@ -57,18 +57,14 @@ jobs:
                   test "$(docker compose exec -T control-plane cat /var/lib/dataraum/lake/.handoff | tr -d '\r\n')" = "cockpit_wrote"
                   docker compose exec -T cockpit rm /var/lib/dataraum/lake/.handoff
 
-            - name: Set up Node + pnpm (for drizzle-kit pull drift check)
-              uses: actions/setup-node@v6
+            - name: Set up Bun (for drizzle-kit pull drift check)
+              uses: oven-sh/setup-bun@v2
               with:
-                  node-version: "26"
-
-            - name: Install pnpm (version from packages/cockpit/package.json packageManager)
-              working-directory: packages/cockpit
-              run: npm install -g "$(node -p "require('./package.json').packageManager")"
+                  bun-version: "1.3.14"
 
             - name: Install cockpit deps
               working-directory: packages/cockpit
-              run: pnpm install --frozen-lockfile
+              run: bun install --frozen-lockfile
 
             - name: Drizzle metadata schema drift check
               working-directory: packages/cockpit
@@ -88,11 +84,11 @@ jobs:
                   . ../infra/.env
                   set +a
                   export METADATA_DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:5432/${POSTGRES_DB}"
-                  pnpm db:pull:metadata
+                  bun run db:pull:metadata
                   drift_modified=$(git diff --name-only -- src/db/metadata/)
                   drift_untracked=$(git ls-files --others --exclude-standard -- src/db/metadata/)
                   if [ -n "$drift_modified" ] || [ -n "$drift_untracked" ]; then
-                      echo "::error::Drift detected: engine SQLAlchemy schema differs from committed src/db/metadata/. Run 'pnpm db:pull:metadata' locally and commit the result."
+                      echo "::error::Drift detected: engine SQLAlchemy schema differs from committed src/db/metadata/. Run 'bun run db:pull:metadata' locally and commit the result."
                       [ -n "$drift_modified" ] && { echo "Modified:"; echo "$drift_modified"; }
                       [ -n "$drift_untracked" ] && { echo "Untracked:"; echo "$drift_untracked"; }
                       git diff -- src/db/metadata/ || true

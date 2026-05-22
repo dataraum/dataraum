@@ -94,7 +94,7 @@ services:
       # here; the engine's SQLAlchemy models own the schema.
       METADATA_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       # Active workspace_id — same value the control-plane bootstraps.
-      # Drives `pnpm db:pull:metadata` schemaFilter + the metadata
+      # Drives `bun run db:pull:metadata` schemaFilter + the metadata
       # client's search_path resolution. Must match what the engine
       # was bootstrapped with or drizzle pulls from the wrong schema.
       DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}

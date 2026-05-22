@@ -36,7 +36,7 @@ React components never reach across to the engine directly.
   and a future `src/kernel/` (for kernel-verb fetch wrappers when slice 2
   needs them). Don't reach across to another tool's internal helpers.
 - **No openapi-fetch.** Pre-pivot the cockpit consumed a generated REST
-  client; that surface (and `pnpm codegen`) retired in DAT-339 Phase 0c.
+  client; that surface (and the `codegen` script) retired in DAT-339 Phase 0c.
   Tools call the kernel verbs (`/measure`, `/query`, `/probe`) via a
   hand-written `fetch` wrapper, and read metadata directly via the
   Drizzle introspected schema.

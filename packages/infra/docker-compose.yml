@@ -51,6 +51,12 @@ services:
       # bootstrap_workspace fails loud if it's unset; the mounted volume
       # (dataraum_workspace) gives it restart persistence.
       DATARAUM_HOME: /var/lib/dataraum/workspace
+      # DATARAUM_WORKSPACE_ID is the active workspace pointer (DAT-339 pivot).
+      # Engine resolves the Postgres schema name as ws_<id-with-dashes-as-_>
+      # and sets search_path on every connection. bootstrap_workspace fails
+      # loud if it's unset. Cockpit dev uses the same value to drive
+      # drizzle-kit pull + the metadata client.
+      DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - dataraum_lake:/var/lib/dataraum/lake
@@ -65,6 +71,14 @@ services:
       retries: 10
 
   cockpit:
+    # Runtime env to wire when the cockpit starts hitting Postgres (Phase 1+
+    # of the DAT-339 pivot):
+    #   COCKPIT_DATABASE_URL  — cockpit_db database in the shared Postgres
+    #   METADATA_DATABASE_URL — engine metadata DB (same URL the engine uses,
+    #                           sans the +psycopg dialect prefix)
+    #   DATARAUM_WORKSPACE_ID — propagated from the control-plane block above
+    # The cockpit's db/{cockpit,metadata}/client.ts files throw on import if
+    # these are unset, so they must land before the first DB-touching route.
     build:
       context: ../cockpit
       args:

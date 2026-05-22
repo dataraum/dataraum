@@ -14,7 +14,10 @@
     "format": "biome format",
     "lint": "biome lint",
     "check": "biome check",
-    "codegen": "openapi-typescript ../api/openapi.yaml -o src/api/types.ts"
+    "codegen": "openapi-typescript ../api/openapi.yaml -o src/api/types.ts",
+    "db:pull:metadata": "drizzle-kit pull --config drizzle.config.metadata.ts && node scripts/normalize-metadata-pull.mjs",
+    "db:push:cockpit": "drizzle-kit push --config drizzle.config.cockpit.ts",
+    "db:generate:cockpit": "drizzle-kit generate --config drizzle.config.cockpit.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.97.0",

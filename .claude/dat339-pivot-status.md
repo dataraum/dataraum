@@ -1,25 +1,72 @@
 # DAT-339 pivot — multi-session status
 
-Companion to `.claude/platform-status.md`. The pivot is multi-session work; this file persists locked decisions + the phase chain across compactions.
+Locked decisions + phase state for the cockpit v1 slice 1 (`add_source`) pivot. Companion to:
 
-Integration branch: `feat/dat-339-pivot`
-Active phase branch: `feat/dat-339-pivot-p0-substrate` (0a + 0b + 0c + 0d + 0e+0f)
+- [`dat339-slice1-features-plan.md`](./dat339-slice1-features-plan.md) — per-ticket implementation plan
+- [`platform-status.md`](./platform-status.md) — at-a-glance lane board
+- [DAT-339 epic](https://real-dataraum.atlassian.net/browse/DAT-339) — authoritative ticket structure
+- Confluence [DD/23363586](https://real-dataraum.atlassian.net/wiki/spaces/DD/pages/23363586) — canonical spec
 
-## Decisions locked by /refine (2026-05-22)
+Substrate (0a–0f) merged via PR #132. Slice-1 feature work continues per ticket structure under the epic; no integration branch — each ticket lands its own PR off `main`.
 
-These are the binding architectural decisions. Do NOT renegotiate without going back through /refine.
+---
 
-- **Engine kernel = 3 verbs.** `measure` (SSE), `query` (Arrow), `probe` (read-only SQL against sources). FastAPI + OpenAPI + `packages/api/openapi.yaml` + `packages/engine/scripts/export_openapi.py` + `packages/cockpit/src/api/types.ts` + `pnpm codegen` all delete.
-- **Schema-per-workspace.** Each workspace = its own Postgres schema (`ws_<uuid_with_underscores>`) in the engine metadata DB. No RLS, no GUC. Physical isolation. Per-workspace DuckLake catalog (user, 2026-05-22).
-- **Cockpit_db is the control plane.** Holds `workspaces` registry table + (future) conversations / ui_state. Engine reads active workspace from `DATARAUM_WORKSPACE_ID` env var (slice 1 simple); cockpit_db lookup is multi-workspace future.
-- **`drizzle-kit pull`** (NOT `introspect` — EOL in drizzle 1.0). Two configs: `drizzle.config.cockpit.ts` (push/generate cockpit_db) + `drizzle.config.metadata.ts` (pull-only against engine workspace schema).
-- **Tools are hand-written TS in cockpit.** No openapi-fetch underneath. Cockpit data hooks = chat agent tools (DAT-353 was already N:M; pivot just changes the runtime from REST → drizzle/kernel).
-- **Teach goes proper-from-day-one in Phase 4.** TS owns overlay writes against a Postgres `config_overlay(workspace_id, session_id NULLABLE, type, target, payload)` table. Filesystem overlay (DAT-358) deletes in Phase 4. `mcp/teach.py` deletes in Phase 4. No legacy-Python teach wrapped in TS — see `[[no-corner-cutting-via-deferral]]` memory.
-- **MCP server (`packages/engine/src/dataraum/mcp/`) stays untouched in slice 1.** Code-on-disk reference for slice 2's session-lifecycle reimplementation. Slice 2 deletes the directory after porting `begin_session` / `end_session` / `resume_session` to TS + kernel.
+## Decisions locked (2026-05-22, refined throughout the day)
 
-## Phase chain
+Binding. Do NOT renegotiate without `/refine`.
 
-Each phase is roughly one session. Tick when committed AND tests green.
+### Engine kernel
+- **3 verbs**: `measure` (SSE), `run_sql` (Arrow IPC, **renamed from `query` 2026-05-22** to disambiguate from the legacy NL-to-SQL MCP tool), `probe` (read-only SQL against external sources).
+- `/measure` SSE handles its own reconnect by replaying current state — no separate job_id surface (DAT-345 folded into DAT-344).
+- FastAPI + OpenAPI + `packages/api/openapi.yaml` + `export_openapi.py` + `packages/cockpit/src/api/types.ts` + `pnpm codegen` all deleted in Phase 0c.
+
+### Persistence
+- **Schema-per-workspace**: each workspace = own Postgres schema (`ws_<uuid_with_underscores>`) in engine metadata DB. No RLS, no GUC. Per-workspace DuckLake catalog.
+- **`config_overlay` table** lives in engine `ws_<id>` schema (per-workspace by virtue of being in a per-workspace schema):
+  - Cols: `workspace_id, session_id NULLABLE, type, target, payload, created_at, superseded_at`
+  - Workspace-scoped rows (`session_id NULL`): `type_pattern`, `null_value`, `concept_property`
+  - Session-scoped rows (`session_id NOT NULL`): `metric`, `validation`, `cycle`
+  - Engine SQLAlchemy creates + migrates; cockpit pulls via existing `drizzle-kit pull`; cockpit writes via Drizzle metadata client (policy: metadata client otherwise read-only, `config_overlay` writes allowed)
+- **DAT-358 filesystem overlay = stepping-stone**, not destination. Retires when DAT-343 lands Postgres `config_overlay`. See `[[recency-not-value]]` memory.
+- **Cockpit_db** is the control plane: `workspaces` registry + (future) conversations / ui_state. Engine reads active workspace from `DATARAUM_WORKSPACE_ID` env var.
+- **`drizzle-kit pull`** (NOT `introspect`).
+
+### Cockpit
+- Tools are hand-written TS in `packages/cockpit/src/tools/`. No openapi-fetch, no codegen.
+- 7 slice-1 tools: `list_sources`, `list_tables`, `add_source_file`, `add_source_recipe`, `look_table`, `why_column`, `teach`.
+- **Why agent moves from Python (`mcp/why.py`) to TS** (`tools/why_column.ts`): Drizzle evidence aggregation + Anthropic synthesis in chat handler. Engine no longer hosts agent logic.
+- Each tool owns its widget response shape (TableProfile JSON, WhyPanel hybrid markdown+suggestions, traffic-light bands).
+- Current cockpit routes (`chat.tsx`, `sources.tsx`, `index.tsx`) are **placeholders**. The real UI is the three-region layout + Stage Navigator from DAT-347 (C1).
+
+### Pipeline phases
+- **Semantic phase MUST split** into per-column (LLM-driven column roles, business terms) and per-table (entity types, table-level synthesis). New sub-ticket under DAT-339 (file pending). See `[[semantic-phase-split]]` memory.
+- Per-column annotations are the surface in-loop teach acts on; per-table synthesis runs over post-teach annotations.
+- Don't frame LLM phases as "latency cost" — this is an agentic system.
+
+### Config package extraction
+- `packages/engine/config/` extracts to standalone `packages/dataraum-config/`. Engine consumes via env-var / mount path. Cockpit can also consume vertical YAMLs for UX. Independent of all other slice-1 work; ships first.
+
+### MCP folder
+- `packages/engine/src/dataraum/mcp/` stays through slice 1 as dead code (teach moves to TS, why moves to TS, server.py loses its only HTTP mount). Whole-folder delete in slice 2 alongside session-lifecycle reimplementation.
+
+### Orchestration framework (OPEN — spike pending)
+- **Three-way spike**: DBOS vs Temporal vs Restate.
+- Tight scope: typing phase as activity in each + minimal `import → typing` workflow.
+- Compare: lines deleted from current orchestrator, retry/resume, polyglot fit, op cost.
+- Output: framework decision OR "keep monolith, port Python orchestrator to TS."
+- DAT-344 (E4) shape is pending spike outcome.
+- Memory `[[durable-execution-lean]]` (DBOS-only lean pre-pivot) is being re-evaluated — rationale was single-language; post-pivot is TS-drives-Python.
+
+### Hard rules
+- No backwards-compat shims.
+- No legacy Python wrapped in TS — TS owns teach writes directly via Drizzle (`[[no-corner-cutting-via-deferral]]`).
+- Recency does not imply value (`[[recency-not-value]]`).
+
+---
+
+## Phase chain (substrate — Done, historical)
+
+Substrate phases 0a–0f shipped via PR #132. Detail kept for historical reference; do not modify.
 
 - [x] **Phase 0a — Schema-per-workspace substrate**
   - [x] A1: Drop `workspace_id` columns from `Table` + `EntropyObjectRecord`, drop `idx_entropy_workspace`, remove 11 row-stamping call sites, drop `workspace_id` param from `entropy/engine._make_record`. Commit `ffb9b345`. 1350/1350 unit tests green.
@@ -61,28 +108,67 @@ Each phase is roughly one session. Tick when committed AND tests green.
     - "Verify dataraum_lake mounted writable" now tests both containers individually + the cross-container handoff (cockpit writes a sentinel file, control-plane reads it).
     - New step: install node 26 + pnpm, `pnpm install --frozen-lockfile`, run `pnpm db:pull:metadata` against the running engine, `git diff --exit-code -- src/db/metadata/`. Drift = engine SQLAlchemy changed without the cockpit refreshing → CI fails with `::error::Drift detected...` message pointing at the fix.
   - Verified end-to-end locally: `docker compose down -v` + `up -d --build --wait` brings all three services healthy; all 3 databases present; lake mount writable + handoff works; `pnpm db:pull:metadata` against the live stack produces zero diff against the committed schema.
-- [ ] **Phase 1 — Read surfaces.** TS Drizzle tools: list_sources, list_tables, look_table, search_snippets. Engine `query` Arrow verb. Widgets WorkspaceInventory + TableProfile (DAT-349 + DAT-350).
-- [ ] **Phase 2 — add_source.** TS upload to mounted lake volume, recipe authoring in TS, engine `probe` verb, engine `measure` SSE verb. `TypingPhase.table_filter` (DAT-342 logic). Widget AddSourceWizard (DAT-348).
-- [ ] **Phase 3 — why.** TS Drizzle + LLM synthesis in chat. Widget WhyPanel (DAT-351 without TeachProposal).
-- [ ] **Phase 4 — teach (proper).** Postgres `config_overlay` table. Engine config loader reads Postgres overlay. Delete filesystem overlay logic (DAT-358 retire). Delete `mcp/teach.py`. TS owns teach writes. Widget TeachProposal + MeasureProgress (DAT-351 completion + DAT-352).
-- [ ] **Phase 5 — Cleanup.** Verify `api/` empty + deleted (happened in 0c). `mcp/` directory **untouched** (carries to slice 2 for session-lifecycle reimplementation). Engine = pipeline + storage + analysis + kernel only.
+
+---
+
+## Slice-1 feature tickets (live state)
+
+Per the DAT-339 epic decomposition. See [`dat339-slice1-features-plan.md`](./dat339-slice1-features-plan.md) for per-ticket implementation detail.
+
+### Engine
+
+| ID | Ticket | Status | Notes |
+|---|---|---|---|
+| EW | [DAT-358](https://real-dataraum.atlassian.net/browse/DAT-358) | Done | Filesystem overlay stepping-stone; superseded by Postgres `config_overlay` in DAT-343 |
+| E0 | [DAT-340](https://real-dataraum.atlassian.net/browse/DAT-340) | Shipped PR #129; Jira transition pending | |
+| E1 | [DAT-341](https://real-dataraum.atlassian.net/browse/DAT-341) | Done | |
+| E2 | [DAT-342](https://real-dataraum.atlassian.net/browse/DAT-342) | To Do | Mostly aligned; minor touchup |
+| E2b | NEW (file pending) | — | Semantic phase split per-column / per-table |
+| E3 | [DAT-343](https://real-dataraum.atlassian.net/browse/DAT-343) | To Do — REWRITE PENDING | Filesystem → Postgres `config_overlay` |
+| E4 | [DAT-344](https://real-dataraum.atlassian.net/browse/DAT-344) | To Do — REWRITE PENDING SPIKE | Shape depends on orchestration framework choice |
+| ~~E5~~ | ~~DAT-345~~ | Folded into E4 | `/measure` IS the SSE verb; reconnect replays current state |
+
+### Cockpit
+
+| ID | Ticket | Status | Notes |
+|---|---|---|---|
+| C1 | [DAT-347](https://real-dataraum.atlassian.net/browse/DAT-347) | To Do | Three-region layout + Stage Navigator (the real UI; current routes are placeholders) |
+| C2 | [DAT-348](https://real-dataraum.atlassian.net/browse/DAT-348) | To Do | AddSourceWizard |
+| C3 | [DAT-349](https://real-dataraum.atlassian.net/browse/DAT-349) | To Do | WorkspaceInventory + SourceCard |
+| C4 | [DAT-350](https://real-dataraum.atlassian.net/browse/DAT-350) | To Do | TableProfile |
+| C5 | [DAT-351](https://real-dataraum.atlassian.net/browse/DAT-351) | To Do — REWRITE PENDING | WhyPanel + TeachProposal + why agent port from Python to TS |
+| C6 | [DAT-352](https://real-dataraum.atlassian.net/browse/DAT-352) | To Do | MeasureProgress + chat-as-audit-trail rehydration |
+
+### Chat
+
+| ID | Ticket | Status | Notes |
+|---|---|---|---|
+| CH1 | [DAT-353](https://real-dataraum.atlassian.net/browse/DAT-353) | To Do — REWRITE PENDING | Drop openapi-fetch; tools call Drizzle + orchestrator; absorb widget response shapes from DAT-344 |
+| CH2 | [DAT-354](https://real-dataraum.atlassian.net/browse/DAT-354) | To Do | Tool-result chip rendering |
+
+### Cross-cutting (NEW)
+
+| ID | Title | Status |
+|---|---|---|
+| SPIKE | DBOS vs Temporal vs Restate (tight scope, ~2 days) | To file |
+| CFG | Config package extraction (`engine/config/` → `dataraum-config/`) | To file |
+| E2b | Semantic phase split | To file |
+
+---
+
+## Active state
+
+No active phase branch. Each slice-1 ticket lands its own PR off `main`.
+
+Doc rewrite in flight on `chore/dat-339-doc-rewrite`. Ships with: this file, [`dat339-slice1-features-plan.md`](./dat339-slice1-features-plan.md), [`platform-status.md`](./platform-status.md).
+
+---
 
 ## Resume protocol
 
-1. `git status` on `feat/dat-339-pivot-p0-substrate` (or the active phase branch — check this file's header).
-2. Read this file's "Phase chain" — find the next unchecked checkbox.
-3. Read locked decisions above; do NOT renegotiate.
-4. Skim relevant memory entries: `[[mcp-dead-reference-only]]`, `[[teach-writes-measure-runs]]`, `[[drizzle-kit-pull-not-introspect]]`, `[[platform-pivot]]`, `[[no-corner-cutting-via-deferral]]`.
-5. Confluence spec DD/23363586 only if the pivot decisions above feel underspecified — they shouldn't be.
-6. Continue from the next unchecked checkbox.
-
-## Ticket-rewrite todo (deferred from /refine, low urgency)
-
-The slice-1 phase tickets still reflect the pre-pivot REST-routes shape. Rewrite when each ticket actually comes up:
-
-- **DAT-340 (E0)** — most MCP-surface tests now obsolete because the surface is going away. Scope shrinks.
-- **DAT-343 (E3)** — drop the "teach handler invokes typing with table_filter" framing (hallucinated per user). Rewrite as "teach writes Postgres overlay row; cockpit calls `measure(target_phase='typing', table_filter=[id])` after."
-- **DAT-344 (E4)** — replace "9 FastAPI routes" with "3-verb kernel surface" (measure + query + probe).
-- **DAT-353 (CH1)** — tools call drizzle / kernel underneath, not openapi-fetch.
-
-Doing this in-flight (when each phase actually starts) keeps the rewrites grounded in what we just built, not theoretical.
+1. Check `git branch --show-current`; if on a feature branch, check the ticket's status row above.
+2. Read locked decisions above. Do NOT renegotiate.
+3. Read [`dat339-slice1-features-plan.md`](./dat339-slice1-features-plan.md) for per-ticket implementation detail.
+4. Skim memory entries: `[[no-corner-cutting-via-deferral]]`, `[[recency-not-value]]`, `[[teach-writes-measure-runs]]` (under update), `[[semantic-phase-split]]`, `[[durable-execution-lean]]` (under re-evaluation), `[[mcp-dead-reference-only]]`.
+5. Confluence [DD/23363586](https://real-dataraum.atlassian.net/wiki/spaces/DD/pages/23363586) — kept in lockstep with this doc.
+6. `/refine` if reality conflicts with locked decisions; otherwise `/implement` on the next To Do ticket.

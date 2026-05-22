@@ -38,7 +38,7 @@ def init_spy(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     monkeypatch.setattr("dataraum.server.app.ConnectionManager", _StubManager)
     monkeypatch.setattr(
         "dataraum.server.app.ConnectionConfig.for_workspace",
-        lambda: object(),
+        object,
     )
     return counter
 

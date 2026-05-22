@@ -25,7 +25,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine, text
 
 from dataraum.api import api_router
-from dataraum.api.deps import _get_workspace_manager
 from dataraum.core.logging import get_logger
 from dataraum.server.storage import bootstrap_lake, health_probe, teardown_lake
 from dataraum.server.workspace import bootstrap_workspace
@@ -39,9 +38,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     Refuses to start if either ``DUCKLAKE_CATALOG_URL`` or
     ``DUCKLAKE_DATA_PATH`` is unset — the container substrate (L1+L4)
-    provides both. After the lake is open, bootstraps the active
-    Workspace (DAT-358) so subsequent config reads resolve to the
-    writable per-workspace overlay.
+    provides both. After the lake is open, activates the workspace
+    identified by ``DATARAUM_WORKSPACE_ID`` so subsequent config reads
+    resolve to the writable per-workspace overlay.
     """
     catalog_url = os.environ.get("DUCKLAKE_CATALOG_URL")
     data_path = os.environ.get("DUCKLAKE_DATA_PATH")
@@ -58,8 +57,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
 
     bootstrap_lake(catalog_url, data_path)
-    workspace_mgr = _get_workspace_manager()
-    bootstrap_workspace(workspace_mgr.session_scope)
+    bootstrap_workspace()
     try:
         yield
     finally:

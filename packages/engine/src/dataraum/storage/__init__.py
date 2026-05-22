@@ -15,7 +15,6 @@ from dataraum.storage.base import (
     reset_database,
 )
 from dataraum.storage.models import Column, Source, Table
-from dataraum.storage.workspace_models import Workspace
 
 __all__ = [
     # Base and metadata
@@ -25,7 +24,6 @@ __all__ = [
     "Source",
     "Table",
     "Column",
-    "Workspace",
     # Database management
     "init_database",
     "reset_database",

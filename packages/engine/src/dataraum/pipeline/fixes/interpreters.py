@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from dataraum.core.config import _get_config_root
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.fixes import apply_config_yaml
 from dataraum.pipeline.fixes.models import DataFix, FixDocument
@@ -395,7 +396,6 @@ def apply_and_persist(
     documents: list[FixDocument],
     *,
     session: Session,
-    workspace_id: str,
     session_id: str,
 ) -> list[DataFix]:
     """Apply a list of fix documents and persist them to the DB.
@@ -407,28 +407,12 @@ def apply_and_persist(
         source_id: The source these fixes apply to.
         documents: Ordered list of fix documents to apply.
         session: SQLAlchemy session (used for metadata fixes and persistence).
-        workspace_id: The active workspace. ``config_root`` is derived from
-            ``workspace.config_dir`` for config-target fixes — DAT-341
-            retired the per-session config overlay so all teach writes land
-            on the workspace-stable directory established by DAT-358.
         session_id: Investigation session id for DataFix provenance.
 
     Returns:
         List of persisted DataFix records.
-
-    Raises:
-        RuntimeError: If ``workspace_id`` does not resolve to a Workspace row
-            (bootstrap should have run at server startup).
     """
-    from dataraum.storage import Workspace
-
-    workspace = session.get(Workspace, workspace_id)
-    if workspace is None:
-        raise RuntimeError(
-            f"workspace_id={workspace_id!r} does not exist. apply_and_persist "
-            "needs a live Workspace row to resolve config_dir."
-        )
-    config_root = Path(workspace.config_dir)
+    config_root = _get_config_root()
 
     sorted_docs = sorted(documents, key=lambda d: d.ordinal)
     records: list[DataFix] = []

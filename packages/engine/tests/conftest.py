@@ -16,7 +16,6 @@ from dataraum.storage import init_database
 
 _TEST_SESSION_ID = "00000000-0000-0000-0000-000000000001"
 _TEST_SOURCE_ID = "00000000-0000-0000-0000-000000000002"
-_TEST_WORKSPACE_ID = "00000000-0000-0000-0000-000000000003"
 
 
 @pytest.fixture(autouse=True)
@@ -59,25 +58,22 @@ def _close_mcp_servers_after_test(monkeypatch: pytest.MonkeyPatch):
 
 @event.listens_for(Session, "before_flush")
 def _autofill_fks_globally(sess, _flush_ctx, _instances):
-    """Auto-fill workspace/session FKs on any pending row that left them None.
+    """Auto-fill the ``session_id`` FK on any pending row that left it None.
 
     Pure test convenience — production code always sets ``session_id`` (DAT-321
-    plumbing) and ``workspace_id`` (DAT-341 plumbing). This hook keeps test
-    fixtures that construct DB rows directly from having to know about either FK.
+    plumbing). This hook keeps test fixtures that construct DB rows directly
+    from having to know about the FK.
 
-    Excludes ``InvestigationSession`` and ``Workspace`` themselves — their ``*_id``
-    columns are PKs, not FKs, so autofilling would collide with the baseline rows.
+    Excludes ``InvestigationSession`` itself — its ``session_id`` is a PK,
+    not a FK, so autofilling would collide with the baseline row.
     """
     from dataraum.investigation.db_models import InvestigationSession
-    from dataraum.storage import Workspace
 
     for obj in sess.new:
-        if isinstance(obj, (InvestigationSession, Workspace)):
+        if isinstance(obj, InvestigationSession):
             continue
         if hasattr(obj, "session_id") and getattr(obj, "session_id", None) is None:
             obj.session_id = _TEST_SESSION_ID
-        if hasattr(obj, "workspace_id") and getattr(obj, "workspace_id", None) is None:
-            obj.workspace_id = _TEST_WORKSPACE_ID
 
 
 @pytest.fixture(scope="function")
@@ -122,21 +118,13 @@ def session(engine: Engine) -> Session:
     from datetime import UTC, datetime
 
     from dataraum.investigation.db_models import InvestigationSession
-    from dataraum.storage import Source, Workspace
+    from dataraum.storage import Source
 
     factory = sessionmaker(
         bind=engine,
         expire_on_commit=False,
     )
     with factory() as sess:
-        sess.add(
-            Workspace(
-                workspace_id=_TEST_WORKSPACE_ID,
-                name="test_baseline",
-                config_dir="/tmp/test-baseline-workspace/config",
-            )
-        )
-        sess.flush()
         sess.add(Source(source_id=_TEST_SOURCE_ID, name="test_baseline", source_type="csv"))
         sess.flush()
         sess.add(
@@ -160,17 +148,6 @@ def baseline_session_id() -> str:
     one of those rows should set ``session_id=baseline_session_id()``.
     """
     return _TEST_SESSION_ID
-
-
-def baseline_workspace_id() -> str:
-    """Return the baseline Workspace id seeded by the ``session`` fixture.
-
-    Per-workspace DB models post-DAT-341 (``Table``, ``EntropyObjectRecord``)
-    carry a NOT NULL FK to ``workspaces.workspace_id``. The ``before_flush``
-    hook auto-fills it on bare constructions; tests that need the value
-    explicitly call ``baseline_workspace_id()``.
-    """
-    return _TEST_WORKSPACE_ID
 
 
 @pytest.fixture

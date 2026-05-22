@@ -48,13 +48,6 @@ def stub_substrate(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         lambda: {"status": "ok"},
     )
 
-    class _StubMgr:
-        session_scope = staticmethod(lambda: None)
-
-    monkeypatch.setattr(
-        "dataraum.server.app._get_workspace_manager",
-        lambda: _StubMgr(),
-    )
     monkeypatch.setattr(
         "dataraum.server.app.bootstrap_workspace",
         lambda *a, **kw: None,

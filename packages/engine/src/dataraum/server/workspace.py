@@ -2,97 +2,106 @@
 
 Owns three things, in order:
 
-1. Pick the active ``Workspace`` row (first existing, else create
-   ``name="default"``). Slice 1 has exactly one workspace per server.
+1. Pull the active workspace_id from ``DATARAUM_WORKSPACE_ID``. Slice 1
+   has exactly one workspace per server.
 2. Materialize the writable config overlay at
-   ``${DATARAUM_HOME}/workspaces/<workspace_id>/config/`` by copying
-   the read-only baked-in defaults on first boot. Existing dirs are left
+   ``${DATARAUM_HOME}/workspaces/<workspace_id>/config/`` by copying the
+   read-only baked-in defaults on first boot. Existing dirs are left
    alone — teach edits already there must survive container restarts.
 3. Register the workspace's ``config_dir`` as the active config root via
    ``set_active_workspace_config_dir`` so every subsequent
    ``load_yaml_config`` / ``load_phase_config`` / teach write resolves
-   there.
+   there, and stash the workspace_id on a module pointer so
+   ``get_active_workspace_id`` returns it without a DB hit.
 
 The ``_adhoc`` vertical scaffold (cold-start write target for induction
 agents) lives under the workspace overlay too — created here, once per
 workspace, instead of on every pipeline setup. See
 ``dataraum.pipeline.setup`` for the pre-DAT-358 per-session home.
+
+Pivot note (DAT-339): bootstrap no longer touches the workspace
+Postgres. Schema-per-workspace makes the row-in-DB approach redundant
+— the workspace_id from the env var IS the schema selector, applied at
+SQLAlchemy connect time. The cockpit_db is the multi-workspace registry;
+slice 1 doesn't query it.
 """
 
 from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import Callable
-from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
-from sqlalchemy import select
-from sqlalchemy.orm import Session as SASession
 
 from dataraum.core.config import _get_config_root, set_active_workspace_config_dir
 from dataraum.core.logging import get_logger
-from dataraum.storage import Workspace
 
 logger = get_logger(__name__)
 
 
-SessionFactory = Callable[[], AbstractContextManager[SASession]]
+_active_workspace_id: str | None = None
 
 
-def get_active_workspace_id(session: SASession) -> str:
-    """Return the workspace_id of the currently-active workspace.
+@dataclass(frozen=True)
+class BootstrappedWorkspace:
+    """Return shape of :func:`bootstrap_workspace`.
 
-    Slice 1 invariant: exactly one Workspace row exists per server.
-    Returns the lowest-``created_at`` row (deterministic), matching the
-    selection logic in :func:`_pick_or_create_workspace`. Used by production
-    construction sites (loaders, phases, fix interpreters) that need to
-    stamp ``workspace_id`` on newly-created ``Table`` / ``EntropyObjectRecord``
-    rows.
+    Slice-1 minimum: just enough for the lifespan log + tests. No
+    SQLAlchemy row, no DB-bound state.
+    """
 
-    Args:
-        session: SQLAlchemy session bound to the workspace Postgres engine.
+    workspace_id: str
+    config_dir: Path
+
+
+def get_active_workspace_id() -> str:
+    """Return the active workspace_id set by :func:`bootstrap_workspace`.
+
+    Reads from a module-level pointer that mirrors
+    ``DATARAUM_WORKSPACE_ID`` after bootstrap has run. Production
+    construction sites (loaders, phases, fix interpreters) call this
+    when they need the workspace_id without a DB hit.
 
     Returns:
         The active workspace's id.
 
     Raises:
-        RuntimeError: If no Workspace row exists. Bootstrap is expected to
-            have run at server startup; absence here means the lifespan
-            never ran or someone deleted the row mid-process.
+        RuntimeError: If bootstrap_workspace has not run yet (the
+            lifespan never executed, or test code reset the pointer
+            without rebootstrapping).
     """
-    row = session.execute(
-        select(Workspace.workspace_id).order_by(Workspace.created_at).limit(1)
-    ).scalar_one_or_none()
-    if row is None:
+    if _active_workspace_id is None:
         raise RuntimeError(
             "No active workspace. bootstrap_workspace must run at server "
-            "startup before pipeline/loader code constructs Table or "
-            "EntropyObjectRecord rows."
+            "startup before pipeline/loader code reads the active workspace_id."
         )
-    return row
+    return _active_workspace_id
 
 
-def bootstrap_workspace(session_factory: SessionFactory) -> Workspace:
-    """Pick or create the active workspace and activate its config overlay.
+def reset_active_workspace_id_for_tests() -> None:
+    """Clear the module-level workspace_id pointer. Tests only."""
+    global _active_workspace_id  # noqa: PLW0603
+    _active_workspace_id = None
 
-    Refuses to start if ``DATARAUM_HOME`` is unset — the container
-    image sets it and a misconfigured deployment is a footgun (workspace
-    state would land in an ephemeral cwd-relative directory).
 
-    Args:
-        session_factory: Zero-arg callable returning a context-managed
-            SQLAlchemy session bound to the workspace Postgres engine.
-            Production passes ``workspace_manager.session_scope``.
+def bootstrap_workspace() -> BootstrappedWorkspace:
+    """Activate the workspace identified by ``DATARAUM_WORKSPACE_ID``.
+
+    Refuses to start if either ``DATARAUM_HOME`` or
+    ``DATARAUM_WORKSPACE_ID`` is unset — both are container substrate
+    concerns, and a misconfigured deployment is a footgun (workspace
+    state would land in an ephemeral cwd-relative directory, or every
+    pod would think it owns a different workspace).
 
     Returns:
-        The active ``Workspace`` row. Detached from any session — the
-        function commits and re-reads the row to avoid handing back a
-        bound object whose session has closed.
+        :class:`BootstrappedWorkspace` with the resolved workspace_id
+        and the (now-populated) config_dir.
 
     Raises:
-        RuntimeError: If ``DATARAUM_HOME`` is unset.
+        RuntimeError: If ``DATARAUM_HOME`` or ``DATARAUM_WORKSPACE_ID``
+            is unset.
     """
     home_env = os.environ.get("DATARAUM_HOME")
     if not home_env:
@@ -102,7 +111,16 @@ def bootstrap_workspace(session_factory: SessionFactory) -> Workspace:
             "container, export DATARAUM_HOME=<absolute path> to a "
             "writable directory."
         )
+    workspace_id = os.environ.get("DATARAUM_WORKSPACE_ID")
+    if not workspace_id:
+        raise RuntimeError(
+            "DATARAUM_WORKSPACE_ID is not set. The container substrate "
+            "sets it; for local dev outside the container, export "
+            "DATARAUM_WORKSPACE_ID=<uuid-or-stable-id>."
+        )
+
     home_dir = Path(home_env)
+    config_dir = home_dir / "workspaces" / workspace_id / "config"
 
     # The bootstrap copy source MUST be resolved before we set the
     # active-workspace pointer — otherwise ``_get_config_root()`` returns
@@ -110,12 +128,13 @@ def bootstrap_workspace(session_factory: SessionFactory) -> Workspace:
     # itself. After this line, env var or auto-detect wins.
     baked_in_config = _get_config_root()
 
-    workspace_id, config_dir = _pick_or_create_workspace(session_factory, home_dir)
-
     _ensure_config_dir_populated(config_dir, baked_in_config)
     _ensure_adhoc_vertical(config_dir)
 
     set_active_workspace_config_dir(config_dir)
+
+    global _active_workspace_id  # noqa: PLW0603
+    _active_workspace_id = workspace_id
 
     logger.info(
         "workspace_bootstrapped",
@@ -124,44 +143,7 @@ def bootstrap_workspace(session_factory: SessionFactory) -> Workspace:
         baked_in_config=str(baked_in_config),
     )
 
-    # Re-fetch a detached snapshot so callers can read fields without a
-    # session attached. The lifespan caller doesn't need the row but
-    # tests use it to assert shape.
-    with session_factory() as session:
-        ws = session.get(Workspace, workspace_id)
-        if ws is None:  # defensive — bootstrap just wrote this row
-            raise RuntimeError(f"Workspace {workspace_id} vanished after bootstrap")
-        session.expunge(ws)
-        return ws
-
-
-def _pick_or_create_workspace(session_factory: SessionFactory, home_dir: Path) -> tuple[str, Path]:
-    """Return ``(workspace_id, config_dir)`` for the active workspace.
-
-    Picks the lowest-``created_at`` existing row (deterministic) or
-    creates ``name="default"`` if none exist. ``config_dir`` is computed
-    from ``workspace_id`` — generated upfront so we can persist the path
-    on the row in a single INSERT.
-    """
-    from uuid import uuid4
-
-    with session_factory() as session:
-        existing = session.execute(
-            select(Workspace).order_by(Workspace.created_at).limit(1)
-        ).scalar_one_or_none()
-        if existing is not None:
-            return existing.workspace_id, Path(existing.config_dir)
-
-        new_id = str(uuid4())
-        new_config_dir = home_dir / "workspaces" / new_id / "config"
-        ws = Workspace(
-            workspace_id=new_id,
-            name="default",
-            config_dir=str(new_config_dir),
-        )
-        session.add(ws)
-        # session_scope commits on exit
-        return new_id, new_config_dir
+    return BootstrappedWorkspace(workspace_id=workspace_id, config_dir=config_dir)
 
 
 def _ensure_config_dir_populated(config_dir: Path, source: Path) -> None:

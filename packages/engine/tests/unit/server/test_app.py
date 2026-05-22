@@ -32,18 +32,9 @@ def stub_substrate(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         lambda: {"status": "ok"},
     )
 
-    # Workspace bootstrap normally pulls a workspace ConnectionManager
-    # (which needs DATABASE_URL) and a config copy. Tests that don't
-    # exercise it stub both: the manager getter returns a sentinel
-    # with the .session_scope attribute the lifespan reads, and the
-    # bootstrap call itself is a no-op.
-    class _StubMgr:
-        session_scope = staticmethod(lambda: None)
-
-    monkeypatch.setattr(
-        "dataraum.server.app._get_workspace_manager",
-        lambda: _StubMgr(),
-    )
+    # Workspace bootstrap reads DATARAUM_HOME + DATARAUM_WORKSPACE_ID and
+    # touches the filesystem. Tests that don't exercise it stub the call
+    # to a no-op.
     monkeypatch.setattr(
         "dataraum.server.app.bootstrap_workspace",
         lambda *a, **kw: None,

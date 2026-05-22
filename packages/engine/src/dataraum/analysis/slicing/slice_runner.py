@@ -184,11 +184,8 @@ def register_slice_tables(
 
                 # Create Table entry for slice
                 # Generate table_id explicitly since SQLAlchemy defaults only apply at INSERT time
-                from dataraum.server.workspace import get_active_workspace_id
-
                 slice_table = Table(
                     table_id=str(uuid4()),
-                    workspace_id=get_active_workspace_id(session),
                     source_id=source_table.source_id,
                     table_name=slice_table_name,
                     layer="slice",

@@ -369,11 +369,8 @@ class EnrichedViewsPhase(BasePhase):
             return None
 
         try:
-            from dataraum.server.workspace import get_active_workspace_id
-
             view_table = Table(
                 table_id=str(uuid4()),
-                workspace_id=get_active_workspace_id(ctx.session),
                 source_id=fact_table.source_id,
                 table_name=view_name,
                 layer="enriched",

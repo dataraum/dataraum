@@ -82,9 +82,6 @@ class Table(Base):
     )
 
     table_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    workspace_id: Mapped[str] = mapped_column(
-        ForeignKey("workspaces.workspace_id"), nullable=False, index=True
-    )
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.source_id"), nullable=False)
     table_name: Mapped[str] = mapped_column(String, nullable=False)
     layer: Mapped[str] = mapped_column(String, nullable=False)  # 'raw', 'typed', 'quarantine'

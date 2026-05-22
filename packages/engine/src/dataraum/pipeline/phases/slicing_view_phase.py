@@ -257,11 +257,8 @@ class SlicingViewPhase(BasePhase):
             # Register the slicing view as a Table(layer="slicing_view") so that
             # downstream phases can look up its column schema via standard metadata
             # queries instead of reading from DuckDB or guessing from slice tables.
-            from dataraum.server.workspace import get_active_workspace_id
-
             sv_table = Table(
                 table_id=str(uuid4()),
-                workspace_id=get_active_workspace_id(ctx.session),
                 source_id=fact_table.source_id,
                 table_name=view_name,
                 layer="slicing_view",

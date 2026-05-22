@@ -18,7 +18,7 @@ packages/
 
 ## Cross-package conventions
 
-- **No OpenAPI, no codegen.** Engine kernel = 3 verbs + /health. Cockpit consumes the engine's metadata via Drizzle introspection (`pnpm db:pull:metadata`), not generated REST types.
+- **No OpenAPI, no codegen.** Engine kernel = 3 verbs + /health. Cockpit consumes the engine's metadata via Drizzle introspection (`bun run db:pull:metadata`), not generated REST types.
 - **No backwards-compat shims.** v0.2.x MCP transport is gone; v1 is kernel verbs + chat-via-cockpit. Don't reintroduce migration code or compatibility paths.
 - **Persistence is transparent.** Engine owns SQLAlchemy models in the workspace's `ws_<uuid>` schema; cockpit owns its own `cockpit_db` via Drizzle. They share the same Postgres instance but never share schemas.
 - **Skills live at workspace root** (`.claude/skills/`). They drive engine work today; cockpit/infra workflows are still emerging.

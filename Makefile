@@ -24,11 +24,11 @@ build:
 	docker compose -f packages/infra/docker-compose.yml build
 
 dev-cockpit:
-	cd packages/cockpit && pnpm dev
+	cd packages/cockpit && bun run dev
 
 test-engine:
 	cd packages/engine && uv run pytest --testmon tests/unit -q
 
 install:
 	cd packages/engine && uv sync --group dev
-	cd packages/cockpit && pnpm install
+	cd packages/cockpit && bun install

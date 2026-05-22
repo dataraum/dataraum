@@ -11,7 +11,7 @@
 // const to `metadataSchema`, while leaving the pgSchema("ws_<id>") argument
 // intact so emitted SQL still qualifies by the real Postgres schema.
 //
-// Run after pull (or via `pnpm db:pull:metadata`, which chains them).
+// Run after pull (or via `bun run db:pull:metadata`, which chains them).
 
 import { readdir, readFile, rm, writeFile } from 'node:fs/promises'
 

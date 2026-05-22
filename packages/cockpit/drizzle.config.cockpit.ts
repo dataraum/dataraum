@@ -2,8 +2,8 @@
 // Postgres database. Hand-written schema is the source of truth here.
 //
 // Usage:
-//   pnpm exec drizzle-kit push     --config drizzle.config.cockpit.ts
-//   pnpm exec drizzle-kit generate --config drizzle.config.cockpit.ts
+//   bunx drizzle-kit push     --config drizzle.config.cockpit.ts
+//   bunx drizzle-kit generate --config drizzle.config.cockpit.ts
 //
 // Env: COCKPIT_DATABASE_URL must point at the cockpit_db database in the
 // shared Postgres instance (separate from the engine's `dataraum` and

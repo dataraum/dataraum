@@ -151,12 +151,15 @@ Per spike side investigation P5 (`@duckdb/node-api` in Bun probe): 30/30 + 10/10
 | CH1 | [DAT-353](https://real-dataraum.atlassian.net/browse/DAT-353) | Tool registry + intent → canvas dispatch | **Rewrite pending** (drop openapi-fetch; absorb widget response shapes) |
 | CH2 | [DAT-354](https://real-dataraum.atlassian.net/browse/DAT-354) | Tool-result chip rendering | Verify |
 
-### Cross-cutting — NEW
+### Cross-cutting
 
-| ID | Title | Notes |
+| ID | Ticket | Notes |
 |---|---|---|
-| SPIKE ([DAT-360](https://real-dataraum.atlassian.net/browse/DAT-360)) | DBOS vs Temporal vs Restate (tight scope) | **Done 2026-05-25 — Temporal selected.** Spike artifact in `spike/dat-360-orchestration/README.md`. |
-| CFG | Config package extraction (`engine/config/` → `dataraum-config/`) | Independent; ship first |
+| SPIKE | [DAT-360](https://real-dataraum.atlassian.net/browse/DAT-360) | **Done 2026-05-25 — Temporal selected.** Spike artifact in `spike/dat-360-orchestration/README.md`. |
+| CFG | [DAT-361](https://real-dataraum.atlassian.net/browse/DAT-361) | Config package extraction (`engine/config/` → `dataraum-config/`). Independent; ships first. |
+| CONF | [DAT-363](https://real-dataraum.atlassian.net/browse/DAT-363) | Typed config modules (Pydantic Settings + Zod) + Temporal env additions. **Ships before E4's first commit.** |
+| ISO | [DAT-364](https://real-dataraum.atlassian.net/browse/DAT-364) | Isolation cornerstones: workflow IDs encode workspace_id; activity inputs carry workspace_id; non-default-UUID CI test. **Inside E4 review gate.** |
+| ACT | [DAT-365](https://real-dataraum.atlassian.net/browse/DAT-365) | `actor_id` seam for slice 2+ identity. Optional param everywhere, always None in slice 1. Folds into E4 / E3 / CH1 PRs. |
 
 ---
 
@@ -175,10 +178,14 @@ EW (DAT-358) ──► E0 (DAT-340) ──► C1 (DAT-347)
 Cross-cutting:
   SPIKE (DAT-360) ──► Done 2026-05-25 — Temporal locked; unblocks E4
   CFG (DAT-361)   ──independent──► ships first; no blockers
+  CONF (DAT-363)  ──blocks──► E4 first commit; ships alongside CFG
+  ISO (DAT-364)   ──inside E4 review gate
+  ACT (DAT-365)   ──folds into E4 / E3 / CH1 PRs
 ```
 
 True parallel lanes once each prerequisite lands:
-- (E2 chain) ⫦ (CFG) ⫦ (SPIKE) — all on Done substrate
+- (E2 → E2b → E3 chain) ⫦ (E4 with deferred-validation first commits) ⫦ (CFG + CONF substrate) — all on Done substrate
+- C1 (cockpit real-UI shell) ⫦ everything above — independent cockpit lane
 - After E4: (CH1) ⫦ (CH2)
 - After CH1: cockpit chain (C2 → C3 → C4 → C5 → C6) is sequential by design (each widget builds on the previous tool's data)
 

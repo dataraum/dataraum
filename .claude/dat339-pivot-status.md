@@ -156,7 +156,10 @@ Per the DAT-339 epic decomposition. See [`dat339-slice1-features-plan.md`](./dat
 | ID | Ticket | Status | Notes |
 |---|---|---|---|
 | SPIKE | [DAT-360](https://real-dataraum.atlassian.net/browse/DAT-360) | **Done 2026-05-25** | Temporal selected. Spike artifact in `spike/dat-360-orchestration/README.md`. |
-| CFG | [DAT-361](https://real-dataraum.atlassian.net/browse/DAT-361) | To Do | Config package extraction (`engine/config/` → `dataraum-config/`); independent of all other slice-1 work, ships first |
+| CFG | [DAT-361](https://real-dataraum.atlassian.net/browse/DAT-361) | To Do | Config package extraction (`engine/config/` → `dataraum-config/`); independent, ships first |
+| CONF | [DAT-363](https://real-dataraum.atlassian.net/browse/DAT-363) | To Do | Typed config modules (Pydantic Settings + Zod) + Temporal env additions; ships before DAT-344's first commit |
+| ISO | [DAT-364](https://real-dataraum.atlassian.net/browse/DAT-364) | To Do | Isolation cornerstones (workflow ID convention, activity workspace_id, non-default-UUID test); inside DAT-344 review gate |
+| ACT | [DAT-365](https://real-dataraum.atlassian.net/browse/DAT-365) | To Do | `actor_id` seam for slice 2+ identity; folds into DAT-344 / DAT-343 / DAT-353 PRs |
 
 ---
 

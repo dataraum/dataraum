@@ -43,7 +43,7 @@ FastAPI + OpenAPI + `packages/api/openapi.yaml` + `export_openapi.py` + `package
 
 ### Cockpit — hand-written TS tools
 - `packages/cockpit/src/tools/` (no openapi-fetch, no codegen, no generated REST client)
-- 7 slice-1 tools call Drizzle (metadata + cockpit_db) + kernel verbs (or the chosen orchestration framework, pending spike)
+- 7 slice-1 tools call Drizzle (metadata + cockpit_db) + Temporal client (workflow start/signal/query) + kernel verbs (`/run_sql`, `/probe`)
   1. `list_sources` — Drizzle against `sources` table
   2. `list_tables` — Drizzle against `tables` table
   3. `add_source_file` — TS server function (multipart upload to mounted lake) + kicks off measure(import + typing + statistics + semantic_*)
@@ -72,13 +72,36 @@ FastAPI + OpenAPI + `packages/api/openapi.yaml` + `export_openapi.py` + `package
 - Whole folder deletes in slice 2 alongside session-lifecycle reimplementation (`begin_session` / `end_session` / `resume_session`)
 - Per `[[mcp-dead-reference-only]]` memory
 
-### Orchestration framework — OPEN (spike pending)
-- Three-way spike: **DBOS vs Temporal vs Restate**
-- Tight scope: convert typing phase to each, write minimal `import → typing` workflow in each
-- Compare: lines deleted from current orchestrator, retry/resume behavior, polyglot fit (TS-drives-Python), op cost, framework feature usage
-- Output: framework decision OR "keep monolith, port current Python orchestrator to TS"
-- E4 (DAT-344) shape is pending spike
-- Memory `[[durable-execution-lean]]` (which leaned DBOS pre-pivot, dismissed Temporal as too heavy) is being re-evaluated — its rationale was single-language. Post-pivot is TS-drives-Python, which changes the calculus.
+### Orchestration framework: Temporal (locked 2026-05-25 via DAT-360)
+
+Spike output in `spike/dat-360-orchestration/README.md`. Summary:
+
+- **Temporal adopted.** Build-time-enforced determinism, first-class RetryPolicy + heartbeats, mature polyglot, TS as first-class workflow author.
+- **DBOS disqualified** on a silent-stranding bug: `client.enqueue()` (the default cross-lang trigger) writes a workflow the Python worker never picks up, with zero error on either side. Hit in 90 min. CLAUDE.md's "correctness over speed" forbids silent failure modes.
+- **Restate dropped** at P1 closure: RPC-style design center; not optimized for multi-minute / multi-hour pipeline phases.
+- **Keep-monolith disqualified**: existing `pipeline/scheduler.py` + `runner.py` have three structural absences (no durable execution, no TS workflow author, no retry primitives).
+- Memory `[[durable-execution-lean]]` rewritten to lock Temporal.
+
+**Architecture:**
+- Engine becomes a Python Temporal activity worker
+- Cockpit (TS) is the workflow author + Temporal client
+- Existing `pipeline/scheduler.py` + `runner.py` retire (per `[[no-corner-cutting-via-deferral]]`; no parallel-run period)
+- Bun ≥ 1.3.14 enforced (Temporal TS worker segfault on 1.3.0 in shutdown)
+- 3 dev containers added: Postgres (Temporal-dedicated), Temporal server, Temporal UI
+
+**Deferred validations** (first commits in DAT-344):
+- Workflow-worker crash replay (Temporal's headline robustness claim; not exercised in spike)
+- Real `TypingPhase` wrapped as activity (only stub was tested)
+- Multi-workspace isolation strategy (namespace-per-workspace vs search-attribute-per-workspace)
+
+### Engine kernel verbs — `/run_sql` + `/probe` stay Python (locked 2026-05-25)
+
+Per spike side investigation P5 (`@duckdb/node-api` in Bun probe): 30/30 + 10/10 PASS on macOS, but Bun issue [#13910](https://github.com/oven-sh/bun/issues/13910) is a real production risk. **One-owner-per-substrate principle keeps DuckDB in the Python container.** Cockpit-owned DuckDB is a viable future shape; revisit if sample-read latency becomes a UX problem.
+
+- `/run_sql` (Arrow IPC streaming over DuckDB) — Starlette route in engine
+- `/probe` (read-only SQL against external sources via DuckDB ATTACH) — Starlette route in engine
+- `/measure` **retired** — replaced by Temporal workflow start from cockpit
+- `/health` stays
 
 ### Hard rules (no-corner-cutting)
 - No backwards-compat shims
@@ -107,7 +130,7 @@ FastAPI + OpenAPI + `packages/api/openapi.yaml` + `export_openapi.py` + `package
 | E2 | [DAT-342](https://real-dataraum.atlassian.net/browse/DAT-342) | Per-table extract + type at add_source | Mostly aligned |
 | **E2b** | **NEW** | Semantic phase split (per-column + per-table) | File pending |
 | E3 | [DAT-343](https://real-dataraum.atlassian.net/browse/DAT-343) | Teach via Postgres `config_overlay` + remove-and-replay undo | **Rewrite pending** (filesystem → Postgres) |
-| E4 | [DAT-344](https://real-dataraum.atlassian.net/browse/DAT-344) | Kernel / activity implementation | **Rewrite pending spike outcome** |
+| E4 | [DAT-344](https://real-dataraum.atlassian.net/browse/DAT-344) | Temporal worker + activity wrappers + workflow scaffolding + `/run_sql` + `/probe` kernel verbs | Rewritten 2026-05-25 post-spike |
 | ~~E5~~ | ~~DAT-345~~ | ~~SSE /api/jobs/{job_id}~~ | **Fold into E4** — `measure` IS the SSE verb; reconnect replays current state |
 
 ### To Do — Cockpit
@@ -128,12 +151,15 @@ FastAPI + OpenAPI + `packages/api/openapi.yaml` + `export_openapi.py` + `package
 | CH1 | [DAT-353](https://real-dataraum.atlassian.net/browse/DAT-353) | Tool registry + intent → canvas dispatch | **Rewrite pending** (drop openapi-fetch; absorb widget response shapes) |
 | CH2 | [DAT-354](https://real-dataraum.atlassian.net/browse/DAT-354) | Tool-result chip rendering | Verify |
 
-### Cross-cutting — NEW
+### Cross-cutting
 
-| ID | Title | Notes |
+| ID | Ticket | Notes |
 |---|---|---|
-| SPIKE | DBOS vs Temporal vs Restate (tight scope) | Blocks E4 + downstream |
-| CFG | Config package extraction (`engine/config/` → `dataraum-config/`) | Independent; ship first |
+| SPIKE | [DAT-360](https://real-dataraum.atlassian.net/browse/DAT-360) | **Done 2026-05-25 — Temporal selected.** Spike artifact in `spike/dat-360-orchestration/README.md`. |
+| CFG | [DAT-361](https://real-dataraum.atlassian.net/browse/DAT-361) | Config package extraction (`engine/config/` → `dataraum-config/`). Independent; ships first. |
+| CONF | [DAT-363](https://real-dataraum.atlassian.net/browse/DAT-363) | Typed config modules (Pydantic Settings + Zod) + Temporal env additions. **Ships before E4's first commit.** |
+| ISO | [DAT-364](https://real-dataraum.atlassian.net/browse/DAT-364) | Isolation cornerstones: workflow IDs encode workspace_id; activity inputs carry workspace_id; non-default-UUID CI test. **Inside E4 review gate.** |
+| ACT | [DAT-365](https://real-dataraum.atlassian.net/browse/DAT-365) | `actor_id` seam for slice 2+ identity. Optional param everywhere, always None in slice 1. Folds into E4 / E3 / CH1 PRs. |
 
 ---
 
@@ -150,12 +176,16 @@ EW (DAT-358) ──► E0 (DAT-340) ──► C1 (DAT-347)
                                           └──► CH2 (DAT-354)
 
 Cross-cutting:
-  SPIKE (DBOS/Temporal/Restate) ──blocks──► E4
-  CFG (config package)          ──independent──► ship first
+  SPIKE (DAT-360) ──► Done 2026-05-25 — Temporal locked; unblocks E4
+  CFG (DAT-361)   ──independent──► ships first; no blockers
+  CONF (DAT-363)  ──blocks──► E4 first commit; ships alongside CFG
+  ISO (DAT-364)   ──inside E4 review gate
+  ACT (DAT-365)   ──folds into E4 / E3 / CH1 PRs
 ```
 
 True parallel lanes once each prerequisite lands:
-- (E2 chain) ⫦ (CFG) ⫦ (SPIKE) — all on Done substrate
+- (E2 → E2b → E3 chain) ⫦ (E4 with deferred-validation first commits) ⫦ (CFG + CONF substrate) — all on Done substrate
+- C1 (cockpit real-UI shell) ⫦ everything above — independent cockpit lane
 - After E4: (CH1) ⫦ (CH2)
 - After CH1: cockpit chain (C2 → C3 → C4 → C5 → C6) is sequential by design (each widget builds on the previous tool's data)
 
@@ -188,26 +218,37 @@ Major rewrite from the original "filesystem overlay" framing:
 - Engine config loader: layered read (base config from `dataraum-config/` + workspace + session overlay rows). Resolves type+target conflicts via `created_at` ordering (later supersedes earlier; soft-delete via `superseded_at`)
 - Engine `_get_config_root()` rewires: no more `${DUCKLAKE_DATA_PATH}/workspaces/<id>/config/` — config comes from Postgres
 - TS teach tool writes `config_overlay` rows directly via Drizzle metadata client
-- TS teach tool triggers replay-typing via the orchestrator (kernel `/measure(target_phase=typing, table_filter=[id])` OR Temporal signal OR DBOS workflow event — pending spike)
+- TS teach tool triggers replay-typing via Temporal: `client.workflow.start(replayTypingWorkflow, { args: [{ tableId }], workflowId: 'replay-typing-<tableId>-<overlayId>' })`
 - Undo: write `superseded_at = now()` on the teach record + trigger same replay path
 
 3 teach types fully round-trip in slice 1: `type_pattern`, `null_value`, `concept_property`. Other 6 currently-shipped types continue via existing engine paths (still write to `config_overlay`, but their phase replay is not yet wired in slice 1).
 
-### E4 (DAT-344) — Kernel / activity implementation (PENDING SPIKE)
+### E4 (DAT-344) — Temporal worker + activity wrappers + kernel verbs (locked 2026-05-25 post-spike)
 
-Two possible shapes:
+Per DAT-360 spike outcome. Full ticket body has the implementation list; this section captures the essentials:
 
-**If spike chooses "keep monolith" or DBOS:**
-- 3 kernel verbs as Starlette routes: `/measure` (SSE), `/run_sql` (Arrow IPC streaming), `/probe` (read-only SQL)
-- `/measure` implements SSE with replay-current-state on reconnect (the "fold E5 in" decision)
-- `/run_sql` uses the pyarrow batch streaming pattern (see implementation reference below)
-- `/probe` runs against external sources via DuckDB ATTACH READ_ONLY
+**Engine = Python Temporal activity worker + Starlette HTTP shell** (one container, two concerns):
+- Starlette hosts `/run_sql` (Arrow IPC), `/probe` (read-only SQL), `/health`
+- Long-running Temporal activity worker process registers `@activity.defn(name=...)` wrappers around the 5 slice-1 phases (`run_import`, `run_typing`, `run_statistics`, `run_semantic_per_column`, `run_semantic_per_table`)
+- Sync SQLAlchemy / DuckDB inside async activities via `asyncio.to_thread(...)`
 
-**If spike chooses Temporal or Restate:**
-- 2 kernel verbs: `/run_sql` + `/probe` (still Starlette)
-- Pipeline phases become standalone activity functions registered with the framework's worker
-- Cockpit starts workflows directly via the framework's TS SDK
-- Measure progress comes from workflow events, not SSE
+**Cockpit = Temporal workflow author + Temporal client**:
+- Workflows live in `packages/dataraum-workflows/` (new TS-only package; shared between cockpit + engine for the activity-name catalog)
+- `addSourceWorkflow` orchestrates per-table phases up to `semantic_per_column`, waits for an in-loop teach signal, then runs `semantic_per_table`
+- `replayTypingWorkflow` triggers from the teach tool after writing a `config_overlay` row
+
+**Activity name catalog** (`packages/dataraum-workflows/activity_names.ts` + `python/activity_names.py` mirror): CI-checked for drift. A Python rename without TS update fails CI, not runtime.
+
+**Determinism rules** (webpack-enforced): workflow code imports ONLY from `@temporalio/workflow` + the activity-name catalog. PR review checklist entry.
+
+**Infra additions** (3 containers): Postgres (Temporal-dedicated), Temporal server, Temporal UI. Bun ≥ 1.3.14 enforced (Temporal TS worker segfault on 1.3.0 in shutdown).
+
+**Retirement** (per `[[no-corner-cutting-via-deferral]]`): `pipeline/scheduler.py` + `pipeline/runner.py` delete as activities + workflows ship. No parallel-run period. Spike estimate: ~900 lines retired → ~150 lines of wrappers + framework config.
+
+**Deferred-validation first commits** (per spike — these are unvalidated in the spike but Temporal's headline robustness claims):
+1. Workflow-worker crash replay (kill TS workflow worker between activities; verify event-history replay reaches the same final state)
+2. Real `TypingPhase` wrapped as activity (PhaseContext + `asyncio.to_thread` friction not yet validated)
+3. Multi-workspace isolation strategy (namespace-per-workspace vs search-attribute-per-workspace)
 
 **`/run_sql` pyarrow streaming pattern** (user-provided reference, 2026-05-22):
 
@@ -280,18 +321,18 @@ Major rewrite from "openapi-fetch + REST routes":
 - `pyproject.toml` / `package.json` references: no — the config is data, not a code dependency
 - Update compose env vars + `.env.example`
 
-### SPIKE — DBOS vs Temporal vs Restate
+### SPIKE — DBOS vs Temporal vs Restate (DAT-360, Done 2026-05-25)
 
-- Tight scope: typing phase as activity in each + `import → typing` workflow in each
-- Time-box: 2 days max
-- Compare:
-  - Lines of orchestrator code deleted from `packages/engine/src/dataraum/pipeline/`
-  - Retry / resume behavior under simulated crash (kill the worker mid-typing)
-  - Polyglot ergonomics (TS workflow ↔ Python activity)
-  - Operational footprint (extra Postgres? extra cluster? extra worker process?)
-  - Determinism rules / footguns when writing workflows
-- Output: decision memo + recommendation in this file's "Substrate decisions" section
-- If "keep monolith" wins: open ticket for "port Python orchestrator to TS" as the lighter alternative
+**Outcome: Temporal adopted.** Full decision memo + comparison table in `spike/dat-360-orchestration/README.md`. Key findings:
+
+- DBOS disqualified on a silent-stranding bug (`client.enqueue()` cross-lang)
+- Restate dropped (RPC-style; not suited for multi-minute pipeline phases)
+- Keep-monolith disqualified (existing scheduler has three structural absences)
+- Temporal wins on robustness; loses on ops complexity (3 dev containers); ops was secondary
+
+Side investigation (P5): `@duckdb/node-api` works in Bun on macOS but Bun [#13910](https://github.com/oven-sh/bun/issues/13910) is a real production risk. `/run_sql` + `/probe` stay Python in v1.
+
+The shape impact landed in this doc's "Orchestration framework" + "E4 (DAT-344)" sections above. `[[durable-execution-lean]]` memory rewritten to lock Temporal.
 
 ---
 
@@ -311,10 +352,12 @@ Major rewrite from "openapi-fetch + REST routes":
 
 ## Open questions / pending decisions
 
-1. **Orchestration framework** — pending spike
+1. ~~**Orchestration framework**~~ — **CLOSED 2026-05-25.** Temporal adopted via DAT-360 spike.
 2. **Dedupe phase placement** — architecture-future.md says add_source loop includes deduplicate. Does this phase exist? If not, scope for slice 1 or defer to slice 2?
-3. **`/probe` semantics for DB recipes** — does `/probe` SQL go against the source via DuckDB ATTACH? Or do recipes generate `/probe` SQL stubs? Settle during E4 implementation
+3. **`/probe` semantics for DB recipes** — does `/probe` SQL go against the source via DuckDB ATTACH? Or do recipes generate `/probe` SQL stubs? Settle during E4 implementation.
 4. **C5's TeachProposal widget UX for the 6 non-round-tripped teach types** — slice 1 round-trips 3 types fully. The other 6 (`concept`, `validation`, `cycle`, `metric`, `relationship`, `explanation`) write to `config_overlay` but no replay path. UX implications for TeachProposal: disable or document?
+5. **Multi-workspace isolation in Temporal** — namespace-per-workspace (heavy, full isolation) vs search-attribute-per-workspace (lighter, single namespace). Validated as a deferred first commit in DAT-344.
+6. **Workflow module location** (`packages/dataraum-workflows/`) — confirm package shape + how engine imports the activity-name catalog from a TS-only package (likely via a Python mirror file with CI drift check). Settle during DAT-344.
 
 ---
 
@@ -325,18 +368,18 @@ Major rewrite from "openapi-fetch + REST routes":
 3. Skim memory entries that are load-bearing:
    - `[[no-corner-cutting-via-deferral]]`
    - `[[recency-not-value]]`
-   - `[[teach-writes-measure-runs]]` (note: being updated for Postgres overlay)
+   - `[[teach-writes-measure-runs]]`
    - `[[semantic-phase-split]]`
-   - `[[durable-execution-lean]]` (under re-evaluation via spike)
+   - `[[durable-execution-lean]]` (Temporal locked 2026-05-25)
    - `[[mcp-dead-reference-only]]`
 4. Confluence [DD/23363586](https://real-dataraum.atlassian.net/wiki/spaces/DD/pages/23363586) — kept in lockstep with this doc
 5. `/refine` only if reality conflicts with this doc; otherwise `/implement`
 
 ---
 
-## Decisions made 2026-05-22 (this session)
+## Decisions made 2026-05-22 + 2026-05-25 (cross-session continuity)
 
-Captured here for cross-session continuity, since this entire doc is a rewrite triggered by today's findings:
+### 2026-05-22 (`/refine` session)
 
 1. The previous `dat339-slice1-features-plan.md` invented Phase 1-5 that didn't match the DAT-339 epic. Deleted.
 2. Confirmed canonical `add_source` definition from architecture-future.md.
@@ -348,5 +391,14 @@ Captured here for cross-session continuity, since this entire doc is a rewrite t
 8. DAT-345 folds into DAT-344.
 9. mcp/ folder stays as dead code through slice 1; whole-folder delete in slice 2.
 10. Recency does not imply value — DAT-358 retires despite being 2 days old (`[[recency-not-value]]` memory).
-11. Spike DBOS vs Temporal vs Restate, tight scope (typing phase + import→typing workflow), 2 days max. `[[durable-execution-lean]]` memory under re-evaluation.
+11. Spike DBOS vs Temporal vs Restate, tight scope (typing phase + import→typing workflow), 2 days max.
 12. The current cockpit UI (`chat.tsx`, `sources.tsx`, `index.tsx`) is throwaway — DAT-347 (C1) builds the real UI.
+
+### 2026-05-25 (DAT-360 spike closure)
+
+13. **Temporal adopted** as the orchestration framework. DBOS disqualified on cross-lang silent-stranding (`client.enqueue()` writes a workflow the Python worker never picks up; zero error on either side). Restate dropped at P1 closure (RPC-style design not suited for multi-minute pipeline phases). Keep-monolith disqualified on three structural absences (no durable execution, no TS workflow author, no retry primitives). `[[durable-execution-lean]]` rewritten to lock Temporal.
+14. **Engine becomes a Python Temporal activity worker.** Cockpit (TS) is the workflow author + Temporal client. Existing `pipeline/scheduler.py` + `runner.py` retire (per `[[no-corner-cutting-via-deferral]]`; no parallel-run period).
+15. **`/run_sql` + `/probe` stay Python.** Side investigation (P5): `@duckdb/node-api` works in Bun on macOS but Bun [#13910](https://github.com/oven-sh/bun/issues/13910) is a real production risk; one-owner-per-substrate principle keeps DuckDB in the Python container. Revisit if sample-read latency becomes a UX problem.
+16. **`/measure` retired.** No HTTP verb for orchestration; cockpit calls `client.workflow.start(addSourceWorkflow, ...)` instead.
+17. **3 dev containers added**: Postgres (Temporal-dedicated), Temporal server, Temporal UI. Bun ≥ 1.3.14 enforced (Temporal TS worker segfault on 1.3.0 in shutdown).
+18. **Deferred validations** become DAT-344 first commits: workflow-worker crash replay, real `TypingPhase` as activity, multi-workspace isolation strategy.

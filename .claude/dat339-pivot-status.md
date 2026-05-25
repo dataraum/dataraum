@@ -15,9 +15,10 @@ Substrate (0a–0f) merged via PR #132. Slice-1 feature work continues per ticke
 
 Binding. Do NOT renegotiate without `/refine`.
 
-### Engine kernel
-- **3 verbs**: `measure` (SSE), `run_sql` (Arrow IPC, **renamed from `query` 2026-05-22** to disambiguate from the legacy NL-to-SQL MCP tool), `probe` (read-only SQL against external sources).
-- `/measure` SSE handles its own reconnect by replaying current state — no separate job_id surface (DAT-345 folded into DAT-344).
+### Engine kernel (post-spike 2026-05-25)
+- **2 verbs + Temporal worker**: `/run_sql` (Arrow IPC, renamed from `query` 2026-05-22) + `/probe` (read-only SQL against external sources) + `/health`. The engine container hosts a Starlette HTTP shell for these alongside a long-running Temporal activity worker process.
+- **`/measure` retired** — replaced by Temporal workflow start from cockpit (`client.workflow.start(addSourceWorkflow, ...)`).  DAT-345 (separate SSE job_id surface) closed; folded into DAT-344.
+- `/run_sql` + `/probe` stay Python per DAT-360 spike P5 (Bun [#13910](https://github.com/oven-sh/bun/issues/13910) is real production risk on `@duckdb/node-api`; one-owner-per-substrate principle).
 - FastAPI + OpenAPI + `packages/api/openapi.yaml` + `export_openapi.py` + `packages/cockpit/src/api/types.ts` + `pnpm codegen` all deleted in Phase 0c.
 
 ### Persistence
@@ -39,7 +40,7 @@ Binding. Do NOT renegotiate without `/refine`.
 - Current cockpit routes (`chat.tsx`, `sources.tsx`, `index.tsx`) are **placeholders**. The real UI is the three-region layout + Stage Navigator from DAT-347 (C1).
 
 ### Pipeline phases
-- **Semantic phase MUST split** into per-column (LLM-driven column roles, business terms) and per-table (entity types, table-level synthesis). New sub-ticket under DAT-339 (file pending). See `[[semantic-phase-split]]` memory.
+- **Semantic phase MUST split** into per-column (LLM-driven column roles, business terms) and per-table (entity types, table-level synthesis). Tracked as [DAT-362](https://real-dataraum.atlassian.net/browse/DAT-362) (E2b). See `[[semantic-phase-split]]` memory.
 - Per-column annotations are the surface in-loop teach acts on; per-table synthesis runs over post-teach annotations.
 - Don't frame LLM phases as "latency cost" — this is an agentic system.
 
@@ -49,13 +50,17 @@ Binding. Do NOT renegotiate without `/refine`.
 ### MCP folder
 - `packages/engine/src/dataraum/mcp/` stays through slice 1 as dead code (teach moves to TS, why moves to TS, server.py loses its only HTTP mount). Whole-folder delete in slice 2 alongside session-lifecycle reimplementation.
 
-### Orchestration framework (OPEN — spike pending)
-- **Three-way spike**: DBOS vs Temporal vs Restate.
-- Tight scope: typing phase as activity in each + minimal `import → typing` workflow.
-- Compare: lines deleted from current orchestrator, retry/resume, polyglot fit, op cost.
-- Output: framework decision OR "keep monolith, port Python orchestrator to TS."
-- DAT-344 (E4) shape is pending spike outcome.
-- Memory `[[durable-execution-lean]]` (DBOS-only lean pre-pivot) is being re-evaluated — rationale was single-language; post-pivot is TS-drives-Python.
+### Orchestration framework: Temporal (locked 2026-05-25 via [DAT-360](https://real-dataraum.atlassian.net/browse/DAT-360))
+- **Temporal adopted.** Engine becomes a Python Temporal activity worker; cockpit (TS) is the workflow author + Temporal client. Workflows live in new `packages/dataraum-workflows/` package; activity-name catalog mirrored in TS + Python with CI drift check.
+- **DBOS disqualified** on a silent-stranding bug: `client.enqueue()` (default cross-lang trigger) writes a workflow the Python worker never picks up, with zero error on either side. CLAUDE.md's "correctness over speed" forbids silent failure modes.
+- **Restate dropped** at P1 closure: RPC-style design center; not optimized for multi-minute / multi-hour pipeline phases.
+- **Keep-monolith disqualified**: existing `pipeline/scheduler.py` + `runner.py` have three structural absences (no durable execution, no TS workflow author, no retry primitives).
+- **3 dev containers added**: Postgres (Temporal-dedicated), Temporal server, Temporal UI.
+- **Bun ≥ 1.3.14** enforced (Temporal TS worker segfault on 1.3.0 in shutdown).
+- **Existing scheduler retires** in DAT-344 (no parallel-run period, per `[[no-corner-cutting-via-deferral]]`). Estimated ~900 lines deleted → ~150 lines wrappers.
+- **Deferred validations** (DAT-344 first commits): workflow-worker crash replay, real `TypingPhase` as activity, multi-workspace isolation strategy.
+- Memory `[[durable-execution-lean]]` rewritten to lock Temporal. Pre-pivot DBOS lean explicitly superseded.
+- Spike artifact: `spike/dat-360-orchestration/README.md`.
 
 ### Hard rules
 - No backwards-compat shims.
@@ -123,9 +128,9 @@ Per the DAT-339 epic decomposition. See [`dat339-slice1-features-plan.md`](./dat
 | E0 | [DAT-340](https://real-dataraum.atlassian.net/browse/DAT-340) | Shipped PR #129; Jira transition pending | |
 | E1 | [DAT-341](https://real-dataraum.atlassian.net/browse/DAT-341) | Done | |
 | E2 | [DAT-342](https://real-dataraum.atlassian.net/browse/DAT-342) | To Do | Mostly aligned; minor touchup |
-| E2b | NEW (file pending) | — | Semantic phase split per-column / per-table |
+| E2b | [DAT-362](https://real-dataraum.atlassian.net/browse/DAT-362) | To Do | Semantic phase split per-column / per-table |
 | E3 | [DAT-343](https://real-dataraum.atlassian.net/browse/DAT-343) | To Do — REWRITE PENDING | Filesystem → Postgres `config_overlay` |
-| E4 | [DAT-344](https://real-dataraum.atlassian.net/browse/DAT-344) | To Do — REWRITE PENDING SPIKE | Shape depends on orchestration framework choice |
+| E4 | [DAT-344](https://real-dataraum.atlassian.net/browse/DAT-344) | To Do — rewritten 2026-05-25 post-spike | Temporal worker + activity wrappers + workflow scaffolding + `/run_sql` + `/probe` kernel verbs |
 | ~~E5~~ | ~~DAT-345~~ | Folded into E4 | `/measure` IS the SSE verb; reconnect replays current state |
 
 ### Cockpit
@@ -143,16 +148,15 @@ Per the DAT-339 epic decomposition. See [`dat339-slice1-features-plan.md`](./dat
 
 | ID | Ticket | Status | Notes |
 |---|---|---|---|
-| CH1 | [DAT-353](https://real-dataraum.atlassian.net/browse/DAT-353) | To Do — REWRITE PENDING | Drop openapi-fetch; tools call Drizzle + orchestrator; absorb widget response shapes from DAT-344 |
+| CH1 | [DAT-353](https://real-dataraum.atlassian.net/browse/DAT-353) | To Do — rewritten 2026-05-22 | Drop openapi-fetch; tools call Drizzle + Temporal client + kernel verbs; absorb widget response shapes from DAT-344 |
 | CH2 | [DAT-354](https://real-dataraum.atlassian.net/browse/DAT-354) | To Do | Tool-result chip rendering |
 
-### Cross-cutting (NEW)
+### Cross-cutting
 
-| ID | Title | Status |
-|---|---|---|
-| SPIKE | DBOS vs Temporal vs Restate (tight scope, ~2 days) | To file |
-| CFG | Config package extraction (`engine/config/` → `dataraum-config/`) | To file |
-| E2b | Semantic phase split | To file |
+| ID | Ticket | Status | Notes |
+|---|---|---|---|
+| SPIKE | [DAT-360](https://real-dataraum.atlassian.net/browse/DAT-360) | **Done 2026-05-25** | Temporal selected. Spike artifact in `spike/dat-360-orchestration/README.md`. |
+| CFG | [DAT-361](https://real-dataraum.atlassian.net/browse/DAT-361) | To Do | Config package extraction (`engine/config/` → `dataraum-config/`); independent of all other slice-1 work, ships first |
 
 ---
 
@@ -169,6 +173,6 @@ Doc rewrite in flight on `chore/dat-339-doc-rewrite`. Ships with: this file, [`d
 1. Check `git branch --show-current`; if on a feature branch, check the ticket's status row above.
 2. Read locked decisions above. Do NOT renegotiate.
 3. Read [`dat339-slice1-features-plan.md`](./dat339-slice1-features-plan.md) for per-ticket implementation detail.
-4. Skim memory entries: `[[no-corner-cutting-via-deferral]]`, `[[recency-not-value]]`, `[[teach-writes-measure-runs]]` (under update), `[[semantic-phase-split]]`, `[[durable-execution-lean]]` (under re-evaluation), `[[mcp-dead-reference-only]]`.
+4. Skim memory entries: `[[no-corner-cutting-via-deferral]]`, `[[recency-not-value]]`, `[[teach-writes-measure-runs]]`, `[[semantic-phase-split]]`, `[[durable-execution-lean]]` (Temporal locked 2026-05-25), `[[mcp-dead-reference-only]]`.
 5. Confluence [DD/23363586](https://real-dataraum.atlassian.net/wiki/spaces/DD/pages/23363586) — kept in lockstep with this doc.
 6. `/refine` if reality conflicts with locked decisions; otherwise `/implement` on the next To Do ticket.

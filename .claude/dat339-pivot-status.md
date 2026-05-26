@@ -15,10 +15,15 @@ Substrate (0a–0f) merged via PR #132. Slice-1 feature work continues per ticke
 
 Binding. Do NOT renegotiate without `/refine`.
 
-### Engine kernel (post-spike 2026-05-25)
-- **2 verbs + Temporal worker**: `/run_sql` (Arrow IPC, renamed from `query` 2026-05-22) + `/probe` (read-only SQL against external sources) + `/health`. The engine container hosts a Starlette HTTP shell for these alongside a long-running Temporal activity worker process.
+### Engine kernel (revised 2026-05-26 — `run_sql` + `probe` move to cockpit)
+
+> **Supersedes the 2026-05-25 "stay Python" lock.** `/run_sql` + `/probe` move from the Python engine to the cockpit (TS/Bun + `@duckdb/node-api`). Rationale + the accepted Bun #13910 risk are in the **2026-05-26 decision entry** below.
+
+- **Engine = pure Temporal activity worker — no HTTP server.** With `run_sql`/`probe` in the cockpit and `measure` retired, the engine exposes **no HTTP kernel at all** (the Starlette shell goes away). Health is the [Temporal worker health](https://docs.temporal.io/cloud/worker-health) surface, not an HTTP `/health`. Two consequences for DAT-344: (a) substrate bootstrap moves from the (removed) Starlette lifespan into worker startup; (b) the engine container's compose healthcheck changes — no more `curl :8000/health`.
+- **Dual DuckDB.** The cockpit owns a DuckDB connection (via `@duckdb/node-api`) for the interactive read verbs (`run_sql`, `probe`); the engine keeps DuckDB for the Temporal pipeline activities (import / typing / statistics / semantic_*) that operate on the lake. Two owners of the same lake + DuckLake catalog — **cross-process read consistency needs verification** (open question).
+- **`/probe` credential resolution moves to TS.** Per-source DB URLs (`DATARAUM_<NAME>_URL`, today resolved by the engine's `CredentialChain`) now resolve in the cockpit, since `/probe` runs there. This reshapes DAT-363's cockpit scope.
 - **`/measure` retired** — replaced by Temporal workflow start from cockpit (`client.workflow.start(addSourceWorkflow, ...)`).  DAT-345 (separate SSE job_id surface) closed; folded into DAT-344.
-- `/run_sql` + `/probe` stay Python per DAT-360 spike P5 (Bun [#13910](https://github.com/oven-sh/bun/issues/13910) is real production risk on `@duckdb/node-api`; one-owner-per-substrate principle).
+- **Known accepted risk — Bun [#13910](https://github.com/oven-sh/bun/issues/13910)** (open, ~30% segfault rate for `@duckdb/node-api` under Bun). The DAT-360 P5 probe passed 30/30 + 10/10 — but only on **macOS arm64, NOT the Linux x64 production platform**. A Linux-x64 reproduction probe **gates the migration before ship** (new task — see 2026-05-26 entry).
 - FastAPI + OpenAPI + `packages/api/openapi.yaml` + `export_openapi.py` + `packages/cockpit/src/api/types.ts` + `pnpm codegen` all deleted in Phase 0c.
 
 ### Persistence
@@ -60,7 +65,18 @@ Binding. Do NOT renegotiate without `/refine`.
 - **Existing scheduler retires** in DAT-344 (no parallel-run period, per `[[no-corner-cutting-via-deferral]]`). Estimated ~900 lines deleted → ~150 lines wrappers.
 - **Deferred validations** (DAT-344 first commits): workflow-worker crash replay, real `TypingPhase` as activity, multi-workspace isolation strategy.
 - Memory `[[durable-execution-lean]]` rewritten to lock Temporal. Pre-pivot DBOS lean explicitly superseded.
-- Spike artifact: `spike/dat-360-orchestration/README.md`.
+- Spike artifact: `README.md` + `duckdb-bun-probe/` live on branch `spike/dat-360-orchestration-spike` (committed there; not on `main`). The `spike/` dir in working trees holds only untracked build artifacts.
+
+### Decision revised 2026-05-26 — `run_sql` + `probe` move to the cockpit
+
+**Reverses the 2026-05-25 "stay Python / one-owner-per-substrate" lock** (the prior rationale is kept above for history; it no longer governs).
+
+- **What:** `/run_sql` + `/probe` are implemented in the **cockpit** (TS/Bun, `@duckdb/node-api`), not the Python engine. The engine becomes a **pure Temporal activity worker with no HTTP server** (no `/health` either — health via [Temporal worker health](https://docs.temporal.io/cloud/worker-health)). Substrate bootstrap moves into worker startup; the engine container's compose healthcheck changes.
+- **DuckDB ownership = dual.** Cockpit DuckDB for interactive read verbs; engine DuckDB for Temporal pipeline activities. Same lake + DuckLake catalog, two processes — cross-process read consistency is an **open question** to validate.
+- **Credential resolution for `/probe` moves to TS.** The per-source `DATARAUM_<NAME>_URL` lookup (engine `CredentialChain`) is re-homed in the cockpit. **This expands DAT-363's cockpit config scope** — the Zod config / a TS credential resolver must handle the dynamic per-source URLs (no longer "engine-only, descope" as the DAT-363 refine assumed).
+- **Accepted risk — Bun [#13910](https://github.com/oven-sh/bun/issues/13910)** (open; ~30% segfault rate for `@duckdb/node-api` under Bun). DAT-360 P5 probe: 30/30 + 10/10 PASS, but **macOS arm64 only** — production is **Linux x64**, untested. Risk accepted *conditional on* a Linux-x64 reproduction probe (new task) that **gates the migration before ship**.
+- **Follow-on tickets to file:** (1) `run_sql` + `probe` as cockpit-owned TS DuckDB + TS probe-credential resolution; (2) Linux-x64 #13910 validation probe (blocks #1).
+- **DAT-344 re-scoped:** Temporal worker + activity wrappers + workflow scaffolding; engine = pure worker, no HTTP (health via Temporal worker health; substrate bootstrap into worker startup). `run_sql`/`probe` removed from its scope.
 
 ### Hard rules
 - No backwards-compat shims.
@@ -130,7 +146,9 @@ Per the DAT-339 epic decomposition. See [`dat339-slice1-features-plan.md`](./dat
 | E2 | [DAT-342](https://real-dataraum.atlassian.net/browse/DAT-342) | To Do | Mostly aligned; minor touchup |
 | E2b | [DAT-362](https://real-dataraum.atlassian.net/browse/DAT-362) | To Do | Semantic phase split per-column / per-table |
 | E3 | [DAT-343](https://real-dataraum.atlassian.net/browse/DAT-343) | To Do — REWRITE PENDING | Filesystem → Postgres `config_overlay` |
-| E4 | [DAT-344](https://real-dataraum.atlassian.net/browse/DAT-344) | To Do — rewritten 2026-05-25 post-spike | Temporal worker + activity wrappers + workflow scaffolding + `/run_sql` + `/probe` kernel verbs |
+| E4 | [DAT-344](https://real-dataraum.atlassian.net/browse/DAT-344) | To Do — re-scoped 2026-05-26 | Temporal worker + activity wrappers + workflow scaffolding. Engine = **pure worker, no HTTP** (health via Temporal worker health; substrate bootstrap moves into worker startup). **`/run_sql` + `/probe` removed from E4** — they move to the cockpit (TS/Bun DuckDB). See 2026-05-26 decision. |
+| RS/PR | NEW (file) | To Do | `run_sql` + `probe` as cockpit-owned TS DuckDB (`@duckdb/node-api`) + TS credential resolution for probe. Gated by the #13910 Linux-x64 validation task. |
+| 13910 | NEW (file) | To Do | Linux-x64 reproduction probe of Bun [#13910](https://github.com/oven-sh/bun/issues/13910) — **blocks** the run_sql/probe-to-cockpit migration. |
 | ~~E5~~ | ~~DAT-345~~ | Folded into E4 | `/measure` IS the SSE verb; reconnect replays current state |
 
 ### Cockpit

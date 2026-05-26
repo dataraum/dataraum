@@ -116,7 +116,9 @@ async def run_worker() -> None:
                 # host's already-imported modules. Runtime determinism guards
                 # (banned time/random/etc.) still apply.
                 workflow_runner=SandboxedWorkflowRunner(
-                    restrictions=SandboxRestrictions.default.with_passthrough_modules("dataraum")
+                    restrictions=SandboxRestrictions.default.with_passthrough_modules(
+                        "dataraum", "pydantic", "pydantic_core"
+                    )
                 ),
             )
             logger.info(

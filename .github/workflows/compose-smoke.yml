@@ -25,10 +25,30 @@ jobs:
             - name: Build and start the stack
               run: docker compose up -d --wait
 
-            - name: Check /health
+            - name: Wait for the engine worker heartbeat (Status=Running)
               run: |
-                  curl --fail --silent --show-error http://127.0.0.1:8000/health
-                  echo
+                  set -euo pipefail
+                  # The engine is a Temporal activity worker, not an HTTP service
+                  # (DAT-344) — its health is the worker heartbeat the Temporal
+                  # server records. Poll it via the `temporal` CLI in the
+                  # admin-tools image (the server/engine images ship no CLI).
+                  # Status=Running also implies the worker finished bootstrapping
+                  # its substrate (and the ws_<id> schema) before it began
+                  # polling, which the drizzle drift check below relies on.
+                  for i in $(seq 1 30); do
+                      line=$(docker compose run --rm --no-deps --entrypoint temporal temporal-admin-tools \
+                          worker list --namespace default --address temporal:7233 2>/dev/null \
+                          | grep "dataraum-pipeline" || true)
+                      if echo "$line" | grep -qi "running"; then
+                          echo "engine worker is Running:"
+                          echo "$line"
+                          exit 0
+                      fi
+                      echo "worker not Running yet ($i/30)…"
+                      sleep 5
+                  done
+                  echo "::error::engine worker did not reach Status=Running on dataraum-pipeline"
+                  exit 1
 
             - name: Verify all three Postgres databases exist
               run: |
@@ -46,15 +66,15 @@ jobs:
 
             - name: Verify dataraum_lake mounted writable on both containers
               run: |
-                  # Both control-plane and cockpit must mount the shared lake
-                  # volume: cockpit writes user-uploaded files there (Phase 2
-                  # add_source), engine reads them via DuckLake. Tests both
-                  # individually + the cross-container handoff.
-                  docker compose exec -T control-plane sh -c \
+                  # Both engine-worker and cockpit must mount the shared lake
+                  # volume: cockpit writes user-uploaded files there (add_source),
+                  # the engine reads them via DuckLake. Tests both individually +
+                  # the cross-container handoff.
+                  docker compose exec -T engine-worker sh -c \
                       'touch /var/lib/dataraum/lake/.cp_smoke && rm /var/lib/dataraum/lake/.cp_smoke'
                   docker compose exec -T cockpit sh -c \
                       'echo cockpit_wrote > /var/lib/dataraum/lake/.handoff'
-                  test "$(docker compose exec -T control-plane cat /var/lib/dataraum/lake/.handoff | tr -d '\r\n')" = "cockpit_wrote"
+                  test "$(docker compose exec -T engine-worker cat /var/lib/dataraum/lake/.handoff | tr -d '\r\n')" = "cockpit_wrote"
                   docker compose exec -T cockpit rm /var/lib/dataraum/lake/.handoff
 
             - name: Set up Bun (for drizzle-kit pull drift check)
@@ -70,11 +90,11 @@ jobs:
               working-directory: packages/cockpit
               run: |
                   # Catches: engine added/changed SQLAlchemy models without
-                  # the cockpit refreshing src/db/metadata/. Eager
-                  # substrate-init in the Starlette lifespan guarantees the
-                  # ws_<id> schema is fully materialized by the time
-                  # control-plane is healthy, so a re-pull here is
-                  # deterministic.
+                  # the cockpit refreshing src/db/metadata/. The engine-worker
+                  # materializes the ws_<id> schema during substrate bootstrap,
+                  # which strictly precedes it reporting Status=Running — and the
+                  # heartbeat gate above waited for Running — so the schema is
+                  # fully materialized and a re-pull here is deterministic.
                   #
                   # Source the same .env compose used so creds + workspace_id
                   # stay in lockstep with .env.example. Avoids drift between

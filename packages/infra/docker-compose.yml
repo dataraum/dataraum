@@ -1,4 +1,4 @@
-# DataRaum platform stack — Postgres + control-plane (Python engine) + cockpit (TanStack Start).
+# DataRaum platform stack — Postgres + Temporal + engine activity worker (Python) + cockpit (TanStack Start).
 #
 # Run from workspace root:
 #   docker compose -f packages/infra/docker-compose.yml --env-file packages/infra/.env up -d --wait
@@ -8,7 +8,9 @@
 # First run:
 #   cp packages/infra/.env.example packages/infra/.env
 #   make up
-#   curl http://127.0.0.1:8000/health   # → {"status":"ok",...}
+#   # engine health = Temporal worker heartbeat (no HTTP endpoint):
+#   docker compose run --rm --no-deps --entrypoint temporal temporal-admin-tools \
+#     worker list --namespace default --address temporal:7233   # → Status: Running
 #   open http://127.0.0.1:3000
 
 services:
@@ -129,69 +131,16 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
 
-  control-plane:
-    build:
-      context: ../engine
-      dockerfile: docker/control-plane.Dockerfile
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      # DATABASE_URL is consumed by SQLAlchemy (workspace + sessions); the
-      # +psycopg dialect prefix is required — we ship psycopg v3, not psycopg2,
-      # and the bare postgresql:// scheme falls back to the missing psycopg2
-      # driver. DUCKLAKE_CATALOG_URL is consumed by DuckDB's postgres
-      # extension (libpq), which accepts the bare postgresql:// scheme.
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
-      DUCKLAKE_DATA_PATH: /var/lib/dataraum/lake
-      # Config is the standalone dataraum-config package (DAT-361), bind-mounted
-      # below at this path rather than baked into the image. First step toward a
-      # swappable config backend (object store / ConfigMap).
-      DATARAUM_CONFIG_PATH: /opt/dataraum/config
-      # DATARAUM_HOME is the writable workspace state root (DAT-358).
-      # bootstrap_workspace fails loud if it's unset; the mounted volume
-      # (dataraum_workspace) gives it restart persistence.
-      DATARAUM_HOME: /var/lib/dataraum/workspace
-      # DATARAUM_WORKSPACE_ID is the active workspace pointer (DAT-339 pivot).
-      # Engine resolves the Postgres schema name as ws_<id-with-dashes-as-_>
-      # and sets search_path on every connection. bootstrap_workspace fails
-      # loud if it's unset. Cockpit dev uses the same value to drive
-      # drizzle-kit pull + the metadata client.
-      DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      # Temporal (DAT-363 cornerstone for DAT-344). Optional in slice-1 — the
-      # engine's typed Settings treats these as optional and there is no
-      # Temporal service yet, so empty values keep the stack healthy. DAT-344
-      # wires the activity worker and flips them to required.
-      TEMPORAL_HOST: ${TEMPORAL_HOST:-}
-      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-}
-      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-}
-    volumes:
-      - dataraum_lake:/var/lib/dataraum/lake
-      - dataraum_workspace:/var/lib/dataraum/workspace
-      - ${HOST_SOURCES_DIR:-../engine/sources}:/var/lib/dataraum/sources:ro
-      # Config (DAT-361) — standalone dataraum-config package mounted read-only.
-      # Same sibling dir, same in-container path for engine + cockpit.
-      - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro
-    ports:
-      - "127.0.0.1:8000:8000"
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  # Engine Temporal activity worker (DAT-344). Same image as control-plane, but
-  # runs the activity worker (`python -m dataraum.worker.main`) instead of the
-  # Starlette shell (which P4 removes). Holds one workspace ConnectionManager +
-  # DuckLake anchor and serves the phase activities (import, typing) on the
-  # task queue. No HTTP port; no healthcheck yet — worker-health lands in P4.
+  # Engine Temporal activity worker (DAT-344). The engine is a pure activity
+  # worker now — no Starlette shell, no HTTP port. It bootstraps one workspace
+  # ConnectionManager + the DuckLake anchor (also materializing the ws_<id>
+  # schema), then serves the bundled addSourceWorkflow + the import/typing
+  # activities on the task queue. Health = the worker heartbeat the Temporal
+  # server records (checked via `temporal worker list`), not a container probe.
   engine-worker:
     build:
       context: ../engine
-      dockerfile: docker/control-plane.Dockerfile
-    entrypoint: ["/app/.venv/bin/python", "-m", "dataraum.worker.main"]
+      dockerfile: docker/worker.Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
@@ -222,8 +171,14 @@ services:
       args:
         VITE_ENGINE_API_URL: http://localhost:8000
     depends_on:
-      control-plane:
+      postgres:
         condition: service_healthy
+      # engine-worker bootstraps the ws_<id> metadata schema the cockpit reads
+      # via Drizzle. No healthcheck on the worker (its health is the Temporal
+      # heartbeat), so gate on service_started; the smoke additionally waits for
+      # the worker heartbeat before the drift check.
+      engine-worker:
+        condition: service_started
     environment:
       # cockpit_db — TanStack Start side of the substrate. Created at
       # postgres first-boot by init-databases.sh. Holds workspaces
@@ -233,7 +188,7 @@ services:
       # The cockpit reads (Drizzle introspected schema) but never writes
       # here; the engine's SQLAlchemy models own the schema.
       METADATA_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      # Active workspace_id — same value the control-plane bootstraps.
+      # Active workspace_id — same value the engine-worker bootstraps.
       # Drives `bun run db:pull:metadata` schemaFilter + the metadata
       # client's search_path resolution. Must match what the engine
       # was bootstrapped with or drizzle pulls from the wrong schema.

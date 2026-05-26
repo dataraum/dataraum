@@ -26,6 +26,34 @@ else
     exit 2
 fi
 
+# Single change-gate for the whole quality suite. ruff, vulture, mypy and
+# pytest all only inspect engine Python, so if there are no unpushed engine
+# .py changes there's nothing any of them can newly flag — skip the lot.
+# pytest is the motivator (~85s, and --testmon still imports/collects the
+# whole suite before it can decide nothing changed), but the same logic
+# applies to all four; mypy in particular is ~15s every turn otherwise.
+#
+# Baseline = what CI has already validated: the merge-base with the upstream
+# tracking branch (falls back to origin/main, then main). We diff the
+# working tree against that, so the guard sees ALL local-ahead work —
+# uncommitted AND committed-but-unpushed. Comparing against HEAD alone would
+# wrongly skip once a change is committed (e.g. stacking several commits
+# locally before a push); the slate only clears when you push and the
+# baseline advances. If no baseline resolves (detached/no-remote), fail safe
+# by running the checks.
+base=$(git -C "$project_dir" rev-parse --verify --quiet '@{upstream}') \
+    || base=$(git -C "$project_dir" rev-parse --verify --quiet origin/main) \
+    || base=$(git -C "$project_dir" rev-parse --verify --quiet main) \
+    || base=""
+mb=""
+if [ -n "$base" ]; then
+    mb=$(git -C "$project_dir" merge-base "$base" HEAD 2>/dev/null) || mb=""
+fi
+if [ -n "$mb" ] && git -C "$project_dir" diff --quiet "$mb" -- 'packages/engine/*.py'; then
+    echo "No unpushed engine .py changes — skipping quality checks (CI covers the full suite)."
+    exit 0
+fi
+
 cd "$project_dir/packages/engine"
 
 echo "Running quality checks ($project_dir/packages/engine)..."
@@ -53,8 +81,11 @@ if ! uv run python -m mypy -i src --no-error-summary 2>/dev/null; then
     exit 2
 fi
 
-echo "Checking: pytest..."
-if ! uv run python -m pytest --testmon tests/unit tests/integration --tb=short -q 2>&1; then
+# Integration/testcontainer tests stay out of the per-turn loop (they spin
+# up Postgres); CI owns the full matrix. --testmon de-dupes execution so a
+# turn that didn't touch source collects fast and runs nothing.
+echo "Checking: pytest (unit)..."
+if ! uv run python -m pytest --testmon tests/unit --tb=short -q 2>&1; then
     echo "❌ Tests failed. ALL tests must pass before declaring done." >&2
     exit 2
 fi

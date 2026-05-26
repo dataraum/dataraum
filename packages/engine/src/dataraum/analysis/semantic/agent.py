@@ -23,14 +23,13 @@ from dataraum.analysis.relationships.graph_topology import (
     analyze_graph_topology,
 )
 from dataraum.analysis.semantic.models import (
-    ColumnAnnotationOutput,
     EntityDetection,
     Relationship,
-    SemanticAnalysisOutput,
-    SemanticAnnotation,
     SemanticEnrichmentResult,
+    TableSynthesisOutput,
 )
 from dataraum.analysis.semantic.ontology import OntologyLoader
+from dataraum.analysis.semantic.utils import load_persisted_annotations
 from dataraum.analysis.statistics.db_models import (
     StatisticalProfile as ColumnProfileModel,
 )
@@ -43,10 +42,8 @@ from dataraum.analysis.statistics.models import (
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import (
     ColumnRef,
-    DecisionSource,
     RelationshipType,
     Result,
-    SemanticRole,
 )
 from dataraum.llm.features._base import LLMFeature
 from dataraum.llm.privacy import DataSampler
@@ -99,79 +96,60 @@ class SemanticAgent(LLMFeature):
         super().__init__(config, provider, prompt_renderer)
         self._ontology_loader = OntologyLoader(verticals_dir)
 
-    def analyze(
+    def synthesize_tables(
         self,
         session: Session,
         table_ids: list[str],
         ontology: str = "general",
         relationship_candidates: list[dict[str, Any]] | None = None,
-        column_annotations: ColumnAnnotationOutput | None = None,
-        required_standard_fields: list[str] | None = None,
     ) -> Result[SemanticEnrichmentResult]:
-        """Analyze semantic meaning of tables and columns.
+        """Classify tables + confirm relationships over persisted column annotations.
+
+        The per-table synthesis tier (DAT-362 Option B). Reads the already-persisted
+        per-column annotations (post-teach) as read-only context and produces only
+        table entity classifications + cross-table relationships — it does NOT
+        re-emit per-column annotations.
 
         Args:
-            session: Database session
-            table_ids: List of table IDs to analyze
-            ontology: Ontology name to use for context
-            relationship_candidates: Pre-computed relationship candidates from
-                analysis/relationships module. Each candidate contains:
-                - table1, table2: Table names
-                - join_columns: List of column pairs with confidence scores
-                - join_success_rate: Percentage of rows with successful joins
-                - introduces_duplicates: Whether the join causes row fan-out
-            column_annotations: Tier 1 column annotations from ColumnAnnotationAgent.
-                When provided, included as context so the capable model can focus
-                on relationships, table classification, and reviewing/upgrading
-                low-confidence annotations.
-            required_standard_fields: Standard field concepts required by active
-                metric graphs. Prioritizes mapping these to actual columns.
+            session: Database session.
+            table_ids: Table IDs to synthesize.
+            ontology: Ontology name for context.
+            relationship_candidates: Pre-computed relationship candidates from the
+                relationships phase (TDA + join detection).
 
         Returns:
-            Result containing SemanticEnrichmentResult or error
+            Result with a ``SemanticEnrichmentResult`` carrying ``entity_detections``
+            and ``relationships`` (``annotations`` is always empty).
         """
-        # Check if feature is enabled
         feature_config = self.config.features.semantic_analysis
         if not feature_config.enabled:
             return Result.fail("Semantic analysis is disabled in config")
 
-        # Load column profiles from metadata
         profiles_result = self._load_profiles(session, table_ids)
         if not profiles_result.success or not profiles_result.value:
             return Result.fail(profiles_result.error if profiles_result.error else "Unknown Error")
-
         profiles = profiles_result.value
 
-        # Prepare sample data with privacy controls
         sampler = DataSampler(self.config.privacy)
         samples = sampler.prepare_samples(profiles)
-
-        # Build context for prompt
         tables_json = self._build_tables_json(profiles, samples)
-        ontology_def = self._ontology_loader.load(ontology)
 
-        # Ontology is required for business_concept mapping
+        ontology_def = self._ontology_loader.load(ontology)
         if ontology_def is None:
             available = self._ontology_loader.list_verticals()
             return Result.fail(
-                f"Vertical '{ontology}' not found. "
-                f"Available verticals: {available}. "
-                f"Create config/verticals/{ontology}/ontology.yaml or use an existing vertical."
+                f"Vertical '{ontology}' not found. Available verticals: {available}."
             )
 
-        # Compute graph topology from relationship candidates
         graph_structure: GraphStructure | None = None
         if relationship_candidates:
-            # Extract table names from candidates
             table_names_from_candidates = set()
             for cand in relationship_candidates:
                 if cand.get("table1"):
                     table_names_from_candidates.add(cand["table1"])
                 if cand.get("table2"):
                     table_names_from_candidates.add(cand["table2"])
-
             if table_names_from_candidates:
-                # Use table names as IDs since candidates use names
                 graph_structure = analyze_graph_topology(
                     table_ids=list(table_names_from_candidates),
                     relationships=relationship_candidates,
@@ -184,40 +162,128 @@ class SemanticAgent(LLMFeature):
             "relationship_candidates": self._format_relationship_candidates(
                 relationship_candidates, graph_structure=graph_structure
             ),
-            "column_annotations": self._format_column_annotations(column_annotations),
-            "required_standard_fields": self._format_required_fields(required_standard_fields),
+            "column_annotations": self._format_persisted_annotations(
+                load_persisted_annotations(session, table_ids)
+            ),
         }
 
-        # Render prompt with system/user split
         try:
             system_prompt, user_prompt, temperature = self.renderer.render_split(
-                "semantic_analysis", context
+                "semantic_per_table", context
             )
         except Exception as e:
-            return Result.fail(f"Failed to render prompt: {e}")
+            return Result.fail(f"Failed to render semantic_per_table prompt: {e}")
 
-        # Create tool definition from Pydantic model
-        tool = self._create_tool_definition()
-
-        # Call LLM with tool use
-        response_result = self._call_with_tool(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            tool=tool,
-            temperature=temperature,
-            model_tier=feature_config.model_tier,
+        tool = ToolDefinition(
+            name="analyze_tables",
+            description=(
+                "Classify each table as a business entity (fact/dimension, grain, "
+                "time column) and confirm relationships between tables. Do NOT "
+                "annotate individual columns — those are already decided."
+            ),
+            input_schema=TableSynthesisOutput.model_json_schema(),
         )
 
-        if not response_result.success or not response_result.value:
-            return Result.fail(response_result.error or "Unknown Error")
+        model = self.provider.get_model_for_tier(feature_config.model_tier)
+        request = ConversationRequest(
+            messages=[Message(role="user", content=user_prompt)],
+            system=system_prompt,
+            tools=[tool],
+            tool_choice={"type": "tool", "name": "analyze_tables"},
+            max_tokens=self.config.limits.max_output_tokens_per_request,
+            temperature=temperature,
+            model=model,
+        )
 
-        tool_output, model_name = response_result.value
+        response_result = self.provider.converse(request)
+        if not response_result.success or not response_result.value:
+            return Result.fail(response_result.error or "Table synthesis LLM call failed")
+        response = response_result.value
+
+        if not response.tool_calls or response.tool_calls[0].name != "analyze_tables":
+            return Result.fail("LLM did not use the analyze_tables tool")
 
         try:
-            # Parse tool output into our internal models
-            return self._parse_tool_output(tool_output, model_name, ontology_def=ontology_def)
+            return self._parse_table_synthesis_output(response.tool_calls[0].input, response.model)
         except Exception as e:
-            return Result.fail(f"Failed to parse semantic response: {e}")
+            return Result.fail(f"Failed to parse table synthesis response: {e}")
+
+    @staticmethod
+    def _format_persisted_annotations(annotations: list[dict[str, Any]]) -> str:
+        """Format persisted per-column annotations as read-only per-table context."""
+        if not annotations:
+            return "No prior column annotations available."
+
+        by_table: dict[str, list[dict[str, Any]]] = {}
+        for ann in annotations:
+            by_table.setdefault(ann["table_name"], []).append(ann)
+
+        lines: list[str] = []
+        for table_name, cols in by_table.items():
+            lines.append(f"\n### {table_name}")
+            for col in cols:
+                concept = col.get("business_concept") or "(none)"
+                role = col.get("semantic_role") or "(unknown)"
+                conf = col.get("confidence")
+                conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
+                lines.append(
+                    f"  - {col['column_name']}: role={role}, concept={concept}, "
+                    f"confidence={conf_str}"
+                )
+        return "\n".join(lines)
+
+    def _parse_table_synthesis_output(
+        self,
+        tool_output: dict[str, Any],
+        model_name: str,
+    ) -> Result[SemanticEnrichmentResult]:
+        """Parse ``analyze_tables`` output into entities + relationships (no annotations)."""
+        synthesis = TableSynthesisOutput.model_validate(tool_output)
+
+        entity_detections = [
+            EntityDetection(
+                table_id="",  # Filled by caller
+                table_name=table.table_name,
+                entity_type=table.entity_type,
+                description=table.description,
+                confidence=0.9,
+                grain_columns=table.grain,
+                is_fact_table=table.is_fact_table,
+                is_dimension_table=not table.is_fact_table,
+                time_column=table.time_column,
+            )
+            for table in synthesis.tables
+        ]
+
+        relationships = []
+        for rel in synthesis.relationships:
+            try:
+                rel_type = RelationshipType(rel.relationship_type)
+            except ValueError:
+                rel_type = RelationshipType.FOREIGN_KEY
+            relationships.append(
+                Relationship(
+                    relationship_id=str(uuid4()),
+                    from_table=rel.from_table,
+                    from_column=rel.from_column,
+                    to_table=rel.to_table,
+                    to_column=rel.to_column,
+                    relationship_type=rel_type,
+                    cardinality=None,  # Set by processor from actual data
+                    confidence=rel.confidence,
+                    detection_method="llm_tool",
+                    evidence={"source": "table_synthesis", "reasoning": rel.reasoning},
+                )
+            )
+
+        return Result.ok(
+            SemanticEnrichmentResult(
+                annotations=[],
+                entity_detections=entity_detections,
+                relationships=relationships,
+                source="llm",
+            )
+        )
 
     def _load_profiles(self, session: Session, table_ids: list[str]) -> Result[list[ColumnProfile]]:
         """Load column profiles from metadata.
@@ -464,53 +530,6 @@ class SemanticAgent(LLMFeature):
         return "\n".join(lines)
 
     @staticmethod
-    def _format_column_annotations(annotations: ColumnAnnotationOutput | None) -> str:
-        """Format tier 1 column annotations for the prompt.
-
-        Args:
-            annotations: Tier 1 column annotations, or None
-
-        Returns:
-            Formatted string for the prompt
-        """
-        if annotations is None:
-            return "No prior column annotations available."
-
-        lines = []
-        for table in annotations.tables:
-            lines.append(f"\n### {table.table_name}")
-            for col in table.columns:
-                concept = col.business_concept or "(none)"
-                lines.append(
-                    f"  - {col.column_name}: role={col.semantic_role}, "
-                    f"concept={concept}, confidence={col.confidence:.2f}"
-                )
-                if col.confidence < 0.7:
-                    lines.append("    [LOW CONFIDENCE — review recommended]")
-
-        return "\n".join(lines) if lines else "No prior column annotations available."
-
-    @staticmethod
-    def _format_required_fields(fields: list[str] | None) -> str:
-        """Format required standard fields for the prompt.
-
-        Args:
-            fields: Standard field concept names from metric graphs, or None
-
-        Returns:
-            Formatted string for the prompt
-        """
-        if not fields:
-            return "No specific standard fields required by metrics."
-        lines = ["The following standard_field concepts are used by active metrics:"]
-        for f in fields:
-            lines.append(f"  - {f}")
-        lines.append("")
-        lines.append("PRIORITY: If a column semantically matches one of these concepts,")
-        lines.append("set business_concept to the EXACT concept name from this list.")
-        return "\n".join(lines)
-
-    @staticmethod
     def _truncate_sample(value: Any, max_length: int = 100) -> Any:
         """Truncate a sample value if it exceeds max_length.
 
@@ -582,198 +601,3 @@ class SemanticAgent(LLMFeature):
             tables_data[table_name]["columns"].append(col_data)
 
         return list(tables_data.values())
-
-    def _create_tool_definition(self) -> ToolDefinition:
-        """Create tool definition from SemanticAnalysisOutput Pydantic model.
-
-        Returns:
-            ToolDefinition with JSON schema from the Pydantic model
-        """
-        # Generate JSON schema from Pydantic model
-        schema = SemanticAnalysisOutput.model_json_schema()
-
-        return ToolDefinition(
-            name="analyze_schema",
-            description=(
-                "Provide semantic analysis results for the database schema. "
-                "Analyze each table and column, map to business concepts, "
-                "and identify relationships."
-            ),
-            input_schema=schema,
-        )
-
-    def _call_with_tool(
-        self,
-        system_prompt: str | None,
-        user_prompt: str,
-        tool: ToolDefinition,
-        temperature: float,
-        model_tier: str,
-    ) -> Result[tuple[dict[str, Any], str]]:
-        """Call LLM with tool use and extract tool output.
-
-        Args:
-            system_prompt: System message (role/instructions)
-            user_prompt: User message (data/context)
-            tool: Tool definition for structured output
-            temperature: Sampling temperature
-            model_tier: Model tier to use
-
-        Returns:
-            Result containing (tool_output_dict, model_name)
-        """
-        # Get model for tier
-        model = self.provider.get_model_for_tier(model_tier)
-
-        # Build conversation request
-        request = ConversationRequest(
-            messages=[Message(role="user", content=user_prompt)],
-            system=system_prompt,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": "analyze_schema"},
-            max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
-            model=model,
-        )
-
-        # Call LLM
-        response_result = self.provider.converse(request)
-
-        if not response_result.success or not response_result.value:
-            return Result.fail(response_result.error or "LLM call failed")
-
-        response = response_result.value
-
-        # Extract tool call result
-        if not response.tool_calls:
-            # LLM didn't use the tool - try to parse text response as fallback
-            if response.content:
-                try:
-                    parsed = json.loads(response.content)
-                    return Result.ok((parsed, response.model))
-                except json.JSONDecodeError:
-                    pass
-            return Result.fail(
-                f"LLM did not use the analyze_schema tool. Response: {response.content[:500]}"
-            )
-
-        # Get the first tool call (should be analyze_schema)
-        tool_call = response.tool_calls[0]
-        if tool_call.name != "analyze_schema":
-            return Result.fail(f"Unexpected tool call: {tool_call.name}")
-
-        return Result.ok((tool_call.input, response.model))
-
-    def _parse_tool_output(
-        self,
-        tool_output: dict[str, Any],
-        model_name: str,
-        ontology_def: Any = None,
-    ) -> Result[SemanticEnrichmentResult]:
-        """Parse tool output into SemanticEnrichmentResult.
-
-        Args:
-            tool_output: Raw tool output dict from LLM
-            model_name: Model that generated the response
-
-        Returns:
-            Result containing SemanticEnrichmentResult
-        """
-        try:
-            # Validate with Pydantic model
-            analysis = SemanticAnalysisOutput.model_validate(tool_output)
-
-            annotations = []
-            entity_detections = []
-            relationships = []
-
-            # Convert tool output to internal models
-            for table in analysis.tables:
-                # Create entity detection
-                entity = EntityDetection(
-                    table_id="",  # Filled by caller
-                    table_name=table.table_name,
-                    entity_type=table.entity_type,
-                    description=table.description,
-                    confidence=0.9,  # Tool-based output has higher confidence
-                    grain_columns=table.grain,
-                    is_fact_table=table.is_fact_table,
-                    is_dimension_table=not table.is_fact_table,
-                    time_column=table.time_column,
-                )
-                entity_detections.append(entity)
-
-                # Parse column annotations
-                for col in table.columns:
-                    try:
-                        semantic_role = SemanticRole(col.semantic_role)
-                    except ValueError:
-                        semantic_role = SemanticRole.UNKNOWN
-
-                    annotation = SemanticAnnotation(
-                        column_id="",  # Filled by caller
-                        column_ref=ColumnRef(
-                            table_name=table.table_name,
-                            column_name=col.column_name,
-                        ),
-                        semantic_role=semantic_role,
-                        entity_type=col.entity_type,
-                        business_name=col.business_term,
-                        business_description=col.description,
-                        business_concept=col.business_concept,
-                        unit_source_column=col.unit_source_column,
-                        annotation_source=DecisionSource.LLM,
-                        annotated_by=model_name,
-                        confidence=col.confidence,
-                    )
-                    annotations.append(annotation)
-
-                # Backfill unit_source_column from table-level unit_relationships
-                for unit_rel in table.unit_relationships:
-                    for annotation in annotations:
-                        if (
-                            annotation.column_ref.table_name == table.table_name
-                            and annotation.column_ref.column_name in unit_rel.measure_columns
-                            and annotation.unit_source_column is None
-                        ):
-                            annotation.unit_source_column = unit_rel.unit_column
-
-            # Backfill temporal_behavior from ontology concepts
-            if ontology_def:
-                concept_map = {c.name: c.temporal_behavior for c in ontology_def.concepts}
-                for annotation in annotations:
-                    if annotation.business_concept:
-                        annotation.temporal_behavior = concept_map.get(annotation.business_concept)
-
-            # Parse relationships (cardinality is computed post-hoc from actual data)
-            for rel in analysis.relationships:
-                try:
-                    rel_type = RelationshipType(rel.relationship_type)
-                except ValueError:
-                    rel_type = RelationshipType.FOREIGN_KEY
-
-                relationship = Relationship(
-                    relationship_id=str(uuid4()),
-                    from_table=rel.from_table,
-                    from_column=rel.from_column,
-                    to_table=rel.to_table,
-                    to_column=rel.to_column,
-                    relationship_type=rel_type,
-                    cardinality=None,  # Set by processor from actual data
-                    confidence=rel.confidence,
-                    detection_method="llm_tool",
-                    evidence={"source": "semantic_analysis", "reasoning": rel.reasoning},
-                )
-                relationships.append(relationship)
-
-            return Result.ok(
-                SemanticEnrichmentResult(
-                    annotations=annotations,
-                    entity_detections=entity_detections,
-                    relationships=relationships,
-                    source="llm",
-                )
-            )
-
-        except Exception as e:
-            return Result.fail(f"Failed to parse tool output: {e}")

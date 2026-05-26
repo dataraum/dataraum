@@ -1,8 +1,8 @@
 # Pipeline
 
-The DataRaum pipeline extracts metadata from data files through 18 phases. Each phase produces structured metadata stored in SQLite (metadata) and DuckDB (data). Phases declare their dependencies and execute in topological order with parallel execution where possible.
+The DataRaum pipeline extracts metadata from data files through 19 phases. Each phase produces structured metadata stored in SQLite (metadata) and DuckDB (data). Phases declare their dependencies and execute in topological order with parallel execution where possible.
 
-When a vertical is not yet configured for a dataset, the pipeline runs a **cold-start bootstrap** during the `semantic` and `business_cycles`/`validation` phases — inducing an ontology, cycles, and validations from the data itself so subsequent phases have grounding.
+When a vertical is not yet configured for a dataset, the pipeline runs a **cold-start bootstrap** during the `semantic_per_column`/`semantic_per_table` and `business_cycles`/`validation` phases — inducing an ontology, cycles, and validations from the data itself so subsequent phases have grounding.
 
 ## Running the Pipeline
 
@@ -35,19 +35,20 @@ cockpit. See the project README for current status.
 | 5 | **statistical_quality** | Benford's Law compliance, outlier detection | — |
 | 6 | **relationships** | Cross-table join detection (FK candidates) | — |
 | 7 | **temporal** | Temporal pattern and trend analysis | — |
-| 8 | **semantic** | Business meaning, roles, entity types. Cold-start: induces an ontology if none is configured. | Yes |
-| 9 | **data_fixes** | Apply stored metadata fixes | — |
-| 10 | **enriched_views** | Fact + dimension joined views | Yes |
-| 11 | **slicing** | Identify slice dimensions for analysis | Yes |
-| 12 | **slicing_view** | Create enriched views projected to slice-relevant columns | — |
-| 13 | **slice_analysis** | Execute slicing SQL, build slice tables | — |
-| 14 | **temporal_slice_analysis** | Distribution drift across slices over time | — |
-| 15 | **correlations** | Derived column detection (same + cross-table via enriched views) | — |
-| 16 | **business_cycles** | Detect business processes across tables. Cold-start: induces cycles if none are configured. | Yes |
-| 17 | **validation** | Domain-specific validation checks. Cold-start: induces validations if none are configured. | Yes |
-| 18 | **graph_execution** | Compute business metrics via the graph agent (extract → formula SQL, cached as reusable snippets with provenance) | Yes |
+| 8 | **semantic_per_column** | Per-column business meaning, roles, concepts, units (persisted). Cold-start: induces an ontology if none is configured. | Yes |
+| 9 | **semantic_per_table** | Per-table entity classification + relationship confirmation over the persisted column annotations. | Yes |
+| 10 | **data_fixes** | Apply stored metadata fixes | — |
+| 11 | **enriched_views** | Fact + dimension joined views | Yes |
+| 12 | **slicing** | Identify slice dimensions for analysis | Yes |
+| 13 | **slicing_view** | Create enriched views projected to slice-relevant columns | — |
+| 14 | **slice_analysis** | Execute slicing SQL, build slice tables | — |
+| 15 | **temporal_slice_analysis** | Distribution drift across slices over time | — |
+| 16 | **correlations** | Derived column detection (same + cross-table via enriched views) | — |
+| 17 | **business_cycles** | Detect business processes across tables. Cold-start: induces cycles if none are configured. | Yes |
+| 18 | **validation** | Domain-specific validation checks. Cold-start: induces validations if none are configured. | Yes |
+| 19 | **graph_execution** | Compute business metrics via the graph agent (extract → formula SQL, cached as reusable snippets with provenance) | Yes |
 
-6 of 18 phases require an LLM.
+7 of 19 phases require an LLM.
 
 ## Phase Categories
 
@@ -57,13 +58,13 @@ cockpit. See the project README for current status.
 ### Profiling Layer (Phases 3–7)
 Statistical profiling, column eligibility evaluation, Benford's Law and outlier detection, relationship discovery, and temporal analysis. These phases are purely computational — no LLM calls.
 
-### Enrichment Layer (Phases 8–15)
+### Enrichment Layer (Phases 8–16)
 LLM-powered semantic analysis assigns business meaning to columns. Enriched views join fact and dimension tables. Slicing identifies meaningful data segments for deeper analysis. Correlations detect derived columns.
 
-### Domain Layer (Phases 16–17)
+### Domain Layer (Phases 17–18)
 Business cycle detection finds multi-table processes (e.g., order-to-cash). Validation runs domain-specific checks (e.g., debits = credits).
 
-### Computation Layer (Phase 18)
+### Computation Layer (Phase 19)
 **Graph execution** takes metric definitions (from the vertical or taught via `teach(type="metric")`) and the graph agent generates SQL grounded in the semantic layer. Each computed metric is cached as an authoritative `graph:{graph_id}` snippet with provenance (field resolution, column mappings, reasoning, repair status) so downstream `query` and `run_sql` calls can reuse it.
 
 ## Post-Phase Detectors
@@ -72,7 +73,8 @@ After each phase completes, the orchestrator runs **post-step detectors** — en
 
 - After `typing`: measures `type_fidelity`
 - After `statistics`: measures `null_ratio`
-- After `semantic`: measures `business_meaning`, `unit_entropy`, `temporal_entropy`, `outlier_rate`, `benford`, `join_path_determinism`, `relationship_entropy`
+- After `semantic_per_column`: measures `business_meaning`, `unit_entropy`, `temporal_entropy`, `outlier_rate`, `benford`
+- After `semantic_per_table`: measures `join_path_determinism`, `relationship_entropy`
 - After `enriched_views`: measures `dimension_coverage`
 - After `correlations`: measures `derived_value`
 
@@ -85,7 +87,7 @@ import ──► typing ──► statistics ──► column_eligibility ──
                                                           ├──► relationships           │
                                                           └──► temporal                │
                                                                    │                   │
-                                                          semantic ◄┘                  │
+                                       semantic_per_column ──► semantic_per_table ◄┘      │
                                                               │                        │
                                                          data_fixes                    │
                                                               │                        │
@@ -102,7 +104,7 @@ import ──► typing ──► statistics ──► column_eligibility ──
                                     temporal_slice_analysis ◄── temporal│
                                                   │                     │
                                      business_cycles, validation        │
-                                     (depend on semantic, relationships,│
+                                     (depend on semantic_per_table,        │
                                       temporal, enriched_views, slicing)│
                                                   │                     │
                                                   └─────────┬───────────┘

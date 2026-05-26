@@ -109,73 +109,6 @@ class ColumnSemanticOutput(BaseModel):
     )
 
 
-class UnitRelationship(BaseModel):
-    """A dimension column that defines units for one or more measure columns."""
-
-    unit_column: str = Field(
-        description="The dimension column that defines the unit (e.g., 'currency_code')."
-    )
-    measure_columns: list[str] = Field(
-        description="Measure columns whose unit is defined by this dimension (e.g., ['amount', 'debit', 'credit'])."
-    )
-    unit_values: list[str] = Field(
-        default_factory=list,
-        description="Known unit values from the dimension column (e.g., ['USD', 'EUR', 'GBP']).",
-    )
-
-
-class TableSemanticOutput(BaseModel):
-    """Semantic annotation for a database table.
-
-    Describes the table's purpose, structure, and the semantic meaning
-    of all its columns.
-    """
-
-    table_name: str = Field(description="Exact table name from the provided schema.")
-
-    entity_type: str = Field(
-        description=(
-            "What real-world entity this table represents. Examples: 'customers', "
-            "'orders', 'products', 'transactions', 'invoices', 'payments'"
-        )
-    )
-
-    description: str = Field(
-        description="One sentence describing the table's purpose in the business domain."
-    )
-
-    is_fact_table: bool = Field(
-        description=(
-            "True if this is a fact table (contains transactions, events, or measurements). "
-            "False if this is a dimension table (contains reference/lookup data)."
-        )
-    )
-
-    grain: list[str] = Field(
-        description=(
-            "Column names that define the unique grain (primary key) of the table. "
-            "These columns together uniquely identify each row."
-        )
-    )
-
-    time_column: str | None = Field(
-        default=None,
-        description="Primary timestamp column for time-based analysis, if the table has one.",
-    )
-
-    columns: list[ColumnSemanticOutput] = Field(
-        description="Semantic annotations for each column in this table."
-    )
-
-    unit_relationships: list[UnitRelationship] = Field(
-        default_factory=list,
-        description=(
-            "Dimension columns that define units for measure columns. "
-            "E.g., a 'currency' dimension defines units for monetary measures."
-        ),
-    )
-
-
 class RelationshipOutput(BaseModel):
     """A detected relationship between two tables.
 
@@ -213,15 +146,53 @@ class RelationshipOutput(BaseModel):
     )
 
 
-class SemanticAnalysisOutput(BaseModel):
-    """Complete semantic analysis result for a database schema.
+class TableEntityOutput(BaseModel):
+    """Entity-level classification for a single table (per-table tier)."""
 
-    This is the top-level tool output containing all tables, columns,
-    and relationships analyzed.
+    table_name: str = Field(description="Exact table name from the provided schema.")
+
+    entity_type: str = Field(
+        description=(
+            "What real-world entity this table represents. Examples: 'customers', "
+            "'orders', 'products', 'transactions', 'invoices', 'payments'"
+        )
+    )
+
+    description: str = Field(
+        description="One sentence describing the table's purpose in the business domain."
+    )
+
+    is_fact_table: bool = Field(
+        description=(
+            "True if this is a fact table (contains transactions, events, or measurements). "
+            "False if this is a dimension table (contains reference/lookup data)."
+        )
+    )
+
+    grain: list[str] = Field(
+        description=(
+            "Column names that define the unique grain (primary key) of the table. "
+            "These columns together uniquely identify each row."
+        )
+    )
+
+    time_column: str | None = Field(
+        default=None,
+        description="Primary timestamp column for time-based analysis, if the table has one.",
+    )
+
+
+class TableSynthesisOutput(BaseModel):
+    """Per-table synthesis tool output: table entities + cross-table relationships.
+
+    Replaces :class:`SemanticAnalysisOutput` for the post-split per-table phase.
+    Column annotations are produced and persisted by the per-column phase; they
+    are provided to this phase as read-only context and are NOT part of this
+    schema.
     """
 
-    tables: list[TableSemanticOutput] = Field(
-        description="Semantic annotations for each table in the schema."
+    tables: list[TableEntityOutput] = Field(
+        description="Entity classification for each table in the schema."
     )
 
     relationships: list[RelationshipOutput] = Field(
@@ -235,12 +206,12 @@ class SemanticAnalysisOutput(BaseModel):
 
 
 # =============================================================================
-# Tier 1: Column Annotation Output (fast model)
+# Per-column annotation output (DAT-362: now the authoritative per-column phase output)
 # =============================================================================
 
 
 class TableColumnAnnotation(BaseModel):
-    """Column annotations for a single table (tier 1 fast model output)."""
+    """Column annotations for a single table (per-column phase output)."""
 
     table_name: str = Field(description="Exact table name from the provided schema.")
     columns: list[ColumnSemanticOutput] = Field(
@@ -249,10 +220,10 @@ class TableColumnAnnotation(BaseModel):
 
 
 class ColumnAnnotationOutput(BaseModel):
-    """Output from tier 1 column annotation (fast model).
+    """Output from the per-column annotation phase.
 
     Contains column-level annotations only — no relationships or
-    table-level entity classification. Those are handled by tier 2.
+    table-level entity classification. Those are handled by semantic_per_table.
     """
 
     tables: list[TableColumnAnnotation] = Field(description="Column annotations grouped by table.")
@@ -335,11 +306,11 @@ class SemanticEnrichmentResult(BaseModel):
 __all__ = [
     # Tool output models for LLM structured output
     "ColumnSemanticOutput",
-    "UnitRelationship",
-    "TableSemanticOutput",
     "RelationshipOutput",
-    "SemanticAnalysisOutput",
-    # Tier 1 column annotation output
+    # Per-table synthesis output (DAT-362 Option B)
+    "TableEntityOutput",
+    "TableSynthesisOutput",
+    # Per-column annotation output
     "TableColumnAnnotation",
     "ColumnAnnotationOutput",
     # Internal models for storage and processing

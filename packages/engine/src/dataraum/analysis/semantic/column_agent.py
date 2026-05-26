@@ -1,11 +1,10 @@
-"""Column Annotation Agent - Fast tier 1 LLM annotation.
+"""Column Annotation Agent — authoritative per-column LLM annotation.
 
-Annotates columns with semantic roles, entity types, business terms,
-and ontology concept mappings. Uses a fast/cheap model (e.g. Haiku)
-since this is pattern recognition work that doesn't need reasoning.
-
-The output feeds into the tier 2 SemanticAgent as additional context,
-allowing the capable model to focus on relationships and table analysis.
+Annotates columns with semantic roles, entity types, business terms, ontology
+concept mappings, and unit sources. Post-DAT-362 this is the per-column phase's
+authoritative agent, run on the capable (balanced) model — not a throwaway fast
+pre-pass. Its output is persisted as ``SemanticAnnotation`` rows and later read
+by ``semantic_per_table`` as read-only context.
 """
 
 from __future__ import annotations
@@ -42,12 +41,12 @@ logger = get_logger(__name__)
 
 
 class ColumnAnnotationAgent(LLMFeature):
-    """Fast column annotation agent (tier 1).
+    """Authoritative per-column annotation agent (DAT-362 semantic_per_column).
 
-    Annotates columns with semantic metadata using a fast model.
-    Does NOT handle relationships or table-level entity classification.
-
-    Output is used as input context for the tier 2 SemanticAgent.
+    Annotates columns with semantic metadata on the configured model tier
+    (balanced post-split). Does NOT handle relationships or table-level entity
+    classification — that is ``semantic_per_table``'s job. Output is persisted
+    as ``SemanticAnnotation`` rows.
     """
 
     def __init__(
@@ -66,6 +65,7 @@ class ColumnAnnotationAgent(LLMFeature):
         table_ids: list[str],
         ontology: str = "general",
         profiles: list[ColumnProfile] | None = None,
+        required_standard_fields: list[str] | None = None,
     ) -> Result[ColumnAnnotationOutput]:
         """Annotate columns with semantic metadata.
 
@@ -74,6 +74,11 @@ class ColumnAnnotationAgent(LLMFeature):
             table_ids: List of table IDs to annotate
             ontology: Ontology name for concept mapping
             profiles: Pre-loaded column profiles (avoids re-loading)
+            required_standard_fields: Standard-field concepts required by active
+                metric graphs. When provided, the prompt prioritizes mapping
+                these concepts to actual dataset columns (DAT-362: this used to
+                live in the tier-2 SemanticAgent; concept mapping is now owned by
+                the per-column phase).
 
         Returns:
             Result containing ColumnAnnotationOutput
@@ -111,6 +116,7 @@ class ColumnAnnotationAgent(LLMFeature):
             "tables_json": json.dumps(tables_json),
             "ontology_name": ontology,
             "ontology_concepts": self._ontology_loader.format_concepts_for_prompt(ontology_def),
+            "required_standard_fields": self._format_required_fields(required_standard_fields),
         }
 
         # Render prompt
@@ -176,6 +182,18 @@ class ColumnAnnotationAgent(LLMFeature):
             return Result.ok(output)
         except Exception as e:
             return Result.fail(f"Failed to parse column annotation output: {e}")
+
+    @staticmethod
+    def _format_required_fields(fields: list[str] | None) -> str:
+        """Format required standard fields for the prompt."""
+        if not fields:
+            return "No specific standard fields required by metrics."
+        lines = ["The following standard_field concepts are used by active metrics:"]
+        lines.extend(f"  - {f}" for f in fields)
+        lines.append("")
+        lines.append("PRIORITY: If a column semantically matches one of these concepts,")
+        lines.append("set business_concept to the EXACT concept name from this list.")
+        return "\n".join(lines)
 
     @staticmethod
     def _truncate_sample(value: Any, max_length: int = 100) -> Any:

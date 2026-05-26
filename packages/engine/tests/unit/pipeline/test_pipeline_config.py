@@ -21,7 +21,8 @@ class TestLoadPhaseDeclarations:
         # Should have all active phases
         assert "import" in declarations
         assert "typing" in declarations
-        assert "semantic" in declarations
+        assert "semantic_per_column" in declarations
+        assert "semantic_per_table" in declarations
 
     def test_import_has_no_dependencies(self):
         declarations = load_phase_declarations()

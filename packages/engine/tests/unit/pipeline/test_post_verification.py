@@ -15,8 +15,8 @@ class TestPhaseProducesAnalyses:
         decl = load_phase_declarations()["statistics"]
         assert decl.produces == {AnalysisKey.STATISTICS}
 
-    def test_semantic_phase_produces_semantic(self):
-        decl = load_phase_declarations()["semantic"]
+    def test_semantic_per_column_produces_semantic(self):
+        decl = load_phase_declarations()["semantic_per_column"]
         assert decl.produces == {AnalysisKey.SEMANTIC}
 
     def test_relationships_phase_produces_relationships(self):

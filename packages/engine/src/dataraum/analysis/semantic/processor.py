@@ -31,7 +31,7 @@ from dataraum.analysis.semantic.models import (
 )
 from dataraum.analysis.semantic.utils import load_column_mappings, load_table_mappings
 from dataraum.core.logging import get_logger
-from dataraum.core.models.base import Result
+from dataraum.core.models.base import DecisionSource, Result
 
 logger = get_logger(__name__)
 
@@ -135,132 +135,133 @@ def _build_candidate_metrics_lookup(
     return lookup
 
 
-def enrich_semantic(
+def persist_column_annotations(
+    session: Session,
+    column_output: ColumnAnnotationOutput,
+    table_ids: list[str],
+    *,
+    annotated_by: str,
+    session_id: str,
+    ontology_def: Any = None,
+) -> int:
+    """Persist per-column annotations as ``SemanticAnnotation`` rows (DAT-362).
+
+    The per-column phase's authoritative output. Maps each annotated column to a
+    DB row, backfilling ``temporal_behavior`` from the ontology concept (same as
+    the legacy monolithic path did).
+
+    Args:
+        session: Database session.
+        column_output: Per-column tool output (tables -> columns).
+        table_ids: Tables the annotations belong to (for column-id resolution).
+        annotated_by: Model identifier that produced the annotations.
+        session_id: Per-session FK.
+        ontology_def: Loaded ontology, for ``temporal_behavior`` backfill.
+
+    Returns:
+        Number of annotation rows persisted.
+    """
+    column_map = load_column_mappings(session, table_ids)
+    concept_temporal = (
+        {c.name: c.temporal_behavior for c in ontology_def.concepts} if ontology_def else {}
+    )
+
+    count = 0
+    for table in column_output.tables:
+        for col in table.columns:
+            column_id = column_map.get((table.table_name, col.column_name))
+            if not column_id:
+                continue
+            session.add(
+                AnnotationModel(
+                    session_id=session_id,
+                    column_id=column_id,
+                    semantic_role=col.semantic_role,
+                    entity_type=col.entity_type,
+                    business_name=col.business_term,
+                    business_description=col.description,
+                    business_concept=col.business_concept,
+                    temporal_behavior=concept_temporal.get(col.business_concept)
+                    if col.business_concept
+                    else None,
+                    unit_source_column=col.unit_source_column,
+                    annotation_source=DecisionSource.LLM.value,
+                    annotated_by=annotated_by,
+                    confidence=col.confidence,
+                )
+            )
+            count += 1
+    return count
+
+
+def synthesize_and_store_tables(
     session: Session,
     agent: SemanticAgent,
     table_ids: list[str],
     ontology: str = "general",
     relationship_candidates: list[dict[str, Any]] | None = None,
     duckdb_conn: duckdb.DuckDBPyConnection | None = None,
-    column_annotations: ColumnAnnotationOutput | None = None,
-    required_standard_fields: list[str] | None = None,
     *,
     session_id: str,
 ) -> Result[SemanticEnrichmentResult]:
-    """Run semantic enrichment on tables.
+    """Run per-table synthesis and store entities + relationships (DAT-362).
 
-    Steps:
-    1. Call semantic agent for LLM analysis (with relationship candidates)
-    2. Map column_refs to actual column_ids from database
-    3. Store annotations in semantic_annotations table
-    4. Store entity detections in table_entities table
-    5. Store relationships in relationships table (with RI metrics)
-    6. Return enrichment result
-
-    Args:
-        session: Database session
-        agent: Semantic agent for LLM analysis
-        table_ids: List of table IDs to enrich
-        ontology: Ontology context for analysis
-        relationship_candidates: Pre-computed relationship candidates from
-            analysis/relationships module (TDA + join detection)
-        duckdb_conn: Optional DuckDB connection for computing RI metrics
-            for relationships not in candidates
-        column_annotations: Tier 1 column annotations from ColumnAnnotationAgent
-        required_standard_fields: Standard field concepts required by active
-            metric graphs. When provided, the semantic agent prioritizes mapping
-            these concepts to actual dataset columns.
+    Calls :meth:`SemanticAgent.synthesize_tables` (which reads the persisted
+    per-column annotations as context), then stores the resulting table entities
+    and LLM-confirmed relationships. Cardinality + RI metrics are computed from
+    actual data, not LLM guesses. Does NOT touch ``SemanticAnnotation`` rows —
+    those are owned by the per-column phase.
 
     Returns:
-        Result containing semantic enrichment data
+        Result with the ``SemanticEnrichmentResult`` (entities + relationships).
     """
-    # Call semantic agent with relationship candidates and tier 1 annotations
-    llm_result = agent.analyze(
+    llm_result = agent.synthesize_tables(
         session=session,
         table_ids=table_ids,
         ontology=ontology,
         relationship_candidates=relationship_candidates,
-        column_annotations=column_annotations,
-        required_standard_fields=required_standard_fields,
     )
-
     if not llm_result.success:
-        return Result.fail(llm_result.error or "Semantic analysis failed")
-
+        return Result.fail(llm_result.error or "Table synthesis failed")
     enrichment = llm_result.unwrap()
 
-    # Load column ID mappings
-    column_map = load_column_mappings(session, table_ids)
     table_map = load_table_mappings(session, table_ids)
+    column_map = load_column_mappings(session, table_ids)
 
-    # Store annotations
-    for annotation in enrichment.annotations:
-        column_id = column_map.get(
-            (annotation.column_ref.table_name, annotation.column_ref.column_name)
-        )
-        if not column_id:
-            continue  # Skip if column not found
-
-        # Create or update semantic annotation
-        db_annotation = AnnotationModel(
-            session_id=session_id,
-            column_id=column_id,
-            semantic_role=annotation.semantic_role.value,
-            entity_type=annotation.entity_type,
-            business_name=annotation.business_name,
-            business_description=annotation.business_description,
-            business_concept=annotation.business_concept,
-            temporal_behavior=annotation.temporal_behavior,
-            unit_source_column=annotation.unit_source_column,
-            annotation_source=annotation.annotation_source.value,
-            annotated_by=annotation.annotated_by,
-            confidence=annotation.confidence,
-        )
-        session.add(db_annotation)
-
-    # Store entity detections
     for entity in enrichment.entity_detections:
         table_id = table_map.get(entity.table_name)
         if not table_id:
             continue
-
-        db_entity = EntityModel(
-            session_id=session_id,
-            table_id=table_id,
-            detected_entity_type=entity.entity_type,
-            description=entity.description,
-            confidence=entity.confidence,
-            grain_columns={"columns": entity.grain_columns},
-            is_fact_table=entity.is_fact_table,
-            is_dimension_table=entity.is_dimension_table,
-            time_column=entity.time_column,
-            detection_source="llm",
+        session.add(
+            EntityModel(
+                session_id=session_id,
+                table_id=table_id,
+                detected_entity_type=entity.entity_type,
+                description=entity.description,
+                confidence=entity.confidence,
+                grain_columns={"columns": entity.grain_columns},
+                is_fact_table=entity.is_fact_table,
+                is_dimension_table=entity.is_dimension_table,
+                time_column=entity.time_column,
+                detection_source="llm",
+            )
         )
-        session.add(db_entity)
 
-    # Build lookup of candidate metrics for merging into LLM relationships
     candidate_metrics = _build_candidate_metrics_lookup(relationship_candidates)
 
-    # Store LLM-confirmed relationships (separate from Phase 6 candidates)
-    # Cardinality is computed from actual data, not from LLM output.
     for rel in enrichment.relationships:
         from_col_id = column_map.get((rel.from_table, rel.from_column))
         to_col_id = column_map.get((rel.to_table, rel.to_column))
         from_table_id = table_map.get(rel.from_table)
         to_table_id = table_map.get(rel.to_table)
-
         if not all([from_col_id, to_col_id, from_table_id, to_table_id]):
             continue
 
-        # Merge candidate evaluation metrics into LLM evidence
         evidence = dict(rel.evidence) if rel.evidence else {}
         candidate_key = (rel.from_table, rel.from_column, rel.to_table, rel.to_column)
-
         if candidate_key in candidate_metrics:
-            # Use pre-computed metrics from candidates
             evidence.update(candidate_metrics[candidate_key])
         elif duckdb_conn is not None:
-            # Compute RI metrics for LLM-discovered relationships not in candidates
             from_table_path = f'lake.typed."{rel.from_table}"'
             to_table_path = f'lake.typed."{rel.to_table}"'
             try:
@@ -284,26 +285,22 @@ def enrich_semantic(
                     error=str(e),
                 )
 
-        # Determine cardinality from actual data
-        cardinality = _resolve_cardinality(
-            rel=rel,
-            evidence=evidence,
-            duckdb_conn=duckdb_conn,
-        )
+        cardinality = _resolve_cardinality(rel=rel, evidence=evidence, duckdb_conn=duckdb_conn)
 
-        db_rel = RelationshipModel(
-            relationship_id=rel.relationship_id,
-            session_id=session_id,
-            from_table_id=from_table_id,
-            from_column_id=from_col_id,
-            to_table_id=to_table_id,
-            to_column_id=to_col_id,
-            relationship_type=rel.relationship_type.value,
-            cardinality=cardinality,
-            confidence=rel.confidence,
-            detection_method="llm",  # Always 'llm' for semantic analysis
-            evidence=evidence,
+        session.add(
+            RelationshipModel(
+                relationship_id=rel.relationship_id,
+                session_id=session_id,
+                from_table_id=from_table_id,
+                from_column_id=from_col_id,
+                to_table_id=to_table_id,
+                to_column_id=to_col_id,
+                relationship_type=rel.relationship_type.value,
+                cardinality=cardinality,
+                confidence=rel.confidence,
+                detection_method="llm",
+                evidence=evidence,
+            )
         )
-        session.add(db_rel)
 
     return Result.ok(enrichment)

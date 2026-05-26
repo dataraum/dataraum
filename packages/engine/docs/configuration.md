@@ -36,7 +36,7 @@ config/
 ├── llm/
 │   ├── config.yaml            # Provider, model tiers, privacy settings
 │   └── prompts/               # LLM prompt templates (15 files)
-│       ├── semantic_analysis.yaml
+│       ├── semantic_per_table.yaml
 │       ├── column_annotation.yaml
 │       ├── slicing_analysis.yaml
 │       ├── enrichment_analysis.yaml
@@ -132,12 +132,12 @@ providers:
 active_provider: anthropic
 
 features:
-  semantic_analysis:
+  semantic_analysis:        # per-table synthesis (entities + relationships)
     enabled: true
-    model_tier: balanced     # Use the "balanced" model
-  column_annotation:
+    model_tier: balanced
+  column_annotation:        # per-column annotation (authoritative, DAT-362)
     enabled: true
-    model_tier: fast         # Use the cheaper "fast" model
+    model_tier: balanced
   enrichment_analysis:
     enabled: true
     model_tier: balanced

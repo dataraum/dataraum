@@ -25,7 +25,7 @@ Usage:
 
 from __future__ import annotations
 
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 from pydantic import SecretStr
@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     temporal_task_queue: str | None = None
 
 
-@lru_cache(maxsize=None)
+@cache
 def get_settings() -> Settings:
     """Return the process-wide settings singleton, validating env on first call.
 

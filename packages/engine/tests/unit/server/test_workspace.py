@@ -27,12 +27,6 @@ from dataraum.core.config import (
     reset_config_root,
     set_config_root,
 )
-from dataraum.server.workspace import (
-    bootstrap_workspace,
-    get_active_workspace_id,
-    reset_active_workspace_id_for_tests,
-    schema_name_for,
-)
 
 
 @pytest.fixture
@@ -69,7 +63,7 @@ def _isolate_active_workspace() -> Iterator[None]:
     """
     saved_pointer = _ws._active_workspace_id
     reset_active_workspace_for_tests()
-    reset_active_workspace_id_for_tests()
+    _ws.reset_active_workspace_id_for_tests()
     yield
     reset_active_workspace_for_tests()
     _ws._active_workspace_id = saved_pointer
@@ -102,7 +96,7 @@ def test_bootstrap_uses_workspace_id_from_env_var(
     monkeypatch.setenv("DATARAUM_HOME", str(home_dir))
     monkeypatch.setenv("DATARAUM_WORKSPACE_ID", _FIXED_WS_ID)
 
-    ws = bootstrap_workspace()
+    ws = _ws.bootstrap_workspace()
 
     assert ws.workspace_id == _FIXED_WS_ID
     expected_config_dir = home_dir / "workspaces" / _FIXED_WS_ID / "config"
@@ -118,16 +112,16 @@ def test_bootstrap_sets_module_pointer_for_get_active_workspace_id(
     monkeypatch.setenv("DATARAUM_HOME", str(home_dir))
     monkeypatch.setenv("DATARAUM_WORKSPACE_ID", _FIXED_WS_ID)
 
-    bootstrap_workspace()
+    _ws.bootstrap_workspace()
 
-    assert get_active_workspace_id() == _FIXED_WS_ID
+    assert _ws.get_active_workspace_id() == _FIXED_WS_ID
 
 
 def test_get_active_workspace_id_raises_before_bootstrap() -> None:
     # autouse fixture has already reset the pointer; calling without a
     # bootstrap is the precondition.
     with pytest.raises(RuntimeError, match="No active workspace"):
-        get_active_workspace_id()
+        _ws.get_active_workspace_id()
 
 
 def test_bootstrap_copies_baked_in_config_on_first_boot(
@@ -138,7 +132,7 @@ def test_bootstrap_copies_baked_in_config_on_first_boot(
     monkeypatch.setenv("DATARAUM_HOME", str(home_dir))
     monkeypatch.setenv("DATARAUM_WORKSPACE_ID", _FIXED_WS_ID)
 
-    ws = bootstrap_workspace()
+    ws = _ws.bootstrap_workspace()
 
     overlay = ws.config_dir
     assert (overlay / "pipeline.yaml").read_text() == "phases: {}\npipeline: {}\n"
@@ -154,7 +148,7 @@ def test_bootstrap_activates_workspace_as_config_root(
     monkeypatch.setenv("DATARAUM_HOME", str(home_dir))
     monkeypatch.setenv("DATARAUM_WORKSPACE_ID", _FIXED_WS_ID)
 
-    ws = bootstrap_workspace()
+    ws = _ws.bootstrap_workspace()
 
     # The set_config_root() override would still win; drop it so we can
     # observe the active-workspace step.
@@ -170,7 +164,7 @@ def test_bootstrap_creates_adhoc_vertical_scaffold(
     monkeypatch.setenv("DATARAUM_HOME", str(home_dir))
     monkeypatch.setenv("DATARAUM_WORKSPACE_ID", _FIXED_WS_ID)
 
-    ws = bootstrap_workspace()
+    ws = _ws.bootstrap_workspace()
 
     adhoc = ws.config_dir / "verticals" / "_adhoc"
     assert adhoc.is_dir()
@@ -189,13 +183,13 @@ def test_bootstrap_reuses_existing_overlay_and_does_not_overwrite(
     monkeypatch.setenv("DATARAUM_HOME", str(home_dir))
     monkeypatch.setenv("DATARAUM_WORKSPACE_ID", _FIXED_WS_ID)
 
-    first = bootstrap_workspace()
+    first = _ws.bootstrap_workspace()
     teach_edit = first.config_dir / "phases" / "import.yaml"
     teach_edit.write_text("junk_columns:\n  - id\n# edited by teach\n")
     reset_active_workspace_for_tests()
-    reset_active_workspace_id_for_tests()
+    _ws.reset_active_workspace_id_for_tests()
 
-    second = bootstrap_workspace()
+    second = _ws.bootstrap_workspace()
 
     assert second.workspace_id == first.workspace_id
     assert second.config_dir == first.config_dir
@@ -213,7 +207,7 @@ def test_bootstrap_raises_when_datatraum_home_unset(
     # Resolution flows through typed settings (DAT-363): a missing var surfaces
     # as a pydantic ValidationError naming the field.
     with pytest.raises(ValidationError, match="dataraum_home"):
-        bootstrap_workspace()
+        _ws.bootstrap_workspace()
 
 
 def test_bootstrap_raises_when_workspace_id_unset(
@@ -224,7 +218,7 @@ def test_bootstrap_raises_when_workspace_id_unset(
     monkeypatch.delenv("DATARAUM_WORKSPACE_ID", raising=False)
 
     with pytest.raises(ValidationError, match="dataraum_workspace_id"):
-        bootstrap_workspace()
+        _ws.bootstrap_workspace()
 
 
 class TestSchemaNameFor:
@@ -232,25 +226,25 @@ class TestSchemaNameFor:
 
     def test_uuid_dashes_become_underscores(self) -> None:
         assert (
-            schema_name_for("00000000-0000-0000-0000-0000000000aa")
+            _ws.schema_name_for("00000000-0000-0000-0000-0000000000aa")
             == "ws_00000000_0000_0000_0000_0000000000aa"
         )
 
     def test_short_identifier_passes_through(self) -> None:
-        assert schema_name_for("test") == "ws_test"
+        assert _ws.schema_name_for("test") == "ws_test"
 
     def test_rejects_invalid_identifier_chars(self) -> None:
         with pytest.raises(ValueError, match="not a valid"):
-            schema_name_for("bad name with spaces")
+            _ws.schema_name_for("bad name with spaces")
 
     def test_rejects_overlong_identifier(self) -> None:
         # 60-char workspace id → "ws_" + 60 = 63 chars (exactly the PG
         # limit; allowed). 61 char id → 64 chars (over; rejected).
         ok = "a" * 60
         too_long = "a" * 61
-        assert schema_name_for(ok) == "ws_" + ok
+        assert _ws.schema_name_for(ok) == "ws_" + ok
         with pytest.raises(ValueError, match="max out at 63"):
-            schema_name_for(too_long)
+            _ws.schema_name_for(too_long)
 
 
 def test_bootstrap_adhoc_scaffold_is_idempotent(
@@ -261,9 +255,9 @@ def test_bootstrap_adhoc_scaffold_is_idempotent(
     monkeypatch.setenv("DATARAUM_HOME", str(home_dir))
     monkeypatch.setenv("DATARAUM_WORKSPACE_ID", _FIXED_WS_ID)
 
-    bootstrap_workspace()
+    _ws.bootstrap_workspace()
     reset_active_workspace_for_tests()
-    reset_active_workspace_id_for_tests()
+    _ws.reset_active_workspace_id_for_tests()
 
     # second call should not raise even though _adhoc already exists
-    bootstrap_workspace()
+    _ws.bootstrap_workspace()

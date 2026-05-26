@@ -34,21 +34,27 @@ _active_workspace_config_dir: Path | None = None
 
 @lru_cache
 def _find_config_dir() -> Path:
-    """Find the config directory by walking up from the package location.
+    """Locate the standalone ``dataraum-config`` package on the host.
+
+    Config is a sibling package (``packages/dataraum-config/``), not part of
+    the engine. In containers ``DATARAUM_CONFIG_PATH`` points at the
+    bind-mounted copy and this function is never reached; this is the
+    dev / CLI / test fallback that finds the sibling next to
+    ``packages/engine/``.
 
     This is the ONE place that does path-relative-to-file resolution.
     Everything else goes through get_config_file().
 
     Cached because it does filesystem traversal with a stable result.
     """
-    # src/dataraum/core/config.py -> 4 levels up -> project root
-    package_dir = Path(__file__).resolve().parent.parent.parent.parent
-    candidate = package_dir / "config"
+    # src/dataraum/core/config.py -> 4 levels up -> packages/engine
+    engine_dir = Path(__file__).resolve().parent.parent.parent.parent
+    candidate = engine_dir.parent / "dataraum-config"
     if candidate.is_dir():
         return candidate
 
-    # Fallback: relative path (works when CWD is project root)
-    return Path("config")
+    # Fallback: relative path (works when CWD is the workspace root)
+    return Path("packages/dataraum-config")
 
 
 def _get_config_root() -> Path:

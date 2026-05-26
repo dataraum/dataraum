@@ -20,11 +20,13 @@ RUN uv sync --no-dev --frozen --no-install-project
 
 # Now copy the project itself and re-sync to install the package
 COPY src/ src/
-COPY config/ /opt/dataraum/config/
 RUN uv sync --no-dev --frozen
 
-# Engine config root — load verticals/ontologies/prompts/llm configs from the
-# baked-in /opt/dataraum/config/ rather than auto-detecting via package layout.
+# Engine config root. Config is the standalone `dataraum-config` package, NOT
+# baked into this image — it is bind-mounted at /opt/dataraum/config by compose
+# (and would be a volume / object-store mount in other deploys). This env var
+# tells dataraum.core.config where to find it; the directory is provided at
+# runtime, so a bare `docker run` without the mount has no config by design.
 ENV DATARAUM_CONFIG_PATH=/opt/dataraum/config
 
 # Non-root runtime user. DuckDB extensions live at a known image path

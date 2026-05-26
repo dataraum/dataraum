@@ -102,7 +102,12 @@ class TypingPhase(BasePhase):
         return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if typed tables already exist for all raw tables."""
+        """Skip if typed tables already exist for the targeted raw tables.
+
+        When ``ctx.table_ids`` is set (per-table teach replay), only the
+        requested raw tables are considered — so a targeted untyped table
+        still runs even if its sibling tables are already typed.
+        """
         stmt = select(Table).where(
             Table.source_id == ctx.source_id,
             Table.layer == "raw",
@@ -111,7 +116,13 @@ class TypingPhase(BasePhase):
         if not raw_tables:
             return "No raw tables to process"
 
-        # Check if all raw tables have corresponding typed tables
+        if ctx.table_ids:
+            requested = set(ctx.table_ids)
+            raw_tables = [t for t in raw_tables if t.table_id in requested]
+            if not raw_tables:
+                return "No raw tables match the requested table_ids filter"
+
+        # Check if all (targeted) raw tables have corresponding typed tables
         for raw_table in raw_tables:
             typed_stmt = select(Table).where(
                 Table.source_id == ctx.source_id,
@@ -214,6 +225,37 @@ class TypingPhase(BasePhase):
 
         return typed_table_id, type_decisions
 
+    def _resolve_target_table_ids(self, ctx: PhaseContext) -> list[str]:
+        """Resolve which raw table_ids to type for this run.
+
+        Resolution order:
+
+        1. Query the raw tables registered under ``ctx.source_id``.
+        2. If none are found, fall back to ``ctx.table_ids`` verbatim — some
+           callers carry the ids in context without a source-scoped raw row.
+        3. If raw tables exist *and* ``ctx.table_ids`` is set, intersect:
+           type only the requested subset. This is the per-table teach-replay
+           path — re-type one table without touching its siblings.
+
+        An empty ``ctx.table_ids`` means "all raw tables" (backward compatible).
+        Requested ids that are not raw tables of this source are dropped.
+        """
+        stmt = select(Table.table_id).where(
+            Table.source_id == ctx.source_id,
+            Table.layer == "raw",
+        )
+        raw_table_ids = [row[0] for row in ctx.session.execute(stmt)]
+
+        if not raw_table_ids:
+            # No source-scoped raw rows — trust caller-provided ids as-is.
+            return list(ctx.table_ids)
+
+        if ctx.table_ids:
+            requested = set(ctx.table_ids)
+            return [tid for tid in raw_table_ids if tid in requested]
+
+        return raw_table_ids
+
     def _run(self, ctx: PhaseContext) -> PhaseResult:
         """Run type inference and resolution.
 
@@ -226,15 +268,7 @@ class TypingPhase(BasePhase):
         Returns:
             PhaseResult with typed_tables and type_decisions
         """
-        # Get raw tables from DB
-        stmt = select(Table.table_id).where(
-            Table.source_id == ctx.source_id,
-            Table.layer == "raw",
-        )
-        raw_table_ids = [row[0] for row in ctx.session.execute(stmt)]
-        if not raw_table_ids:
-            # Fall back to table_ids in context
-            raw_table_ids = ctx.table_ids
+        raw_table_ids = self._resolve_target_table_ids(ctx)
 
         if not raw_table_ids:
             return PhaseResult.failed("No raw tables to process")

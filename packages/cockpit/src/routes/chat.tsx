@@ -1,5 +1,3 @@
-import { useRef, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
 import {
 	Alert,
 	Badge,
@@ -11,6 +9,8 @@ import {
 	Textarea,
 	Title,
 } from "@mantine/core";
+import { createFileRoute } from "@tanstack/react-router";
+import { useRef, useState } from "react";
 
 type Turn =
 	| { role: "user"; text: string }
@@ -89,8 +89,8 @@ function Chat() {
 				buffer += decoder.decode(value, { stream: true });
 
 				// Parse SSE frames: blank-line separated event blocks.
-				let idx: number;
-				while ((idx = buffer.indexOf("\n\n")) !== -1) {
+				let idx = buffer.indexOf("\n\n");
+				while (idx !== -1) {
 					const frame = buffer.slice(0, idx);
 					buffer = buffer.slice(idx + 2);
 
@@ -102,7 +102,13 @@ function Chat() {
 					}
 					if (!dataLine) continue;
 
-					let payload: any;
+					let payload: {
+						text?: string;
+						id?: string;
+						name?: string;
+						result?: unknown;
+						message?: string;
+					};
 					try {
 						payload = JSON.parse(dataLine);
 					} catch {
@@ -110,7 +116,10 @@ function Chat() {
 					}
 
 					if (eventName === "text") {
-						updateAssistant((t) => ({ ...t, text: t.text + payload.text }));
+						updateAssistant((t) => ({
+							...t,
+							text: t.text + (payload.text ?? ""),
+						}));
 					} else if (eventName === "tool_call_start") {
 						updateAssistant((t) =>
 							t.toolCalls.some((c) => c.id === payload.id)
@@ -119,7 +128,7 @@ function Chat() {
 										...t,
 										toolCalls: [
 											...t.toolCalls,
-											{ id: payload.id, name: payload.name },
+											{ id: payload.id ?? "", name: payload.name ?? "" },
 										],
 									},
 						);
@@ -133,6 +142,8 @@ function Chat() {
 					} else if (eventName === "error") {
 						setError(payload.message ?? "stream error");
 					}
+
+					idx = buffer.indexOf("\n\n");
 				}
 			}
 		} catch (err) {
@@ -161,6 +172,7 @@ function Chat() {
 			<Stack gap="md" data-testid="chat-log">
 				{turns.map((turn, i) => (
 					<Stack
+						// biome-ignore lint/suspicious/noArrayIndexKey: chat log is append-only and never reordered
 						key={i}
 						gap={6}
 						p="md"

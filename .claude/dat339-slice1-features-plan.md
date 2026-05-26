@@ -24,10 +24,12 @@ The semantic agent's reasoning is what makes add_source iterative. Without teach
 
 ## Substrate decisions (locked 2026-05-22)
 
-### Engine kernel — 3 verbs
-- `measure` (SSE — pipeline runner, target_phase + table_filter; reconnect replays current state)
-- `run_sql` (Arrow IPC — DuckDB SQL over the lake; renamed from `query` 2026-05-22 to disambiguate from the legacy NL-to-SQL MCP tool)
-- `probe` (read-only SQL against external sources — pre-import sniff)
+### Engine kernel — none; engine is a pure Temporal worker (revised 2026-05-26)
+
+Successive decisions collapsed the engine's HTTP kernel to nothing:
+- `measure` — **retired 2026-05-25** (Temporal workflow start from cockpit; reconnect = Temporal query/UI, not an SSE verb).
+- `run_sql` + `probe` — **moved to the cockpit 2026-05-26** (TS/Bun + `@duckdb/node-api`; dual DuckDB). See the "Engine kernel verbs" section below + the 2026-05-26 entry in `dat339-pivot-status.md`.
+- **No HTTP server remains.** The engine is a pure Temporal activity worker; health is the [Temporal worker health](https://docs.temporal.io/cloud/worker-health) surface, not an HTTP `/health`. Substrate bootstrap moves from the (removed) Starlette lifespan into worker startup.
 
 FastAPI + OpenAPI + `packages/api/openapi.yaml` + `export_openapi.py` + `packages/cockpit/src/api/types.ts` + `pnpm codegen` deleted in Phase 0c.
 
@@ -94,14 +96,25 @@ Spike output in `spike/dat-360-orchestration/README.md`. Summary:
 - Real `TypingPhase` wrapped as activity (only stub was tested)
 - Multi-workspace isolation strategy (namespace-per-workspace vs search-attribute-per-workspace)
 
-### Engine kernel verbs — `/run_sql` + `/probe` stay Python (locked 2026-05-25)
+### Engine kernel verbs — `/run_sql` + `/probe` move to the cockpit (revised 2026-05-26)
 
-Per spike side investigation P5 (`@duckdb/node-api` in Bun probe): 30/30 + 10/10 PASS on macOS, but Bun issue [#13910](https://github.com/oven-sh/bun/issues/13910) is a real production risk. **One-owner-per-substrate principle keeps DuckDB in the Python container.** Cockpit-owned DuckDB is a viable future shape; revisit if sample-read latency becomes a UX problem.
+> **Reverses the 2026-05-25 "stay Python" lock.** The prior reasoning (one-owner-per-substrate; DuckDB stays in the Python container because of Bun #13910) no longer governs. The original P5 finding stands as evidence, but the call changed: the cockpit owns DuckDB for the interactive read verbs.
 
-- `/run_sql` (Arrow IPC streaming over DuckDB) — Starlette route in engine
-- `/probe` (read-only SQL against external sources via DuckDB ATTACH) — Starlette route in engine
-- `/measure` **retired** — replaced by Temporal workflow start from cockpit
-- `/health` stays
+- `/run_sql` — **cockpit-owned**, TS/Bun + `@duckdb/node-api` (DuckDB SQL over the lake). No HTTP round-trip to the engine; the chat tools query the cockpit's local DuckDB directly (Arrow handling is in-process — see the Arrow note below).
+- `/probe` — **cockpit-owned**, read-only SQL against external sources via DuckDB ATTACH. **Per-source credential resolution (`DATARAUM_<NAME>_URL`) moves to TS** (was engine `CredentialChain`).
+- **Dual DuckDB:** engine keeps DuckDB for Temporal pipeline activities; cockpit gets its own for the read verbs. Same lake + DuckLake catalog; cross-process read consistency is an **open question** to validate.
+- `/measure` **retired** — replaced by Temporal workflow start from cockpit.
+- **Engine = pure Temporal worker, no HTTP server.** No `/health` route; health via [Temporal worker health](https://docs.temporal.io/cloud/worker-health). Substrate bootstrap moves into worker startup.
+
+**Accepted risk + gate:** Bun [#13910](https://github.com/oven-sh/bun/issues/13910) (open; ~30% segfault for `@duckdb/node-api` under Bun) did not reproduce in the P5 probe — but on **macOS arm64 only, not Linux x64** (production). A Linux-x64 reproduction probe **gates the migration before ship** (new task to file).
+
+If #13910 reproduces on Linux x64, the "DuckDB read verbs leave the pipeline-engine" decision still holds — **Bun is just one host.** Mitigation options (undecided):
+- run the DuckDB layer on **Node** instead of Bun;
+- **wait for the upstream Bun fix** (underlying bug [#6139](https://github.com/oven-sh/bun/issues/6139));
+- move the DuckDB wrapper into a separate **Rust-tokio or Go service** exposing `run_sql` + `probe` (with Arrow streaming);
+- or fall back to the **Python engine**.
+
+Python-engine fallback is one option among these, not the default.
 
 ### Hard rules (no-corner-cutting)
 - No backwards-compat shims
@@ -227,8 +240,8 @@ Major rewrite from the original "filesystem overlay" framing:
 
 Per DAT-360 spike outcome. Full ticket body has the implementation list; this section captures the essentials:
 
-**Engine = Python Temporal activity worker + Starlette HTTP shell** (one container, two concerns):
-- Starlette hosts `/run_sql` (Arrow IPC), `/probe` (read-only SQL), `/health`
+**Engine = Python Temporal activity worker** (one process, no HTTP server):
+- **No Starlette / HTTP server.** Pure Temporal worker; health via [Temporal worker health](https://docs.temporal.io/cloud/worker-health). Substrate bootstrap (lake + workspace + `ConnectionManager`) moves from the old Starlette lifespan into worker startup. **`/run_sql` + `/probe` removed (2026-05-26) — they move to the cockpit** (TS/Bun DuckDB; separate follow-on ticket, gated by the #13910 Linux-x64 probe).
 - Long-running Temporal activity worker process registers `@activity.defn(name=...)` wrappers around the 5 slice-1 phases (`run_import`, `run_typing`, `run_statistics`, `run_semantic_per_column`, `run_semantic_per_table`)
 - Sync SQLAlchemy / DuckDB inside async activities via `asyncio.to_thread(...)`
 
@@ -250,7 +263,9 @@ Per DAT-360 spike outcome. Full ticket body has the implementation list; this se
 2. Real `TypingPhase` wrapped as activity (PhaseContext + `asyncio.to_thread` friction not yet validated)
 3. Multi-workspace isolation strategy (namespace-per-workspace vs search-attribute-per-workspace)
 
-**`/run_sql` pyarrow streaming pattern** (user-provided reference, 2026-05-22):
+**`/run_sql` pyarrow streaming pattern** (user-provided reference, 2026-05-22): this is the *Python-engine* HTTP-streaming reference. With `run_sql` now cockpit-owned (2026-05-26) it is not the current implementation — kept as a reference for **any service-based DuckDB host** (a Python-engine fallback, or a Rust-tokio/Go service) should the #13910 Linux-x64 probe rule out Bun. See the mitigation options in the "Engine kernel verbs" section.
+
+**Arrow IPC is not Python-specific.** The TS DuckDB client exposes Arrow IPC streaming natively ([`Connection.arrowIPCStream`](https://duckdb.org/docs/lts/clients/nodejs/reference) in `@duckdb/node-api`) — fast, supports streaming. So moving `run_sql` to TS does *not* retire Arrow IPC; whether the cockpit's `run_sql` returns Arrow IPC streams (vs materialized rows) is undecided.
 
 ```python
 async def run_sql(request):
@@ -330,7 +345,7 @@ Major rewrite from "openapi-fetch + REST routes":
 - Keep-monolith disqualified (existing scheduler has three structural absences)
 - Temporal wins on robustness; loses on ops complexity (3 dev containers); ops was secondary
 
-Side investigation (P5): `@duckdb/node-api` works in Bun on macOS but Bun [#13910](https://github.com/oven-sh/bun/issues/13910) is a real production risk. `/run_sql` + `/probe` stay Python in v1.
+Side investigation (P5): `@duckdb/node-api` works in Bun on macOS but Bun [#13910](https://github.com/oven-sh/bun/issues/13910) is a real production risk. (P5 originally concluded "stay Python in v1"; **reversed 2026-05-26** — `run_sql` + `probe` move to the cockpit, gated by a Linux-x64 #13910 probe. See the "Engine kernel verbs" section + decision-log entry 19.)
 
 The shape impact landed in this doc's "Orchestration framework" + "E4 (DAT-344)" sections above. `[[durable-execution-lean]]` memory rewritten to lock Temporal.
 
@@ -354,7 +369,7 @@ The shape impact landed in this doc's "Orchestration framework" + "E4 (DAT-344)"
 
 1. ~~**Orchestration framework**~~ — **CLOSED 2026-05-25.** Temporal adopted via DAT-360 spike.
 2. **Dedupe phase placement** — architecture-future.md says add_source loop includes deduplicate. Does this phase exist? If not, scope for slice 1 or defer to slice 2?
-3. **`/probe` semantics for DB recipes** — does `/probe` SQL go against the source via DuckDB ATTACH? Or do recipes generate `/probe` SQL stubs? Settle during E4 implementation.
+3. **`/probe` semantics for DB recipes** — does `/probe` SQL go against the source via DuckDB ATTACH? Or do recipes generate `/probe` SQL stubs? Settle during the cockpit `run_sql`/`probe` ticket (no longer E4 — probe moved to the cockpit 2026-05-26). Plus: cross-process DuckDB read consistency (engine + cockpit on the same lake) needs validation.
 4. **C5's TeachProposal widget UX for the 6 non-round-tripped teach types** — slice 1 round-trips 3 types fully. The other 6 (`concept`, `validation`, `cycle`, `metric`, `relationship`, `explanation`) write to `config_overlay` but no replay path. UX implications for TeachProposal: disable or document?
 5. **Multi-workspace isolation in Temporal** — namespace-per-workspace (heavy, full isolation) vs search-attribute-per-workspace (lighter, single namespace). Validated as a deferred first commit in DAT-344.
 6. **Workflow module location** (`packages/dataraum-workflows/`) — confirm package shape + how engine imports the activity-name catalog from a TS-only package (likely via a Python mirror file with CI drift check). Settle during DAT-344.
@@ -398,7 +413,14 @@ The shape impact landed in this doc's "Orchestration framework" + "E4 (DAT-344)"
 
 13. **Temporal adopted** as the orchestration framework. DBOS disqualified on cross-lang silent-stranding (`client.enqueue()` writes a workflow the Python worker never picks up; zero error on either side). Restate dropped at P1 closure (RPC-style design not suited for multi-minute pipeline phases). Keep-monolith disqualified on three structural absences (no durable execution, no TS workflow author, no retry primitives). `[[durable-execution-lean]]` rewritten to lock Temporal.
 14. **Engine becomes a Python Temporal activity worker.** Cockpit (TS) is the workflow author + Temporal client. Existing `pipeline/scheduler.py` + `runner.py` retire (per `[[no-corner-cutting-via-deferral]]`; no parallel-run period).
-15. **`/run_sql` + `/probe` stay Python.** Side investigation (P5): `@duckdb/node-api` works in Bun on macOS but Bun [#13910](https://github.com/oven-sh/bun/issues/13910) is a real production risk; one-owner-per-substrate principle keeps DuckDB in the Python container. Revisit if sample-read latency becomes a UX problem.
+15. ~~**`/run_sql` + `/probe` stay Python.**~~ **SUPERSEDED 2026-05-26 (see entry 19).** (Original: P5 — `@duckdb/node-api` works in Bun on macOS but #13910 is a production risk; one-owner-per-substrate kept DuckDB in Python.)
 16. **`/measure` retired.** No HTTP verb for orchestration; cockpit calls `client.workflow.start(addSourceWorkflow, ...)` instead.
 17. **3 dev containers added**: Postgres (Temporal-dedicated), Temporal server, Temporal UI. Bun ≥ 1.3.14 enforced (Temporal TS worker segfault on 1.3.0 in shutdown).
 18. **Deferred validations** become DAT-344 first commits: workflow-worker crash replay, real `TypingPhase` as activity, multi-workspace isolation strategy.
+
+### 2026-05-26 (`run_sql` + `probe` → cockpit)
+
+19. **`/run_sql` + `/probe` move from the Python engine to the cockpit** (TS/Bun + `@duckdb/node-api`). Reverses entry 15. **Dual DuckDB**: engine keeps DuckDB for Temporal pipeline activities; cockpit owns DuckDB for the interactive read verbs. **Engine becomes a pure Temporal worker with no HTTP server** — no `/health` route; health via [Temporal worker health](https://docs.temporal.io/cloud/worker-health); substrate bootstrap moves into worker startup; the engine's compose healthcheck changes.
+20. **`/probe` credential resolution moves to TS.** Per-source `DATARAUM_<NAME>_URL` lookup re-homes from engine `CredentialChain` to the cockpit. **Expands DAT-363's cockpit scope** — the TS config must handle dynamic per-source URLs (the DAT-363 refine's "descope database_urls, engine-only" assumption no longer holds).
+21. **Bun #13910 accepted as a gated risk.** P5 passed on macOS arm64 only; a **Linux-x64 reproduction probe gates the migration before ship**. If it reproduces, the cockpit-owned-DuckDB decision still holds — Bun is one host. Mitigation options are open: Node instead of Bun; await the upstream Bun fix ([#6139](https://github.com/oven-sh/bun/issues/6139)); a Rust-tokio/Go DuckDB service exposing run_sql/probe (Arrow streaming); or Python-engine fallback. Not a single prescribed revert.
+22. **DAT-344 re-scoped** to Temporal worker + activities + workflow scaffolding; engine = pure worker, no HTTP server (health via Temporal worker health; substrate bootstrap into worker startup). `run_sql`/`probe` removed. Two new tickets to file: cockpit run_sql/probe + TS probe-credentials; Linux-x64 #13910 validation probe (blocks the first).

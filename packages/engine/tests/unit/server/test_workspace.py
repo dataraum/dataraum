@@ -27,12 +27,6 @@ from dataraum.core.config import (
     reset_config_root,
     set_config_root,
 )
-from dataraum.server.workspace import (
-    bootstrap_workspace,
-    get_active_workspace_id,
-    reset_active_workspace_id_for_tests,
-    schema_name_for,
-)
 
 
 @pytest.fixture
@@ -69,7 +63,7 @@ def _isolate_active_workspace() -> Iterator[None]:
     """
     saved_pointer = _ws._active_workspace_id
     reset_active_workspace_for_tests()
-    reset_active_workspace_id_for_tests()
+    _ws.reset_active_workspace_id_for_tests()
     yield
     reset_active_workspace_for_tests()
     _ws._active_workspace_id = saved_pointer

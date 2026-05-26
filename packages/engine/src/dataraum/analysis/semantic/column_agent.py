@@ -1,11 +1,10 @@
-"""Column Annotation Agent - Fast tier 1 LLM annotation.
+"""Column Annotation Agent — authoritative per-column LLM annotation.
 
-Annotates columns with semantic roles, entity types, business terms,
-and ontology concept mappings. Uses a fast/cheap model (e.g. Haiku)
-since this is pattern recognition work that doesn't need reasoning.
-
-The output feeds into the tier 2 SemanticAgent as additional context,
-allowing the capable model to focus on relationships and table analysis.
+Annotates columns with semantic roles, entity types, business terms, ontology
+concept mappings, and unit sources. Post-DAT-362 this is the per-column phase's
+authoritative agent, run on the capable (balanced) model — not a throwaway fast
+pre-pass. Its output is persisted as ``SemanticAnnotation`` rows and later read
+by ``semantic_per_table`` as read-only context.
 """
 
 from __future__ import annotations
@@ -42,12 +41,12 @@ logger = get_logger(__name__)
 
 
 class ColumnAnnotationAgent(LLMFeature):
-    """Fast column annotation agent (tier 1).
+    """Authoritative per-column annotation agent (DAT-362 semantic_per_column).
 
-    Annotates columns with semantic metadata using a fast model.
-    Does NOT handle relationships or table-level entity classification.
-
-    Output is used as input context for the tier 2 SemanticAgent.
+    Annotates columns with semantic metadata on the configured model tier
+    (balanced post-split). Does NOT handle relationships or table-level entity
+    classification — that is ``semantic_per_table``'s job. Output is persisted
+    as ``SemanticAnnotation`` rows.
     """
 
     def __init__(

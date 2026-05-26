@@ -48,7 +48,7 @@ For UI iteration, skip the cockpit container and run the dev server outside
 docker for hot reload (see `../cockpit/README.md`). The compose cockpit
 service is for end-to-end smoke and prod-like serving.
 
-The engine runs an 18-phase analysis pipeline. The 12 tools the v1 cockpit exposes (also the shape the engine REST will publish, route by route):
+The engine runs a 19-phase analysis pipeline. The 12 tools the v1 cockpit exposes (also the shape the engine REST will publish, route by route):
 
 | Tool | Description |
 |------|-------------|
@@ -128,7 +128,7 @@ uv run uvicorn dataraum.server.app:app --host 0.0.0.0 --port 8000
 ## Documentation
 
 - [Architecture](docs/architecture.md) — system design and pipeline overview
-- [Pipeline](docs/pipeline.md) — 18-phase pipeline reference
+- [Pipeline](docs/pipeline.md) — 19-phase pipeline reference
 - [Entropy](docs/entropy.md) — uncertainty quantification system
 - [Data Model](docs/data-model.md) — metadata schema
 - [Configuration](docs/configuration.md) — config directory reference

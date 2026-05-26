@@ -81,7 +81,12 @@ class SemanticPerColumnPhase(BasePhase):
         return [row[0] for row in ctx.session.execute(stmt)]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if every column in the typed tables already has an LLM annotation."""
+        """Skip if every column in the typed tables already has an LLM annotation.
+
+        Only ``annotation_source == "llm"`` rows count: teach-sourced rows are
+        excluded so a re-run after a teach regenerates the LLM annotation (and
+        thus the post-teach context the per-table phase reads).
+        """
         table_ids = self._typed_table_ids(ctx)
         if not table_ids:
             return "No typed tables found"

@@ -65,7 +65,7 @@ Traditional semantic layers tell BI tools "what things are called." DataRaum tel
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           PIPELINE ORCHESTRATOR                             │
 │                                                                             │
-│   18 phases with dependency-based execution                                 │
+│   19 phases with dependency-based execution                                 │
 │   Post-phase entropy detectors (scores computed incrementally)              │
 │   ThreadPoolExecutor (true parallelism via Python 3.14 free-threading)      │
 │   Idempotent phases, checkpoint-based resumption                            │
@@ -202,7 +202,7 @@ src/dataraum/
 ├── pipeline/              # Pipeline orchestrator
 │   ├── registry.py        # Phase auto-discovery
 │   ├── runner.py          # Execution engine + RunConfig
-│   └── phases/            # 18 phase implementations
+│   └── phases/            # 19 phase implementations
 ├── sources/               # Data source loaders (CSV, Parquet, JSON)
 ├── storage/               # SQLAlchemy base, migrations
 ├── llm/                   # LLM provider abstraction, prompt management
@@ -274,7 +274,7 @@ the FastAPI app at `src/dataraum/api/` as the cockpit needs each route.
 
 ## LLM Integration
 
-6 of 18 pipeline phases use LLM, plus interactive agents invoked via MCP.
+7 of 19 pipeline phases use LLM, plus interactive agents invoked via MCP.
 
 | Feature | Model Tier | Purpose |
 |---------|------------|---------|

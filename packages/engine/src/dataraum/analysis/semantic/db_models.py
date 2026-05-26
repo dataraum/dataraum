@@ -67,7 +67,7 @@ class SemanticAnnotation(Base):
     temporal_behavior: Mapped[str | None] = mapped_column(String)
 
     # Cross-column unit inference: column name that defines the unit for this measure
-    # e.g., 'currency_code' for monetary measures. Set by semantic analysis (tier 2).
+    # e.g., 'currency_code' for monetary measures. Set by the per-column phase.
     unit_source_column: Mapped[str | None] = mapped_column(String)
 
     # Provenance

@@ -45,6 +45,11 @@ phases:
   semantic_per_column:
     description: Per-column LLM annotation (roles, concepts, business terms)
     dependencies: [statistics]
+    # produces:[semantic] stays here, not on semantic_per_table: the SEMANTIC
+    # AnalysisKey is the column-annotation surface, and every SEMANTIC-requiring
+    # detector (business_meaning/unit_entropy/temporal_entropy/outlier_rate/
+    # benford) runs as a post-step of THIS phase. The per-table phase consumes
+    # RELATIONSHIPS (produced by `relationships`), not SEMANTIC.
     produces: [semantic]
     detectors: [business_meaning, unit_entropy, temporal_entropy,
                 outlier_rate, benford]

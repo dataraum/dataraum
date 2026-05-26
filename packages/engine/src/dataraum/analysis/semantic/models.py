@@ -211,7 +211,7 @@ class TableSynthesisOutput(BaseModel):
 
 
 class TableColumnAnnotation(BaseModel):
-    """Column annotations for a single table (tier 1 fast model output)."""
+    """Column annotations for a single table (per-column phase output)."""
 
     table_name: str = Field(description="Exact table name from the provided schema.")
     columns: list[ColumnSemanticOutput] = Field(
@@ -223,7 +223,7 @@ class ColumnAnnotationOutput(BaseModel):
     """Output from the per-column annotation phase.
 
     Contains column-level annotations only — no relationships or
-    table-level entity classification. Those are handled by tier 2.
+    table-level entity classification. Those are handled by semantic_per_table.
     """
 
     tables: list[TableColumnAnnotation] = Field(description="Column annotations grouped by table.")

@@ -12,7 +12,7 @@ DataRaum is mid-pivot to a TypeScript cockpit + Python engine REST architecture.
 
 ## Concepts
 
-- [Pipeline](pipeline.md) — the 18-phase analysis pipeline and cold-start bootstrap
+- [Pipeline](pipeline.md) — the 19-phase analysis pipeline and cold-start bootstrap
 - [Entropy](entropy.md) — uncertainty quantification across all metadata dimensions
 - [Architecture](architecture.md) — operation model, teach overlay, snippet provenance, key design decisions
 

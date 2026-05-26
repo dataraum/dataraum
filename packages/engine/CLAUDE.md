@@ -455,6 +455,8 @@ src/dataraum/
 
 SQLAlchemy DB models are co-located with business logic in `db_models.py` files within each module.
 
+Config **data** (entropy contracts, LLM prompts, per-phase config, vertical YAMLs) is **not** in this package — it lives in the sibling `packages/dataraum-config/` package (DAT-361) and is bind-mounted at `/opt/dataraum/config` in containers. Load it only through `dataraum.core.config` (`get_config_file` / `load_yaml_config` / `load_phase_config`) — never via `Path(__file__)` navigation. On the host the resolver auto-detects the sibling package, so `uv run` / pytest work without `DATARAUM_CONFIG_PATH` set.
+
 ### Data Flow
 
 ```

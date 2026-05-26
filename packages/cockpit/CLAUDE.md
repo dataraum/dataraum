@@ -89,6 +89,8 @@ The engine exposes a 3-verb Starlette kernel (`/measure`, `/query`, `/probe`) pl
 
 For metadata reads, the cockpit introspects the engine's `ws_<workspace_id>` Postgres schema directly via Drizzle: `bun run db:pull:metadata` produces typed clients in `src/db/metadata/`. Re-run after the engine adds or changes SQLAlchemy models.
 
+Config data (vertical YAMLs etc.) lives in the `packages/dataraum-config/` sibling package and is bind-mounted read-only into the cockpit container at `DATARAUM_CONFIG_PATH` (`/opt/dataraum/config`) (DAT-361). No consumers yet — the mount is plumbing for future "which concept did the agent bind to?" UX hints, read via Node `fs`.
+
 ## Useful commands
 
 ```bash

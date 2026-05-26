@@ -49,13 +49,27 @@ def test_sources_dir_matches_docker_compose_bind_mount() -> None:
     ), f"docker-compose.yml bind-mount target must equal SOURCES_DIR={SOURCES_DIR}"
 
 
-def test_config_dir_matches_dockerfile_copy_target() -> None:
+def test_config_dir_is_bind_mounted_not_baked() -> None:
+    """Config is the standalone ``dataraum-config`` package, bind-mounted at
+    runtime (DAT-361) — NOT baked into the image. The Dockerfile must set the
+    env var but must not COPY config in; compose provides it via bind mount.
+    """
     dockerfile = (_REPO_ROOT / "docker" / "control-plane.Dockerfile").read_text()
-    assert f"COPY config/ {paths_mod.CONFIG_DIR}/" in dockerfile, (
-        f"control-plane.Dockerfile must COPY config/ into {paths_mod.CONFIG_DIR}/"
+    assert "COPY config/" not in dockerfile, (
+        "control-plane.Dockerfile must NOT bake config/ into the image — "
+        "it is bind-mounted by compose (DAT-361)"
     )
     assert f"ENV DATARAUM_CONFIG_PATH={paths_mod.CONFIG_DIR}" in dockerfile, (
         f"control-plane.Dockerfile must set DATARAUM_CONFIG_PATH={paths_mod.CONFIG_DIR}"
+    )
+    compose = (_INFRA_DIR / "docker-compose.yml").read_text()
+    mounts = re.findall(
+        r"\$\{HOST_CONFIG_DIR.*?\}:" + re.escape(str(paths_mod.CONFIG_DIR)) + r":ro\b",
+        compose,
+    )
+    assert len(mounts) == 2, (
+        f"docker-compose.yml must bind-mount dataraum-config at "
+        f"{paths_mod.CONFIG_DIR}:ro on BOTH control-plane and cockpit; found {len(mounts)}"
     )
 
 

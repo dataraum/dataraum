@@ -1,12 +1,13 @@
 # DataRaum — workspace CLAUDE.md
 
-This is a monorepo. Three packages, two languages, one repo.
+This is a monorepo. Four packages, two languages, one repo.
 
 ```
 packages/
-├── engine/     # Python — pipeline, detectors, Starlette kernel shell. See packages/engine/CLAUDE.md.
-├── cockpit/    # TypeScript — TanStack Start web UI. See packages/cockpit/CLAUDE.md.
-└── infra/      # docker-compose orchestration for the stack.
+├── engine/          # Python — pipeline, detectors, Starlette kernel shell. See packages/engine/CLAUDE.md.
+├── cockpit/         # TypeScript — TanStack Start web UI. See packages/cockpit/CLAUDE.md.
+├── dataraum-config/ # Config DATA (yaml) — entropy contracts, LLM prompts, verticals. No code; mounted, not imported.
+└── infra/           # docker-compose orchestration for the stack.
 ```
 
 ## Where to look first
@@ -14,7 +15,8 @@ packages/
 - **Engine work (Python, pipeline, detectors, kernel verbs):** `packages/engine/CLAUDE.md` is the canonical guidance — everything about correctness-over-speed, calibration, detector standards, skills, branching, testing. Read it before touching anything under `packages/engine/`.
 - **Cockpit work (UI, TanStack Start, Mantine, Drizzle):** `packages/cockpit/CLAUDE.md` — stack overview, dev loop, two-config Drizzle setup.
 - **Engine ↔ cockpit contract:** the engine exposes a 3-verb Starlette kernel (`/measure` SSE, `/query` Arrow, `/probe` read-only SQL) plus `/health`. There is no OpenAPI spec and no codegen anymore (retired in the DAT-339 pivot). Cockpit data access is split: tools/widgets read the engine's metadata schema directly via Drizzle (`packages/cockpit/src/db/metadata/`); long-running operations call the kernel verbs.
-- **Infra (docker-compose, postgres):** `packages/infra/docker-compose.yml`. Build contexts point at sibling packages (`../engine`, `../cockpit`).
+- **Config (yaml data):** `packages/dataraum-config/` — entropy contracts, LLM config + prompts, per-phase config, vertical YAMLs. It is **data, not code**: bind-mounted into containers at `/opt/dataraum/config` (`DATARAUM_CONFIG_PATH`), never imported. The engine resolves it through `dataraum.core.config` (never relative paths); on the host the resolver auto-detects the sibling package. See `packages/dataraum-config/README.md`.
+- **Infra (docker-compose, postgres):** `packages/infra/docker-compose.yml`. Build contexts point at sibling packages (`../engine`, `../cockpit`); `dataraum-config` is bind-mounted (not built) into both the engine and cockpit containers.
 
 ## Cross-package conventions
 

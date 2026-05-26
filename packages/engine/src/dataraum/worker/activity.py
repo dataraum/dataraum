@@ -18,8 +18,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field
-
 from dataraum.core.config import load_phase_config
 from dataraum.core.logging import get_logger
 from dataraum.entropy.engine import run_detector_post_step
@@ -27,43 +25,14 @@ from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
 from dataraum.storage import Source
+from dataraum.worker.contracts import PhaseActivityInput, PhaseActivityResult
 
 if TYPE_CHECKING:
     from dataraum.core.connections import ConnectionManager
 
 logger = get_logger(__name__)
 
-
-class PhaseActivityInput(BaseModel):
-    """Pydantic input for a phase activity — IDs only, serialized over Temporal.
-
-    The runner reconstructs everything else (source identity, phase config)
-    from these IDs + the workspace substrate, mirroring what ``setup_pipeline``
-    assembles in-process today.
-    """
-
-    workspace_id: str
-    source_id: str
-    # Per-run FK for session-scoped rows (e.g. the type_fidelity detector's
-    # EntropyObjectRecord). Pure data — NOT a connection scope. In the platform
-    # model this is the workflow execution processing the source (E4b wires it).
-    session_id: str
-    vertical: str | None = None
-    # Optional table filter (DAT-342). Empty = all of the source's raw tables.
-    table_ids: list[str] = Field(default_factory=list)
-
-
-class PhaseActivityResult(BaseModel):
-    """Serializable phase outcome returned across the Temporal boundary."""
-
-    phase: str
-    status: str
-    summary: str = ""
-    records_processed: int = 0
-    records_created: int = 0
-    outputs: dict[str, Any] = Field(default_factory=dict)
-    warnings: list[str] = Field(default_factory=list)
-    error: str | None = None
+__all__ = ["PhaseActivityInput", "PhaseActivityResult", "run_phase_activity"]
 
 
 def run_phase_activity(

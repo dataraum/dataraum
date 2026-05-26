@@ -18,6 +18,10 @@ from concurrent.futures import ThreadPoolExecutor
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
+from temporalio.worker.workflow_sandbox import (
+    SandboxedWorkflowRunner,
+    SandboxRestrictions,
+)
 
 from dataraum.core.logging import get_logger
 from dataraum.core.settings import get_settings
@@ -26,6 +30,7 @@ from dataraum.worker.bootstrap import (
     bootstrap_worker_substrate,
     shutdown_worker_substrate,
 )
+from dataraum.worker.workflows import AddSourceWorkflow
 
 logger = get_logger(__name__)
 
@@ -88,21 +93,38 @@ async def run_worker() -> None:
             loop.add_signal_handler(sig, interrupt.set)
 
         with ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_ACTIVITIES) as executor:
+            # Bundled worker (Temporal's recommended default): this one worker
+            # runs the workflow (asyncio, in the determinism sandbox) AND the
+            # phase activities (sync, on the ThreadPoolExecutor) on one task
+            # queue. Split activities onto a dedicated task queue later if the
+            # heavy phases need to scale independently of orchestration.
             worker = Worker(
                 client,
                 task_queue=task_queue,
+                workflows=[AddSourceWorkflow],
                 activities=[
                     phase_activities.run_import,
                     phase_activities.run_typing,
                 ],
                 activity_executor=executor,
                 max_concurrent_activities=_MAX_CONCURRENT_ACTIVITIES,
+                # The workflow module lives in the `dataraum` package, whose
+                # import chain loads the engine — including duckdb's native
+                # extension, which cannot be reimported inside the workflow
+                # sandbox. The workflow only uses the pure-data contracts (it
+                # never calls engine code), so pass `dataraum` through to the
+                # host's already-imported modules. Runtime determinism guards
+                # (banned time/random/etc.) still apply.
+                workflow_runner=SandboxedWorkflowRunner(
+                    restrictions=SandboxRestrictions.default.with_passthrough_modules("dataraum")
+                ),
             )
             logger.info(
                 "worker_started",
                 task_queue=task_queue,
                 namespace=namespace,
                 host=host,
+                workflows=["addSourceWorkflow"],
                 activities=["import", "typing"],
             )
             async with worker:

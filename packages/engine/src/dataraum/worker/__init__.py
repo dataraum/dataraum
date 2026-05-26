@@ -8,17 +8,16 @@ these activities by name. No Starlette shell.
 
 from __future__ import annotations
 
-from dataraum.worker.activity import (
-    PhaseActivityInput,
-    PhaseActivityResult,
-    run_phase_activity,
-)
+from dataraum.worker.activity import run_phase_activity
 from dataraum.worker.bootstrap import (
     bootstrap_worker_substrate,
     shutdown_worker_substrate,
 )
+from dataraum.worker.contracts import PhaseActivityInput, PhaseActivityResult
+from dataraum.worker.workflows import AddSourceWorkflow
 
 __all__ = [
+    "AddSourceWorkflow",
     "PhaseActivityInput",
     "PhaseActivityResult",
     "bootstrap_worker_substrate",

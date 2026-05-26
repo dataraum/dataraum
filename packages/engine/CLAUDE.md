@@ -52,17 +52,17 @@ Tests pass · type-check passes · lint passes · output verified (not just "it 
 
 ## Architecture
 
-The engine is a **Starlette kernel** (`src/dataraum/server/`) exposing `/measure` (SSE), `/query` (Arrow), `/probe` (read-only SQL), and `/health`. No OpenAPI, no codegen. The cockpit (`../cockpit`) reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle and calls these verbs for long-running work. A reference-only `src/dataraum/mcp/` module survives for the cockpit takeover — no transport, no in-tree consumer.
+The engine is a **Temporal activity worker** (`src/dataraum/worker/`, entrypoint `python -m dataraum.worker.main`) — no HTTP surface. It bootstraps the substrate once (DuckLake anchor + one workspace `ConnectionManager`, reusing `src/dataraum/server/{storage,workspace}.py`), then serves the **bundled** `AddSourceWorkflow` + the phase activities on one task queue. The cockpit (`../cockpit`) reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle and triggers workflows via the Temporal Client. No OpenAPI, no codegen. A reference-only `src/dataraum/mcp/` module survives for the cockpit takeover — no transport, no in-tree consumer.
 
 **Key design decisions:**
 - **VARCHAR-first staging** — everything loads as VARCHAR; type inference happens in profiling, not load. Failed casts go to quarantine tables, never pipeline failure.
 - **Pre-computed context** — AI receives a fully-assembled `ContextDocument`; no runtime discovery.
 - **Ontologies are config** — domain ontologies (financial_reporting, marketing, …) are YAML mapping column patterns → business terms, defining metrics, guiding interpretation. They live in `packages/dataraum-config/` (bind-mounted at `/opt/dataraum/config`); load them only through `dataraum.core.config`, never `Path(__file__)` navigation.
-- **Pipeline measures, doesn't interpret** — detectors run as pipeline post-steps; interpretation happens interactively through the kernel.
+- **Pipeline measures, doesn't interpret** — detectors run as pipeline post-steps; interpretation happens interactively through the cockpit (Temporal workflows + chat).
 - **BBN readiness** — per-column ready / investigate / blocked via a Bayesian network.
 - **Free-threading** — Python 3.14t with the GIL off; treat all shared mutable state as unsafe.
 
-**Temporal (durable orchestration).** Skill: `npx skills add temporalio/skill-temporal-developer`. The engine runs a **Python activity worker** — each phase is an `@activity.defn(name="<phase>")` wrapper; workflows are authored in TypeScript (the cockpit orchestrates). Bridge sync SQLAlchemy / DuckDB through `asyncio.to_thread`. Determinism + retry rules live in the skill; the locked decision and constraints live in the `feedback-durable-execution-lean` memory.
+**Temporal (durable orchestration).** Skill: `npx skills add temporalio/skill-temporal-developer`. The engine runs a **bundled Python worker** (`worker/`): `AddSourceWorkflow` (`worker/workflows.py`, sandbox-deterministic, imports only `temporalio` + the engine-free `worker/contracts.py`) **and** the phase activities (`worker/activities.py`, `@activity.defn(name="<phase>")` over `run_phase_activity`) on one task queue. Activities are **sync**, run on a `ThreadPoolExecutor` (NOT `asyncio.to_thread`). The cockpit triggers workflows via the Temporal Client. Workflow names are called by string; no shared catalogue. Locked decision + the DAT-360→DAT-344 reversal (workflows are Python, not TS) live in the `feedback-durable-execution-lean` memory.
 
 **Module layout:**
 ```
@@ -75,7 +75,8 @@ src/dataraum/
 ├── storage/     # SQLAlchemy models (co-located in db_models.py per module)
 ├── llm/         # providers + prompts
 ├── core/        # config, connections, settings
-├── server/      # Starlette kernel
+├── worker/      # Temporal activity worker — workflows, activities, bootstrap, contracts
+├── server/      # substrate bootstrap (DuckLake anchor + workspace overlay); no HTTP
 └── mcp/         # reference-only (no transport)
 ```
 
@@ -104,9 +105,12 @@ settings = get_settings()        # validates once, fails loud at boot
 
 ```bash
 docker compose -f packages/infra/docker-compose.yml up -d --wait   # full stack
-curl -fsS http://localhost:8000/health
-# or run the kernel directly (DUCKLAKE_* env required):
-uv run uvicorn dataraum.server.app:app --port 8000
+# engine health = Temporal worker heartbeat (no HTTP endpoint):
+docker compose -f packages/infra/docker-compose.yml run --rm --no-deps \
+  --entrypoint temporal temporal-admin-tools \
+  worker list --namespace default --address temporal:7233          # → Status: Running
+# or run the worker directly (DATABASE_URL / DUCKLAKE_* / TEMPORAL_* env required):
+uv run python -m dataraum.worker.main
 ```
 
 ## Docs & tracking

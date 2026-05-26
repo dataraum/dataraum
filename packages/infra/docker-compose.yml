@@ -182,6 +182,40 @@ services:
       timeout: 3s
       retries: 10
 
+  # Engine Temporal activity worker (DAT-344). Same image as control-plane, but
+  # runs the activity worker (`python -m dataraum.worker.main`) instead of the
+  # Starlette shell (which P4 removes). Holds one workspace ConnectionManager +
+  # DuckLake anchor and serves the phase activities (import, typing) on the
+  # task queue. No HTTP port; no healthcheck yet — worker-health lands in P4.
+  engine-worker:
+    build:
+      context: ../engine
+      dockerfile: docker/control-plane.Dockerfile
+    entrypoint: ["/app/.venv/bin/python", "-m", "dataraum.worker.main"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      temporal-create-namespace:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
+      DUCKLAKE_DATA_PATH: /var/lib/dataraum/lake
+      DATARAUM_CONFIG_PATH: /opt/dataraum/config
+      DATARAUM_HOME: /var/lib/dataraum/workspace
+      DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TEMPORAL_HOST: ${TEMPORAL_HOST:-temporal:7233}
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-dataraum-pipeline}
+    volumes:
+      - dataraum_lake:/var/lib/dataraum/lake
+      - dataraum_workspace:/var/lib/dataraum/workspace
+      - ${HOST_SOURCES_DIR:-../engine/sources}:/var/lib/dataraum/sources:ro
+      - ${HOST_CONFIG_DIR:-../dataraum-config}:/opt/dataraum/config:ro
+
   cockpit:
     build:
       context: ../cockpit

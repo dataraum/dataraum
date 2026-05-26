@@ -139,7 +139,8 @@ def bootstrap_lake(catalog_url: str, data_path: str) -> None:
         RuntimeError: If bootstrap fails. The original DuckDB exception is
             chained for inspection.
 
-    Environment overrides:
+    Configuration (resolved via typed settings — ``core/settings.py`` — from
+    these env vars, no longer read here directly; DAT-363):
         DUCKDB_EXTENSION_DIRECTORY: Path where DuckDB looks up cached
             extensions. The container image pre-installs extensions at
             ``/opt/dataraum/duckdb-extensions`` (Dockerfile); this env var

@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     temporal_task_queue: str | None = None
 
 
-@lru_cache
+@lru_cache(maxsize=None)
 def get_settings() -> Settings:
     """Return the process-wide settings singleton, validating env on first call.
 

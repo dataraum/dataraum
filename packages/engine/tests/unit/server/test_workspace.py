@@ -17,9 +17,10 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
-import dataraum.server.workspace as _ws
 import pytest
+from pydantic import ValidationError
 
+import dataraum.server.workspace as _ws
 from dataraum.core.config import (
     _get_config_root,
     reset_active_workspace_for_tests,
@@ -209,7 +210,9 @@ def test_bootstrap_raises_when_datatraum_home_unset(
     monkeypatch.delenv("DATARAUM_HOME", raising=False)
     monkeypatch.setenv("DATARAUM_WORKSPACE_ID", _FIXED_WS_ID)
 
-    with pytest.raises(RuntimeError, match="DATARAUM_HOME is not set"):
+    # Resolution flows through typed settings (DAT-363): a missing var surfaces
+    # as a pydantic ValidationError naming the field.
+    with pytest.raises(ValidationError, match="dataraum_home"):
         bootstrap_workspace()
 
 
@@ -220,7 +223,7 @@ def test_bootstrap_raises_when_workspace_id_unset(
     monkeypatch.setenv("DATARAUM_HOME", str(home_dir))
     monkeypatch.delenv("DATARAUM_WORKSPACE_ID", raising=False)
 
-    with pytest.raises(RuntimeError, match="DATARAUM_WORKSPACE_ID is not set"):
+    with pytest.raises(ValidationError, match="dataraum_workspace_id"):
         bootstrap_workspace()
 
 

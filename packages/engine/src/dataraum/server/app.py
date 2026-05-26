@@ -17,7 +17,6 @@ Run via ``uvicorn dataraum.server.app:app`` or ``docker compose up``.
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -31,6 +30,7 @@ from starlette.routing import Route
 
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.core.logging import get_logger
+from dataraum.core.settings import get_settings
 from dataraum.server.storage import bootstrap_lake, health_probe, teardown_lake
 from dataraum.server.workspace import bootstrap_workspace
 
@@ -41,33 +41,19 @@ logger = get_logger(__name__)
 async def lifespan(app: Starlette) -> AsyncIterator[None]:
     """Open DuckLake + workspace + SQLAlchemy substrate at startup.
 
-    Refuses to start if any of ``DUCKLAKE_CATALOG_URL``,
-    ``DUCKLAKE_DATA_PATH``, ``DATARAUM_HOME``, ``DATARAUM_WORKSPACE_ID``,
-    or ``DATABASE_URL`` is unset — the container substrate provides all
-    five. The first two are validated here; the remaining three are
-    validated by ``bootstrap_workspace()`` and
-    ``ConnectionConfig.for_workspace()`` respectively.
+    Calls ``get_settings()`` first, which validates the full env contract
+    (DB / DuckLake / workspace / LLM) in one place and raises a
+    ``pydantic.ValidationError`` naming any missing var — the container
+    substrate provides all of them. This is the single boot-time gate; the
+    future Temporal worker entrypoint imports the same ``get_settings()``.
 
     After this lifespan runs, the ``ws_<workspace_id>`` Postgres schema
     exists with all SQLAlchemy-registered tables, and a process-wide
     :class:`ConnectionManager` lives on ``app.state.workspace_manager``
     for downstream routes.
     """
-    catalog_url = os.environ.get("DUCKLAKE_CATALOG_URL")
-    data_path = os.environ.get("DUCKLAKE_DATA_PATH")
-    if not catalog_url:
-        raise RuntimeError(
-            "DUCKLAKE_CATALOG_URL is not set. The container substrate (L1) "
-            "provides this; for local dev outside the container, export "
-            "DUCKLAKE_CATALOG_URL=postgresql://<user>:<pass>@<host>:<port>/<db>."
-        )
-    if not data_path:
-        raise RuntimeError(
-            "DUCKLAKE_DATA_PATH is not set. The container substrate (L1) "
-            "mounts the dataraum_lake named volume at /var/lib/dataraum/lake/."
-        )
-
-    bootstrap_lake(catalog_url, data_path)
+    settings = get_settings()
+    bootstrap_lake(settings.ducklake_catalog_url, str(settings.ducklake_data_path))
     try:
         bootstrap_workspace()
 
@@ -94,12 +80,11 @@ def _postgres_probe() -> dict[str, str]:
     """Return a /health-shaped dict for the workspace Postgres engine.
 
     Uses a short-lived engine (no pool reuse) so the probe never wedges on a
-    pool-exhausted main connection manager. ``DATABASE_URL`` is the same env
-    var the rest of the engine reads at runtime.
+    pool-exhausted main connection manager. Reads the same typed
+    ``database_url`` the rest of the engine uses; boot validation guarantees
+    it is present by the time any request lands.
     """
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        return {"status": "not_configured"}
+    url = get_settings().database_url
     try:
         engine = create_engine(url, pool_pre_ping=True)
         try:

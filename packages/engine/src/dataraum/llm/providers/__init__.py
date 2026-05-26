@@ -24,10 +24,12 @@ def create_provider(provider_name: str, provider_config: dict[str, Any]) -> LLMP
         ValueError: If provider name is unknown
     """
     if provider_name == "anthropic":
+        from dataraum.core.settings import get_settings
         from dataraum.llm.providers.anthropic import AnthropicConfig, AnthropicProvider
 
         anthropic_config = AnthropicConfig(**provider_config)
+        api_key = get_settings().anthropic_api_key.get_secret_value()
         logger.debug("llm_provider_created", provider=provider_name)
-        return AnthropicProvider(anthropic_config)
+        return AnthropicProvider(anthropic_config, api_key)
 
     raise ValueError(f"Unknown LLM provider: {provider_name}. Supported providers: anthropic")

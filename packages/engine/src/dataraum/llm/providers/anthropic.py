@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any, cast
 
 import anthropic
@@ -24,7 +23,6 @@ from dataraum.llm.providers.base import (
 class AnthropicConfig(BaseModel):
     """Configuration for Anthropic provider."""
 
-    api_key_env: str
     default_model: str
     models: dict[str, str]
 
@@ -87,30 +85,28 @@ class AnthropicProvider(LLMProvider):
     Supports both JSON and text response formats.
     """
 
-    def __init__(self, config: AnthropicConfig):
+    def __init__(self, config: AnthropicConfig, api_key: str):
         """Initialize Anthropic provider.
 
         Args:
-            config: Provider configuration
+            config: Provider configuration (models, defaults).
+            api_key: Anthropic API key. The factory resolves this from
+                typed settings (``settings.anthropic_api_key``) — the
+                provider itself stays free of env / settings coupling.
 
         Raises:
-            ImportError: If anthropic package not installed
-            ValueError: If API key environment variable not set
+            ImportError: If anthropic package not installed.
+            ValueError: If ``api_key`` is empty.
         """
         if anthropic is None:
             raise ImportError(
                 "anthropic package not installed. Install with: pip install anthropic"
             )
 
-        self.config = config
-
-        # Get API key from environment
-        api_key = os.getenv(config.api_key_env)
         if not api_key:
-            raise ValueError(
-                f"Missing environment variable: {config.api_key_env}. "
-                f"Set your Anthropic API key in .env file."
-            )
+            raise ValueError("Anthropic API key is empty. Set ANTHROPIC_API_KEY.")
+
+        self.config = config
 
         # Create sync client
         self.client = anthropic.Anthropic(api_key=api_key)

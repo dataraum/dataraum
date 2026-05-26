@@ -242,12 +242,12 @@ Per DAT-360 spike outcome. Full ticket body has the implementation list; this se
 
 **Engine = Python Temporal activity worker** (one process, no HTTP server):
 - **No Starlette / HTTP server.** Pure Temporal worker; health via [Temporal worker health](https://docs.temporal.io/cloud/worker-health). Substrate bootstrap (lake + workspace + `ConnectionManager`) moves from the old Starlette lifespan into worker startup. **`/run_sql` + `/probe` removed (2026-05-26) — they move to the cockpit** (TS/Bun DuckDB; separate follow-on ticket, gated by the #13910 Linux-x64 probe).
-- Long-running Temporal activity worker process registers `@activity.defn(name=...)` wrappers around the 5 slice-1 phases (`run_import`, `run_typing`, `run_statistics`, `run_semantic_per_column`, `run_semantic_per_table`)
-- Sync SQLAlchemy / DuckDB inside async activities via `asyncio.to_thread(...)`
+- Long-running Temporal activity worker process registers `@activity.defn(name=...)` wrappers around the **7 slice-1 (table-local) phases** — everything before the cross-table `relationships` cut, plus `semantic_per_column`: `run_import`, `run_typing`, `run_statistics`, `run_column_eligibility`, `run_statistical_quality`, `run_temporal`, `run_semantic_per_column`. (`relationships` + `semantic_per_table` are **slice-2** — cross-table, begin_session-time; dormant after DAT-362. Corrected 2026-05-26 per the DAT-344 refine.)
+- Sync SQLAlchemy / DuckDB inside activities — each phase is wrapped by a single `@phase_activity` runtime that leases a scoped session + DuckDB cursor from the worker's one `ConnectionManager` and builds `PhaseContext`. Connection lifecycle lives in one place, not per-activity (sync-activity-on-Temporal-executor vs `asyncio.to_thread` is a Phase-A decision).
 
 **Cockpit = Temporal workflow author + Temporal client**:
 - Workflows live in `packages/dataraum-workflows/` (new TS-only package; shared between cockpit + engine for the activity-name catalog)
-- `addSourceWorkflow` orchestrates per-table phases up to `semantic_per_column`, waits for an in-loop teach signal, then runs `semantic_per_table`
+- `addSourceWorkflow` orchestrates the table-local phases and **ends at `semantic_per_column`**, then waits on the in-loop teach signal (drives `replayTypingWorkflow`). `semantic_per_table` is **not** in this workflow — it runs in slice-2 (begin_session), after `relationships`
 - `replayTypingWorkflow` triggers from the teach tool after writing a `config_overlay` row
 
 **Activity name catalog** (`packages/dataraum-workflows/activity_names.ts` + `python/activity_names.py` mirror): CI-checked for drift. A Python rename without TS update fails CI, not runtime.

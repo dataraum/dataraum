@@ -235,6 +235,76 @@ class SemanticAnalysisOutput(BaseModel):
 
 
 # =============================================================================
+# Per-table synthesis output (DAT-362 Option B)
+#
+# The post-split per-table phase classifies tables and confirms relationships
+# OVER the already-persisted per-column annotations. It does NOT re-emit column
+# annotations — those are owned by the per-column phase and read from the DB as
+# context. Hence this schema carries no ``columns`` field (contrast
+# ``TableSemanticOutput``).
+# =============================================================================
+
+
+class TableEntityOutput(BaseModel):
+    """Entity-level classification for a single table (per-table tier)."""
+
+    table_name: str = Field(description="Exact table name from the provided schema.")
+
+    entity_type: str = Field(
+        description=(
+            "What real-world entity this table represents. Examples: 'customers', "
+            "'orders', 'products', 'transactions', 'invoices', 'payments'"
+        )
+    )
+
+    description: str = Field(
+        description="One sentence describing the table's purpose in the business domain."
+    )
+
+    is_fact_table: bool = Field(
+        description=(
+            "True if this is a fact table (contains transactions, events, or measurements). "
+            "False if this is a dimension table (contains reference/lookup data)."
+        )
+    )
+
+    grain: list[str] = Field(
+        description=(
+            "Column names that define the unique grain (primary key) of the table. "
+            "These columns together uniquely identify each row."
+        )
+    )
+
+    time_column: str | None = Field(
+        default=None,
+        description="Primary timestamp column for time-based analysis, if the table has one.",
+    )
+
+
+class TableSynthesisOutput(BaseModel):
+    """Per-table synthesis tool output: table entities + cross-table relationships.
+
+    Replaces :class:`SemanticAnalysisOutput` for the post-split per-table phase.
+    Column annotations are produced and persisted by the per-column phase; they
+    are provided to this phase as read-only context and are NOT part of this
+    schema.
+    """
+
+    tables: list[TableEntityOutput] = Field(
+        description="Entity classification for each table in the schema."
+    )
+
+    relationships: list[RelationshipOutput] = Field(
+        default_factory=list,
+        description=(
+            "Relationships between tables. Evaluate the pre-computed candidates "
+            "and include only confirmed relationships. Add any additional "
+            "relationships you detect that weren't in the candidates."
+        ),
+    )
+
+
+# =============================================================================
 # Tier 1: Column Annotation Output (fast model)
 # =============================================================================
 
@@ -339,6 +409,9 @@ __all__ = [
     "TableSemanticOutput",
     "RelationshipOutput",
     "SemanticAnalysisOutput",
+    # Per-table synthesis output (DAT-362 Option B)
+    "TableEntityOutput",
+    "TableSynthesisOutput",
     # Tier 1 column annotation output
     "TableColumnAnnotation",
     "ColumnAnnotationOutput",

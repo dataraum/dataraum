@@ -63,7 +63,9 @@ class TestResolveTargetTableIds:
         t2 = _make_table(session, src.source_id, "t2")
         t3 = _make_table(session, src.source_id, "t3")
 
-        resolved = TypingPhase()._resolve_target_table_ids(_ctx(session, duckdb_conn, src.source_id))
+        resolved = TypingPhase()._resolve_target_table_ids(
+            _ctx(session, duckdb_conn, src.source_id)
+        )
 
         assert set(resolved) == {t1.table_id, t2.table_id, t3.table_id}
 
@@ -72,14 +74,18 @@ class TestResolveTargetTableIds:
     ) -> None:
         src = _make_source(session)
         t1 = _make_table(session, src.source_id, "t1")
-        _make_table(session, src.source_id, "t2")
-        _make_table(session, src.source_id, "t3")
+        t2 = _make_table(session, src.source_id, "t2")
+        t3 = _make_table(session, src.source_id, "t3")
 
         resolved = TypingPhase()._resolve_target_table_ids(
             _ctx(session, duckdb_conn, src.source_id, table_ids=[t1.table_id])
         )
 
+        # Only the targeted table is resolved; siblings are excluded so _run
+        # never touches them (the per-table "siblings untouched" guarantee).
         assert resolved == [t1.table_id]
+        assert t2.table_id not in resolved
+        assert t3.table_id not in resolved
 
     def test_filter_drops_ids_that_are_not_raw_tables_of_this_source(
         self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection

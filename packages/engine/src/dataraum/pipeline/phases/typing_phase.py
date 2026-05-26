@@ -59,6 +59,12 @@ class TypingPhase(BasePhase):
         table_ids: list[str],
         column_ids: list[str],
     ) -> int:
+        # NOTE: source-scoped — deletes typed/quarantine for the WHOLE source,
+        # ignoring any per-table filter. `_run`/`should_skip` honor
+        # `ctx.table_ids`, but cleanup does not: the cleanup_phase_cascade path
+        # has no table-filter param. A per-table replay that runs cleanup first
+        # would clobber sibling tables' typed rows. TODO(DAT-344): thread a
+        # table filter through cleanup when the per-table replay path lands.
         from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
 
         count = 0
@@ -247,7 +253,9 @@ class TypingPhase(BasePhase):
         raw_table_ids = [row[0] for row in ctx.session.execute(stmt)]
 
         if not raw_table_ids:
-            # No source-scoped raw rows — trust caller-provided ids as-is.
+            # No source-scoped raw rows: preserve the pre-existing fallback of
+            # trusting caller-provided ids verbatim (unreachable from the
+            # scheduler today, which never sets table_ids without raw rows).
             return list(ctx.table_ids)
 
         if ctx.table_ids:

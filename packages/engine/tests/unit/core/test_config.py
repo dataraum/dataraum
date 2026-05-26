@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from dataraum.core.config import (
+    _find_config_dir,
     _get_config_root,
     get_config_dir,
     get_config_file,
@@ -144,6 +145,29 @@ class TestLoadPipelineConfig:
             assert phase_section not in data, (
                 f"Phase section '{phase_section}' should not be in pipeline.yaml"
             )
+
+
+class TestFindConfigDir:
+    """Tests for ``_find_config_dir()`` auto-detection (resolution priority 4).
+
+    This is the dev / CLI / test fallback hit when no override, no active
+    workspace, and no ``DATARAUM_CONFIG_PATH`` are set. After DAT-361 it must
+    resolve the sibling ``dataraum-config`` package, not the old in-engine
+    ``config/`` dir.
+    """
+
+    def test_detects_sibling_dataraum_config_package(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DATARAUM_CONFIG_PATH", raising=False)
+        _find_config_dir.cache_clear()
+        try:
+            found = _find_config_dir()
+        finally:
+            _find_config_dir.cache_clear()
+
+        assert found.name == "dataraum-config"
+        assert found.is_dir()
+        # Sanity: a known config file resolves under it.
+        assert (found / "pipeline.yaml").exists()
 
 
 class TestSetConfigRoot:

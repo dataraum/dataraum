@@ -63,10 +63,14 @@ def test_config_dir_is_bind_mounted_not_baked() -> None:
         f"control-plane.Dockerfile must set DATARAUM_CONFIG_PATH={paths_mod.CONFIG_DIR}"
     )
     compose = (_INFRA_DIR / "docker-compose.yml").read_text()
-    assert re.search(
+    mounts = re.findall(
         r"\$\{HOST_CONFIG_DIR.*?\}:" + re.escape(str(paths_mod.CONFIG_DIR)) + r":ro\b",
         compose,
-    ), f"docker-compose.yml must bind-mount dataraum-config at {paths_mod.CONFIG_DIR}:ro"
+    )
+    assert len(mounts) == 2, (
+        f"docker-compose.yml must bind-mount dataraum-config at "
+        f"{paths_mod.CONFIG_DIR}:ro on BOTH control-plane and cockpit; found {len(mounts)}"
+    )
 
 
 # === (2) DATARAUM_CONFIG_PATH env var end-to-end ===

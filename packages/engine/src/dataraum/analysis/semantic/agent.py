@@ -29,8 +29,10 @@ from dataraum.analysis.semantic.models import (
     SemanticAnalysisOutput,
     SemanticAnnotation,
     SemanticEnrichmentResult,
+    TableSynthesisOutput,
 )
 from dataraum.analysis.semantic.ontology import OntologyLoader
+from dataraum.analysis.semantic.utils import load_persisted_annotations
 from dataraum.analysis.statistics.db_models import (
     StatisticalProfile as ColumnProfileModel,
 )
@@ -218,6 +220,195 @@ class SemanticAgent(LLMFeature):
             return self._parse_tool_output(tool_output, model_name, ontology_def=ontology_def)
         except Exception as e:
             return Result.fail(f"Failed to parse semantic response: {e}")
+
+    def synthesize_tables(
+        self,
+        session: Session,
+        table_ids: list[str],
+        ontology: str = "general",
+        relationship_candidates: list[dict[str, Any]] | None = None,
+    ) -> Result[SemanticEnrichmentResult]:
+        """Classify tables + confirm relationships over persisted column annotations.
+
+        The per-table synthesis tier (DAT-362 Option B). Reads the already-persisted
+        per-column annotations (post-teach) as read-only context and produces only
+        table entity classifications + cross-table relationships — it does NOT
+        re-emit per-column annotations.
+
+        Args:
+            session: Database session.
+            table_ids: Table IDs to synthesize.
+            ontology: Ontology name for context.
+            relationship_candidates: Pre-computed relationship candidates from the
+                relationships phase (TDA + join detection).
+
+        Returns:
+            Result with a ``SemanticEnrichmentResult`` carrying ``entity_detections``
+            and ``relationships`` (``annotations`` is always empty).
+        """
+        feature_config = self.config.features.semantic_analysis
+        if not feature_config.enabled:
+            return Result.fail("Semantic analysis is disabled in config")
+
+        profiles_result = self._load_profiles(session, table_ids)
+        if not profiles_result.success or not profiles_result.value:
+            return Result.fail(profiles_result.error if profiles_result.error else "Unknown Error")
+        profiles = profiles_result.value
+
+        sampler = DataSampler(self.config.privacy)
+        samples = sampler.prepare_samples(profiles)
+        tables_json = self._build_tables_json(profiles, samples)
+
+        ontology_def = self._ontology_loader.load(ontology)
+        if ontology_def is None:
+            available = self._ontology_loader.list_verticals()
+            return Result.fail(
+                f"Vertical '{ontology}' not found. Available verticals: {available}."
+            )
+
+        graph_structure: GraphStructure | None = None
+        if relationship_candidates:
+            table_names_from_candidates = set()
+            for cand in relationship_candidates:
+                if cand.get("table1"):
+                    table_names_from_candidates.add(cand["table1"])
+                if cand.get("table2"):
+                    table_names_from_candidates.add(cand["table2"])
+            if table_names_from_candidates:
+                graph_structure = analyze_graph_topology(
+                    table_ids=list(table_names_from_candidates),
+                    relationships=relationship_candidates,
+                )
+
+        context = {
+            "tables_json": json.dumps(tables_json),
+            "ontology_name": ontology,
+            "ontology_concepts": self._ontology_loader.format_concepts_for_prompt(ontology_def),
+            "relationship_candidates": self._format_relationship_candidates(
+                relationship_candidates, graph_structure=graph_structure
+            ),
+            "column_annotations": self._format_persisted_annotations(
+                load_persisted_annotations(session, table_ids)
+            ),
+        }
+
+        try:
+            system_prompt, user_prompt, temperature = self.renderer.render_split(
+                "semantic_per_table", context
+            )
+        except Exception as e:
+            return Result.fail(f"Failed to render semantic_per_table prompt: {e}")
+
+        tool = ToolDefinition(
+            name="analyze_tables",
+            description=(
+                "Classify each table as a business entity (fact/dimension, grain, "
+                "time column) and confirm relationships between tables. Do NOT "
+                "annotate individual columns — those are already decided."
+            ),
+            input_schema=TableSynthesisOutput.model_json_schema(),
+        )
+
+        model = self.provider.get_model_for_tier(feature_config.model_tier)
+        request = ConversationRequest(
+            messages=[Message(role="user", content=user_prompt)],
+            system=system_prompt,
+            tools=[tool],
+            tool_choice={"type": "tool", "name": "analyze_tables"},
+            max_tokens=self.config.limits.max_output_tokens_per_request,
+            temperature=temperature,
+            model=model,
+        )
+
+        response_result = self.provider.converse(request)
+        if not response_result.success or not response_result.value:
+            return Result.fail(response_result.error or "Table synthesis LLM call failed")
+        response = response_result.value
+
+        if not response.tool_calls or response.tool_calls[0].name != "analyze_tables":
+            return Result.fail("LLM did not use the analyze_tables tool")
+
+        try:
+            return self._parse_table_synthesis_output(response.tool_calls[0].input, response.model)
+        except Exception as e:
+            return Result.fail(f"Failed to parse table synthesis response: {e}")
+
+    @staticmethod
+    def _format_persisted_annotations(annotations: list[dict[str, Any]]) -> str:
+        """Format persisted per-column annotations as read-only per-table context."""
+        if not annotations:
+            return "No prior column annotations available."
+
+        by_table: dict[str, list[dict[str, Any]]] = {}
+        for ann in annotations:
+            by_table.setdefault(ann["table_name"], []).append(ann)
+
+        lines: list[str] = []
+        for table_name, cols in by_table.items():
+            lines.append(f"\n### {table_name}")
+            for col in cols:
+                concept = col.get("business_concept") or "(none)"
+                role = col.get("semantic_role") or "(unknown)"
+                conf = col.get("confidence")
+                conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
+                lines.append(
+                    f"  - {col['column_name']}: role={role}, concept={concept}, "
+                    f"confidence={conf_str}"
+                )
+        return "\n".join(lines)
+
+    def _parse_table_synthesis_output(
+        self,
+        tool_output: dict[str, Any],
+        model_name: str,
+    ) -> Result[SemanticEnrichmentResult]:
+        """Parse ``analyze_tables`` output into entities + relationships (no annotations)."""
+        synthesis = TableSynthesisOutput.model_validate(tool_output)
+
+        entity_detections = [
+            EntityDetection(
+                table_id="",  # Filled by caller
+                table_name=table.table_name,
+                entity_type=table.entity_type,
+                description=table.description,
+                confidence=0.9,
+                grain_columns=table.grain,
+                is_fact_table=table.is_fact_table,
+                is_dimension_table=not table.is_fact_table,
+                time_column=table.time_column,
+            )
+            for table in synthesis.tables
+        ]
+
+        relationships = []
+        for rel in synthesis.relationships:
+            try:
+                rel_type = RelationshipType(rel.relationship_type)
+            except ValueError:
+                rel_type = RelationshipType.FOREIGN_KEY
+            relationships.append(
+                Relationship(
+                    relationship_id=str(uuid4()),
+                    from_table=rel.from_table,
+                    from_column=rel.from_column,
+                    to_table=rel.to_table,
+                    to_column=rel.to_column,
+                    relationship_type=rel_type,
+                    cardinality=None,  # Set by processor from actual data
+                    confidence=rel.confidence,
+                    detection_method="llm_tool",
+                    evidence={"source": "table_synthesis", "reasoning": rel.reasoning},
+                )
+            )
+
+        return Result.ok(
+            SemanticEnrichmentResult(
+                annotations=[],
+                entity_detections=entity_detections,
+                relationships=relationships,
+                source="llm",
+            )
+        )
 
     def _load_profiles(self, session: Session, table_ids: list[str]) -> Result[list[ColumnProfile]]:
         """Load column profiles from metadata.

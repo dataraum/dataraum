@@ -105,6 +105,7 @@ bun run db:push:cockpit   # push schema directly to cockpit_db
 
 ## Conventions
 
+- Server config (DB URLs, API key, workspace id, lake path, Temporal vars) goes through `src/config.ts` (typed Zod, parsed + validated once at boot) — never read `process.env` directly (DAT-363). It's server-only; don't import it into a client component.
 - Metadata reads go through the Drizzle metadata client (`src/db/metadata/`); the engine kernel verbs (`/measure`, `/query`, `/probe`) handle long-running operations.
 - TanStack Start server functions for the chat surface (`/api/chat`) and any other BFF logic.
 - One Mantine component per widget; Tailwind for layout/utility classes.

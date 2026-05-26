@@ -23,15 +23,15 @@ from dataraum.llm.providers.base import ConversationRequest, Message
 
 def _config() -> AnthropicConfig:
     return AnthropicConfig(
-        api_key_env="ANTHROPIC_API_KEY",
         default_model="claude-x",
         models={"fast": "claude-x", "balanced": "claude-x"},
     )
 
 
-def _provider(monkeypatch: pytest.MonkeyPatch) -> AnthropicProvider:
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    return AnthropicProvider(_config())
+def _provider() -> AnthropicProvider:
+    # Key is injected by the factory in production; tests pass it directly so
+    # the provider needs no env / settings.
+    return AnthropicProvider(_config(), "sk-ant-test")
 
 
 def _request() -> ConversationRequest:
@@ -83,7 +83,7 @@ class TestConverseSurfacesClassification:
     inspect the original exception."""
 
     def test_permanent_error_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        provider = _provider(monkeypatch)
+        provider = _provider()
 
         def boom(**_: object) -> object:
             raise _status_error(401)
@@ -95,7 +95,7 @@ class TestConverseSurfacesClassification:
         assert "permanent" in (result.error or "")
 
     def test_transient_error_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        provider = _provider(monkeypatch)
+        provider = _provider()
 
         def boom(**_: object) -> object:
             raise _status_error(529)

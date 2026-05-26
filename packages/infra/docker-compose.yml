@@ -67,6 +67,13 @@ services:
       # drizzle-kit pull + the metadata client.
       DATARAUM_WORKSPACE_ID: ${DATARAUM_WORKSPACE_ID:-00000000-0000-0000-0000-000000000001}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Temporal (DAT-363 cornerstone for DAT-344). Optional in slice-1 — the
+      # engine's typed Settings treats these as optional and there is no
+      # Temporal service yet, so empty values keep the stack healthy. DAT-344
+      # wires the activity worker and flips them to required.
+      TEMPORAL_HOST: ${TEMPORAL_HOST:-}
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-}
+      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-}
     volumes:
       - dataraum_lake:/var/lib/dataraum/lake
       - dataraum_workspace:/var/lib/dataraum/workspace
@@ -114,6 +121,12 @@ services:
       # mount + path are plumbing. Same package, same path as the engine.
       DATARAUM_CONFIG_PATH: /opt/dataraum/config
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Temporal (DAT-363 cornerstone for DAT-344). Optional in slice-1 — the
+      # cockpit's Zod config treats these as optional and the Temporal client
+      # lands in DAT-344; empty values keep the stack healthy until then.
+      TEMPORAL_HOST: ${TEMPORAL_HOST:-}
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-}
+      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-}
     volumes:
       # Writable — the cockpit writes uploaded files into the lake
       # directory; the engine container reads them through the same

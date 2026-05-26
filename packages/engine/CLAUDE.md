@@ -501,6 +501,12 @@ async def some_operation() -> Result[SomeOutput]:
 with manager.session_scope() as session:
     with manager.duckdb_cursor() as cursor:
         result = some_operation(cursor, session)
+
+# Environment config — typed Settings, never os.environ (DAT-363)
+from dataraum.core.settings import get_settings
+
+settings = get_settings()  # validates the full env once; fails loud at boot
+engine = create_engine(settings.database_url)
 ```
 
 ### Code Style
@@ -508,3 +514,4 @@ with manager.session_scope() as session:
 - Pydantic models for data classes
 - No classes where functions suffice
 - Max function length: ~50 lines
+- Environment config goes through `core/settings.get_settings()` (typed, boot-validated) — never `os.environ` directly. Allowlisted exceptions: `core/config.py` (config-file location resolver) and `core/credentials.py` (dynamic per-source `DATARAUM_<NAME>_URL`).

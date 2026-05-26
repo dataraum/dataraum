@@ -11,17 +11,10 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
+import { config } from "../../config";
 import { relations } from "./relations";
 
-const connectionString = process.env.METADATA_DATABASE_URL;
-
-if (!connectionString) {
-	throw new Error(
-		"METADATA_DATABASE_URL is not set. Point it at the engine metadata DB (e.g. the `dataraum` database in the shared Postgres instance).",
-	);
-}
-
-const client = postgres(connectionString, { prepare: false });
+const client = postgres(config.metadataDatabaseUrl, { prepare: false });
 
 // drizzle 1.0 takes a single options object. `relations` already encodes
 // every table reference (via defineRelations(schema, ...)), so we don't need

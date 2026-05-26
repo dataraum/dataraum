@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from dataraum.core.connections import (
     ConnectionConfig,
@@ -188,20 +189,25 @@ class TestWorkspaceTypedDuckLake:
 
 
 class TestMissingDatabaseUrl:
-    """for_workspace / for_directory fail loud when DATABASE_URL is unset."""
+    """for_workspace / for_directory fail loud when DATABASE_URL is unset.
+
+    Resolution now flows through typed settings (DAT-363), so the missing var
+    surfaces as a ``pydantic.ValidationError`` naming the field rather than a
+    hand-rolled RuntimeError.
+    """
 
     def test_workspace_fails_without_env(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.delenv("DATABASE_URL", raising=False)
-        with pytest.raises(RuntimeError, match="DATABASE_URL is not set"):
+        with pytest.raises(ValidationError, match="database_url"):
             ConnectionConfig.for_workspace()
 
     def test_directory_fails_without_env(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.delenv("DATABASE_URL", raising=False)
-        with pytest.raises(RuntimeError, match="DATABASE_URL is not set"):
+        with pytest.raises(ValidationError, match="database_url"):
             ConnectionConfig.for_directory(tmp_path)
 
 

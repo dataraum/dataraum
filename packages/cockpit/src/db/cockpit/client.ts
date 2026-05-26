@@ -7,15 +7,9 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
-const connectionString = process.env.COCKPIT_DATABASE_URL;
+import { config } from "../../config";
 
-if (!connectionString) {
-	throw new Error(
-		"COCKPIT_DATABASE_URL is not set. Point it at the cockpit_db database in the shared Postgres instance.",
-	);
-}
-
-const client = postgres(connectionString, { prepare: false });
+const client = postgres(config.cockpitDatabaseUrl, { prepare: false });
 
 // schema is intentionally not passed yet — ./schema.ts is a placeholder. Once
 // real tables land (e.g. workspaces registry), pass `{ client, schema }`.

@@ -15,6 +15,21 @@ from collections.abc import Generator
 # the test schema.
 os.environ["DATARAUM_WORKSPACE_ID"] = "test"
 
+# DAT-363: the engine reads all substrate config through one validated
+# Settings object (dataraum.core.settings). get_settings() validates the full
+# env on first call, so ANY test that triggers it — booting the server,
+# building a DB connection, creating the LLM provider via the factory — needs
+# every required var present. Set deterministic placeholders here (mirroring
+# DATARAUM_WORKSPACE_ID above) so the singleton constructs; tests needing real
+# values (e.g. a live Postgres URL) override via monkeypatch + the autouse
+# reset_settings fixture below, and tests asserting a specific var is required
+# delenv just that one.
+os.environ["DATABASE_URL"] = "postgresql+psycopg://test:test@localhost:5432/test"
+os.environ["DUCKLAKE_CATALOG_URL"] = "postgresql://test:test@localhost:5432/lake"
+os.environ["DUCKLAKE_DATA_PATH"] = "/tmp/dataraum-test-lake"
+os.environ["DATARAUM_HOME"] = "/tmp/dataraum-test-home"
+os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-placeholder"
+
 import duckdb  # noqa: E402
 import pytest  # noqa: E402
 from sqlalchemy import create_engine, event, text  # noqa: E402
@@ -37,6 +52,21 @@ _ws_mod._active_workspace_id = os.environ["DATARAUM_WORKSPACE_ID"]
 
 _TEST_SESSION_ID = "00000000-0000-0000-0000-000000000001"
 _TEST_SOURCE_ID = "00000000-0000-0000-0000-000000000002"
+
+
+@pytest.fixture(autouse=True)
+def _reset_settings_cache() -> Generator[None]:
+    """Clear the settings singleton around every test (DAT-363).
+
+    ``get_settings()`` caches process-wide; without this, a ``monkeypatch.setenv``
+    in one test would not take effect (stale cache) and settings would leak
+    across tests. Reset before and after so each test reads current env.
+    """
+    from dataraum.core.settings import reset_settings
+
+    reset_settings()
+    yield
+    reset_settings()
 
 
 @pytest.fixture(autouse=True)

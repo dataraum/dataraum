@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
@@ -186,7 +187,7 @@ class TestLifespanRefuseToStart:
         monkeypatch.setenv("DUCKLAKE_DATA_PATH", "/tmp/stub-lake")
         from dataraum.server.app import app as control_plane
 
-        with pytest.raises(RuntimeError, match="DUCKLAKE_CATALOG_URL is not set"):
+        with pytest.raises(ValidationError, match="ducklake_catalog_url"):
             with TestClient(control_plane):
                 pass
 
@@ -198,7 +199,7 @@ class TestLifespanRefuseToStart:
         monkeypatch.delenv("DUCKLAKE_DATA_PATH", raising=False)
         from dataraum.server.app import app as control_plane
 
-        with pytest.raises(RuntimeError, match="DUCKLAKE_DATA_PATH is not set"):
+        with pytest.raises(ValidationError, match="ducklake_data_path"):
             with TestClient(control_plane):
                 pass
 

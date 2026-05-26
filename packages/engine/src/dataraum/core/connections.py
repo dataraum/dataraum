@@ -38,7 +38,6 @@ Usage:
 
 from __future__ import annotations
 
-import os
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -52,25 +51,20 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from dataraum.core.logging import get_logger
+from dataraum.core.settings import get_settings
 from dataraum.storage import Base
 
 logger = get_logger(__name__)
 
 
-_DATABASE_URL_MISSING_MSG = (
-    "DATABASE_URL is not set. The workspace SQLAlchemy engine targets Postgres; "
-    "the container substrate (L1) provides this on the control-plane service "
-    "(see docker-compose.yml). For local dev outside the container, export "
-    "DATABASE_URL=postgresql+psycopg://<user>:<pass>@<host>:<port>/<db>."
-)
-
-
 def _resolve_database_url() -> str:
-    """Read DATABASE_URL or fail loud with an actionable message."""
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        raise RuntimeError(_DATABASE_URL_MISSING_MSG)
-    return url
+    """Return the workspace SQLAlchemy DSN from typed settings.
+
+    The ``postgresql+psycopg://`` scheme is load-bearing (psycopg v3, not
+    psycopg2); ``get_settings()`` fails loud at boot if ``DATABASE_URL`` is
+    unset.
+    """
+    return get_settings().database_url
 
 
 class _LakeScopedConnection:

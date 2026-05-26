@@ -28,7 +28,6 @@ slice 1 doesn't query it.
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -38,6 +37,7 @@ import yaml
 
 from dataraum.core.config import _get_config_root, set_active_workspace_config_dir
 from dataraum.core.logging import get_logger
+from dataraum.core.settings import get_settings
 
 logger = get_logger(__name__)
 
@@ -140,26 +140,12 @@ def bootstrap_workspace() -> BootstrappedWorkspace:
         and the (now-populated) config_dir.
 
     Raises:
-        RuntimeError: If ``DATARAUM_HOME`` or ``DATARAUM_WORKSPACE_ID``
-            is unset.
+        pydantic.ValidationError: via ``get_settings()`` if ``DATARAUM_HOME``
+            or ``DATARAUM_WORKSPACE_ID`` is unset.
     """
-    home_env = os.environ.get("DATARAUM_HOME")
-    if not home_env:
-        raise RuntimeError(
-            "DATARAUM_HOME is not set. The container image sets it to "
-            "/var/lib/dataraum/workspace; for local dev outside the "
-            "container, export DATARAUM_HOME=<absolute path> to a "
-            "writable directory."
-        )
-    workspace_id = os.environ.get("DATARAUM_WORKSPACE_ID")
-    if not workspace_id:
-        raise RuntimeError(
-            "DATARAUM_WORKSPACE_ID is not set. The container substrate "
-            "sets it; for local dev outside the container, export "
-            "DATARAUM_WORKSPACE_ID=<uuid-or-stable-id>."
-        )
-
-    home_dir = Path(home_env)
+    settings = get_settings()
+    home_dir = settings.dataraum_home
+    workspace_id = settings.dataraum_workspace_id
     config_dir = home_dir / "workspaces" / workspace_id / "config"
 
     # The bootstrap copy source MUST be resolved before we set the

@@ -1,6 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createFileRoute } from "@tanstack/react-router";
 
+import { config } from "../../config";
+
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 1024;
 
@@ -19,16 +21,9 @@ export const Route = createFileRoute("/api/chat")({
 	server: {
 		handlers: {
 			POST: async ({ request }: { request: Request }) => {
-				const apiKey = process.env.ANTHROPIC_API_KEY;
-				if (!apiKey) {
-					return new Response(
-						JSON.stringify({ error: "ANTHROPIC_API_KEY not set" }),
-						{
-							status: 500,
-							headers: { "Content-Type": "application/json" },
-						},
-					);
-				}
+				// ANTHROPIC_API_KEY is validated at boot via the typed config
+				// (DAT-363); no per-request presence check needed.
+				const apiKey = config.anthropicApiKey;
 
 				const body = (await request.json()) as ChatRequest;
 				if (!body.messages?.length) {

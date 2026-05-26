@@ -1,18 +1,18 @@
-import type { QueryClient } from "@tanstack/react-query";
-import {
-	HeadContent,
-	Link,
-	Scripts,
-	createRootRouteWithContext,
-} from "@tanstack/react-router";
-import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
-import { TanStackDevtools } from "@tanstack/react-devtools";
 import {
 	ColorSchemeScript,
 	Group,
 	MantineProvider,
 	mantineHtmlProps,
 } from "@mantine/core";
+import { TanStackDevtools } from "@tanstack/react-devtools";
+import type { QueryClient } from "@tanstack/react-query";
+import {
+	createRootRouteWithContext,
+	HeadContent,
+	Link,
+	Scripts,
+} from "@tanstack/react-router";
+import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 
 import "@mantine/core/styles.css";
 import appCss from "../styles.css?url";

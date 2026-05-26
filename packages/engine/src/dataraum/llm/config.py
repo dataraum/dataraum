@@ -11,9 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProviderConfig(BaseModel):
-    """Configuration for a single LLM provider."""
+    """Configuration for a single LLM provider.
 
-    api_key_env: str
+    The API key is no longer named here — it is read from typed settings
+    (``settings.anthropic_api_key``), which is the single source of truth.
+    """
+
     default_model: str
     models: dict[str, str]
 

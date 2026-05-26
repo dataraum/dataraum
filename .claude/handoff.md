@@ -4,6 +4,54 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-26: DAT-362 — semantic phase split (per-column + per-table)
+
+The monolithic `semantic` phase is split into two pipeline phases (Option B):
+`semantic_per_column` (annotates + **persists** columns on the balanced model)
+and `semantic_per_table` (classifies tables + confirms relationships, reasoning
+over the persisted annotations). The old single `analyze_schema` LLM call is gone.
+
+### dataraum-eval
+
+- **What changed**: the semantic detectors' *inputs* are produced differently,
+  even though the detectors themselves are untouched:
+  - **Column annotations now come from a column-only LLM call** that runs
+    **before** relationships (table-local), instead of the old capable-model
+    pass that saw relationship context. The deliberate trade (DAT-362 Option B):
+    the LLM cross-table column-upgrade pass is **dropped**; human/agent teach
+    between the phases is meant to replace it. This is the change most likely
+    to move `business_meaning` recall.
+  - **Unit detection moved**: the table-level `unit_relationships` backfill is
+    removed. `unit_source_column` is now set **directly per column** by the
+    per-column model (prompt `<unit_detection>`). Watch `unit_entropy`.
+  - The per-column model tier changed `fast → balanced` (was a throwaway
+    pre-pass; now authoritative). Net annotation quality should hold or improve.
+  - `temporal_entropy`, `outlier_rate`, `benford` read the same persisted
+    annotations — should be unaffected. `join_path_determinism`,
+    `relationship_entropy` read relationships from `semantic_per_table` —
+    same data, later phase.
+- **Affected phases/detectors**: `semantic_per_column` produces `[semantic]`
+  + detectors `business_meaning, unit_entropy, temporal_entropy, outlier_rate,
+  benford`; `semantic_per_table` runs `join_path_determinism,
+  relationship_entropy`. Downstream (`enriched_views`, `business_cycles`,
+  `validation`, `data_fixes`) now depend on `semantic_per_table`.
+- **Expected calibration outcome**: recall on `business_meaning` / `unit_entropy`
+  is the open question — this is the first run of the next-gen split, and the
+  user accepted that quality is validated here, in eval, not in-repo. If recall
+  regresses, fix the per-column prompt (`column_annotation.yaml`) /
+  `semantic_per_table.yaml`, not the detectors.
+- **Calibrate**: full suite once the engine run surface lands (blocked on
+  DAT-344 / E4, same as DAT-341). Compare `business_meaning` + `unit_entropy`
+  recall against the pre-split baseline specifically.
+- **Status**: pending (blocked on DAT-344)
+
+### dataraum-testdata (hints)
+
+- No new injection types required. If `unit_entropy` regresses, a targeted
+  fixture with cross-column unit dimensions (e.g. a `currency_code` column
+  defining units for several measures in one table) would exercise the new
+  per-column unit-detection path directly.
+
 ## 2026-05-21: DAT-341 — workspace-typed substrate (slice 1 E1)
 
 Substrate change: typed tables move from `lake.session_<id>` (per-session,

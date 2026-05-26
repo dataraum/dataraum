@@ -13,6 +13,7 @@ from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.pipeline.base import PhaseContext
 from dataraum.pipeline.phases.semantic_per_column_phase import SemanticPerColumnPhase
 from dataraum.pipeline.phases.semantic_per_table_phase import SemanticPerTablePhase
+from dataraum.pipeline.registry import get_all_dependencies, get_downstream_phases
 from dataraum.storage import Column, Source, Table
 from tests.conftest import baseline_session_id
 
@@ -119,3 +120,23 @@ class TestPerTableShouldSkip:
         assert SemanticPerTablePhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) == (
             "All tables already classified"
         )
+
+
+class TestPauseBetweenWiring:
+    """The dependency graph must let a run pause between the two phases.
+
+    This is the structural guarantee behind the DAT-362 acceptance criteria:
+    target_phase=semantic_per_column stops before synthesis (per_table is
+    strictly downstream, not a dependency), and target_phase=semantic_per_table
+    pulls per_column in as a transitive dependency.
+    """
+
+    def test_per_table_depends_on_per_column(self) -> None:
+        assert "semantic_per_column" in get_all_dependencies("semantic_per_table")
+
+    def test_per_column_does_not_depend_on_per_table(self) -> None:
+        # Stopping at per_column must NOT drag synthesis in.
+        assert "semantic_per_table" not in get_all_dependencies("semantic_per_column")
+
+    def test_per_table_is_downstream_of_per_column(self) -> None:
+        assert "semantic_per_table" in get_downstream_phases("semantic_per_column")

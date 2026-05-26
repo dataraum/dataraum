@@ -2459,22 +2459,14 @@ def _check_prerequisites() -> str | None:
 
     errors: list[str] = []
 
-    # API key: load config to get the env var name, then probe
-    try:
-        from dataraum.llm.config import load_llm_config
-
-        llm_config = load_llm_config()
-        provider_config = llm_config.providers.get(llm_config.active_provider)
-        if provider_config:
-            env_var = provider_config.api_key_env
-            if not os.getenv(env_var):
-                errors.append(
-                    f"Missing {env_var}. The pipeline requires an LLM API key. "
-                    f"Set it via: export {env_var}=<your-api-key> "
-                    f"or add it to a .env file."
-                )
-    except Exception:
-        pass  # Config load failure is not a prereq error — pipeline will report it
+    # API key: Settings owns the LLM key (ANTHROPIC_API_KEY) as of DAT-363,
+    # so probe that fixed var directly rather than via the LLM config.
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        errors.append(
+            "Missing ANTHROPIC_API_KEY. The pipeline requires an LLM API key. "
+            "Set it via: export ANTHROPIC_API_KEY=<your-api-key> "
+            "or add it to a .env file."
+        )
 
     if not errors:
         return None

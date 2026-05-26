@@ -27,14 +27,12 @@ from dataraum.analysis.semantic.ontology import (
     OntologyLoader,
 )
 from dataraum.analysis.semantic.processor import (
-    enrich_semantic,
     persist_column_annotations,
     synthesize_and_store_tables,
 )
 
 __all__ = [
     # Main entry points
-    "enrich_semantic",
     "persist_column_annotations",
     "synthesize_and_store_tables",
     "SemanticAgent",

@@ -7,9 +7,9 @@ from dataraum.pipeline.registry import get_all_dependencies, get_downstream_phas
 
 class TestGetDownstreamPhases:
     def test_semantic_has_downstream(self) -> None:
-        """semantic phase has multiple downstream dependents."""
-        downstream = get_downstream_phases("semantic")
-        # These phases all transitively depend on semantic
+        """semantic_per_column phase has multiple downstream dependents."""
+        downstream = get_downstream_phases("semantic_per_column")
+        # These phases all transitively depend on semantic_per_column
         assert "enriched_views" in downstream
         assert "enriched_views" in downstream
 
@@ -25,12 +25,14 @@ class TestGetDownstreamPhases:
 
     def test_downstream_does_not_include_self(self) -> None:
         """The phase itself is not in its downstream set."""
-        downstream = get_downstream_phases("semantic")
-        assert "semantic" not in downstream
+        downstream = get_downstream_phases("semantic_per_column")
+        assert "semantic_per_column" not in downstream
 
     def test_downstream_consistent_with_dependencies(self) -> None:
         """If B is downstream of A, then A must be in B's transitive dependencies."""
-        downstream = get_downstream_phases("semantic")
+        downstream = get_downstream_phases("semantic_per_column")
         for phase in downstream:
             deps = get_all_dependencies(phase)
-            assert "semantic" in deps, f"{phase} is downstream but semantic not in its deps"
+            assert "semantic_per_column" in deps, (
+                f"{phase} is downstream but semantic_per_column not in its deps"
+            )

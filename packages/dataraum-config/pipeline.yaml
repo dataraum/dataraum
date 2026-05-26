@@ -42,24 +42,28 @@ phases:
     description: Temporal pattern and trend analysis
     dependencies: [column_eligibility]
 
-  semantic:
-    description: LLM-powered semantic analysis
-    dependencies: [relationships]
+  semantic_per_column:
+    description: Per-column LLM annotation (roles, concepts, business terms)
+    dependencies: [statistics]
     produces: [semantic]
     detectors: [business_meaning, unit_entropy, temporal_entropy,
-                outlier_rate, benford,
-                join_path_determinism, relationship_entropy]
+                outlier_rate, benford]
+
+  semantic_per_table:
+    description: Per-table LLM synthesis (entities, relationships) over annotations
+    dependencies: [semantic_per_column, relationships]
+    detectors: [join_path_determinism, relationship_entropy]
 
   data_fixes:
     description: Apply stored metadata fixes
-    dependencies: [semantic]
+    dependencies: [semantic_per_table]
 
   # =========================================================================
   # Zone 2: Enrichment
   # =========================================================================
   enriched_views:
     description: Create enriched views joining fact + dimension tables
-    dependencies: [semantic, statistical_quality]
+    dependencies: [semantic_per_table, statistical_quality]
     produces: [enriched_view]
     detectors: [dimension_coverage]
 
@@ -94,13 +98,13 @@ phases:
   # =========================================================================
   business_cycles:
     description: Expert LLM cycle detection
-    dependencies: [semantic, relationships, temporal, enriched_views, slicing]
+    dependencies: [semantic_per_table, relationships, temporal, enriched_views, slicing]
     produces: [business_cycles]
     detectors: [business_cycle_health]
 
   validation:
     description: LLM-powered validation checks
-    dependencies: [semantic, relationships, enriched_views, slicing]
+    dependencies: [semantic_per_table, relationships, enriched_views, slicing]
     produces: [validation]
     detectors: [cross_table_consistency]
 

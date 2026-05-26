@@ -61,6 +61,16 @@ system_prompt: |
   year/month/quarter/week structure, they are temporal.
   </period_detection>
 
+  <unit_detection>
+  For measure columns, determine the column that defines their unit and set
+  unit_source_column. You can see every column in the table, so reason across
+  columns: e.g. a 'currency_code' dimension defines the unit for 'amount',
+  'debit', and 'credit' measures. Use just the column name for same-table
+  references. For measures that are inherently dimensionless (ratios, rates,
+  indices, percentages, scores), set unit_source_column to 'dimensionless'.
+  Only set it when there is a concrete dimension column — never guess a unit.
+  </unit_detection>
+
   Use the annotate_columns tool to provide your analysis.
 
 # User prompt - provides data and context
@@ -81,6 +91,10 @@ user_prompt: |
   {ontology_concepts}
   </ontology>
 
+  <required_standard_fields>
+  {required_standard_fields}
+  </required_standard_fields>
+
   Annotate all columns using the annotate_columns tool.
 
 # Input variable definitions
@@ -96,5 +110,9 @@ inputs:
   ontology_concepts:
     description: List of concepts from the ontology with descriptions
     required: true
+
+  required_standard_fields:
+    description: Standard-field concepts required by active metric graphs
+    required: false
 
 # Output is defined by the ColumnAnnotationOutput Pydantic tool schema

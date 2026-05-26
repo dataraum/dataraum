@@ -18,9 +18,11 @@ active_provider: anthropic
 
 # Feature toggles
 features:
+  # DAT-362: per-column annotation is now the authoritative semantic_per_column
+  # phase (Option B) — run it on the capable model, not the fast pre-pass tier.
   column_annotation:
     enabled: true
-    model_tier: fast
+    model_tier: balanced
 
   semantic_analysis:
     enabled: true

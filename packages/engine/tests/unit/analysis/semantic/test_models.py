@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from dataraum.analysis.semantic.models import (
-    SemanticAnalysisOutput,
-    TableSynthesisOutput,
-)
+from dataraum.analysis.semantic.models import TableSynthesisOutput
 
 
 def test_table_synthesis_output_has_no_column_field() -> None:
@@ -49,9 +46,3 @@ def test_table_synthesis_output_validates_entities_and_relationships() -> None:
     )
     assert out.tables[0].is_fact_table is True
     assert out.relationships[0].to_table == "customers"
-
-
-def test_full_schema_still_carries_columns() -> None:
-    """The legacy whole-schema output keeps columns (until it is retired)."""
-    table_def = SemanticAnalysisOutput.model_json_schema()["$defs"]["TableSemanticOutput"]
-    assert "columns" in table_def["properties"]

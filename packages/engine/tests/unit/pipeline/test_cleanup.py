@@ -212,24 +212,24 @@ class TestCleanupPhaseCascade:
         source = _make_source(session)
         _make_table(session, source.source_id, layer="typed")
 
-        # Create phase logs for semantic and some downstream phases
-        _make_phase_log(session, source.source_id, "semantic")
+        # Create phase logs for semantic_per_column and some downstream phases
+        _make_phase_log(session, source.source_id, "semantic_per_column")
         _make_phase_log(session, source.source_id, "enriched_views")
         _make_phase_log(session, source.source_id, "slicing")
         session.flush()
 
-        cleaned = cleanup_phase_cascade("semantic", source.source_id, session, duck)
+        cleaned = cleanup_phase_cascade("semantic_per_column", source.source_id, session, duck)
         session.flush()
 
-        # Should include semantic and downstream phases
-        assert "semantic" in cleaned
+        # Should include semantic_per_column and downstream phases
+        assert "semantic_per_column" in cleaned
         assert "enriched_views" in cleaned
         assert "slicing" in cleaned
 
         # Phase logs should be deleted
         remaining = (
             session.query(PhaseLog)
-            .filter_by(source_id=source.source_id, phase_name="semantic")
+            .filter_by(source_id=source.source_id, phase_name="semantic_per_column")
             .all()
         )
         assert len(remaining) == 0
@@ -239,7 +239,7 @@ class TestCleanupPhaseCascade:
     ) -> None:
         """Phases with more dependencies (further downstream) are cleaned first."""
         source = _make_source(session)
-        cleaned = cleanup_phase_cascade("semantic", source.source_id, session, duck)
+        cleaned = cleanup_phase_cascade("semantic_per_column", source.source_id, session, duck)
 
-        # semantic should be last (fewest deps of the target set)
-        assert cleaned[-1] == "semantic"
+        # semantic_per_column should be last (fewest deps of the target set)
+        assert cleaned[-1] == "semantic_per_column"

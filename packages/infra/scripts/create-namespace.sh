@@ -1,9 +1,9 @@
 #!/bin/sh
 # Register the `default` Temporal namespace (one-shot, run by the
 # temporal-create-namespace service after the server is healthy). Adapted from
-# temporalio/samples-server compose/scripts/create-namespace.sh (fixes the
-# upstream MAX_ATTdMPTS typo). Idempotent: skips if the namespace already
-# exists.
+# temporalio/samples-server compose/scripts/create-namespace.sh (fixes an
+# upstream typo in the retry-loop variable name). Idempotent: skips if the
+# namespace already exists.
 set -eu
 
 NAMESPACE=${DEFAULT_NAMESPACE:-default}

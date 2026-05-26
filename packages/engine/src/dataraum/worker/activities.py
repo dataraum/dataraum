@@ -1,17 +1,21 @@
-"""Temporal activity definitions for pipeline phases (DAT-344, P2).
+"""Temporal activity definitions for pipeline phases (DAT-344).
 
 Thin ``@activity.defn`` wrappers over :func:`run_phase_activity`. They hold the
 worker's single :class:`ConnectionManager` (set at bootstrap) and name each
-activity after its pipeline.yaml phase — so a TS workflow drives them by the
-same phase-name strings, no shared catalogue needed.
+activity after its pipeline.yaml phase — so the workflow calls them by that
+phase-name string, no shared catalogue.
 
 Activities are **sync** (``def``): Temporal runs them on the worker's
-``ThreadPoolExecutor``, which is the SDK-recommended shape for blocking
-SQLAlchemy/DuckDB work. They run concurrently — each ``run_phase_activity`` call
-leases its own Postgres session + DuckDB connection (independent MVCC
-transaction over the shared DuckLake catalog), so distinct sources write
-distinct tables without conflict; the rare DuckLake optimistic-commit conflict
-surfaces as a raised exception and is absorbed by Temporal's activity retry.
+``ThreadPoolExecutor``, the SDK-recommended shape for blocking SQLAlchemy/DuckDB
+work. Each ``run_phase_activity`` call leases a fresh Postgres session + a DuckDB
+**cursor** on the worker's one shared DuckLake connection. DuckDB serializes
+statements per connection, so concurrent activities serialize at the DuckDB
+layer rather than running as independent transactions (see
+:meth:`ConnectionManager.duckdb_cursor`) — E4a's workflow runs its two
+activities sequentially, so this isn't exercised yet; when E4b fans out
+concurrent source workflows, revisit (a per-activity ``connect_session`` or a
+dedicated activity task queue). The rare DuckLake commit conflict raises and is
+absorbed by Temporal's activity retry.
 """
 
 from __future__ import annotations

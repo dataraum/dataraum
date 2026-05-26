@@ -510,9 +510,10 @@ class ConnectionManager:
         self._ensure_initialized()
         if self._duckdb_conn is None:
             raise RuntimeError(
-                "DuckDB cursor requested on a workspace-only ConnectionManager. "
-                "Workspace managers (constructed without session_id) have no "
-                "DuckDB; route data operations through a per-session manager."
+                "DuckDB is not open on this ConnectionManager. Open it first: "
+                "open_lake() for the worker path (no session needed), or set a "
+                "session_id (scheduler path) so initialize()/bind_session_id() "
+                "opens it."
             )
 
         cursor = self._duckdb_conn.cursor()

@@ -61,7 +61,18 @@ def run_phase_activity(
     # commits on clean exit (so the phase's writes are visible to the detector
     # scope below); duckdb_cursor closes the derived cursor on exit.
     with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
-        config = _build_phase_config(session, phase_name, payload)
+        source = session.get(Source, payload.source_id)
+        if source is None:
+            return PhaseActivityResult(
+                phase=phase_name,
+                status=PhaseStatus.FAILED.value,
+                error=(
+                    f"Source '{payload.source_id}' not found in workspace "
+                    f"'{payload.workspace_id}'. begin_session / the workflow caller "
+                    "must write the Source row before the phase runs."
+                ),
+            )
+        config = _build_phase_config(source, phase_name, payload)
         ctx = PhaseContext(
             session=session,
             duckdb_conn=cursor,
@@ -106,7 +117,7 @@ def run_phase_activity(
 
 
 def _build_phase_config(
-    session: Any,
+    source: Source,
     phase_name: str,
     payload: PhaseActivityInput,
 ) -> dict[str, Any]:
@@ -114,22 +125,17 @@ def _build_phase_config(
 
     Mirrors the ``phase_config | runtime_config`` merge ``setup_pipeline`` does,
     minus the PipelineRun-only fields (fingerprint, source_path) the worker path
-    doesn't carry.
+    doesn't carry. The caller (:func:`run_phase_activity`) guarantees ``source``
+    exists.
     """
-    source = session.get(Source, payload.source_id)
-    if source is None:
-        # Surface as a config gap the phase will fail on with a clear message,
-        # rather than raising an opaque AttributeError here.
-        runtime_config: dict[str, Any] = {}
-    else:
-        runtime_config = {
-            "source_id": source.source_id,
-            "source_name": source.name,
-            "source_type": source.source_type,
-            "source_connection_config": source.connection_config or {},
-            "source_backend": source.backend,
-            "vertical": payload.vertical or "_adhoc",
-        }
+    runtime_config: dict[str, Any] = {
+        "source_id": source.source_id,
+        "source_name": source.name,
+        "source_type": source.source_type,
+        "source_connection_config": source.connection_config or {},
+        "source_backend": source.backend,
+        "vertical": payload.vertical or "_adhoc",
+    }
 
     config: dict[str, Any] = {}
     config.update(load_phase_config(phase_name))

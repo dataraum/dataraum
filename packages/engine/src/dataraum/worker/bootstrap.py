@@ -38,13 +38,24 @@ def bootstrap_worker_substrate() -> ConnectionManager:
     """
     settings = get_settings()
     bootstrap_lake(settings.ducklake_catalog_url, str(settings.ducklake_data_path))
-    bootstrap_workspace()
 
-    manager = ConnectionManager(ConnectionConfig.for_workspace())
-    manager.initialize()
-    # Workspace-level DuckDB: one connection for the worker's whole life. No
-    # session binding — activities carry their own session_id as data.
-    manager.open_lake()
+    # bootstrap_lake set the process-wide DuckLake anchor. If anything after it
+    # fails, release the anchor (and any partially-opened manager) so a
+    # partial-init boot doesn't leak the Postgres-backed catalog connection —
+    # the caller's try/finally only runs once a manager is returned.
+    manager: ConnectionManager | None = None
+    try:
+        bootstrap_workspace()
+        manager = ConnectionManager(ConnectionConfig.for_workspace())
+        manager.initialize()
+        # Workspace-level DuckDB: one connection for the worker's whole life. No
+        # session binding — activities carry their own session_id as data.
+        manager.open_lake()
+    except Exception:
+        if manager is not None:
+            manager.close()
+        teardown_lake()
+        raise
 
     logger.info("worker_substrate_bootstrapped")
     return manager

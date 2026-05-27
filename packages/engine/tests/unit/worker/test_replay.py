@@ -9,10 +9,11 @@ non-determinism.
 
 No live server or activities are needed — the Replayer drives only the workflow
 code, using the recorded activity results from the history. The fixture was
-captured from the mock-activity ``WorkflowEnvironment`` run in
-``tests/integration/worker/test_add_source_workflow.py`` (a mock-activity history
-replays faithfully against the real workflow, since Replayer drives only
-workflow code); regenerate it there if the chain changes.
+captured from a one-off ``WorkflowEnvironment`` run with mock activities (a
+mock-activity history replays faithfully against the real workflow, since the
+Replayer drives only workflow code). To regenerate after a chain change: run
+``AddSourceWorkflow`` under ``WorkflowEnvironment.start_time_skipping()`` with
+stub activities and write ``handle.fetch_history().to_json_dict()`` here.
 """
 
 from __future__ import annotations

@@ -18,27 +18,6 @@ export const metadataSchema = pgSchema(
 	"ws_00000000_0000_0000_0000_000000000001",
 );
 
-export const activeSession = metadataSchema.table("active_session", {
-	id: integer().primaryKey(),
-	sessionId: varchar("session_id").notNull(),
-	fingerprint: varchar().notNull(),
-	startedAt: timestamp("started_at").notNull(),
-});
-
-export const archivedSessions = metadataSchema.table("archived_sessions", {
-	sessionId: varchar("session_id").primaryKey(),
-	fingerprint: varchar().notNull(),
-	intent: varchar().notNull(),
-	contract: varchar().notNull(),
-	vertical: varchar(),
-	outcome: varchar().notNull(),
-	summary: varchar(),
-	sourceName: varchar("source_name").notNull(),
-	startedAt: timestamp("started_at").notNull(),
-	endedAt: timestamp("ended_at").notNull(),
-	stepCount: integer("step_count").notNull(),
-});
-
 export const columnDriftSummaries = metadataSchema.table(
 	"column_drift_summaries",
 	{
@@ -469,65 +448,6 @@ export const investigationSteps = metadataSchema.table(
 		index("ix_investigation_steps_session_id").using(
 			"btree",
 			table.sessionId.asc().nullsLast(),
-		),
-	],
-);
-
-export const phaseLogs = metadataSchema.table(
-	"phase_logs",
-	{
-		logId: varchar("log_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		runId: varchar("run_id")
-			.notNull()
-			.references(() => pipelineRuns.runId, { onDelete: "cascade" }),
-		sourceId: varchar("source_id").notNull(),
-		phaseName: varchar("phase_name").notNull(),
-		status: varchar().notNull(),
-		startedAt: timestamp("started_at").notNull(),
-		completedAt: timestamp("completed_at").notNull(),
-		durationSeconds: doublePrecision("duration_seconds").notNull(),
-		error: varchar(),
-		outputs: json(),
-	},
-	(table) => [
-		index("ix_phase_logs_run_id").using("btree", table.runId.asc().nullsLast()),
-		index("ix_phase_logs_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		index("ix_phase_logs_source_id").using(
-			"btree",
-			table.sourceId.asc().nullsLast(),
-		),
-	],
-);
-
-export const pipelineRuns = metadataSchema.table(
-	"pipeline_runs",
-	{
-		runId: varchar("run_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		sourceId: varchar("source_id").notNull(),
-		targetPhase: varchar("target_phase"),
-		config: json().notNull(),
-		status: varchar().notNull(),
-		startedAt: timestamp("started_at").notNull(),
-		completedAt: timestamp("completed_at"),
-		error: varchar(),
-	},
-	(table) => [
-		index("ix_pipeline_runs_session_id").using(
-			"btree",
-			table.sessionId.asc().nullsLast(),
-		),
-		index("ix_pipeline_runs_source_id").using(
-			"btree",
-			table.sourceId.asc().nullsLast(),
 		),
 	],
 );

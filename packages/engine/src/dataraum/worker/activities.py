@@ -29,6 +29,7 @@ from dataraum.pipeline.base import PhaseStatus
 from dataraum.worker.activity import (
     raw_table_ids,
     run_phase,
+    run_source_detectors,
     run_table_detectors,
     typed_table_id_for_raw,
 )
@@ -125,6 +126,21 @@ class PhaseActivities:
         analytics phases it makes real LLM calls.
         """
         return self._run_or_raise("semantic_per_column", identity, [])
+
+    @activity.defn(name="detect_source")
+    def run_detect_source(self, identity: SourceIdentity) -> PhaseOutcome:
+        """Run the source-level detectors after the reduce (DAT-370 follow-up).
+
+        The source-level analogue of ``detect_table``: runs ``semantic_per_column``'s
+        declared detectors once, source-wide, after the reduce. Without it those
+        detectors are declared in pipeline.yaml but never execute (the gap DAT-370
+        left when detectors moved off the per-phase path).
+        """
+        count = run_source_detectors(self._manager, identity)
+        return PhaseOutcome(
+            status=PhaseStatus.COMPLETED.value,
+            summary=f"{count} source-level detector records",
+        )
 
     def _run_or_raise(
         self,

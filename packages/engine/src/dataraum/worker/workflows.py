@@ -155,4 +155,16 @@ class AddSourceWorkflow:
             retry_policy=_RETRY,
         )
 
+        # Source-level detect step: run semantic_per_column's declared detectors
+        # once after the reduce (the table-local detectors already ran per child
+        # in detect_table). Without this the source-level detectors are declared
+        # but never execute.
+        await workflow.execute_activity(
+            "detect_source",
+            payload.identity,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
         return AddSourceResult(raw_table_ids=imported.raw_table_ids, tables=tables)

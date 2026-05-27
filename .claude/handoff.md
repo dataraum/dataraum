@@ -4,6 +4,36 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-27: DAT-370 follow-up — restore the source-level detectors (eval-caught regression)
+
+Eval found that DAT-370 orphaned `semantic_per_column`'s detectors. When detectors
+moved off the per-phase path, only `detect_table` (the table-local phases) was
+wired; `semantic_per_column` runs as the source-level reduce but nothing ran its
+declared detectors — `business_meaning`, `unit_entropy`, `temporal_entropy`,
+`outlier_rate`, `benford` — so they were dead from DAT-370 until now.
+
+Fix: added a source-level `detect_source` activity that runs after the reduce in
+`addSourceWorkflow`, executing the `_SOURCE_LEVEL_PHASES` (= `semantic_per_column`)
+detectors **source-wide** (`run_detector_post_step(table_ids=None)`; single
+sequential step in the parent, no concurrency). Mirrors `detect_table`. A unit
+guard (`test_no_chain_phase_detector_is_orphaned`) now fails if any chain phase
+declares a detector that no detect step runs.
+
+### dataraum-eval
+
+- **Action: re-run the semantic detectors — they now produce scores.**
+  `business_meaning`, `unit_entropy`, `temporal_entropy`, `outlier_rate`, `benford`
+  execute once after the reduce, source-wide (same scope as the pre-DAT-370 coarse
+  run). No detector logic changed — purely the missing execution path restored.
+- Drive a run the same way (`addSourceWorkflow`); the new `detect_source` step is
+  internal to the workflow.
+- `relationship_entropy` / `join_path_determinism` (semantic_per_table) and the
+  other Zone-2/3 detectors remain unwired — their phases aren't in the chain yet.
+
+### dataraum-testdata (hints)
+
+- None.
+
 ## 2026-05-27: DAT-370 — per-table fan-out for add_source (E4b-2)
 
 The table is now the unit of work. `addSourceWorkflow` imports the source,

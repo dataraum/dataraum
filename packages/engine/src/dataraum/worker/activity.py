@@ -17,6 +17,7 @@ Temporal-agnostic helpers into the per-boundary contracts.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -39,8 +40,10 @@ logger = get_logger(__name__)
 
 __all__ = [
     "PhaseRun",
+    "declared_detector_ids",
     "raw_table_ids",
     "run_phase",
+    "run_source_detectors",
     "run_table_detectors",
     "typed_table_id_for_raw",
 ]
@@ -61,6 +64,15 @@ _TABLE_LOCAL_PHASES = (
     "statistical_quality",
     "temporal",
 )
+
+# The source-level phases whose detectors run once, after the per-table fan-out,
+# in the parent's ``detect_source`` step. ``semantic_per_column`` is a
+# source-global reduce, so its detectors (business_meaning, unit_entropy,
+# temporal_entropy, outlier_rate, benford) read the whole source's typed tables
+# and run once — no concurrency, so the source-wide delete-before-insert is safe.
+# Kept in sync with the workflow + checked against pipeline.yaml by
+# ``tests/unit/worker/test_phase_constants.py`` (no declared chain detector orphaned).
+_SOURCE_LEVEL_PHASES = ("semantic_per_column",)
 
 
 @dataclass
@@ -197,6 +209,20 @@ def typed_table_id_for_raw(
         ).scalar_one_or_none()
 
 
+def declared_detector_ids(phase_names: Iterable[str]) -> list[str]:
+    """The de-duplicated detectors the given phases declare in pipeline.yaml."""
+    declarations = load_phase_declarations()
+    detector_ids: list[str] = []
+    for phase_name in phase_names:
+        decl = declarations.get(phase_name)
+        if not decl:
+            continue
+        for detector_id in decl.detectors:
+            if detector_id not in detector_ids:
+                detector_ids.append(detector_id)
+    return detector_ids
+
+
 def run_table_detectors(
     manager: ConnectionManager,
     identity: SourceIdentity,
@@ -211,16 +237,36 @@ def run_table_detectors(
     what lets parallel child workflows run their detectors without colliding on
     the shared ``(source_id, detector_id)`` rows.
     """
-    declarations = load_phase_declarations()
-    detector_ids: list[str] = []
-    for phase_name in _TABLE_LOCAL_PHASES:
-        decl = declarations.get(phase_name)
-        if not decl:
-            continue
-        for detector_id in decl.detectors:
-            if detector_id not in detector_ids:
-                detector_ids.append(detector_id)
+    return _run_detectors(manager, identity, _TABLE_LOCAL_PHASES, [table_id])
 
+
+def run_source_detectors(manager: ConnectionManager, identity: SourceIdentity) -> int:
+    """Run the source-level detectors once, after the per-table fan-out.
+
+    The parent's ``detect_source`` step: runs the detectors the source-level
+    phases declare (``semantic_per_column``'s business_meaning / unit_entropy /
+    temporal_entropy / outlier_rate / benford), source-wide (``table_ids=None``).
+    Its ontology induction is source-global and it is a single sequential step in
+    the parent — no concurrency — so the source-wide delete-before-insert is safe.
+    Without this step those detectors would be declared but never executed (the
+    gap DAT-370 left when it moved detectors off the per-phase path).
+    """
+    return _run_detectors(manager, identity, _SOURCE_LEVEL_PHASES, None)
+
+
+def _run_detectors(
+    manager: ConnectionManager,
+    identity: SourceIdentity,
+    phase_names: Iterable[str],
+    table_ids: list[str] | None,
+) -> int:
+    """Run the detectors declared by ``phase_names``, scoped to ``table_ids``.
+
+    ``table_ids=None`` runs each detector source-wide; a single-element list
+    scopes it to that typed table. Shared by :func:`run_table_detectors` and
+    :func:`run_source_detectors`.
+    """
+    detector_ids = declared_detector_ids(phase_names)
     if not detector_ids:
         return 0
 
@@ -233,7 +279,7 @@ def run_table_detectors(
                 detector_id,
                 cursor,
                 session_id=identity.session_id,
-                table_ids=[table_id],
+                table_ids=table_ids,
             )
     return total
 

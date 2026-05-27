@@ -85,6 +85,11 @@ async def stub_semantic_per_column(identity: SourceIdentity) -> PhaseOutcome:
     return PhaseOutcome(status="completed")
 
 
+@activity.defn(name="detect_source")
+async def stub_detect_source(identity: SourceIdentity) -> PhaseOutcome:
+    return PhaseOutcome(status="completed")
+
+
 async def main() -> None:
     async with await WorkflowEnvironment.start_time_skipping(
         data_converter=pydantic_data_converter
@@ -102,6 +107,7 @@ async def main() -> None:
                 stub_temporal,
                 stub_detect_table,
                 stub_semantic_per_column,
+                stub_detect_source,
             ],
             workflow_runner=SandboxedWorkflowRunner(
                 restrictions=SandboxRestrictions.default.with_passthrough_modules(

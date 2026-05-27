@@ -56,9 +56,7 @@ class ColumnEligibilityPhase(BasePhase):
         table_ids: list[str],
         column_ids: list[str],
     ) -> int:
-        stmt = delete(ColumnEligibilityRecord).where(
-            ColumnEligibilityRecord.source_id == source_id
-        )
+        stmt = delete(ColumnEligibilityRecord).where(ColumnEligibilityRecord.source_id == source_id)
         # Scope to the requested tables when given (per-table replay, DAT-370) so a
         # single table's re-run does not clobber sibling tables' eligibility rows.
         if table_ids:

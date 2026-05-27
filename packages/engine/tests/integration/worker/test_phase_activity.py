@@ -212,9 +212,7 @@ def test_workspace_mismatch_fails_loud(worker_manager: ConnectionManager) -> Non
     assert "some-other-workspace" in (result.error or "")
 
 
-def test_per_table_chain_runs(
-    worker_manager: ConnectionManager, small_finance_path: Path
-) -> None:
+def test_per_table_chain_runs(worker_manager: ConnectionManager, small_finance_path: Path) -> None:
     """The full table-local chain runs green per table on a multi-table source.
 
     Drives the production worker path (``run_phase`` + ``run_table_detectors``,

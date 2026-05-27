@@ -70,9 +70,7 @@ def _replayer(*workflows: type) -> Replayer:
 )
 async def test_workflow_replays_deterministically(workflow: type, fixture: str) -> None:
     """Replaying a completed history reaches the same final state, no non-determinism."""
-    history = WorkflowHistory.from_json(
-        "replay", (_FIXTURES / fixture).read_text()
-    )
+    history = WorkflowHistory.from_json("replay", (_FIXTURES / fixture).read_text())
     # Raises on any non-determinism or replay mismatch; returns cleanly on a
     # faithful replay to the recorded WorkflowExecutionCompleted.
     await _replayer(workflow).replay_workflow(history)

@@ -35,9 +35,7 @@ def _table(session: Session, source_id: str, name: str, layer: str) -> Table:
 
 
 def _ctx(session: Session, duck: duckdb.DuckDBPyConnection, source_id: str, table_ids: list[str]):  # noqa: ANN202
-    return PhaseContext(
-        session=session, duckdb_conn=duck, source_id=source_id, table_ids=table_ids
-    )
+    return PhaseContext(session=session, duckdb_conn=duck, source_id=source_id, table_ids=table_ids)
 
 
 def test_empty_filter_returns_all_typed_tables(

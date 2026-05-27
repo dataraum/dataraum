@@ -106,7 +106,7 @@ class _ProxyLogger:
 
 
 class _ProxyLoggerFactory:
-    def __call__(self, *args: Any) -> _ProxyLogger:
+    def __call__(self, *_args: Any) -> _ProxyLogger:
         return _ProxyLogger()
 
 
@@ -246,7 +246,7 @@ class LogContext:
         self.token = _run_context.set(new_context)
         return self
 
-    def __exit__(self, *args: Any) -> None:
+    def __exit__(self, *_args: Any) -> None:
         """Exit context, restoring previous values."""
         if self.token:
             _run_context.reset(self.token)

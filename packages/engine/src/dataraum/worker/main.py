@@ -132,7 +132,15 @@ async def run_worker() -> None:
                 namespace=namespace,
                 host=host,
                 workflows=["addSourceWorkflow"],
-                activities=["import", "typing"],
+                activities=[
+                    "import",
+                    "typing",
+                    "statistics",
+                    "column_eligibility",
+                    "statistical_quality",
+                    "temporal",
+                    "semantic_per_column",
+                ],
             )
             async with worker:
                 await interrupt.wait()

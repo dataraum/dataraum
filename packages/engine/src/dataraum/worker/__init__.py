@@ -1,9 +1,10 @@
 """Temporal activity worker (DAT-344).
 
-The engine runs as a pure Python Temporal *activity* worker: it bootstraps the
-substrate once (:mod:`dataraum.worker.bootstrap`) and exposes pipeline phases as
-activities via :mod:`dataraum.worker.activity`. TS workflows (cockpit) drive
-these activities by name. No Starlette shell.
+The engine runs as a pure Python Temporal worker: it bootstraps the substrate
+once (:mod:`dataraum.worker.bootstrap`) and serves both the Python workflows
+(:mod:`dataraum.worker.workflows`) and the pipeline-phase activities
+(:mod:`dataraum.worker.activity`) on one task queue. The cockpit triggers
+workflows by name via the Temporal Client. No Starlette shell.
 """
 
 from __future__ import annotations

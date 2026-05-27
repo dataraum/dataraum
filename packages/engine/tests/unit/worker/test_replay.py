@@ -3,14 +3,16 @@
 A Temporal worker that dies mid-run is recovered by **replaying** the workflow's
 event history against the workflow code when a worker picks it back up. This
 test performs exactly that replay: it feeds a recorded ``addSourceWorkflow``
-history (``import`` + ``typing`` both completed) through the ``Replayer`` and
+history (all seven slice-1 phases completed) through the ``Replayer`` and
 asserts the workflow code replays to the same final state with no
 non-determinism.
 
 No live server or activities are needed — the Replayer drives only the workflow
-code, using the recorded activity results from the history. The history fixture
-was captured from a real run via ``temporal workflow show -o json``; regenerate
-it the same way if the workflow's activity sequence changes.
+code, using the recorded activity results from the history. The fixture was
+captured from the mock-activity ``WorkflowEnvironment`` run in
+``tests/integration/worker/test_add_source_workflow.py`` (a mock-activity history
+replays faithfully against the real workflow, since Replayer drives only
+workflow code); regenerate it there if the chain changes.
 """
 
 from __future__ import annotations

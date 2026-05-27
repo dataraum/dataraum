@@ -4,6 +4,37 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-27: DAT-368 — slice-1 run surface lands (addSourceWorkflow)
+
+The engine run surface that DAT-362 + DAT-341 calibration were **blocked on**
+now exists. The engine is a Temporal worker; all seven slice-1 table-local
+phases are registered as activities (`import`, `typing`, `statistics`,
+`column_eligibility`, `statistical_quality`, `temporal`, `semantic_per_column`)
+and the `addSourceWorkflow` workflow drives them in dependency order over a
+source, then completes.
+
+### dataraum-eval
+
+- **What changed**: no detector or response-shape change — this is purely the
+  *execution surface*. Phases now run through `dataraum.worker.run_phase_activity`
+  (scoped Postgres session + a per-activity DuckDB cursor) and are orchestrated
+  by `addSourceWorkflow`, instead of the in-process scheduler / `PipelineTestHarness`.
+- **How to drive a run**: trigger `addSourceWorkflow` via the Temporal Client
+  (task queue `dataraum-pipeline`) with `{workspace_id, source_id, session_id,
+  vertical?, table_ids?}`. It runs **once over all the source's tables** (coarse;
+  per-table fan-out + column batching is E4b-2 / DAT-370). It stops at
+  `semantic_per_column` — `relationships` + `semantic_per_table` (slice-2) and
+  teach (DAT-343) are **not** in the chain yet.
+- **Calibrate**: the DAT-362 semantic-split calibration (business_meaning /
+  unit_entropy recall vs. the pre-split baseline) can now actually run end-to-end
+  through this surface. `semantic_per_table` detectors (`join_path_determinism`,
+  `relationship_entropy`) remain un-runnable here until slice-2.
+- **Status**: run surface ready; DAT-362 calibration unblocked.
+
+### dataraum-testdata (hints)
+
+- None. Same fixtures; this is an orchestration change, not a detector change.
+
 ## 2026-05-26: DAT-362 — semantic phase split (per-column + per-table)
 
 The monolithic `semantic` phase is split into two pipeline phases (Option B):

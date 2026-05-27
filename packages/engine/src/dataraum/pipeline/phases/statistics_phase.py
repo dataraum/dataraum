@@ -22,7 +22,7 @@ from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
-from dataraum.storage import Column, Table
+from dataraum.storage import Column
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -60,11 +60,8 @@ class StatisticsPhase(BasePhase):
         return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if all typed tables already have profiles."""
-        # Get typed tables
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        """Skip if the scoped typed tables already have profiles."""
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return "No typed tables found"
@@ -91,11 +88,8 @@ class StatisticsPhase(BasePhase):
         return "All typed tables already profiled"
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Run statistical profiling on typed tables."""
-        # Get typed tables for this source
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        """Run statistical profiling on the scoped typed tables."""
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")

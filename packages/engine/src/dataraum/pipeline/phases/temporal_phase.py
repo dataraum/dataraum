@@ -22,7 +22,7 @@ from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
-from dataraum.storage import Column, Table
+from dataraum.storage import Column
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -61,12 +61,8 @@ class TemporalPhase(BasePhase):
         return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if no temporal columns or all already profiled."""
-
-        # Get typed tables
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        """Skip if the scoped tables have no temporal columns or all are profiled."""
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return f"No typed tables found for source {ctx.source_id}"
@@ -86,20 +82,21 @@ class TemporalPhase(BasePhase):
             type_counts[t] = type_counts.get(t, 0) + 1
         logger.debug(f"Temporal: Column types in typed tables: {type_counts}")
 
-        temporal_columns_stmt = select(Column).where(
-            Column.table_id.in_(typed_table_ids),
-            Column.resolved_type.in_(temporal_types),
-        )
-        temporal_columns = (ctx.session.execute(temporal_columns_stmt)).scalars().all()
+        temporal_columns = [c for c in all_columns if c.resolved_type in temporal_types]
 
         if not temporal_columns:
             return f"No temporal columns found (types: {temporal_types}, available: {list(type_counts.keys())})"
 
         logger.debug(f"Temporal: Found {len(temporal_columns)} temporal columns")
 
-        # Check existing profiles
+        # Check existing profiles for THIS scope's temporal columns only.
+        temporal_column_ids = [c.column_id for c in temporal_columns]
         existing_count = (
-            ctx.session.execute(select(func.count(TemporalColumnProfile.profile_id)))
+            ctx.session.execute(
+                select(func.count(TemporalColumnProfile.profile_id)).where(
+                    TemporalColumnProfile.column_id.in_(temporal_column_ids)
+                )
+            )
         ).scalar() or 0
 
         if existing_count >= len(temporal_columns):
@@ -108,11 +105,8 @@ class TemporalPhase(BasePhase):
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Run temporal profiling on typed tables."""
-        # Get typed tables for this source
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        """Run temporal profiling on the scoped typed tables."""
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")

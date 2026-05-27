@@ -19,7 +19,7 @@ from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
-from dataraum.storage import Column, Table
+from dataraum.storage import Column
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -62,19 +62,15 @@ class StatisticalQualityPhase(BasePhase):
         return [quality_db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if all numeric columns already have quality metrics."""
-
-        # Get typed tables
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        """Skip if the scoped tables' numeric columns all have quality metrics."""
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return f"No typed tables found for source {ctx.source_id}"
 
         logger.debug(f"StatQuality: Found {len(typed_tables)} typed tables")
 
-        # Get all columns for typed tables
+        # Get all columns for the scoped typed tables
         typed_table_ids = [t.table_id for t in typed_tables]
         columns_stmt = select(Column).where(Column.table_id.in_(typed_table_ids))
         all_columns = (ctx.session.execute(columns_stmt)).scalars().all()
@@ -95,33 +91,34 @@ class StatisticalQualityPhase(BasePhase):
 
         logger.debug(f"StatQuality: Found {len(numeric_columns)} numeric columns")
 
-        # Check which already have quality metrics
-        assessed_stmt = select(StatisticalQualityMetrics.column_id).distinct()
+        # Check which of THIS scope's numeric columns already have metrics.
+        numeric_ids = {c.column_id for c in numeric_columns}
+        assessed_stmt = select(StatisticalQualityMetrics.column_id).where(
+            StatisticalQualityMetrics.column_id.in_(numeric_ids)
+        )
         assessed_ids = set((ctx.session.execute(assessed_stmt)).scalars().all())
 
-        numeric_ids = {c.column_id for c in numeric_columns}
         if not (numeric_ids - assessed_ids):
             return "All numeric columns already assessed"
 
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
-        """Run statistical quality assessment on typed tables."""
-        # Get typed tables for this source
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        result = ctx.session.execute(stmt)
-        typed_tables = result.scalars().all()
+        """Run statistical quality assessment on the scoped typed tables."""
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")
 
-        # Get all columns for typed tables
+        # Get all columns for the scoped typed tables
         typed_table_ids = [t.table_id for t in typed_tables]
         columns_stmt = select(Column).where(Column.table_id.in_(typed_table_ids))
         all_columns = (ctx.session.execute(columns_stmt)).scalars().all()
 
-        # Check which already have quality metrics
-        assessed_stmt = select(StatisticalQualityMetrics.column_id).distinct()
+        # Check which of these columns already have quality metrics
+        assessed_stmt = select(StatisticalQualityMetrics.column_id).where(
+            StatisticalQualityMetrics.column_id.in_([c.column_id for c in all_columns])
+        )
         assessed_ids = set((ctx.session.execute(assessed_stmt)).scalars().all())
 
         # Find tables with unassessed numeric columns

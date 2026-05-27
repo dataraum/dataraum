@@ -2,14 +2,14 @@
   "events": [
     {
       "eventId": "1",
-      "eventTime": "2026-05-27T07:51:47.485Z",
+      "eventTime": "2026-05-27T19:34:20.031Z",
       "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
       "workflowExecutionStartedEventAttributes": {
         "workflowType": {
           "name": "addSourceWorkflow"
         },
         "taskQueue": {
-          "name": "test-add-source"
+          "name": "history-gen"
         },
         "input": {
           "payloads": [
@@ -17,16 +17,16 @@
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJ3b3Jrc3BhY2VfaWQiOiJ0ZXN0Iiwic291cmNlX2lkIjoiODFlNWU5MWMtNDA5Ny00MzA5LThkZjEtNTQxNWQ2ZTk3YjMxIiwic2Vzc2lvbl9pZCI6ImM1OTgyNDBlLTJiMWEtNDU5MC05NjU5LTJkMzljYjU2M2U3MSIsInZlcnRpY2FsIjpudWxsLCJ0YWJsZV9pZHMiOltdfQ=="
+              "data": "eyJpZGVudGl0eSI6eyJ3b3Jrc3BhY2VfaWQiOiJnZW4td3MiLCJzb3VyY2VfaWQiOiJnZW4tc3JjIiwic2Vzc2lvbl9pZCI6Imdlbi1zZXNzaW9uIiwidmVydGljYWwiOm51bGx9fQ=="
             }
           ]
         },
         "workflowExecutionTimeout": "315360000s",
         "workflowRunTimeout": "315360000s",
         "workflowTaskTimeout": "10s",
-        "originalExecutionRunId": "c7c2c37e-1f5d-49a0-94c8-6dc4f346fffe",
-        "identity": "420106@dataraum-context",
-        "firstExecutionRunId": "c7c2c37e-1f5d-49a0-94c8-6dc4f346fffe",
+        "originalExecutionRunId": "c21ffab9-b567-4114-9c64-8d699ac32c4d",
+        "identity": "380497@dataraum-context",
+        "firstExecutionRunId": "c21ffab9-b567-4114-9c64-8d699ac32c4d",
         "attempt": 1,
         "firstWorkflowTaskBackoff": "0s",
         "priority": {}
@@ -34,11 +34,11 @@
     },
     {
       "eventId": "2",
-      "eventTime": "2026-05-27T07:51:47.485Z",
+      "eventTime": "2026-05-27T19:34:20.031Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
       "workflowTaskScheduledEventAttributes": {
         "taskQueue": {
-          "name": "test-add-source"
+          "name": "history-gen"
         },
         "startToCloseTimeout": "10s",
         "attempt": 1
@@ -46,26 +46,26 @@
     },
     {
       "eventId": "3",
-      "eventTime": "2026-05-27T07:51:47.485Z",
+      "eventTime": "2026-05-27T19:34:20.031Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
       "workflowTaskStartedEventAttributes": {
         "scheduledEventId": "2",
-        "identity": "420106@dataraum-context"
+        "identity": "380497@dataraum-context"
       }
     },
     {
       "eventId": "4",
-      "eventTime": "2026-05-27T07:51:47.493Z",
+      "eventTime": "2026-05-27T19:34:20.036Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
       "workflowTaskCompletedEventAttributes": {
         "scheduledEventId": "2",
-        "identity": "420106@dataraum-context",
-        "binaryChecksum": "6247a044e0ccd9c7d318354ba04c32ef",
+        "identity": "380497@dataraum-context",
+        "binaryChecksum": "1f3fdf5089105e269bd763a5c4e05da4",
         "sdkMetadata": {
           "coreUsedFlags": [
+            3,
             2,
-            1,
-            3
+            1
           ],
           "sdkName": "temporal-python",
           "sdkVersion": "1.27.2"
@@ -75,7 +75,7 @@
     },
     {
       "eventId": "5",
-      "eventTime": "2026-05-27T07:51:47.493Z",
+      "eventTime": "2026-05-27T19:34:20.036Z",
       "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
       "activityTaskScheduledEventAttributes": {
         "activityId": "1",
@@ -83,7 +83,7 @@
           "name": "import"
         },
         "taskQueue": {
-          "name": "test-add-source",
+          "name": "history-gen",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -93,7 +93,7 @@
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJ3b3Jrc3BhY2VfaWQiOiJ0ZXN0Iiwic291cmNlX2lkIjoiODFlNWU5MWMtNDA5Ny00MzA5LThkZjEtNTQxNWQ2ZTk3YjMxIiwic2Vzc2lvbl9pZCI6ImM1OTgyNDBlLTJiMWEtNDU5MC05NjU5LTJkMzljYjU2M2U3MSIsInZlcnRpY2FsIjpudWxsLCJ0YWJsZV9pZHMiOltdfQ=="
+              "data": "eyJ3b3Jrc3BhY2VfaWQiOiJnZW4td3MiLCJzb3VyY2VfaWQiOiJnZW4tc3JjIiwic2Vzc2lvbl9pZCI6Imdlbi1zZXNzaW9uIiwidmVydGljYWwiOm51bGx9"
             }
           ]
         },
@@ -116,17 +116,17 @@
     },
     {
       "eventId": "6",
-      "eventTime": "2026-05-27T07:51:47.493Z",
+      "eventTime": "2026-05-27T19:34:20.036Z",
       "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
       "activityTaskStartedEventAttributes": {
         "scheduledEventId": "5",
-        "identity": "420106@dataraum-context",
+        "identity": "380497@dataraum-context",
         "attempt": 1
       }
     },
     {
       "eventId": "7",
-      "eventTime": "2026-05-27T07:51:47.495Z",
+      "eventTime": "2026-05-27T19:34:20.037Z",
       "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
       "activityTaskCompletedEventAttributes": {
         "result": {
@@ -135,22 +135,22 @@
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJwaGFzZSI6ImltcG9ydCIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInN1bW1hcnkiOiJtb2NrIGltcG9ydCIsInJlY29yZHNfcHJvY2Vzc2VkIjowLCJyZWNvcmRzX2NyZWF0ZWQiOjAsIm91dHB1dHMiOnt9LCJ3YXJuaW5ncyI6W10sImVycm9yIjpudWxsfQ=="
+              "data": "eyJyYXdfdGFibGVfaWRzIjpbInJhdy0xIiwicmF3LTIiXX0="
             }
           ]
         },
         "scheduledEventId": "5",
         "startedEventId": "6",
-        "identity": "420106@dataraum-context"
+        "identity": "380497@dataraum-context"
       }
     },
     {
       "eventId": "8",
-      "eventTime": "2026-05-27T07:51:47.495Z",
+      "eventTime": "2026-05-27T19:34:20.037Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
       "workflowTaskScheduledEventAttributes": {
         "taskQueue": {
-          "name": "test-add-source"
+          "name": "history-gen"
         },
         "startToCloseTimeout": "10s",
         "attempt": 1
@@ -158,103 +158,118 @@
     },
     {
       "eventId": "9",
-      "eventTime": "2026-05-27T07:51:47.495Z",
+      "eventTime": "2026-05-27T19:34:20.038Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
       "workflowTaskStartedEventAttributes": {
         "scheduledEventId": "8",
-        "identity": "420106@dataraum-context"
+        "identity": "380497@dataraum-context"
       }
     },
     {
       "eventId": "10",
-      "eventTime": "2026-05-27T07:51:47.497Z",
+      "eventTime": "2026-05-27T19:34:20.039Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
       "workflowTaskCompletedEventAttributes": {
         "scheduledEventId": "8",
-        "identity": "420106@dataraum-context",
-        "binaryChecksum": "6247a044e0ccd9c7d318354ba04c32ef",
+        "identity": "380497@dataraum-context",
+        "binaryChecksum": "1f3fdf5089105e269bd763a5c4e05da4",
         "sdkMetadata": {},
         "meteringMetadata": {}
       }
     },
     {
       "eventId": "11",
-      "eventTime": "2026-05-27T07:51:47.497Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
-      "activityTaskScheduledEventAttributes": {
-        "activityId": "2",
-        "activityType": {
-          "name": "typing"
+      "eventTime": "2026-05-27T19:34:20.039Z",
+      "eventType": "EVENT_TYPE_START_CHILD_WORKFLOW_EXECUTION_INITIATED",
+      "startChildWorkflowExecutionInitiatedEventAttributes": {
+        "namespace": "default",
+        "workflowId": "addsource-gen-src-table-raw-1",
+        "workflowType": {
+          "name": "processTableWorkflow"
         },
         "taskQueue": {
-          "name": "test-add-source",
+          "name": "history-gen",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
-        "header": {},
         "input": {
           "payloads": [
             {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJ3b3Jrc3BhY2VfaWQiOiJ0ZXN0Iiwic291cmNlX2lkIjoiODFlNWU5MWMtNDA5Ny00MzA5LThkZjEtNTQxNWQ2ZTk3YjMxIiwic2Vzc2lvbl9pZCI6ImM1OTgyNDBlLTJiMWEtNDU5MC05NjU5LTJkMzljYjU2M2U3MSIsInZlcnRpY2FsIjpudWxsLCJ0YWJsZV9pZHMiOltdfQ=="
+              "data": "eyJpZGVudGl0eSI6eyJ3b3Jrc3BhY2VfaWQiOiJnZW4td3MiLCJzb3VyY2VfaWQiOiJnZW4tc3JjIiwic2Vzc2lvbl9pZCI6Imdlbi1zZXNzaW9uIiwidmVydGljYWwiOm51bGx9LCJyYXdfdGFibGVfaWQiOiJyYXctMSJ9"
             }
           ]
         },
-        "scheduleToCloseTimeout": "315360000s",
-        "scheduleToStartTimeout": "315360000s",
-        "startToCloseTimeout": "600s",
-        "heartbeatTimeout": "0s",
+        "workflowExecutionTimeout": "0s",
+        "workflowRunTimeout": "0s",
+        "workflowTaskTimeout": "10s",
+        "parentClosePolicy": "PARENT_CLOSE_POLICY_TERMINATE",
         "workflowTaskCompletedEventId": "9",
-        "retryPolicy": {
-          "initialInterval": "1s",
-          "backoffCoefficient": 2.0,
-          "maximumInterval": "100s",
-          "maximumAttempts": 5,
-          "nonRetryableErrorTypes": [
-            "PhaseFailed"
-          ]
-        },
+        "workflowIdReusePolicy": "WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE",
+        "header": {},
+        "memo": {},
         "priority": {}
       }
     },
     {
       "eventId": "12",
-      "eventTime": "2026-05-27T07:51:47.497Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
-      "activityTaskStartedEventAttributes": {
-        "scheduledEventId": "11",
-        "identity": "420106@dataraum-context",
-        "attempt": 1
-      }
-    },
-    {
-      "eventId": "13",
-      "eventTime": "2026-05-27T07:51:47.497Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
-      "activityTaskCompletedEventAttributes": {
-        "result": {
+      "eventTime": "2026-05-27T19:34:20.039Z",
+      "eventType": "EVENT_TYPE_START_CHILD_WORKFLOW_EXECUTION_INITIATED",
+      "startChildWorkflowExecutionInitiatedEventAttributes": {
+        "namespace": "default",
+        "workflowId": "addsource-gen-src-table-raw-2",
+        "workflowType": {
+          "name": "processTableWorkflow"
+        },
+        "taskQueue": {
+          "name": "history-gen",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "input": {
           "payloads": [
             {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJwaGFzZSI6InR5cGluZyIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInN1bW1hcnkiOiJtb2NrIHR5cGluZyIsInJlY29yZHNfcHJvY2Vzc2VkIjowLCJyZWNvcmRzX2NyZWF0ZWQiOjAsIm91dHB1dHMiOnt9LCJ3YXJuaW5ncyI6W10sImVycm9yIjpudWxsfQ=="
+              "data": "eyJpZGVudGl0eSI6eyJ3b3Jrc3BhY2VfaWQiOiJnZW4td3MiLCJzb3VyY2VfaWQiOiJnZW4tc3JjIiwic2Vzc2lvbl9pZCI6Imdlbi1zZXNzaW9uIiwidmVydGljYWwiOm51bGx9LCJyYXdfdGFibGVfaWQiOiJyYXctMiJ9"
             }
           ]
         },
-        "scheduledEventId": "11",
-        "startedEventId": "12",
-        "identity": "420106@dataraum-context"
+        "workflowExecutionTimeout": "0s",
+        "workflowRunTimeout": "0s",
+        "workflowTaskTimeout": "10s",
+        "parentClosePolicy": "PARENT_CLOSE_POLICY_TERMINATE",
+        "workflowTaskCompletedEventId": "9",
+        "workflowIdReusePolicy": "WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE",
+        "header": {},
+        "memo": {},
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "13",
+      "eventTime": "2026-05-27T19:34:20.039Z",
+      "eventType": "EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_STARTED",
+      "childWorkflowExecutionStartedEventAttributes": {
+        "namespace": "default",
+        "initiatedEventId": "12",
+        "workflowExecution": {
+          "workflowId": "addsource-gen-src-table-raw-2",
+          "runId": "8ae16fac-cb46-422f-9c83-7f422a768931"
+        },
+        "workflowType": {
+          "name": "processTableWorkflow"
+        }
       }
     },
     {
       "eventId": "14",
-      "eventTime": "2026-05-27T07:51:47.497Z",
+      "eventTime": "2026-05-27T19:34:20.039Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
       "workflowTaskScheduledEventAttributes": {
         "taskQueue": {
-          "name": "test-add-source"
+          "name": "history-gen"
         },
         "startToCloseTimeout": "10s",
         "attempt": 1
@@ -262,207 +277,168 @@
     },
     {
       "eventId": "15",
-      "eventTime": "2026-05-27T07:51:47.497Z",
+      "eventTime": "2026-05-27T19:34:20.039Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
       "workflowTaskStartedEventAttributes": {
         "scheduledEventId": "14",
-        "identity": "420106@dataraum-context"
+        "identity": "380497@dataraum-context"
       }
     },
     {
       "eventId": "16",
-      "eventTime": "2026-05-27T07:51:47.499Z",
+      "eventTime": "2026-05-27T19:34:20.040Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
       "workflowTaskCompletedEventAttributes": {
         "scheduledEventId": "14",
-        "identity": "420106@dataraum-context",
-        "binaryChecksum": "6247a044e0ccd9c7d318354ba04c32ef",
+        "identity": "380497@dataraum-context",
+        "binaryChecksum": "1f3fdf5089105e269bd763a5c4e05da4",
         "sdkMetadata": {},
         "meteringMetadata": {}
       }
     },
     {
       "eventId": "17",
-      "eventTime": "2026-05-27T07:51:47.499Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
-      "activityTaskScheduledEventAttributes": {
-        "activityId": "3",
-        "activityType": {
-          "name": "statistics"
+      "eventTime": "2026-05-27T19:34:20.040Z",
+      "eventType": "EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_STARTED",
+      "childWorkflowExecutionStartedEventAttributes": {
+        "namespace": "default",
+        "initiatedEventId": "11",
+        "workflowExecution": {
+          "workflowId": "addsource-gen-src-table-raw-1",
+          "runId": "a39d5eda-26e8-4231-93ac-a79adad2f825"
         },
-        "taskQueue": {
-          "name": "test-add-source",
-          "kind": "TASK_QUEUE_KIND_NORMAL"
-        },
-        "header": {},
-        "input": {
-          "payloads": [
-            {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg=="
-              },
-              "data": "eyJ3b3Jrc3BhY2VfaWQiOiJ0ZXN0Iiwic291cmNlX2lkIjoiODFlNWU5MWMtNDA5Ny00MzA5LThkZjEtNTQxNWQ2ZTk3YjMxIiwic2Vzc2lvbl9pZCI6ImM1OTgyNDBlLTJiMWEtNDU5MC05NjU5LTJkMzljYjU2M2U3MSIsInZlcnRpY2FsIjpudWxsLCJ0YWJsZV9pZHMiOltdfQ=="
-            }
-          ]
-        },
-        "scheduleToCloseTimeout": "315360000s",
-        "scheduleToStartTimeout": "315360000s",
-        "startToCloseTimeout": "600s",
-        "heartbeatTimeout": "0s",
-        "workflowTaskCompletedEventId": "15",
-        "retryPolicy": {
-          "initialInterval": "1s",
-          "backoffCoefficient": 2.0,
-          "maximumInterval": "100s",
-          "maximumAttempts": 5,
-          "nonRetryableErrorTypes": [
-            "PhaseFailed"
-          ]
-        },
-        "priority": {}
+        "workflowType": {
+          "name": "processTableWorkflow"
+        }
       }
     },
     {
       "eventId": "18",
-      "eventTime": "2026-05-27T07:51:47.499Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
-      "activityTaskStartedEventAttributes": {
-        "scheduledEventId": "17",
-        "identity": "420106@dataraum-context",
-        "attempt": 1
+      "eventTime": "2026-05-27T19:34:20.040Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "history-gen"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 2
       }
     },
     {
       "eventId": "19",
-      "eventTime": "2026-05-27T07:51:47.499Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
-      "activityTaskCompletedEventAttributes": {
+      "eventTime": "2026-05-27T19:34:20.040Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "18",
+        "identity": "380497@dataraum-context"
+      }
+    },
+    {
+      "eventId": "20",
+      "eventTime": "2026-05-27T19:34:20.042Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "18",
+        "identity": "380497@dataraum-context",
+        "binaryChecksum": "1f3fdf5089105e269bd763a5c4e05da4",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "21",
+      "eventTime": "2026-05-27T19:34:20.052Z",
+      "eventType": "EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED",
+      "childWorkflowExecutionCompletedEventAttributes": {
         "result": {
           "payloads": [
             {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJwaGFzZSI6InN0YXRpc3RpY3MiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJzdW1tYXJ5IjoibW9jayBzdGF0aXN0aWNzIiwicmVjb3Jkc19wcm9jZXNzZWQiOjAsInJlY29yZHNfY3JlYXRlZCI6MCwib3V0cHV0cyI6e30sIndhcm5pbmdzIjpbXSwiZXJyb3IiOm51bGx9"
+              "data": "eyJyYXdfdGFibGVfaWQiOiJyYXctMiIsInR5cGVkX3RhYmxlX2lkIjoidHlwZWQtcmF3LTIifQ=="
             }
           ]
         },
-        "scheduledEventId": "17",
-        "startedEventId": "18",
-        "identity": "420106@dataraum-context"
+        "namespace": "default",
+        "workflowExecution": {
+          "workflowId": "addsource-gen-src-table-raw-2",
+          "runId": "8ae16fac-cb46-422f-9c83-7f422a768931"
+        },
+        "workflowType": {
+          "name": "processTableWorkflow"
+        },
+        "initiatedEventId": "12",
+        "startedEventId": "13"
       }
     },
     {
-      "eventId": "20",
-      "eventTime": "2026-05-27T07:51:47.499Z",
+      "eventId": "22",
+      "eventTime": "2026-05-27T19:34:20.052Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
       "workflowTaskScheduledEventAttributes": {
         "taskQueue": {
-          "name": "test-add-source"
+          "name": "history-gen"
         },
         "startToCloseTimeout": "10s",
         "attempt": 1
       }
     },
     {
-      "eventId": "21",
-      "eventTime": "2026-05-27T07:51:47.499Z",
+      "eventId": "23",
+      "eventTime": "2026-05-27T19:34:20.052Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
       "workflowTaskStartedEventAttributes": {
-        "scheduledEventId": "20",
-        "identity": "420106@dataraum-context"
+        "scheduledEventId": "22",
+        "identity": "380497@dataraum-context"
       }
     },
     {
-      "eventId": "22",
-      "eventTime": "2026-05-27T07:51:47.501Z",
+      "eventId": "24",
+      "eventTime": "2026-05-27T19:34:20.053Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
       "workflowTaskCompletedEventAttributes": {
-        "scheduledEventId": "20",
-        "identity": "420106@dataraum-context",
-        "binaryChecksum": "6247a044e0ccd9c7d318354ba04c32ef",
+        "scheduledEventId": "22",
+        "identity": "380497@dataraum-context",
+        "binaryChecksum": "1f3fdf5089105e269bd763a5c4e05da4",
         "sdkMetadata": {},
         "meteringMetadata": {}
       }
     },
     {
-      "eventId": "23",
-      "eventTime": "2026-05-27T07:51:47.501Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
-      "activityTaskScheduledEventAttributes": {
-        "activityId": "4",
-        "activityType": {
-          "name": "column_eligibility"
-        },
-        "taskQueue": {
-          "name": "test-add-source",
-          "kind": "TASK_QUEUE_KIND_NORMAL"
-        },
-        "header": {},
-        "input": {
-          "payloads": [
-            {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg=="
-              },
-              "data": "eyJ3b3Jrc3BhY2VfaWQiOiJ0ZXN0Iiwic291cmNlX2lkIjoiODFlNWU5MWMtNDA5Ny00MzA5LThkZjEtNTQxNWQ2ZTk3YjMxIiwic2Vzc2lvbl9pZCI6ImM1OTgyNDBlLTJiMWEtNDU5MC05NjU5LTJkMzljYjU2M2U3MSIsInZlcnRpY2FsIjpudWxsLCJ0YWJsZV9pZHMiOltdfQ=="
-            }
-          ]
-        },
-        "scheduleToCloseTimeout": "315360000s",
-        "scheduleToStartTimeout": "315360000s",
-        "startToCloseTimeout": "600s",
-        "heartbeatTimeout": "0s",
-        "workflowTaskCompletedEventId": "21",
-        "retryPolicy": {
-          "initialInterval": "1s",
-          "backoffCoefficient": 2.0,
-          "maximumInterval": "100s",
-          "maximumAttempts": 5,
-          "nonRetryableErrorTypes": [
-            "PhaseFailed"
-          ]
-        },
-        "priority": {}
-      }
-    },
-    {
-      "eventId": "24",
-      "eventTime": "2026-05-27T07:51:47.501Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
-      "activityTaskStartedEventAttributes": {
-        "scheduledEventId": "23",
-        "identity": "420106@dataraum-context",
-        "attempt": 1
-      }
-    },
-    {
       "eventId": "25",
-      "eventTime": "2026-05-27T07:51:47.502Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
-      "activityTaskCompletedEventAttributes": {
+      "eventTime": "2026-05-27T19:34:20.053Z",
+      "eventType": "EVENT_TYPE_CHILD_WORKFLOW_EXECUTION_COMPLETED",
+      "childWorkflowExecutionCompletedEventAttributes": {
         "result": {
           "payloads": [
             {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJwaGFzZSI6ImNvbHVtbl9lbGlnaWJpbGl0eSIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInN1bW1hcnkiOiJtb2NrIGNvbHVtbl9lbGlnaWJpbGl0eSIsInJlY29yZHNfcHJvY2Vzc2VkIjowLCJyZWNvcmRzX2NyZWF0ZWQiOjAsIm91dHB1dHMiOnt9LCJ3YXJuaW5ncyI6W10sImVycm9yIjpudWxsfQ=="
+              "data": "eyJyYXdfdGFibGVfaWQiOiJyYXctMSIsInR5cGVkX3RhYmxlX2lkIjoidHlwZWQtcmF3LTEifQ=="
             }
           ]
         },
-        "scheduledEventId": "23",
-        "startedEventId": "24",
-        "identity": "420106@dataraum-context"
+        "namespace": "default",
+        "workflowExecution": {
+          "workflowId": "addsource-gen-src-table-raw-1",
+          "runId": "a39d5eda-26e8-4231-93ac-a79adad2f825"
+        },
+        "workflowType": {
+          "name": "processTableWorkflow"
+        },
+        "initiatedEventId": "11",
+        "startedEventId": "16"
       }
     },
     {
       "eventId": "26",
-      "eventTime": "2026-05-27T07:51:47.502Z",
+      "eventTime": "2026-05-27T19:34:20.053Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
       "workflowTaskScheduledEventAttributes": {
         "taskQueue": {
-          "name": "test-add-source"
+          "name": "history-gen"
         },
         "startToCloseTimeout": "10s",
         "attempt": 1
@@ -470,36 +446,36 @@
     },
     {
       "eventId": "27",
-      "eventTime": "2026-05-27T07:51:47.502Z",
+      "eventTime": "2026-05-27T19:34:20.053Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
       "workflowTaskStartedEventAttributes": {
         "scheduledEventId": "26",
-        "identity": "420106@dataraum-context"
+        "identity": "380497@dataraum-context"
       }
     },
     {
       "eventId": "28",
-      "eventTime": "2026-05-27T07:51:47.503Z",
+      "eventTime": "2026-05-27T19:34:20.054Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
       "workflowTaskCompletedEventAttributes": {
         "scheduledEventId": "26",
-        "identity": "420106@dataraum-context",
-        "binaryChecksum": "6247a044e0ccd9c7d318354ba04c32ef",
+        "identity": "380497@dataraum-context",
+        "binaryChecksum": "1f3fdf5089105e269bd763a5c4e05da4",
         "sdkMetadata": {},
         "meteringMetadata": {}
       }
     },
     {
       "eventId": "29",
-      "eventTime": "2026-05-27T07:51:47.503Z",
+      "eventTime": "2026-05-27T19:34:20.054Z",
       "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
       "activityTaskScheduledEventAttributes": {
-        "activityId": "5",
+        "activityId": "2",
         "activityType": {
-          "name": "statistical_quality"
+          "name": "semantic_per_column"
         },
         "taskQueue": {
-          "name": "test-add-source",
+          "name": "history-gen",
           "kind": "TASK_QUEUE_KIND_NORMAL"
         },
         "header": {},
@@ -509,7 +485,7 @@
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJ3b3Jrc3BhY2VfaWQiOiJ0ZXN0Iiwic291cmNlX2lkIjoiODFlNWU5MWMtNDA5Ny00MzA5LThkZjEtNTQxNWQ2ZTk3YjMxIiwic2Vzc2lvbl9pZCI6ImM1OTgyNDBlLTJiMWEtNDU5MC05NjU5LTJkMzljYjU2M2U3MSIsInZlcnRpY2FsIjpudWxsLCJ0YWJsZV9pZHMiOltdfQ=="
+              "data": "eyJ3b3Jrc3BhY2VfaWQiOiJnZW4td3MiLCJzb3VyY2VfaWQiOiJnZW4tc3JjIiwic2Vzc2lvbl9pZCI6Imdlbi1zZXNzaW9uIiwidmVydGljYWwiOm51bGx9"
             }
           ]
         },
@@ -532,17 +508,17 @@
     },
     {
       "eventId": "30",
-      "eventTime": "2026-05-27T07:51:47.503Z",
+      "eventTime": "2026-05-27T19:34:20.054Z",
       "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
       "activityTaskStartedEventAttributes": {
         "scheduledEventId": "29",
-        "identity": "420106@dataraum-context",
+        "identity": "380497@dataraum-context",
         "attempt": 1
       }
     },
     {
       "eventId": "31",
-      "eventTime": "2026-05-27T07:51:47.504Z",
+      "eventTime": "2026-05-27T19:34:20.055Z",
       "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
       "activityTaskCompletedEventAttributes": {
         "result": {
@@ -551,22 +527,22 @@
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJwaGFzZSI6InN0YXRpc3RpY2FsX3F1YWxpdHkiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJzdW1tYXJ5IjoibW9jayBzdGF0aXN0aWNhbF9xdWFsaXR5IiwicmVjb3Jkc19wcm9jZXNzZWQiOjAsInJlY29yZHNfY3JlYXRlZCI6MCwib3V0cHV0cyI6e30sIndhcm5pbmdzIjpbXSwiZXJyb3IiOm51bGx9"
+              "data": "eyJzdGF0dXMiOiJjb21wbGV0ZWQiLCJzdW1tYXJ5IjoiIn0="
             }
           ]
         },
         "scheduledEventId": "29",
         "startedEventId": "30",
-        "identity": "420106@dataraum-context"
+        "identity": "380497@dataraum-context"
       }
     },
     {
       "eventId": "32",
-      "eventTime": "2026-05-27T07:51:47.504Z",
+      "eventTime": "2026-05-27T19:34:20.055Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
       "workflowTaskScheduledEventAttributes": {
         "taskQueue": {
-          "name": "test-add-source"
+          "name": "history-gen"
         },
         "startToCloseTimeout": "10s",
         "attempt": 1
@@ -574,236 +550,28 @@
     },
     {
       "eventId": "33",
-      "eventTime": "2026-05-27T07:51:47.504Z",
+      "eventTime": "2026-05-27T19:34:20.055Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
       "workflowTaskStartedEventAttributes": {
         "scheduledEventId": "32",
-        "identity": "420106@dataraum-context"
+        "identity": "380497@dataraum-context"
       }
     },
     {
       "eventId": "34",
-      "eventTime": "2026-05-27T07:51:47.505Z",
+      "eventTime": "2026-05-27T19:34:20.055Z",
       "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
       "workflowTaskCompletedEventAttributes": {
         "scheduledEventId": "32",
-        "identity": "420106@dataraum-context",
-        "binaryChecksum": "6247a044e0ccd9c7d318354ba04c32ef",
+        "identity": "380497@dataraum-context",
+        "binaryChecksum": "1f3fdf5089105e269bd763a5c4e05da4",
         "sdkMetadata": {},
         "meteringMetadata": {}
       }
     },
     {
       "eventId": "35",
-      "eventTime": "2026-05-27T07:51:47.505Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
-      "activityTaskScheduledEventAttributes": {
-        "activityId": "6",
-        "activityType": {
-          "name": "temporal"
-        },
-        "taskQueue": {
-          "name": "test-add-source",
-          "kind": "TASK_QUEUE_KIND_NORMAL"
-        },
-        "header": {},
-        "input": {
-          "payloads": [
-            {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg=="
-              },
-              "data": "eyJ3b3Jrc3BhY2VfaWQiOiJ0ZXN0Iiwic291cmNlX2lkIjoiODFlNWU5MWMtNDA5Ny00MzA5LThkZjEtNTQxNWQ2ZTk3YjMxIiwic2Vzc2lvbl9pZCI6ImM1OTgyNDBlLTJiMWEtNDU5MC05NjU5LTJkMzljYjU2M2U3MSIsInZlcnRpY2FsIjpudWxsLCJ0YWJsZV9pZHMiOltdfQ=="
-            }
-          ]
-        },
-        "scheduleToCloseTimeout": "315360000s",
-        "scheduleToStartTimeout": "315360000s",
-        "startToCloseTimeout": "600s",
-        "heartbeatTimeout": "0s",
-        "workflowTaskCompletedEventId": "33",
-        "retryPolicy": {
-          "initialInterval": "1s",
-          "backoffCoefficient": 2.0,
-          "maximumInterval": "100s",
-          "maximumAttempts": 5,
-          "nonRetryableErrorTypes": [
-            "PhaseFailed"
-          ]
-        },
-        "priority": {}
-      }
-    },
-    {
-      "eventId": "36",
-      "eventTime": "2026-05-27T07:51:47.505Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
-      "activityTaskStartedEventAttributes": {
-        "scheduledEventId": "35",
-        "identity": "420106@dataraum-context",
-        "attempt": 1
-      }
-    },
-    {
-      "eventId": "37",
-      "eventTime": "2026-05-27T07:51:47.505Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
-      "activityTaskCompletedEventAttributes": {
-        "result": {
-          "payloads": [
-            {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg=="
-              },
-              "data": "eyJwaGFzZSI6InRlbXBvcmFsIiwic3RhdHVzIjoiY29tcGxldGVkIiwic3VtbWFyeSI6Im1vY2sgdGVtcG9yYWwiLCJyZWNvcmRzX3Byb2Nlc3NlZCI6MCwicmVjb3Jkc19jcmVhdGVkIjowLCJvdXRwdXRzIjp7fSwid2FybmluZ3MiOltdLCJlcnJvciI6bnVsbH0="
-            }
-          ]
-        },
-        "scheduledEventId": "35",
-        "startedEventId": "36",
-        "identity": "420106@dataraum-context"
-      }
-    },
-    {
-      "eventId": "38",
-      "eventTime": "2026-05-27T07:51:47.505Z",
-      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
-      "workflowTaskScheduledEventAttributes": {
-        "taskQueue": {
-          "name": "test-add-source"
-        },
-        "startToCloseTimeout": "10s",
-        "attempt": 1
-      }
-    },
-    {
-      "eventId": "39",
-      "eventTime": "2026-05-27T07:51:47.505Z",
-      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
-      "workflowTaskStartedEventAttributes": {
-        "scheduledEventId": "38",
-        "identity": "420106@dataraum-context"
-      }
-    },
-    {
-      "eventId": "40",
-      "eventTime": "2026-05-27T07:51:47.507Z",
-      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
-      "workflowTaskCompletedEventAttributes": {
-        "scheduledEventId": "38",
-        "identity": "420106@dataraum-context",
-        "binaryChecksum": "6247a044e0ccd9c7d318354ba04c32ef",
-        "sdkMetadata": {},
-        "meteringMetadata": {}
-      }
-    },
-    {
-      "eventId": "41",
-      "eventTime": "2026-05-27T07:51:47.507Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
-      "activityTaskScheduledEventAttributes": {
-        "activityId": "7",
-        "activityType": {
-          "name": "semantic_per_column"
-        },
-        "taskQueue": {
-          "name": "test-add-source",
-          "kind": "TASK_QUEUE_KIND_NORMAL"
-        },
-        "header": {},
-        "input": {
-          "payloads": [
-            {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg=="
-              },
-              "data": "eyJ3b3Jrc3BhY2VfaWQiOiJ0ZXN0Iiwic291cmNlX2lkIjoiODFlNWU5MWMtNDA5Ny00MzA5LThkZjEtNTQxNWQ2ZTk3YjMxIiwic2Vzc2lvbl9pZCI6ImM1OTgyNDBlLTJiMWEtNDU5MC05NjU5LTJkMzljYjU2M2U3MSIsInZlcnRpY2FsIjpudWxsLCJ0YWJsZV9pZHMiOltdfQ=="
-            }
-          ]
-        },
-        "scheduleToCloseTimeout": "315360000s",
-        "scheduleToStartTimeout": "315360000s",
-        "startToCloseTimeout": "600s",
-        "heartbeatTimeout": "0s",
-        "workflowTaskCompletedEventId": "39",
-        "retryPolicy": {
-          "initialInterval": "1s",
-          "backoffCoefficient": 2.0,
-          "maximumInterval": "100s",
-          "maximumAttempts": 5,
-          "nonRetryableErrorTypes": [
-            "PhaseFailed"
-          ]
-        },
-        "priority": {}
-      }
-    },
-    {
-      "eventId": "42",
-      "eventTime": "2026-05-27T07:51:47.507Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
-      "activityTaskStartedEventAttributes": {
-        "scheduledEventId": "41",
-        "identity": "420106@dataraum-context",
-        "attempt": 1
-      }
-    },
-    {
-      "eventId": "43",
-      "eventTime": "2026-05-27T07:51:47.507Z",
-      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
-      "activityTaskCompletedEventAttributes": {
-        "result": {
-          "payloads": [
-            {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg=="
-              },
-              "data": "eyJwaGFzZSI6InNlbWFudGljX3Blcl9jb2x1bW4iLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJzdW1tYXJ5IjoibW9jayBzZW1hbnRpY19wZXJfY29sdW1uIiwicmVjb3Jkc19wcm9jZXNzZWQiOjAsInJlY29yZHNfY3JlYXRlZCI6MCwib3V0cHV0cyI6e30sIndhcm5pbmdzIjpbXSwiZXJyb3IiOm51bGx9"
-            }
-          ]
-        },
-        "scheduledEventId": "41",
-        "startedEventId": "42",
-        "identity": "420106@dataraum-context"
-      }
-    },
-    {
-      "eventId": "44",
-      "eventTime": "2026-05-27T07:51:47.507Z",
-      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
-      "workflowTaskScheduledEventAttributes": {
-        "taskQueue": {
-          "name": "test-add-source"
-        },
-        "startToCloseTimeout": "10s",
-        "attempt": 1
-      }
-    },
-    {
-      "eventId": "45",
-      "eventTime": "2026-05-27T07:51:47.507Z",
-      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
-      "workflowTaskStartedEventAttributes": {
-        "scheduledEventId": "44",
-        "identity": "420106@dataraum-context"
-      }
-    },
-    {
-      "eventId": "46",
-      "eventTime": "2026-05-27T07:51:47.508Z",
-      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
-      "workflowTaskCompletedEventAttributes": {
-        "scheduledEventId": "44",
-        "identity": "420106@dataraum-context",
-        "binaryChecksum": "6247a044e0ccd9c7d318354ba04c32ef",
-        "sdkMetadata": {},
-        "meteringMetadata": {}
-      }
-    },
-    {
-      "eventId": "47",
-      "eventTime": "2026-05-27T07:51:47.508Z",
+      "eventTime": "2026-05-27T19:34:20.055Z",
       "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED",
       "workflowExecutionCompletedEventAttributes": {
         "result": {
@@ -812,11 +580,11 @@
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "W3sicGhhc2UiOiJpbXBvcnQiLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJzdW1tYXJ5IjoibW9jayBpbXBvcnQiLCJyZWNvcmRzX3Byb2Nlc3NlZCI6MCwicmVjb3Jkc19jcmVhdGVkIjowLCJvdXRwdXRzIjp7fSwid2FybmluZ3MiOltdLCJlcnJvciI6bnVsbH0seyJwaGFzZSI6InR5cGluZyIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInN1bW1hcnkiOiJtb2NrIHR5cGluZyIsInJlY29yZHNfcHJvY2Vzc2VkIjowLCJyZWNvcmRzX2NyZWF0ZWQiOjAsIm91dHB1dHMiOnt9LCJ3YXJuaW5ncyI6W10sImVycm9yIjpudWxsfSx7InBoYXNlIjoic3RhdGlzdGljcyIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInN1bW1hcnkiOiJtb2NrIHN0YXRpc3RpY3MiLCJyZWNvcmRzX3Byb2Nlc3NlZCI6MCwicmVjb3Jkc19jcmVhdGVkIjowLCJvdXRwdXRzIjp7fSwid2FybmluZ3MiOltdLCJlcnJvciI6bnVsbH0seyJwaGFzZSI6ImNvbHVtbl9lbGlnaWJpbGl0eSIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInN1bW1hcnkiOiJtb2NrIGNvbHVtbl9lbGlnaWJpbGl0eSIsInJlY29yZHNfcHJvY2Vzc2VkIjowLCJyZWNvcmRzX2NyZWF0ZWQiOjAsIm91dHB1dHMiOnt9LCJ3YXJuaW5ncyI6W10sImVycm9yIjpudWxsfSx7InBoYXNlIjoic3RhdGlzdGljYWxfcXVhbGl0eSIsInN0YXR1cyI6ImNvbXBsZXRlZCIsInN1bW1hcnkiOiJtb2NrIHN0YXRpc3RpY2FsX3F1YWxpdHkiLCJyZWNvcmRzX3Byb2Nlc3NlZCI6MCwicmVjb3Jkc19jcmVhdGVkIjowLCJvdXRwdXRzIjp7fSwid2FybmluZ3MiOltdLCJlcnJvciI6bnVsbH0seyJwaGFzZSI6InRlbXBvcmFsIiwic3RhdHVzIjoiY29tcGxldGVkIiwic3VtbWFyeSI6Im1vY2sgdGVtcG9yYWwiLCJyZWNvcmRzX3Byb2Nlc3NlZCI6MCwicmVjb3Jkc19jcmVhdGVkIjowLCJvdXRwdXRzIjp7fSwid2FybmluZ3MiOltdLCJlcnJvciI6bnVsbH0seyJwaGFzZSI6InNlbWFudGljX3Blcl9jb2x1bW4iLCJzdGF0dXMiOiJjb21wbGV0ZWQiLCJzdW1tYXJ5IjoibW9jayBzZW1hbnRpY19wZXJfY29sdW1uIiwicmVjb3Jkc19wcm9jZXNzZWQiOjAsInJlY29yZHNfY3JlYXRlZCI6MCwib3V0cHV0cyI6e30sIndhcm5pbmdzIjpbXSwiZXJyb3IiOm51bGx9XQ=="
+              "data": "eyJyYXdfdGFibGVfaWRzIjpbInJhdy0xIiwicmF3LTIiXSwidGFibGVzIjpbeyJyYXdfdGFibGVfaWQiOiJyYXctMSIsInR5cGVkX3RhYmxlX2lkIjoidHlwZWQtcmF3LTEifSx7InJhd190YWJsZV9pZCI6InJhdy0yIiwidHlwZWRfdGFibGVfaWQiOiJ0eXBlZC1yYXctMiJ9XX0="
             }
           ]
         },
-        "workflowTaskCompletedEventId": "45"
+        "workflowTaskCompletedEventId": "33"
       }
     }
   ]

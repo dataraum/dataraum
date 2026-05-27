@@ -30,7 +30,7 @@ from dataraum.worker.bootstrap import (
     bootstrap_worker_substrate,
     shutdown_worker_substrate,
 )
-from dataraum.worker.workflows import AddSourceWorkflow
+from dataraum.worker.workflows import AddSourceWorkflow, ProcessTableWorkflow
 
 logger = get_logger(__name__)
 
@@ -76,7 +76,7 @@ async def run_worker() -> None:
             worker = Worker(
                 client,
                 task_queue=task_queue,
-                workflows=[AddSourceWorkflow],
+                workflows=[AddSourceWorkflow, ProcessTableWorkflow],
                 activities=[
                     phase_activities.run_import,
                     phase_activities.run_typing,
@@ -84,6 +84,7 @@ async def run_worker() -> None:
                     phase_activities.run_column_eligibility,
                     phase_activities.run_statistical_quality,
                     phase_activities.run_temporal,
+                    phase_activities.run_detect_table,
                     phase_activities.run_semantic_per_column,
                 ],
                 activity_executor=executor,
@@ -106,7 +107,7 @@ async def run_worker() -> None:
                 task_queue=task_queue,
                 namespace=namespace,
                 host=host,
-                workflows=["addSourceWorkflow"],
+                workflows=["addSourceWorkflow", "processTableWorkflow"],
                 activities=[
                     "import",
                     "typing",
@@ -114,6 +115,7 @@ async def run_worker() -> None:
                     "column_eligibility",
                     "statistical_quality",
                     "temporal",
+                    "detect_table",
                     "semantic_per_column",
                 ],
             )

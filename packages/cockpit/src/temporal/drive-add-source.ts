@@ -1,11 +1,11 @@
-// E4a integration driver (DAT-344, P3): prove the TS workflow → Python activity
-// path end-to-end against a running compose stack (temporal + engine-worker +
-// workflow-worker + postgres).
+// Integration driver (DAT-344; per-table fan-out DAT-370): prove the Client →
+// Python workflow path end-to-end against a running compose stack (temporal +
+// engine-worker + postgres).
 //
 // In production the addSourceWorkflow's caller seeds the Source +
-// InvestigationSession (E4b). Here this script does it directly, then starts the
-// workflow and asserts both phases completed and import produced raw tables —
-// which means the cross-language dispatch + the Python substrate both worked.
+// InvestigationSession. Here this script does it directly, then starts the
+// workflow and asserts import discovered raw tables and every table was processed
+// to a typed table — which means the fan-out + the Python substrate both worked.
 //
 // Run against the published compose ports, e.g.:
 //   TEMPORAL_HOST=localhost:7233 TEMPORAL_NAMESPACE=default \
@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 import { Client, Connection } from "@temporalio/client";
 import postgres from "postgres";
 import { z } from "zod";
-import type { PhaseActivityInput, PhaseActivityResult } from "./types";
+import type { AddSourceInput, AddSourceResult } from "./types";
 
 const env = z
 	.object({
@@ -67,34 +67,40 @@ async function main(): Promise<void> {
 			connection,
 			namespace: env.TEMPORAL_NAMESPACE,
 		});
-		const input: PhaseActivityInput = {
-			workspace_id: env.DATARAUM_WORKSPACE_ID,
-			source_id: sourceId,
-			session_id: sessionId,
+		const input: AddSourceInput = {
+			identity: {
+				workspace_id: env.DATARAUM_WORKSPACE_ID,
+				source_id: sourceId,
+				session_id: sessionId,
+			},
 		};
-		const results = await client.workflow.execute<
-			(input: PhaseActivityInput) => Promise<PhaseActivityResult[]>
+		const result = await client.workflow.execute<
+			(input: AddSourceInput) => Promise<AddSourceResult>
 		>("addSourceWorkflow", {
 			taskQueue: env.TEMPORAL_TASK_QUEUE,
 			workflowId: `addsource-${sourceId}`,
 			args: [input],
 		});
 
-		const [importResult, typingResult] = results;
-		console.log("import:", JSON.stringify(importResult));
-		console.log("typing:", JSON.stringify(typingResult));
+		console.log("result:", JSON.stringify(result));
 
-		const rawTables = (importResult?.outputs?.raw_tables as unknown[]) ?? [];
-		if (importResult?.status !== "completed" || rawTables.length === 0) {
+		if (result.raw_table_ids.length === 0) {
+			throw new Error("import discovered no raw tables");
+		}
+		if (result.tables.length !== result.raw_table_ids.length) {
 			throw new Error(
-				`import did not complete with raw tables: ${importResult?.error}`,
+				`fan-out incomplete: ${result.tables.length} processed vs ` +
+					`${result.raw_table_ids.length} raw tables`,
 			);
 		}
-		if (typingResult?.status !== "completed") {
-			throw new Error(`typing did not complete: ${typingResult?.error}`);
+		for (const table of result.tables) {
+			if (!table.typed_table_id) {
+				throw new Error(`table ${table.raw_table_id} produced no typed table`);
+			}
 		}
 		console.log(
-			"✓ addSourceWorkflow completed: import + typing landed via Temporal",
+			`✓ addSourceWorkflow completed: ${result.tables.length} table(s) ` +
+				"fanned out + typed via Temporal",
 		);
 	} finally {
 		await connection.close();

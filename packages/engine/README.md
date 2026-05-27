@@ -22,7 +22,7 @@ DataRaum is mid-pivot. v0.2.x exposed a 12-tool MCP server over HTTP for use fro
 - **`../api`** — OpenAPI contract generated from the engine, consumed by the cockpit
 - **`../infra`** — docker-compose orchestration
 
-Today the substrate boots cleanly and you can poke `/health` and `/api/sources`; remaining REST routes get extracted from `src/dataraum/mcp/server.py` as the cockpit needs them. **No end-user surface yet** — if you need v0.2.x MCP behavior, pin `dataraum==0.2.2`.
+Today the engine runs as a **Temporal activity worker** (no HTTP surface): it bootstraps the substrate, then serves the bundled `AddSourceWorkflow` + phase activities; the cockpit triggers workflows via the Temporal Client and reads metadata via Drizzle. **No end-user surface yet** — if you need v0.2.x MCP behavior, pin `dataraum==0.2.2`.
 
 ## Quick Start (substrate + cockpit — v1 surface in development)
 
@@ -33,12 +33,14 @@ Run from the workspace root.
 cp packages/infra/.env.example packages/infra/.env
 echo "ANTHROPIC_API_KEY=sk-ant-..." >> packages/infra/.env
 
-# Bring up Postgres + control plane + cockpit
+# Bring up Postgres + Temporal + engine worker + cockpit
 docker compose -f packages/infra/docker-compose.yml up -d --wait
 
-# Verify the substrate
-curl -fsS http://localhost:8000/health
-# → {"status":"ok","ducklake":{"status":"ok",...},"postgres":{"status":"ok"}}
+# Verify the engine worker — its health is the Temporal heartbeat (no HTTP):
+docker compose -f packages/infra/docker-compose.yml run --rm --no-deps \
+  --entrypoint temporal temporal-admin-tools \
+  worker list --namespace default --address temporal:7233
+# → Status: Running   (on the dataraum-pipeline task queue)
 
 # Open the cockpit
 open http://localhost:3000
@@ -117,12 +119,15 @@ uv run mypy src/
 uv run ruff check src/
 uv run ruff format --check src/
 
-# Run the control plane locally (without docker)
+# Run the engine activity worker locally (without docker; needs a reachable Temporal)
 export DUCKLAKE_CATALOG_URL=postgresql://...
 export DUCKLAKE_DATA_PATH=/var/lib/dataraum/lake
 export DATABASE_URL=postgresql://...
+export DATARAUM_HOME=/var/lib/dataraum/workspace
+export DATARAUM_WORKSPACE_ID=00000000-0000-0000-0000-000000000001
 export ANTHROPIC_API_KEY=sk-ant-...
-uv run uvicorn dataraum.server.app:app --host 0.0.0.0 --port 8000
+export TEMPORAL_HOST=localhost:7233 TEMPORAL_NAMESPACE=default TEMPORAL_TASK_QUEUE=dataraum-pipeline
+uv run python -m dataraum.worker.main
 ```
 
 ## Documentation

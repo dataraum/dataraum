@@ -65,11 +65,15 @@ class TestForWorkspace:
             manager.close()
 
     def test_workspace_manager_rejects_duckdb_cursor(self) -> None:
-        """duckdb_cursor() on a workspace manager raises with a clear message."""
+        """duckdb_cursor() before DuckDB is opened raises with a clear message.
+
+        A workspace manager that never called open_lake() (nor bound a session)
+        has no DuckDB connection; the error points at open_lake() / session_id.
+        """
         manager = ConnectionManager(ConnectionConfig.for_workspace())
         manager.initialize()
         try:
-            with pytest.raises(RuntimeError, match="workspace-only"):
+            with pytest.raises(RuntimeError, match="open_lake"):
                 with manager.duckdb_cursor():
                     pass
         finally:

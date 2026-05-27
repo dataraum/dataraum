@@ -4,7 +4,7 @@ Monorepo. Four packages, two languages.
 
 ```
 packages/
-├── engine/          # Python — pipeline, detectors, Starlette kernel.  → packages/engine/CLAUDE.md
+├── engine/          # Python — pipeline, detectors, Temporal activity worker. → packages/engine/CLAUDE.md
 ├── cockpit/         # TypeScript — TanStack Start web UI.              → packages/cockpit/CLAUDE.md
 ├── dataraum-config/ # YAML data (entropy contracts, LLM prompts, verticals). No code; bind-mounted, never imported.
 └── infra/           # docker-compose orchestration.                   → packages/infra/docker-compose.yml
@@ -14,8 +14,8 @@ Read the package's own CLAUDE.md before touching it. This file is just the map b
 
 ## How the packages connect
 
-- **Engine ↔ cockpit:** the engine is a 3-verb Starlette kernel (`/measure`, `/query`, `/probe`) + `/health`. No OpenAPI, no codegen. The cockpit reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle (`bun run db:pull:metadata`) and calls the kernel verbs for long-running work.
-- **Orchestration:** Temporal. The cockpit (TS) authors workflows and orchestrates; the engine (Python) runs activities. See `feedback-durable-execution-lean` memory.
+- **Engine ↔ cockpit:** the engine is a **Temporal activity worker** (no HTTP). No OpenAPI, no codegen. The cockpit reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle (`bun run db:pull:metadata`) and drives long-running work as Temporal workflows.
+- **Orchestration:** Temporal (DAT-344). Workflows **and** activities are **Python, bundled on one engine worker** (one task queue); the cockpit is a **Client** that triggers workflows by name (`@temporalio/client`) and renders progress. See `feedback-durable-execution-lean` memory. (This reverses DAT-360's "workflows in TS".)
 - **Persistence:** one Postgres instance, separate schemas — engine owns `ws_<id>` (SQLAlchemy), cockpit owns `cockpit_db` (Drizzle). Never shared.
 - **Config:** `packages/dataraum-config/` is **data, not code** — bind-mounted at `/opt/dataraum/config`, resolved through `dataraum.core.config` (engine) / `fs` (cockpit), never imported or path-navigated.
 - **No backwards-compat shims.** Clean cuts, no migration/compatibility paths.
@@ -34,7 +34,10 @@ Dev runs in a sandboxed (SBX) container — the sandbox handles permissions, so 
 
 ```bash
 docker compose -f packages/infra/docker-compose.yml up -d --wait   # full stack
-curl -fsS http://localhost:8000/health
+# engine health = Temporal worker heartbeat (no HTTP endpoint):
+docker compose -f packages/infra/docker-compose.yml run --rm --no-deps \
+  --entrypoint temporal temporal-admin-tools \
+  worker list --namespace default --address temporal:7233          # → Status: Running
 open http://localhost:3000                                          # cockpit (run dev outside docker for hot reload)
 ```
 

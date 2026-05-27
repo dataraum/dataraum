@@ -117,7 +117,7 @@ jobs:
               uses: docker/build-push-action@v7
               with:
                   context: packages/engine
-                  file: packages/engine/docker/control-plane.Dockerfile
+                  file: packages/engine/docker/worker.Dockerfile
                   push: true
                   tags: |
                       ghcr.io/dataraum/dataraum:${{ steps.version.outputs.version }}

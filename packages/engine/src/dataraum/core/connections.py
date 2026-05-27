@@ -370,22 +370,49 @@ class ConnectionManager:
             self._init_duckdb()
 
     def _init_duckdb(self) -> None:
-        """Open a DuckDB connection scoped to the workspace-stable ``typed`` schema.
+        """Open DuckDB at ``initialize()`` time *iff* a session is already bound.
 
-        Workspace managers that never bind a session (``session_id is None``)
-        skip this; ``duckdb_cursor()`` will raise on attempted use. Slice 1's
-        substrate is workspace-stable, so any manager with a bound session
-        gets the same USE scope: ``lake.typed``.
-
-        The three layer schemas (``raw``, ``typed``, ``quarantine``) are
-        created at :func:`dataraum.server.storage.bootstrap_lake` time, so
-        this method assumes they already exist — no ``CREATE SCHEMA`` here.
+        This is the session-gated entry point used by the ``for_directory``
+        managers the (dying) scheduler/``setup_pipeline`` path constructs with
+        ``session_id`` set at build time. It — and ``bind_session_id`` — are
+        vestiges of the pre-DAT-341 file-per-session model, kept alive only by
+        the scheduler (retired in E4c/DAT-369) and the dead MCP path. New code
+        (the Temporal worker) opens DuckDB via :meth:`open_lake` instead, where
+        ``session_id`` is pure per-activity data, not a precondition.
         """
         if self.session_id is None:
             return
+        self._open_lake_connection()
 
-        # Lazy import: avoids pulling the FastAPI/DuckLake bootstrap surface
-        # into module-load for workspace-only configurations.
+    def open_lake(self) -> None:
+        """Open the workspace-level DuckLake DuckDB connection (no session needed).
+
+        The long-lived Temporal activity worker (DAT-344) calls this once at
+        startup. The lake ``USE`` scope (``lake.typed``) is workspace-stable
+        post-DAT-341, so one connection serves every activity and ``session_id``
+        stays a per-activity data tag (``PhaseContext.session_id``) rather than
+        a gate on having DuckDB at all.
+
+        DuckDB-open is opt-in (not folded into ``initialize()``) because it
+        requires :func:`dataraum.server.storage.bootstrap_lake` to have run,
+        and lake-less managers are legitimate (unit-test engines, the
+        ``/health`` Postgres-only probe). Idempotent.
+        """
+        self._ensure_initialized()
+        self._open_lake_connection()
+
+    def _open_lake_connection(self) -> None:
+        """Open + wrap a DuckDB connection scoped to the workspace-stable ``typed`` schema.
+
+        The three layer schemas (``raw``, ``typed``, ``quarantine``) are created
+        at :func:`dataraum.server.storage.bootstrap_lake` time, so this assumes
+        they already exist — no ``CREATE SCHEMA`` here. Idempotent.
+        """
+        if self._duckdb_conn is not None:
+            return
+
+        # Lazy import: avoids pulling the DuckLake bootstrap surface into
+        # module-load for workspace-only configurations.
         from dataraum.server.storage import LAKE_CATALOG_ALIAS, connect_session
 
         raw_conn = connect_session()
@@ -483,9 +510,10 @@ class ConnectionManager:
         self._ensure_initialized()
         if self._duckdb_conn is None:
             raise RuntimeError(
-                "DuckDB cursor requested on a workspace-only ConnectionManager. "
-                "Workspace managers (constructed without session_id) have no "
-                "DuckDB; route data operations through a per-session manager."
+                "DuckDB is not open on this ConnectionManager. Open it first: "
+                "open_lake() for the worker path (no session needed), or set a "
+                "session_id (scheduler path) so initialize()/bind_session_id() "
+                "opens it."
             )
 
         cursor = self._duckdb_conn.cursor()

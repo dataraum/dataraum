@@ -1,12 +1,14 @@
 FROM python:3.14-slim
 
 LABEL org.opencontainers.image.source="https://github.com/dataraum/dataraum"
-LABEL org.opencontainers.image.description="DataRaum control plane (platform substrate)"
+LABEL org.opencontainers.image.description="DataRaum engine — Temporal activity worker"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
-# System deps: gcc/g++ for any source builds; curl for the container healthcheck
+# System deps: gcc/g++ for any source builds. No curl — the engine is a Temporal
+# worker now (DAT-344), not an HTTP service; its health is the worker heartbeat
+# the Temporal server records, checked externally via `temporal worker list`.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ curl && \
+    gcc g++ && \
     rm -rf /var/lib/apt/lists/*
 
 # Install uv for fast dependency resolution
@@ -60,6 +62,7 @@ RUN /app/.venv/bin/python -c "import duckdb; \
 ENV DUCKDB_EXTENSION_DIRECTORY=/opt/dataraum/duckdb-extensions
 ENV DUCKLAKE_SKIP_INSTALL=1
 
-EXPOSE 8000
-
-ENTRYPOINT ["/app/.venv/bin/uvicorn", "dataraum.server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# The engine runs as a Temporal activity worker (DAT-344): it polls the task
+# queue, it does not listen on a port. Bootstraps the substrate, then runs the
+# bundled workflow + phase activities until SIGTERM.
+ENTRYPOINT ["/app/.venv/bin/python", "-m", "dataraum.worker.main"]

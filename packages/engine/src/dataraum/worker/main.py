@@ -86,6 +86,7 @@ async def run_worker() -> None:
                     phase_activities.run_temporal,
                     phase_activities.run_detect_table,
                     phase_activities.run_semantic_per_column,
+                    phase_activities.run_detect_source,
                 ],
                 activity_executor=executor,
                 max_concurrent_activities=_MAX_CONCURRENT_ACTIVITIES,
@@ -117,6 +118,7 @@ async def run_worker() -> None:
                     "temporal",
                     "detect_table",
                     "semantic_per_column",
+                    "detect_source",
                 ],
             )
             async with worker:

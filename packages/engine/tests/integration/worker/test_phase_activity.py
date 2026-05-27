@@ -34,6 +34,7 @@ from dataraum.worker import (
     SourceIdentity,
     raw_table_ids,
     run_phase,
+    run_source_detectors,
     run_table_detectors,
     typed_table_id_for_raw,
 )
@@ -334,3 +335,9 @@ def test_semantic_per_column_reduce_runs_live(
 
     result = run_phase(worker_manager, "semantic_per_column", identity, [])
     assert result.status == "completed", f"semantic_per_column failed: {result.error}"
+
+    # Source-level detect step (detect_source) runs semantic_per_column's declared
+    # detectors after the reduce — the path DAT-370 originally orphaned. With real
+    # annotations present it should persist records.
+    records = run_source_detectors(worker_manager, identity)
+    assert records > 0, "detect_source produced no source-level detector records"

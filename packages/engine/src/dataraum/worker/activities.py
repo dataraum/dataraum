@@ -8,14 +8,15 @@ phase-name string, no shared catalogue.
 Activities are **sync** (``def``): Temporal runs them on the worker's
 ``ThreadPoolExecutor``, the SDK-recommended shape for blocking SQLAlchemy/DuckDB
 work. Each ``run_phase_activity`` call leases a fresh Postgres session + a DuckDB
-**cursor** on the worker's one shared DuckLake connection. DuckDB serializes
-statements per connection, so concurrent activities serialize at the DuckDB
-layer rather than running as independent transactions (see
-:meth:`ConnectionManager.duckdb_cursor`) — E4a's workflow runs its two
-activities sequentially, so this isn't exercised yet; when E4b fans out
-concurrent source workflows, revisit (a per-activity ``connect_session`` or a
-dedicated activity task queue). The rare DuckLake commit conflict raises and is
-absorbed by Temporal's activity retry.
+**cursor** off the worker's shared DuckLake connection. A DuckDB ``cursor()`` is
+an *independent connection* to the same named in-memory lake DB: it shares the
+catalog (the DuckLake ATTACH, schemas, tables) but carries its own transaction +
+``USE`` state, and is DuckDB's blessed primitive for concurrent access —
+reusing a single connection across threads serializes, but cursors do not (see
+:meth:`ConnectionManager.duckdb_cursor`). So concurrent activities run on
+independent channels; DuckLake reconciles concurrent writers via MVCC +
+optimistic concurrency, and the rare commit conflict raises and is absorbed by
+Temporal's activity retry.
 """
 
 from __future__ import annotations
@@ -56,6 +57,36 @@ class PhaseActivities:
     def run_typing(self, payload: PhaseActivityInput) -> PhaseActivityResult:
         """Typing activity — type-resolves raw tables into ``lake.typed.*``."""
         return _run("typing", self._manager, payload)
+
+    @activity.defn(name="statistics")
+    def run_statistics(self, payload: PhaseActivityInput) -> PhaseActivityResult:
+        """Statistics activity — per-column statistical profiling of typed tables."""
+        return _run("statistics", self._manager, payload)
+
+    @activity.defn(name="column_eligibility")
+    def run_column_eligibility(self, payload: PhaseActivityInput) -> PhaseActivityResult:
+        """Column-eligibility activity — marks which columns downstream phases analyze."""
+        return _run("column_eligibility", self._manager, payload)
+
+    @activity.defn(name="statistical_quality")
+    def run_statistical_quality(self, payload: PhaseActivityInput) -> PhaseActivityResult:
+        """Statistical-quality activity — Benford + outlier detection on numeric columns."""
+        return _run("statistical_quality", self._manager, payload)
+
+    @activity.defn(name="temporal")
+    def run_temporal(self, payload: PhaseActivityInput) -> PhaseActivityResult:
+        """Temporal activity — pattern/trend profiling of date/time columns."""
+        return _run("temporal", self._manager, payload)
+
+    @activity.defn(name="semantic_per_column")
+    def run_semantic_per_column(self, payload: PhaseActivityInput) -> PhaseActivityResult:
+        """Semantic-per-column activity — the first LLM phase (roles, concepts, terms).
+
+        Needs a working ``ANTHROPIC_API_KEY`` in the worker env + the provider /
+        prompt config resolvable from ``dataraum.core.config``; unlike the four
+        analytics phases above it makes real LLM calls.
+        """
+        return _run("semantic_per_column", self._manager, payload)
 
 
 def _run(

@@ -27,30 +27,43 @@ with workflow.unsafe.imports_passed_through():
 _RETRY = RetryPolicy(maximum_attempts=5, non_retryable_error_types=["PhaseFailed"])
 _TIMEOUT = timedelta(minutes=10)
 
+# The slice-1 table-local chain, in dependency order. Each phase runs once over
+# all of the source's tables (per-table fan-out + column batching is E4b-2,
+# DAT-370). ``relationships`` + ``semantic_per_table`` are the cross-table
+# slice-2 cut — deliberately absent. Activities are called by these registered
+# string names; the workflow never imports their implementations.
+_SLICE1_PHASES = (
+    "import",
+    "typing",
+    "statistics",
+    "column_eligibility",
+    "statistical_quality",
+    "temporal",
+    "semantic_per_column",
+)
+
 
 @workflow.defn(name="addSourceWorkflow")
 class AddSourceWorkflow:
-    """E4a's trivial-but-real workflow: the two table-local de-risk phases.
+    """Run the full slice-1 table-local pipeline for one source, then complete.
 
-    Sequential by data dependency — ``typing`` reads the raw tables ``import``
-    writes. The full add_source workflow (through semantic_per_column + the
-    teach signal) is E4b (DAT-368).
+    Drives :data:`_SLICE1_PHASES` sequentially — the order is a valid
+    topological sort of the pipeline.yaml dependencies (typing reads import's raw
+    tables, statistics reads typed tables, …). Completes after
+    ``semantic_per_column``; there is **no** teach wait (the in-loop
+    signal/wait + typing replay is DAT-343, built on the ``typing`` activity).
     """
 
     @workflow.run
     async def run(self, payload: PhaseActivityInput) -> list[PhaseActivityResult]:
-        import_result = await workflow.execute_activity(
-            "import",
-            payload,
-            result_type=PhaseActivityResult,
-            start_to_close_timeout=_TIMEOUT,
-            retry_policy=_RETRY,
-        )
-        typing_result = await workflow.execute_activity(
-            "typing",
-            payload,
-            result_type=PhaseActivityResult,
-            start_to_close_timeout=_TIMEOUT,
-            retry_policy=_RETRY,
-        )
-        return [import_result, typing_result]
+        results: list[PhaseActivityResult] = []
+        for phase in _SLICE1_PHASES:
+            result = await workflow.execute_activity(
+                phase,
+                payload,
+                result_type=PhaseActivityResult,
+                start_to_close_timeout=_TIMEOUT,
+                retry_policy=_RETRY,
+            )
+            results.append(result)
+        return results

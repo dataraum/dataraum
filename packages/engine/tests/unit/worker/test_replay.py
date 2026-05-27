@@ -43,9 +43,18 @@ async def test_addsource_workflow_replays_deterministically() -> None:
         # Same passthrough as the worker — the workflow module's package import
         # chain loads duckdb's native ext, which can't be reimported in the
         # sandbox (see worker/main.py).
+        #
+        # ``coverage`` is test-only: under ``--cov`` on Python 3.14, coverage's
+        # default sysmon core lazily imports ``coverage.env`` (which calls
+        # ``platform.python_implementation()``) the first time it traces a
+        # branch in the workflow. That import lands inside the sandbox and trips
+        # RestrictedWorkflowAccessError. Passing it through keeps coverage's own
+        # instrumentation out of the sandbox; coverage is not part of the
+        # workflow's determinism contract, so the replay check is unaffected.
+        # The production worker does not pass it through (no coverage at runtime).
         workflow_runner=SandboxedWorkflowRunner(
             restrictions=SandboxRestrictions.default.with_passthrough_modules(
-                "dataraum", "pydantic", "pydantic_core"
+                "dataraum", "pydantic", "pydantic_core", "coverage"
             )
         ),
     )

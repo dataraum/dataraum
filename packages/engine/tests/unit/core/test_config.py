@@ -119,16 +119,12 @@ class TestLoadPipelineConfig:
         data = load_pipeline_config()
         assert isinstance(data, dict)
         assert "phases" in data
-        assert "pipeline" in data
         assert isinstance(data["phases"], dict)
         assert "import" in data["phases"]
 
-    def test_pipeline_config_has_pipeline_settings(self):
+    def test_pipeline_config_has_limits(self):
         data = load_pipeline_config()
-        pipeline_cfg = data["pipeline"]
-        assert "max_parallel" in pipeline_cfg
-        assert "fail_fast" in pipeline_cfg
-        assert "retry" in pipeline_cfg
+        assert data["limits"]["max_columns"] == 500
 
     def test_pipeline_config_has_no_phase_sections(self):
         """Pipeline.yaml should only have pipeline config, not phase config."""

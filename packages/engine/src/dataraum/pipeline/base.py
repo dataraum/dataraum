@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from dataraum.core.connections import ConnectionManager
-    from dataraum.entropy.dimensions import AnalysisKey
 
 
 class PhaseStatus(_StrValueMixin):
@@ -128,23 +127,15 @@ class PhaseResult:
 class Phase(Protocol):
     """Protocol for pipeline phases.
 
-    Each phase is a callable that takes a PhaseContext and returns a PhaseResult.
-    Phases declare their dependencies and can be skipped based on DB state.
+    Each phase is a callable that takes a PhaseContext and returns a
+    PhaseResult, and can be skipped based on DB state. Matches the runtime
+    surface of ``BasePhase``; structural metadata (description, detectors)
+    lives in pipeline.yaml, not on the phase object.
     """
 
     @property
     def name(self) -> str:
         """Unique identifier for this phase."""
-        ...
-
-    @property
-    def description(self) -> str:
-        """Human-readable description."""
-        ...
-
-    @property
-    def dependencies(self) -> list[str]:
-        """List of phase names that must complete before this phase."""
         ...
 
     def run(self, ctx: PhaseContext) -> PhaseResult:
@@ -156,16 +147,6 @@ class Phase(Protocol):
         Returns:
             PhaseResult with status and outputs
         """
-        ...
-
-    @property
-    def produces_analyses(self) -> set[AnalysisKey]:
-        """Analysis keys this phase produces (used for auto-derive)."""
-        ...
-
-    @property
-    def detectors(self) -> list[str]:
-        """Detector IDs to run as post-steps after this phase completes."""
         ...
 
     @property

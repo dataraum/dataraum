@@ -58,13 +58,6 @@ class TestSlicingViewPhaseRegistry:
         phase = SlicingViewPhase()
         assert phase.name == "slicing_view"
 
-    def test_phase_dependencies(self):
-        """Phase depends on slicing."""
-        from dataraum.pipeline.pipeline_config import load_phase_declarations
-
-        decl = load_phase_declarations()["slicing_view"]
-        assert "slicing" in decl.dependencies
-
 
 class TestBuildSlicingViewSql:
     """Tests for _build_slicing_view_sql logic."""

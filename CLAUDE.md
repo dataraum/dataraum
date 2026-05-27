@@ -12,13 +12,22 @@ packages/
 
 Read the package's own CLAUDE.md before touching it. This file is just the map between them.
 
+## Default to the clean cut
+
+This codebase is mid-pivot (Python library → web-app cockpit). Retiring recently-shipped work is normal — it's the cost of doing the pivot right, not a loss. Implement the agreed design to its clean conclusion:
+
+- **Existing code, scaffolding, and especially tests *follow* the design — they never constrain it.** When the design implies removing a field/abstraction/module, remove it everywhere, including its tests, in one cut. Don't minimize-the-touch to keep tests green; adapting or deleting a test to match the new design is expected, not a concession.
+- **Don't quote prior notes as constraints — even ones written this session, including recalled memory.** They're context, not law; they reflect what was true when written. The code on disk and the agreed design win. If a note and the code disagree, verify the code and act on it.
+- **Investigate to decide, then act.** Grep who actually uses something, then make the cut — don't re-confirm a decision already made or ask permission for routine cleanup.
+- **Philipp owns design direction and is the senior engineer.** Build what's specified at high quality without relitigating settled calls. Reserve check-ins for genuine forks or design risk, not micro-steps.
+- **No backwards-compat shims.** Clean cuts, no migration/compatibility paths.
+
 ## How the packages connect
 
 - **Engine ↔ cockpit:** the engine is a **Temporal activity worker** (no HTTP). No OpenAPI, no codegen. The cockpit reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle (`bun run db:pull:metadata`) and drives long-running work as Temporal workflows.
 - **Orchestration:** Temporal (DAT-344). Workflows **and** activities are **Python, bundled on one engine worker** (one task queue); the cockpit is a **Client** that triggers workflows by name (`@temporalio/client`) and renders progress. See `feedback-durable-execution-lean` memory. (This reverses DAT-360's "workflows in TS".)
 - **Persistence:** one Postgres instance, separate schemas — engine owns `ws_<id>` (SQLAlchemy), cockpit owns `cockpit_db` (Drizzle). Never shared.
 - **Config:** `packages/dataraum-config/` is **data, not code** — bind-mounted at `/opt/dataraum/config`, resolved through `dataraum.core.config` (engine) / `fs` (cockpit), never imported or path-navigated.
-- **No backwards-compat shims.** Clean cuts, no migration/compatibility paths.
 
 ## Skills
 

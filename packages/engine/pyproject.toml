@@ -105,6 +105,7 @@ target-version = "py314"
 line-length = 100
 extend-exclude = [
     "prototypes/",
+    "reference/",
     "*.tcss",
 ]
 
@@ -195,9 +196,6 @@ exclude = ["prototypes/"]
 [tool.coverage.run]
 source = ["src/dataraum"]
 branch = true
-omit = [
-    "src/dataraum/mcp/*",        # MCP server tested via integration
-]
 
 [tool.coverage.report]
 show_missing = true

@@ -69,44 +69,6 @@ def _reset_settings_cache() -> Generator[None]:
     reset_settings()
 
 
-@pytest.fixture(autouse=True)
-def _close_mcp_servers_after_test(monkeypatch: pytest.MonkeyPatch):
-    """Auto-close any MCP server created during a test.
-
-    Tests construct servers inline via ``create_server(output_dir=...)``
-    which caches workspace + session ``ConnectionManager`` instances. The
-    cached psycopg pools never get disposed by the test itself, so they
-    leak until GC catches them — Python 3.12+ raises
-    ``ResourceWarning: <psycopg.Connection> was deleted while still open``.
-
-    This fixture monkeypatches ``create_server`` to track every returned
-    ``Server`` and calls ``server.close()`` on teardown. Tests do not need
-    to opt in.
-    """
-    import warnings
-
-    from dataraum.mcp import server as server_mod
-
-    created: list = []
-    original = server_mod.create_server
-
-    def tracked(*args, **kwargs):
-        s = original(*args, **kwargs)
-        created.append(s)
-        return s
-
-    monkeypatch.setattr(server_mod, "create_server", tracked)
-    yield
-    for s in created:
-        try:
-            s.close()  # type: ignore[attr-defined]
-        except Exception as exc:
-            warnings.warn(
-                f"Failed to close MCP server during test teardown: {s!r} ({exc!r})",
-                stacklevel=2,
-            )
-
-
 @event.listens_for(Session, "before_flush")
 def _autofill_fks_globally(sess, _flush_ctx, _instances):
     """Auto-fill the ``session_id`` FK on any pending row that left it None.

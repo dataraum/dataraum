@@ -24,6 +24,7 @@ from dataraum.entropy.engine import run_detector_post_step
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.pipeline_config import load_phase_declarations
 from dataraum.pipeline.registry import get_phase_class
+from dataraum.server.workspace import get_active_workspace_id
 from dataraum.storage import Source
 from dataraum.worker.contracts import PhaseActivityInput, PhaseActivityResult
 
@@ -48,6 +49,24 @@ def run_phase_activity(
         phase_name: a key in pipeline.yaml / the phase registry (e.g. "import").
         payload: the activity input (IDs + optional table filter).
     """
+    # Anti-footgun for the deferred multi-workspace isolation (DAT-364): the
+    # worker is bound to exactly one workspace, so a payload addressed to a
+    # different one must never run — it would silently write into this worker's
+    # lake + ws_<id> schema. Fail loud before touching any connection (FAILED →
+    # non-retryable PhaseFailed in the activity wrapper). Today workspace_id is
+    # decorative; this becomes the routing key when isolation lands.
+    active_workspace_id = get_active_workspace_id()
+    if payload.workspace_id != active_workspace_id:
+        return PhaseActivityResult(
+            phase=phase_name,
+            status=PhaseStatus.FAILED.value,
+            error=(
+                f"Workspace mismatch: payload targets '{payload.workspace_id}' "
+                f"but this worker is bound to '{active_workspace_id}'. Refusing "
+                "to run to avoid a cross-workspace miswrite (DAT-364)."
+            ),
+        )
+
     phase_cls = get_phase_class(phase_name)
     if phase_cls is None:
         return PhaseActivityResult(

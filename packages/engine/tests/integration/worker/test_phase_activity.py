@@ -12,6 +12,7 @@ SQLite or mocks — the substrate reconstitution is exactly what's under test.
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -201,3 +202,64 @@ def test_semantic_per_column_activity_runs_live(
     for phase in ("import", "typing", "statistics", "semantic_per_column"):
         result = run_phase_activity(worker_manager, phase, payload)
         assert result.status == "completed", f"{phase} failed: {result.error}"
+
+
+def test_workspace_mismatch_fails_loud(
+    worker_manager: ConnectionManager, tmp_path: Path
+) -> None:
+    """A payload addressed to another workspace is refused before any work.
+
+    Anti-footgun for the deferred multi-workspace isolation (DAT-364): the
+    worker is bound to one workspace (``"test"`` under the conftest pointer), so
+    a mismatched ``workspace_id`` must fail rather than silently write into this
+    worker's lake/schema. FAILED here becomes a non-retryable PhaseFailed in the
+    activity wrapper.
+    """
+    payload = PhaseActivityInput(
+        workspace_id="some-other-workspace",
+        source_id=str(uuid4()),
+        session_id=str(uuid4()),
+    )
+    result = run_phase_activity(worker_manager, "import", payload)
+    assert result.status == "failed"
+    assert "Workspace mismatch" in (result.error or "")
+    assert "some-other-workspace" in (result.error or "")
+
+
+def test_concurrent_sources_run_on_independent_cursors(
+    worker_manager: ConnectionManager, small_finance_path: Path
+) -> None:
+    """Two sources' activities run concurrently on the one worker manager.
+
+    Each ``run_phase_activity`` leases its own DuckDB cursor — an independent
+    connection/channel to the shared lake — so concurrent activities do not
+    serialize and DuckLake reconciles the writers via MVCC. This exercises the
+    cursor-concurrency model the bundled worker relies on (DAT-368): a single
+    long-lived ``ConnectionManager`` driven by multiple activity threads.
+    """
+
+    def _run_chain(name: str) -> list[str]:
+        source_id = str(uuid4())
+        session_id = str(uuid4())
+        _seed_source_and_session(
+            worker_manager, source_id, session_id, name, small_finance_path
+        )
+        payload = PhaseActivityInput(
+            workspace_id="test", source_id=source_id, session_id=session_id
+        )
+        # import (writes lake.raw) + typing (writes lake.typed) — concurrent
+        # writers against the shared lake from two activity threads.
+        return [
+            run_phase_activity(worker_manager, phase, payload).status
+            for phase in ("import", "typing")
+        ]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(_run_chain, "concurrent_a"),
+            executor.submit(_run_chain, "concurrent_b"),
+        ]
+        results = [future.result() for future in futures]
+
+    for statuses in results:
+        assert statuses == ["completed", "completed"], statuses

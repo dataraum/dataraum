@@ -495,9 +495,13 @@ class ConnectionManager:
         Each call returns a wrapped ``connection.cursor()`` that
         re-issues ``USE lake.typed`` on every derived cursor (DuckDB's
         Python API does NOT inherit USE on cursor()). See
-        :class:`_LakeScopedConnection` for the API motivation. Statement
-        state serializes per DuckDB's Python client; for parallel work
-        across managers, open separate per-session managers.
+        :class:`_LakeScopedConnection` for the API motivation. A DuckDB
+        ``cursor()`` is an independent connection to the same named
+        in-memory lake DB (shared catalog, own transaction + ``USE``
+        state), so cursors from one manager are safe to use concurrently
+        across threads — DuckDB's blessed primitive for parallel access
+        (reusing a single connection across threads serializes; cursors
+        do not).
 
         Raises:
             RuntimeError: If manager not initialized or it is workspace-only

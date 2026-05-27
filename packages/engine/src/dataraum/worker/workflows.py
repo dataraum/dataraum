@@ -1,25 +1,49 @@
-"""Temporal workflows (DAT-344) — orchestration, authored in Python.
+"""Temporal workflows (DAT-344; per-table fan-out DAT-370) — orchestration in Python.
 
 Runs in Temporal's determinism sandbox, so this module imports ONLY
-``temporalio`` + the engine-free :mod:`dataraum.worker.contracts` shapes (pulled
-through the sandbox via ``imports_passed_through``). It calls activities by
-their registered string names (``import`` / ``typing``) — it never imports the
-activity implementations, which would drag the engine into the sandbox.
+``temporalio`` + ``asyncio`` + the engine-free :mod:`dataraum.worker.contracts`
+shapes (pulled through the sandbox via ``imports_passed_through``). It calls
+activities by their registered string names — it never imports the activity
+implementations, which would drag the engine into the sandbox.
 
-The activities run on the same worker + task queue (bundled — Temporal's
-recommended default; split onto a dedicated activity task queue later if heavy
-phases need independent scaling).
+Topology (DAT-370): the table is the unit of work.
+
+    AddSourceWorkflow(identity)                              [parent]
+      import()                  -> raw table ids             (source-level enumerator)
+      fan-out via asyncio.gather:
+        ProcessTableWorkflow(raw_id) for each raw id         [child, per table]
+      semantic_per_column()                                  (source-level reduce)
+
+    ProcessTableWorkflow(raw_table_id)                       [child]
+      typing(raw_id) -> typed_id
+      statistics -> column_eligibility -> statistical_quality -> temporal   (typed_id)
+      detect_table(typed_id)                                 (stage-level detectors)
+
+The child gives per-table history isolation + bounded parent history, and
+``typed_id`` is threaded through the child's messages (persisted in history,
+replayed verbatim). Detectors run once at the tail of the stage, scoped to the
+child's typed table — not per phase (DAT-370).
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from dataraum.worker.contracts import PhaseActivityInput, PhaseActivityResult
+    from dataraum.worker.contracts import (
+        AddSourceInput,
+        AddSourceResult,
+        ImportResult,
+        PhaseOutcome,
+        ProcessTableInput,
+        ProcessTableResult,
+        TableScopedInput,
+        TypingResult,
+    )
 
 # A deterministic phase failure is raised by the activity as a non-retryable
 # ApplicationError of this type; transient failures (e.g. a DuckLake
@@ -27,43 +51,101 @@ with workflow.unsafe.imports_passed_through():
 _RETRY = RetryPolicy(maximum_attempts=5, non_retryable_error_types=["PhaseFailed"])
 _TIMEOUT = timedelta(minutes=10)
 
-# The slice-1 table-local chain, in dependency order. Each phase runs once over
-# all of the source's tables (per-table fan-out + column batching is E4b-2,
-# DAT-370). ``relationships`` + ``semantic_per_table`` are the cross-table
-# slice-2 cut — deliberately absent. Activities are called by these registered
-# string names; the workflow never imports their implementations.
-_SLICE1_PHASES = (
-    "import",
-    "typing",
+# The table-local analytics phases, in dependency order. ``typing`` precedes
+# them (it mints the typed id); ``detect_table`` follows (stage-level detectors).
+_ANALYTICS_PHASES = (
     "statistics",
     "column_eligibility",
     "statistical_quality",
     "temporal",
-    "semantic_per_column",
 )
+
+
+@workflow.defn(name="processTableWorkflow")
+class ProcessTableWorkflow:
+    """Run the table-local chain for one raw table, then complete.
+
+    ``typing`` mints the typed id; the analytics phases run scoped to it; a
+    single stage-level ``detect_table`` runs the table-local detectors scoped to
+    the same typed table. The typed id travels in the activity results, so it is
+    in history and replayed verbatim — never recomputed.
+    """
+
+    @workflow.run
+    async def run(self, payload: ProcessTableInput) -> ProcessTableResult:
+        typing = await workflow.execute_activity(
+            "typing",
+            payload,
+            result_type=TypingResult,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+        scoped = TableScopedInput(identity=payload.identity, table_id=typing.typed_table_id)
+        for phase in _ANALYTICS_PHASES:
+            await workflow.execute_activity(
+                phase,
+                scoped,
+                result_type=PhaseOutcome,
+                start_to_close_timeout=_TIMEOUT,
+                retry_policy=_RETRY,
+            )
+        await workflow.execute_activity(
+            "detect_table",
+            scoped,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+        return ProcessTableResult(
+            raw_table_id=payload.raw_table_id,
+            typed_table_id=typing.typed_table_id,
+        )
 
 
 @workflow.defn(name="addSourceWorkflow")
 class AddSourceWorkflow:
-    """Run the full slice-1 table-local pipeline for one source, then complete.
+    """Import one source, fan out a child workflow per raw table, then reduce.
 
-    Drives :data:`_SLICE1_PHASES` sequentially — the order is a valid
-    topological sort of the pipeline.yaml dependencies (typing reads import's raw
-    tables, statistics reads typed tables, …). Completes after
-    ``semantic_per_column``; there is **no** teach wait (the in-loop
-    signal/wait + typing replay is DAT-343, built on the ``typing`` activity).
+    ``import`` enumerates the source's raw tables (the table set is unknown until
+    it runs); the workflow fans out one :class:`ProcessTableWorkflow` per raw id
+    via ``asyncio.gather`` and waits for all to complete; then
+    ``semantic_per_column`` runs once as the source-level reduce. The data-
+    dependent fan-out is driven off ``import``'s recorded result, so replay is
+    deterministic. There is **no** teach wait (that is DAT-343).
     """
 
     @workflow.run
-    async def run(self, payload: PhaseActivityInput) -> list[PhaseActivityResult]:
-        results: list[PhaseActivityResult] = []
-        for phase in _SLICE1_PHASES:
-            result = await workflow.execute_activity(
-                phase,
-                payload,
-                result_type=PhaseActivityResult,
-                start_to_close_timeout=_TIMEOUT,
-                retry_policy=_RETRY,
+    async def run(self, payload: AddSourceInput) -> AddSourceResult:
+        imported = await workflow.execute_activity(
+            "import",
+            payload.identity,
+            result_type=ImportResult,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
+        # Per-table fan-out. Deterministic, collision-free child ids keep replay
+        # stable; ParentClosePolicy stays the SDK default TERMINATE — the parent
+        # always gathers its children to completion, so there are no orphans.
+        children = [
+            workflow.execute_child_workflow(
+                ProcessTableWorkflow.run,
+                ProcessTableInput(identity=payload.identity, raw_table_id=raw_id),
+                id=f"addsource-{payload.identity.source_id}-table-{raw_id}",
             )
-            results.append(result)
-        return results
+            for raw_id in imported.raw_table_ids
+        ]
+        tables: list[ProcessTableResult] = list(await asyncio.gather(*children))
+
+        # Source-level reduce: ontology induction is source-global, so it runs
+        # once over all tables after the fan-out (moves to the frame workflow
+        # later; not a blocker here).
+        await workflow.execute_activity(
+            "semantic_per_column",
+            payload.identity,
+            result_type=PhaseOutcome,
+            start_to_close_timeout=_TIMEOUT,
+            retry_policy=_RETRY,
+        )
+
+        return AddSourceResult(raw_table_ids=imported.raw_table_ids, tables=tables)

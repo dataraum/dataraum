@@ -26,7 +26,7 @@ from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
-from dataraum.storage import Column, Table
+from dataraum.storage import Column
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -56,10 +56,14 @@ class ColumnEligibilityPhase(BasePhase):
         table_ids: list[str],
         column_ids: list[str],
     ) -> int:
-        return exec_delete(
-            session,
-            delete(ColumnEligibilityRecord).where(ColumnEligibilityRecord.source_id == source_id),
+        stmt = delete(ColumnEligibilityRecord).where(
+            ColumnEligibilityRecord.source_id == source_id
         )
+        # Scope to the requested tables when given (per-table replay, DAT-370) so a
+        # single table's re-run does not clobber sibling tables' eligibility rows.
+        if table_ids:
+            stmt = stmt.where(ColumnEligibilityRecord.table_id.in_(table_ids))
+        return exec_delete(session, stmt)
 
     @property
     def db_models(self) -> list[ModuleType]:
@@ -68,9 +72,8 @@ class ColumnEligibilityPhase(BasePhase):
         return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if all columns already have eligibility records."""
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        typed_tables = ctx.session.execute(stmt).scalars().all()
+        """Skip if the scoped tables' columns all have eligibility records."""
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return "No typed tables found"
@@ -99,9 +102,7 @@ class ColumnEligibilityPhase(BasePhase):
         """Run column eligibility evaluation."""
         config = load_eligibility_config(ctx.config)
 
-        # Get typed tables
-        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
-        typed_tables = ctx.session.execute(stmt).scalars().all()
+        typed_tables = self._typed_tables(ctx)
 
         if not typed_tables:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")

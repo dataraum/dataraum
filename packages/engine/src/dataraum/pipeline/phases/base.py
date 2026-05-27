@@ -13,8 +13,11 @@ from abc import ABC, abstractmethod
 from types import ModuleType
 from typing import TYPE_CHECKING
 
+from sqlalchemy import select
+
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
+from dataraum.storage import Table
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -70,6 +73,19 @@ class BasePhase(ABC):
         Lazy imports inside the property avoid circular imports at decoration time.
         """
         return []
+
+    def _typed_tables(self, ctx: PhaseContext) -> list[Table]:
+        """The typed tables this phase should process, scoped to ``ctx.table_ids``.
+
+        The table-local phases run per-table under the DAT-370 fan-out:
+        ``ctx.table_ids`` carries the single typed table the child workflow is
+        processing, so the phase analyzes exactly that table. An empty
+        ``ctx.table_ids`` means source-wide (direct/test invocation).
+        """
+        stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
+        if ctx.table_ids:
+            stmt = stmt.where(Table.table_id.in_(ctx.table_ids))
+        return list(ctx.session.execute(stmt).scalars().all())
 
     def run(self, ctx: PhaseContext) -> PhaseResult:
         """Execute the phase.

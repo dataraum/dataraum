@@ -1,22 +1,21 @@
-"""Temporal activity definitions for pipeline phases (DAT-344).
+"""Temporal activity definitions for pipeline phases (DAT-344, per-table DAT-370).
 
-Thin ``@activity.defn`` wrappers over :func:`run_phase_activity`. They hold the
-worker's single :class:`ConnectionManager` (set at bootstrap) and name each
-activity after its pipeline.yaml phase — so the workflow calls them by that
-phase-name string, no shared catalogue.
+Thin ``@activity.defn`` wrappers that translate the per-boundary contracts into
+calls on the Temporal-agnostic helpers in :mod:`dataraum.worker.activity`. They
+hold the worker's single :class:`ConnectionManager` (set at bootstrap) and name
+each activity after its pipeline.yaml phase (plus ``detect_table``) — so the
+workflows call them by that string, no shared catalogue.
 
 Activities are **sync** (``def``): Temporal runs them on the worker's
 ``ThreadPoolExecutor``, the SDK-recommended shape for blocking SQLAlchemy/DuckDB
-work. Each ``run_phase_activity`` call leases a fresh Postgres session + a DuckDB
-**cursor** off the worker's shared DuckLake connection. A DuckDB ``cursor()`` is
-an *independent connection* to the same named in-memory lake DB: it shares the
+work. Each helper call leases a fresh Postgres session + a DuckDB **cursor** off
+the worker's shared DuckLake connection. A DuckDB ``cursor()`` is an
+*independent connection* to the same named in-memory lake DB: it shares the
 catalog (the DuckLake ATTACH, schemas, tables) but carries its own transaction +
-``USE`` state, and is DuckDB's blessed primitive for concurrent access —
-reusing a single connection across threads serializes, but cursors do not (see
-:meth:`ConnectionManager.duckdb_cursor`). So concurrent activities run on
-independent channels; DuckLake reconciles concurrent writers via MVCC +
-optimistic concurrency, and the rare commit conflict raises and is absorbed by
-Temporal's activity retry.
+``USE`` state, and is DuckDB's blessed primitive for concurrent access. So
+concurrent activities (parallel child workflows) run on independent channels;
+DuckLake reconciles concurrent writers via MVCC + optimistic concurrency, and
+the rare commit conflict raises and is absorbed by Temporal's activity retry.
 """
 
 from __future__ import annotations
@@ -28,9 +27,18 @@ from temporalio.exceptions import ApplicationError
 
 from dataraum.pipeline.base import PhaseStatus
 from dataraum.worker.activity import (
-    PhaseActivityInput,
-    PhaseActivityResult,
-    run_phase_activity,
+    raw_table_ids,
+    run_phase,
+    run_table_detectors,
+    typed_table_id_for_raw,
+)
+from dataraum.worker.contracts import (
+    ImportResult,
+    PhaseOutcome,
+    ProcessTableInput,
+    SourceIdentity,
+    TableScopedInput,
+    TypingResult,
 )
 
 if TYPE_CHECKING:
@@ -40,73 +48,103 @@ if TYPE_CHECKING:
 class PhaseActivities:
     """Phase activities bound to the worker's ConnectionManager.
 
-    Registered as bound methods (``worker = Worker(..., activities=[acts.run_import,
-    acts.run_typing])``) so the manager is captured by instance, not a module
-    global — no import-time/runtime ordering coupling.
+    Registered as bound methods (``Worker(..., activities=[acts.run_import, …])``)
+    so the manager is captured by instance, not a module global — no
+    import-time/runtime ordering coupling.
     """
 
     def __init__(self, manager: ConnectionManager) -> None:
         self._manager = manager
 
     @activity.defn(name="import")
-    def run_import(self, payload: PhaseActivityInput) -> PhaseActivityResult:
-        """Import activity — loads the bound source into ``lake.raw.*``."""
-        return _run("import", self._manager, payload)
+    def run_import(self, identity: SourceIdentity) -> ImportResult:
+        """Import activity — loads the source into ``lake.raw.*``, returns raw ids.
+
+        The discovered raw ids are the parent workflow's fan-out source, so they
+        are read authoritatively from the substrate after the phase — correct
+        even when import is skipped because the source was already imported.
+        """
+        self._run_or_raise("import", identity, [])
+        return ImportResult(raw_table_ids=raw_table_ids(self._manager, identity.source_id))
 
     @activity.defn(name="typing")
-    def run_typing(self, payload: PhaseActivityInput) -> PhaseActivityResult:
-        """Typing activity — type-resolves raw tables into ``lake.typed.*``."""
-        return _run("typing", self._manager, payload)
+    def run_typing(self, payload: ProcessTableInput) -> TypingResult:
+        """Typing activity — type-resolves one raw table, returns its typed id."""
+        self._run_or_raise("typing", payload.identity, [payload.raw_table_id])
+        typed_id = typed_table_id_for_raw(
+            self._manager, payload.identity.source_id, payload.raw_table_id
+        )
+        if typed_id is None:
+            raise ApplicationError(
+                f"typing produced no typed table for raw table '{payload.raw_table_id}'",
+                type="PhaseFailed",
+                non_retryable=True,
+            )
+        return TypingResult(typed_table_id=typed_id)
 
     @activity.defn(name="statistics")
-    def run_statistics(self, payload: PhaseActivityInput) -> PhaseActivityResult:
-        """Statistics activity — per-column statistical profiling of typed tables."""
-        return _run("statistics", self._manager, payload)
+    def run_statistics(self, payload: TableScopedInput) -> PhaseOutcome:
+        """Statistics activity — per-column statistical profiling of one typed table."""
+        return self._run_or_raise("statistics", payload.identity, [payload.table_id])
 
     @activity.defn(name="column_eligibility")
-    def run_column_eligibility(self, payload: PhaseActivityInput) -> PhaseActivityResult:
+    def run_column_eligibility(self, payload: TableScopedInput) -> PhaseOutcome:
         """Column-eligibility activity — marks which columns downstream phases analyze."""
-        return _run("column_eligibility", self._manager, payload)
+        return self._run_or_raise("column_eligibility", payload.identity, [payload.table_id])
 
     @activity.defn(name="statistical_quality")
-    def run_statistical_quality(self, payload: PhaseActivityInput) -> PhaseActivityResult:
+    def run_statistical_quality(self, payload: TableScopedInput) -> PhaseOutcome:
         """Statistical-quality activity — Benford + outlier detection on numeric columns."""
-        return _run("statistical_quality", self._manager, payload)
+        return self._run_or_raise("statistical_quality", payload.identity, [payload.table_id])
 
     @activity.defn(name="temporal")
-    def run_temporal(self, payload: PhaseActivityInput) -> PhaseActivityResult:
+    def run_temporal(self, payload: TableScopedInput) -> PhaseOutcome:
         """Temporal activity — pattern/trend profiling of date/time columns."""
-        return _run("temporal", self._manager, payload)
+        return self._run_or_raise("temporal", payload.identity, [payload.table_id])
+
+    @activity.defn(name="detect_table")
+    def run_detect_table(self, payload: TableScopedInput) -> PhaseOutcome:
+        """Run the table-local detectors scoped to one typed table (DAT-370).
+
+        The stage-level detector step: runs once per ``ProcessTableWorkflow`` after
+        its analytics phases, scoped to the child's typed table — never per phase.
+        """
+        count = run_table_detectors(self._manager, payload.identity, payload.table_id)
+        return PhaseOutcome(
+            status=PhaseStatus.COMPLETED.value,
+            summary=f"{count} detector records for table {payload.table_id}",
+        )
 
     @activity.defn(name="semantic_per_column")
-    def run_semantic_per_column(self, payload: PhaseActivityInput) -> PhaseActivityResult:
-        """Semantic-per-column activity — the first LLM phase (roles, concepts, terms).
+    def run_semantic_per_column(self, identity: SourceIdentity) -> PhaseOutcome:
+        """Semantic-per-column activity — the source-level LLM reduce (roles, concepts, terms).
 
-        Needs a working ``ANTHROPIC_API_KEY`` in the worker env + the provider /
-        prompt config resolvable from ``dataraum.core.config``; unlike the four
-        analytics phases above it makes real LLM calls.
+        Runs once over the whole source after the per-table fan-out (its ontology
+        induction is source-global). Needs a working ``ANTHROPIC_API_KEY`` + the
+        provider/prompt config resolvable from ``dataraum.core.config``; unlike the
+        analytics phases it makes real LLM calls.
         """
-        return _run("semantic_per_column", self._manager, payload)
+        return self._run_or_raise("semantic_per_column", identity, [])
 
+    def _run_or_raise(
+        self,
+        phase_name: str,
+        identity: SourceIdentity,
+        table_ids: list[str],
+    ) -> PhaseOutcome:
+        """Run a phase; turn a deterministic phase failure into a non-retryable error.
 
-def _run(
-    phase_name: str,
-    manager: ConnectionManager,
-    payload: PhaseActivityInput,
-) -> PhaseActivityResult:
-    """Run a phase; turn a deterministic phase failure into a non-retryable error.
-
-    A FAILED ``PhaseResult`` means the phase itself decided it cannot proceed
-    (bad path, missing config) — permanent, so we raise a non-retryable
-    ``ApplicationError`` rather than burning Temporal retries. Transient
-    failures (e.g. a DuckLake optimistic-commit conflict) raise out of
-    ``run_phase_activity`` as ordinary exceptions and stay retryable by default.
-    """
-    result = run_phase_activity(manager, phase_name, payload)
-    if result.status == PhaseStatus.FAILED.value:
-        raise ApplicationError(
-            result.error or f"Phase '{phase_name}' failed",
-            type="PhaseFailed",
-            non_retryable=True,
-        )
-    return result
+        A FAILED ``PhaseRun`` means the phase itself decided it cannot proceed
+        (bad path, missing config) — permanent, so we raise a non-retryable
+        ``ApplicationError`` rather than burning Temporal retries. Transient
+        failures (e.g. a DuckLake optimistic-commit conflict) raise out of
+        ``run_phase`` as ordinary exceptions and stay retryable by default.
+        """
+        run = run_phase(self._manager, phase_name, identity, table_ids)
+        if run.status == PhaseStatus.FAILED.value:
+            raise ApplicationError(
+                run.error or f"Phase '{phase_name}' failed",
+                type="PhaseFailed",
+                non_retryable=True,
+            )
+        return PhaseOutcome(status=run.status, summary=run.summary)

@@ -4,6 +4,50 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-27: DAT-370 — per-table fan-out for add_source (E4b-2)
+
+The table is now the unit of work. `addSourceWorkflow` imports the source,
+**fans out one `processTableWorkflow` child per raw table** (`asyncio.gather`),
+then runs `semantic_per_column` once as the source-level reduce. Each child runs
+the table-local chain scoped to its one table: `typing` (mints a typed id) →
+`statistics` → `column_eligibility` → `statistical_quality` → `temporal` →
+`detect_table`. This replaces DAT-368's coarse single pass over the whole source.
+
+Two structural changes ride along:
+- **Detectors moved off the per-phase path to a stage-level step.** They no
+  longer run as a post-step after each phase; instead one `detect_table` step at
+  the tail of each child runs the table-local detectors (`type_fidelity`,
+  `null_ratio`) **scoped to that child's typed table**. `run_detector_post_step`
+  gained a `table_ids` scope (delete-before-insert + scan restricted to the
+  table) so parallel children never clobber each other's
+  `(source_id, detector_id)` rows.
+- **Message contract redesigned per-boundary.** The uniform
+  `PhaseActivityInput`/`PhaseActivityResult` envelope is gone; activities take
+  typed inputs (a `SourceIdentity` header + their real args) and the workflow
+  returns `AddSourceResult { raw_table_ids, tables:[{raw_table_id, typed_table_id}] }`.
+
+### dataraum-eval
+
+- **Eval action: behavior-preserving — re-verify, don't expect a shift.** Same
+  detectors, same per-table/per-column analysis; only granularity (per-table) and
+  detector *timing* (once per table at stage end vs. once per source-wide phase)
+  changed. The union of per-table detector records equals the old single
+  source-wide run. **This is the per-table execution the eval gate was waiting
+  on** — calibration can now run against the stabilized pattern.
+- **How to drive a run**: start `addSourceWorkflow` (task queue
+  `dataraum-pipeline`) with `AddSourceInput` = `{ identity: { workspace_id,
+  source_id, session_id, vertical? } }`. It fans out per table and stops after
+  `semantic_per_column`; `relationships` + `semantic_per_table` (slice-2) and
+  teach (DAT-343) are still not in the chain.
+- **If recall moves**: suspect the per-table detector scoping (`table_ids` in
+  `run_detector_post_step`) or the per-table `should_skip` rewrites in the four
+  analytics phases — those are the only behavioral touches.
+- **Status**: per-table execution stabilized; eval unblocked to run in parallel.
+
+### dataraum-testdata (hints)
+
+- None. No detector or fixture surface changed; output is preserved.
+
 ## 2026-05-27: DAT-369 — de-monolith (retire the hand-rolled scheduler + monitoring)
 
 Pure-cleanup follow-up to DAT-368. Now that the engine is a Temporal activity

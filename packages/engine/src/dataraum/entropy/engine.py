@@ -32,18 +32,26 @@ def run_detector_post_step(
     duckdb_conn: Any = None,
     *,
     session_id: str,
+    table_ids: list[str] | None = None,
 ) -> int:
     """Run a single detector as a phase post-step.
 
     Scoped delete-before-insert: deletes existing records for this
-    (source_id, detector_id) pair, then runs the detector against all
-    typed tables/columns/views and persists new records.
+    (source_id, detector_id) pair, then runs the detector against the typed
+    tables in scope and persists new records.
+
+    When ``table_ids`` is given (the per-table stage step, DAT-370), both the
+    delete and the table scan are restricted to those tables — so parallel
+    child workflows running this detector on different tables never collide on
+    each other's ``(source_id, detector_id)`` rows. ``None`` = source-wide.
 
     Args:
         session: SQLAlchemy session (caller manages commit).
         source_id: Source ID for record provenance.
         detector_id: ID of the detector to run.
         duckdb_conn: DuckDB connection for detectors that query data directly.
+        session_id: Per-run FK for the persisted records.
+        table_ids: Optional typed-table scope; ``None`` runs over all typed tables.
 
     Returns:
         Number of records created.
@@ -58,20 +66,20 @@ def run_detector_post_step(
         logger.warning("post_step_detector_not_found", detector_id=detector_id)
         return 0
 
-    # Scoped delete: remove stale records for this detector only
-    session.execute(
-        delete(EntropyObjectRecord).where(
-            EntropyObjectRecord.source_id == source_id,
-            EntropyObjectRecord.detector_id == detector_id,
-        )
+    # Scoped delete: remove stale records for this detector (and table scope) only
+    delete_stmt = delete(EntropyObjectRecord).where(
+        EntropyObjectRecord.source_id == source_id,
+        EntropyObjectRecord.detector_id == detector_id,
     )
+    if table_ids is not None:
+        delete_stmt = delete_stmt.where(EntropyObjectRecord.table_id.in_(table_ids))
+    session.execute(delete_stmt)
 
-    # Get typed tables
-    typed_tables = list(
-        session.execute(select(Table).where(Table.source_id == source_id, Table.layer == "typed"))
-        .scalars()
-        .all()
-    )
+    # Get typed tables (restricted to the scope when given)
+    typed_stmt = select(Table).where(Table.source_id == source_id, Table.layer == "typed")
+    if table_ids is not None:
+        typed_stmt = typed_stmt.where(Table.table_id.in_(table_ids))
+    typed_tables = list(session.execute(typed_stmt).scalars().all())
     if not typed_tables:
         return 0
 

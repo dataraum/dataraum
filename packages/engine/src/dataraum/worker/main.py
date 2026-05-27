@@ -105,6 +105,11 @@ async def run_worker() -> None:
                 activities=[
                     phase_activities.run_import,
                     phase_activities.run_typing,
+                    phase_activities.run_statistics,
+                    phase_activities.run_column_eligibility,
+                    phase_activities.run_statistical_quality,
+                    phase_activities.run_temporal,
+                    phase_activities.run_semantic_per_column,
                 ],
                 activity_executor=executor,
                 max_concurrent_activities=_MAX_CONCURRENT_ACTIVITIES,

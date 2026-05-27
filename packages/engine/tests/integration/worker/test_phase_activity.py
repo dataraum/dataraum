@@ -11,6 +11,7 @@ SQLite or mocks — the substrate reconstitution is exactly what's under test.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -21,6 +22,20 @@ from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.investigation.db_models import InvestigationSession
 from dataraum.storage import Source
 from dataraum.worker import PhaseActivityInput, run_phase_activity
+
+# The table-local analytics chain wrapped as activities in E4b (DAT-368), in
+# dependency order. ``semantic_per_column`` (the first LLM phase) is exercised
+# separately, gated behind a real key.
+_SLICE1_ANALYTICS_CHAIN = (
+    "import",
+    "typing",
+    "statistics",
+    "column_eligibility",
+    "statistical_quality",
+    "temporal",
+)
+
+_LIVE_LLM_ENV = "DATARAUM_LIVE_LLM_TEST"
 
 
 @pytest.fixture
@@ -127,3 +142,62 @@ def test_unknown_phase_returns_failed(worker_manager: ConnectionManager, tmp_pat
     result = run_phase_activity(worker_manager, "does_not_exist", payload)
     assert result.status == "failed"
     assert "does_not_exist" in (result.error or "")
+
+
+def test_slice1_analytics_chain_runs(
+    worker_manager: ConnectionManager, small_finance_path: Path
+) -> None:
+    """The six table-local analytics activities run green on a multi-table source.
+
+    Drives each phase through ``run_phase_activity`` — the production worker path,
+    not the retired ``PipelineTestHarness`` — on the one long-lived worker
+    manager. This is the E4b assertion that the slice-1 chain (minus the LLM
+    ``semantic_per_column`` phase, exercised separately) runs end-to-end as
+    activities against a real multi-table DuckLake source.
+    """
+    source_id = str(uuid4())
+    session_id = str(uuid4())
+    _seed_source_and_session(
+        worker_manager, source_id, session_id, "small_finance", small_finance_path
+    )
+    payload = PhaseActivityInput(
+        workspace_id="test", source_id=source_id, session_id=session_id
+    )
+
+    for phase in _SLICE1_ANALYTICS_CHAIN:
+        result = run_phase_activity(worker_manager, phase, payload)
+        assert result.status == "completed", f"{phase} failed: {result.error}"
+
+    assert _lake_tables(worker_manager, "typed"), "no typed tables after the analytics chain"
+
+
+@pytest.mark.skipif(
+    not os.environ.get(_LIVE_LLM_ENV),
+    reason=(
+        f"Set {_LIVE_LLM_ENV}=1 (with a real ANTHROPIC_API_KEY) to run the live "
+        "semantic_per_column activity — it makes real Anthropic calls."
+    ),
+)
+def test_semantic_per_column_activity_runs_live(
+    worker_manager: ConnectionManager, small_finance_path: Path
+) -> None:
+    """semantic_per_column runs as an activity end-to-end against a real LLM.
+
+    Opt-in only (real Anthropic calls). Validates provider/prompt-config
+    resolution + the API key in the worker substrate — the one slice-1 activity
+    E4a could not de-risk offline.
+    """
+    source_id = str(uuid4())
+    session_id = str(uuid4())
+    _seed_source_and_session(
+        worker_manager, source_id, session_id, "small_finance", small_finance_path
+    )
+    payload = PhaseActivityInput(
+        workspace_id="test", source_id=source_id, session_id=session_id
+    )
+
+    # semantic_per_column depends on statistics (per pipeline.yaml); run its
+    # prerequisites, then the LLM phase itself.
+    for phase in ("import", "typing", "statistics", "semantic_per_column"):
+        result = run_phase_activity(worker_manager, phase, payload)
+        assert result.status == "completed", f"{phase} failed: {result.error}"

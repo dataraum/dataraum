@@ -29,6 +29,9 @@ os.environ["DUCKLAKE_CATALOG_URL"] = "postgresql://test:test@localhost:5432/lake
 os.environ["DUCKLAKE_DATA_PATH"] = "/tmp/dataraum-test-lake"
 os.environ["DATARAUM_HOME"] = "/tmp/dataraum-test-home"
 os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-placeholder"
+os.environ["TEMPORAL_HOST"] = "localhost:7233"
+os.environ["TEMPORAL_NAMESPACE"] = "default"
+os.environ["TEMPORAL_TASK_QUEUE"] = "dataraum-pipeline"
 
 import duckdb  # noqa: E402
 import pytest  # noqa: E402

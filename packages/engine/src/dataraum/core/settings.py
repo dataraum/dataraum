@@ -62,11 +62,13 @@ class Settings(BaseSettings):
     ducklake_skip_install: bool = False
     duckdb_extension_directory: Path | None = None
 
-    # --- Temporal (optional for slice-1: no consumer + no Temporal service in
-    # compose yet; DAT-344 flips these to required when the worker lands) ---
-    temporal_host: str | None = None
-    temporal_namespace: str | None = None
-    temporal_task_queue: str | None = None
+    # --- Temporal (required: the engine process IS the Temporal activity
+    # worker; it cannot start without a broker to poll. DAT-369 flipped these
+    # from slice-1 optional now that the worker is the only Settings consumer
+    # and compose always provides them.) ---
+    temporal_host: str
+    temporal_namespace: str
+    temporal_task_queue: str
 
 
 @cache

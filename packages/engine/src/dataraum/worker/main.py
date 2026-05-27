@@ -41,39 +41,14 @@ logger = get_logger(__name__)
 _MAX_CONCURRENT_ACTIVITIES = 8
 
 
-def _require_temporal_config() -> tuple[str, str, str]:
-    """Read + validate the worker's Temporal settings, failing loud if unset.
-
-    ``TEMPORAL_*`` are Optional in the shared typed Settings (the cockpit +
-    control-plane tolerate their absence); the worker cannot start without them,
-    so it asserts them here rather than widening the shared schema (the
-    required-flip across the stack is E4c/DAT-369).
-    """
+async def run_worker() -> None:
+    """Bootstrap the substrate, then poll the task queue until interrupted."""
+    # TEMPORAL_* are required in Settings (DAT-369): get_settings() fails loud
+    # at construction naming any unset field, so the reads below are total.
     settings = get_settings()
     host = settings.temporal_host
     namespace = settings.temporal_namespace
     task_queue = settings.temporal_task_queue
-    missing = [
-        name
-        for name, value in (
-            ("TEMPORAL_HOST", host),
-            ("TEMPORAL_NAMESPACE", namespace),
-            ("TEMPORAL_TASK_QUEUE", task_queue),
-        )
-        if not value
-    ]
-    if missing:
-        raise RuntimeError(
-            f"Temporal worker cannot start — unset: {', '.join(missing)}. "
-            "Set them in the environment (compose .env)."
-        )
-    assert host and namespace and task_queue  # narrowed for the type checker
-    return host, namespace, task_queue
-
-
-async def run_worker() -> None:
-    """Bootstrap the substrate, then poll the task queue until interrupted."""
-    host, namespace, task_queue = _require_temporal_config()
 
     # Substrate bootstrap strictly precedes worker.run() — the worker must not
     # advertise itself as polling until its DuckLake anchor + ConnectionManager

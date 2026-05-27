@@ -13,6 +13,8 @@ Correctness over speed. The product is **analytical correctness** — the system
 
 **Investigate before acting.** The codebase moves fast — modules get deleted and renamed. Your training assumptions are stale; the code on disk is the only truth. Grep for a function/class/config key before using it, check call sites before changing a signature, read more code when unsure.
 
+**Then act — don't cling.** Investigate to *decide*, not to keep re-confirming. Existing code and tests follow the design; they never constrain it. Make the clean cut in one pass and don't quote prior notes (even your own, even recalled memory) as constraints. Full rule: "Default to the clean cut" in the workspace CLAUDE.md.
+
 **Branching.** Feature branches only (`type/description`: feat / fix / refactor / docs / chore / test); never push to `main`. Commit after each verified (green) phase. Open PRs with `gh pr create` only when asked.
 
 **Skills drive the work** (`.claude/skills/`):
@@ -29,7 +31,7 @@ Correctness over speed. The product is **analytical correctness** — the system
 
 `/implement` updates `.claude/handoff.md`, the bridge telling `dataraum-eval` (calibration) and `dataraum-testdata` what changed. Detector changes always update it.
 
-**Sizing.** S (1–3 files): direct. M (3–8 files): plan, single session. L/XL (8+ files or cross-module): Confluence plan linked to the Jira issue, phased, each phase green before the next. Declare DO-change / DO-NOT-change file lists — unplanned edits to adjacent code are the #1 source of bugs.
+**Sizing.** S (1–3 files): direct. M (3–8 files): plan, single session. L/XL (8+ files or cross-module): Confluence plan linked to the Jira issue, phased, each phase green before the next. Declare DO-change / DO-NOT-change file lists to fence *unrelated* scope. Cleanup the design implies — deleting dead code, removing a retired field, adapting its tests — is in-scope, not an adjacent-edit violation. What to avoid is unplanned *unrelated* edits, never design-implied deletion (see "Default to the clean cut" in the workspace CLAUDE.md).
 
 ## Testing
 
@@ -52,7 +54,7 @@ Tests pass · type-check passes · lint passes · output verified (not just "it 
 
 ## Architecture
 
-The engine is a **Temporal activity worker** (`src/dataraum/worker/`, entrypoint `python -m dataraum.worker.main`) — no HTTP surface. It bootstraps the substrate once (DuckLake anchor + one workspace `ConnectionManager`, reusing `src/dataraum/server/{storage,workspace}.py`), then serves the **bundled** `AddSourceWorkflow` + the phase activities on one task queue. The cockpit (`../cockpit`) reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle and triggers workflows via the Temporal Client. No OpenAPI, no codegen. A reference-only `src/dataraum/mcp/` module survives for the cockpit takeover — no transport, no in-tree consumer.
+The engine is a **Temporal activity worker** (`src/dataraum/worker/`, entrypoint `python -m dataraum.worker.main`) — no HTTP surface. It bootstraps the substrate once (DuckLake anchor + one workspace `ConnectionManager`, reusing `src/dataraum/server/{storage,workspace}.py`), then serves the **bundled** `AddSourceWorkflow` + the phase activities on one task queue. The cockpit (`../cockpit`) reads engine metadata directly from the `ws_<id>` Postgres schema via Drizzle and triggers workflows via the Temporal Client. No OpenAPI, no codegen. The legacy MCP surface has been moved out of the package to `reference/mcp/` (DAT-369) — **dead code**, no transport, no in-tree consumer, kept only as a copy-reference during the cockpit takeover and slated for deletion in slice 2. Do not extend it, build on it, import from it, or treat its presence as a reason to preserve anything related. It is the one tolerated exception, not a pattern to emulate.
 
 **Key design decisions:**
 - **VARCHAR-first staging** — everything loads as VARCHAR; type inference happens in profiling, not load. Failed casts go to quarantine tables, never pipeline failure.
@@ -76,8 +78,8 @@ src/dataraum/
 ├── llm/         # providers + prompts
 ├── core/        # config, connections, settings
 ├── worker/      # Temporal activity worker — workflows, activities, bootstrap, contracts
-├── server/      # substrate bootstrap (DuckLake anchor + workspace overlay); no HTTP
-└── mcp/         # reference-only (no transport)
+└── server/      # substrate bootstrap (DuckLake anchor + workspace overlay); no HTTP
+# (legacy mcp/ moved out of the package to reference/mcp/ — dead, slated for deletion)
 ```
 
 **Data flow:** Source → VARCHAR staging → type inference (typed + quarantine tables) → LLM semantic / temporal / topology enrichment → quality (LLM rules + entropy) → `ContextDocument`.

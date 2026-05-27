@@ -16,6 +16,7 @@ data_sources/
 .claude/worktrees/
 .claude/settings.local.json
 .worktrees/
+.claude/skills/temporal-developer
 
 # Python
 __pycache__/

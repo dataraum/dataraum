@@ -1,22 +1,15 @@
-"""Phase registry with auto-discovery and YAML-driven declarations.
+"""Phase registry with auto-discovery.
 
-Provides a decorator-based registry for pipeline phases, lazy auto-discovery,
-and a YAML-aware wrapper that sources structural metadata from pipeline.yaml.
+Provides a decorator-based registry for pipeline phases and lazy
+auto-discovery of phase modules.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from types import ModuleType
-
-    from sqlalchemy.orm import Session
-
-    from dataraum.entropy.dimensions import AnalysisKey
-    from dataraum.pipeline.base import PhaseContext, PhaseResult
     from dataraum.pipeline.phases.base import BasePhase
-    from dataraum.pipeline.pipeline_config import PhaseDeclaration
 
 _REGISTRY: dict[str, type[BasePhase]] = {}
 _discovered = False
@@ -73,124 +66,3 @@ def import_all_phase_models() -> None:
             mod_name = module.__name__
             if mod_name not in seen:
                 seen.add(mod_name)
-
-
-def get_downstream_phases(phase_name: str) -> set[str]:
-    """Get all phases that transitively depend on the given phase.
-
-    Uses YAML declarations for the dependency graph.
-    """
-    from dataraum.pipeline.pipeline_config import (
-        get_downstream_phases_from_declarations,
-        load_phase_declarations,
-    )
-
-    declarations = load_phase_declarations()
-    return get_downstream_phases_from_declarations(phase_name, declarations)
-
-
-def get_all_dependencies(phase_name: str) -> set[str]:
-    """Get all transitive dependencies for a phase.
-
-    Uses YAML declarations for the dependency graph.
-    """
-    from dataraum.pipeline.pipeline_config import (
-        get_all_dependencies_from_declarations,
-        load_phase_declarations,
-    )
-
-    declarations = load_phase_declarations()
-    return get_all_dependencies_from_declarations(phase_name, declarations)
-
-
-class YAMLAwarePhase:
-    """Wraps a BasePhase with YAML-sourced structural declarations.
-
-    Delegates runtime behavior (_run, cleanup, should_skip, db_models,
-    duckdb_layers) to the inner phase. Returns YAML values for
-    dependencies, description, produces_analyses.
-    """
-
-    def __init__(self, inner: BasePhase, declaration: PhaseDeclaration) -> None:
-        self._inner = inner
-        self._decl = declaration
-
-    @property
-    def name(self) -> str:
-        return self._decl.name
-
-    @property
-    def description(self) -> str:
-        return self._decl.description
-
-    @property
-    def dependencies(self) -> list[str]:
-        return self._decl.dependencies
-
-    @property
-    def produces_analyses(self) -> set[AnalysisKey]:
-        return self._decl.produces
-
-    @property
-    def detectors(self) -> list[str]:
-        return self._decl.detectors
-
-    # --- Delegated to inner phase ---
-
-    @property
-    def duckdb_layers(self) -> list[str]:
-        return self._inner.duckdb_layers
-
-    @property
-    def db_models(self) -> list[ModuleType]:
-        return self._inner.db_models
-
-    def run(self, ctx: PhaseContext) -> PhaseResult:
-        return self._inner.run(ctx)
-
-    def cleanup(
-        self,
-        session: Session,
-        source_id: str,
-        table_ids: list[str],
-        column_ids: list[str],
-    ) -> int:
-        return self._inner.cleanup(session, source_id, table_ids, column_ids)
-
-    def should_skip(self, ctx: PhaseContext) -> str | None:
-        return self._inner.should_skip(ctx)
-
-
-def build_yaml_aware_phases(
-    pipeline_config: dict[str, Any] | None = None,
-) -> dict[str, YAMLAwarePhase]:
-    """Build phase instances wrapped with YAML declarations.
-
-    Args:
-        pipeline_config: Pre-loaded pipeline config dict. If None, loads
-            from the active config root.
-
-    Returns:
-        Dict of phase name -> YAMLAwarePhase, for phases that have both
-        a YAML declaration and a registered Python class.
-    """
-    from dataraum.pipeline.pipeline_config import load_phase_declarations
-
-    declarations = load_phase_declarations(pipeline_config)
-    registry = get_registry()
-
-    phases: dict[str, YAMLAwarePhase] = {}
-    for name, decl in declarations.items():
-        cls = registry.get(name)
-        if cls is None:
-            from dataraum.core.logging import get_logger
-
-            get_logger(__name__).warning(
-                "phase_declared_but_not_registered",
-                phase=name,
-                message=f"Phase {name!r} is declared in pipeline.yaml but has no registered class.",
-            )
-            continue
-        phases[name] = YAMLAwarePhase(cls(), decl)
-
-    return phases

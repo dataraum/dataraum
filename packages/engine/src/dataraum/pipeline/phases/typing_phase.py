@@ -61,7 +61,7 @@ class TypingPhase(BasePhase):
     ) -> int:
         # NOTE: source-scoped — deletes typed/quarantine for the WHOLE source,
         # ignoring any per-table filter. `_run`/`should_skip` honor
-        # `ctx.table_ids`, but cleanup does not: the cleanup_phase_cascade path
+        # `ctx.table_ids`, but cleanup does not: the cleanup() path
         # has no table-filter param. A per-table replay that runs cleanup first
         # would clobber sibling tables' typed rows. TODO(DAT-344): thread a
         # table filter through cleanup when the per-table replay path lands.

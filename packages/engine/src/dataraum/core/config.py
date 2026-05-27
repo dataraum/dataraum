@@ -233,8 +233,8 @@ def load_phase_config(
 def load_pipeline_config() -> dict[str, Any]:
     """Load pipeline configuration.
 
-    Loads config/pipeline.yaml which contains pipeline settings
-    (active phases, max_parallel, retry config). Per-phase config lives in
+    Loads config/pipeline.yaml which lists the pipeline phases (description,
+    detectors) and run limits. Per-phase config lives in
     config/phases/<name>.yaml and is loaded via load_phase_config().
 
     Returns:

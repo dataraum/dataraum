@@ -105,6 +105,7 @@ target-version = "py314"
 line-length = 100
 extend-exclude = [
     "prototypes/",
+    "reference/",
     "*.tcss",
 ]
 
@@ -173,14 +174,6 @@ module = [
 ]
 ignore_missing_imports = true
 
-# Unfinished features that depend on not-yet-implemented context module
-[[tool.mypy.overrides]]
-module = [
-    "dataraum.llm.features.queries",
-    "dataraum.llm.features.summary",
-]
-ignore_errors = true
-
 # Test files don't need strict type checking
 [[tool.mypy.overrides]]
 module = "tests.*"
@@ -195,9 +188,6 @@ exclude = ["prototypes/"]
 [tool.coverage.run]
 source = ["src/dataraum"]
 branch = true
-omit = [
-    "src/dataraum/mcp/*",        # MCP server tested via integration
-]
 
 [tool.coverage.report]
 show_missing = true

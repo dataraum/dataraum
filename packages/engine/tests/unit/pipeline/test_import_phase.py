@@ -1,13 +1,10 @@
-"""Unit tests for the import phase and per-source fingerprint.
+"""Unit tests for the import phase.
 
 DAT-290 collapsed multi-source semantics into single-source-per-session.
 This module covers:
 
 - TestColumnLimit: enforcement of the max-columns guard (orthogonal to
   source model).
-- TestSourceFingerprint: ``_compute_source_fingerprint`` for a single
-  source — the same hash used by ``begin_session`` to key the per-source
-  session directory and by ``setup_pipeline`` to stamp the PipelineRun.
 - TestImportDispatch: ``_run`` dispatches on the bound source's type
   without orchestrating across multiple sources.
 """
@@ -19,7 +16,6 @@ from unittest.mock import MagicMock, patch
 
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.import_phase import ImportPhase
-from dataraum.pipeline.setup import _compute_source_fingerprint
 
 
 class TestColumnLimit:
@@ -105,45 +101,6 @@ class TestColumnLimit:
         assert result.status == PhaseStatus.FAILED
         assert "source_name" in (result.error or "")
         assert "source_type" in (result.error or "")
-
-
-class TestSourceFingerprint:
-    """Tests for single-source fingerprint computation."""
-
-    def _spec(self, name: str = "a", path: str = "/a.csv") -> dict[str, Any]:
-        return {
-            "name": name,
-            "source_type": "csv",
-            "connection_config": {"path": path},
-        }
-
-    def test_fingerprint_deterministic(self) -> None:
-        """Same source produces same fingerprint."""
-        spec = self._spec()
-        assert _compute_source_fingerprint(spec) == _compute_source_fingerprint(spec)
-
-    def test_fingerprint_changes_with_connection_config(self) -> None:
-        """Changing the connection_config changes the fingerprint."""
-        a = self._spec(path="/a.csv")
-        b = self._spec(path="/a_v2.csv")
-        assert _compute_source_fingerprint(a) != _compute_source_fingerprint(b)
-
-    def test_fingerprint_changes_with_name(self) -> None:
-        """Renaming the source changes the fingerprint."""
-        a = self._spec(name="a")
-        b = self._spec(name="b")
-        assert _compute_source_fingerprint(a) != _compute_source_fingerprint(b)
-
-    def test_fingerprint_handles_none_connection_config(self) -> None:
-        """Sources without connection_config (edge case) hash without error."""
-        spec: dict[str, Any] = {
-            "name": "a",
-            "source_type": "csv",
-            "connection_config": None,
-        }
-        fp = _compute_source_fingerprint(spec)
-        assert isinstance(fp, str)
-        assert len(fp) == 16
 
 
 class TestImportDispatch:

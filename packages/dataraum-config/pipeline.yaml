@@ -1,7 +1,9 @@
 # Pipeline Configuration
 #
-# Structural declarations for the pipeline DAG. Per-phase config lives
-# in config/phases/<name>.yaml. Execution order determined by dependencies.
+# Per-phase metadata for the analysis pipeline. Per-phase config lives in
+# config/phases/<name>.yaml. Execution order is owned by the Temporal worker
+# (AddSourceWorkflow), not by this file. `detectors` lists the entropy
+# detectors run as post-steps after each phase completes.
 
 version: "2.0.0"
 
@@ -11,91 +13,62 @@ phases:
   # =========================================================================
   import:
     description: Load data files into raw tables
-    dependencies: []
 
   typing:
     description: Type inference and resolution
-    dependencies: [import]
-    produces: [typing]
     detectors: [type_fidelity]
 
   statistics:
     description: Statistical profiling of typed tables
-    dependencies: [typing]
-    produces: [statistics]
     detectors: [null_ratio]
 
   column_eligibility:
     description: Column eligibility evaluation
-    dependencies: [statistics]
 
   statistical_quality:
     description: "Benford's Law and outlier detection"
-    dependencies: [column_eligibility]
 
   relationships:
     description: Cross-table relationship detection
-    dependencies: [column_eligibility]
-    produces: [relationships]
 
   temporal:
     description: Temporal pattern and trend analysis
-    dependencies: [column_eligibility]
 
   semantic_per_column:
     description: Per-column LLM annotation (roles, concepts, business terms)
-    dependencies: [statistics]
-    # produces:[semantic] stays here, not on semantic_per_table: the SEMANTIC
-    # AnalysisKey is the column-annotation surface, and every SEMANTIC-requiring
-    # detector (business_meaning/unit_entropy/temporal_entropy/outlier_rate/
-    # benford) runs as a post-step of THIS phase. The per-table phase consumes
-    # RELATIONSHIPS (produced by `relationships`), not SEMANTIC.
-    produces: [semantic]
     detectors: [business_meaning, unit_entropy, temporal_entropy,
                 outlier_rate, benford]
 
   semantic_per_table:
     description: Per-table LLM synthesis (entities, relationships) over annotations
-    dependencies: [semantic_per_column, relationships]
     detectors: [join_path_determinism, relationship_entropy]
 
   data_fixes:
     description: Apply stored metadata fixes
-    dependencies: [semantic_per_table]
 
   # =========================================================================
   # Zone 2: Enrichment
   # =========================================================================
   enriched_views:
     description: Create enriched views joining fact + dimension tables
-    dependencies: [semantic_per_table, statistical_quality]
-    produces: [enriched_view]
     detectors: [dimension_coverage]
 
   slicing:
     description: LLM-powered slice dimension identification
-    dependencies: [enriched_views]
 
   slicing_view:
     description: Create slicing views narrowed to slice-relevant columns
-    dependencies: [slicing]
 
   slice_analysis:
     description: Execute slice SQL and analyze slice tables
-    dependencies: [slicing_view]
-    produces: [slice_variance]
     detectors: [slice_variance]
 
   temporal_slice_analysis:
     description: Distribution drift analysis on slices
-    dependencies: [slice_analysis, temporal]
-    produces: [drift_summaries]
     detectors: [temporal_drift, dimensional_entropy]
 
   correlations:
     description: Within-table correlation analysis
-    dependencies: [enriched_views]
-    produces: [correlation]
     detectors: [derived_value]
 
   # =========================================================================
@@ -103,35 +76,15 @@ phases:
   # =========================================================================
   business_cycles:
     description: Expert LLM cycle detection
-    dependencies: [semantic_per_table, relationships, temporal, enriched_views, slicing]
-    produces: [business_cycles]
     detectors: [business_cycle_health]
 
   validation:
     description: LLM-powered validation checks
-    dependencies: [semantic_per_table, relationships, enriched_views, slicing]
-    produces: [validation]
     detectors: [cross_table_consistency]
 
   graph_execution:
     description: Compute business metrics via graph agent
-    dependencies: [validation, business_cycles, correlations]
 
 # Limits
 limits:
   max_columns: 500  # Overall across all tables in a pipeline run
-
-# Pipeline orchestrator settings
-pipeline:
-  # Maximum phases to run in parallel (ThreadPoolExecutor workers)
-  max_parallel: 4
-  # Stop pipeline on first phase failure
-  fail_fast: true
-  # Skip phases that already have completed checkpoints
-  skip_completed: true
-
-  # Retry configuration for transient SQLite contention errors
-  retry:
-    max_retries: 2
-    # Exponential backoff: backoff_base * (2^attempt) seconds
-    backoff_base: 2.0

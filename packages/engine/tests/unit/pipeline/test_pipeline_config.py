@@ -4,13 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dataraum.entropy.dimensions import AnalysisKey
-from dataraum.pipeline.pipeline_config import (
-    PhaseDeclaration,
-    get_all_dependencies_from_declarations,
-    get_downstream_phases_from_declarations,
-    load_phase_declarations,
-)
+from dataraum.pipeline.pipeline_config import load_phase_declarations
 
 
 class TestLoadPhaseDeclarations:
@@ -23,14 +17,6 @@ class TestLoadPhaseDeclarations:
         assert "typing" in declarations
         assert "semantic_per_column" in declarations
         assert "semantic_per_table" in declarations
-
-    def test_import_has_no_dependencies(self):
-        declarations = load_phase_declarations()
-        assert declarations["import"].dependencies == []
-
-    def test_typing_produces_typing(self):
-        declarations = load_phase_declarations()
-        assert declarations["typing"].produces == {AnalysisKey.TYPING}
 
     def test_detectors_are_listed(self):
         declarations = load_phase_declarations()
@@ -50,67 +36,6 @@ class TestValidation:
     def test_rejects_flat_list_format(self):
         with pytest.raises(ValueError, match="must be a dict"):
             load_phase_declarations({"phases": ["import", "typing"]})
-
-    def test_rejects_unknown_analysis_key(self):
-        config = {
-            "phases": {
-                "test_phase": {
-                    "description": "test",
-                    "dependencies": [],
-                    "produces": ["nonexistent_key"],
-                }
-            }
-        }
-        with pytest.raises(ValueError, match="unknown produces key"):
-            load_phase_declarations(config)
-
-    def test_rejects_unknown_dependency(self):
-        config = {
-            "phases": {
-                "test_phase": {
-                    "description": "test",
-                    "dependencies": ["nonexistent_phase"],
-                }
-            }
-        }
-        with pytest.raises(ValueError, match="unknown dependencies"):
-            load_phase_declarations(config)
-
-    def test_rejects_dependency_cycle(self):
-        config = {
-            "phases": {
-                "a": {"description": "a", "dependencies": ["b"]},
-                "b": {"description": "b", "dependencies": ["a"]},
-            }
-        }
-        with pytest.raises(ValueError, match="cycle"):
-            load_phase_declarations(config)
-
-
-class TestDependencyHelpers:
-    """Tests for transitive dependency resolution from declarations."""
-
-    def test_transitive_deps(self):
-        declarations = {
-            "a": PhaseDeclaration(name="a", description="", dependencies=[]),
-            "b": PhaseDeclaration(name="b", description="", dependencies=["a"]),
-            "c": PhaseDeclaration(name="c", description="", dependencies=["b"]),
-        }
-        assert get_all_dependencies_from_declarations("c", declarations) == {"a", "b"}
-
-    def test_downstream(self):
-        declarations = {
-            "a": PhaseDeclaration(name="a", description="", dependencies=[]),
-            "b": PhaseDeclaration(name="b", description="", dependencies=["a"]),
-            "c": PhaseDeclaration(name="c", description="", dependencies=["b"]),
-        }
-        assert get_downstream_phases_from_declarations("a", declarations) == {"b", "c"}
-
-    def test_unknown_phase_returns_empty(self):
-        declarations = {
-            "a": PhaseDeclaration(name="a", description="", dependencies=[]),
-        }
-        assert get_all_dependencies_from_declarations("z", declarations) == set()
 
 
 class TestYAMLMatchesRegistry:

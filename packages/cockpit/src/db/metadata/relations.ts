@@ -35,12 +35,6 @@ export const relations = defineRelations(schema, (r) => ({
 			alias: "investigationSessions_sourceId_sources_sourceId",
 		}),
 		investigationStepss: r.many.investigationSteps(),
-		pipelineRunssViaPhaseLogs: r.many.pipelineRuns({
-			alias: "pipelineRuns_runId_investigationSessions_sessionId_via_phaseLogs",
-		}),
-		pipelineRunssSessionId: r.many.pipelineRuns({
-			alias: "pipelineRuns_sessionId_investigationSessions_sessionId",
-		}),
 		sourcessViaQueryExecutions: r.many.sources({
 			from: r.investigationSessions.sessionId.through(
 				r.queryExecutions.sessionId,
@@ -316,18 +310,6 @@ export const relations = defineRelations(schema, (r) => ({
 		investigationSessions: r.one.investigationSessions({
 			from: r.investigationSteps.sessionId,
 			to: r.investigationSessions.sessionId,
-		}),
-	},
-	pipelineRuns: {
-		investigationSessionss: r.many.investigationSessions({
-			from: r.pipelineRuns.runId.through(r.phaseLogs.runId),
-			to: r.investigationSessions.sessionId.through(r.phaseLogs.sessionId),
-			alias: "pipelineRuns_runId_investigationSessions_sessionId_via_phaseLogs",
-		}),
-		investigationSessions: r.one.investigationSessions({
-			from: r.pipelineRuns.sessionId,
-			to: r.investigationSessions.sessionId,
-			alias: "pipelineRuns_sessionId_investigationSessions_sessionId",
 		}),
 	},
 	relationships: {

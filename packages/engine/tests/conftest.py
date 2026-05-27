@@ -29,6 +29,9 @@ os.environ["DUCKLAKE_CATALOG_URL"] = "postgresql://test:test@localhost:5432/lake
 os.environ["DUCKLAKE_DATA_PATH"] = "/tmp/dataraum-test-lake"
 os.environ["DATARAUM_HOME"] = "/tmp/dataraum-test-home"
 os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-placeholder"
+os.environ["TEMPORAL_HOST"] = "localhost:7233"
+os.environ["TEMPORAL_NAMESPACE"] = "default"
+os.environ["TEMPORAL_TASK_QUEUE"] = "dataraum-pipeline"
 
 import duckdb  # noqa: E402
 import pytest  # noqa: E402
@@ -67,44 +70,6 @@ def _reset_settings_cache() -> Generator[None]:
     reset_settings()
     yield
     reset_settings()
-
-
-@pytest.fixture(autouse=True)
-def _close_mcp_servers_after_test(monkeypatch: pytest.MonkeyPatch):
-    """Auto-close any MCP server created during a test.
-
-    Tests construct servers inline via ``create_server(output_dir=...)``
-    which caches workspace + session ``ConnectionManager`` instances. The
-    cached psycopg pools never get disposed by the test itself, so they
-    leak until GC catches them — Python 3.12+ raises
-    ``ResourceWarning: <psycopg.Connection> was deleted while still open``.
-
-    This fixture monkeypatches ``create_server`` to track every returned
-    ``Server`` and calls ``server.close()`` on teardown. Tests do not need
-    to opt in.
-    """
-    import warnings
-
-    from dataraum.mcp import server as server_mod
-
-    created: list = []
-    original = server_mod.create_server
-
-    def tracked(*args, **kwargs):
-        s = original(*args, **kwargs)
-        created.append(s)
-        return s
-
-    monkeypatch.setattr(server_mod, "create_server", tracked)
-    yield
-    for s in created:
-        try:
-            s.close()  # type: ignore[attr-defined]
-        except Exception as exc:
-            warnings.warn(
-                f"Failed to close MCP server during test teardown: {s!r} ({exc!r})",
-                stacklevel=2,
-            )
 
 
 @event.listens_for(Session, "before_flush")

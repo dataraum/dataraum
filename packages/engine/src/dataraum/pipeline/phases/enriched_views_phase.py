@@ -35,7 +35,6 @@ from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.cleanup import exec_delete
-from dataraum.pipeline.db_models import PhaseLog
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
@@ -93,12 +92,7 @@ class EnrichedViewsPhase(BasePhase):
         return [db_models]
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
-        """Skip if enriched views phase already completed for this source.
-
-        Uses PhaseLog instead of counting EnrichedView records, because the
-        LLM may legitimately decide that some fact tables don't need
-        enrichment. Counting records would cause unnecessary re-runs.
-        """
+        """Skip if enriched views already exist for this source's fact tables."""
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)
         typed_tables = ctx.session.execute(stmt).scalars().all()
 
@@ -117,14 +111,17 @@ class EnrichedViewsPhase(BasePhase):
         if not fact_entities:
             return "No fact tables identified"
 
-        # Check if phase already completed (cleaned up by cleanup_phase on cascade)
-        log_stmt = select(PhaseLog).where(
-            PhaseLog.source_id == ctx.source_id,
-            PhaseLog.phase_name == "enriched_views",
-            PhaseLog.status == "completed",
-        )
-        if ctx.session.execute(log_stmt).first():
-            return "Enriched views phase already completed"
+        # Skip if enriched views already exist for this source's fact tables.
+        # (Was a PhaseLog "completed" check, retired with the monitoring tables
+        # in DAT-369. Existence-based now: a prior run that produced zero views —
+        # the LLM declining all enrichment — would re-run, harmless for this
+        # dormant slice-2 phase; slice-2 gives it proper activity idempotency.)
+        fact_table_ids = [fe.table_id for fe in fact_entities]
+        existing = ctx.session.execute(
+            select(EnrichedView.view_id).where(EnrichedView.fact_table_id.in_(fact_table_ids))
+        ).first()
+        if existing:
+            return "Enriched views already built"
 
         return None
 

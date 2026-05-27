@@ -1,7 +1,8 @@
 """Tests for typed application settings (DAT-363).
 
-The contract under test: required vars fail loud at boot naming the field,
-defaulted vars fall back, and the slice-1 Temporal vars are optional.
+The contract under test: required vars (including the Temporal broker coords
+the worker polls) fail loud at boot naming the field, and defaulted vars fall
+back.
 """
 
 from __future__ import annotations
@@ -20,15 +21,15 @@ _REQUIRED_ENV = {
     "DATARAUM_HOME": "/tmp/home",
     "DATARAUM_WORKSPACE_ID": "test",
     "ANTHROPIC_API_KEY": "sk-ant-test",
+    "TEMPORAL_HOST": "localhost:7233",
+    "TEMPORAL_NAMESPACE": "default",
+    "TEMPORAL_TASK_QUEUE": "dataraum-pipeline",
 }
 
 _OPTIONAL_ENV = [
     "DUCKLAKE_PG_POOL_MAX",
     "DUCKLAKE_SKIP_INSTALL",
     "DUCKDB_EXTENSION_DIRECTORY",
-    "TEMPORAL_HOST",
-    "TEMPORAL_NAMESPACE",
-    "TEMPORAL_TASK_QUEUE",
 ]
 
 
@@ -78,13 +79,25 @@ def test_all_required_present_constructs(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.mark.usefixtures("clean_env")
-def test_temporal_vars_optional(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_temporal_vars_required(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_required(monkeypatch)
     settings = get_settings()
 
-    assert settings.temporal_host is None
-    assert settings.temporal_namespace is None
-    assert settings.temporal_task_queue is None
+    assert settings.temporal_host == "localhost:7233"
+    assert settings.temporal_namespace == "default"
+    assert settings.temporal_task_queue == "dataraum-pipeline"
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_missing_temporal_host_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_required(monkeypatch)
+    monkeypatch.delenv("TEMPORAL_HOST", raising=False)
+    reset_settings()
+
+    with pytest.raises(ValidationError) as exc:
+        get_settings()
+
+    assert "temporal_host" in str(exc.value).lower()
 
 
 @pytest.mark.usefixtures("clean_env")

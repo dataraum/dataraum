@@ -79,24 +79,6 @@ class TestForWorkspace:
         finally:
             manager.close()
 
-    def test_active_session_table_created(self) -> None:
-        """Workspace manager creates the active_session pointer table."""
-        import os
-
-        from sqlalchemy import inspect
-
-        from dataraum.server.workspace import schema_name_for
-
-        schema_name = schema_name_for(os.environ["DATARAUM_WORKSPACE_ID"])
-        manager = ConnectionManager(ConnectionConfig.for_workspace())
-        manager.initialize()
-        try:
-            inspector = inspect(manager.engine)
-            # Post-DAT-339 Commit B: tables live under the workspace schema.
-            assert "active_session" in inspector.get_table_names(schema=schema_name)
-        finally:
-            manager.close()
-
 
 class TestWorkspaceTypedDuckLake:
     """Per-session managers open a DuckDB connection scoped to ``lake.typed``.
@@ -295,10 +277,10 @@ class TestSchemaPerWorkspace:
             inspector = inspect(manager.engine)
             ws_tables = set(inspector.get_table_names(schema=schema_name))
             public_tables = set(inspector.get_table_names(schema="public"))
-            # An MCP-side table (``active_session``) should land in the
+            # A core engine table (``sources``) should land in the
             # workspace schema, not public.
-            assert "active_session" in ws_tables
-            assert "active_session" not in public_tables
+            assert "sources" in ws_tables
+            assert "sources" not in public_tables
         finally:
             manager.close()
 

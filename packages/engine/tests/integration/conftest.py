@@ -352,9 +352,7 @@ def integration_duckdb(lake_anchor, lake_clean):
     try:
         raw_conn.close()
     except Exception as exc:
-        warnings.warn(
-            f"Failed to close integration DuckDB connection cleanly: {exc}", stacklevel=2
-        )
+        warnings.warn(f"Failed to close integration DuckDB connection cleanly: {exc}", stacklevel=2)
 
 
 @pytest.fixture

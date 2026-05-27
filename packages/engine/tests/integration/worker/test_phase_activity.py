@@ -161,9 +161,7 @@ def test_slice1_analytics_chain_runs(
     _seed_source_and_session(
         worker_manager, source_id, session_id, "small_finance", small_finance_path
     )
-    payload = PhaseActivityInput(
-        workspace_id="test", source_id=source_id, session_id=session_id
-    )
+    payload = PhaseActivityInput(workspace_id="test", source_id=source_id, session_id=session_id)
 
     for phase in _SLICE1_ANALYTICS_CHAIN:
         result = run_phase_activity(worker_manager, phase, payload)
@@ -193,9 +191,7 @@ def test_semantic_per_column_activity_runs_live(
     _seed_source_and_session(
         worker_manager, source_id, session_id, "small_finance", small_finance_path
     )
-    payload = PhaseActivityInput(
-        workspace_id="test", source_id=source_id, session_id=session_id
-    )
+    payload = PhaseActivityInput(workspace_id="test", source_id=source_id, session_id=session_id)
 
     # These are semantic_per_column's exact declared prerequisites per
     # pipeline.yaml (it depends on statistics, not column_eligibility); run them,
@@ -205,9 +201,7 @@ def test_semantic_per_column_activity_runs_live(
         assert result.status == "completed", f"{phase} failed: {result.error}"
 
 
-def test_workspace_mismatch_fails_loud(
-    worker_manager: ConnectionManager, tmp_path: Path
-) -> None:
+def test_workspace_mismatch_fails_loud(worker_manager: ConnectionManager, tmp_path: Path) -> None:
     """A payload addressed to another workspace is refused before any work.
 
     Anti-footgun for the deferred multi-workspace isolation (DAT-364): the
@@ -246,9 +240,7 @@ def test_concurrent_sources_run_on_independent_cursors(
     def _run_chain(name: str) -> list[str]:
         source_id = str(uuid4())
         session_id = str(uuid4())
-        _seed_source_and_session(
-            worker_manager, source_id, session_id, name, small_finance_path
-        )
+        _seed_source_and_session(worker_manager, source_id, session_id, name, small_finance_path)
         payload = PhaseActivityInput(
             workspace_id="test", source_id=source_id, session_id=session_id
         )

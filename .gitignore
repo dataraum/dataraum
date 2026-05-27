@@ -14,6 +14,7 @@ data_sources/
 .claude/agent-memory/
 .claude/memory/
 .claude/worktrees/
+.claude/settings.local.json
 .worktrees/
 
 # Python

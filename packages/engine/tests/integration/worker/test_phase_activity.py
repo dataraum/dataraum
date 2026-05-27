@@ -197,8 +197,9 @@ def test_semantic_per_column_activity_runs_live(
         workspace_id="test", source_id=source_id, session_id=session_id
     )
 
-    # semantic_per_column depends on statistics (per pipeline.yaml); run its
-    # prerequisites, then the LLM phase itself.
+    # These are semantic_per_column's exact declared prerequisites per
+    # pipeline.yaml (it depends on statistics, not column_eligibility); run them,
+    # then the LLM phase itself.
     for phase in ("import", "typing", "statistics", "semantic_per_column"):
         result = run_phase_activity(worker_manager, phase, payload)
         assert result.status == "completed", f"{phase} failed: {result.error}"
@@ -236,6 +237,10 @@ def test_concurrent_sources_run_on_independent_cursors(
     serialize and DuckLake reconciles the writers via MVCC. This exercises the
     cursor-concurrency model the bundled worker relies on (DAT-368): a single
     long-lived ``ConnectionManager`` driven by multiple activity threads.
+
+    Note: this drives ``run_phase_activity`` directly (not the ``_run`` activity
+    wrapper), so it proves cursor isolation under concurrency — the FAILED →
+    non-retryable path is covered by ``test_workspace_mismatch_fails_loud``.
     """
 
     def _run_chain(name: str) -> list[str]:

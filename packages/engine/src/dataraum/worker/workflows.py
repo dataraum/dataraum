@@ -53,6 +53,8 @@ _TIMEOUT = timedelta(minutes=10)
 
 # The table-local analytics phases, in dependency order. ``typing`` precedes
 # them (it mints the typed id); ``detect_table`` follows (stage-level detectors).
+# The detect step aggregates detectors over ``activity._TABLE_LOCAL_PHASES`` =
+# ``("typing", *_ANALYTICS_PHASES)``; ``test_phase_constants.py`` pins the link.
 _ANALYTICS_PHASES = (
     "statistics",
     "column_eligibility",
@@ -125,8 +127,13 @@ class AddSourceWorkflow:
         )
 
         # Per-table fan-out. Deterministic, collision-free child ids keep replay
-        # stable; ParentClosePolicy stays the SDK default TERMINATE — the parent
-        # always gathers its children to completion, so there are no orphans.
+        # stable; ParentClosePolicy is TERMINATE (execute_child_workflow's own
+        # default) — the parent always gathers its children to completion, so
+        # there are no orphans in the happy path. On a permanent child failure
+        # gather propagates, the parent ends, and Temporal terminates the
+        # in-flight siblings; a parent retry resumes each child idempotently via
+        # the phases' should_skip (each phase commits atomically in one
+        # session_scope, so there are no partial-write rows to confuse it).
         children = [
             workflow.execute_child_workflow(
                 ProcessTableWorkflow.run,

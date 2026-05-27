@@ -49,6 +49,11 @@ __all__ = [
 # of the detectors these phases declare in pipeline.yaml (today: type_fidelity
 # from typing, null_ratio from statistics) — scoped to the one typed table, so
 # parallel child workflows never touch each other's detector rows.
+#
+# This is ``typing`` + ``workflows._ANALYTICS_PHASES`` (typing is here for its
+# type_fidelity detector but is scheduled separately as the id-minting step).
+# ``tests/unit/worker/test_phase_constants.py`` pins that relationship so a new
+# table-local phase can't be added to the workflow without its detectors running.
 _TABLE_LOCAL_PHASES = (
     "typing",
     "statistics",

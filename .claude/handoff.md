@@ -4,6 +4,32 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-27: DAT-369 — de-monolith (retire the hand-rolled scheduler + monitoring)
+
+Pure-cleanup follow-up to DAT-368. Now that the engine is a Temporal activity
+worker, the hand-rolled orchestration is dead and gone: deleted the
+scheduler/runner/setup/event-system, the `PipelineRun`/`PhaseLog` monitoring
+tables + `pipeline/status.py`, the YAML dependency-DAG machinery (per-phase
+`dependencies`/`produces`, `YAMLAwarePhase`, the transitive-dep helpers), the
+MCP-only `investigation/recorder.py`, and `ConnectionManager.bind_session_id`.
+The dead MCP surface moved out of the package to `reference/mcp/`. `TEMPORAL_*`
+settings are now required/fail-loud.
+
+### dataraum-eval
+
+- **Eval action: none.** No detector, pipeline-phase behavior, response-shape,
+  or Temporal-contract change. `pipeline.yaml` kept every phase's `description`
+  + `detectors` (the worker still runs detectors as post-steps via
+  `PhaseDeclaration.detectors`); only the unused DAG metadata was removed. The
+  one behavioral touch — `enriched_views` `should_skip` now checks for an
+  `EnrichedView` row instead of a `PhaseLog` "completed" row — is on a slice-2
+  phase that calibration doesn't exercise yet.
+- **Status**: no calibration impact; informational only.
+
+### dataraum-testdata (hints)
+
+- None. No detector or fixture surface changed.
+
 ## 2026-05-27: DAT-368 — slice-1 run surface lands (addSourceWorkflow)
 
 The engine run surface that DAT-362 + DAT-341 calibration were **blocked on**

@@ -2,12 +2,12 @@
 
 One place wires connections to a phase. :func:`run_phase_activity` leases a
 *scoped* SQLAlchemy session + DuckDB cursor from the worker's single
-:class:`~dataraum.core.connections.ConnectionManager`, reconstructs the
-``PhaseContext`` that ``setup_pipeline`` builds today (source identity from the
-``Source`` row + the phase's static config), runs the sync phase, then runs its
-pipeline.yaml-declared detectors as post-steps — all without the scheduler,
-``PipelineRun``/``PhaseLog`` monitoring rows (Temporal's event history is the
-execution log), or per-activity connection wiring.
+:class:`~dataraum.core.connections.ConnectionManager`, builds the
+``PhaseContext`` (source identity from the ``Source`` row + the phase's static
+config), runs the sync phase, then runs its pipeline.yaml-declared detectors as
+post-steps — all without a scheduler, ``PipelineRun``/``PhaseLog`` monitoring
+rows (Temporal's event history is the execution log), or per-activity
+connection wiring.
 
 P2 wraps this in ``@activity.defn`` activities (``run_import`` / ``run_typing``)
 that read the worker-held manager; the runner itself is Temporal-agnostic so it
@@ -169,8 +169,8 @@ def _run_detectors(
 ) -> None:
     """Run the phase's pipeline.yaml-declared detectors as post-steps.
 
-    Each detector gets a fresh session + cursor scope (matching the scheduler),
-    so it observes the committed phase output.
+    Each detector gets a fresh session + cursor scope, so it observes the
+    committed phase output.
     """
     declarations = load_phase_declarations()
     decl = declarations.get(phase_name)

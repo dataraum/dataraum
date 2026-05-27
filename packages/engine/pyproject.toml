@@ -174,14 +174,6 @@ module = [
 ]
 ignore_missing_imports = true
 
-# Unfinished features that depend on not-yet-implemented context module
-[[tool.mypy.overrides]]
-module = [
-    "dataraum.llm.features.queries",
-    "dataraum.llm.features.summary",
-]
-ignore_errors = true
-
 # Test files don't need strict type checking
 [[tool.mypy.overrides]]
 module = "tests.*"

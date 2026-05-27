@@ -225,9 +225,8 @@ class ConnectionManager:
     - Proper cleanup on close
 
     The ``session_id`` field is populated by callers that open a per-session
-    manager (e.g. ``mcp/server.py::_get_session_manager``). Recorders read
-    it when constructing per-session rows so writes carry the FK scoping
-    required by the post-L2 schema.
+    manager; per-session rows carry it as FK scoping so writes land under the
+    right ``InvestigationSession``.
 
     Thread Safety:
     - SQLAlchemy sessions: One session per thread via ``session_scope()``
@@ -343,42 +342,14 @@ class ConnectionManager:
             autoflush=False,
         )
 
-    def bind_session_id(self, session_id: str) -> None:
-        """Assign ``session_id`` and open DuckDB on first transition from None.
-
-        Post-DAT-341 the DuckDB connection's USE state is workspace-stable
-        (``lake.typed``) — it no longer depends on ``session_id``. The
-        chicken-and-egg dance from begin_session still applies (a SQLAlchemy
-        session is needed to allocate the new ``InvestigationSession.session_id``,
-        but the manager that owns that session has to be opened first), so
-        managers are still opened with ``session_id=None`` and bound later.
-
-        On first bind: opens the DuckDB connection (workspace-only managers
-        skip ``_init_duckdb`` until they get a session). Subsequent re-binds
-        with a different id are field-only — no DuckDB close-and-reopen since
-        the USE scope doesn't change with session_id anymore.
-        """
-        if self.session_id == session_id and self._duckdb_conn is not None:
-            return
-        first_bind = self.session_id is None
-        self.session_id = session_id
-        if not self._initialized:
-            # The DuckDB hook runs as part of initialize(); nothing to do until
-            # the manager is actually initialized.
-            return
-        if first_bind and self._duckdb_conn is None:
-            self._init_duckdb()
-
     def _init_duckdb(self) -> None:
         """Open DuckDB at ``initialize()`` time *iff* a session is already bound.
 
-        This is the session-gated entry point used by the ``for_directory``
-        managers the (dying) scheduler/``setup_pipeline`` path constructs with
-        ``session_id`` set at build time. It — and ``bind_session_id`` — are
-        vestiges of the pre-DAT-341 file-per-session model, kept alive only by
-        the scheduler (retired in E4c/DAT-369) and the dead MCP path. New code
-        (the Temporal worker) opens DuckDB via :meth:`open_lake` instead, where
-        ``session_id`` is pure per-activity data, not a precondition.
+        This is the session-gated entry point for managers constructed with
+        ``session_id`` set at build time (``ConnectionManager(config,
+        session_id=...)``). Workspace-only managers leave it a no-op and open
+        DuckDB later via :meth:`open_lake`, where ``session_id`` is pure
+        per-activity data, not a precondition.
         """
         if self.session_id is None:
             return
@@ -513,9 +484,8 @@ class ConnectionManager:
         if self._duckdb_conn is None:
             raise RuntimeError(
                 "DuckDB is not open on this ConnectionManager. Open it first: "
-                "open_lake() for the worker path (no session needed), or set a "
-                "session_id (scheduler path) so initialize()/bind_session_id() "
-                "opens it."
+                "open_lake() for the worker path (no session needed), or "
+                "construct the manager with a session_id so initialize() opens it."
             )
 
         cursor = self._duckdb_conn.cursor()

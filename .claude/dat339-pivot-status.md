@@ -115,8 +115,8 @@ Per the DAT-339 epic decomposition. See [`dat339-slice1-features-plan.md`](./dat
 | C1 | [DAT-347](https://real-dataraum.atlassian.net/browse/DAT-347) | To Do | Three-region layout + Stage Navigator (the real UI; current routes are placeholders) |
 | C2 | [DAT-348](https://real-dataraum.atlassian.net/browse/DAT-348) | To Do | AddSourceWizard |
 | C3 | [DAT-349](https://real-dataraum.atlassian.net/browse/DAT-349) | To Do | WorkspaceInventory + SourceCard |
-| C4 | [DAT-350](https://real-dataraum.atlassian.net/browse/DAT-350) | To Do | TableProfile |
-| C5 | [DAT-351](https://real-dataraum.atlassian.net/browse/DAT-351) | To Do — REWRITE PENDING | WhyPanel + TeachProposal + why agent port from Python to TS |
+| C4 | [DAT-350](https://real-dataraum.atlassian.net/browse/DAT-350) | To Do | TableProfile — **surface pending teach overlays in the response** (DAT-343 left `src/db/metadata/pending-overlays.ts`'s `getPendingOverlays(workspaceId)` ready; the chip should read "N teaches pending — replay before trusting") |
+| C5 | [DAT-351](https://real-dataraum.atlassian.net/browse/DAT-351) | To Do — REWRITE PENDING | WhyPanel + TeachProposal + why agent port from Python to TS — **same pending-teach hint as C4** (helper ready; the why-panel UX is the cleanest place to nudge the agent toward `replay`) |
 | C6 | [DAT-352](https://real-dataraum.atlassian.net/browse/DAT-352) | To Do | MeasureProgress + chat-as-audit-trail rehydration |
 
 ### Chat

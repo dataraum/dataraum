@@ -66,17 +66,18 @@ async function seed(sourceId: string, sessionId: string): Promise<void> {
 	}
 }
 
-async function countOverlays(workspaceId: string): Promise<number> {
+async function countOverlays(): Promise<number> {
 	// Counted via raw SQL (not Drizzle) so the assertion stays independent
 	// of the metadata client — proves the rows actually landed in the
 	// engine's schema, not just that Drizzle returned what it inserted.
+	// Workspace scope is implicit in the ws_<id> schema (DAT-343 dropped
+	// the workspace_id column).
 	const sql = postgres(env.METADATA_DATABASE_URL, { onnotice: () => {} });
 	try {
 		const rows = await sql<{ count: number }[]>`
 			SELECT count(*)::int AS count
 			FROM ${sql(schema)}.config_overlay
-			WHERE workspace_id = ${workspaceId}
-			  AND superseded_at IS NULL`;
+			WHERE superseded_at IS NULL`;
 		return rows[0]?.count ?? 0;
 	} finally {
 		await sql.end();
@@ -176,7 +177,7 @@ async function main(): Promise<void> {
 		});
 		console.log(`✓ wrote teaches: ${teach1.overlay_id}, ${teach2.overlay_id}`);
 
-		const overlayCount = await countOverlays(env.DATARAUM_WORKSPACE_ID);
+		const overlayCount = await countOverlays();
 		if (overlayCount < 2) {
 			throw new Error(
 				`expected at least 2 active overlay rows post-teach, got ${overlayCount}`,
@@ -219,7 +220,7 @@ async function main(): Promise<void> {
 
 		// Sanity: the overlay rows are still active after replay (replay
 		// reads them; it doesn't supersede them — that's `undoTeach`'s job).
-		const postReplayCount = await countOverlays(env.DATARAUM_WORKSPACE_ID);
+		const postReplayCount = await countOverlays();
 		if (postReplayCount < overlayCount) {
 			throw new Error(
 				`replay: active overlay count dropped from ${overlayCount} to ${postReplayCount} ` +

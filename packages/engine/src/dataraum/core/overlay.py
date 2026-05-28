@@ -24,11 +24,18 @@ Registered teach types
 ----------------------
 * ``type_pattern`` — ``phases/typing.yaml`` ``overrides.patterns.<name>``
 * ``null_value`` — ``null_values.yaml`` under its declared category list
+* ``concept`` — ``verticals/<vertical>/ontology.yaml``, upsert-replace
+  by ``name`` into ``concepts:``; routed via :func:`apply_overlay`'s
+  vertical-path detection. Used both by user teach and by the engine's
+  cold-start ``_adhoc`` induction (DAT-371) which writes one row per
+  induced concept instead of a YAML file.
 * ``concept_property`` — ``verticals/<vertical>/ontology.yaml``,
   patching a field on a named concept entry; routed via
-  :func:`apply_overlay`'s vertical-path detection.
+  :func:`apply_overlay`'s vertical-path detection. Concept rows are
+  applied first (define / replace), then concept_property rows patch on
+  top.
 
-The 6 deferred types (``concept``, ``validation``, ``cycle``, ``metric``,
+The 5 still-deferred types (``validation``, ``cycle``, ``metric``,
 ``relationship``, ``explanation``) have no applier in slice 1 — the
 cockpit may still write their rows, but the layered read is a no-op
 until slice 2+ wires their consumers.
@@ -143,6 +150,39 @@ def _apply_null_value(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str,
     return out
 
 
+def _apply_concept(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
+    """Upsert-replace concept rows into a vertical ontology's ``concepts:`` list.
+
+    Payload shape mirrors :class:`OntologyConcept`:
+    ``{vertical, name, description?, indicators?, exclude_patterns?,
+    temporal_behavior?, typical_role?, typical_values?, unit_from_concept?,
+    is_unit_dimension?}``. ``vertical`` is matched by the caller (this
+    applier only sees rows already filtered to the loading vertical).
+
+    Merge semantics: one row = one concept. Same ``name`` replaces — the
+    last row for a given concept name wins (rows are pre-sorted ASC by
+    ``created_at``). Used by user teach AND by ``_adhoc`` cold-start
+    induction (DAT-371) — induction writes N concept rows instead of a
+    YAML file, and the layered read materializes them as if they were in
+    the base file.
+    """
+    out = dict(base)
+    concepts = [dict(c) for c in (out.get("concepts") or [])]
+    by_name = {c.get("name"): i for i, c in enumerate(concepts) if c.get("name")}
+    for row in rows:
+        payload = {k: v for k, v in row.payload.items() if k != "vertical"}
+        name = payload.get("name")
+        if not name:
+            continue
+        if name in by_name:
+            concepts[by_name[name]] = payload
+        else:
+            by_name[name] = len(concepts)
+            concepts.append(payload)
+    out["concepts"] = concepts
+    return out
+
+
 def _apply_concept_property(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
     """Patch a property on a named concept in a vertical ontology.
 
@@ -208,8 +248,12 @@ def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
     registered or no row targets this path.
 
     Dispatch:
-        * ``verticals/<v>/ontology.yaml`` — apply ``concept_property``
-          rows whose payload ``vertical`` matches ``<v>``.
+        * ``verticals/<v>/ontology.yaml`` — apply ``concept`` rows whose
+          payload ``vertical`` matches ``<v>`` (upsert-replace the list),
+          then ``concept_property`` rows for the same vertical patch on
+          top. The order matters: concept defines / replaces a whole
+          concept entry; concept_property patches one field on the
+          (possibly just-replaced) concept.
         * everything else — look up ``relative_path`` in the registry;
           apply each matching teach type's rows.
     """
@@ -228,12 +272,20 @@ def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
         _VERTICAL_ONTOLOGY_SUFFIX
     ):
         vertical = relative_path[len(_VERTICAL_ONTOLOGY_PREFIX) : -len(_VERTICAL_ONTOLOGY_SUFFIX)]
-        matching = [
+        concept_rows = [
+            r for r in rows if r.type == "concept" and r.payload.get("vertical") == vertical
+        ]
+        property_rows = [
             r
             for r in rows
             if r.type == "concept_property" and r.payload.get("vertical") == vertical
         ]
-        return _apply_concept_property(base, matching) if matching else base
+        merged = base
+        if concept_rows:
+            merged = _apply_concept(merged, concept_rows)
+        if property_rows:
+            merged = _apply_concept_property(merged, property_rows)
+        return merged
 
     merged = base
     for teach_type, spec in _REGISTRY.items():

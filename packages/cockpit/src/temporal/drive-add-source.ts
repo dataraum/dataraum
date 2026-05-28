@@ -93,13 +93,12 @@ async function runInitial(
 			workspace_id: env.DATARAUM_WORKSPACE_ID,
 			source_id: sourceId,
 			session_id: sessionId,
-			// Use a baked-in vertical so semantic_per_column's _adhoc
-			// induction path (which writes verticals/_adhoc/ontology.yaml
-			// to the now-read-only mounted config) is bypassed. Tracked as
-			// a follow-up to move induction off filesystem writes — see
-			// .claude/dat339-pivot-status.md (DAT-343 follow-up: _adhoc to
-			// concept overlay rows).
-			vertical: "finance",
+			// `_adhoc` is the empty / start-here vertical (DAT-371): cold-start
+			// induction generates concepts from the data and stores them as
+			// `concept` overlay rows, not as YAML writes. This smoke is the
+			// real DAT-371 acceptance test — a clean run proves induction
+			// works against the read-only mounted config.
+			vertical: "_adhoc",
 		},
 	};
 	const result = await client.workflow.execute<

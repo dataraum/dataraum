@@ -109,6 +109,85 @@ describe("validateTeach", () => {
 		});
 	});
 
+	describe("concept", () => {
+		it("accepts vertical+name (minimal)", () => {
+			const out = validateTeach({
+				type: "concept",
+				payload: { vertical: "_adhoc", name: "revenue" },
+			});
+			expect(out.vertical).toBe("_adhoc");
+			expect(out.name).toBe("revenue");
+		});
+
+		it("accepts the full OntologyConcept shape", () => {
+			const out = validateTeach({
+				type: "concept",
+				payload: {
+					vertical: "_adhoc",
+					name: "revenue",
+					description: "Total income",
+					indicators: ["revenue", "sales", "income"],
+					exclude_patterns: ["cost", "expense"],
+					temporal_behavior: "additive",
+					typical_role: "measure",
+					typical_values: ["10000", "20000"],
+					unit_from_concept: "currency",
+					is_unit_dimension: false,
+				},
+			});
+			expect(out.indicators).toEqual(["revenue", "sales", "income"]);
+			expect(out.typical_role).toBe("measure");
+			expect(out.is_unit_dimension).toBe(false);
+		});
+
+		it("rejects missing vertical", () => {
+			expect(() =>
+				validateTeach({
+					type: "concept",
+					payload: { name: "revenue" },
+				}),
+			).toThrow(TeachValidationError);
+		});
+
+		it("rejects missing name", () => {
+			expect(() =>
+				validateTeach({
+					type: "concept",
+					payload: { vertical: "_adhoc" },
+				}),
+			).toThrow(TeachValidationError);
+		});
+
+		it("rejects empty vertical", () => {
+			expect(() =>
+				validateTeach({
+					type: "concept",
+					payload: { vertical: "", name: "revenue" },
+				}),
+			).toThrow(TeachValidationError);
+		});
+
+		it("rejects a non-object payload (must be a dict)", () => {
+			expect(() =>
+				validateTeach({ type: "concept", payload: "just a string" }),
+			).toThrow(TeachValidationError);
+		});
+
+		it("passes through extra optional fields", () => {
+			// Mirrors passthrough() — the applier can accept new fields without
+			// a code change in the cockpit.
+			const out = validateTeach({
+				type: "concept",
+				payload: {
+					vertical: "_adhoc",
+					name: "revenue",
+					some_future_field: "ok",
+				},
+			});
+			expect(out.some_future_field).toBe("ok");
+		});
+	});
+
 	describe("concept_property", () => {
 		it("accepts vertical+concept+property+value", () => {
 			const out = validateTeach({
@@ -181,7 +260,6 @@ describe("validateTeach", () => {
 
 	describe("deferred types (generic passthrough)", () => {
 		it.each([
-			"concept",
 			"validation",
 			"cycle",
 			"metric",
@@ -192,12 +270,6 @@ describe("validateTeach", () => {
 				payload: { anything: "goes", here: { nested: true } },
 			});
 			expect(out).toEqual({ anything: "goes", here: { nested: true } });
-		});
-
-		it("concept rejects a non-object payload (must be a dict)", () => {
-			expect(() =>
-				validateTeach({ type: "concept", payload: "just a string" }),
-			).toThrow();
 		});
 	});
 

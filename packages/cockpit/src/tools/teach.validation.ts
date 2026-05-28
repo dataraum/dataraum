@@ -50,10 +50,31 @@ const ConceptPropertyPayload = z
 	})
 	.passthrough();
 
-// Six deferred types — slice 1 proves the write path only; consumers either
-// land in slice 2+ or already read ConfigOverlay directly (relationship's
-// join_path_determinism detector). Generic object passthrough until each
-// type's consumer is wired, then we tighten here.
+// Mirrors OntologyConcept (packages/engine/.../analysis/semantic/ontology.py).
+// Used both by user teach AND by the engine's cold-start _adhoc induction
+// (DAT-371), which inserts one `concept` row per induced concept instead of
+// writing YAML. Required: vertical + name; the rest mirrors the OntologyConcept
+// fields and is optional. passthrough() lets the applier accept new optional
+// fields without lock-step cockpit edits.
+const ConceptPayload = z
+	.object({
+		vertical: z.string().min(1),
+		name: z.string().min(1),
+		description: z.string().optional(),
+		indicators: z.array(z.string()).optional(),
+		exclude_patterns: z.array(z.string()).optional(),
+		temporal_behavior: z.string().optional(),
+		typical_role: z.string().optional(),
+		typical_values: z.array(z.string()).optional(),
+		unit_from_concept: z.string().optional(),
+		is_unit_dimension: z.boolean().optional(),
+	})
+	.passthrough();
+
+// Five still-deferred types — slice 1 proves the write path only; consumers
+// either land in slice 2+ or already read ConfigOverlay directly
+// (relationship's join_path_determinism detector). Generic object passthrough
+// until each type's consumer is wired, then we tighten here.
 const GenericPayload = z.record(z.string(), z.unknown());
 
 // `relationship` is consumed today by join_path_determinism via
@@ -72,9 +93,9 @@ const RelationshipPayload = z
 const TYPE_SCHEMAS = {
 	type_pattern: TypePatternPayload,
 	null_value: NullValuePayload,
+	concept: ConceptPayload,
 	concept_property: ConceptPropertyPayload,
 	relationship: RelationshipPayload,
-	concept: GenericPayload,
 	validation: GenericPayload,
 	cycle: GenericPayload,
 	metric: GenericPayload,

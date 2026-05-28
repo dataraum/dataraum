@@ -1,0 +1,22 @@
+# _adhoc — the empty / start-here vertical (DAT-371)
+#
+# Used when no domain vertical has been selected. Cold-start runs of the
+# semantic_per_column phase trigger an LLM induction agent that proposes
+# business concepts from the data's schemas + samples; those concepts are
+# written as `concept`-type rows in the workspace's `config_overlay`
+# table, NOT back into this file. This baseline stays empty — the
+# overlay materializes the induced concepts on every layered read.
+#
+# Selecting `_adhoc` is therefore the "let the engine figure it out"
+# mode; selecting a stock vertical (e.g. `finance`) skips induction and
+# uses the curated concept set under that vertical's directory.
+
+name: _adhoc
+version: "1.0.0"
+description: |
+  Empty baseline used when no domain vertical is selected. The engine
+  induces concepts from the data on cold start and stores them as
+  config_overlay rows; the layered loader materializes them as if they
+  were in this file.
+
+concepts: []

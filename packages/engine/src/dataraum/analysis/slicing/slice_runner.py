@@ -135,27 +135,14 @@ def register_slice_tables(
                 if slice_table_name not in slice_tables_in_duckdb:
                     continue
 
-                # Check if already registered (include source_id in query for correct uniqueness)
+                # Check if already registered (include source_id in query for correct uniqueness).
+                # Earlier iterations flush before they fall through, so this query sees them.
                 existing_stmt = select(Table).where(
                     Table.source_id == source_table.source_id,
                     Table.table_name == slice_table_name,
                     Table.layer == "slice",
                 )
-                existing_result = session.execute(existing_stmt)
-                existing_table = existing_result.scalar_one_or_none()
-
-                # Non-PK query — session.execute() can't see unflushed objects.
-                # Check session.new for Tables added earlier in this loop iteration.
-                if not existing_table:
-                    for obj in session.new:
-                        if (
-                            isinstance(obj, Table)
-                            and obj.source_id == source_table.source_id
-                            and obj.table_name == slice_table_name
-                            and obj.layer == "slice"
-                        ):
-                            existing_table = obj
-                            break
+                existing_table = session.execute(existing_stmt).scalar_one_or_none()
 
                 if existing_table:
                     # Already registered
@@ -239,6 +226,10 @@ def register_slice_tables(
                             )
                         )
 
+                # Flush so the next iteration's existing_stmt sees this slice
+                # (and run_statistics_on_slice can resolve it by PK on identity map).
+                session.flush()
+
                 registered.append(
                     SliceTableInfo(
                         slice_table_id=slice_table.table_id,
@@ -279,18 +270,7 @@ def run_statistics_on_slice(
     # temporarily work with slice layer. We'll directly call it with the table_id.
     # Since we registered with layer='slice', we need to handle this.
 
-    # session.get() checks the identity map first, so pending objects
-    # added via session.add() in this session are found without flush.
     table = session.get(Table, slice_info.slice_table_id)
-
-    # Fallback: check session.new for pending objects not yet in identity map
-    # (can happen with autoflush=False when objects were added but PK not indexed)
-    if not table:
-        for obj in session.new:
-            if isinstance(obj, Table) and obj.table_id == slice_info.slice_table_id:
-                table = obj
-                break
-
     if not table:
         return Result.fail(f"Slice table not found: {slice_info.slice_table_id}")
 

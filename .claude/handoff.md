@@ -4,6 +4,47 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-28: DAT-371 — `_adhoc` ontology induction moves to `concept` overlay rows
+
+Follow-up to DAT-343 that unblocks DAT-339 user testing. The baked-in
+config root is bind-mounted `:ro`, so `semantic_per_column`'s cold-start
+`_adhoc` path (which used to `OntologyLoader.save()` back to
+`verticals/_adhoc/ontology.yaml`) crashed with `OSError: Read-only file
+system`. Induced concepts now persist as `config_overlay` rows.
+
+### dataraum-eval
+
+- **Eval action: no recalibration needed.** No detector logic changed;
+  concept-content is still produced by the same LLM induction agent
+  with the same prompt and tool schema. What changed is *where* the
+  induced concepts live (Postgres overlay rows, not a YAML file) and
+  the layered-read path that materializes them.
+- **New `concept` overlay applier** in `dataraum.core.overlay`:
+  ``verticals/<v>/ontology.yaml`` reads now merge concept rows
+  (upsert-replace by `name`) **before** `concept_property` patches. If
+  any eval fixture inserts both for the same vertical, the order matters
+  — a `concept` row replaces a concept wholesale; subsequent
+  `concept_property` rows for that concept patch on top.
+- **`OntologyLoader.load` now routes through `load_yaml_config`** so the
+  overlay applies. The in-loader cache is removed (live reads must
+  reflect freshly-inserted rows). Eval fixtures that pass
+  `verticals_dir=...` still bypass the overlay and are deterministic.
+- **`OntologyLoader.save` is deleted.** Any eval helper that wrote a
+  vertical YAML via the loader must switch to inserting `ConfigOverlay`
+  rows (one per concept; `type='concept'`; payload includes `vertical`).
+- **New `_adhoc` baseline ships at
+  `packages/dataraum-config/verticals/_adhoc/ontology.yaml`** with
+  `concepts: []`. The induction-on-cold-start path inserts overlay rows
+  on top of this empty baseline.
+- **Cockpit `concept` payload is now typed** (`ConceptPayload` in
+  `teach.validation.ts`) mirroring `OntologyConcept` — required:
+  `vertical` + `name`; everything else optional with passthrough.
+
+### dataraum-testdata
+
+- No testdata change required. Adhoc induction still happens on the
+  same data shape; the only difference is the persistence substrate.
+
 ## 2026-05-28: DAT-343 — teach via Postgres `config_overlay` + remove-and-replay (E3)
 
 DAT-343 retires the DAT-358 filesystem teach overlay and replaces it with a

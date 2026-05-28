@@ -29,6 +29,7 @@ from dataraum.pipeline.base import PhaseStatus
 from dataraum.worker.activity import (
     raw_table_ids,
     run_phase,
+    run_replay_cleanup,
     run_source_detectors,
     run_table_detectors,
     typed_table_id_for_raw,
@@ -37,6 +38,7 @@ from dataraum.worker.contracts import (
     ImportResult,
     PhaseOutcome,
     ProcessTableInput,
+    ReplayCleanupInput,
     SourceIdentity,
     TableScopedInput,
     TypingResult,
@@ -126,6 +128,58 @@ class PhaseActivities:
         analytics phases it makes real LLM calls.
         """
         return self._run_or_raise("semantic_per_column", identity, [])
+
+    @activity.defn(name="lookup_raw_table_ids")
+    def lookup_raw_table_ids(self, identity: SourceIdentity) -> ImportResult:
+        """Read the source's raw table ids without re-running import (DAT-343).
+
+        Called by ``addSourceWorkflow`` on a teach replay that starts past
+        ``import`` — the parent still needs the raw ids to drive the
+        fan-out, and reading them in an activity (so the result lands in
+        history) keeps replay deterministic.
+        """
+        return ImportResult(raw_table_ids=raw_table_ids(self._manager, identity.source_id))
+
+    @activity.defn(name="lookup_typed_table_id")
+    def lookup_typed_table_id(self, payload: ProcessTableInput) -> TypingResult:
+        """Resolve an existing typed table id without re-running typing (DAT-343).
+
+        Called by ``processTableWorkflow`` on a teach replay that starts past
+        ``typing``. Same shape as the ``typing`` activity's result so the
+        downstream child workflow code path stays identical.
+        """
+        typed_id = typed_table_id_for_raw(
+            self._manager, payload.identity.source_id, payload.raw_table_id
+        )
+        if typed_id is None:
+            raise ApplicationError(
+                f"No typed table for raw table '{payload.raw_table_id}' — replay "
+                "started past typing but typing's output is missing. Re-run from "
+                "an earlier phase.",
+                type="PhaseFailed",
+                non_retryable=True,
+            )
+        return TypingResult(typed_table_id=typed_id)
+
+    @activity.defn(name="replay_cleanup_for_phase")
+    def run_replay_cleanup_for_phase(self, payload: ReplayCleanupInput) -> PhaseOutcome:
+        """Invoke a phase's ``replay_cleanup`` before the workflow re-runs it (DAT-343).
+
+        The workflow calls this immediately before the first phase activity
+        of a teach replay — that's where ``replay.from_phase`` enters the
+        chain, and the cleanup wipes the phase's prior outputs so its
+        existing ``should_skip`` lets the re-run proceed.
+        """
+        run_replay_cleanup(
+            self._manager,
+            payload.identity,
+            payload.phase_name,
+            payload.table_ids,
+        )
+        return PhaseOutcome(
+            status=PhaseStatus.COMPLETED.value,
+            summary=f"cleaned up {payload.phase_name} for {len(payload.table_ids)} table(s)",
+        )
 
     @activity.defn(name="detect_source")
     def run_detect_source(self, identity: SourceIdentity) -> PhaseOutcome:

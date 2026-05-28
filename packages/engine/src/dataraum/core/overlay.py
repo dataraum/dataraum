@@ -129,9 +129,7 @@ def _apply_null_value(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str,
     return out
 
 
-def _apply_concept_property(
-    base: dict[str, Any], rows: list[OverlayRow]
-) -> dict[str, Any]:
+def _apply_concept_property(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
     """Patch a property on a named concept in a vertical ontology.
 
     Payload shape: ``{vertical, concept, property, value}``. The
@@ -210,9 +208,7 @@ def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
     if relative_path.startswith(_VERTICAL_ONTOLOGY_PREFIX) and relative_path.endswith(
         _VERTICAL_ONTOLOGY_SUFFIX
     ):
-        vertical = relative_path[
-            len(_VERTICAL_ONTOLOGY_PREFIX) : -len(_VERTICAL_ONTOLOGY_SUFFIX)
-        ]
+        vertical = relative_path[len(_VERTICAL_ONTOLOGY_PREFIX) : -len(_VERTICAL_ONTOLOGY_SUFFIX)]
         matching = [
             r
             for r in rows

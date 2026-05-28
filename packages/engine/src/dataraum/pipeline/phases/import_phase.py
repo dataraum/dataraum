@@ -84,9 +84,7 @@ class ImportPhase(BasePhase):
             return
 
         rows = list(
-            ctx.session.execute(
-                select(Table).where(Table.source_id == ctx.source_id)
-            ).scalars()
+            ctx.session.execute(select(Table).where(Table.source_id == ctx.source_id)).scalars()
         )
         for table in rows:
             if not table.duckdb_path:

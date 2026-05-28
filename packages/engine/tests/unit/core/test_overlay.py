@@ -155,9 +155,7 @@ class TestApplyNullValue:
         set_overlay_resolver(
             lambda: [
                 OverlayRow(type="null_value", payload={"value": "x"}),  # no category
-                OverlayRow(
-                    type="null_value", payload={"category": "standard_nulls"}
-                ),  # no value
+                OverlayRow(type="null_value", payload={"category": "standard_nulls"}),  # no value
             ]
         )
         merged = apply_overlay("null_values.yaml", {"standard_nulls": []})
@@ -263,11 +261,7 @@ class TestApplyOverlayDispatch:
 
     def test_unrelated_path_returns_base_unmodified(self) -> None:
         set_overlay_resolver(
-            lambda: [
-                OverlayRow(
-                    type="type_pattern", payload={"name": "x", "pattern": "y"}
-                )
-            ]
+            lambda: [OverlayRow(type="type_pattern", payload={"name": "x", "pattern": "y"})]
         )
         base = {"providers": {"anthropic": {}}}
         merged = apply_overlay("llm/config.yaml", base)
@@ -399,11 +393,7 @@ class TestResolverLifecycle:
 
     def test_reset_drops_resolver(self) -> None:
         set_overlay_resolver(
-            lambda: [
-                OverlayRow(
-                    type="type_pattern", payload={"name": "x", "pattern": "y"}
-                )
-            ]
+            lambda: [OverlayRow(type="type_pattern", payload={"name": "x", "pattern": "y"})]
         )
         reset_overlay_resolver_for_tests()
         # No resolver → base returned unchanged regardless of registered rows.
@@ -412,11 +402,7 @@ class TestResolverLifecycle:
 
     def test_set_to_none_explicit(self) -> None:
         set_overlay_resolver(
-            lambda: [
-                OverlayRow(
-                    type="type_pattern", payload={"name": "x", "pattern": "y"}
-                )
-            ]
+            lambda: [OverlayRow(type="type_pattern", payload={"name": "x", "pattern": "y"})]
         )
         set_overlay_resolver(None)
         base = {"overrides": {"patterns": {}}}

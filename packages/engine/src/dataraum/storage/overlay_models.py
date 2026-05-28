@@ -50,9 +50,7 @@ class ConfigOverlay(Base):
 
     __tablename__ = "config_overlay"
 
-    overlay_id: Mapped[str] = mapped_column(
-        String, primary_key=True, default=lambda: str(uuid4())
-    )
+    overlay_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     workspace_id: Mapped[str] = mapped_column(String, nullable=False)
     session_id: Mapped[str | None] = mapped_column(String, nullable=True)
     type: Mapped[str] = mapped_column(String, nullable=False)

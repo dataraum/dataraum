@@ -87,6 +87,11 @@ async def run_worker() -> None:
                     phase_activities.run_detect_table,
                     phase_activities.run_semantic_per_column,
                     phase_activities.run_detect_source,
+                    # DAT-343 replay activities — lookups when phases are
+                    # skipped on replay + per-phase cleanup before re-runs.
+                    phase_activities.lookup_raw_table_ids,
+                    phase_activities.lookup_typed_table_id,
+                    phase_activities.run_replay_cleanup_for_phase,
                 ],
                 activity_executor=executor,
                 max_concurrent_activities=_MAX_CONCURRENT_ACTIVITIES,
@@ -119,6 +124,9 @@ async def run_worker() -> None:
                     "detect_table",
                     "semantic_per_column",
                     "detect_source",
+                    "lookup_raw_table_ids",
+                    "lookup_typed_table_id",
+                    "replay_cleanup_for_phase",
                 ],
             )
             async with worker:

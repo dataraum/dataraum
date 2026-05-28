@@ -139,9 +139,7 @@ class TypingPhase(BasePhase):
         from dataraum.core.duckdb_naming import schema_for_layer
         from dataraum.server.storage import LAKE_CATALOG_ALIAS
 
-        raw_stmt = select(Table).where(
-            Table.source_id == ctx.source_id, Table.layer == "raw"
-        )
+        raw_stmt = select(Table).where(Table.source_id == ctx.source_id, Table.layer == "raw")
         if table_ids:
             raw_stmt = raw_stmt.where(Table.table_id.in_(table_ids))
         raw_tables = list(ctx.session.execute(raw_stmt).scalars())
@@ -160,9 +158,7 @@ class TypingPhase(BasePhase):
             ctx.session.execute(
                 delete(TypeCandidate).where(TypeCandidate.column_id.in_(raw_col_ids))
             )
-            ctx.session.execute(
-                delete(TypeDecision).where(TypeDecision.column_id.in_(raw_col_ids))
-            )
+            ctx.session.execute(delete(TypeDecision).where(TypeDecision.column_id.in_(raw_col_ids)))
 
         # 2 + 3: drop typed/quarantine Tables sharing the raw table_name —
         # typed and quarantine each have at most one row per name per source,

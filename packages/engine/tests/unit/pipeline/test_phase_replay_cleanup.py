@@ -165,9 +165,7 @@ class TestImportPhaseReplayCleanup:
 
         ImportPhase().replay_cleanup(ctx, [])
 
-        remaining = session.execute(
-            select(Table).where(Table.source_id == source.source_id)
-        ).all()
+        remaining = session.execute(select(Table).where(Table.source_id == source.source_id)).all()
         assert remaining == []
 
     def test_emits_drop_for_each_layer(self, session: Session) -> None:
@@ -237,16 +235,12 @@ class TestTypingPhaseReplayCleanup:
 
         # The typed Table row matching the raw is gone.
         remaining_typed = session.execute(
-            select(Table).where(
-                Table.source_id == source.source_id, Table.layer == "typed"
-            )
+            select(Table).where(Table.source_id == source.source_id, Table.layer == "typed")
         ).all()
         assert remaining_typed == []
         # The raw Table row stays — only typing's outputs are cleaned.
         remaining_raw = session.execute(
-            select(Table).where(
-                Table.source_id == source.source_id, Table.layer == "raw"
-            )
+            select(Table).where(Table.source_id == source.source_id, Table.layer == "raw")
         ).all()
         assert len(remaining_raw) == 1
 
@@ -278,9 +272,7 @@ class TestTypingPhaseReplayCleanup:
         remaining = {
             row.table_name
             for row in session.execute(
-                select(Table).where(
-                    Table.source_id == source.source_id, Table.layer == "typed"
-                )
+                select(Table).where(Table.source_id == source.source_id, Table.layer == "typed")
             ).scalars()
         }
         assert remaining == {"customers"}
@@ -308,9 +300,7 @@ class TestTypingPhaseReplayCleanup:
         TypingPhase().replay_cleanup(ctx, [])
 
         remaining_typed = session.execute(
-            select(Table).where(
-                Table.source_id == source.source_id, Table.layer == "typed"
-            )
+            select(Table).where(Table.source_id == source.source_id, Table.layer == "typed")
         ).all()
         assert remaining_typed == []
 
@@ -351,9 +341,7 @@ class TestTypingPhaseReplayCleanup:
             == []
         )
         assert (
-            session.execute(
-                select(TypeDecision).where(TypeDecision.column_id == raw_col_id)
-            ).all()
+            session.execute(select(TypeDecision).where(TypeDecision.column_id == raw_col_id)).all()
             == []
         )
 
@@ -379,9 +367,7 @@ class TestTypingPhaseReplayCleanup:
 
         # Typed Table stays; no DuckDB statements emitted.
         remaining = session.execute(
-            select(Table).where(
-                Table.source_id == source.source_id, Table.layer == "typed"
-            )
+            select(Table).where(Table.source_id == source.source_id, Table.layer == "typed")
         ).all()
         assert len(remaining) == 1
         assert ctx.duckdb_conn.statements == []  # type: ignore[attr-defined]
@@ -445,12 +431,18 @@ class TestSemanticPerColumnReplayCleanup:
         SemanticPerColumnPhase().replay_cleanup(ctx, [])
 
         # source_a's annotation gone; source_b's remains.
-        assert session.execute(
-            select(SemanticAnnotation).where(SemanticAnnotation.column_id == col_a)
-        ).all() == []
-        assert session.execute(
-            select(SemanticAnnotation).where(SemanticAnnotation.column_id == col_b)
-        ).first() is not None
+        assert (
+            session.execute(
+                select(SemanticAnnotation).where(SemanticAnnotation.column_id == col_a)
+            ).all()
+            == []
+        )
+        assert (
+            session.execute(
+                select(SemanticAnnotation).where(SemanticAnnotation.column_id == col_b)
+            ).first()
+            is not None
+        )
 
     def test_no_op_when_source_has_no_typed_tables(self, session: Session) -> None:
         source = Source(

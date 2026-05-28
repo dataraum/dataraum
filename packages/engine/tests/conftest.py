@@ -27,7 +27,6 @@ os.environ["DATARAUM_WORKSPACE_ID"] = "test"
 os.environ["DATABASE_URL"] = "postgresql+psycopg://test:test@localhost:5432/test"
 os.environ["DUCKLAKE_CATALOG_URL"] = "postgresql://test:test@localhost:5432/lake"
 os.environ["DUCKLAKE_DATA_PATH"] = "/tmp/dataraum-test-lake"
-os.environ["DATARAUM_HOME"] = "/tmp/dataraum-test-home"
 os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-placeholder"
 os.environ["TEMPORAL_HOST"] = "localhost:7233"
 os.environ["TEMPORAL_NAMESPACE"] = "default"
@@ -41,12 +40,11 @@ from sqlalchemy.orm import Session, sessionmaker  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 from testcontainers.postgres import PostgresContainer  # noqa: E402
 
-# Mirror what ``bootstrap_workspace()`` would do at FastAPI lifespan
-# startup: stamp the module-level active-workspace pointer so any
+# Mirror what ``bootstrap_workspace()`` would do at worker startup:
+# stamp the module-level active-workspace pointer so any
 # ConnectionManager.initialize() in a unit test resolves the workspace
-# schema without us also having to materialize DATARAUM_HOME + the
-# config overlay. Tests for ``bootstrap_workspace`` itself reset and
-# rebootstrap via the autouse ``_isolate_active_workspace`` fixture in
+# schema. Tests for ``bootstrap_workspace`` itself reset and rebootstrap
+# via the autouse ``_isolate_active_workspace`` fixture in
 # ``tests/unit/server/test_workspace.py``.
 _ws_mod = importlib.import_module("dataraum.server.workspace")  # noqa: E402
 from dataraum.storage import init_database  # noqa: E402

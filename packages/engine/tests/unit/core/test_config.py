@@ -12,9 +12,7 @@ from dataraum.core.config import (
     load_phase_config,
     load_pipeline_config,
     load_yaml_config,
-    reset_active_workspace_for_tests,
     reset_config_root,
-    set_active_workspace_config_dir,
     set_config_root,
 )
 
@@ -222,64 +220,35 @@ class TestSetConfigRoot:
         assert _get_config_root() == dir_b
 
 
-class TestActiveWorkspacePriority:
-    """Tests for the workspace overlay step in ``_get_config_root()``.
+class TestConfigPathPriority:
+    """``_get_config_root()`` honors override → env var → auto-detect order.
 
-    The active workspace ``config_dir`` is registered at FastAPI startup
-    by ``bootstrap_workspace`` and sits between the test override and the
-    ``DATARAUM_CONFIG_PATH`` env var in resolution priority.
+    Post-DAT-343 the workspace-overlay tier is gone (FS overlay retired);
+    teach edits live in Postgres and are layered by
+    :mod:`dataraum.core.overlay`, not by swapping the config root.
     """
 
     def teardown_method(self) -> None:
         reset_config_root()
-        reset_active_workspace_for_tests()
 
-    def test_active_workspace_wins_over_env_var(
+    def test_override_wins_over_env_var(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         env_dir = tmp_path / "env_config"
-        workspace_dir = tmp_path / "workspace_config"
-        env_dir.mkdir()
-        workspace_dir.mkdir()
-
-        monkeypatch.setenv("DATARAUM_CONFIG_PATH", str(env_dir))
-        set_active_workspace_config_dir(workspace_dir)
-
-        assert _get_config_root() == workspace_dir
-
-    def test_override_wins_over_active_workspace(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        workspace_dir = tmp_path / "workspace_config"
         override_dir = tmp_path / "override_config"
-        workspace_dir.mkdir()
+        env_dir.mkdir()
         override_dir.mkdir()
 
-        set_active_workspace_config_dir(workspace_dir)
+        monkeypatch.setenv("DATARAUM_CONFIG_PATH", str(env_dir))
         set_config_root(override_dir)
 
         assert _get_config_root() == override_dir
 
-    def test_env_var_wins_when_no_active_workspace(
+    def test_env_var_wins_when_no_override(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         env_dir = tmp_path / "env_only"
         env_dir.mkdir()
         monkeypatch.setenv("DATARAUM_CONFIG_PATH", str(env_dir))
 
-        assert _get_config_root() == env_dir
-
-    def test_reset_active_workspace_falls_back_to_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        env_dir = tmp_path / "env_config"
-        workspace_dir = tmp_path / "workspace_config"
-        env_dir.mkdir()
-        workspace_dir.mkdir()
-        monkeypatch.setenv("DATARAUM_CONFIG_PATH", str(env_dir))
-
-        set_active_workspace_config_dir(workspace_dir)
-        assert _get_config_root() == workspace_dir
-
-        reset_active_workspace_for_tests()
         assert _get_config_root() == env_dir

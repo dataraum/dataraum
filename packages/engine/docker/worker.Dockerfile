@@ -36,16 +36,10 @@ ENV DATARAUM_CONFIG_PATH=/opt/dataraum/config
 # don't need to provision a writable home — the path is immutable, predictable,
 # and pre-populated at build time. Pattern adapted from web-app/roboduck.
 RUN groupadd -r dataraum && useradd -r -g dataraum -u 1001 dataraum && \
-    mkdir -p /var/lib/dataraum/lake /var/lib/dataraum/sources /var/lib/dataraum/workspace /opt/dataraum/duckdb-extensions && \
+    mkdir -p /var/lib/dataraum/lake /var/lib/dataraum/sources /opt/dataraum/duckdb-extensions && \
     chown -R dataraum:dataraum /app /opt/dataraum /var/lib/dataraum
 
 USER dataraum
-
-# Workspace state (sessions, archives, logs) lives here — outside $HOME so
-# the non-root user doesn't need a writable home directory. Consumers of the
-# image (compose / k8s / `docker run`) inherit this default; mount a volume
-# at /var/lib/dataraum/workspace to persist across container recreations.
-ENV DATARAUM_HOME=/var/lib/dataraum/workspace
 
 # Pre-install the DuckLake extension at image build time. Runtime sets
 # DUCKLAKE_SKIP_INSTALL=1 (read by server/storage.bootstrap_lake) so the cold

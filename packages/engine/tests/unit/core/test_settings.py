@@ -18,7 +18,6 @@ _REQUIRED_ENV = {
     "DATABASE_URL": "postgresql+psycopg://u:p@localhost:5432/db",
     "DUCKLAKE_CATALOG_URL": "postgresql://u:p@localhost:5432/lake",
     "DUCKLAKE_DATA_PATH": "/tmp/lake",
-    "DATARAUM_HOME": "/tmp/home",
     "DATARAUM_WORKSPACE_ID": "test",
     "ANTHROPIC_API_KEY": "sk-ant-test",
     "TEMPORAL_HOST": "localhost:7233",

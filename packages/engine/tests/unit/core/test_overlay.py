@@ -161,6 +161,151 @@ class TestApplyNullValue:
         assert merged["standard_nulls"] == []
 
 
+class TestApplyConcept:
+    """``concept`` rows upsert-replace into a vertical ontology's ``concepts:`` list.
+
+    Used by user teach AND by ``_adhoc`` cold-start induction (DAT-371) —
+    induction writes one row per induced concept instead of a YAML file.
+    """
+
+    def teardown_method(self) -> None:
+        reset_overlay_resolver_for_tests()
+
+    def test_appends_new_concept_to_empty_baseline(self) -> None:
+        """Empty ``_adhoc`` baseline + one concept row materializes that concept."""
+        base = {"name": "_adhoc", "concepts": []}
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="concept",
+                    payload={
+                        "vertical": "_adhoc",
+                        "name": "revenue",
+                        "description": "Total income",
+                        "indicators": ["revenue", "sales"],
+                        "typical_role": "measure",
+                    },
+                )
+            ]
+        )
+        merged = apply_overlay("verticals/_adhoc/ontology.yaml", base)
+        assert merged["concepts"] == [
+            {
+                "name": "revenue",
+                "description": "Total income",
+                "indicators": ["revenue", "sales"],
+                "typical_role": "measure",
+            }
+        ]
+        # ``vertical`` is the routing key, never leaks into the merged concept.
+        assert "vertical" not in merged["concepts"][0]
+
+    def test_appends_alongside_existing_concepts(self) -> None:
+        base = {
+            "name": "finance",
+            "concepts": [{"name": "revenue", "indicators": ["rev"]}],
+        }
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="concept",
+                    payload={
+                        "vertical": "finance",
+                        "name": "cost",
+                        "indicators": ["cost", "expense"],
+                    },
+                )
+            ]
+        )
+        merged = apply_overlay("verticals/finance/ontology.yaml", base)
+        assert [c["name"] for c in merged["concepts"]] == ["revenue", "cost"]
+        # Existing concept untouched.
+        assert merged["concepts"][0] == {"name": "revenue", "indicators": ["rev"]}
+
+    def test_same_name_replaces_in_place(self) -> None:
+        """Upsert-replace by name: a later row for the same concept wins."""
+        base = {
+            "name": "finance",
+            "concepts": [{"name": "revenue", "indicators": ["old"], "typical_role": "measure"}],
+        }
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="concept",
+                    payload={
+                        "vertical": "finance",
+                        "name": "revenue",
+                        "indicators": ["new"],
+                    },
+                )
+            ]
+        )
+        merged = apply_overlay("verticals/finance/ontology.yaml", base)
+        revenue = next(c for c in merged["concepts"] if c["name"] == "revenue")
+        # Replaced wholesale — old ``typical_role`` is gone.
+        assert revenue == {"name": "revenue", "indicators": ["new"]}
+
+    def test_skips_row_targeting_other_vertical(self) -> None:
+        base = {"concepts": []}
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="concept",
+                    payload={"vertical": "marketing", "name": "campaign"},
+                )
+            ]
+        )
+        merged = apply_overlay("verticals/finance/ontology.yaml", base)
+        # No row for finance → identity short-circuit (no concept rows for vertical).
+        assert merged is base
+
+    def test_row_without_name_is_ignored(self) -> None:
+        base = {"concepts": []}
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="concept",
+                    payload={"vertical": "_adhoc", "description": "no name"},
+                )
+            ]
+        )
+        merged = apply_overlay("verticals/_adhoc/ontology.yaml", base)
+        assert merged["concepts"] == []
+
+    def test_concept_rows_apply_before_property_patches(self) -> None:
+        """Dispatcher applies concept rows first, then concept_property patches on top.
+
+        Pins the order documented in :func:`apply_overlay`: a concept
+        row may freshly insert a concept, then a property row may patch a
+        field on that same just-inserted concept in the same merge pass.
+        """
+        base = {"name": "_adhoc", "concepts": []}
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="concept",
+                    payload={"vertical": "_adhoc", "name": "revenue", "indicators": ["rev"]},
+                ),
+                OverlayRow(
+                    type="concept_property",
+                    payload={
+                        "vertical": "_adhoc",
+                        "concept": "revenue",
+                        "property": "typical_role",
+                        "value": "measure",
+                    },
+                ),
+            ]
+        )
+        merged = apply_overlay("verticals/_adhoc/ontology.yaml", base)
+        revenue = next(c for c in merged["concepts"] if c["name"] == "revenue")
+        assert revenue == {
+            "name": "revenue",
+            "indicators": ["rev"],
+            "typical_role": "measure",
+        }
+
+
 class TestApplyConceptProperty:
     """``concept_property`` rows patch a field on a named concept entry.
 

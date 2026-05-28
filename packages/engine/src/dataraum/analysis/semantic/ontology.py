@@ -1,7 +1,11 @@
 """Ontology loading from configuration files.
 
 Loads ontology definitions from config/verticals/<vertical>/ontology.yaml.
-Follows the same pattern as PromptRenderer for YAML config loading.
+Reads go through :func:`dataraum.core.config.load_yaml_config` so the
+workspace's active overlay rows (DAT-343; ``concept`` and
+``concept_property`` types per DAT-371) are merged onto the baked-in
+YAML. Custom ``verticals_dir`` (test fixtures) bypasses the overlay —
+they're deterministic.
 """
 
 from pathlib import Path
@@ -9,7 +13,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field
 
-from dataraum.core.config import get_config_dir
+from dataraum.core.config import get_config_dir, load_yaml_config
 
 
 class OntologyConcept(BaseModel):
@@ -45,26 +49,40 @@ class OntologyLoader:
         """Initialize ontology loader.
 
         Args:
-            verticals_dir: Root verticals directory.
-                          If None, uses config/verticals/
+            verticals_dir: Root verticals directory. ``None`` (production)
+                routes loads through :func:`load_yaml_config` so workspace
+                overlay rows are merged. A custom path (tests / fixtures)
+                reads YAML directly and bypasses the overlay —
+                deterministic for unit tests.
         """
-        if verticals_dir is None:
-            verticals_dir = get_config_dir("verticals")
-
         self.verticals_dir = verticals_dir
-        self._cache: dict[str, OntologyDefinition] = {}
+        # No cache: the overlay-aware production path must reflect newly
+        # inserted overlay rows on the next call (e.g. _adhoc induction
+        # inserts rows then re-reads in the same phase). Per-load latency
+        # is one filesystem read + dict copies; not a hotspot.
 
     def load(self, vertical: str) -> OntologyDefinition | None:
-        """Load and cache an ontology definition for a vertical.
+        """Load an ontology definition for a vertical.
+
+        Production path (``verticals_dir`` is ``None``) goes through
+        :func:`load_yaml_config` so any active overlay rows for
+        ``verticals/<vertical>/ontology.yaml`` are merged in. The test
+        path (explicit ``verticals_dir``) reads YAML directly and
+        bypasses the overlay.
 
         Args:
-            vertical: Vertical name (e.g. 'finance')
+            vertical: Vertical name (e.g. ``'finance'`` or ``'_adhoc'``).
 
         Returns:
-            Loaded ontology definition, or None if not found
+            Loaded (and overlay-merged) ontology definition, or ``None``
+            if the baked-in YAML doesn't exist.
         """
-        if vertical in self._cache:
-            return self._cache[vertical]
+        if self.verticals_dir is None:
+            try:
+                data = load_yaml_config(f"verticals/{vertical}/ontology.yaml")
+            except FileNotFoundError:
+                return None
+            return OntologyDefinition(**data)
 
         ontology_path = self.verticals_dir / vertical / "ontology.yaml"
         if not ontology_path.exists():
@@ -73,38 +91,19 @@ class OntologyLoader:
         with open(ontology_path) as f:
             data = yaml.safe_load(f)
 
-        ontology = OntologyDefinition(**data)
-        self._cache[vertical] = ontology
-        return ontology
-
-    def save(self, vertical: str, definition: OntologyDefinition) -> Path:
-        """Write an OntologyDefinition to YAML.
-
-        Args:
-            vertical: Vertical name (e.g. '_adhoc')
-            definition: The ontology to persist
-
-        Returns:
-            Path to the written YAML file
-        """
-        ontology_path = self.verticals_dir / vertical / "ontology.yaml"
-        ontology_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(ontology_path, "w") as f:
-            yaml.dump(
-                definition.model_dump(exclude_none=True),
-                f,
-                default_flow_style=False,
-                sort_keys=False,
-            )
-        self._cache.pop(vertical, None)
-        return ontology_path
+        return OntologyDefinition(**data)
 
     def list_verticals(self) -> list[str]:
-        """List available verticals with ontology definitions."""
-        if not self.verticals_dir.exists():
-            return []
+        """List available verticals with ontology definitions on disk.
 
-        return [p.parent.name for p in self.verticals_dir.glob("*/ontology.yaml")]
+        Lists only baked-in verticals — overlay rows can't add a wholly
+        new vertical (they augment a vertical whose YAML exists). Returns
+        ``[]`` if the verticals root doesn't exist.
+        """
+        root = self.verticals_dir if self.verticals_dir is not None else get_config_dir("verticals")
+        if not root.exists():
+            return []
+        return [p.parent.name for p in root.glob("*/ontology.yaml")]
 
     def format_concepts_for_prompt(self, ontology: OntologyDefinition | None) -> str:
         """Format ontology concepts for inclusion in LLM prompts.

@@ -215,12 +215,28 @@ class SemanticPerColumnPhase(BasePhase):
         renderer: PromptRendererType,
         table_ids: list[str],
     ) -> str | None:
-        """Induce an ``_adhoc`` ontology from schemas when none exists. Returns error or None."""
+        """Induce an ``_adhoc`` ontology and persist it as ``concept`` overlay rows.
+
+        DAT-371: the baked-in config root is bind-mounted read-only, so the
+        old "write YAML back to ``verticals/_adhoc/ontology.yaml``" path
+        crashes on cold start. Induced concepts now land as one
+        ``config_overlay`` row per concept (``type="concept"``,
+        ``payload={"vertical": "_adhoc", **concept.model_dump()}``,
+        workspace-scoped — ``session_id=None``); the layered loader
+        materializes them on every subsequent ontology read via
+        :func:`dataraum.core.overlay._apply_concept`.
+
+        Returns the error string on induction failure, ``None`` on
+        success (including the short-circuit when concepts already exist).
+        """
         from dataraum.analysis.semantic.induction import OntologyInductionAgent
         from dataraum.analysis.semantic.ontology import OntologyLoader
+        from dataraum.storage import ConfigOverlay
 
-        loader = OntologyLoader()
-        existing = loader.load("_adhoc")
+        # Short-circuit: re-read through the layered loader so already-
+        # induced concept rows count as "the ontology exists". This is
+        # what makes a re-run after a successful induction idempotent.
+        existing = OntologyLoader().load("_adhoc")
         if existing is not None and existing.concepts:
             return None
 
@@ -231,5 +247,21 @@ class SemanticPerColumnPhase(BasePhase):
             return f"Ontology induction failed: {induction.error}"
         if not induction.value or not induction.value.concepts:
             return "Ontology induction returned no concepts."
-        loader.save("_adhoc", induction.value)
+
+        for concept in induction.value.concepts:
+            ctx.session.add(
+                ConfigOverlay(
+                    session_id=None,  # workspace-scoped: induction is not per-session
+                    type="concept",
+                    payload={"vertical": "_adhoc", **concept.model_dump(exclude_none=True)},
+                )
+            )
+        # Commit so the resolver (which leases its own session via
+        # session_scope) can see the newly inserted rows on the next
+        # load. Postgres READ COMMITTED means a flush alone wouldn't make
+        # the rows visible across sessions. Committing here is also a
+        # crash-safety win: induction is expensive (LLM call); if a later
+        # phase fails, the next run short-circuits this branch via the
+        # ``existing.concepts`` check above.
+        ctx.session.commit()
         return None

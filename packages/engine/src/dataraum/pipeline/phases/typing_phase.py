@@ -22,7 +22,6 @@ from dataraum.analysis.typing import infer_type_candidates, resolve_types
 from dataraum.analysis.typing.patterns import load_typing_config
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
-from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
@@ -47,59 +46,6 @@ class TypingPhase(BasePhase):
     @property
     def name(self) -> str:
         return "typing"
-
-    @property
-    def duckdb_layers(self) -> list[str]:
-        return ["typed", "quarantine"]
-
-    def cleanup(
-        self,
-        session: Session,
-        source_id: str,
-        table_ids: list[str],
-        column_ids: list[str],
-    ) -> int:
-        # NOTE: source-scoped — deletes typed/quarantine for the WHOLE source,
-        # ignoring any per-table filter. `_run`/`should_skip` honor
-        # `ctx.table_ids`, but cleanup does not: the cleanup() path
-        # has no table-filter param. A per-table replay that runs cleanup first
-        # would clobber sibling tables' typed rows. TODO(DAT-344): thread a
-        # table filter through cleanup when the per-table replay path lands.
-        from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
-
-        count = 0
-        # Delete TypeCandidate and TypeDecision for raw-layer columns
-        raw_table_ids = list(
-            session.execute(
-                select(Table.table_id).where(Table.source_id == source_id, Table.layer == "raw")
-            )
-            .scalars()
-            .all()
-        )
-        if raw_table_ids:
-            raw_col_ids = list(
-                session.execute(select(Column.column_id).where(Column.table_id.in_(raw_table_ids)))
-                .scalars()
-                .all()
-            )
-            if raw_col_ids:
-                count += exec_delete(
-                    session,
-                    delete(TypeCandidate).where(TypeCandidate.column_id.in_(raw_col_ids)),
-                )
-                count += exec_delete(
-                    session,
-                    delete(TypeDecision).where(TypeDecision.column_id.in_(raw_col_ids)),
-                )
-        # Delete typed and quarantine layer Tables (CASCADE deletes Columns and children)
-        count += exec_delete(
-            session,
-            delete(Table).where(
-                Table.source_id == source_id,
-                Table.layer.in_(["typed", "quarantine"]),
-            ),
-        )
-        return count
 
     @property
     def db_models(self) -> list[ModuleType]:

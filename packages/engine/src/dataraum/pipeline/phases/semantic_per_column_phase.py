@@ -23,14 +23,11 @@ from dataraum.analysis.semantic.processor import persist_column_annotations
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
-from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
-
     from dataraum.llm.config import LLMConfig
     from dataraum.llm.prompts import PromptRenderer as PromptRendererType
     from dataraum.llm.providers.base import LLMProvider
@@ -59,20 +56,6 @@ class SemanticPerColumnPhase(BasePhase):
         from dataraum.analysis.semantic import db_models
 
         return [db_models]
-
-    def cleanup(
-        self,
-        session: Session,
-        source_id: str,
-        table_ids: list[str],
-        column_ids: list[str],
-    ) -> int:
-        if not column_ids:
-            return 0
-        return exec_delete(
-            session,
-            delete(SemanticAnnotation).where(SemanticAnnotation.column_id.in_(column_ids)),
-        )
 
     def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
         """Drop the source's LLM annotations so the reduce re-annotates (DAT-343).

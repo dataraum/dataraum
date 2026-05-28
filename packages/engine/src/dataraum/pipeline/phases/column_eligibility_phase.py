@@ -10,7 +10,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from dataraum.analysis.eligibility.config import load_eligibility_config
 from dataraum.analysis.eligibility.db_models import ColumnEligibilityRecord
@@ -23,13 +23,12 @@ from dataraum.analysis.eligibility.evaluator import (
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
-from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column
 
 if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
+    pass
 
 logger = get_logger(__name__)
 
@@ -48,20 +47,6 @@ class ColumnEligibilityPhase(BasePhase):
     @property
     def name(self) -> str:
         return "column_eligibility"
-
-    def cleanup(
-        self,
-        session: Session,
-        source_id: str,
-        table_ids: list[str],
-        column_ids: list[str],
-    ) -> int:
-        stmt = delete(ColumnEligibilityRecord).where(ColumnEligibilityRecord.source_id == source_id)
-        # Scope to the requested tables when given (per-table replay, DAT-370) so a
-        # single table's re-run does not clobber sibling tables' eligibility rows.
-        if table_ids:
-            stmt = stmt.where(ColumnEligibilityRecord.table_id.in_(table_ids))
-        return exec_delete(session, stmt)
 
     @property
     def db_models(self) -> list[ModuleType]:

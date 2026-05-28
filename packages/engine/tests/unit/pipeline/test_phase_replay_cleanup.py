@@ -19,7 +19,6 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 

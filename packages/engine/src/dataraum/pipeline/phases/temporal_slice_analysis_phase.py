@@ -13,7 +13,7 @@ from datetime import date, datetime
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from dataraum.analysis.semantic.db_models import TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
@@ -28,13 +28,12 @@ from dataraum.analysis.temporal_slicing.analyzer import (
 from dataraum.analysis.temporal_slicing.models import TemporalSliceConfig, TimeGrain
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
-from dataraum.pipeline.cleanup import exec_delete, get_slice_table_names
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
+    pass
 
 
 def _sanitize_name(value: str) -> str:
@@ -63,43 +62,6 @@ class TemporalSliceAnalysisPhase(BasePhase):
     @property
     def name(self) -> str:
         return "temporal_slice_analysis"
-
-    def cleanup(
-        self,
-        session: Session,
-        source_id: str,
-        table_ids: list[str],
-        column_ids: list[str],
-    ) -> int:
-        from dataraum.analysis.temporal_slicing.db_models import (
-            ColumnDriftSummary,
-            TemporalSliceAnalysis,
-        )
-
-        slice_names = get_slice_table_names(source_id, session)
-        if not slice_names:
-            return 0
-        count = exec_delete(
-            session,
-            delete(ColumnDriftSummary).where(ColumnDriftSummary.slice_table_name.in_(slice_names)),
-        )
-        count += exec_delete(
-            session,
-            delete(TemporalSliceAnalysis).where(
-                TemporalSliceAnalysis.slice_table_name.in_(slice_names)
-            ),
-        )
-        # Clean ColumnSliceProfile records (written by build_slice_profiles)
-        if column_ids:
-            from dataraum.analysis.slicing.db_models import ColumnSliceProfile
-
-            count += exec_delete(
-                session,
-                delete(ColumnSliceProfile).where(
-                    ColumnSliceProfile.source_column_id.in_(column_ids)
-                ),
-            )
-        return count
 
     @property
     def db_models(self) -> list[ModuleType]:

@@ -27,7 +27,6 @@ from dataraum.core.overlay import (
     set_overlay_resolver,
 )
 
-
 # ---------------------------------------------------------------------------
 # Per-type applier semantics — driven through ``apply_overlay`` so the
 # dispatcher's path matching is exercised alongside the merge functions.

@@ -9,14 +9,13 @@ from __future__ import annotations
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from dataraum.analysis.validation import ValidationAgent
 from dataraum.analysis.validation.db_models import ValidationResultRecord
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
-from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
@@ -24,7 +23,7 @@ from dataraum.storage import Table
 _log = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
+    pass
 
 
 @analysis_phase
@@ -41,15 +40,6 @@ class ValidationPhase(BasePhase):
     @property
     def name(self) -> str:
         return "validation"
-
-    def cleanup(
-        self,
-        session: Session,
-        source_id: str,
-        table_ids: list[str],
-        column_ids: list[str],
-    ) -> int:
-        return exec_delete(session, delete(ValidationResultRecord))
 
     @property
     def db_models(self) -> list[ModuleType]:

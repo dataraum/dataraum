@@ -12,7 +12,7 @@ from __future__ import annotations
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from dataraum.analysis.relationships.utils import load_relationship_candidates_for_semantic
 from dataraum.analysis.semantic.agent import SemanticAgent
@@ -21,13 +21,12 @@ from dataraum.analysis.semantic.processor import synthesize_and_store_tables
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
-from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
 if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
+    pass
 
 logger = get_logger(__name__)
 
@@ -49,30 +48,6 @@ class SemanticPerTablePhase(BasePhase):
         from dataraum.analysis.semantic import db_models
 
         return [db_models]
-
-    def cleanup(
-        self,
-        session: Session,
-        source_id: str,
-        table_ids: list[str],
-        column_ids: list[str],
-    ) -> int:
-        from dataraum.analysis.relationships.db_models import Relationship
-
-        count = 0
-        if table_ids:
-            count += exec_delete(
-                session, delete(TableEntity).where(TableEntity.table_id.in_(table_ids))
-            )
-            count += exec_delete(
-                session,
-                delete(Relationship).where(
-                    Relationship.detection_method == "llm",
-                    Relationship.from_table_id.in_(table_ids)
-                    | Relationship.to_table_id.in_(table_ids),
-                ),
-            )
-        return count
 
     def _typed_tables(self, ctx: PhaseContext) -> list[Table]:
         stmt = select(Table).where(Table.layer == "typed", Table.source_id == ctx.source_id)

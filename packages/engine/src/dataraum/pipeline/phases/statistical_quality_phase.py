@@ -10,19 +10,18 @@ from __future__ import annotations
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 
 from dataraum.analysis.statistics import assess_statistical_quality
 from dataraum.analysis.statistics.quality_db_models import StatisticalQualityMetrics
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
-from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column
 
 if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
+    pass
 
 logger = get_logger(__name__)
 
@@ -38,22 +37,6 @@ class StatisticalQualityPhase(BasePhase):
     @property
     def name(self) -> str:
         return "statistical_quality"
-
-    def cleanup(
-        self,
-        session: Session,
-        source_id: str,
-        table_ids: list[str],
-        column_ids: list[str],
-    ) -> int:
-        if not column_ids:
-            return 0
-        return exec_delete(
-            session,
-            delete(StatisticalQualityMetrics).where(
-                StatisticalQualityMetrics.column_id.in_(column_ids)
-            ),
-        )
 
     @property
     def db_models(self) -> list[ModuleType]:

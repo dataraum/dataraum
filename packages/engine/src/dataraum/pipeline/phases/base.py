@@ -11,16 +11,12 @@ import time
 import traceback
 from abc import ABC, abstractmethod
 from types import ModuleType
-from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.storage import Table
-
-if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
 
 logger = get_logger(__name__)
 
@@ -42,28 +38,27 @@ class BasePhase(ABC):
         """Unique identifier for this phase."""
         ...
 
-    @property
-    def duckdb_layers(self) -> list[str]:
-        """DuckDB layers this phase creates (for cleanup).
+    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
+        """Drop this phase's outputs so a replay from here starts fresh (DAT-343).
 
-        Phases that create DuckDB tables/views should override this
-        to declare the layers they own, so cleanup can drop them.
+        Invoked by the worker activity wrapper **before** ``run`` when the
+        workflow's ``replay.from_phase`` equals this phase's name. The
+        purpose is to clear whatever would make ``should_skip`` return a
+        "already done" reason — typically the phase's own DB rows plus any
+        DuckDB artifacts it owns.
+
+        Default: no-op. Phases that ARE replay entry points (today:
+        ``import``, ``typing``, ``semantic_per_column``) override; everything
+        downstream of a from_phase rides on cascade-delete through
+        ``Column.cascade='all, delete-orphan'`` from the cleaned-up rows.
+
+        Args:
+            ctx: phase context (session + DuckDB cursor + source_id).
+            table_ids: replay scope. Empty list = source-wide cleanup
+                (matches the source-level reduce shape); a single-element
+                list scopes to that raw table id (table-local replays).
         """
-        return []
-
-    def cleanup(
-        self,
-        session: Session,
-        source_id: str,
-        table_ids: list[str],
-        column_ids: list[str],
-    ) -> int:
-        """Delete this phase's output records for the given source.
-
-        Override in subclasses to define phase-specific cleanup logic.
-        Returns the number of records deleted.
-        """
-        return 0
+        return None
 
     @property
     def db_models(self) -> list[ModuleType]:

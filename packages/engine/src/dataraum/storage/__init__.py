@@ -15,6 +15,7 @@ from dataraum.storage.base import (
     reset_database,
 )
 from dataraum.storage.models import Column, Source, Table
+from dataraum.storage.overlay_models import ConfigOverlay
 
 __all__ = [
     # Base and metadata
@@ -24,6 +25,8 @@ __all__ = [
     "Source",
     "Table",
     "Column",
+    # Teach overlay (DAT-343)
+    "ConfigOverlay",
     # Database management
     "init_database",
     "reset_database",

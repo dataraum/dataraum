@@ -32,6 +32,7 @@ from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from dataraum.worker.contracts import (
@@ -41,6 +42,9 @@ with workflow.unsafe.imports_passed_through():
         PhaseOutcome,
         ProcessTableInput,
         ProcessTableResult,
+        ReplayCleanupInput,
+        ReplayScope,
+        SourceIdentity,
         TableScopedInput,
         TypingResult,
     )
@@ -62,28 +66,147 @@ _ANALYTICS_PHASES = (
     "temporal",
 )
 
+# Phase order in the parent + child chains; ``_at_or_before(from_phase, p)``
+# decides whether to run ``p`` on a replay. Parent stages are the ones the
+# parent body invokes (`import` + the source-level reduce); child stages are
+# the ones the child body invokes. ``ReplayScope.from_phase`` always names a
+# phase listed in one of these tuples — anything else is a programmer error
+# on the cockpit side.
+_PARENT_PHASE_ORDER = ("import", "semantic_per_column")
+_CHILD_PHASE_ORDER = ("typing", *_ANALYTICS_PHASES, "detect_table")
+
+
+def _at_or_after(phase: str, from_phase: str, order: tuple[str, ...]) -> bool:
+    """Return True if ``phase`` runs in a replay starting at ``from_phase``.
+
+    The replay runs ``from_phase`` and everything after it in ``order``;
+    everything before is skipped. Either ``phase`` or ``from_phase`` not in
+    ``order`` means "this phase doesn't live in the same chain" — return
+    False (skip the phase). Pure logic over workflow input, so deterministic.
+    """
+    if phase not in order or from_phase not in order:
+        return False
+    return order.index(phase) >= order.index(from_phase)
+
+
+def _runs_under(phase: str, replay: ReplayScope | None, order: tuple[str, ...]) -> bool:
+    """True iff ``phase`` should execute given ``replay`` and its chain ``order``.
+
+    Initial run (``replay is None``) runs every phase. A replay runs only
+    the phases at or after ``replay.from_phase`` in ``order``.
+    """
+    if replay is None:
+        return True
+    return _at_or_after(phase, replay.from_phase, order)
+
+
+# All phase names valid as ``ReplayScope.from_phase``. A value outside this
+# set is a programmer error on the cockpit side — without this guard a typo
+# would silently skip every phase in both chains (since ``_at_or_after``
+# returns False for an unknown ``from_phase``) and produce a partial replay
+# with no error. ``_PARENT_PHASE_ORDER`` ∪ ``_CHILD_PHASE_ORDER`` is the
+# closed set both workflows recognise.
+_VALID_REPLAY_PHASES: frozenset[str] = frozenset(_PARENT_PHASE_ORDER) | frozenset(
+    _CHILD_PHASE_ORDER
+)
+
+
+def _validate_replay(replay: ReplayScope | None) -> None:
+    """Refuse a replay whose ``from_phase`` isn't a known chain phase.
+
+    Pure function over workflow input → deterministic. Raises non-retryable
+    so the workflow fails loud on the first attempt; no silent partial replay.
+    """
+    if replay is None or replay.from_phase in _VALID_REPLAY_PHASES:
+        return
+    raise ApplicationError(
+        f"Unknown replay.from_phase '{replay.from_phase}'. "
+        f"Valid values: {sorted(_VALID_REPLAY_PHASES)}",
+        type="PhaseFailed",
+        non_retryable=True,
+    )
+
+
+async def _maybe_replay_cleanup(
+    phase: str,
+    replay: ReplayScope | None,
+    identity: SourceIdentity,
+    table_ids: list[str],
+) -> None:
+    """Invoke ``replay_cleanup_for_phase`` when ``phase`` is the replay entry.
+
+    The first phase that runs on a teach replay (``replay.from_phase``) needs
+    its prior outputs cleaned so its existing ``should_skip`` doesn't bail.
+    On the initial run (``replay is None``), nothing to clean. Downstream
+    phases of a replay ride on the entry phase's cascade — no per-phase
+    cleanup needed there either.
+    """
+    if replay is None or replay.from_phase != phase:
+        return
+    await workflow.execute_activity(
+        "replay_cleanup_for_phase",
+        ReplayCleanupInput(
+            identity=identity,
+            phase_name=phase,
+            table_ids=list(table_ids),
+        ),
+        result_type=PhaseOutcome,
+        start_to_close_timeout=_TIMEOUT,
+        retry_policy=_RETRY,
+    )
+
 
 @workflow.defn(name="processTableWorkflow")
 class ProcessTableWorkflow:
     """Run the table-local chain for one raw table, then complete.
 
-    ``typing`` mints the typed id; the analytics phases run scoped to it; a
-    single stage-level ``detect_table`` runs the table-local detectors scoped to
-    the same typed table. The typed id travels in the activity results, so it is
-    in history and replayed verbatim — never recomputed.
+    Initial run (``payload.replay is None``): ``typing`` mints the typed id,
+    the analytics phases run scoped to it, a single stage-level
+    ``detect_table`` runs the table-local detectors. The typed id travels in
+    the activity results, so it is in history and replayed verbatim.
+
+    Teach replay (``payload.replay`` set; DAT-343): gates each phase on
+    ``replay.from_phase``'s position in ``_CHILD_PHASE_ORDER``; if the chain
+    starts past ``typing``, the typed id comes from ``lookup_typed_table_id``
+    instead of being re-minted. The first activity that runs has its phase
+    ``replay_cleanup`` invoked first (via the activity wrapper, see
+    ``run_phase``) so the phase's own ``should_skip`` doesn't refuse to
+    re-execute.
     """
 
     @workflow.run
     async def run(self, payload: ProcessTableInput) -> ProcessTableResult:
-        typing = await workflow.execute_activity(
-            "typing",
-            payload,
-            result_type=TypingResult,
-            start_to_close_timeout=_TIMEOUT,
-            retry_policy=_RETRY,
-        )
-        scoped = TableScopedInput(identity=payload.identity, table_id=typing.typed_table_id)
+        replay = payload.replay
+        _validate_replay(replay)
+
+        if _runs_under("typing", replay, _CHILD_PHASE_ORDER):
+            await _maybe_replay_cleanup("typing", replay, payload.identity, [payload.raw_table_id])
+            typing = await workflow.execute_activity(
+                "typing",
+                payload,
+                result_type=TypingResult,
+                start_to_close_timeout=_TIMEOUT,
+                retry_policy=_RETRY,
+            )
+            typed_table_id = typing.typed_table_id
+        else:
+            # Replay started past typing — resolve the typed id from substrate
+            # so it lands in history (deterministic) and downstream activities
+            # see the same scoped input as on an initial run.
+            resolved = await workflow.execute_activity(
+                "lookup_typed_table_id",
+                payload,
+                result_type=TypingResult,
+                start_to_close_timeout=_TIMEOUT,
+                retry_policy=_RETRY,
+            )
+            typed_table_id = resolved.typed_table_id
+
+        scoped = TableScopedInput(identity=payload.identity, table_id=typed_table_id)
+
         for phase in _ANALYTICS_PHASES:
+            if not _runs_under(phase, replay, _CHILD_PHASE_ORDER):
+                continue
             await workflow.execute_activity(
                 phase,
                 scoped,
@@ -91,16 +214,19 @@ class ProcessTableWorkflow:
                 start_to_close_timeout=_TIMEOUT,
                 retry_policy=_RETRY,
             )
-        await workflow.execute_activity(
-            "detect_table",
-            scoped,
-            result_type=PhaseOutcome,
-            start_to_close_timeout=_TIMEOUT,
-            retry_policy=_RETRY,
-        )
+
+        if _runs_under("detect_table", replay, _CHILD_PHASE_ORDER):
+            await workflow.execute_activity(
+                "detect_table",
+                scoped,
+                result_type=PhaseOutcome,
+                start_to_close_timeout=_TIMEOUT,
+                retry_policy=_RETRY,
+            )
+
         return ProcessTableResult(
             raw_table_id=payload.raw_table_id,
-            typed_table_id=typing.typed_table_id,
+            typed_table_id=typed_table_id,
         )
 
 
@@ -108,45 +234,102 @@ class ProcessTableWorkflow:
 class AddSourceWorkflow:
     """Import one source, fan out a child workflow per raw table, then reduce.
 
-    ``import`` enumerates the source's raw tables (the table set is unknown until
-    it runs); the workflow fans out one :class:`ProcessTableWorkflow` per raw id
-    via ``asyncio.gather`` and waits for all to complete; then
-    ``semantic_per_column`` runs once as the source-level reduce. The data-
-    dependent fan-out is driven off ``import``'s recorded result, so replay is
-    deterministic. There is **no** teach wait (that is DAT-343).
+    Initial run (``payload.replay is None``): ``import`` enumerates the
+    source's raw tables, the workflow fans out one
+    :class:`ProcessTableWorkflow` per raw id via ``asyncio.gather`` and waits
+    for all to complete, then ``semantic_per_column`` runs once as the
+    source-level reduce (followed by ``detect_source`` for its detectors).
+
+    Teach replay (``payload.replay`` set; DAT-343): per-stage gates +
+    fan-out scope follow ``replay``:
+
+      * ``import`` runs only if ``replay.from_phase == "import"``;
+        otherwise we read the existing raw ids from substrate via
+        ``lookup_raw_table_ids`` so the fan-out's data-dependence stays
+        recorded in history.
+      * Fan-out narrows to ``replay.raw_table_ids`` (None = all tables;
+        empty list = no children at all — source-tail-only replays like
+        ``concept_property``). Children carry ``replay`` so they gate
+        their own activities.
+      * ``semantic_per_column`` + ``detect_source`` always re-run on any
+        replay (the source-level reduce benefits from the widening data
+        breadth — see the DAT-343 refine).
+
+    The data-dependent fan-out is driven off ``imported.raw_table_ids``
+    (recorded in history whether ``import`` ran or was looked up), so
+    replay stays deterministic.
     """
 
     @workflow.run
     async def run(self, payload: AddSourceInput) -> AddSourceResult:
-        imported = await workflow.execute_activity(
-            "import",
-            payload.identity,
-            result_type=ImportResult,
-            start_to_close_timeout=_TIMEOUT,
-            retry_policy=_RETRY,
+        replay = payload.replay
+        _validate_replay(replay)
+
+        if _runs_under("import", replay, _PARENT_PHASE_ORDER):
+            await _maybe_replay_cleanup("import", replay, payload.identity, [])
+            imported = await workflow.execute_activity(
+                "import",
+                payload.identity,
+                result_type=ImportResult,
+                start_to_close_timeout=_TIMEOUT,
+                retry_policy=_RETRY,
+            )
+        else:
+            # Replay past import — look up the existing raw ids so the fan-out
+            # is data-dependent in the same shape as the initial run.
+            imported = await workflow.execute_activity(
+                "lookup_raw_table_ids",
+                payload.identity,
+                result_type=ImportResult,
+                start_to_close_timeout=_TIMEOUT,
+                retry_policy=_RETRY,
+            )
+
+        # Narrow the fan-out by replay scope: None = every raw, list = those
+        # raw ids. An empty list means "no children" — source-tail-only
+        # replays (concept_property) re-run the reduce without re-typing.
+        target_raw_ids = imported.raw_table_ids
+        if replay is not None and replay.raw_table_ids is not None:
+            allowed = set(replay.raw_table_ids)
+            target_raw_ids = [r for r in target_raw_ids if r in allowed]
+
+        # Replay forwarded to children only when ``from_phase`` is a child
+        # chain phase. A parent-stage replay (``from_phase="import"``) has
+        # already cleaned the children's substrate state via the import
+        # cleanup, so the per-table re-runs against the freshly-imported
+        # raw tables must run every child phase from scratch — passing the
+        # parent's replay would make ``_runs_under`` return False for every
+        # child phase and leave the new raw tables un-typed.
+        child_replay = (
+            replay if replay is not None and replay.from_phase in _CHILD_PHASE_ORDER else None
         )
 
-        # Per-table fan-out. Deterministic, collision-free child ids keep replay
-        # stable; ParentClosePolicy is TERMINATE (execute_child_workflow's own
-        # default) — the parent always gathers its children to completion, so
-        # there are no orphans in the happy path. On a permanent child failure
-        # gather propagates, the parent ends, and Temporal terminates the
-        # in-flight siblings; a parent retry resumes each child idempotently via
-        # the phases' should_skip (each phase commits atomically in one
-        # session_scope, so there are no partial-write rows to confuse it).
+        # Deterministic, collision-free child ids keep replay stable. The same
+        # id is reused across teach iterations with WorkflowIdReusePolicy.ALLOW_DUPLICATE
+        # on the parent — Temporal UI groups iterations naturally.
         children = [
             workflow.execute_child_workflow(
                 ProcessTableWorkflow.run,
-                ProcessTableInput(identity=payload.identity, raw_table_id=raw_id),
+                ProcessTableInput(
+                    identity=payload.identity,
+                    raw_table_id=raw_id,
+                    replay=child_replay,
+                ),
                 id=f"addsource-{payload.identity.source_id}-table-{raw_id}",
             )
-            for raw_id in imported.raw_table_ids
+            for raw_id in target_raw_ids
         ]
         tables: list[ProcessTableResult] = list(await asyncio.gather(*children))
 
-        # Source-level reduce: ontology induction is source-global, so it runs
-        # once over all tables after the fan-out (moves to the frame workflow
-        # later; not a blocker here).
+        # Source-level reduce + its detectors: ALWAYS run, on both initial
+        # runs and any replay. Per the DAT-343 refine, re-running the reduce
+        # over the (possibly widened) source data is strictly better than
+        # skipping it. ``detect_source`` is cheap + idempotent
+        # (delete-before-insert) so it joins the always-runs set.
+        # ``_maybe_replay_cleanup`` is still gated on
+        # ``replay.from_phase == "semantic_per_column"`` — it only fires for
+        # the concept_property entry case.
+        await _maybe_replay_cleanup("semantic_per_column", replay, payload.identity, [])
         await workflow.execute_activity(
             "semantic_per_column",
             payload.identity,
@@ -154,11 +337,6 @@ class AddSourceWorkflow:
             start_to_close_timeout=_TIMEOUT,
             retry_policy=_RETRY,
         )
-
-        # Source-level detect step: run semantic_per_column's declared detectors
-        # once after the reduce (the table-local detectors already ran per child
-        # in detect_table). Without this the source-level detectors are declared
-        # but never execute.
         await workflow.execute_activity(
             "detect_source",
             payload.identity,

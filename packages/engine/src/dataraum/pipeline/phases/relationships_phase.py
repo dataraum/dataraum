@@ -12,20 +12,19 @@ from __future__ import annotations
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 
 from dataraum.analysis.relationships import detect_relationships
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.core.config import load_phase_config
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
-from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Table
 
 if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
+    pass
 
 logger = get_logger(__name__)
 
@@ -41,22 +40,6 @@ class RelationshipsPhase(BasePhase):
     @property
     def name(self) -> str:
         return "relationships"
-
-    def cleanup(
-        self,
-        session: Session,
-        source_id: str,
-        table_ids: list[str],
-        column_ids: list[str],
-    ) -> int:
-        if not table_ids:
-            return 0
-        return exec_delete(
-            session,
-            delete(Relationship).where(
-                Relationship.from_table_id.in_(table_ids) | Relationship.to_table_id.in_(table_ids)
-            ),
-        )
 
     @property
     def db_models(self) -> list[ModuleType]:

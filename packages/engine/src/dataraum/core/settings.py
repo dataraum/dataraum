@@ -49,7 +49,6 @@ class Settings(BaseSettings):
     database_url: str
     ducklake_catalog_url: str
     ducklake_data_path: Path
-    dataraum_home: Path
     # Stays ``str`` (not ``UUID``): the engine resolves the schema name from it
     # and dev/test use stable non-UUID ids (e.g. "test").
     dataraum_workspace_id: str

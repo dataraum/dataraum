@@ -4,6 +4,93 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-28: DAT-343 — teach via Postgres `config_overlay` + remove-and-replay (E3)
+
+DAT-343 retires the DAT-358 filesystem teach overlay and replaces it with a
+per-workspace `ws_<id>.config_overlay` Postgres table. Teach edits flow
+through that single seam; layered reads merge active rows over the
+baked-in YAML via per-type appliers in `dataraum.core.overlay`. The
+`addSourceWorkflow` grows an optional `replay: ReplayScope` input so the
+cockpit can re-run the affected portion of the chain after a teach.
+
+### dataraum-eval
+
+- **Eval action: re-baseline.** This PR doesn't change detector logic, but it
+  changes the substrate detectors observe AND the trigger surface that
+  invalidates their inputs.
+- **`relationship` detector now reads `ConfigOverlay`, not `DataFix`.**
+  `entropy/detectors/structural/relations.py:_get_preferred_joins` queries
+  rows of `type='relationship'` with `superseded_at IS NULL`. Payload shape
+  changed from nested `{parameters: {table, target_table, ...}}` to flat
+  `{source_id, table, target_table, ...}`. Any eval fixture writing the
+  legacy shape needs updating. The detector lives in `semantic_per_table`
+  which isn't in the slice-1 chain — no calibration impact in slice 1; flag
+  for slice 2 when that phase joins.
+- **`Relationship.is_confirmed` no longer gets stamped by user teaches.**
+  `MetadataInterpreter._create_relationship` was the only writer; deleted in
+  P3. `relationship_entropy` still reads `is_confirmed` and gives confirmed
+  joins a lower entropy. Same slice-2+ latency — neither detector runs
+  today, but when they do, user teaches will affect `join_path_determinism`
+  scoring (cuts ambiguity) but NOT `relationship_entropy` scoring (the
+  "confirmed" branch). Tracked as **DAT-372** (`Relationship.is_confirmed
+  signal lost from relationship_entropy post-DAT-343`).
+- **Per-Column cleanup is FK-cascade-driven, not per-phase-owned.** Critical
+  for slice 2: `typing.replay_cleanup` deletes the typed `Table` row,
+  SQLAlchemy cascade wipes its `Column` rows, and every per-Column row
+  cascades from there. Works in slice 1 because `add_source` is the only
+  stage writing per-Column. The moment `begin_session` lands and attaches
+  findings to those same Columns, an `add_source` teach replay silently
+  wipes them. Tracked as **DAT-373** (`Per-phase replay_cleanup ownership
+  — required before begin_session writes per-Column data`); marked
+  `Blocks DAT-356` (slice 2). Re-design needed: per-stage tables, or
+  per-stage column identity, or scoped cascade declarations.
+- **Replay paths re-run detectors.** A teach + `replay(from_phase="typing",
+  raw_table_ids=[t])` re-runs typing + analytics + `detect_table` for that
+  table → `type_fidelity`, `null_ratio` regenerate. A teach +
+  `replay(from_phase="import", raw_table_ids=None)` re-runs the full source
+  → all per-table detectors + `detect_source` (`business_meaning`,
+  `unit_entropy`, `temporal_entropy`, `outlier_rate`, `benford`). On any
+  replay the source-level reduce (`semantic_per_column` + `detect_source`)
+  always re-runs — eval should expect detector outputs to refresh on every
+  replay invocation, not just on initial `add_source` runs.
+- **How to drive a teach round-trip**:
+  1. `teach({type, payload})` → inserts a row in `ws_<id>.config_overlay`;
+     returns `{overlay_id, type}`.
+  2. (optional) batch more teaches.
+  3. `replay({source_id, scope: ReplayScope, vertical?})` → starts
+     `addSourceWorkflow` with `ReplayScope` carrying the from_phase + the
+     raw_table_ids to narrow the fan-out. `workflow_id` is reused as
+     `addsource-<source_id>` with `ALLOW_DUPLICATE` policy — Temporal UI
+     shows iterations grouped per source. Returns the run_id; await via
+     `client.workflow.getHandle(...).result()`.
+  4. (undo) `undoTeach(overlay_id)` → sets `superseded_at = now()`. The
+     row is still readable by audit queries but no longer participates in
+     layered reads. Idempotent.
+- **Cold-start regression — DAT-371 follow-up:**
+  `semantic_per_column._ensure_adhoc_ontology` still writes
+  `verticals/_adhoc/ontology.yaml` to the bind-mounted (read-only)
+  baked-in config dir — OSError on every initial `add_source` run with the
+  default `_adhoc` vertical. Workaround for now: pass an explicit
+  `vertical` (e.g. `"finance"`) in the `SourceIdentity`. **DAT-371 blocks
+  DAT-339 user testing**; the fix moves induced concepts to `concept`
+  overlay rows via a new per-type applier.
+- **Container-restart persistence is architecturally guaranteed**
+  (Postgres-backed; survives engine + cockpit restarts). Spec asked for
+  explicit verification — not added as a test. If you want it, a single
+  `docker compose restart engine-worker` between a teach and a
+  `getPendingOverlays` assertion is the minimum.
+- **`DATARAUM_HOME` env + `dataraum_workspace` Docker volume retired.**
+  Local dev setups holding stale data in that volume should
+  `docker compose down -v` once before next bring-up.
+
+### dataraum-testdata (hints)
+
+- No new injection types needed — the substrate change doesn't introduce
+  new detection surface.
+- A teach-aware fixture set would be useful for slice-2 calibration: data
+  with known mis-typing that a `type_pattern` teach should fix on replay.
+  Not a slice-1 ask.
+
 ## 2026-05-27: DAT-370 follow-up — restore the source-level detectors (eval-caught regression)
 
 Eval found that DAT-370 orphaned `semantic_per_column`'s detectors. When detectors

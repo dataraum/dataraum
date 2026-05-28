@@ -166,33 +166,21 @@ export const columns = metadataSchema.table(
 	],
 );
 
-export const dataFixes = metadataSchema.table(
-	"data_fixes",
+export const configOverlay = metadataSchema.table(
+	"config_overlay",
 	{
-		fixId: varchar("fix_id").primaryKey(),
-		sessionId: varchar("session_id")
-			.notNull()
-			.references(() => investigationSessions.sessionId),
-		sourceId: varchar("source_id")
-			.notNull()
-			.references(() => sources.sourceId),
-		action: varchar().notNull(),
-		target: varchar().notNull(),
-		dimension: varchar().notNull(),
-		description: varchar().notNull(),
-		tableName: varchar("table_name").notNull(),
-		columnName: varchar("column_name"),
+		overlayId: varchar("overlay_id").primaryKey(),
+		sessionId: varchar("session_id"),
+		type: varchar().notNull(),
 		payload: json().notNull(),
-		status: varchar().notNull(),
-		errorMessage: varchar("error_message"),
-		ordinal: integer().notNull(),
 		createdAt: timestamp("created_at").notNull(),
-		appliedAt: timestamp("applied_at"),
+		supersededAt: timestamp("superseded_at"),
 	},
 	(table) => [
-		index("ix_data_fixes_session_id").using(
+		index("idx_config_overlay_active").using(
 			"btree",
-			table.sessionId.asc().nullsLast(),
+			table.supersededAt.asc().nullsLast(),
+			table.type.asc().nullsLast(),
 		),
 	],
 );

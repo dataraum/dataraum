@@ -21,7 +21,7 @@ import asyncio
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
@@ -60,25 +60,6 @@ class GraphExecutionPhase(BasePhase):
     @property
     def name(self) -> str:
         return "graph_execution"
-
-    def cleanup(
-        self,
-        session: Session,
-        source_id: str,
-        table_ids: list[str],
-        column_ids: list[str],
-    ) -> int:
-        from dataraum.query.snippet_models import SQLSnippetRecord
-
-        # Scope to this source's snippets from graph execution
-        result = session.execute(
-            delete(SQLSnippetRecord).where(
-                SQLSnippetRecord.source.like("graph:%"),
-                SQLSnippetRecord.schema_mapping_id == source_id,
-            )
-        )
-        count: int = result.rowcount  # type: ignore[attr-defined]
-        return count
 
     @property
     def db_models(self) -> list[ModuleType]:

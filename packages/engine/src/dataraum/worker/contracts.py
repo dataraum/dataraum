@@ -35,6 +35,35 @@ class SourceIdentity(BaseModel):
     vertical: str | None = None
 
 
+class ReplayScope(BaseModel):
+    """Scope for a teach-driven replay of ``addSourceWorkflow`` (DAT-343).
+
+    Attached to ``AddSourceInput`` (and propagated to child
+    ``ProcessTableInput``) when the cockpit's teach tool starts the
+    workflow to re-apply a teach. Optional on the inputs because the
+    initial-run call from the cockpit doesn't carry one — every
+    pre-replay invocation reads the field as ``None`` and the workflow
+    body's gates take the initial-run path.
+
+    Attributes:
+        from_phase: Phase name to start the replay at. The workflow runs
+            this phase and everything downstream of it; everything before
+            is skipped. One of ``"import"``, ``"typing"``, or
+            ``"semantic_per_column"`` in slice 1.
+        raw_table_ids: Per-child scope filter. ``None`` = all tables (the
+            initial-run shape, used by source-wide replays like
+            ``null_value``). A non-empty list narrows the parent's fan-out
+            to those raw table ids (per-table replays like
+            ``type_pattern``). An empty list ``[]`` means "no children" —
+            used for source-tail-only replays (``concept_property``) where
+            the parent re-runs ``semantic_per_column`` + ``detect_source``
+            without re-typing anything.
+    """
+
+    from_phase: str
+    raw_table_ids: list[str] | None = None
+
+
 class PhaseOutcome(BaseModel):
     """Lean per-activity result: outcome + human summary.
 
@@ -64,11 +93,13 @@ class ProcessTableInput(BaseModel):
     """Input to ``ProcessTableWorkflow`` (and its ``typing`` activity).
 
     One raw table is the unit of work; the child workflow runs the table-local
-    chain over it.
+    chain over it. ``replay`` (DAT-343) is set when the parent is replaying
+    this child for a teach — the child gates which of its activities run.
     """
 
     identity: SourceIdentity
     raw_table_id: str
+    replay: ReplayScope | None = None
 
 
 class TypingResult(BaseModel):
@@ -78,9 +109,42 @@ class TypingResult(BaseModel):
     result, so it is persisted in Temporal history and replayed verbatim — the
     downstream analytics activities read it from the child workflow, never
     recompute it.
+
+    Also the return shape of ``lookup_typed_table_id`` (DAT-343), which the
+    child workflow calls when a teach replay starts past ``typing`` and the
+    typed id has to be re-read from substrate.
     """
 
     typed_table_id: str
+
+
+class ReplayCleanupInput(BaseModel):
+    """Input to the ``replay_cleanup_for_phase`` activity (DAT-343).
+
+    Carried by the workflow when it's about to enter the ``from_phase`` of
+    a teach replay; the activity invokes the phase's ``replay_cleanup``
+    so the phase's existing ``should_skip`` doesn't bail on a re-run.
+
+    Attributes:
+        identity: source identity header (same as every other phase activity).
+        phase_name: which phase's ``replay_cleanup`` to invoke — must equal
+            the workflow's ``replay.from_phase``.
+        table_ids: scope passed through to the phase's ``replay_cleanup``.
+            An empty list collapses two distinct workflow shapes onto the
+            same wire value: (1) source-wide replays where
+            ``replay.raw_table_ids is None`` (e.g. ``null_value`` →
+            ``ImportPhase.replay_cleanup``, which ignores the scope and
+            drops everything for the source); and (2) source-tail-only
+            replays where ``replay.raw_table_ids == []`` (e.g.
+            ``concept_property`` → ``SemanticPerColumnPhase.replay_cleanup``,
+            which is intrinsically source-wide). Per-table replays
+            (``type_pattern``) carry a single raw_table_id so the typing
+            cleanup can narrow.
+    """
+
+    identity: SourceIdentity
+    phase_name: str
+    table_ids: list[str] = []
 
 
 class TableScopedInput(BaseModel):
@@ -102,13 +166,17 @@ class ProcessTableResult(BaseModel):
 
 
 class AddSourceInput(BaseModel):
-    """Input to ``AddSourceWorkflow`` — just the source identity.
+    """Input to ``AddSourceWorkflow`` — source identity + optional replay scope.
 
     The table set is unknown until ``import`` enumerates it (a source is a dir /
     DB recipe), so the parent carries identity only and discovers tables at run.
+
+    ``replay`` (DAT-343) is set by the cockpit's ``replay`` tool when re-running
+    after a teach; ``None`` is the initial-run shape.
     """
 
     identity: SourceIdentity
+    replay: ReplayScope | None = None
 
 
 class AddSourceResult(BaseModel):

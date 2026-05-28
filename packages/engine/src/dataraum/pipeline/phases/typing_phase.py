@@ -22,7 +22,6 @@ from dataraum.analysis.typing import infer_type_candidates, resolve_types
 from dataraum.analysis.typing.patterns import load_typing_config
 from dataraum.core.logging import get_logger
 from dataraum.pipeline.base import PhaseContext, PhaseResult
-from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
@@ -49,63 +48,86 @@ class TypingPhase(BasePhase):
         return "typing"
 
     @property
-    def duckdb_layers(self) -> list[str]:
-        return ["typed", "quarantine"]
-
-    def cleanup(
-        self,
-        session: Session,
-        source_id: str,
-        table_ids: list[str],
-        column_ids: list[str],
-    ) -> int:
-        # NOTE: source-scoped — deletes typed/quarantine for the WHOLE source,
-        # ignoring any per-table filter. `_run`/`should_skip` honor
-        # `ctx.table_ids`, but cleanup does not: the cleanup() path
-        # has no table-filter param. A per-table replay that runs cleanup first
-        # would clobber sibling tables' typed rows. TODO(DAT-344): thread a
-        # table filter through cleanup when the per-table replay path lands.
-        from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
-
-        count = 0
-        # Delete TypeCandidate and TypeDecision for raw-layer columns
-        raw_table_ids = list(
-            session.execute(
-                select(Table.table_id).where(Table.source_id == source_id, Table.layer == "raw")
-            )
-            .scalars()
-            .all()
-        )
-        if raw_table_ids:
-            raw_col_ids = list(
-                session.execute(select(Column.column_id).where(Column.table_id.in_(raw_table_ids)))
-                .scalars()
-                .all()
-            )
-            if raw_col_ids:
-                count += exec_delete(
-                    session,
-                    delete(TypeCandidate).where(TypeCandidate.column_id.in_(raw_col_ids)),
-                )
-                count += exec_delete(
-                    session,
-                    delete(TypeDecision).where(TypeDecision.column_id.in_(raw_col_ids)),
-                )
-        # Delete typed and quarantine layer Tables (CASCADE deletes Columns and children)
-        count += exec_delete(
-            session,
-            delete(Table).where(
-                Table.source_id == source_id,
-                Table.layer.in_(["typed", "quarantine"]),
-            ),
-        )
-        return count
-
-    @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.typing import db_models
 
         return [db_models]
+
+    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
+        """Drop the typed/quarantine state for raw tables in ``table_ids`` (DAT-343).
+
+        Triggered when a teach (e.g. ``type_pattern``) requires re-typing
+        one or more raw tables. Scoped to ``table_ids`` (raw table ids from
+        ``replay.raw_table_ids``) so parallel siblings in a fan-out keep
+        their typed state.
+
+        Drops, in order:
+            1. ``TypeCandidate`` / ``TypeDecision`` rows for the raw columns
+               in scope — these are FK'd to the raw Column (not the typed
+               Column), so the cascade through the typed Table delete below
+               doesn't reach them; we delete them explicitly so re-inference
+               gets a clean slate.
+            2. The matching typed ``Table`` row (looked up by name in the
+               ``typed`` layer). Cascade deletes its Columns and every
+               per-column derived row (statistical profiles, quality
+               metrics, semantic annotations, temporal profiles,
+               relationships).
+            3. Any leftover quarantine ``Table`` row by the same name.
+            4. The DuckDB ``lake.typed.<bare>`` and ``lake.quarantine.<bare>``
+               tables. ``CREATE OR REPLACE`` on the next run would overwrite
+               them, but we drop them explicitly to keep ``DROP TABLE IF
+               EXISTS`` idempotent against schema drift between teach
+               iterations.
+
+        Empty ``table_ids`` means source-wide — re-types every raw table.
+        """
+        from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
+        from dataraum.core.duckdb_naming import schema_for_layer
+        from dataraum.server.storage import LAKE_CATALOG_ALIAS
+
+        raw_stmt = select(Table).where(Table.source_id == ctx.source_id, Table.layer == "raw")
+        if table_ids:
+            raw_stmt = raw_stmt.where(Table.table_id.in_(table_ids))
+        raw_tables = list(ctx.session.execute(raw_stmt).scalars())
+        if not raw_tables:
+            return
+
+        # 1: drop TypeCandidate/TypeDecision for the raw columns in scope.
+        raw_col_ids = list(
+            ctx.session.execute(
+                select(Column.column_id).where(
+                    Column.table_id.in_([t.table_id for t in raw_tables])
+                )
+            ).scalars()
+        )
+        if raw_col_ids:
+            ctx.session.execute(
+                delete(TypeCandidate).where(TypeCandidate.column_id.in_(raw_col_ids))
+            )
+            ctx.session.execute(delete(TypeDecision).where(TypeDecision.column_id.in_(raw_col_ids)))
+
+        # 2 + 3: drop typed/quarantine Tables sharing the raw table_name —
+        # typed and quarantine each have at most one row per name per source,
+        # so we match by (source_id, table_name, layer).
+        names = [t.table_name for t in raw_tables]
+        ctx.session.execute(
+            delete(Table).where(
+                Table.source_id == ctx.source_id,
+                Table.table_name.in_(names),
+                Table.layer.in_(["typed", "quarantine"]),
+            )
+        )
+        ctx.session.flush()
+
+        # 4: drop the DuckDB typed/quarantine tables for these bare names.
+        # The raw row carries the canonical bare name (``<source>__<table>``),
+        # and typed/quarantine share it (post-DAT-341).
+        for raw in raw_tables:
+            if not raw.duckdb_path:
+                continue
+            for layer in ("typed", "quarantine"):
+                fqn = f'{LAKE_CATALOG_ALIAS}.{schema_for_layer(layer)}."{raw.duckdb_path}"'
+                ctx.duckdb_conn.execute(f"DROP TABLE IF EXISTS {fqn}")
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if typed tables already exist for the targeted raw tables.

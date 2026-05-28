@@ -41,7 +41,7 @@ def init_database(engine: Engine) -> None:
         engine: SQLAlchemy engine
     """
     # Core models not owned by any phase
-    from dataraum.documentation import db_models as _fixes  # noqa: F401
+    from dataraum.documentation import db_models as _fix_ledger  # noqa: F401
     from dataraum.investigation import db_models as _investigation  # noqa: F401
 
     # Phase-owned models: auto-discovered from registry
@@ -49,6 +49,7 @@ def init_database(engine: Engine) -> None:
     from dataraum.query import db_models as _query  # noqa: F401
     from dataraum.query import snippet_models as _snippets  # noqa: F401
     from dataraum.storage import models as _storage  # noqa: F401
+    from dataraum.storage import overlay_models as _overlay  # noqa: F401
 
     import_all_phase_models()
 
@@ -66,7 +67,7 @@ def reset_database(engine: Engine) -> None:
         engine: SQLAlchemy engine
     """
     # Core models not owned by any phase
-    from dataraum.documentation import db_models as _fixes  # noqa: F401
+    from dataraum.documentation import db_models as _fix_ledger  # noqa: F401
     from dataraum.investigation import db_models as _investigation  # noqa: F401
 
     # Phase-owned models: auto-discovered from registry
@@ -74,6 +75,7 @@ def reset_database(engine: Engine) -> None:
     from dataraum.query import db_models as _query  # noqa: F401
     from dataraum.query import snippet_models as _snippets  # noqa: F401
     from dataraum.storage import models as _storage  # noqa: F401
+    from dataraum.storage import overlay_models as _overlay  # noqa: F401
 
     import_all_phase_models()
 

@@ -12,11 +12,6 @@ export const relations = defineRelations(schema, (r) => ({
 		columnDriftSummariess: r.many.columnDriftSummaries(),
 		columnEligibilitys: r.many.columnEligibility(),
 		columnSliceProfiless: r.many.columnSliceProfiles(),
-		sourcessViaDataFixes: r.many.sources({
-			from: r.investigationSessions.sessionId.through(r.dataFixes.sessionId),
-			to: r.sources.sourceId.through(r.dataFixes.sourceId),
-			alias: "investigationSessions_sessionId_sources_sourceId_via_dataFixes",
-		}),
 		derivedColumnss: r.many.derivedColumns(),
 		sourcessViaDetectedBusinessCycles: r.many.sources({
 			from: r.investigationSessions.sessionId.through(
@@ -107,9 +102,6 @@ export const relations = defineRelations(schema, (r) => ({
 	},
 	sources: {
 		columnEligibilitys: r.many.columnEligibility(),
-		investigationSessionssViaDataFixes: r.many.investigationSessions({
-			alias: "investigationSessions_sessionId_sources_sourceId_via_dataFixes",
-		}),
 		investigationSessionssViaDetectedBusinessCycles:
 			r.many.investigationSessions({
 				alias:

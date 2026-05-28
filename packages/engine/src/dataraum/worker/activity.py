@@ -43,6 +43,7 @@ __all__ = [
     "declared_detector_ids",
     "raw_table_ids",
     "run_phase",
+    "run_replay_cleanup",
     "run_source_detectors",
     "run_table_detectors",
     "typed_table_id_for_raw",
@@ -221,6 +222,57 @@ def declared_detector_ids(phase_names: Iterable[str]) -> list[str]:
             if detector_id not in detector_ids:
                 detector_ids.append(detector_id)
     return detector_ids
+
+
+def run_replay_cleanup(
+    manager: ConnectionManager,
+    identity: SourceIdentity,
+    phase_name: str,
+    table_ids: list[str],
+) -> None:
+    """Invoke ``phase.replay_cleanup`` for ``phase_name`` (DAT-343).
+
+    The activity-side counterpart to ``BasePhase.replay_cleanup``: leases a
+    scoped session + DuckDB cursor, builds the minimal ``PhaseContext`` the
+    cleanup needs (source_id + connections; no per-phase static config —
+    cleanup deletes rows, doesn't read config), and calls the phase's
+    cleanup method. Commits via ``session_scope`` on clean exit.
+
+    Workspace-mismatch guard mirrors :func:`run_phase` so a payload
+    addressed to another workspace can't accidentally clean up this one.
+    """
+    active_workspace_id = get_active_workspace_id()
+    if identity.workspace_id != active_workspace_id:
+        raise RuntimeError(
+            f"Workspace mismatch: replay_cleanup payload targets "
+            f"'{identity.workspace_id}' but this worker is bound to "
+            f"'{active_workspace_id}'."
+        )
+
+    phase_cls = get_phase_class(phase_name)
+    if phase_cls is None:
+        raise RuntimeError(f"Unknown phase '{phase_name}' — not in the phase registry.")
+    phase = phase_cls()
+
+    with manager.session_scope() as session, manager.duckdb_cursor() as cursor:
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=cursor,
+            source_id=identity.source_id,
+            table_ids=list(table_ids),
+            config={},
+            session_factory=manager.session_scope,
+            manager=manager,
+            session_id=identity.session_id,
+        )
+        phase.replay_cleanup(ctx, list(table_ids))
+
+    logger.info(
+        "activity.replay_cleanup",
+        phase=phase_name,
+        table_ids=table_ids,
+        source_id=identity.source_id,
+    )
 
 
 def run_table_detectors(

@@ -150,21 +150,6 @@ class Phase(Protocol):
         """
         ...
 
-    @property
-    def duckdb_layers(self) -> list[str]:
-        """DuckDB layers this phase creates (for cleanup)."""
-        ...
-
-    def cleanup(
-        self,
-        session: Session,
-        source_id: str,
-        table_ids: list[str],
-        column_ids: list[str],
-    ) -> int:
-        """Delete this phase's output records for the given source."""
-        ...
-
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Check if this phase should be skipped.
 

@@ -21,7 +21,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
@@ -34,13 +34,12 @@ from dataraum.analysis.views.enrichment_models import EnrichmentAnalysisResult
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
-from dataraum.pipeline.cleanup import exec_delete
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
 
 if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
+    pass
 
 logger = get_logger(__name__)
 
@@ -62,28 +61,6 @@ class EnrichedViewsPhase(BasePhase):
     @property
     def name(self) -> str:
         return "enriched_views"
-
-    @property
-    def duckdb_layers(self) -> list[str]:
-        return ["enriched"]
-
-    def cleanup(
-        self,
-        session: Session,
-        source_id: str,
-        table_ids: list[str],
-        column_ids: list[str],
-    ) -> int:
-        if not table_ids:
-            return 0
-        count = exec_delete(
-            session, delete(EnrichedView).where(EnrichedView.fact_table_id.in_(table_ids))
-        )
-        # Delete enriched-layer Table records (CASCADE deletes Columns + StatisticalProfiles)
-        count += exec_delete(
-            session, delete(Table).where(Table.source_id == source_id, Table.layer == "enriched")
-        )
-        return count
 
     @property
     def db_models(self) -> list[ModuleType]:

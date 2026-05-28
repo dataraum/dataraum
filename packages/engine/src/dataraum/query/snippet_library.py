@@ -197,23 +197,6 @@ class SnippetLibrary:
             stmt = stmt.where(SQLSnippetRecord.parameter_value.is_(None))
 
         record = self.session.execute(stmt).scalar_one_or_none()
-
-        # Check session.new for pending objects not yet visible to SQLite (autoflush=False)
-        if record is None:
-            for obj in self.session.new:
-                if (
-                    isinstance(obj, SQLSnippetRecord)
-                    and obj.snippet_type == snippet_type
-                    and obj.schema_mapping_id == schema_mapping_id
-                    and obj.standard_field == standard_field
-                    and obj.statement == statement
-                    and obj.aggregation == aggregation
-                    and obj.parameter_value == parameter_value
-                    and obj.failure_count == 0
-                ):
-                    record = obj
-                    break
-
         if record is None:
             return None
 
@@ -259,24 +242,7 @@ class SnippetLibrary:
         else:
             stmt = stmt.where(SQLSnippetRecord.parameter_value.is_(None))
 
-        record = self.session.execute(stmt).scalar_one_or_none()
-
-        # Check session.new for pending objects (autoflush=False)
-        if record is None:
-            for obj in self.session.new:
-                if (
-                    isinstance(obj, SQLSnippetRecord)
-                    and obj.snippet_type == snippet_type
-                    and obj.schema_mapping_id == schema_mapping_id
-                    and obj.standard_field == standard_field
-                    and obj.statement == statement
-                    and obj.aggregation == aggregation
-                    and obj.parameter_value == parameter_value
-                ):
-                    record = obj
-                    break
-
-        return record
+        return self.session.execute(stmt).scalar_one_or_none()
 
     def find_by_expression(
         self,
@@ -615,6 +581,9 @@ class SnippetLibrary:
                 updated_at=datetime.now(UTC),
             )
             self.session.add(record)
+            # Flush so a subsequent save_snippet in the same session sees it
+            # via _find_by_key_* (which queries the DB, not the identity map).
+            self.session.flush()
             logger.debug(
                 "snippet_created",
                 snippet_id=record.snippet_id,

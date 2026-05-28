@@ -65,6 +65,28 @@ class BasePhase(ABC):
         """
         return 0
 
+    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
+        """Drop this phase's outputs so a replay from here starts fresh (DAT-343).
+
+        Invoked by the worker activity wrapper **before** ``run`` when the
+        workflow's ``replay.from_phase`` equals this phase's name. The
+        purpose is to clear whatever would make ``should_skip`` return a
+        "already done" reason — typically the phase's own DB rows plus any
+        DuckDB artifacts it owns.
+
+        Default: no-op. Phases that ARE replay entry points (today:
+        ``import``, ``typing``, ``semantic_per_column``) override; everything
+        downstream of a from_phase rides on cascade-delete through
+        ``Column.cascade='all, delete-orphan'`` from the cleaned-up rows.
+
+        Args:
+            ctx: phase context (session + DuckDB cursor + source_id).
+            table_ids: replay scope. Empty list = source-wide cleanup
+                (matches the source-level reduce shape); a single-element
+                list scopes to that raw table id (table-local replays).
+        """
+        return None
+
     @property
     def db_models(self) -> list[ModuleType]:
         """Modules containing SQLAlchemy models owned by this phase.

@@ -74,6 +74,36 @@ class SemanticPerColumnPhase(BasePhase):
             delete(SemanticAnnotation).where(SemanticAnnotation.column_id.in_(column_ids)),
         )
 
+    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
+        """Drop the source's LLM annotations so the reduce re-annotates (DAT-343).
+
+        Triggered when a teach (e.g. ``concept_property``) changes the
+        ontology this reduce reads. Re-running source-wide is the right
+        shape per the user's "widening breadth is good input" framing —
+        re-annotation sees the now-bigger source and the new ontology.
+
+        Drops every ``SemanticAnnotation`` whose column belongs to a typed
+        table of this source. The next run produces a fresh annotation
+        per column. ``table_ids`` is ignored — the reduce is source-wide
+        and so is its cleanup (matches the empty ``raw_table_ids`` shape
+        the workflow uses for source-tail-only replays).
+        """
+        del table_ids
+        typed_table_ids = self._typed_table_ids(ctx)
+        if not typed_table_ids:
+            return
+        column_ids = list(
+            ctx.session.execute(
+                select(Column.column_id).where(Column.table_id.in_(typed_table_ids))
+            ).scalars()
+        )
+        if not column_ids:
+            return
+        ctx.session.execute(
+            delete(SemanticAnnotation).where(SemanticAnnotation.column_id.in_(column_ids))
+        )
+        ctx.session.flush()
+
     def _typed_table_ids(self, ctx: PhaseContext) -> list[str]:
         stmt = select(Table.table_id).where(
             Table.layer == "typed", Table.source_id == ctx.source_id

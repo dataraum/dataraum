@@ -40,6 +40,11 @@ export interface ReplayInput {
 	// rows the activities create. Optional: a stable random uuid is fine
 	// for slice 1 (no session lifecycle).
 	session_id?: string;
+	// Vertical the engine resolves phase config + ontology against. Defaults
+	// to "_adhoc" engine-side when unset; pass an explicit vertical to keep
+	// the replay's source-level reduce on the same ontology as the initial
+	// run.
+	vertical?: string;
 }
 
 export interface ReplayResult {
@@ -75,6 +80,7 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		workspace_id: config.dataraumWorkspaceId,
 		source_id: input.source_id,
 		session_id: input.session_id ?? randomUUID(),
+		vertical: input.vertical,
 	};
 	const payload: AddSourceInput = {
 		identity,

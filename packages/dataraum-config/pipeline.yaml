@@ -43,9 +43,6 @@ phases:
     description: Per-table LLM synthesis (entities, relationships) over annotations
     detectors: [join_path_determinism, relationship_entropy]
 
-  data_fixes:
-    description: Apply stored metadata fixes
-
   # =========================================================================
   # Zone 2: Enrichment
   # =========================================================================

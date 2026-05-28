@@ -15,32 +15,44 @@ from dataraum.entropy.models import EntropyObject
 
 
 def _get_preferred_joins(context: DetectorContext) -> dict[str, object]:
-    """Load preferred join paths from applied DataFix records."""
+    """Load preferred join paths from ``relationship`` overlay rows.
+
+    Reads ``ConfigOverlay`` rows of ``type == "relationship"`` whose
+    payload targets this source (DAT-343 — the substrate the legacy
+    ``DataFix`` machinery replaces). The cockpit's teach tool writes
+    these rows; ``superseded_at IS NULL`` filters undone teaches out.
+
+    Payload shape:
+        ``{source_id, table, target_table, ...}`` — flat (no nested
+        ``parameters`` wrapper). Rows missing ``table``/``target_table``
+        or targeting another source are ignored.
+    """
     if not context.session or not context.source_id:
         return {}
 
     from sqlalchemy import select
 
-    from dataraum.pipeline.fixes.models import DataFix
+    from dataraum.storage import ConfigOverlay
 
-    fixes = (
+    rows = (
         context.session.execute(
-            select(DataFix).where(
-                DataFix.source_id == context.source_id,
-                DataFix.action == "relationship",
-                DataFix.status == "applied",
+            select(ConfigOverlay).where(
+                ConfigOverlay.type == "relationship",
+                ConfigOverlay.superseded_at.is_(None),
             )
         )
         .scalars()
         .all()
     )
     result: dict[str, object] = {}
-    for fix in fixes:
-        params = fix.payload.get("parameters", {})
-        table = params.get("table", "")
-        target_table = params.get("target_table", "")
+    for row in rows:
+        payload = row.payload or {}
+        if payload.get("source_id") != context.source_id:
+            continue
+        table = payload.get("table", "")
+        target_table = payload.get("target_table", "")
         if table and target_table:
-            result[f"{table}->{target_table}"] = params
+            result[f"{table}->{target_table}"] = payload
     return result
 
 

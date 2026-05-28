@@ -48,7 +48,6 @@ describe.skipIf(!STACK_AVAILABLE)(
 		let undoTeach: any;
 		// biome-ignore lint/suspicious/noExplicitAny: dynamic-imported module shapes
 		let getPendingOverlays: any;
-		let workspaceId: string;
 
 		beforeAll(async () => {
 			// Dynamic imports so the missing-env skip works — top-level imports
@@ -58,8 +57,6 @@ describe.skipIf(!STACK_AVAILABLE)(
 			undoTeach = teachMod.undoTeach;
 			const helperMod = await import("../db/metadata/pending-overlays");
 			getPendingOverlays = helperMod.getPendingOverlays;
-			const cfgMod = await import("../config");
-			workspaceId = cfgMod.config.dataraumWorkspaceId;
 		});
 
 		afterAll(async () => {
@@ -69,7 +66,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 		});
 
 		it("teach inserts a row that pending-overlays returns; undo removes it from the active set", async () => {
-			const before = await getPendingOverlays(workspaceId);
+			const before = await getPendingOverlays();
 
 			const result = await teach({
 				type: "type_pattern",
@@ -81,7 +78,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 			});
 			expect(result.overlay_id).toBeTruthy();
 
-			const afterInsert = await getPendingOverlays(workspaceId);
+			const afterInsert = await getPendingOverlays();
 			expect(afterInsert.length).toBe(before.length + 1);
 			expect(
 				afterInsert.some(
@@ -91,7 +88,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 
 			await undoTeach(result.overlay_id);
 
-			const afterUndo = await getPendingOverlays(workspaceId);
+			const afterUndo = await getPendingOverlays();
 			expect(afterUndo.length).toBe(before.length);
 			expect(
 				afterUndo.some(
@@ -114,7 +111,7 @@ describe.skipIf(!STACK_AVAILABLE)(
 			// value (idempotency contract — re-undoing leaves the row alone).
 			await undoTeach(result.overlay_id);
 
-			const remaining = await getPendingOverlays(workspaceId);
+			const remaining = await getPendingOverlays();
 			expect(
 				remaining.some(
 					(r: { overlay_id: string }) => r.overlay_id === result.overlay_id,

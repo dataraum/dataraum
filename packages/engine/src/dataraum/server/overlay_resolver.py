@@ -18,7 +18,6 @@ from sqlalchemy import asc, select
 
 from dataraum.core.logging import get_logger
 from dataraum.core.overlay import OverlayRow, set_overlay_resolver
-from dataraum.server.workspace import get_active_workspace_id
 from dataraum.storage import ConfigOverlay
 
 if TYPE_CHECKING:
@@ -38,19 +37,17 @@ def install_overlay_resolver(manager: ConnectionManager) -> None:
 
     The resolver leases a short-lived session each call and returns rows
     ordered by ``created_at ASC`` (matches the appliers' last-write-wins
-    semantics for keyed payloads). Single workspace per worker keeps the
-    workspace_id filter implicit via :func:`get_active_workspace_id`.
+    semantics for keyed payloads). Workspace scope is implicit in the
+    ``ws_<id>`` schema the ConfigOverlay table lives in — schema-per-
+    workspace means the manager's connection already targets the right
+    schema and no per-row workspace filter is needed.
     """
 
     def resolver() -> list[OverlayRow]:
-        workspace_id = get_active_workspace_id()
         with manager.session_scope() as session:
             rows = session.execute(
                 select(ConfigOverlay.type, ConfigOverlay.payload)
-                .where(
-                    ConfigOverlay.workspace_id == workspace_id,
-                    ConfigOverlay.superseded_at.is_(None),
-                )
+                .where(ConfigOverlay.superseded_at.is_(None))
                 .order_by(asc(ConfigOverlay.created_at))
             ).all()
         return [OverlayRow(type=r.type, payload=r.payload or {}) for r in rows]

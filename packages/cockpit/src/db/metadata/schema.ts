@@ -170,7 +170,6 @@ export const configOverlay = metadataSchema.table(
 	"config_overlay",
 	{
 		overlayId: varchar("overlay_id").primaryKey(),
-		workspaceId: varchar("workspace_id").notNull(),
 		sessionId: varchar("session_id"),
 		type: varchar().notNull(),
 		payload: json().notNull(),
@@ -180,7 +179,6 @@ export const configOverlay = metadataSchema.table(
 	(table) => [
 		index("idx_config_overlay_active").using(
 			"btree",
-			table.workspaceId.asc().nullsLast(),
 			table.supersededAt.asc().nullsLast(),
 			table.type.asc().nullsLast(),
 		),

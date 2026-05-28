@@ -15,7 +15,6 @@
 
 import { randomUUID } from "node:crypto";
 
-import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
 import { configOverlay } from "../db/metadata/schema";
 import {
@@ -47,9 +46,12 @@ export async function teach(input: TeachInput): Promise<TeachResult> {
 	const payload = validateTeach(input);
 	const overlayId = randomUUID();
 
+	// Workspace identity is implicit in the ws_<id> schema this insert
+	// targets — the metadata client's connection already scopes to it via
+	// pgSchema. No explicit workspace_id column post-DAT-343 (multi-workspace
+	// shared-schema is DAT-357; bring the column back then).
 	await metadataDb.insert(configOverlay).values({
 		overlayId,
-		workspaceId: config.dataraumWorkspaceId,
 		sessionId: input.session_id ?? null,
 		type: input.type,
 		payload,

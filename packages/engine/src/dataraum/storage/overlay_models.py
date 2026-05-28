@@ -6,10 +6,11 @@ One row = one teach mutation; rows are soft-superseded for undo
 (``superseded_at IS NOT NULL`` excludes them from layered reads).
 
 Lives in the workspace's ``ws_<id>`` schema by virtue of the schema-per-
-workspace setup — ``workspace_id`` is kept as a column for audit and for
-the cockpit's Drizzle-side filter, but it's redundant with the connection's
-search_path. The cockpit writes rows via its (otherwise read-only) Drizzle
-metadata client; the engine reads them via ``dataraum.core.overlay``.
+workspace setup — workspace identity is implicit in the schema name; no
+``workspace_id`` column. The cockpit writes rows via its (otherwise
+read-only) Drizzle metadata client; the engine reads them via
+:mod:`dataraum.core.overlay`. If multi-workspace shared-schema ever lands
+(DAT-357), the column comes back with a simple migration.
 
 Single source of truth for the slice-1 teach surface — the legacy
 ``DataFix``/``ConfigInterpreter`` machinery it replaces is deleted in the
@@ -33,7 +34,6 @@ class ConfigOverlay(Base):
 
     Columns:
         overlay_id: uuid4 primary key.
-        workspace_id: the owning workspace (redundant with schema; kept for audit).
         session_id: NULL for workspace-scoped teaches (``type_pattern``,
             ``null_value``, ``concept_property``); non-NULL for session-scoped
             teaches (slice-2+: ``metric``, ``validation``, ``cycle``).
@@ -51,7 +51,6 @@ class ConfigOverlay(Base):
     __tablename__ = "config_overlay"
 
     overlay_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
-    workspace_id: Mapped[str] = mapped_column(String, nullable=False)
     session_id: Mapped[str | None] = mapped_column(String, nullable=True)
     type: Mapped[str] = mapped_column(String, nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
@@ -61,11 +60,11 @@ class ConfigOverlay(Base):
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
-# The loader hits this index for every config read on a workspace with any
-# active overlay rows: filter to unsuperseded, optionally by type.
+# The loader hits this index for every config read with any active overlay
+# rows: filter to unsuperseded, optionally by type. Workspace scope is
+# implicit in the schema this table lives in (ws_<id>).
 Index(
     "idx_config_overlay_active",
-    ConfigOverlay.workspace_id,
     ConfigOverlay.superseded_at,
     ConfigOverlay.type,
 )

@@ -34,6 +34,16 @@ cockpit can re-run the affected portion of the chain after a teach.
   scoring (cuts ambiguity) but NOT `relationship_entropy` scoring (the
   "confirmed" branch). Tracked as **DAT-372** (`Relationship.is_confirmed
   signal lost from relationship_entropy post-DAT-343`).
+- **Per-Column cleanup is FK-cascade-driven, not per-phase-owned.** Critical
+  for slice 2: `typing.replay_cleanup` deletes the typed `Table` row,
+  SQLAlchemy cascade wipes its `Column` rows, and every per-Column row
+  cascades from there. Works in slice 1 because `add_source` is the only
+  stage writing per-Column. The moment `begin_session` lands and attaches
+  findings to those same Columns, an `add_source` teach replay silently
+  wipes them. Tracked as **DAT-373** (`Per-phase replay_cleanup ownership
+  — required before begin_session writes per-Column data`); marked
+  `Blocks DAT-356` (slice 2). Re-design needed: per-stage tables, or
+  per-stage column identity, or scoped cascade declarations.
 - **Replay paths re-run detectors.** A teach + `replay(from_phase="typing",
   raw_table_ids=[t])` re-runs typing + analytics + `detect_table` for that
   table → `type_fidelity`, `null_ratio` regenerate. A teach +

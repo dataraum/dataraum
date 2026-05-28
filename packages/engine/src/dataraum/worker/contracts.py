@@ -40,9 +40,10 @@ class ReplayScope(BaseModel):
 
     Attached to ``AddSourceInput`` (and propagated to child
     ``ProcessTableInput``) when the cockpit's teach tool starts the
-    workflow to re-apply a teach. Adding this as an optional field on the
-    inputs is replay-back-compat (existing histories never carried it,
-    and the workflow body's gates default-take the same path as before).
+    workflow to re-apply a teach. Optional on the inputs because the
+    initial-run call from the cockpit doesn't carry one — every
+    pre-replay invocation reads the field as ``None`` and the workflow
+    body's gates take the initial-run path.
 
     Attributes:
         from_phase: Phase name to start the replay at. The workflow runs

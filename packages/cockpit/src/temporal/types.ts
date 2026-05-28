@@ -15,8 +15,26 @@ export interface SourceIdentity {
 	vertical?: string | null;
 }
 
+// Teach replay scope (DAT-343) — mirrors worker.contracts.ReplayScope.
+// Optional on AddSourceInput; null/undefined = initial run.
+//
+// from_phase: which phase to restart the replay at. One of "import",
+//             "typing", "semantic_per_column" in slice 1.
+// raw_table_ids:
+//   - null  → fan out across every raw table (source-wide replay shape;
+//             null_value's broad reset)
+//   - [...] → narrow fan-out to those raw table ids (type_pattern's
+//             per-table reset)
+//   - []    → no children at all — source-tail-only replay
+//             (concept_property's reduce-only reset)
+export interface ReplayScope {
+	from_phase: string;
+	raw_table_ids: string[] | null;
+}
+
 export interface AddSourceInput {
 	identity: SourceIdentity;
+	replay?: ReplayScope | null;
 }
 
 // One raw→typed mapping, produced by a ProcessTableWorkflow child.

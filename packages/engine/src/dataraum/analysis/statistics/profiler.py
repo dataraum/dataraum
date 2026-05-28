@@ -320,18 +320,7 @@ def profile_statistics(
         stats_config = load_statistics_config()
 
     try:
-        # session.get() checks the identity map first, so pending objects
-        # added via session.add() in this session are found without flush.
         table = session.get(Table, str(table_id))
-
-        # Fallback: check session.new for pending objects not yet in identity map
-        # (can happen with autoflush=False when objects were added but PK not indexed)
-        if not table:
-            for obj in session.new:
-                if isinstance(obj, Table) and obj.table_id == str(table_id):
-                    table = obj
-                    break
-
         if not table:
             return Result.fail(f"Table not found: {table_id}")
 
@@ -341,28 +330,12 @@ def profile_statistics(
         if table.layer != "typed":
             return Result.fail(f"Statistics profiling requires typed tables. Got: {table.layer}")
 
-        # Query columns from DB. With autoflush=False, session.execute() hits
-        # SQLite which can't see unflushed objects. We must also check session.new
-        # for pending Columns (non-PK query — identity map doesn't help here).
         from sqlalchemy import select
 
         column_stmt = (
             select(Column).where(Column.table_id == table.table_id).order_by(Column.column_position)
         )
-        column_result = session.execute(column_stmt)
-        columns = list(column_result.scalars().all())
-
-        pending_columns = [
-            obj for obj in session.new if isinstance(obj, Column) and obj.table_id == table.table_id
-        ]
-        if pending_columns:
-            # Merge pending columns, avoiding duplicates
-            existing_ids = {c.column_id for c in columns}
-            for pc in pending_columns:
-                if pc.column_id not in existing_ids:
-                    columns.append(pc)
-            # Sort by position
-            columns.sort(key=lambda c: c.column_position or 0)
+        columns = list(session.execute(column_stmt).scalars().all())
 
         if not columns:
             return Result.fail(f"No columns found for table {table.table_id}")

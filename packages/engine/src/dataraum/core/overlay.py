@@ -40,6 +40,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Final
 
+from dataraum.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 # ---------------------------------------------------------------------------
 # Resolver — module-level pointer set by the worker bootstrap (and by tests).
 # ---------------------------------------------------------------------------
@@ -115,17 +119,27 @@ def _apply_null_value(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str,
     no-op, not an error — teach idempotency).
     """
     out = dict(base)
+    # Per-category seen-set keeps the dedup O(rows + base) rather than the
+    # naive O(rows * base) inner scan — practical teach sizes are tiny but
+    # the base lists already carry the engine's stock null tokens.
+    seen_by_category: dict[str, set[Any]] = {}
     for row in rows:
         category = row.payload.get("category")
         value = row.payload.get("value")
         if not category or value is None:
             continue
-        existing = list(out.get(category) or [])
-        if any(e.get("value") == value for e in existing):
+        if category not in seen_by_category:
+            existing = out.get(category) or []
+            seen_by_category[category] = {e.get("value") for e in existing}
+            # Copy the list once so the base dict isn't aliased to the same
+            # list we then mutate (callers may pass shared base dicts).
+            out[category] = list(existing)
+        seen = seen_by_category[category]
+        if value in seen:
             continue
+        seen.add(value)
         item = {k: v for k, v in row.payload.items() if k != "category"}
-        existing.append(item)
-        out[category] = existing
+        out[category].append(item)
     return out
 
 
@@ -200,6 +214,11 @@ def apply_overlay(relative_path: str, base: dict[str, Any]) -> dict[str, Any]:
           apply each matching teach type's rows.
     """
     if _overlay_resolver is None:
+        # Once-per-process DEBUG breadcrumb so an operator wiring the
+        # resolver can confirm whether the layered read is live. Logged
+        # only when there's nothing to merge AND no resolver — overlap-free
+        # signal for "the overlay is inert in this process".
+        logger.debug("overlay_resolver_inert", relative_path=relative_path)
         return base
     rows = _overlay_resolver()
     if not rows:

@@ -61,7 +61,13 @@ class RelationshipEntropyDetector(EntropyDetector):
         Computes entropy components from actual relationship data:
         - ri_entropy: from referential integrity percentage
         - card_entropy: from cardinality_verified flag
-        - semantic_entropy: from is_confirmed and relationship_type
+        - semantic_entropy: from is_confirmed and relationship_type.
+          DAT-372: after DAT-343 the only writer that set
+          ``is_confirmed=True`` (``MetadataInterpreter``) is gone, so user
+          relationship teaches no longer flow into this branch — they
+          land in ``ConfigOverlay`` instead, where ``join_path_determinism``
+          reads them but this detector doesn't. Latent for slice 2+ when
+          ``semantic_per_table`` joins the workflow chain.
 
         Args:
             context: Detector context with relationship analysis

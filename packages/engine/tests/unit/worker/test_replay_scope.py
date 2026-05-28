@@ -14,14 +14,17 @@ tests cover only the pure-logic gating layer.
 from __future__ import annotations
 
 import pytest
+from temporalio.exceptions import ApplicationError
 
 from dataraum.worker.contracts import ReplayScope
 from dataraum.worker.workflows import (
     _ANALYTICS_PHASES,
     _CHILD_PHASE_ORDER,
     _PARENT_PHASE_ORDER,
+    _VALID_REPLAY_PHASES,
     _at_or_after,
     _runs_under,
+    _validate_replay,
 )
 
 
@@ -122,3 +125,38 @@ class TestReplayScopeContract:
         scope = ReplayScope(from_phase="semantic_per_column", raw_table_ids=[])
         assert scope.raw_table_ids == []
         assert scope.raw_table_ids is not None
+
+
+class TestValidateReplay:
+    """``_validate_replay`` refuses a replay with an unknown ``from_phase``.
+
+    Closes the silent-no-op-on-typo gap: without this guard a typo like
+    ``"typ1ng"`` returns False from every ``_runs_under`` call and produces
+    a partial replay with no error log. The workflow now fails loud on the
+    first attempt instead.
+    """
+
+    def test_none_replay_is_noop(self) -> None:
+        # Initial run — no scope to validate.
+        _validate_replay(None)
+
+    @pytest.mark.parametrize("phase", sorted(_VALID_REPLAY_PHASES))
+    def test_every_known_phase_passes(self, phase: str) -> None:
+        # Each phase in the parent or child chain is a valid from_phase.
+        _validate_replay(ReplayScope(from_phase=phase))
+
+    @pytest.mark.parametrize(
+        "bad",
+        ["typ1ng", "unknown", "TYPING", "semantic_per_table", ""],
+    )
+    def test_unknown_phase_raises_non_retryable(self, bad: str) -> None:
+        with pytest.raises(ApplicationError) as exc:
+            _validate_replay(ReplayScope(from_phase=bad))
+        assert "Unknown replay.from_phase" in str(exc.value)
+        assert exc.value.type == "PhaseFailed"
+        assert exc.value.non_retryable is True
+
+    def test_valid_set_is_union_of_parent_and_child_orders(self) -> None:
+        assert _VALID_REPLAY_PHASES == frozenset(_PARENT_PHASE_ORDER) | frozenset(
+            _CHILD_PHASE_ORDER
+        )

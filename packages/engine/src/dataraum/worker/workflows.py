@@ -32,6 +32,7 @@ from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ApplicationError
 
 with workflow.unsafe.imports_passed_through():
     from dataraum.worker.contracts import (
@@ -99,6 +100,33 @@ def _runs_under(phase: str, replay: ReplayScope | None, order: tuple[str, ...]) 
     return _at_or_after(phase, replay.from_phase, order)
 
 
+# All phase names valid as ``ReplayScope.from_phase``. A value outside this
+# set is a programmer error on the cockpit side — without this guard a typo
+# would silently skip every phase in both chains (since ``_at_or_after``
+# returns False for an unknown ``from_phase``) and produce a partial replay
+# with no error. ``_PARENT_PHASE_ORDER`` ∪ ``_CHILD_PHASE_ORDER`` is the
+# closed set both workflows recognise.
+_VALID_REPLAY_PHASES: frozenset[str] = frozenset(_PARENT_PHASE_ORDER) | frozenset(
+    _CHILD_PHASE_ORDER
+)
+
+
+def _validate_replay(replay: ReplayScope | None) -> None:
+    """Refuse a replay whose ``from_phase`` isn't a known chain phase.
+
+    Pure function over workflow input → deterministic. Raises non-retryable
+    so the workflow fails loud on the first attempt; no silent partial replay.
+    """
+    if replay is None or replay.from_phase in _VALID_REPLAY_PHASES:
+        return
+    raise ApplicationError(
+        f"Unknown replay.from_phase '{replay.from_phase}'. "
+        f"Valid values: {sorted(_VALID_REPLAY_PHASES)}",
+        type="PhaseFailed",
+        non_retryable=True,
+    )
+
+
 async def _maybe_replay_cleanup(
     phase: str,
     replay: ReplayScope | None,
@@ -149,6 +177,7 @@ class ProcessTableWorkflow:
     @workflow.run
     async def run(self, payload: ProcessTableInput) -> ProcessTableResult:
         replay = payload.replay
+        _validate_replay(replay)
 
         if _runs_under("typing", replay, _CHILD_PHASE_ORDER):
             await _maybe_replay_cleanup("typing", replay, payload.identity, [payload.raw_table_id])
@@ -234,6 +263,7 @@ class AddSourceWorkflow:
     @workflow.run
     async def run(self, payload: AddSourceInput) -> AddSourceResult:
         replay = payload.replay
+        _validate_replay(replay)
 
         if _runs_under("import", replay, _PARENT_PHASE_ORDER):
             await _maybe_replay_cleanup("import", replay, payload.identity, [])

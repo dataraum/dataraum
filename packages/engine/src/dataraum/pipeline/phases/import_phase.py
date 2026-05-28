@@ -86,6 +86,14 @@ class ImportPhase(BasePhase):
         rows = list(
             ctx.session.execute(select(Table).where(Table.source_id == ctx.source_id)).scalars()
         )
+        # Two loops on purpose: DROP the DuckDB tables FIRST while the rows
+        # still know their ``duckdb_path`` (and layer), then delete the
+        # Postgres rows. Folding both into one loop would lose the
+        # DuckDB-before-Postgres ordering — a partial failure mid-loop
+        # would leave Postgres saying "no raw tables for this source"
+        # while DuckDB still holds them, and the next import would collide
+        # on the un-dropped DuckDB table (CSV loader's CREATE TABLE isn't
+        # OR REPLACE).
         for table in rows:
             if not table.duckdb_path:
                 continue

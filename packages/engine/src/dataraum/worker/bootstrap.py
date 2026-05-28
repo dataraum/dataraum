@@ -18,6 +18,10 @@ from __future__ import annotations
 from dataraum.core.connections import ConnectionConfig, ConnectionManager
 from dataraum.core.logging import get_logger
 from dataraum.core.settings import get_settings
+from dataraum.server.overlay_resolver import (
+    install_overlay_resolver,
+    uninstall_overlay_resolver,
+)
 from dataraum.server.storage import bootstrap_lake, teardown_lake
 from dataraum.server.workspace import bootstrap_workspace
 
@@ -51,6 +55,11 @@ def bootstrap_worker_substrate() -> ConnectionManager:
         # Workspace-level DuckDB: one connection for the worker's whole life. No
         # session binding — activities carry their own session_id as data.
         manager.open_lake()
+        # DAT-343: layered config reads via Postgres-backed overlay resolver.
+        # Must come after the manager + workspace pointer are up — the resolver
+        # needs both. After this, every load_yaml_config call merges the
+        # workspace's active config_overlay rows over the baked-in YAML.
+        install_overlay_resolver(manager)
     except Exception:
         if manager is not None:
             manager.close()
@@ -63,6 +72,7 @@ def bootstrap_worker_substrate() -> ConnectionManager:
 
 def shutdown_worker_substrate(manager: ConnectionManager) -> None:
     """Tear down the worker substrate. Safe to call on partial init."""
+    uninstall_overlay_resolver()
     try:
         manager.close()
     finally:

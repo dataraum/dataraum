@@ -128,9 +128,17 @@ class ReplayCleanupInput(BaseModel):
         identity: source identity header (same as every other phase activity).
         phase_name: which phase's ``replay_cleanup`` to invoke — must equal
             the workflow's ``replay.from_phase``.
-        table_ids: scope passed through to the phase's ``replay_cleanup``;
-            empty list = source-wide (matches ``replay.raw_table_ids=None``
-            and the source-tail-only ``[]`` shape).
+        table_ids: scope passed through to the phase's ``replay_cleanup``.
+            An empty list collapses two distinct workflow shapes onto the
+            same wire value: (1) source-wide replays where
+            ``replay.raw_table_ids is None`` (e.g. ``null_value`` →
+            ``ImportPhase.replay_cleanup``, which ignores the scope and
+            drops everything for the source); and (2) source-tail-only
+            replays where ``replay.raw_table_ids == []`` (e.g.
+            ``concept_property`` → ``SemanticPerColumnPhase.replay_cleanup``,
+            which is intrinsically source-wide). Per-table replays
+            (``type_pattern``) carry a single raw_table_id so the typing
+            cleanup can narrow.
     """
 
     identity: SourceIdentity

@@ -24,6 +24,8 @@ from typing import Any
 
 import yaml
 
+from dataraum.core.overlay import apply_overlay
+
 # Module-level state. ``_config_root_override`` is the test/override slot
 # that wins over everything. ``_active_workspace_config_dir`` is set by
 # ``dataraum.server.workspace.bootstrap_workspace`` at FastAPI startup and
@@ -178,15 +180,19 @@ def get_config_dir(relative_path: str) -> Path:
 
 
 def load_yaml_config(relative_path: str) -> dict[str, Any]:
-    """Load and parse a YAML config file.
+    """Load and parse a YAML config file, layered with any active overlay rows.
 
-    Convenience function that combines get_config_file() + yaml.safe_load().
+    Convenience function that combines get_config_file() + yaml.safe_load(),
+    then applies per-workspace teach edits via
+    :func:`dataraum.core.overlay.apply_overlay` (no-op when no resolver is
+    registered — e.g. CLI / tests that never bootstrap a workspace).
 
     Args:
         relative_path: Path relative to config/, e.g. "llm/config.yaml"
 
     Returns:
-        Parsed YAML content as a dict.
+        Parsed YAML content as a dict, with any active workspace overlay rows
+        for this file merged in.
 
     Raises:
         FileNotFoundError: If the config file does not exist.
@@ -196,9 +202,9 @@ def load_yaml_config(relative_path: str) -> dict[str, Any]:
     with open(path) as f:
         data = yaml.safe_load(f)
     if data is None:
-        return {}
+        data = {}
     result: dict[str, Any] = data
-    return result
+    return apply_overlay(relative_path, result)
 
 
 def load_phase_config(
@@ -210,6 +216,12 @@ def load_phase_config(
     Looks for config/phases/<phase_name>.yaml. Returns empty dict if the
     file doesn't exist (some phases have no config).
 
+    When ``config_root`` is None (the production / worker path), the file
+    is loaded via :func:`load_yaml_config`, so any registered teach
+    overlay rows for ``phases/<phase_name>.yaml`` are merged in. With an
+    explicit ``config_root`` (test fixtures pointing at a custom tree)
+    the overlay is bypassed — fixtures are deterministic.
+
     Args:
         phase_name: Phase name, e.g. "statistics" -> config/phases/statistics.yaml
         config_root: Optional config root override. Uses default if None.
@@ -220,8 +232,12 @@ def load_phase_config(
     Raises:
         yaml.YAMLError: If the file exists but contains invalid YAML.
     """
+    relative_path = f"phases/{phase_name}.yaml"
     if config_root is None:
-        config_root = _get_config_root()
+        try:
+            return load_yaml_config(relative_path)
+        except FileNotFoundError:
+            return {}
     path = config_root / "phases" / f"{phase_name}.yaml"
     if not path.exists():
         return {}

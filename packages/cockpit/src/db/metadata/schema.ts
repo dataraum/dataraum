@@ -874,7 +874,7 @@ export const temporalColumnProfiles = metadataSchema.table(
 			.references(() => investigationSessions.sessionId),
 		columnId: varchar("column_id")
 			.notNull()
-			.references(() => columns.columnId),
+			.references(() => columns.columnId, { onDelete: "cascade" }),
 		profiledAt: timestamp("profiled_at").notNull(),
 		minTimestamp: timestamp("min_timestamp").notNull(),
 		maxTimestamp: timestamp("max_timestamp").notNull(),

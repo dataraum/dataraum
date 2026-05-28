@@ -41,7 +41,9 @@ class TemporalColumnProfile(Base):
     session_id: Mapped[str] = mapped_column(
         ForeignKey("investigation_sessions.session_id"), nullable=False, index=True
     )
-    column_id: Mapped[str] = mapped_column(ForeignKey("columns.column_id"), nullable=False)
+    column_id: Mapped[str] = mapped_column(
+        ForeignKey("columns.column_id", ondelete="CASCADE"), nullable=False
+    )
     profiled_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
     # Relationships

@@ -185,9 +185,15 @@ async function main(): Promise<void> {
 		}
 
 		// ---- Replay from typing for the affected raw tables --------------
+		// Reuse the seeded InvestigationSession — per-session rows the replay
+		// re-creates (TypeCandidate, etc.) FK to investigation_sessions, and
+		// the replay tool would otherwise mint a random session_id with no
+		// matching row. Slice 1 has no session lifecycle; one session per
+		// driver run is fine.
 		const replayResult = await replay({
 			source_id: sourceId,
-			vertical: "finance",
+			session_id: sessionId,
+			vertical: "_adhoc",
 			scope: {
 				from_phase: "typing",
 				raw_table_ids: initial.raw_table_ids,

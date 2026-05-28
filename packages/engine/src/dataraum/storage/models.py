@@ -62,8 +62,12 @@ class Source(Base):
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Relationships
+    # passive_deletes=True: lean on the DB's ON DELETE CASCADE (declared on the
+    # child FK) instead of having SQLAlchemy load children and NULL their FKs on
+    # flush. Required for bulk SQL DELETE in replay_cleanup to behave like the
+    # ORM cascade declaration claims (DAT-343 follow-up).
     tables: Mapped[list[Table]] = relationship(
-        back_populates="source", cascade="all, delete-orphan"
+        back_populates="source", cascade="all, delete-orphan", passive_deletes=True
     )
 
 
@@ -100,12 +104,12 @@ class Table(Base):
     # Relationships
     source: Mapped[Source] = relationship(back_populates="tables")
     columns: Mapped[list[Column]] = relationship(
-        back_populates="table", cascade="all, delete-orphan"
+        back_populates="table", cascade="all, delete-orphan", passive_deletes=True
     )
 
     # Semantic context relationships
     entity_detections: Mapped[list[TableEntity]] = relationship(
-        back_populates="table", cascade="all, delete-orphan"
+        back_populates="table", cascade="all, delete-orphan", passive_deletes=True
     )
 
 
@@ -136,38 +140,54 @@ class Column(Base):
     # Relationships
     table: Mapped[Table] = relationship(back_populates="columns")
 
-    # Context-specific relationships (defined in their respective modules)
+    # Context-specific relationships (defined in their respective modules).
+    # passive_deletes=True everywhere a Column-owned child sits on the other end:
+    # bulk SQL DELETE in per-phase replay_cleanup hooks (e.g. typing_phase) only
+    # works if SQLAlchemy DOES NOT pre-load and NULL the FK on flush, and lets
+    # the DB's ON DELETE CASCADE do the work instead (DAT-343 follow-up).
     statistical_profiles: Mapped[list[StatisticalProfile]] = relationship(
-        back_populates="column", cascade="all, delete-orphan"
+        back_populates="column", cascade="all, delete-orphan", passive_deletes=True
     )
     statistical_quality_metrics: Mapped[list[StatisticalQualityMetrics]] = relationship(
-        back_populates="column", cascade="all, delete-orphan"
+        back_populates="column", cascade="all, delete-orphan", passive_deletes=True
     )
 
     # Type inference relationships
     type_candidates: Mapped[list[TypeCandidate]] = relationship(
-        back_populates="column", cascade="all, delete-orphan"
+        back_populates="column", cascade="all, delete-orphan", passive_deletes=True
     )
     type_decision: Mapped[TypeDecision | None] = relationship(
-        back_populates="column", uselist=False, cascade="all, delete-orphan"
+        back_populates="column",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
     # Semantic context relationships
     semantic_annotation: Mapped[SemanticAnnotation | None] = relationship(
-        back_populates="column", uselist=False, cascade="all, delete-orphan"
+        back_populates="column",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
     # Temporal analysis
     temporal_profiles: Mapped[list[TemporalColumnProfile]] = relationship(
-        back_populates="column", cascade="all, delete-orphan"
+        back_populates="column", cascade="all, delete-orphan", passive_deletes=True
     )
 
-    # Relationship tracking
+    # Relationship tracking — relationships are owned by the relationships
+    # phase, not the Column; deletion semantics live at the DB-level CASCADE on
+    # the FK (passive_deletes prevents the pre-flush FK-NULL probe).
     relationships_from: Mapped[list[Relationship]] = relationship(
-        foreign_keys="Relationship.from_column_id", back_populates="from_column"
+        foreign_keys="Relationship.from_column_id",
+        back_populates="from_column",
+        passive_deletes=True,
     )
     relationships_to: Mapped[list[Relationship]] = relationship(
-        foreign_keys="Relationship.to_column_id", back_populates="to_column"
+        foreign_keys="Relationship.to_column_id",
+        back_populates="to_column",
+        passive_deletes=True,
     )
 
 

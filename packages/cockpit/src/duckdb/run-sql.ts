@@ -10,6 +10,7 @@
 // `lake.typed.orders` (the `lake` alias matches the engine's catalog alias).
 
 import { getLakeConnection } from "./lake";
+import { clampRowLimit } from "./limit";
 import type { QueryResult } from "./query-result";
 import { readerToResult } from "./query-result";
 
@@ -23,24 +24,25 @@ export interface RunSqlInput {
 	 */
 	params?: (string | number | boolean | null)[];
 	/**
-	 * Row cap so a broad SELECT can't flood the chat context. Defaults to 1000.
+	 * Row cap so a broad SELECT can't flood the chat context. Defaults to
+	 * {@link DEFAULT_ROW_LIMIT} and is clamped to {@link HARD_ROW_CEILING}.
 	 * Applied as a wrapping `LIMIT`.
 	 */
 	limit?: number;
 }
 
-const DEFAULT_LIMIT = 1000;
-
 /**
  * Run read-only SQL against the lake and return JSON-safe rows.
  *
  * The query is wrapped in `SELECT * FROM (<sql>) LIMIT <n>` so every result is
- * bounded. The lake connection is ATTACHed READ_ONLY, so writes fail at the
- * engine level — this is a read verb by construction, not by convention.
+ * bounded — the limit defaults to {@link DEFAULT_ROW_LIMIT} and is clamped to
+ * {@link HARD_ROW_CEILING} regardless of what the caller asks for. The lake
+ * connection is ATTACHed READ_ONLY, so writes fail at the engine level — this
+ * is a read verb by construction, not by convention.
  */
 export async function runSql(input: RunSqlInput): Promise<QueryResult> {
 	const conn = await getLakeConnection();
-	const limit = input.limit ?? DEFAULT_LIMIT;
+	const limit = clampRowLimit(input.limit);
 	const wrapped = `SELECT * FROM (${input.sql}) AS _run_sql LIMIT ${limit}`;
 	const reader = input.params
 		? await conn.runAndReadAll(wrapped, input.params)

@@ -88,7 +88,8 @@ export const Route = createFileRoute("/api/run-sql")({
 						? conn.stream(wrapped, params)
 						: conn.stream(wrapped))) as unknown as StreamableResult;
 				} catch (err) {
-					return badRequest(err instanceof Error ? err.message : String(err));
+					console.error("run-sql prepare failed", err);
+					return badRequest("Invalid SQL or parameters.");
 				}
 
 				const enc = new TextEncoder();

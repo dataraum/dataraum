@@ -33,6 +33,9 @@ const REQUIRED_DEFAULTS: Record<string, string> = {
 		process.env.DATARAUM_WORKSPACE_ID ?? "00000000-0000-0000-0000-000000000001",
 	DATARAUM_LAKE_PATH:
 		process.env.DATARAUM_LAKE_PATH ?? "/var/lib/dataraum/lake",
+	DUCKLAKE_CATALOG_URL:
+		process.env.DUCKLAKE_CATALOG_URL ??
+		"postgresql://dataraum:dataraum@127.0.0.1:5432/lake_catalog",
 	ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "sk-ant-test-placeholder",
 };
 for (const [k, v] of Object.entries(REQUIRED_DEFAULTS)) {

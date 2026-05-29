@@ -15,8 +15,23 @@ Phase 1 of the DAT-339 pivot (DAT-353).
 ```
 chat.ts  ──registry──→  tools/<name>.ts  ──┬──→  src/db/metadata/  (Drizzle, engine substrate read)
                                             ├──→  src/db/cockpit/   (Drizzle, chat history / ui_state)
-                                            └──→  fetch("/measure" | "/query" | "/probe")  (engine kernel)
+                                            └──→  src/duckdb/        (cockpit-owned DuckDB read verbs)
 ```
+
+The interactive DuckDB read verbs are **cockpit-owned** (DAT-367) — there is no
+HTTP round-trip to the engine for them. `run_sql` / `probe` are thin LLM-facing
+wrappers in `tools/`; the connection lifecycle + query logic live in
+`src/duckdb/` (neo driver `@duckdb/node-api`):
+
+- `src/duckdb/lake.ts` — lazily-opened, process-wide DuckDB connection that
+  ATTACHes the engine's DuckLake catalog **READ_ONLY**. `getLakeConnection()`
+  is reusable by any read verb and by the future `connect` schema-sniff (DAT-381).
+- `src/duckdb/run-sql.ts` — `runSql` over the lake (`lake.typed.*`, etc.).
+- `src/duckdb/probe.ts` — `probe` against an external DB source via a throwaway
+  READ_ONLY ATTACH; credentials resolved by source name in
+  `src/duckdb/credentials.ts` (`DATARAUM_<NAME>_URL`, re-homed from the engine).
+- `src/duckdb/query-result.ts` — shared JSON-safe `{columns, rows, rowCount}`
+  result shape (neo `getRowObjectsJson()`; not Arrow IPC — see that file).
 
 Tools are the **only** layer that touches engine state. The chat handler
 streams Anthropic responses and runs tools when the model emits `tool_use`;
@@ -26,20 +41,19 @@ React components never reach across to the engine directly.
 
 > One tool wraps N engine operations. N tools share M backends.
 
-- A single tool can compose multiple drizzle queries, a kernel `/query`
-  call, and a `/measure` SSE follow-up before returning to the agent. The
-  tool is the unit the LLM reasons about; the boundary is intent
-  (`look_table`, `add_source`), not protocol (`run_drizzle_query`,
-  `call_kernel`).
-- The same drizzle helper or kernel verb is fair game for many tools —
-  shared helpers live in `src/db/metadata/` (for Drizzle-backed reads)
-  and a future `src/kernel/` (for kernel-verb fetch wrappers when slice 2
-  needs them). Don't reach across to another tool's internal helpers.
+- A single tool can compose multiple drizzle queries and a `run_sql` read
+  over the lake before returning to the agent. The tool is the unit the LLM
+  reasons about; the boundary is intent (`look_table`, `add_source`), not
+  protocol (`run_drizzle_query`, `run_sql`).
+- The same drizzle helper or DuckDB read verb is fair game for many tools —
+  shared helpers live in `src/db/metadata/` (for Drizzle-backed reads) and
+  `src/duckdb/` (for the cockpit-owned DuckDB read verbs). Don't reach across
+  to another tool's internal helpers.
 - **No openapi-fetch.** Pre-pivot the cockpit consumed a generated REST
   client; that surface (and the `codegen` script) retired in DAT-339 Phase 0c.
-  Tools call the kernel verbs (`/measure`, `/query`, `/probe`) via a
-  hand-written `fetch` wrapper, and read metadata directly via the
-  Drizzle introspected schema.
+  The DuckDB read verbs (`run_sql`, `probe`) are cockpit-owned (DAT-367,
+  `src/duckdb/`); metadata reads go directly via the Drizzle introspected
+  schema. No HTTP to the engine for reads.
 
 ## File layout convention
 

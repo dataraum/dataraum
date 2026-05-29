@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.97.1",
+    "@duckdb/node-api": "^1.5.3-r.2",
     "@mantine/core": "^9.2.2",
     "@mantine/hooks": "^9.2.2",
     "@tailwindcss/vite": "^4.3.0",

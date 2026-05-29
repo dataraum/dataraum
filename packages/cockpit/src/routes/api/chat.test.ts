@@ -3,29 +3,17 @@
 // registry is attached — without calling the model or touching the network.
 // The live agentic loop is acceptance-tested via the compose smoke (real LLM).
 //
-// Booting the route transitively imports config.ts (via the tool registry →
-// metadataDb). Env-stub + dynamic import, same as registry.test.ts.
+// Importing the route transitively pulls config.ts + the Postgres metadata
+// client (via the tool registry). We MOCK both so the test needs no real env and
+// opens no connection — and sets NO process.env, which would leak across files
+// in a reused worker and un-skip the gated integration tests.
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-const ENV_DEFAULTS: Record<string, string> = {
-	COCKPIT_DATABASE_URL: "postgresql://u:p@127.0.0.1:5432/cockpit_db",
-	METADATA_DATABASE_URL: "postgresql://u:p@127.0.0.1:5432/ws_test",
-	DATARAUM_WORKSPACE_ID: "test",
-	DATARAUM_LAKE_PATH: "/tmp/lake",
-	ANTHROPIC_API_KEY: "sk-ant-test-placeholder",
-};
-for (const [k, v] of Object.entries(ENV_DEFAULTS)) {
-	if (!process.env[k]) process.env[k] = v;
-}
+vi.mock("#/config", () => ({ config: { anthropicApiKey: "sk-ant-test" } }));
+vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
-let buildChatOptions: (
-	messages: Array<{ role: "user"; content: string }>,
-	// biome-ignore lint/suspicious/noExplicitAny: the option object's adapter is provider-internal
-) => any;
-beforeAll(async () => {
-	({ buildChatOptions } = await import("./chat"));
-});
+import { buildChatOptions } from "./chat";
 
 describe("chat route wiring (DAT-353)", () => {
 	it("sends the orchestrator instructions as a cached system block", () => {

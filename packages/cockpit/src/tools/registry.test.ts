@@ -1,32 +1,20 @@
 // Tool-registry contract tests (DAT-353). Pure — asserts the LLM-facing surface
-// of the registry (names + approval gating) without a DB. The DB query paths
-// (list_sources / list_tables) are covered by gated integration tests;
-// teach/replay write paths by the integration smoke.
+// of the registry (names + approval gating). The DB query paths (list_sources /
+// list_tables) are covered by gated integration tests; teach/replay write paths
+// by the integration smoke.
 //
-// Importing the registry transitively boots config.ts (via metadataDb), which
-// throws unless these are set. Placeholders only: the contract assertions never
-// query, and the postgres client is lazy (no connect on import). The registry
-// is dynamic-imported in beforeAll so this env block runs first (static imports
-// hoist above it). vitest isolates env per file, so setting METADATA_DATABASE_URL
-// here does NOT unskip the gated integration tests in other files.
+// Importing the registry transitively pulls config.ts + the Postgres metadata
+// client (via the tools). We MOCK both so the test needs no real env and opens
+// no connection — and, critically, sets NO process.env, which would leak across
+// files in a reused worker and un-skip the gated integration tests (that bug
+// hung the whole suite while it tried to connect to a Postgres that isn't up).
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-const ENV_DEFAULTS: Record<string, string> = {
-	COCKPIT_DATABASE_URL: "postgresql://u:p@127.0.0.1:5432/cockpit_db",
-	METADATA_DATABASE_URL: "postgresql://u:p@127.0.0.1:5432/ws_test",
-	DATARAUM_WORKSPACE_ID: "test",
-	DATARAUM_LAKE_PATH: "/tmp/lake",
-	ANTHROPIC_API_KEY: "sk-ant-test-placeholder",
-};
-for (const [k, v] of Object.entries(ENV_DEFAULTS)) {
-	if (!process.env[k]) process.env[k] = v;
-}
+vi.mock("#/config", () => ({ config: {} }));
+vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
-let tools: ReadonlyArray<{ name: string; needsApproval?: boolean }>;
-beforeAll(async () => {
-	({ tools } = await import("./registry"));
-});
+import { tools } from "./registry";
 
 describe("tool registry (DAT-353)", () => {
 	it("registers the slice-1 toolset with unique names", () => {

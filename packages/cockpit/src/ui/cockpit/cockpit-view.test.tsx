@@ -6,16 +6,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CockpitProvider } from "#/ui/cockpit/cockpit-state";
 import { CockpitView } from "#/ui/cockpit/cockpit-view";
 
-// CockpitView mounts ChatRail, whose useChatStream would otherwise reference
-// fetch; the view never streams on mount, but stub the hook to keep the test
+// CockpitView mounts ChatRail, which calls useChat (network on real use). The
+// view never streams on mount, but stub the SDK hook to keep the test
 // self-contained.
-vi.mock("#/ui/cockpit/use-chat-stream", async (orig) => {
-	const actual = await orig<typeof import("#/ui/cockpit/use-chat-stream")>();
-	return {
-		...actual,
-		useChatStream: () => ({ streaming: false, send: async () => {} }),
-	};
-});
+vi.mock("@tanstack/ai-react", () => ({
+	useChat: () => ({
+		messages: [],
+		isLoading: false,
+		error: undefined,
+		sendMessage: async () => {},
+		addToolApprovalResponse: async () => {},
+	}),
+	fetchServerSentEvents: () => ({}),
+}));
 
 function renderView() {
 	render(

@@ -5,10 +5,15 @@
 // tool→canvas mapper case — they never touch the canvas/stream/shell plumbing.
 // Keep the union sorted baseline-first so the extension point is obvious.
 
+import type { SourceSummary } from "#/tools/list-sources";
+import type { TableSummary } from "#/tools/list-tables";
+
 export type CanvasState =
 	| { kind: "empty" }
 	| { kind: "loading" }
-	| { kind: "error"; message: string };
+	| { kind: "error"; message: string }
+	| { kind: "source-list"; sources: SourceSummary[] }
+	| { kind: "table-list"; tables: TableSummary[] };
 
 /** Every `kind` a canvas member can have — handy for registry/test exhaustion. */
 export type CanvasKind = CanvasState["kind"];

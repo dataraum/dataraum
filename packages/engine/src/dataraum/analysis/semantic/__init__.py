@@ -13,6 +13,10 @@ from dataraum.analysis.semantic.db_models import (
 from dataraum.analysis.semantic.db_models import (
     TableEntity,
 )
+from dataraum.analysis.semantic.induction import (
+    OntologyInductionAgent,
+    induce_adhoc_concepts,
+)
 from dataraum.analysis.semantic.models import (
     ColumnAnnotationOutput,
     EntityDetection,
@@ -27,6 +31,7 @@ from dataraum.analysis.semantic.ontology import (
     OntologyLoader,
 )
 from dataraum.analysis.semantic.processor import (
+    ground_columns,
     persist_column_annotations,
     synthesize_and_store_tables,
 )
@@ -35,6 +40,9 @@ __all__ = [
     # Main entry points
     "persist_column_annotations",
     "synthesize_and_store_tables",
+    "ground_columns",
+    "induce_adhoc_concepts",
+    "OntologyInductionAgent",
     "SemanticAgent",
     "ColumnAnnotationAgent",
     # Ontology

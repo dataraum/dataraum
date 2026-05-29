@@ -19,6 +19,7 @@ import { type DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+	type AbortSignalLike,
 	clampGridCap,
 	type ResultFrame,
 	type StreamableResult,
@@ -42,6 +43,36 @@ async function streamQuery(
 	const frames: ResultFrame[] = [];
 	for await (const line of streamNdjson(result, cap, "q_it")) {
 		frames.push(JSON.parse(line) as ResultFrame);
+	}
+	return frames;
+}
+
+/**
+ * Stream a query but flip the abort signal the moment the first batch frame
+ * lands, mirroring the route's mutable `{ aborted }` flag (run-sql.ts) and the
+ * grid closing mid-stream. The generator checks `signal.aborted` at the NEXT
+ * chunk boundary, so the loop stops within one chunk and the footer carries
+ * `cancelled: true`.
+ */
+async function streamQueryAbortingAfterFirstBatch(
+	sql: string,
+	cap: number,
+): Promise<ResultFrame[]> {
+	const wrapped = `SELECT * FROM (${sql}) AS _run_sql`;
+	const result = (await readerConn.stream(
+		wrapped,
+	)) as unknown as StreamableResult;
+	const signal: { aborted: boolean } = { aborted: false };
+	const frames: ResultFrame[] = [];
+	for await (const line of streamNdjson(
+		result,
+		cap,
+		"q_it",
+		signal as AbortSignalLike,
+	)) {
+		const frame = JSON.parse(line) as ResultFrame;
+		frames.push(frame);
+		if (frame.t === "b") signal.aborted = true;
 	}
 	return frames;
 }
@@ -75,6 +106,17 @@ beforeAll(async () => {
 	// A wider table to exercise multi-chunk streaming (DuckDB chunks ~2048 rows).
 	await writer.run(
 		"CREATE TABLE lake.typed.big AS SELECT range AS n FROM range(5000)",
+	);
+	// Nested types (design §12 must-verify): a LIST column and a STRUCT column,
+	// to confirm JsonDuckDBValueConverter coerces them to plain JSON arrays /
+	// objects (not opaque driver handles).
+	await writer.run(
+		"CREATE TABLE lake.typed.nested(id INTEGER, tags VARCHAR[], meta STRUCT(a INTEGER, b VARCHAR))",
+	);
+	await writer.run(
+		"INSERT INTO lake.typed.nested VALUES " +
+			"(1, ['x','y'], {'a': 10, 'b': 'hello'})," +
+			"(2, [], {'a': 20, 'b': 'world'})",
 	);
 	writer.closeSync();
 	writerInstance.closeSync();
@@ -203,5 +245,63 @@ describe("streamNdjson over a real DuckLake lake (DAT-385)", () => {
 		const footer = frames.at(-1);
 		if (footer?.t !== "f") throw new Error("expected footer");
 		expect(footer.error).toBeTruthy();
+	});
+
+	it("coerces LIST and STRUCT columns to JSON-safe values", async () => {
+		const frames = await streamQuery(
+			"SELECT id, tags, meta FROM lake.typed.nested ORDER BY id",
+			1000,
+		);
+
+		const header = frames[0];
+		if (header.t !== "h") throw new Error("expected header first");
+		expect(header.columns).toEqual(["id", "tags", "meta"]);
+
+		const batch = frames[1];
+		if (batch.t !== "b") throw new Error("expected batch second");
+		expect(batch.n).toBe(2);
+		expect(batch.cols[0]).toEqual([1, 2]);
+		// LIST → plain JS array (empty list stays an empty array, not null).
+		expect(batch.cols[1]).toEqual([["x", "y"], []]);
+		// STRUCT → nested plain object, exactly what getRowObjectsJson produces.
+		expect(batch.cols[2]).toEqual([
+			{ a: 10, b: "hello" },
+			{ a: 20, b: "world" },
+		]);
+
+		expect(frames.at(-1)).toEqual({ t: "f", rows: 2 });
+	});
+
+	it("stops within one chunk on abort and leaves the connection reusable", async () => {
+		// Abort the moment the first batch lands; the generator re-checks the
+		// signal at the next chunk boundary, so it stops after at most one more
+		// chunk of work. With a 10k cap (above the full 5000 rows) the stream
+		// would otherwise run to completion — proving the cut is the abort, not
+		// the cap.
+		const frames = await streamQueryAbortingAfterFirstBatch(
+			"SELECT n FROM lake.typed.big",
+			10_000,
+		);
+
+		const footer = frames.at(-1);
+		if (footer?.t !== "f") throw new Error("expected footer");
+		expect(footer.cancelled).toBe(true);
+		expect(footer.truncated).toBeUndefined();
+		// Far fewer than the full 5000 rows — the loop broke early.
+		expect(footer.rows).toBeLessThan(5000);
+		expect(footer.rows).toBeGreaterThan(0);
+
+		// The shared READ_ONLY reader must be healthy after an aborted stream:
+		// a second query on the SAME connection returns correct results.
+		const after = await streamQuery(
+			"SELECT id, customer FROM lake.typed.orders ORDER BY id",
+			1000,
+		);
+		const batch = after[1];
+		if (batch.t !== "b") throw new Error("expected batch");
+		expect(batch.n).toBe(3);
+		expect(batch.cols[0]).toEqual([1, 2, 3]);
+		expect(batch.cols[1]).toEqual(["acme", "beta", "acme"]);
+		expect(after.at(-1)).toEqual({ t: "f", rows: 3 });
 	});
 });

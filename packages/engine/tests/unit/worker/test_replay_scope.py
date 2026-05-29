@@ -23,6 +23,7 @@ from dataraum.worker.workflows import (
     _PARENT_PHASE_ORDER,
     _VALID_REPLAY_PHASES,
     _at_or_after,
+    _phase_reruns_on_replay,
     _runs_under,
     _validate_replay,
 )
@@ -111,6 +112,40 @@ class TestRunsUnder:
     def test_typing_replay_runs_every_analytics_phase(self, phase: str) -> None:
         replay = ReplayScope(from_phase="typing", raw_table_ids=["raw-1"])
         assert _runs_under(phase, replay, _CHILD_PHASE_ORDER) is True
+
+
+class TestPhaseRerunsOnReplay:
+    """Every phase that re-executes under a replay must self-clean (DAT-373).
+
+    Pre-DAT-373 only the entry phase cleaned and downstream rode the typed-Table
+    cascade. With stable typed identity that cascade is gone, so each phase
+    at-or-after ``from_phase`` clears its own rows. ``_phase_reruns_on_replay``
+    decides who cleans; it must agree with ``_runs_under`` for the chain phases
+    plus always-clean the always-rerun reduce.
+    """
+
+    def test_typing_replay_cleans_every_child_phase(self) -> None:
+        replay = ReplayScope(from_phase="typing", raw_table_ids=["raw-1"])
+        for phase in _CHILD_PHASE_ORDER:
+            assert _phase_reruns_on_replay(phase, replay) is True
+
+    def test_analytics_replay_skips_earlier_phases(self) -> None:
+        # A replay from "statistical_quality" should NOT clean typing/statistics.
+        replay = ReplayScope(from_phase="statistical_quality", raw_table_ids=["raw-1"])
+        assert _phase_reruns_on_replay("typing", replay) is False
+        assert _phase_reruns_on_replay("statistics", replay) is False
+        assert _phase_reruns_on_replay("statistical_quality", replay) is True
+        assert _phase_reruns_on_replay("temporal", replay) is True
+
+    def test_reduce_always_cleans_on_any_replay(self) -> None:
+        # The source-level reduce always re-runs (widening breadth) → always cleans.
+        for from_phase in ("import", "typing", "semantic_per_column"):
+            replay = ReplayScope(from_phase=from_phase)
+            assert _phase_reruns_on_replay("semantic_per_column", replay) is True
+
+    def test_import_replay_cleans_import(self) -> None:
+        replay = ReplayScope(from_phase="import", raw_table_ids=None)
+        assert _phase_reruns_on_replay("import", replay) is True
 
 
 class TestReplayScopeContract:

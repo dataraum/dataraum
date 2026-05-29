@@ -10,7 +10,7 @@ from __future__ import annotations
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from dataraum.analysis.statistics import assess_statistical_quality
 from dataraum.analysis.statistics.quality_db_models import StatisticalQualityMetrics
@@ -43,6 +43,33 @@ class StatisticalQualityPhase(BasePhase):
         from dataraum.analysis.statistics import quality_db_models
 
         return [quality_db_models]
+
+    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
+        """Delete this phase's StatisticalQualityMetrics for the scoped tables (DAT-373).
+
+        Owner-scoped: drops only the quality metrics whose column belongs to a
+        typed table in ``table_ids`` so the re-run (after a re-type) recomputes
+        Benford / outlier metrics against the freshly-typed data. Never touches
+        any other phase's per-Column rows.
+        """
+        typed_tables = self._typed_tables(ctx)
+        if not typed_tables:
+            return
+        column_ids = list(
+            ctx.session.execute(
+                select(Column.column_id).where(
+                    Column.table_id.in_([t.table_id for t in typed_tables])
+                )
+            ).scalars()
+        )
+        if not column_ids:
+            return
+        ctx.session.execute(
+            delete(StatisticalQualityMetrics).where(
+                StatisticalQualityMetrics.column_id.in_(column_ids)
+            )
+        )
+        ctx.session.flush()
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if the scoped tables' numeric columns all have quality metrics."""

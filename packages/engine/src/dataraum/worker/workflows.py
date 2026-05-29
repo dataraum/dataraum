@@ -133,15 +133,23 @@ async def _maybe_replay_cleanup(
     identity: SourceIdentity,
     table_ids: list[str],
 ) -> None:
-    """Invoke ``replay_cleanup_for_phase`` when ``phase`` is the replay entry.
+    """Invoke ``replay_cleanup_for_phase`` for every phase that re-runs on a replay.
 
-    The first phase that runs on a teach replay (``replay.from_phase``) needs
-    its prior outputs cleaned so its existing ``should_skip`` doesn't bail.
-    On the initial run (``replay is None``), nothing to clean. Downstream
-    phases of a replay ride on the entry phase's cascade — no per-phase
-    cleanup needed there either.
+    Each chain phase owns its outputs and clears them in place before the
+    re-run, so its existing ``should_skip`` doesn't bail (DAT-373). Pre-DAT-373
+    only the entry phase (``replay.from_phase``) was cleaned and everything
+    downstream rode on the entry phase's cascade-delete through the dropped
+    typed ``Table``. With stable typed identity that cascade is gone, so each
+    phase at-or-after ``from_phase`` cleans its own per-Column rows (scoped to
+    ``table_ids``) — owner-scoped, never cross-stage.
+
+    On the initial run (``replay is None``), nothing to clean. The phase order
+    used to gate this is the chain ``phase`` belongs to; ``_runs_under`` (which
+    the caller already used to decide whether ``phase`` runs) and this share the
+    same at-or-after predicate, so cleanup fires exactly for the phases that
+    re-execute.
     """
-    if replay is None or replay.from_phase != phase:
+    if replay is None or not _phase_reruns_on_replay(phase, replay):
         return
     await workflow.execute_activity(
         "replay_cleanup_for_phase",
@@ -154,6 +162,22 @@ async def _maybe_replay_cleanup(
         start_to_close_timeout=_TIMEOUT,
         retry_policy=_RETRY,
     )
+
+
+def _phase_reruns_on_replay(phase: str, replay: ReplayScope) -> bool:
+    """True iff ``phase`` re-executes under ``replay`` (so it must self-clean).
+
+    A phase re-runs when it is at-or-after ``from_phase`` in whichever chain it
+    belongs to. ``semantic_per_column`` is the exception: the parent body always
+    re-runs the source-level reduce on ANY replay (the "widening breadth" rule),
+    so it must always self-clean too. Pure logic over workflow input →
+    deterministic.
+    """
+    if phase == "semantic_per_column":
+        return True
+    if phase in _CHILD_PHASE_ORDER:
+        return _at_or_after(phase, replay.from_phase, _CHILD_PHASE_ORDER)
+    return _at_or_after(phase, replay.from_phase, _PARENT_PHASE_ORDER)
 
 
 @workflow.defn(name="processTableWorkflow")
@@ -207,6 +231,10 @@ class ProcessTableWorkflow:
         for phase in _ANALYTICS_PHASES:
             if not _runs_under(phase, replay, _CHILD_PHASE_ORDER):
                 continue
+            # Owner-scoped self-clean before re-run: each analytics phase clears
+            # its own per-Column rows for THIS typed table so its ``should_skip``
+            # doesn't bail (DAT-373). Scope is the typed id its rows hang off.
+            await _maybe_replay_cleanup(phase, replay, payload.identity, [typed_table_id])
             await workflow.execute_activity(
                 phase,
                 scoped,

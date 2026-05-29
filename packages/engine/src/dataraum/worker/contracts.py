@@ -119,27 +119,28 @@ class TypingResult(BaseModel):
 
 
 class ReplayCleanupInput(BaseModel):
-    """Input to the ``replay_cleanup_for_phase`` activity (DAT-343).
+    """Input to the ``replay_cleanup_for_phase`` activity (DAT-343 / DAT-373).
 
-    Carried by the workflow when it's about to enter the ``from_phase`` of
-    a teach replay; the activity invokes the phase's ``replay_cleanup``
-    so the phase's existing ``should_skip`` doesn't bail on a re-run.
+    Carried by the workflow before EVERY phase that re-executes under a teach
+    replay (DAT-373), not just the ``from_phase``; the activity invokes that
+    phase's owner-scoped ``replay_cleanup`` so its existing ``should_skip``
+    doesn't bail on the re-run. Pre-DAT-373 only the entry phase was cleaned and
+    downstream phases rode the now-removed typed-Table cascade.
 
     Attributes:
         identity: source identity header (same as every other phase activity).
-        phase_name: which phase's ``replay_cleanup`` to invoke — must equal
-            the workflow's ``replay.from_phase``.
+        phase_name: which phase's ``replay_cleanup`` to invoke — one of the
+            chain phases at-or-after ``replay.from_phase`` (plus the always-rerun
+            source-level reduce).
         table_ids: scope passed through to the phase's ``replay_cleanup``.
-            An empty list collapses two distinct workflow shapes onto the
-            same wire value: (1) source-wide replays where
-            ``replay.raw_table_ids is None`` (e.g. ``null_value`` →
-            ``ImportPhase.replay_cleanup``, which ignores the scope and
-            drops everything for the source); and (2) source-tail-only
-            replays where ``replay.raw_table_ids == []`` (e.g.
-            ``concept_property`` → ``SemanticPerColumnPhase.replay_cleanup``,
-            which is intrinsically source-wide). Per-table replays
-            (``type_pattern``) carry a single raw_table_id so the typing
-            cleanup can narrow.
+            For ``typing`` / ``import`` this is the raw table id(s); for the
+            table-local analytics phases it is the typed table id their rows
+            hang off. An empty list collapses two source-wide shapes onto one
+            wire value: (1) ``replay.raw_table_ids is None`` (e.g. ``null_value``
+            → ``ImportPhase.replay_cleanup``, which ignores the scope and drops
+            everything for the source); and (2) ``replay.raw_table_ids == []``
+            (e.g. ``concept_property`` → ``SemanticPerColumnPhase.replay_cleanup``,
+            intrinsically source-wide).
     """
 
     identity: SourceIdentity

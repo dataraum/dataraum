@@ -14,7 +14,7 @@ from __future__ import annotations
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from dataraum.analysis.statistics import profile_statistics
 from dataraum.analysis.statistics.db_models import StatisticalProfile
@@ -44,6 +44,33 @@ class StatisticsPhase(BasePhase):
         from dataraum.analysis.statistics import db_models
 
         return [db_models]
+
+    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
+        """Delete this phase's StatisticalProfile rows for the scoped tables (DAT-373).
+
+        Owner-scoped: drops only the profiles whose column belongs to a typed
+        table in ``table_ids`` so the re-run (after a re-type) recomputes them
+        against the freshly-typed data. The typed ``Table``/``Column`` rows
+        survive the re-type now (stable identity), so without this self-clean
+        ``should_skip`` would see the stale profiles and bail. Never touches any
+        other phase's per-Column rows.
+        """
+        typed_tables = self._typed_tables(ctx)
+        if not typed_tables:
+            return
+        column_ids = list(
+            ctx.session.execute(
+                select(Column.column_id).where(
+                    Column.table_id.in_([t.table_id for t in typed_tables])
+                )
+            ).scalars()
+        )
+        if not column_ids:
+            return
+        ctx.session.execute(
+            delete(StatisticalProfile).where(StatisticalProfile.column_id.in_(column_ids))
+        )
+        ctx.session.flush()
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if the scoped typed tables already have profiles."""

@@ -11,12 +11,13 @@ The quarantine pattern:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
 import duckdb
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 
 from dataraum.analysis.typing.db_models import TypeCandidate, TypeDecision
@@ -86,6 +87,100 @@ def _resolve_pattern(
         inferred_type=parts[0].inferred_type,
         standardization_expr=coalesce_expr,
     )
+
+
+def reconcile_typed_table(
+    session: Session,
+    raw_table: Table,
+    layer: str,
+    duckdb_path: str,
+    row_count: int,
+) -> Table:
+    """Find-or-create the ``layer`` Table for ``raw_table`` and refresh its stats.
+
+    Stable typed identity (DAT-373 Option A): a re-type REUSES the existing
+    ``typed`` / ``quarantine`` ``Table`` row (matched by
+    ``(source_id, table_name, layer)`` — unique per ``uq_source_table_layer``)
+    rather than minting a fresh ``table_id``. Reusing the row keeps the typed
+    Table id — and the Column ids reconciled under it — stable across teach
+    replays, so other stages' per-Column rows stay attached. Only the
+    ``row_count`` (and ``duckdb_path``, defensively) are refreshed in place.
+    """
+    existing = session.execute(
+        select(Table).where(
+            Table.source_id == raw_table.source_id,
+            Table.table_name == raw_table.table_name,
+            Table.layer == layer,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.duckdb_path = duckdb_path
+        existing.row_count = row_count
+        return existing
+
+    created = Table(
+        table_id=str(uuid4()),
+        source_id=raw_table.source_id,
+        table_name=raw_table.table_name,
+        layer=layer,
+        duckdb_path=duckdb_path,
+        row_count=row_count,
+    )
+    session.add(created)
+    return created
+
+
+def reconcile_typed_columns(
+    session: Session,
+    typed_table: Table,
+    desired: Sequence[tuple[str, str | None, int, str | None, str]],
+) -> dict[str, str]:
+    """Reconcile ``typed_table``'s Columns to ``desired``, keeping ids stable.
+
+    ``desired`` is the target column set as
+    ``(column_name, original_name, column_position, raw_type, resolved_type)``
+    tuples (``raw_type`` may be ``None`` for source-typed columns). Existing
+    columns matched by ``column_name`` are UPDATED in place
+    (id preserved); columns no longer desired are deleted; genuinely new
+    columns are inserted. Returns ``column_name -> column_id`` for the full
+    reconciled set so callers can attach typing's own derived rows.
+
+    Keeping ids stable is what lets a re-type avoid orphaning another stage's
+    per-Column rows (DAT-373 Option A).
+    """
+    current = {c.column_name: c for c in typed_table.columns}
+    desired_names = {d[0] for d in desired}
+
+    # Delete columns that are no longer present in the re-typed table.
+    for name, col in list(current.items()):
+        if name not in desired_names:
+            session.delete(col)
+
+    column_map: dict[str, str] = {}
+    for column_name, original_name, position, raw_type, resolved_type in desired:
+        existing = current.get(column_name)
+        if existing is not None:
+            existing.original_name = original_name
+            existing.column_position = position
+            existing.raw_type = raw_type
+            existing.resolved_type = resolved_type
+            column_map[column_name] = existing.column_id
+        else:
+            new_id = str(uuid4())
+            session.add(
+                Column(
+                    column_id=new_id,
+                    table_id=typed_table.table_id,
+                    column_name=column_name,
+                    original_name=original_name,
+                    column_position=position,
+                    raw_type=raw_type,
+                    resolved_type=resolved_type,
+                )
+            )
+            column_map[column_name] = new_id
+
+    return column_map
 
 
 @dataclass
@@ -327,70 +422,50 @@ def resolve_types(
     quarantine_result = duckdb_conn.execute(f"SELECT COUNT(*) FROM {quarantine_target}").fetchone()
     quarantine_rows = quarantine_result[0] if quarantine_result else 0
 
-    # Create metadata records for typed and quarantine tables.
-    # All three layer records share the same bare ``duckdb_path``;
-    # ``layer`` discriminates which schema they live in.
-    typed_table_record = Table(
-        table_id=str(uuid4()),
-        source_id=table.source_id,
-        table_name=table.table_name,
-        layer="typed",
-        duckdb_path=bare,
-        row_count=typed_rows,
+    # Reconcile the typed + quarantine metadata records (DAT-373 Option A):
+    # reuse the existing rows for this (source, table_name, layer) when a teach
+    # re-types, keeping ``table_id`` + Column ids stable so other stages'
+    # per-Column rows stay attached. All three layer records share the same bare
+    # ``duckdb_path``; ``layer`` discriminates which schema they live in. The
+    # session must be flushed before reconcile so the typed Table's existing
+    # Columns are loadable (the reconcile reads ``typed_table.columns``).
+    session.flush()
+    typed_table_record = reconcile_typed_table(
+        session, table, "typed", bare, typed_rows
     )
-    session.add(typed_table_record)
-
-    quarantine_table_record = Table(
-        table_id=str(uuid4()),
-        source_id=table.source_id,
-        table_name=table.table_name,
-        layer="quarantine",
-        duckdb_path=bare,
-        row_count=quarantine_rows,
+    quarantine_table_record = reconcile_typed_table(
+        session, table, "quarantine", bare, quarantine_rows
     )
-    session.add(quarantine_table_record)
+    session.flush()
 
-    # Create column records for typed table
-    typed_column_map: dict[str, str] = {}  # column_name -> typed_column_id
-    for i, spec in enumerate(specs):
-        typed_col_id = str(uuid4())
-        raw_col = raw_col_by_id[spec.column_id]
-        typed_col = Column(
-            column_id=typed_col_id,
-            table_id=typed_table_record.table_id,
-            column_name=spec.column_name,
-            original_name=raw_col.original_name,
-            column_position=i,
-            raw_type="VARCHAR",
-            resolved_type=spec.data_type.value,
+    # Reconcile typed columns — UPDATE in place / insert new / delete dropped,
+    # so existing typed Column ids survive a re-type.
+    typed_desired = [
+        (
+            spec.column_name,
+            raw_col_by_id[spec.column_id].original_name,
+            i,
+            "VARCHAR",
+            spec.data_type.value,
         )
-        session.add(typed_col)
-        typed_column_map[spec.column_name] = typed_col_id
+        for i, spec in enumerate(specs)
+    ]
+    typed_column_map = reconcile_typed_columns(session, typed_table_record, typed_desired)
 
-    # Create column records for quarantine table (all columns + _quarantined_at)
-    for i, spec in enumerate(specs):
-        raw_col = raw_col_by_id[spec.column_id]
-        quarantine_col = Column(
-            column_id=str(uuid4()),
-            table_id=quarantine_table_record.table_id,
-            column_name=spec.column_name,
-            original_name=raw_col.original_name,
-            column_position=i,
-            raw_type="VARCHAR",
-            resolved_type="VARCHAR",  # Quarantine keeps original VARCHAR
+    # Reconcile quarantine columns (all columns kept VARCHAR + the _quarantined_at meta col).
+    quarantine_desired = [
+        (
+            spec.column_name,
+            raw_col_by_id[spec.column_id].original_name,
+            i,
+            "VARCHAR",
+            "VARCHAR",  # Quarantine keeps original VARCHAR
         )
-        session.add(quarantine_col)
-
-    # Add _quarantined_at column
-    quarantine_meta_col = Column(
-        column_id=str(uuid4()),
-        table_id=quarantine_table_record.table_id,
-        column_name="_quarantined_at",
-        column_position=len(specs),
-        raw_type="TIMESTAMP",
-        resolved_type="TIMESTAMP",
-    )
-    session.add(quarantine_meta_col)
+        for i, spec in enumerate(specs)
+    ]
+    quarantine_desired.append(("_quarantined_at", None, len(specs), "TIMESTAMP", "TIMESTAMP"))
+    reconcile_typed_columns(session, quarantine_table_record, quarantine_desired)
+    session.flush()
 
     # Compute per-column quarantine metrics and update raw TypeCandidates
     # BEFORE copying to typed columns, so copies include the fields.
@@ -434,6 +509,19 @@ def resolve_types(
     # Raw columns keep originals (audit trail); typed columns get copies so
     # downstream consumers can query by typed column_id directly.
     # Note: quarantine_count/rate are already set on raw TypeCandidates above.
+    #
+    # The typed columns are now reused across re-types (stable ids, DAT-373), so
+    # clear any prior copies first — otherwise the fresh TypeDecision insert would
+    # hit ``uq_column_type_decision`` (one decision per column). Self-contained
+    # idempotency: correct even when called outside the workflow's replay_cleanup.
+    typed_col_ids = list(typed_column_map.values())
+    if typed_col_ids:
+        session.execute(
+            delete(TypeCandidate).where(TypeCandidate.column_id.in_(typed_col_ids))
+        )
+        session.execute(delete(TypeDecision).where(TypeDecision.column_id.in_(typed_col_ids)))
+        session.flush()
+
     for raw_col in table.columns:
         target_col_id = typed_column_map.get(raw_col.column_name)
         if target_col_id is None:

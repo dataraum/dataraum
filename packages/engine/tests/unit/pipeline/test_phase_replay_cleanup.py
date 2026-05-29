@@ -224,29 +224,35 @@ class TestImportPhaseReplayCleanup:
 
 
 class TestTypingPhaseReplayCleanup:
-    """``typing.replay_cleanup`` drops typed/quarantine for the scoped raw tables."""
+    """``typing.replay_cleanup`` clears typing's own state IN PLACE (DAT-373).
 
-    def test_scoped_to_table_ids_drops_matching_typed(self, session: Session) -> None:
+    The typed/quarantine ``Table`` + ``Column`` rows survive a re-type (stable
+    identity); only typing-owned ``TypeCandidate`` / ``TypeDecision`` rows and the
+    DuckDB typed/quarantine tables are cleared.
+    """
+
+    def test_scoped_to_table_ids_keeps_typed_table(self, session: Session) -> None:
         source, raw, typed = _seed_source_with_tables(session)
         ctx = _make_ctx(session, source.source_id)
 
         TypingPhase().replay_cleanup(ctx, [raw.table_id])
 
-        # The typed Table row matching the raw is gone.
+        # The typed Table row matching the raw SURVIVES with the same id —
+        # ``_run`` reconciles it in place on the re-type.
         remaining_typed = session.execute(
             select(Table).where(Table.source_id == source.source_id, Table.layer == "typed")
-        ).all()
-        assert remaining_typed == []
-        # The raw Table row stays — only typing's outputs are cleaned.
+        ).scalar_one()
+        assert remaining_typed.table_id == typed.table_id
+        # The raw Table row stays too.
         remaining_raw = session.execute(
             select(Table).where(Table.source_id == source.source_id, Table.layer == "raw")
         ).all()
         assert len(remaining_raw) == 1
 
-    def test_leaves_sibling_typed_tables_alone(self, session: Session) -> None:
-        """A teach on table A must not clobber table B's typed state."""
-        source, raw_a, typed_a = _seed_source_with_tables(session)
-        # Add a sibling pair (different table_name).
+    def test_leaves_sibling_table_decisions_alone(self, session: Session) -> None:
+        """A teach on table A must not clear table B's typing state."""
+        source, raw_a, _typed_a = _seed_source_with_tables(session)
+        # Add a sibling pair (different table_name) with a typed column + decision.
         raw_b = Table(
             table_id=str(uuid4()),
             source_id=source.source_id,
@@ -263,45 +269,78 @@ class TestTypingPhaseReplayCleanup:
         )
         session.add_all([raw_b, typed_b])
         session.flush()
+        typed_b_col = Column(
+            column_id=str(uuid4()),
+            table_id=typed_b.table_id,
+            column_name="customer_id",
+            column_position=0,
+            raw_type="VARCHAR",
+            resolved_type="BIGINT",
+        )
+        session.add(typed_b_col)
+        session.flush()
+        session.add(
+            TypeDecision(
+                decision_id=str(uuid4()),
+                column_id=typed_b_col.column_id,
+                decided_type="BIGINT",
+                decision_source="automatic",
+                decided_at=datetime.now(UTC),
+            )
+        )
+        session.flush()
         ctx = _make_ctx(session, source.source_id)
 
         TypingPhase().replay_cleanup(ctx, [raw_a.table_id])
 
-        # typed_a is gone; typed_b survives.
+        # Both typed tables survive; sibling B's TypeDecision is untouched.
         remaining = {
             row.table_name
             for row in session.execute(
                 select(Table).where(Table.source_id == source.source_id, Table.layer == "typed")
             ).scalars()
         }
-        assert remaining == {"customers"}
+        assert remaining == {"orders", "customers"}
+        assert (
+            session.execute(
+                select(TypeDecision).where(TypeDecision.column_id == typed_b_col.column_id)
+            ).first()
+            is not None
+        )
 
-    def test_empty_table_ids_means_source_wide(self, session: Session) -> None:
-        source, raw_a, _typed_a = _seed_source_with_tables(session)
-        raw_b = Table(
-            table_id=str(uuid4()),
-            source_id=source.source_id,
-            table_name="customers",
-            layer="raw",
-            duckdb_path=f"{source.name}__customers",
+    def test_empty_table_ids_clears_source_wide_decisions(self, session: Session) -> None:
+        source, raw_a, typed_a = _seed_source_with_tables(session)
+        # Seed a TypeDecision on the typed column so we can prove it's cleared.
+        typed_a_col_id = session.execute(
+            select(Column.column_id).where(Column.table_id == typed_a.table_id)
+        ).scalar_one()
+        session.add(
+            TypeDecision(
+                decision_id=str(uuid4()),
+                column_id=typed_a_col_id,
+                decided_type="BIGINT",
+                decision_source="automatic",
+                decided_at=datetime.now(UTC),
+            )
         )
-        typed_b = Table(
-            table_id=str(uuid4()),
-            source_id=source.source_id,
-            table_name="customers",
-            layer="typed",
-            duckdb_path=f"{source.name}__customers",
-        )
-        session.add_all([raw_b, typed_b])
         session.flush()
         ctx = _make_ctx(session, source.source_id)
 
         TypingPhase().replay_cleanup(ctx, [])
 
-        remaining_typed = session.execute(
-            select(Table).where(Table.source_id == source.source_id, Table.layer == "typed")
-        ).all()
-        assert remaining_typed == []
+        # Typed table survives; its decision is cleared (source-wide re-type).
+        assert (
+            session.execute(
+                select(Table).where(Table.source_id == source.source_id, Table.layer == "typed")
+            ).scalar_one().table_id
+            == typed_a.table_id
+        )
+        assert (
+            session.execute(
+                select(TypeDecision).where(TypeDecision.column_id == typed_a_col_id)
+            ).all()
+            == []
+        )
 
     def test_drops_type_candidates_for_raw_columns(self, session: Session) -> None:
         source, raw, typed = _seed_source_with_tables(session)
@@ -370,6 +409,108 @@ class TestTypingPhaseReplayCleanup:
         ).all()
         assert len(remaining) == 1
         assert ctx.duckdb_conn.statements == []  # type: ignore[attr-defined]
+
+    def test_preserves_typed_table_and_columns(self, session: Session) -> None:
+        """The typed Table + its Column rows survive a re-type (DAT-373 Option A).
+
+        Pre-DAT-373 the cleanup dropped the typed ``Table`` and cascade-wiped
+        every Column. With stable typed identity, ``replay_cleanup`` rebuilds
+        only the DuckDB data + typing's own Postgres rows in place — the typed
+        ``Table`` and ``Column`` rows (and their ids) are kept so other stages'
+        per-Column findings stay attached.
+        """
+        source, raw, typed = _seed_source_with_tables(session)
+        typed_col_id = session.execute(
+            select(Column.column_id).where(Column.table_id == typed.table_id)
+        ).scalar_one()
+        ctx = _make_ctx(session, source.source_id)
+
+        TypingPhase().replay_cleanup(ctx, [raw.table_id])
+
+        # The typed Table row and its Column survive with the SAME ids.
+        surviving_typed = session.execute(
+            select(Table).where(Table.source_id == source.source_id, Table.layer == "typed")
+        ).scalar_one()
+        assert surviving_typed.table_id == typed.table_id
+        surviving_col = session.execute(
+            select(Column.column_id).where(Column.table_id == typed.table_id)
+        ).scalar_one()
+        assert surviving_col == typed_col_id
+
+    def test_preserves_other_stage_per_column_rows(self, session: Session) -> None:
+        """A type-teach replay must NOT wipe another stage's per-Column rows (DAT-373).
+
+        The hazard: a future stage (``begin_session`` / frame-ground) attaches a
+        ``SemanticAnnotation`` (here standing in for any other-stage per-Column
+        finding) to a typed column. A ``type_pattern`` teach re-typing that table
+        must leave the annotation intact — typing owns only its own rows, not the
+        whole typed ``Table``. Pre-DAT-373 the cascade through the dropped typed
+        ``Table`` wiped it; now the row survives.
+        """
+        source, raw, typed = _seed_source_with_tables(session)
+        typed_col_id = session.execute(
+            select(Column.column_id).where(Column.table_id == typed.table_id)
+        ).scalar_one()
+        _seed_semantic_annotation(session, typed_col_id)
+        ctx = _make_ctx(session, source.source_id)
+
+        TypingPhase().replay_cleanup(ctx, [raw.table_id])
+
+        surviving = session.execute(
+            select(SemanticAnnotation).where(SemanticAnnotation.column_id == typed_col_id)
+        ).first()
+        assert surviving is not None, (
+            "type-teach replay wiped another stage's per-Column row "
+            "(cross-stage data loss — DAT-373 hazard)"
+        )
+
+    def test_drops_type_candidates_for_typed_columns(self, session: Session) -> None:
+        """Typing's own copies on the typed column are cleared (in-place rebuild).
+
+        ``resolve_types`` copies ``TypeCandidate`` / ``TypeDecision`` onto the
+        typed column. Because the typed ``Column`` now survives the replay, the
+        cleanup must delete those copies explicitly so the re-run's fresh inserts
+        don't collide with the ``uq_column_type_decision`` unique constraint.
+        """
+        source, raw, typed = _seed_source_with_tables(session)
+        typed_col_id = session.execute(
+            select(Column.column_id).where(Column.table_id == typed.table_id)
+        ).scalar_one()
+        session.add(
+            TypeCandidate(
+                candidate_id=str(uuid4()),
+                column_id=typed_col_id,
+                detected_at=datetime.now(UTC),
+                data_type="BIGINT",
+                confidence=0.9,
+            )
+        )
+        session.add(
+            TypeDecision(
+                decision_id=str(uuid4()),
+                column_id=typed_col_id,
+                decided_type="BIGINT",
+                decision_source="automatic",
+                decided_at=datetime.now(UTC),
+            )
+        )
+        session.flush()
+        ctx = _make_ctx(session, source.source_id)
+
+        TypingPhase().replay_cleanup(ctx, [raw.table_id])
+
+        assert (
+            session.execute(
+                select(TypeCandidate).where(TypeCandidate.column_id == typed_col_id)
+            ).all()
+            == []
+        )
+        assert (
+            session.execute(
+                select(TypeDecision).where(TypeDecision.column_id == typed_col_id)
+            ).all()
+            == []
+        )
 
 
 # ---------------------------------------------------------------------------

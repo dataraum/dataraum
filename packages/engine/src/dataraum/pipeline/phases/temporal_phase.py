@@ -14,7 +14,7 @@ from __future__ import annotations
 from types import ModuleType
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from dataraum.analysis.temporal import TemporalColumnProfile, profile_temporal
 from dataraum.core.logging import get_logger
@@ -45,6 +45,32 @@ class TemporalPhase(BasePhase):
         from dataraum.analysis.temporal import db_models
 
         return [db_models]
+
+    def replay_cleanup(self, ctx: PhaseContext, table_ids: list[str]) -> None:
+        """Delete this phase's TemporalColumnProfile rows for the scoped tables (DAT-373).
+
+        Owner-scoped: drops only the temporal profiles whose column belongs to a
+        typed table in ``table_ids`` so the re-run (after a re-type) recomputes
+        them against the freshly-typed data. ``_run`` is a pure insert, so this
+        self-clean is also what keeps a replay from double-inserting profiles.
+        Never touches any other phase's per-Column rows.
+        """
+        typed_tables = self._typed_tables(ctx)
+        if not typed_tables:
+            return
+        column_ids = list(
+            ctx.session.execute(
+                select(Column.column_id).where(
+                    Column.table_id.in_([t.table_id for t in typed_tables])
+                )
+            ).scalars()
+        )
+        if not column_ids:
+            return
+        ctx.session.execute(
+            delete(TemporalColumnProfile).where(TemporalColumnProfile.column_id.in_(column_ids))
+        )
+        ctx.session.flush()
 
     def should_skip(self, ctx: PhaseContext) -> str | None:
         """Skip if the scoped tables have no temporal columns or all are profiled."""

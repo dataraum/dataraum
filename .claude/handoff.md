@@ -4,6 +4,68 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-29: DAT-373 — stable typed Column ids + owner-scoped per-phase replay_cleanup (Option A)
+
+Fixes the cross-stage data-loss hazard DAT-343 flagged: a type-teach replay used
+to (a) drop the typed `Table` and cascade-wipe **every** per-Column row of **every**
+stage, and (b) re-mint fresh `uuid4` typed Column ids on each re-type (orphaning
+any other stage's per-Column rows even if cleanup were scoped). Both are fixed so
+a future `begin_session` (DAT-356) / frame-ground (DAT-377) per-Column finding
+survives an `add_source` teach. **No schema migration** (the `owner_stage`
+discriminator, Option B, is a deferred fast-follow — not done here).
+
+What changed in the engine:
+- **Stable typed identity.** `resolve_types` + `TypingPhase._promote_strongly_typed`
+  now RECONCILE the typed/quarantine `Table` + `Column` rows by
+  `(source_id, table_name, layer)` / `(table_id, column_name)` — reuse + UPDATE in
+  place, delete columns no longer present, insert genuinely new ones — instead of
+  drop+recreate. Typed Table id AND typed Column ids are **unchanged across a
+  re-type**. New shared helpers `reconcile_typed_table` / `reconcile_typed_columns`
+  in `analysis/typing/resolution.py`.
+- **`typing.replay_cleanup` is now in-place + owner-scoped.** It KEEPS the typed
+  `Table`/`Column` rows; clears only typing-owned `TypeCandidate`/`TypeDecision`
+  (raw + typed copies) and drops the DuckDB typed/quarantine tables (rebuilt by
+  `_run`'s `CREATE OR REPLACE`). It NO LONGER deletes the typed `Table`, so it no
+  longer cascade-wipes `StatisticalProfile` / `SemanticAnnotation` / temporal /
+  quality / eligibility rows.
+- **Per-phase owner-scoped `replay_cleanup`** added to `statistics`,
+  `column_eligibility`, `statistical_quality`, `temporal` — each deletes only its
+  OWN per-Column rows scoped to the replay's typed `table_ids`. The workflow now
+  invokes `replay_cleanup_for_phase` for **every** phase that re-runs under a
+  replay (`_maybe_replay_cleanup` gated by the new `_phase_reruns_on_replay`), not
+  just `from_phase`; the source-level reduce always self-cleans.
+- **`typing.should_skip`** now treats a typed table as "done" only if its columns
+  still carry a `TypeDecision` (the row cleanup clears) — the surviving typed
+  `Table` row alone is no longer the signal.
+- **`BasePhase.replay_cleanup` docstring** now states the ownership contract:
+  delete ONLY your own rows scoped to `table_ids`; NEVER delete a parent `Table`
+  you don't exclusively own; the Table-delete cascade is reserved for
+  `import`/source teardown.
+
+### dataraum-eval
+
+- **Eval action: NO recalibration needed.** No detector, prompt, threshold, or
+  annotation-content change. Recall is unaffected: the re-type produces the same
+  typed data + the same `TypeDecision`/`TypeCandidate` content as before; only the
+  row identity (reuse vs. fresh uuid4) and the cleanup scope changed.
+- **Eval-fixture flag:** any fixture or assertion that relied on a re-type
+  **minting new typed `column_id`s** (or a new typed `table_id`) is now WRONG —
+  ids are stable across replays. The cockpit integration smoke
+  (`packages/cockpit/src/temporal/drive-add-source.ts`) asserted "every
+  typed_table_id CHANGED" as proof `replay_cleanup` fired; that assertion must
+  flip to assert ids are STABLE and that a seeded foreign per-Column row survives.
+  Not changed in this lane (cross-PACKAGE, TS, not run here).
+
+### Tests
+
+- RED→GREEN hazard test + in-place semantics in
+  `tests/unit/pipeline/test_phase_replay_cleanup.py`.
+- Stable-id + downstream-skip update in `tests/unit/pipeline/test_typing_phase.py`.
+- `_phase_reruns_on_replay` predicate in `tests/unit/worker/test_replay_scope.py`.
+- New `tests/integration/pipeline/test_replay_cross_stage.py`: re-type keeps typed
+  ids stable AND a simulated begin_session `SemanticAnnotation` on a typed column
+  survives a re-type + statistics rebuild (real DuckLake substrate).
+
 ## 2026-05-29: DAT-376 — split induction ↔ grounding in `semantic_per_column` (structure-only)
 
 Detached the two LLM steps inside `semantic_per_column` into independently

@@ -9,19 +9,19 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as SourcesRouteImport } from './routes/sources'
-import { Route as ChatRouteImport } from './routes/chat'
+import { Route as appRouteRouteImport } from './routes/(app)/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
+import { Route as appSettingsRouteImport } from './routes/(app)/settings'
+import { Route as appWorkspaceWsIdRouteRouteImport } from './routes/(app)/workspace/$wsId/route'
+import { Route as appWorkspaceWsIdWorkflowsRouteImport } from './routes/(app)/workspace/$wsId/workflows'
+import { Route as appWorkspaceWsIdMetadataRouteImport } from './routes/(app)/workspace/$wsId/metadata'
+import { Route as appWorkspaceWsIdLibraryRouteImport } from './routes/(app)/workspace/$wsId/library'
+import { Route as appWorkspaceWsIdGovernanceRouteImport } from './routes/(app)/workspace/$wsId/governance'
+import { Route as appWorkspaceWsIdCockpitRouteImport } from './routes/(app)/workspace/$wsId/cockpit'
 
-const SourcesRoute = SourcesRouteImport.update({
-  id: '/sources',
-  path: '/sources',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ChatRoute = ChatRouteImport.update({
-  id: '/chat',
-  path: '/chat',
+const appRouteRoute = appRouteRouteImport.update({
+  id: '/(app)',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -34,55 +34,130 @@ const ApiChatRoute = ApiChatRouteImport.update({
   path: '/api/chat',
   getParentRoute: () => rootRouteImport,
 } as any)
+const appSettingsRoute = appSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => appRouteRoute,
+} as any)
+const appWorkspaceWsIdRouteRoute = appWorkspaceWsIdRouteRouteImport.update({
+  id: '/workspace/$wsId',
+  path: '/workspace/$wsId',
+  getParentRoute: () => appRouteRoute,
+} as any)
+const appWorkspaceWsIdWorkflowsRoute =
+  appWorkspaceWsIdWorkflowsRouteImport.update({
+    id: '/workflows',
+    path: '/workflows',
+    getParentRoute: () => appWorkspaceWsIdRouteRoute,
+  } as any)
+const appWorkspaceWsIdMetadataRoute =
+  appWorkspaceWsIdMetadataRouteImport.update({
+    id: '/metadata',
+    path: '/metadata',
+    getParentRoute: () => appWorkspaceWsIdRouteRoute,
+  } as any)
+const appWorkspaceWsIdLibraryRoute = appWorkspaceWsIdLibraryRouteImport.update({
+  id: '/library',
+  path: '/library',
+  getParentRoute: () => appWorkspaceWsIdRouteRoute,
+} as any)
+const appWorkspaceWsIdGovernanceRoute =
+  appWorkspaceWsIdGovernanceRouteImport.update({
+    id: '/governance',
+    path: '/governance',
+    getParentRoute: () => appWorkspaceWsIdRouteRoute,
+  } as any)
+const appWorkspaceWsIdCockpitRoute = appWorkspaceWsIdCockpitRouteImport.update({
+  id: '/cockpit',
+  path: '/cockpit',
+  getParentRoute: () => appWorkspaceWsIdRouteRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/chat': typeof ChatRoute
-  '/sources': typeof SourcesRoute
+  '/settings': typeof appSettingsRoute
   '/api/chat': typeof ApiChatRoute
+  '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRoute
+  '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
+  '/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
+  '/workspace/$wsId/metadata': typeof appWorkspaceWsIdMetadataRoute
+  '/workspace/$wsId/workflows': typeof appWorkspaceWsIdWorkflowsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/chat': typeof ChatRoute
-  '/sources': typeof SourcesRoute
+  '/settings': typeof appSettingsRoute
   '/api/chat': typeof ApiChatRoute
+  '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRoute
+  '/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
+  '/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
+  '/workspace/$wsId/metadata': typeof appWorkspaceWsIdMetadataRoute
+  '/workspace/$wsId/workflows': typeof appWorkspaceWsIdWorkflowsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/chat': typeof ChatRoute
-  '/sources': typeof SourcesRoute
+  '/(app)': typeof appRouteRouteWithChildren
+  '/(app)/settings': typeof appSettingsRoute
   '/api/chat': typeof ApiChatRoute
+  '/(app)/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
+  '/(app)/workspace/$wsId/cockpit': typeof appWorkspaceWsIdCockpitRoute
+  '/(app)/workspace/$wsId/governance': typeof appWorkspaceWsIdGovernanceRoute
+  '/(app)/workspace/$wsId/library': typeof appWorkspaceWsIdLibraryRoute
+  '/(app)/workspace/$wsId/metadata': typeof appWorkspaceWsIdMetadataRoute
+  '/(app)/workspace/$wsId/workflows': typeof appWorkspaceWsIdWorkflowsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/chat' | '/sources' | '/api/chat'
+  fullPaths:
+    | '/'
+    | '/settings'
+    | '/api/chat'
+    | '/workspace/$wsId'
+    | '/workspace/$wsId/cockpit'
+    | '/workspace/$wsId/governance'
+    | '/workspace/$wsId/library'
+    | '/workspace/$wsId/metadata'
+    | '/workspace/$wsId/workflows'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/chat' | '/sources' | '/api/chat'
-  id: '__root__' | '/' | '/chat' | '/sources' | '/api/chat'
+  to:
+    | '/'
+    | '/settings'
+    | '/api/chat'
+    | '/workspace/$wsId'
+    | '/workspace/$wsId/cockpit'
+    | '/workspace/$wsId/governance'
+    | '/workspace/$wsId/library'
+    | '/workspace/$wsId/metadata'
+    | '/workspace/$wsId/workflows'
+  id:
+    | '__root__'
+    | '/'
+    | '/(app)'
+    | '/(app)/settings'
+    | '/api/chat'
+    | '/(app)/workspace/$wsId'
+    | '/(app)/workspace/$wsId/cockpit'
+    | '/(app)/workspace/$wsId/governance'
+    | '/(app)/workspace/$wsId/library'
+    | '/(app)/workspace/$wsId/metadata'
+    | '/(app)/workspace/$wsId/workflows'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  ChatRoute: typeof ChatRoute
-  SourcesRoute: typeof SourcesRoute
+  appRouteRoute: typeof appRouteRouteWithChildren
   ApiChatRoute: typeof ApiChatRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/sources': {
-      id: '/sources'
-      path: '/sources'
-      fullPath: '/sources'
-      preLoaderRoute: typeof SourcesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/chat': {
-      id: '/chat'
-      path: '/chat'
-      fullPath: '/chat'
-      preLoaderRoute: typeof ChatRouteImport
+    '/(app)': {
+      id: '/(app)'
+      path: ''
+      fullPath: ''
+      preLoaderRoute: typeof appRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -99,13 +174,96 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiChatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/(app)/settings': {
+      id: '/(app)/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof appSettingsRouteImport
+      parentRoute: typeof appRouteRoute
+    }
+    '/(app)/workspace/$wsId': {
+      id: '/(app)/workspace/$wsId'
+      path: '/workspace/$wsId'
+      fullPath: '/workspace/$wsId'
+      preLoaderRoute: typeof appWorkspaceWsIdRouteRouteImport
+      parentRoute: typeof appRouteRoute
+    }
+    '/(app)/workspace/$wsId/workflows': {
+      id: '/(app)/workspace/$wsId/workflows'
+      path: '/workflows'
+      fullPath: '/workspace/$wsId/workflows'
+      preLoaderRoute: typeof appWorkspaceWsIdWorkflowsRouteImport
+      parentRoute: typeof appWorkspaceWsIdRouteRoute
+    }
+    '/(app)/workspace/$wsId/metadata': {
+      id: '/(app)/workspace/$wsId/metadata'
+      path: '/metadata'
+      fullPath: '/workspace/$wsId/metadata'
+      preLoaderRoute: typeof appWorkspaceWsIdMetadataRouteImport
+      parentRoute: typeof appWorkspaceWsIdRouteRoute
+    }
+    '/(app)/workspace/$wsId/library': {
+      id: '/(app)/workspace/$wsId/library'
+      path: '/library'
+      fullPath: '/workspace/$wsId/library'
+      preLoaderRoute: typeof appWorkspaceWsIdLibraryRouteImport
+      parentRoute: typeof appWorkspaceWsIdRouteRoute
+    }
+    '/(app)/workspace/$wsId/governance': {
+      id: '/(app)/workspace/$wsId/governance'
+      path: '/governance'
+      fullPath: '/workspace/$wsId/governance'
+      preLoaderRoute: typeof appWorkspaceWsIdGovernanceRouteImport
+      parentRoute: typeof appWorkspaceWsIdRouteRoute
+    }
+    '/(app)/workspace/$wsId/cockpit': {
+      id: '/(app)/workspace/$wsId/cockpit'
+      path: '/cockpit'
+      fullPath: '/workspace/$wsId/cockpit'
+      preLoaderRoute: typeof appWorkspaceWsIdCockpitRouteImport
+      parentRoute: typeof appWorkspaceWsIdRouteRoute
+    }
   }
 }
 
+interface appWorkspaceWsIdRouteRouteChildren {
+  appWorkspaceWsIdCockpitRoute: typeof appWorkspaceWsIdCockpitRoute
+  appWorkspaceWsIdGovernanceRoute: typeof appWorkspaceWsIdGovernanceRoute
+  appWorkspaceWsIdLibraryRoute: typeof appWorkspaceWsIdLibraryRoute
+  appWorkspaceWsIdMetadataRoute: typeof appWorkspaceWsIdMetadataRoute
+  appWorkspaceWsIdWorkflowsRoute: typeof appWorkspaceWsIdWorkflowsRoute
+}
+
+const appWorkspaceWsIdRouteRouteChildren: appWorkspaceWsIdRouteRouteChildren = {
+  appWorkspaceWsIdCockpitRoute: appWorkspaceWsIdCockpitRoute,
+  appWorkspaceWsIdGovernanceRoute: appWorkspaceWsIdGovernanceRoute,
+  appWorkspaceWsIdLibraryRoute: appWorkspaceWsIdLibraryRoute,
+  appWorkspaceWsIdMetadataRoute: appWorkspaceWsIdMetadataRoute,
+  appWorkspaceWsIdWorkflowsRoute: appWorkspaceWsIdWorkflowsRoute,
+}
+
+const appWorkspaceWsIdRouteRouteWithChildren =
+  appWorkspaceWsIdRouteRoute._addFileChildren(
+    appWorkspaceWsIdRouteRouteChildren,
+  )
+
+interface appRouteRouteChildren {
+  appSettingsRoute: typeof appSettingsRoute
+  appWorkspaceWsIdRouteRoute: typeof appWorkspaceWsIdRouteRouteWithChildren
+}
+
+const appRouteRouteChildren: appRouteRouteChildren = {
+  appSettingsRoute: appSettingsRoute,
+  appWorkspaceWsIdRouteRoute: appWorkspaceWsIdRouteRouteWithChildren,
+}
+
+const appRouteRouteWithChildren = appRouteRoute._addFileChildren(
+  appRouteRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  ChatRoute: ChatRoute,
-  SourcesRoute: SourcesRoute,
+  appRouteRoute: appRouteRouteWithChildren,
   ApiChatRoute: ApiChatRoute,
 }
 export const routeTree = rootRouteImport

@@ -1,17 +1,72 @@
-
 @import "tailwindcss";
 
+/*
+ * Tailwind v4 token mirror of src/ui/theme.ts.
+ * Palette values are placeholders; visual identity tuned later. Structure is
+ * the contract — change design in src/ui/theme.ts and mirror it here. These
+ * MUST stay in sync with the `tokens` object (one palette, two systems).
+ */
+@theme {
+	--color-brand-50: #eef2f7;
+	--color-brand-100: #dbe2ec;
+	--color-brand-200: #b6c4d8;
+	--color-brand-300: #8fa4c2;
+	--color-brand-400: #6f89b0;
+	--color-brand-500: #5b78a6;
+	--color-brand-600: #4f6e9f;
+	--color-brand-700: #41598a;
+	--color-brand-800: #384f7c;
+	--color-brand-900: #2c416b;
+
+	--color-surface: #ffffff;
+	--color-surface-muted: #f6f8fa;
+	--color-border: #e3e8ef;
+	--color-text: #1f2933;
+	--color-text-muted: #647084;
+
+	--color-stage-connect: #3b82a6;
+	--color-stage-frame: #6b6fc9;
+	--color-stage-select: #7a5ec2;
+	--color-stage-add-source: #2f9e7e;
+	--color-stage-begin-session: #c2913b;
+	--color-stage-operating-model: #b5573f;
+	--color-stage-answer: #3f7a52;
+
+	--spacing-xs: 0.5rem;
+	--spacing-sm: 0.75rem;
+	--spacing-md: 1rem;
+	--spacing-lg: 1.5rem;
+	--spacing-xl: 2rem;
+
+	--radius-xs: 0.25rem;
+	--radius-sm: 0.375rem;
+	--radius-md: 0.5rem;
+	--radius-lg: 0.75rem;
+
+	--text-sm: 0.8125rem;
+	--text-md: 0.9375rem;
+	--text-lg: 1.125rem;
+
+	--font-sans:
+		-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+		sans-serif;
+	--font-mono:
+		ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+	--size-rail-width: 60px;
+	--size-top-bar-height: 48px;
+}
+
 * {
-  box-sizing: border-box;
+	box-sizing: border-box;
 }
 
 html,
 body,
 #app {
-  min-height: 100%;
+	min-height: 100%;
 }
 
 body {
-  margin: 0;
+	margin: 0;
 }
-

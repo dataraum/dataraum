@@ -8,6 +8,7 @@ const REQUIRED: Record<string, string> = {
 	METADATA_DATABASE_URL: "postgresql://u:p@localhost:5432/meta",
 	DATARAUM_WORKSPACE_ID: "00000000-0000-0000-0000-000000000001",
 	DATARAUM_LAKE_PATH: "/var/lib/dataraum/lake",
+	DUCKLAKE_CATALOG_URL: "postgresql://u:p@localhost:5432/lake_catalog",
 	ANTHROPIC_API_KEY: "sk-ant-test",
 };
 
@@ -40,6 +41,7 @@ describe("cockpit config (DAT-363)", () => {
 		expect(config.cockpitDatabaseUrl).toBe(REQUIRED.COCKPIT_DATABASE_URL);
 		expect(config.metadataDatabaseUrl).toBe(REQUIRED.METADATA_DATABASE_URL);
 		expect(config.dataraumWorkspaceId).toBe(REQUIRED.DATARAUM_WORKSPACE_ID);
+		expect(config.ducklakeCatalogUrl).toBe(REQUIRED.DUCKLAKE_CATALOG_URL);
 		expect(config.anthropicApiKey).toBe(REQUIRED.ANTHROPIC_API_KEY);
 		expect(config.temporalHost).toBeUndefined();
 		// Temporal Web UI URL defaults to the compose dev address.

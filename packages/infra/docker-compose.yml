@@ -196,6 +196,13 @@ services:
       # them via DuckLake from the same path. Same volume mounted on
       # both containers; same in-container path for symmetry.
       DATARAUM_LAKE_PATH: /var/lib/dataraum/lake
+      # DuckLake catalog (DAT-367) — the cockpit ATTACHes the same DuckLake
+      # catalog the engine-worker owns, READ_ONLY, for the interactive read
+      # verbs (run_sql). Same value as the engine-worker's DUCKLAKE_CATALOG_URL
+      # (bare postgresql:// libpq form — DuckDB's postgres extension wants it,
+      # not the +psycopg SQLAlchemy scheme) and the same DATARAUM_LAKE_PATH
+      # data path above.
+      DUCKLAKE_CATALOG_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${DUCKLAKE_CATALOG_DB}
       # Config (DAT-361) — read-only access to vertical YAMLs for future UX
       # hints ("which concept did the agent bind to?"). No consumers yet; the
       # mount + path are plumbing. Same package, same path as the engine.

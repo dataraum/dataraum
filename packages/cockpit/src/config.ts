@@ -19,7 +19,14 @@ const ConfigSchema = z.object({
 	// Plain non-empty string (not .uuid()) to match the engine, which accepts
 	// stable non-UUID ids (e.g. "test"); both sides must agree on the value.
 	dataraumWorkspaceId: z.string().min(1),
+	// DuckLake data path — the filesystem dir where DuckLake writes parquet.
+	// The engine writes here; the cockpit ATTACHes it READ_ONLY (DAT-367).
 	dataraumLakePath: z.string().min(1),
+	// DuckLake catalog (Postgres) URL — the metadata DB the cockpit ATTACHes
+	// to read the lake (DAT-367). The engine bootstraps + owns it; the cockpit
+	// opens it READ_ONLY. Bare `postgresql://` libpq form (DuckDB's postgres
+	// extension wants it), NOT the SQLAlchemy `postgresql+psycopg://` scheme.
+	ducklakeCatalogUrl: z.string().min(1),
 
 	// --- LLM (required) ---
 	anthropicApiKey: z.string().min(1),
@@ -42,6 +49,7 @@ function loadConfig(): Config {
 		metadataDatabaseUrl: process.env.METADATA_DATABASE_URL,
 		dataraumWorkspaceId: process.env.DATARAUM_WORKSPACE_ID,
 		dataraumLakePath: process.env.DATARAUM_LAKE_PATH,
+		ducklakeCatalogUrl: process.env.DUCKLAKE_CATALOG_URL,
 		anthropicApiKey: process.env.ANTHROPIC_API_KEY,
 		temporalHost: process.env.TEMPORAL_HOST,
 		temporalNamespace: process.env.TEMPORAL_NAMESPACE,

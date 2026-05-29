@@ -24,8 +24,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.97.1",
-    "@mantine/core": "^9.2.1",
-    "@mantine/hooks": "^9.2.1",
+    "@mantine/core": "^9.2.2",
+    "@mantine/hooks": "^9.2.2",
     "@tailwindcss/vite": "^4.3.0",
     "@tanstack/react-devtools": "latest",
     "@tanstack/react-query": "^5.100.14",
@@ -33,10 +33,10 @@
     "@tanstack/react-router-devtools": "latest",
     "@tanstack/react-router-ssr-query": "latest",
     "@tanstack/react-start": "latest",
-    "@tanstack/router-plugin": "^1.168.11",
+    "@tanstack/router-plugin": "^1.168.12",
     "@temporalio/client": "^1.17.2",
     "drizzle-orm": "1.0.0-rc.2-e38a2ba",
-    "lucide-react": "^1.16.0",
+    "lucide-react": "^1.17.0",
     "nitro": "^3.0.260522-beta",
     "postgres": "^3.4.9",
     "react": "^19.2.6",
@@ -45,7 +45,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.15",
+    "@biomejs/biome": "^2.4.16",
     "@tanstack/devtools-vite": "latest",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",

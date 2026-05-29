@@ -17,11 +17,18 @@ vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 import { tools } from "./registry";
 
 describe("tool registry (DAT-353)", () => {
-	it("registers the slice-1 toolset with unique names", () => {
+	it("registers the toolset with unique names", () => {
 		const names = tools.map((t) => t.name);
 		expect(names).toHaveLength(new Set(names).size); // no dupes
 		expect(new Set(names)).toEqual(
-			new Set(["list_sources", "list_tables", "teach", "replay"]),
+			new Set([
+				"list_sources",
+				"list_tables",
+				"run_sql",
+				"probe",
+				"teach",
+				"replay",
+			]),
 		);
 	});
 
@@ -32,5 +39,7 @@ describe("tool registry (DAT-353)", () => {
 		// Reads must NOT require approval — they run unattended in the loop.
 		expect(byName.get("list_sources")?.needsApproval ?? false).toBe(false);
 		expect(byName.get("list_tables")?.needsApproval ?? false).toBe(false);
+		expect(byName.get("run_sql")?.needsApproval ?? false).toBe(false);
+		expect(byName.get("probe")?.needsApproval ?? false).toBe(false);
 	});
 });

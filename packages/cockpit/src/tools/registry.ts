@@ -7,12 +7,16 @@
 
 import { listSourcesTool } from "./list-sources";
 import { listTablesTool } from "./list-tables";
+import { probeTool } from "./probe";
 import { replayTool } from "./replay";
+import { runSqlTool } from "./run_sql";
 import { teachTool } from "./teach";
 
 export const tools = [
 	listSourcesTool,
 	listTablesTool,
+	runSqlTool,
+	probeTool,
 	teachTool,
 	replayTool,
 ] as const;

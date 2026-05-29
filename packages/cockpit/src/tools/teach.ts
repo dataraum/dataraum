@@ -14,10 +14,13 @@
 // engine owns the schema; teach edits flow through this single seam.
 
 import { randomUUID } from "node:crypto";
+import { toolDefinition } from "@tanstack/ai";
+import { z } from "zod";
 
 import { metadataDb } from "../db/metadata/client";
 import { configOverlay } from "../db/metadata/schema";
 import {
+	TEACH_TYPES,
 	type TeachInput,
 	type TeachType,
 	validateTeach,
@@ -80,3 +83,25 @@ export async function undoTeach(overlayId: string): Promise<void> {
 			),
 		);
 }
+
+/**
+ * The `teach` tool for the agent loop. `needsApproval: true` — a teach mutates
+ * the workspace, so the SDK pauses for the user to confirm before `.server`
+ * runs (the cockpit answers via `addToolApprovalResponse`). Coarse input
+ * schema (type + payload object); the per-type deep validation runs inside
+ * `teach()` via `validateTeach`.
+ */
+export const teachTool = toolDefinition({
+	name: "teach",
+	description:
+		"Record a correction or declaration about the data (a type pattern, null value, concept, etc.). Writes a config_overlay row; requires user approval. Follow with `replay` to apply it to the source.",
+	inputSchema: z.object({
+		type: z.enum(TEACH_TYPES as readonly [TeachType, ...TeachType[]]),
+		payload: z
+			.record(z.string(), z.unknown())
+			.describe("Per-type payload, validated against the type's schema."),
+		session_id: z.string().nullish(),
+	}),
+	outputSchema: z.object({ overlay_id: z.string(), type: z.string() }),
+	needsApproval: true,
+}).server((input) => teach(input));

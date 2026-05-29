@@ -22,8 +22,10 @@
 //                     (source-tail-only — no children, just the reduce + detect)
 
 import { randomUUID } from "node:crypto";
+import { toolDefinition } from "@tanstack/ai";
 import { Client, Connection } from "@temporalio/client";
 import { WorkflowIdReusePolicy } from "@temporalio/common";
+import { z } from "zod";
 
 import { config } from "../config";
 import type {
@@ -114,3 +116,39 @@ export async function replay(input: ReplayInput): Promise<ReplayResult> {
 		await connection.close();
 	}
 }
+
+const ReplayScopeSchema = z.object({
+	from_phase: z
+		.string()
+		.describe(
+			'Phase to restart at, e.g. "import", "typing", "semantic_per_column".',
+		),
+	raw_table_ids: z
+		.array(z.string())
+		.nullable()
+		.describe("null = source-wide fan-out; [...] = only those raw table ids."),
+});
+
+/**
+ * The `replay` tool for the agent loop. `needsApproval: true` — replay re-runs
+ * engine processing (a durable Temporal workflow), so the user confirms before
+ * it kicks off.
+ */
+export const replayTool = toolDefinition({
+	name: "replay",
+	description:
+		"Re-run processing for a source to apply pending teaches. Provide a ReplayScope (from_phase + raw_table_ids). Requires user approval. Returns the workflow + run id immediately; poll Temporal for progress.",
+	inputSchema: z.object({
+		source_id: z.string(),
+		scope: ReplayScopeSchema,
+		session_id: z.string().optional(),
+		vertical: z.string().optional(),
+	}),
+	outputSchema: z.object({
+		workflow_id: z.string(),
+		run_id: z.string(),
+		source_id: z.string(),
+		scope: ReplayScopeSchema,
+	}),
+	needsApproval: true,
+}).server((input) => replay(input));

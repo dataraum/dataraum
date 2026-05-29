@@ -29,7 +29,14 @@ describe("chat route wiring (DAT-353)", () => {
 		const opts = buildChatOptions([{ role: "user", content: "hi" }]);
 		const names = opts.tools.map((t: { name: string }) => t.name);
 		expect(new Set(names)).toEqual(
-			new Set(["list_sources", "list_tables", "teach", "replay"]),
+			new Set([
+				"list_sources",
+				"list_tables",
+				"run_sql",
+				"probe",
+				"teach",
+				"replay",
+			]),
 		);
 	});
 

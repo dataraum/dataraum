@@ -24,16 +24,11 @@ import { tokens } from "#/ui/theme";
 /**
  * One rail icon. Branches on global vs workspace-scoped so each `Link` carries
  * concrete typed `to`/`params` (TanStack Router can't type-check a spread
- * union of link props). Without an active workspace the workspace links fall
- * back to `/`, which redirects to the active workspace's cockpit.
+ * union of link props). `wsId` is always defined (the shell falls back to the
+ * active workspace), so workspace links resolve even from global routes like
+ * /settings instead of dropping to `/`.
  */
-function RailItem({
-	section,
-	wsId,
-}: {
-	section: Section;
-	wsId: string | undefined;
-}) {
+function RailItem({ section, wsId }: { section: Section; wsId: string }) {
 	const Icon = section.icon;
 	const inner = <Icon size={20} aria-hidden />;
 	const common = {
@@ -58,7 +53,7 @@ function RailItem({
 				>
 					{inner}
 				</ActionIcon>
-			) : wsId ? (
+			) : (
 				<ActionIcon
 					{...common}
 					renderRoot={(props) => (
@@ -72,26 +67,28 @@ function RailItem({
 				>
 					{inner}
 				</ActionIcon>
-			) : (
-				<ActionIcon
-					{...common}
-					renderRoot={(props) => <Link to="/" {...props} />}
-				>
-					{inner}
-				</ActionIcon>
 			)}
 		</Tooltip>
 	);
 }
 
-export function CockpitShell({ children }: { children: ReactNode }) {
+export function CockpitShell({
+	children,
+	activeWorkspaceId,
+}: {
+	children: ReactNode;
+	activeWorkspaceId: string;
+}) {
 	const [paletteOpened, palette] = useDisclosure(false);
 	useHotkeys([["mod+K", () => palette.open()]]);
 
-	// Active workspace, if the current route is workspace-scoped. `strict: false`
-	// lets the shell mount above routes that have no wsId param (e.g. /settings).
+	// wsId from the current route when it's workspace-scoped (`strict: false`
+	// lets the shell mount above routes that have none, e.g. /settings), else
+	// the active workspace. Always defined, so the rail's workspace links resolve
+	// even from a global route instead of falling back to "/".
 	const params = useParams({ strict: false });
-	const wsId = (params as { wsId?: string }).wsId;
+	const routeWsId = (params as { wsId?: string }).wsId;
+	const wsId = routeWsId ?? activeWorkspaceId;
 
 	return (
 		<>
@@ -104,7 +101,7 @@ export function CockpitShell({ children }: { children: ReactNode }) {
 					<Group h="100%" px="md" justify="space-between" wrap="nowrap">
 						<UnstyledButton data-testid="workspace-switcher">
 							<Text size="sm" fw={600} c="text">
-								{wsId ? `Workspace ${wsId}` : "DataRaum"}
+								{routeWsId ? `Workspace ${routeWsId}` : "DataRaum"}
 							</Text>
 						</UnstyledButton>
 						<Tooltip label="Command palette">

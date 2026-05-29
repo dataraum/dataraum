@@ -29,6 +29,9 @@ const ConfigSchema = z.object({
 	temporalHost: z.string().optional(),
 	temporalNamespace: z.string().optional(),
 	temporalTaskQueue: z.string().optional(),
+	// Temporal Web UI, embedded by the /workflows section. Defaults to the
+	// docker-compose dev address (CORS already allows :3000).
+	temporalUiUrl: z.string().min(1).default("http://localhost:8080"),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -43,6 +46,7 @@ function loadConfig(): Config {
 		temporalHost: process.env.TEMPORAL_HOST,
 		temporalNamespace: process.env.TEMPORAL_NAMESPACE,
 		temporalTaskQueue: process.env.TEMPORAL_TASK_QUEUE,
+		temporalUiUrl: process.env.TEMPORAL_UI_URL,
 	});
 
 	if (!parsed.success) {

@@ -11,7 +11,12 @@ const REQUIRED: Record<string, string> = {
 	ANTHROPIC_API_KEY: "sk-ant-test",
 };
 
-const OPTIONAL = ["TEMPORAL_HOST", "TEMPORAL_NAMESPACE", "TEMPORAL_TASK_QUEUE"];
+const OPTIONAL = [
+	"TEMPORAL_HOST",
+	"TEMPORAL_NAMESPACE",
+	"TEMPORAL_TASK_QUEUE",
+	"TEMPORAL_UI_URL",
+];
 
 function stubBaseline(): void {
 	for (const [key, value] of Object.entries(REQUIRED)) vi.stubEnv(key, value);
@@ -37,6 +42,8 @@ describe("cockpit config (DAT-363)", () => {
 		expect(config.dataraumWorkspaceId).toBe(REQUIRED.DATARAUM_WORKSPACE_ID);
 		expect(config.anthropicApiKey).toBe(REQUIRED.ANTHROPIC_API_KEY);
 		expect(config.temporalHost).toBeUndefined();
+		// Temporal Web UI URL defaults to the compose dev address.
+		expect(config.temporalUiUrl).toBe("http://localhost:8080");
 	});
 
 	it("fails loud naming the field when a required var is missing", async () => {

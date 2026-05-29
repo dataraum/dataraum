@@ -1,6 +1,5 @@
 import {
 	ColorSchemeScript,
-	Group,
 	MantineProvider,
 	mantineHtmlProps,
 } from "@mantine/core";
@@ -9,12 +8,13 @@ import type { QueryClient } from "@tanstack/react-query";
 import {
 	createRootRouteWithContext,
 	HeadContent,
-	Link,
+	Outlet,
 	Scripts,
 } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 
 import "@mantine/core/styles.css";
+import { theme } from "#/ui/theme";
 import appCss from "../styles.css?url";
 
 interface RouterContext {
@@ -45,7 +45,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 	shellComponent: RootDocument,
 });
 
-function RootDocument({ children }: { children: React.ReactNode }) {
+function RootDocument() {
 	return (
 		<html lang="en" {...mantineHtmlProps}>
 			<head>
@@ -53,25 +53,8 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 				<HeadContent />
 			</head>
 			<body>
-				<MantineProvider>
-					<Group
-						gap="md"
-						p="md"
-						style={{
-							borderBottom: "1px solid var(--mantine-color-gray-3)",
-						}}
-					>
-						<Link to="/" activeProps={{ style: { fontWeight: 600 } }}>
-							Home
-						</Link>
-						<Link to="/sources" activeProps={{ style: { fontWeight: 600 } }}>
-							Sources
-						</Link>
-						<Link to="/chat" activeProps={{ style: { fontWeight: 600 } }}>
-							Chat
-						</Link>
-					</Group>
-					{children}
+				<MantineProvider theme={theme}>
+					<Outlet />
 				</MantineProvider>
 				<TanStackDevtools
 					config={{

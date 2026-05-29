@@ -1,17 +1,21 @@
-import { Stack, Text, Title } from "@mantine/core";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { config } from "#/config";
 
-export const Route = createFileRoute("/")({ component: Home });
+// `/` resolves the active workspace and sends the user straight to its
+// cockpit. The active workspace id is server config (DATARAUM_WORKSPACE_ID);
+// once multi-workspace lands this becomes a real picker. Read server-side so
+// the server-only config never reaches the client bundle.
+const getActiveWorkspaceId = createServerFn({ method: "GET" }).handler(
+	() => config.dataraumWorkspaceId,
+);
 
-function Home() {
-	return (
-		<Stack p="xl" gap="md">
-			<Title order={1}>DataRaum Cockpit</Title>
-			<Text c="dimmed">
-				Scaffold ready. Read surfaces (sources, tables, snippets) land in Phase
-				1 of the DAT-339 pivot — wired via the Drizzle metadata client straight
-				into the engine substrate.
-			</Text>
-		</Stack>
-	);
-}
+export const Route = createFileRoute("/")({
+	beforeLoad: async () => {
+		const wsId = await getActiveWorkspaceId();
+		throw redirect({
+			to: "/workspace/$wsId/cockpit",
+			params: { wsId },
+		});
+	},
+});

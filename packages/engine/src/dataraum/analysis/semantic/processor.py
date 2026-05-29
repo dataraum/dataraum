@@ -5,10 +5,15 @@ Orchestrates semantic analysis using the SemanticAgent and stores results.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import duckdb
 from sqlalchemy.orm import Session
+
+if TYPE_CHECKING:
+    from dataraum.llm.config import LLMConfig
+    from dataraum.llm.prompts import PromptRenderer
+    from dataraum.llm.providers.base import LLMProvider
 
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipModel
 from dataraum.analysis.relationships.evaluator import (
@@ -192,6 +197,75 @@ def persist_column_annotations(
             )
             count += 1
     return count
+
+
+def ground_columns(
+    *,
+    session: Session,
+    config: LLMConfig,
+    provider: LLMProvider,
+    renderer: PromptRenderer,
+    table_ids: list[str],
+    ontology: str,
+    session_id: str,
+) -> Result[int]:
+    """Annotate columns against ``ontology`` and persist ``SemanticAnnotation`` rows.
+
+    DAT-376: extracted verbatim from the grounding tail of
+    ``SemanticPerColumnPhase._run``. Grounding maps each column to its semantic
+    role, entity type, business term, and ontology concept — it assumes the
+    ontology already exists (cold-start ``_adhoc`` induction is a separate
+    upstream step, :func:`induce_adhoc_concepts`).
+
+    Args:
+        session: Database session.
+        config: Loaded LLM config (gates on ``features.column_annotation``).
+        provider: LLM provider (resolves the annotation model tier).
+        renderer: Prompt renderer for the annotation agent.
+        table_ids: Typed tables to annotate.
+        ontology: Vertical name the columns map their concepts into.
+        session_id: Per-session FK for the persisted annotation rows.
+
+    Returns:
+        ``Result.ok(count)`` with the number of annotation rows persisted, or
+        ``Result.fail`` with the same messages the phase surfaced before.
+    """
+    from dataraum.analysis.semantic.column_agent import ColumnAnnotationAgent
+    from dataraum.analysis.semantic.ontology import OntologyLoader
+    from dataraum.graphs.loader import GraphLoader
+
+    col_config = config.features.column_annotation
+    if not col_config or not col_config.enabled:
+        return Result.fail("Column annotation is disabled in config.")
+
+    # Standard-field concepts required by active metric graphs, so the model
+    # prioritizes mapping those concepts to actual columns.
+    metric_loader = GraphLoader(vertical=ontology)
+    metric_loader.load_all()
+    required_standard_fields = sorted(metric_loader.get_all_abstract_fields())
+
+    agent = ColumnAnnotationAgent(config=config, provider=provider, prompt_renderer=renderer)
+    annotation_result = agent.annotate(
+        session=session,
+        table_ids=table_ids,
+        ontology=ontology,
+        required_standard_fields=required_standard_fields,
+    )
+    if not annotation_result.success or not annotation_result.value:
+        return Result.fail(f"Column annotation failed: {annotation_result.error}")
+
+    ontology_def = OntologyLoader().load(ontology)
+    model_name = provider.get_model_for_tier(col_config.model_tier)
+
+    count = persist_column_annotations(
+        session,
+        annotation_result.value,
+        table_ids,
+        annotated_by=model_name,
+        session_id=session_id,
+        ontology_def=ontology_def,
+    )
+    return Result.ok(count)
 
 
 def synthesize_and_store_tables(

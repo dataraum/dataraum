@@ -26,7 +26,7 @@
 import { type DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 
 import { config } from "../config";
-import { escapeSqlLiteral, pgUrlToLibpq } from "./sql-escape";
+import { buildDucklakeAttachSql } from "./sql-escape";
 
 // Alias the DuckLake catalog is ATTACHed under. Matches the engine's
 // `LAKE_CATALOG_ALIAS` so fully-qualified names (`lake.typed.orders`) resolve
@@ -46,11 +46,11 @@ async function openConnection(): Promise<DuckDBConnection> {
 	const instance = await instancePromise;
 	const conn = await instance.connect();
 
-	const libpq = pgUrlToLibpq(config.ducklakeCatalogUrl);
-	const dataPath = escapeSqlLiteral(config.dataraumLakePath);
-	const attachSql =
-		`ATTACH 'ducklake:postgres:${libpq}' AS ${LAKE_ALIAS} ` +
-		`(DATA_PATH '${dataPath}', READ_ONLY)`;
+	const attachSql = buildDucklakeAttachSql(
+		LAKE_ALIAS,
+		config.ducklakeCatalogUrl,
+		config.dataraumLakePath,
+	);
 
 	// The container image pre-installs the ducklake extension; LOAD is enough
 	// there. INSTALL is attempted first and tolerated-on-failure so a local dev

@@ -23,6 +23,7 @@ import {
 	TEACH_TYPES,
 	type TeachInput,
 	type TeachType,
+	TeachValidationError,
 	validateTeach,
 } from "./teach.validation";
 
@@ -102,6 +103,34 @@ export const teachTool = toolDefinition({
 			.describe("Per-type payload, validated against the type's schema."),
 		session_id: z.string().nullish(),
 	}),
-	outputSchema: z.object({ overlay_id: z.string(), type: z.string() }),
+	// Success OR a structured validation error: the per-type `validateTeach`
+	// rejects a malformed payload by throwing `TeachValidationError`. Surfacing
+	// that as a raw thrown Error kills the agent turn; returning it as data lets
+	// the agent read the message and retry. Non-validation errors (DB, etc.)
+	// still throw — those are not the agent's to fix.
+	outputSchema: z.union([
+		z.object({ overlay_id: z.string(), type: z.string() }),
+		z.object({ error: z.string() }),
+	]),
 	needsApproval: true,
-}).server((input) => teach(input));
+}).server(runTeachTool);
+
+/**
+ * The `teach` tool's server handler, extracted so its error surface is
+ * unit-testable without the SDK wrapper. A malformed payload makes
+ * `validateTeach` throw `TeachValidationError`; we return that as structured
+ * data so the agent can read the message and retry. Any other error (DB,
+ * connectivity, …) is not the agent's to fix and propagates.
+ */
+export async function runTeachTool(
+	input: TeachInput,
+): Promise<TeachResult | { error: string }> {
+	try {
+		return await teach(input);
+	} catch (err) {
+		if (err instanceof TeachValidationError) {
+			return { error: err.message };
+		}
+		throw err;
+	}
+}

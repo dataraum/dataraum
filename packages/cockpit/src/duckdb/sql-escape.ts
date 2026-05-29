@@ -39,3 +39,28 @@ function quoteLibpq(value: string): string {
 export function escapeSqlLiteral(value: string): string {
 	return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
+
+/**
+ * Build the DuckLake `ATTACH` statement for a Postgres catalog.
+ *
+ * BOTH single-quoted literals — the `ducklake:postgres:<libpq>` connection
+ * string and the data path — are escaped. This matters for the connection
+ * string: `pgUrlToLibpq` emits inner single quotes for any value containing
+ * whitespace/quotes (e.g. `password='pa ss'`), and those must be
+ * backslash-escaped so they don't terminate the outer SQL literal. DuckDB
+ * un-escapes them before handing the string to its postgres connector, so the
+ * libpq quoting survives intact. (Escaping only the data path and interpolating
+ * the libpq string raw was a real bug: a space or quote in the catalog
+ * credentials produced malformed/injectable ATTACH SQL.)
+ */
+export function buildDucklakeAttachSql(
+	alias: string,
+	catalogUrl: string,
+	lakePath: string,
+): string {
+	const connStr = escapeSqlLiteral(
+		`ducklake:postgres:${pgUrlToLibpq(catalogUrl)}`,
+	);
+	const dataPath = escapeSqlLiteral(lakePath);
+	return `ATTACH '${connStr}' AS ${alias} (DATA_PATH '${dataPath}', READ_ONLY)`;
+}

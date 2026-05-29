@@ -9,8 +9,6 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as SourcesRouteImport } from './routes/sources'
-import { Route as ChatRouteImport } from './routes/chat'
 import { Route as appRouteRouteImport } from './routes/(app)/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
@@ -22,16 +20,6 @@ import { Route as appWorkspaceWsIdLibraryRouteImport } from './routes/(app)/work
 import { Route as appWorkspaceWsIdGovernanceRouteImport } from './routes/(app)/workspace/$wsId/governance'
 import { Route as appWorkspaceWsIdCockpitRouteImport } from './routes/(app)/workspace/$wsId/cockpit'
 
-const SourcesRoute = SourcesRouteImport.update({
-  id: '/sources',
-  path: '/sources',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ChatRoute = ChatRouteImport.update({
-  id: '/chat',
-  path: '/chat',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const appRouteRoute = appRouteRouteImport.update({
   id: '/(app)',
   getParentRoute: () => rootRouteImport,
@@ -87,8 +75,6 @@ const appWorkspaceWsIdCockpitRoute = appWorkspaceWsIdCockpitRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/chat': typeof ChatRoute
-  '/sources': typeof SourcesRoute
   '/settings': typeof appSettingsRoute
   '/api/chat': typeof ApiChatRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
@@ -100,8 +86,6 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/chat': typeof ChatRoute
-  '/sources': typeof SourcesRoute
   '/settings': typeof appSettingsRoute
   '/api/chat': typeof ApiChatRoute
   '/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
@@ -115,8 +99,6 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/(app)': typeof appRouteRouteWithChildren
-  '/chat': typeof ChatRoute
-  '/sources': typeof SourcesRoute
   '/(app)/settings': typeof appSettingsRoute
   '/api/chat': typeof ApiChatRoute
   '/(app)/workspace/$wsId': typeof appWorkspaceWsIdRouteRouteWithChildren
@@ -130,8 +112,6 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/chat'
-    | '/sources'
     | '/settings'
     | '/api/chat'
     | '/workspace/$wsId'
@@ -143,8 +123,6 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/chat'
-    | '/sources'
     | '/settings'
     | '/api/chat'
     | '/workspace/$wsId'
@@ -157,8 +135,6 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/(app)'
-    | '/chat'
-    | '/sources'
     | '/(app)/settings'
     | '/api/chat'
     | '/(app)/workspace/$wsId'
@@ -172,27 +148,11 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   appRouteRoute: typeof appRouteRouteWithChildren
-  ChatRoute: typeof ChatRoute
-  SourcesRoute: typeof SourcesRoute
   ApiChatRoute: typeof ApiChatRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/sources': {
-      id: '/sources'
-      path: '/sources'
-      fullPath: '/sources'
-      preLoaderRoute: typeof SourcesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/chat': {
-      id: '/chat'
-      path: '/chat'
-      fullPath: '/chat'
-      preLoaderRoute: typeof ChatRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/(app)': {
       id: '/(app)'
       path: ''
@@ -304,8 +264,6 @@ const appRouteRouteWithChildren = appRouteRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   appRouteRoute: appRouteRouteWithChildren,
-  ChatRoute: ChatRoute,
-  SourcesRoute: SourcesRoute,
   ApiChatRoute: ApiChatRoute,
 }
 export const routeTree = rootRouteImport

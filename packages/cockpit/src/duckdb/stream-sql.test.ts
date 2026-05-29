@@ -4,11 +4,11 @@
 
 import { describe, expect, it } from "vitest";
 
+import { HARD_ROW_CEILING } from "#/duckdb/limit";
 import {
 	clampGridCap,
 	encodeFrame,
 	GRID_DEFAULT_CAP,
-	GRID_HARD_CEILING,
 	type ResultFrame,
 	type StreamableChunk,
 	type StreamableResult,
@@ -74,9 +74,9 @@ describe("clampGridCap (design §5.5)", () => {
 		expect(clampGridCap(1234)).toBe(1234);
 	});
 
-	it("clamps above the hard ceiling to 200k", () => {
-		expect(clampGridCap(999_999)).toBe(GRID_HARD_CEILING);
-		expect(clampGridCap(GRID_HARD_CEILING + 1)).toBe(200_000);
+	it("clamps above the shared hard ceiling (HARD_ROW_CEILING, DAT-384)", () => {
+		expect(clampGridCap(999_999)).toBe(HARD_ROW_CEILING);
+		expect(clampGridCap(HARD_ROW_CEILING + 1)).toBe(200_000);
 	});
 
 	it("floors a non-positive or non-finite cap to at least 1", () => {
@@ -182,7 +182,7 @@ describe("streamNdjson cap + truncation", () => {
 		expect(frames[2]).toEqual({ t: "f", rows: 3, truncated: true, cap: 3 });
 	});
 
-	it("stops pulling further chunks once the cap is hit", async () => {
+	it("peeks exactly one chunk past the cap to confirm truncation, then stops", async () => {
 		let pulls = 0;
 		const result: StreamableResult = {
 			columnNames: () => ["id"],
@@ -193,9 +193,26 @@ describe("streamNdjson cap + truncation", () => {
 			},
 		};
 		const frames = await collect(result, 2);
-		// Exactly one chunk consumed (it filled the cap); no extra pull.
-		expect(pulls).toBe(1);
+		// One chunk filled the cap; one peek confirmed there's genuinely more.
+		// No third pull — peak memory stays ≈ one chunk.
+		expect(pulls).toBe(2);
 		expect(frames.at(-1)).toEqual({ t: "f", rows: 2, truncated: true, cap: 2 });
+	});
+
+	it("does NOT mark truncated when the result is exactly the cap (full set)", async () => {
+		// First chunk fills the cap exactly; the peek returns the end sentinel.
+		const result = fakeResult(["id"], ["INTEGER"], [[[1, 2, 3]]]);
+		const frames = await collect(result, 3);
+		expect(frames[1]).toEqual({ t: "b", n: 3, cols: [[1, 2, 3]] });
+		// Clean footer — no `truncated`, no `cap`.
+		expect(frames.at(-1)).toEqual({ t: "f", rows: 3 });
+	});
+
+	it("does NOT mark truncated when a zero-row sentinel follows an exact-cap chunk", async () => {
+		// The peek returns a 0-row chunk (neo's historical end sentinel), not null.
+		const result = fakeResult(["id"], ["INTEGER"], [[[1, 2, 3]], [[]]]);
+		const frames = await collect(result, 3);
+		expect(frames.at(-1)).toEqual({ t: "f", rows: 3 });
 	});
 
 	it("emits an in-band error footer when fetchChunk throws (still HTTP 200)", async () => {
@@ -257,6 +274,28 @@ describe("streamNdjson cancellation", () => {
 		// First chunk emitted; loop checks aborted before pulling a second.
 		expect(pulls).toBe(1);
 		expect(frames.map((f) => f.t)).toEqual(["h", "b", "f"]);
-		expect(frames.at(-1)).toEqual({ t: "f", rows: 1 });
+		// Footer flags the early stop so a consumer can tell a partial body from a
+		// clean finish.
+		expect(frames.at(-1)).toEqual({ t: "f", rows: 1, cancelled: true });
+	});
+
+	it("flags cancelled before any chunk when aborted up front", async () => {
+		const signal = { aborted: true };
+		let pulls = 0;
+		const result: StreamableResult = {
+			columnNames: () => ["id"],
+			columnTypesJson: () => ["INTEGER"],
+			fetchChunk: async () => {
+				pulls += 1;
+				return new FakeChunk([[1]]);
+			},
+		};
+		const frames = await collect(result, 1000, "q_test", signal);
+		// Aborted before the loop pulled anything: header, then a cancelled footer.
+		expect(pulls).toBe(0);
+		expect(frames).toEqual([
+			{ t: "h", columns: ["id"], types: ["INTEGER"], queryId: "q_test" },
+			{ t: "f", rows: 0, cancelled: true },
+		]);
 	});
 });

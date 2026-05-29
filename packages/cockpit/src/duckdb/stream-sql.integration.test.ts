@@ -176,6 +176,16 @@ describe("streamNdjson over a real DuckLake lake (DAT-385)", () => {
 		});
 	});
 
+	it("does NOT mark truncated when the cap equals the full row count", async () => {
+		// `big` has exactly 5000 rows; a cap of 5000 is a full set, not a cut-off
+		// one. The footer must read clean — the post-cap peek finds no more rows.
+		const frames = await streamQuery("SELECT n FROM lake.typed.big", 5000);
+		const batches = frames.filter((f) => f.t === "b");
+		const total = batches.reduce((s, b) => s + (b.t === "b" ? b.n : 0), 0);
+		expect(total).toBe(5000);
+		expect(frames.at(-1)).toEqual({ t: "f", rows: 5000 });
+	});
+
 	it("emits an in-band error footer for a bad query (HTTP would stay 200)", async () => {
 		// `conn.stream` is lazy, so a binder error surfaces on first fetchChunk —
 		// streamNdjson catches it and reports it in the footer rather than throwing.

@@ -75,11 +75,21 @@ export const Route = createFileRoute("/api/run-sql")({
 				// level (READ_ONLY ATTACH, defense in depth). `stream()` is lazy: it
 				// does NOT materialize the whole result, so peak memory ≈ one chunk.
 				// Same positional-bind rule as the agent tool.
-				const conn = await getLakeConnection();
+				//
+				// Prepare time is BEFORE the first byte: a connection failure or a
+				// SQL parse/bind error that surfaces here can still become a 400
+				// (e.g. malformed `sql`). Once the ReadableStream starts flushing the
+				// status is locked at 200 and mid-stream errors go in the footer.
 				const wrapped = `SELECT * FROM (${body.sql}) AS _run_sql`;
-				const result = (await (params
-					? conn.stream(wrapped, params)
-					: conn.stream(wrapped))) as unknown as StreamableResult;
+				let result: StreamableResult;
+				try {
+					const conn = await getLakeConnection();
+					result = (await (params
+						? conn.stream(wrapped, params)
+						: conn.stream(wrapped))) as unknown as StreamableResult;
+				} catch (err) {
+					return badRequest(err instanceof Error ? err.message : String(err));
+				}
 
 				const enc = new TextEncoder();
 				// Flipped by cancel() (grid closed / navigated away). streamNdjson

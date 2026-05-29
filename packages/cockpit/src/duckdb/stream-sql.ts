@@ -26,6 +26,7 @@ import {
 	type Json,
 	JsonDuckDBValueConverter,
 } from "@duckdb/node-api";
+import { HARD_ROW_CEILING } from "#/duckdb/limit";
 
 // --- Cap clamp (design §5.5) -------------------------------------------------
 
@@ -36,23 +37,20 @@ import {
  */
 export const GRID_DEFAULT_CAP = 50_000;
 
-// TODO(DAT-384): dedupe the 200k ceiling once limit.ts (clampRowLimit /
-// HARD_ROW_CEILING) lands on main; until then keep this grid-local so this lane
-// doesn't import an in-flight module.
-export const GRID_HARD_CEILING = 200_000;
-
 /**
- * Clamp a client-requested cap to `[1, GRID_HARD_CEILING]`, defaulting an absent
+ * Clamp a client-requested cap to `[1, HARD_ROW_CEILING]`, defaulting an absent
  * cap to {@link GRID_DEFAULT_CAP}. A client can never ask for an unbounded — or
- * a non-positive — materialization. Mirrors `min(cap ?? 50_000, 200_000)` from
- * the design, with a floor so a 0/negative cap can't stream nothing forever.
+ * a non-positive — materialization. The 200k ceiling is shared with the agent
+ * tool ({@link HARD_ROW_CEILING}, DAT-384); only the *default* differs (the grid
+ * streams far more before truncating). A floor of 1 keeps a 0/negative cap from
+ * streaming nothing forever.
  */
 export function clampGridCap(cap?: number): number {
 	if (cap === undefined || !Number.isFinite(cap)) {
 		return GRID_DEFAULT_CAP;
 	}
 	const floored = Math.max(1, Math.floor(cap));
-	return Math.min(floored, GRID_HARD_CEILING);
+	return Math.min(floored, HARD_ROW_CEILING);
 }
 
 // --- Wire protocol (design §4) -----------------------------------------------
@@ -83,18 +81,28 @@ export interface BatchFrame {
 }
 
 /**
- * Last line, always — even on cap or error. The client uses this to distinguish
- * "finished cleanly", "hit the cap" (`truncated`), and "failed mid-stream"
+ * Last line, always — even on cap, cancel, or error. The client uses this to
+ * distinguish "finished cleanly", "hit the cap" (`truncated`), "stopped early
+ * because the client went away" (`cancelled`), and "failed mid-stream"
  * (`error`). The HTTP status stays 200; the body is the source of truth.
  */
 export interface FooterFrame {
 	t: "f";
 	/** Total rows emitted across all batches. */
 	rows: number;
-	/** Set when the stream stopped at the cap. */
+	/**
+	 * Set when the stream stopped because there are genuinely more rows than the
+	 * cap. Confirmed by peeking one chunk past the cap, so an exact-cap result
+	 * (no further rows) reads as a clean finish, not a truncation.
+	 */
 	truncated?: boolean;
 	/** Echoed cap when truncated, so the client can show "first N of many". */
 	cap?: number;
+	/**
+	 * Set when an abort (the grid closed / navigated away) stopped the stream
+	 * before its natural end — distinguishes a partial body from a clean finish.
+	 */
+	cancelled?: boolean;
 	/** DuckDB error message when the stream failed mid-flight. */
 	error?: string;
 }
@@ -170,19 +178,18 @@ export async function* streamNdjson(
 
 	let rows = 0;
 	let truncated = false;
+	let cancelled = false;
 	try {
 		for (;;) {
-			if (signal?.aborted) break;
+			if (signal?.aborted) {
+				cancelled = true;
+				break;
+			}
 			const chunk = await result.fetchChunk();
 			// neo returns null (and historically a 0-row chunk) at the end.
 			if (chunk === null || chunk.rowCount === 0) break;
 
 			const remaining = cap - rows;
-			if (remaining <= 0) {
-				truncated = true;
-				break;
-			}
-
 			const cols = chunk.convertColumns<Json>(JsonDuckDBValueConverter);
 			const take = Math.min(chunk.rowCount, remaining);
 			yield encodeFrame({
@@ -193,12 +200,25 @@ export async function* streamNdjson(
 			rows += take;
 
 			if (rows >= cap) {
-				truncated = true;
+				// At the cap. Don't assume truncation: a result of exactly `cap`
+				// rows is a full set, not a cut-off one. Peek one more chunk (peak
+				// memory stays ≈ one chunk) and only flag `truncated` if there is
+				// genuinely more. The chunk that crossed the cap was sliced above,
+				// so any rows in a further chunk are rows we'd have dropped.
+				if (take < chunk.rowCount) {
+					// The current chunk itself still held rows past the cap.
+					truncated = true;
+				} else {
+					const next = await result.fetchChunk();
+					truncated = next !== null && next.rowCount > 0;
+				}
 				break;
 			}
 		}
 		yield encodeFrame(
-			truncated ? { t: "f", rows, truncated, cap } : { t: "f", rows },
+			truncated
+				? { t: "f", rows, truncated, cap, ...(cancelled && { cancelled }) }
+				: { t: "f", rows, ...(cancelled && { cancelled }) },
 		);
 	} catch (err) {
 		yield encodeFrame({

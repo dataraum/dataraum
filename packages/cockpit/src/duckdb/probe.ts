@@ -14,6 +14,7 @@
 import { DuckDBInstance } from "@duckdb/node-api";
 
 import { resolveCredential } from "./credentials";
+import { clampRowLimit } from "./limit";
 import type { QueryResult } from "./query-result";
 import { readerToResult } from "./query-result";
 import { escapeSqlLiteral } from "./sql-escape";
@@ -59,12 +60,11 @@ export interface ProbeInput {
 	sql: string;
 	/**
 	 * Row cap. The query is wrapped so the agent can't accidentally pull a huge
-	 * result into the chat context. Defaults to 1000.
+	 * result into the chat context. Defaults to {@link DEFAULT_ROW_LIMIT} and is
+	 * clamped to {@link HARD_ROW_CEILING}.
 	 */
 	limit?: number;
 }
-
-const DEFAULT_PROBE_LIMIT = 1000;
 
 /**
  * Run read-only SQL against an external database source.
@@ -96,7 +96,7 @@ export async function probe(input: ProbeInput): Promise<QueryResult> {
 	const extension = BACKEND_EXTENSIONS[backend];
 	const attachType = BACKEND_ATTACH_TYPES[backend];
 	const defaultSchema = BACKEND_DEFAULT_SCHEMA[backend];
-	const limit = input.limit ?? DEFAULT_PROBE_LIMIT;
+	const limit = clampRowLimit(input.limit);
 
 	const instance = await DuckDBInstance.create(":memory:");
 	const conn = await instance.connect();

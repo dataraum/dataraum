@@ -7,13 +7,14 @@ here we pin the skip gates that decide whether each phase re-runs.
 from __future__ import annotations
 
 import duckdb
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.pipeline.base import PhaseContext
 from dataraum.pipeline.phases.semantic_per_column_phase import SemanticPerColumnPhase
 from dataraum.pipeline.phases.semantic_per_table_phase import SemanticPerTablePhase
-from dataraum.storage import Column, Source, Table
+from dataraum.storage import Column, ConfigOverlay, Source, Table
 from tests.conftest import baseline_session_id
 
 
@@ -81,6 +82,38 @@ class TestPerColumnShouldSkip:
         assert SemanticPerColumnPhase().should_skip(_ctx(session, duckdb_conn, src.source_id)) == (
             "All columns already have semantic annotations"
         )
+
+
+class TestPerColumnReplayCleanup:
+    def test_drops_annotation_but_leaves_concept_overlay(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """DAT-376: replay_cleanup wipes SemanticAnnotation, never concept rows.
+
+        Induced ``_adhoc`` concepts live as workspace-scoped ``concept``
+        ConfigOverlay rows (DAT-371). A reduce replay must re-annotate columns
+        against the *existing* ontology — it must not delete the induced
+        concepts that ontology is built from.
+        """
+        src = _source(session)
+        t1 = _typed_table(session, src.source_id, "t1", ["a"])
+        _annotate(session, t1)
+        overlay = ConfigOverlay(
+            session_id=None,
+            type="concept",
+            payload={"vertical": "_adhoc", "name": "revenue"},
+        )
+        session.add(overlay)
+        session.flush()
+
+        SemanticPerColumnPhase().replay_cleanup(_ctx(session, duckdb_conn, src.source_id), [])
+        session.flush()
+
+        assert session.execute(select(SemanticAnnotation)).scalars().all() == []
+        overlays = session.execute(select(ConfigOverlay)).scalars().all()
+        assert len(overlays) == 1
+        assert overlays[0].type == "concept"
+        assert overlays[0].payload["name"] == "revenue"
 
 
 class TestPerTableShouldSkip:

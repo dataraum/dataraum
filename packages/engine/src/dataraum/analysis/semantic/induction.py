@@ -11,6 +11,7 @@ phase for concept mapping on the same pipeline run.
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import Session
 
@@ -25,6 +26,11 @@ from dataraum.llm.providers.base import (
     Message,
     ToolDefinition,
 )
+
+if TYPE_CHECKING:
+    from dataraum.llm.config import LLMConfig
+    from dataraum.llm.prompts import PromptRenderer
+    from dataraum.llm.providers.base import LLMProvider
 
 logger = get_logger(__name__)
 
@@ -123,3 +129,70 @@ class OntologyInductionAgent(LLMFeature):
             name=definition.name,
         )
         return Result.ok(definition)
+
+
+def induce_adhoc_concepts(
+    *,
+    session: Session,
+    config: LLMConfig,
+    provider: LLMProvider,
+    renderer: PromptRenderer,
+    table_ids: list[str],
+) -> Result[int]:
+    """Induce an ``_adhoc`` ontology and persist it as ``concept`` overlay rows.
+
+    DAT-376: extracted verbatim from ``SemanticPerColumnPhase._ensure_adhoc_ontology``
+    so the cold-start induction step is independently callable (the connect/frame
+    relocation moves this CALL upstream; ``ground_columns`` then runs alone).
+
+    DAT-371: the baked-in config root is bind-mounted read-only, so the
+    old "write YAML back to ``verticals/_adhoc/ontology.yaml``" path
+    crashes on cold start. Induced concepts now land as one
+    ``config_overlay`` row per concept (``type="concept"``,
+    ``payload={"vertical": "_adhoc", **concept.model_dump()}``,
+    workspace-scoped — ``session_id=None``); the layered loader
+    materializes them on every subsequent ontology read via
+    :func:`dataraum.core.overlay._apply_concept`.
+
+    Returns:
+        ``Result.ok(count)`` with the number of concept overlay rows inserted
+        (``0`` for the short-circuit when concepts already exist), or
+        ``Result.fail`` on induction failure.
+    """
+    from dataraum.analysis.semantic.ontology import OntologyLoader
+    from dataraum.storage import ConfigOverlay
+
+    # Short-circuit: re-read through the layered loader so already-
+    # induced concept rows count as "the ontology exists". This is
+    # what makes a re-run after a successful induction idempotent.
+    existing = OntologyLoader().load("_adhoc")
+    if existing is not None and existing.concepts:
+        return Result.ok(0)
+
+    induction = OntologyInductionAgent(
+        config=config, provider=provider, prompt_renderer=renderer
+    ).induce(session=session, table_ids=table_ids)
+    if not induction.success:
+        return Result.fail(f"Ontology induction failed: {induction.error}")
+    if not induction.value or not induction.value.concepts:
+        return Result.fail("Ontology induction returned no concepts.")
+
+    count = 0
+    for concept in induction.value.concepts:
+        session.add(
+            ConfigOverlay(
+                session_id=None,  # workspace-scoped: induction is not per-session
+                type="concept",
+                payload={"vertical": "_adhoc", **concept.model_dump(exclude_none=True)},
+            )
+        )
+        count += 1
+    # Commit so the resolver (which leases its own session via
+    # session_scope) can see the newly inserted rows on the next
+    # load. Postgres READ COMMITTED means a flush alone wouldn't make
+    # the rows visible across sessions. Committing here is also a
+    # crash-safety win: induction is expensive (LLM call); if a later
+    # phase fails, the next run short-circuits this branch via the
+    # ``existing.concepts`` check above.
+    session.commit()
+    return Result.ok(count)

@@ -4,6 +4,55 @@ Changes in dataraum that need attention in other repos.
 
 Updated by `/implement` in this repo. Read by `/accept` in dataraum-eval.
 
+## 2026-05-29: DAT-376 — split induction ↔ grounding in `semantic_per_column` (structure-only)
+
+Detached the two LLM steps inside `semantic_per_column` into independently
+callable module-level functions, **in place** — no new pipeline stage, and
+the `add_source` surface (workflow names, activity names, phase order,
+`pipeline.yaml`, `contracts.py`) is byte-for-byte unchanged. This is a pure
+extract-then-rewire; the phase `_run` is now a thin composer over the two
+functions.
+
+### dataraum-eval
+
+- **Eval action: NO recalibration needed.** Recall is safe by construction —
+  nothing that produces detector/annotation content changed:
+  - The **ontology induction agent**, its prompt, and its tool schema are
+    untouched (the extracted `induce_adhoc_concepts` wraps the *same*
+    `OntologyInductionAgent.induce` call and the *same* per-concept
+    `ConfigOverlay(type="concept", payload={"vertical":"_adhoc", ...})`
+    insert + `session.commit()` as DAT-371's `_ensure_adhoc_ontology`).
+  - The **`ColumnAnnotationAgent`** (the grounding step's worker), its prompt,
+    its tool schema, and the `required_standard_fields` it receives from
+    `GraphLoader(vertical=ontology).get_all_abstract_fields()` are unchanged.
+  - **`persist_column_annotations`** row shapes are unchanged (reused verbatim).
+  - All five `semantic_per_column` detectors are unchanged.
+- **`replay_cleanup` is unchanged** — still drops `SemanticAnnotation` only and
+  NEVER the induced `concept` `ConfigOverlay` rows. A new regression test pins
+  this (`test_semantic_split_phases.py::TestPerColumnReplayCleanup`).
+
+### The new seam (for DAT-377 / DAT-378)
+
+`semantic_per_column` now composes two functions, both in
+`dataraum.analysis.semantic` (and re-exported from its `__init__`):
+
+- `induction.induce_adhoc_concepts(*, session, config, provider, renderer, table_ids) -> Result[int]`
+  — cold-start `_adhoc` ontology induction. Short-circuits (returns `Result.ok(0)`)
+  when concepts already exist; otherwise induces and inserts one `concept`
+  overlay row per concept, then commits. The `if ontology == "_adhoc":` gate
+  stays at the call site.
+- `processor.ground_columns(*, session, config, provider, renderer, table_ids, ontology, session_id) -> Result[int]`
+  — per-column annotation + `persist_column_annotations`, returns the row count.
+
+This is the seam DAT-377/378 act on: the **connect/frame relocation moves the
+induction CALL upstream** (induction belongs in `frame`, where the user declares
+concepts before data — see the `project_frame_stage_ontology` memory), leaving
+`add_source` / `semantic_per_column` calling **only** `ground_columns`. No
+content change to either step is implied by that move — purely *where* the
+induction call lives.
+
+- **Status**: pending
+
 ## 2026-05-28: DAT-371 — `_adhoc` ontology induction moves to `concept` overlay rows
 
 Follow-up to DAT-343 that unblocks DAT-339 user testing. The baked-in

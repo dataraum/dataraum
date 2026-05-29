@@ -13,24 +13,18 @@ Cross-table reasoning (entities, relationships) moves to ``semantic_per_table``.
 from __future__ import annotations
 
 from types import ModuleType
-from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, func, select
 
-from dataraum.analysis.semantic.column_agent import ColumnAnnotationAgent
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
-from dataraum.analysis.semantic.processor import persist_column_annotations
+from dataraum.analysis.semantic.induction import induce_adhoc_concepts
+from dataraum.analysis.semantic.processor import ground_columns
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
 from dataraum.pipeline.phases.base import BasePhase
 from dataraum.pipeline.registry import analysis_phase
 from dataraum.storage import Column, Table
-
-if TYPE_CHECKING:
-    from dataraum.llm.config import LLMConfig
-    from dataraum.llm.prompts import PromptRenderer as PromptRendererType
-    from dataraum.llm.providers.base import LLMProvider
 
 logger = get_logger(__name__)
 
@@ -129,6 +123,14 @@ class SemanticPerColumnPhase(BasePhase):
         return None
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
+        """Resolve config, induce ``_adhoc`` concepts on cold start, then ground.
+
+        A thin composer (DAT-376): the two LLM steps live as module-level
+        functions — :func:`induce_adhoc_concepts` (cold-start ontology) and
+        :func:`ground_columns` (per-column annotation). The ``_adhoc`` gate
+        stays here at the call site; the connect/frame relocation (DAT-377/378)
+        will move the induction CALL upstream and leave this phase grounding only.
+        """
         table_ids = self._typed_table_ids(ctx)
         if not table_ids:
             return PhaseResult.failed("No typed tables found. Run typing phase first.")
@@ -137,10 +139,6 @@ class SemanticPerColumnPhase(BasePhase):
             config = load_llm_config()
         except FileNotFoundError as e:
             return PhaseResult.failed(f"LLM config not found: {e}")
-
-        col_config = config.features.column_annotation
-        if not col_config or not col_config.enabled:
-            return PhaseResult.failed("Column annotation is disabled in config.")
 
         provider_config = config.providers.get(config.active_provider)
         if not provider_config:
@@ -162,106 +160,32 @@ class SemanticPerColumnPhase(BasePhase):
         # induced ontology before columns can map to concepts. (Moved here from
         # the monolithic phase — concept mapping is now per-column.)
         if ontology == "_adhoc":
-            induction_error = self._ensure_adhoc_ontology(
-                ctx, config, provider, renderer, table_ids
+            induction = induce_adhoc_concepts(
+                session=ctx.session,
+                config=config,
+                provider=provider,
+                renderer=renderer,
+                table_ids=table_ids,
             )
-            if induction_error:
-                return PhaseResult.failed(induction_error)
+            if not induction.success:
+                return PhaseResult.failed(induction.error or "Ontology induction failed")
 
-        # Standard-field concepts required by active metric graphs, so the model
-        # prioritizes mapping those concepts to actual columns.
-        from dataraum.graphs.loader import GraphLoader
-
-        metric_loader = GraphLoader(vertical=ontology)
-        metric_loader.load_all()
-        required_standard_fields = sorted(metric_loader.get_all_abstract_fields())
-
-        agent = ColumnAnnotationAgent(config=config, provider=provider, prompt_renderer=renderer)
-        annotation_result = agent.annotate(
+        grounding = ground_columns(
             session=ctx.session,
+            config=config,
+            provider=provider,
+            renderer=renderer,
             table_ids=table_ids,
             ontology=ontology,
-            required_standard_fields=required_standard_fields,
-        )
-        if not annotation_result.success or not annotation_result.value:
-            return PhaseResult.failed(f"Column annotation failed: {annotation_result.error}")
-
-        from dataraum.analysis.semantic.ontology import OntologyLoader
-
-        ontology_def = OntologyLoader().load(ontology)
-        model_name = provider.get_model_for_tier(col_config.model_tier)
-
-        count = persist_column_annotations(
-            ctx.session,
-            annotation_result.value,
-            table_ids,
-            annotated_by=model_name,
             session_id=ctx.require_session_id(),
-            ontology_def=ontology_def,
         )
+        if not grounding.success:
+            return PhaseResult.failed(grounding.error or "Column annotation failed")
 
+        count = grounding.unwrap()
         return PhaseResult.success(
             outputs={"annotations": count, "tables_analyzed": len(table_ids)},
             records_processed=count,
             records_created=count,
             summary=f"{count} column annotations",
         )
-
-    def _ensure_adhoc_ontology(
-        self,
-        ctx: PhaseContext,
-        config: LLMConfig,
-        provider: LLMProvider,
-        renderer: PromptRendererType,
-        table_ids: list[str],
-    ) -> str | None:
-        """Induce an ``_adhoc`` ontology and persist it as ``concept`` overlay rows.
-
-        DAT-371: the baked-in config root is bind-mounted read-only, so the
-        old "write YAML back to ``verticals/_adhoc/ontology.yaml``" path
-        crashes on cold start. Induced concepts now land as one
-        ``config_overlay`` row per concept (``type="concept"``,
-        ``payload={"vertical": "_adhoc", **concept.model_dump()}``,
-        workspace-scoped — ``session_id=None``); the layered loader
-        materializes them on every subsequent ontology read via
-        :func:`dataraum.core.overlay._apply_concept`.
-
-        Returns the error string on induction failure, ``None`` on
-        success (including the short-circuit when concepts already exist).
-        """
-        from dataraum.analysis.semantic.induction import OntologyInductionAgent
-        from dataraum.analysis.semantic.ontology import OntologyLoader
-        from dataraum.storage import ConfigOverlay
-
-        # Short-circuit: re-read through the layered loader so already-
-        # induced concept rows count as "the ontology exists". This is
-        # what makes a re-run after a successful induction idempotent.
-        existing = OntologyLoader().load("_adhoc")
-        if existing is not None and existing.concepts:
-            return None
-
-        induction = OntologyInductionAgent(
-            config=config, provider=provider, prompt_renderer=renderer
-        ).induce(session=ctx.session, table_ids=table_ids)
-        if not induction.success:
-            return f"Ontology induction failed: {induction.error}"
-        if not induction.value or not induction.value.concepts:
-            return "Ontology induction returned no concepts."
-
-        for concept in induction.value.concepts:
-            ctx.session.add(
-                ConfigOverlay(
-                    session_id=None,  # workspace-scoped: induction is not per-session
-                    type="concept",
-                    payload={"vertical": "_adhoc", **concept.model_dump(exclude_none=True)},
-                )
-            )
-        # Commit so the resolver (which leases its own session via
-        # session_scope) can see the newly inserted rows on the next
-        # load. Postgres READ COMMITTED means a flush alone wouldn't make
-        # the rows visible across sessions. Committing here is also a
-        # crash-safety win: induction is expensive (LLM call); if a later
-        # phase fails, the next run short-circuits this branch via the
-        # ``existing.concepts`` check above.
-        ctx.session.commit()
-        return None
